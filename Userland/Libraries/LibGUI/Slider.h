@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -19,7 +20,7 @@ public:
         Proportional,
     };
 
-    virtual ~Slider() override;
+    virtual ~Slider() override = default;
 
     void set_knob_size_mode(KnobSizeMode mode) { m_knob_size_mode = mode; }
     KnobSizeMode knob_size_mode() const { return m_knob_size_mode; }
@@ -39,12 +40,20 @@ public:
         return rect().shrunken(0, track_margin() * 2);
     }
 
+    Function<void()> on_drag_start;
+    Function<void()> on_drag_end;
+
 protected:
     explicit Slider(Orientation = Orientation::Vertical);
 
+    virtual Optional<UISize> calculated_min_size() const override;
+    virtual Optional<UISize> calculated_preferred_size() const override;
+
     virtual void paint_event(PaintEvent&) override;
+    void start_drag(Gfx::IntPoint);
     virtual void mousedown_event(MouseEvent&) override;
     virtual void mousemove_event(MouseEvent&) override;
+    void end_drag();
     virtual void mouseup_event(MouseEvent&) override;
     virtual void mousewheel_event(MouseEvent&) override;
     virtual void leave_event(Core::Event&) override;
@@ -64,7 +73,7 @@ class VerticalSlider final : public Slider {
     C_OBJECT(VerticalSlider);
 
 public:
-    virtual ~VerticalSlider() override { }
+    virtual ~VerticalSlider() override = default;
 
 private:
     VerticalSlider()
@@ -77,7 +86,7 @@ class HorizontalSlider final : public Slider {
     C_OBJECT(HorizontalSlider);
 
 public:
-    virtual ~HorizontalSlider() override { }
+    virtual ~HorizontalSlider() override = default;
 
 private:
     HorizontalSlider()

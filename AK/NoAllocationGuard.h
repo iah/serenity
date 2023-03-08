@@ -12,8 +12,8 @@
 #if defined(KERNEL)
 #    include <Kernel/Arch/Processor.h>
 #    include <Kernel/Heap/kmalloc.h>
-#else
-#    include <LibC/mallocdefs.h>
+#elif defined(AK_OS_SERENITY)
+#    include <mallocdefs.h>
 #endif
 
 namespace AK {
@@ -39,7 +39,7 @@ private:
     {
 #if defined(KERNEL)
         return Processor::current_thread()->get_allocation_enabled();
-#elif defined(__serenity__)
+#elif defined(AK_OS_SERENITY)
         // This extern thread-local lives in our LibC, which doesn't exist on other systems.
         return s_allocation_enabled;
 #else
@@ -51,7 +51,7 @@ private:
     {
 #if defined(KERNEL)
         Processor::current_thread()->set_allocation_enabled(value);
-#elif defined(__serenity__)
+#elif defined(AK_OS_SERENITY)
         s_allocation_enabled = value;
 #else
         (void)value;
@@ -63,4 +63,6 @@ private:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::NoAllocationGuard;
+#endif

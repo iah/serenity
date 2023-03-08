@@ -9,18 +9,14 @@
 
 namespace JS {
 
-NumberObject* NumberObject::create(GlobalObject& global_object, double value)
+NonnullGCPtr<NumberObject> NumberObject::create(Realm& realm, double value)
 {
-    return global_object.heap().allocate<NumberObject>(global_object, value, *global_object.number_prototype());
+    return realm.heap().allocate<NumberObject>(realm, value, *realm.intrinsics().number_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 NumberObject::NumberObject(double value, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_value(value)
-{
-}
-
-NumberObject::~NumberObject()
 {
 }
 

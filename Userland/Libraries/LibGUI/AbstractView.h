@@ -93,7 +93,7 @@ public:
     virtual Gfx::IntRect editing_rect(ModelIndex const& index) const { return content_rect(index); }
     virtual Gfx::IntRect paint_invalidation_rect(ModelIndex const& index) const { return content_rect(index); }
 
-    virtual ModelIndex index_at_event_position(Gfx::IntPoint const&) const { return {}; }
+    virtual ModelIndex index_at_event_position(Gfx::IntPoint) const { return {}; }
     void begin_editing(ModelIndex const&);
     void stop_editing();
 
@@ -109,12 +109,14 @@ public:
 
     void notify_selection_changed(Badge<ModelSelection>);
 
-    NonnullRefPtr<Gfx::Font> font_for_index(ModelIndex const&) const;
+    NonnullRefPtr<Gfx::Font const> font_for_index(ModelIndex const&) const;
 
     void set_key_column_and_sort_order(int column, SortOrder);
 
     int key_column() const { return m_key_column; }
+    void set_key_column(int column) { set_key_column_and_sort_order(column, sort_order()); }
     SortOrder sort_order() const { return m_sort_order; }
+    void set_sort_order(SortOrder order) { set_key_column_and_sort_order(key_column(), order); }
 
     virtual void scroll_into_view(ModelIndex const&, [[maybe_unused]] bool scroll_horizontally = true, [[maybe_unused]] bool scroll_vertically = true) { }
 
@@ -126,6 +128,7 @@ public:
     void set_tab_key_navigation_enabled(bool enabled) { m_tab_key_navigation_enabled = enabled; }
 
     void set_draw_item_text_with_shadow(bool b) { m_draw_item_text_with_shadow = b; }
+    bool does_draw_item_text_with_shadow() const { return m_draw_item_text_with_shadow; }
 
 protected:
     AbstractView();
@@ -145,7 +148,7 @@ protected:
     virtual void hide_event(HideEvent&) override;
     virtual void focusin_event(FocusEvent&) override;
 
-    virtual void on_automatic_scrolling_timer_fired() override;
+    virtual void automatic_scrolling_timer_did_fire() override;
 
     virtual void clear_selection();
     virtual void set_selection(ModelIndex const&);
@@ -153,6 +156,7 @@ protected:
     virtual void add_selection(ModelIndex const&);
     virtual void remove_selection(ModelIndex const&);
     virtual void toggle_selection(ModelIndex const&);
+    virtual void select_range(ModelIndex const&);
     virtual void did_change_hovered_index([[maybe_unused]] ModelIndex const& old_index, [[maybe_unused]] ModelIndex const& new_index) { }
     virtual void did_change_cursor_index([[maybe_unused]] ModelIndex const& old_index, [[maybe_unused]] ModelIndex const& new_index) { }
     virtual void editing_widget_did_change([[maybe_unused]] ModelIndex const& index) { }
@@ -195,7 +199,7 @@ private:
 
     RefPtr<Model> m_model;
     ModelSelection m_selection;
-    String m_highlighted_search;
+    DeprecatedString m_highlighted_search;
     RefPtr<Core::Timer> m_highlighted_search_timer;
     SelectionBehavior m_selection_behavior { SelectionBehavior::SelectItems };
     SelectionMode m_selection_mode { SelectionMode::SingleSelection };

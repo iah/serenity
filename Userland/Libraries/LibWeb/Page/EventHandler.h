@@ -14,6 +14,7 @@
 #include <LibGfx/Forward.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Page/EditEventHandler.h>
+#include <LibWeb/PixelUnits.h>
 
 namespace Web {
 
@@ -22,10 +23,11 @@ public:
     explicit EventHandler(Badge<HTML::BrowsingContext>, HTML::BrowsingContext&);
     ~EventHandler();
 
-    bool handle_mouseup(const Gfx::IntPoint&, unsigned button, unsigned modifiers);
-    bool handle_mousedown(const Gfx::IntPoint&, unsigned button, unsigned modifiers);
-    bool handle_mousemove(const Gfx::IntPoint&, unsigned buttons, unsigned modifiers);
-    bool handle_mousewheel(const Gfx::IntPoint&, unsigned buttons, unsigned modifiers, int wheel_delta_x, int wheel_delta_y);
+    bool handle_mouseup(CSSPixelPoint, unsigned button, unsigned buttons, unsigned modifiers);
+    bool handle_mousedown(CSSPixelPoint, unsigned button, unsigned buttons, unsigned modifiers);
+    bool handle_mousemove(CSSPixelPoint, unsigned buttons, unsigned modifiers);
+    bool handle_mousewheel(CSSPixelPoint, unsigned button, unsigned buttons, unsigned modifiers, int wheel_delta_x, int wheel_delta_y);
+    bool handle_doubleclick(CSSPixelPoint, unsigned button, unsigned buttons, unsigned modifiers);
 
     bool handle_keydown(KeyCode, unsigned modifiers, u32 code_point);
     bool handle_keyup(KeyCode, unsigned modifiers, u32 code_point);
@@ -38,8 +40,15 @@ private:
     bool focus_next_element();
     bool focus_previous_element();
 
-    Layout::InitialContainingBlock* layout_root();
-    const Layout::InitialContainingBlock* layout_root() const;
+    bool fire_keyboard_event(DeprecatedFlyString const& event_name, HTML::BrowsingContext& browsing_context, KeyCode key, unsigned modifiers, u32 code_point);
+    CSSPixelPoint compute_mouse_event_client_offset(CSSPixelPoint event_page_position) const;
+    CSSPixelPoint compute_mouse_event_page_offset(CSSPixelPoint event_client_offset) const;
+
+    Layout::Viewport* layout_root();
+    Layout::Viewport const* layout_root() const;
+
+    Painting::PaintableBox* paint_root();
+    Painting::PaintableBox const* paint_root() const;
 
     HTML::BrowsingContext& m_browsing_context;
 

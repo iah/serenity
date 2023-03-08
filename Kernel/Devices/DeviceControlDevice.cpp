@@ -9,7 +9,7 @@
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullRefPtr<DeviceControlDevice> DeviceControlDevice::must_create()
+UNMAP_AFTER_INIT NonnullLockRefPtr<DeviceControlDevice> DeviceControlDevice::must_create()
 {
     auto device_control_device_or_error = DeviceManagement::try_create_device<DeviceControlDevice>();
     // FIXME: Find a way to propagate errors
@@ -17,7 +17,7 @@ UNMAP_AFTER_INIT NonnullRefPtr<DeviceControlDevice> DeviceControlDevice::must_cr
     return device_control_device_or_error.release_value();
 }
 
-bool DeviceControlDevice::can_read(const OpenFileDescription&, u64) const
+bool DeviceControlDevice::can_read(OpenFileDescription const&, u64) const
 {
     return true;
 }
@@ -27,9 +27,7 @@ UNMAP_AFTER_INIT DeviceControlDevice::DeviceControlDevice()
 {
 }
 
-UNMAP_AFTER_INIT DeviceControlDevice::~DeviceControlDevice()
-{
-}
+UNMAP_AFTER_INIT DeviceControlDevice::~DeviceControlDevice() = default;
 
 ErrorOr<size_t> DeviceControlDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {

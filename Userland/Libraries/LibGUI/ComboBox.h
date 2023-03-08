@@ -20,19 +20,20 @@ class ComboBox : public Frame {
 public:
     virtual ~ComboBox() override;
 
-    String text() const;
-    void set_text(const String&);
+    DeprecatedString text() const;
+    void set_text(DeprecatedString const&, AllowCallback = AllowCallback::Yes);
 
     void open();
     void close();
     void select_all();
 
     Model* model();
-    const Model* model() const;
+    Model const* model() const;
     void set_model(NonnullRefPtr<Model>);
 
     size_t selected_index() const;
     void set_selected_index(size_t index, AllowCallback = AllowCallback::Yes);
+    void clear_selection();
 
     bool only_allow_values_from_model() const { return m_only_allow_values_from_model; }
     void set_only_allow_values_from_model(bool);
@@ -41,9 +42,12 @@ public:
     void set_model_column(int);
 
     void set_editor_placeholder(StringView placeholder);
-    const String& editor_placeholder() const;
+    DeprecatedString const& editor_placeholder() const;
 
-    Function<void(const String&, const ModelIndex&)> on_change;
+    int max_visible_items() const { return m_max_visible_items; }
+    void set_max_visible_items(int max) { m_max_visible_items = max; }
+
+    Function<void(DeprecatedString const&, ModelIndex const&)> on_change;
     Function<void()> on_return_pressed;
 
 protected:
@@ -51,7 +55,7 @@ protected:
     virtual void resize_event(ResizeEvent&) override;
 
 private:
-    void selection_updated(const ModelIndex&);
+    void selection_updated(ModelIndex const&);
     void navigate(AbstractView::CursorMovement);
     void navigate_relative(int);
 
@@ -62,6 +66,7 @@ private:
     Optional<ModelIndex> m_selected_index;
     bool m_only_allow_values_from_model { false };
     bool m_updating_model { false };
+    int m_max_visible_items { 15 };
 };
 
 }

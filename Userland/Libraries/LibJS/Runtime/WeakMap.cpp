@@ -8,18 +8,14 @@
 
 namespace JS {
 
-WeakMap* WeakMap::create(GlobalObject& global_object)
+NonnullGCPtr<WeakMap> WeakMap::create(Realm& realm)
 {
-    return global_object.heap().allocate<WeakMap>(global_object, *global_object.weak_map_prototype());
+    return realm.heap().allocate<WeakMap>(realm, *realm.intrinsics().weak_map_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 WeakMap::WeakMap(Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , WeakContainer(heap())
-{
-}
-
-WeakMap::~WeakMap()
 {
 }
 

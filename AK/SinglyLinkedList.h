@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Assertions.h>
+#include <AK/Error.h>
 #include <AK/Find.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Traits.h>
@@ -18,7 +19,7 @@ template<typename ListType, typename ElementType>
 class SinglyLinkedListIterator {
 public:
     SinglyLinkedListIterator() = default;
-    bool operator!=(const SinglyLinkedListIterator& other) const { return m_node != other.m_node; }
+    bool operator!=(SinglyLinkedListIterator const& other) const { return m_node != other.m_node; }
     SinglyLinkedListIterator& operator++()
     {
         if (m_removed)
@@ -62,7 +63,7 @@ private:
     bool m_removed { false };
 };
 
-template<typename T>
+template<typename T, typename TSizeCalculationPolicy>
 class SinglyLinkedList {
 private:
     struct Node {
@@ -70,7 +71,7 @@ private:
             : value(move(v))
         {
         }
-        explicit Node(const T& v)
+        explicit Node(T const& v)
             : value(v)
         {
         }
@@ -80,7 +81,7 @@ private:
 
 public:
     SinglyLinkedList() = default;
-    SinglyLinkedList(const SinglyLinkedList& other) = delete;
+    SinglyLinkedList(SinglyLinkedList const& other) = delete;
     SinglyLinkedList(SinglyLinkedList&& other)
         : m_head(other.m_head)
         , m_tail(other.m_tail)
@@ -88,19 +89,16 @@ public:
         other.m_head = nullptr;
         other.m_tail = nullptr;
     }
-    SinglyLinkedList& operator=(const SinglyLinkedList& other) = delete;
+    SinglyLinkedList& operator=(SinglyLinkedList const& other) = delete;
     SinglyLinkedList& operator=(SinglyLinkedList&&) = delete;
 
     ~SinglyLinkedList() { clear(); }
 
     bool is_empty() const { return !head(); }
 
-    inline size_t size_slow() const
+    inline size_t size() const
     {
-        size_t size = 0;
-        for (auto* node = m_head; node; node = node->next)
-            ++size;
-        return size;
+        return m_size_policy.size(m_head);
     }
 
     void clear()
@@ -112,6 +110,7 @@ public:
         }
         m_head = nullptr;
         m_tail = nullptr;
+        m_size_policy.reset();
     }
 
     T& first()
@@ -119,7 +118,7 @@ public:
         VERIFY(head());
         return head()->value;
     }
-    const T& first() const
+    T const& first() const
     {
         VERIFY(head());
         return head()->value;
@@ -129,7 +128,7 @@ public:
         VERIFY(head());
         return tail()->value;
     }
-    const T& last() const
+    T const& last() const
     {
         VERIFY(head());
         return tail()->value;
@@ -143,24 +142,60 @@ public:
         if (m_tail == m_head)
             m_tail = nullptr;
         m_head = m_head->next;
+        m_size_policy.decrease_size(value);
         delete prev_head;
         return value;
     }
 
     template<typename U = T>
-    void append(U&& value)
+    ErrorOr<void> try_append(U&& value)
     {
-        auto* node = new Node(forward<U>(value));
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
+        m_size_policy.increase_size(value);
         if (!m_head) {
             m_head = node;
             m_tail = node;
-            return;
+            return {};
         }
         m_tail->next = node;
         m_tail = node;
+        return {};
     }
 
-    bool contains_slow(const T& value) const
+    template<typename U = T>
+    ErrorOr<void> try_prepend(U&& value)
+    {
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
+        m_size_policy.increase_size(value);
+        if (!m_head) {
+            m_head = node;
+            m_tail = node;
+            return {};
+        }
+        node->next = m_head;
+        m_head = node;
+        return {};
+    }
+
+#ifndef KERNEL
+    template<typename U = T>
+    void append(U&& value)
+    {
+        MUST(try_append(forward<U>(value)));
+    }
+
+    template<typename U = T>
+    void prepend(U&& value)
+    {
+        MUST(try_prepend(forward<U>(value)));
+    }
+#endif
+
+    bool contains_slow(T const& value) const
     {
         return find(value) != end();
     }
@@ -170,7 +205,7 @@ public:
     Iterator begin() { return Iterator(m_head); }
     Iterator end() { return {}; }
 
-    using ConstIterator = SinglyLinkedListIterator<const SinglyLinkedList, const T>;
+    using ConstIterator = SinglyLinkedListIterator<const SinglyLinkedList, T const>;
     friend ConstIterator;
     ConstIterator begin() const { return ConstIterator(m_head); }
     ConstIterator end() const { return {}; }
@@ -187,43 +222,63 @@ public:
         return AK::find_if(begin(), end(), forward<TUnaryPredicate>(pred));
     }
 
-    ConstIterator find(const T& value) const
+    ConstIterator find(T const& value) const
     {
         return find_if([&](auto& other) { return Traits<T>::equals(value, other); });
     }
 
-    Iterator find(const T& value)
+    Iterator find(T const& value)
     {
         return find_if([&](auto& other) { return Traits<T>::equals(value, other); });
     }
 
     template<typename U = T>
-    void insert_before(Iterator iterator, U&& value)
+    ErrorOr<void> try_insert_before(Iterator iterator, U&& value)
     {
-        auto* node = new Node(forward<U>(value));
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
+        m_size_policy.increase_size(value);
         node->next = iterator.m_node;
         if (m_head == iterator.m_node)
             m_head = node;
         if (iterator.m_prev)
             iterator.m_prev->next = node;
+        return {};
     }
 
     template<typename U = T>
-    void insert_after(Iterator iterator, U&& value)
+    ErrorOr<void> try_insert_after(Iterator iterator, U&& value)
     {
-        if (iterator.is_end()) {
-            append(value);
-            return;
-        }
+        if (iterator.is_end())
+            return try_append(value);
 
-        auto* node = new Node(forward<U>(value));
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
+        m_size_policy.increase_size(value);
         node->next = iterator.m_node->next;
 
         iterator.m_node->next = node;
 
         if (m_tail == iterator.m_node)
             m_tail = node;
+        return {};
     }
+
+#ifndef KERNEL
+    template<typename U = T>
+    void insert_before(Iterator iterator, U&& value)
+    {
+        MUST(try_insert_before(iterator, forward<U>(value)));
+    }
+
+    template<typename U = T>
+    void insert_after(Iterator iterator, U&& value)
+    {
+        MUST(try_insert_after(iterator, forward<U>(value)));
+    }
+#endif
 
     void remove(Iterator& iterator)
     {
@@ -234,20 +289,23 @@ public:
             m_tail = iterator.m_prev;
         if (iterator.m_prev)
             iterator.m_prev->next = iterator.m_node->next;
+        m_size_policy.decrease_size(iterator.m_node->value);
         delete iterator.m_node;
     }
 
 private:
     Node* head() { return m_head; }
-    const Node* head() const { return m_head; }
+    Node const* head() const { return m_head; }
 
     Node* tail() { return m_tail; }
-    const Node* tail() const { return m_tail; }
+    Node const* tail() const { return m_tail; }
 
     Node* m_head { nullptr };
     Node* m_tail { nullptr };
+    TSizeCalculationPolicy m_size_policy {};
 };
-
 }
 
+#if USING_AK_GLOBALLY
 using AK::SinglyLinkedList;
+#endif

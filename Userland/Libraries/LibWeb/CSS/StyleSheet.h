@@ -7,30 +7,42 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
-#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/CSS/MediaList.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::CSS {
 
-class StyleSheet
-    : public RefCounted<StyleSheet>
-    , public Bindings::Wrappable {
-public:
-    using WrapperType = Bindings::StyleSheetWrapper;
+class StyleSheet : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(StyleSheet, Bindings::PlatformObject);
 
+public:
     virtual ~StyleSheet() = default;
 
-    virtual String type() const = 0;
+    virtual DeprecatedString type() const = 0;
 
     DOM::Element* owner_node() { return m_owner_node; }
     void set_owner_node(DOM::Element*);
 
-    String title() const { return m_title; }
-    void set_title(String title) { m_title = move(title); }
+    DeprecatedString href() const { return m_location; }
 
-    void set_type(String type) { m_type_string = move(type); }
-    void set_media(String media) { m_media_string = move(media); }
+    DeprecatedString location() const { return m_location; }
+    void set_location(DeprecatedString location) { m_location = move(location); }
+
+    DeprecatedString title() const { return m_title; }
+    void set_title(DeprecatedString title) { m_title = move(title); }
+
+    void set_type(DeprecatedString type) { m_type_string = move(type); }
+
+    MediaList* media() const
+    {
+        return &m_media;
+    }
+
+    void set_media(DeprecatedString media)
+    {
+        m_media.set_media_text(media);
+    }
 
     bool is_alternate() const { return m_alternate; }
     void set_alternate(bool alternate) { m_alternate = alternate; }
@@ -44,16 +56,18 @@ public:
     void set_parent_css_style_sheet(CSSStyleSheet*);
 
 protected:
-    StyleSheet() = default;
+    explicit StyleSheet(JS::Realm&, MediaList& media);
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    MediaList& m_media;
 
 private:
-    WeakPtr<DOM::Element> m_owner_node;
+    JS::GCPtr<DOM::Element> m_owner_node;
+    JS::GCPtr<CSSStyleSheet> m_parent_style_sheet;
 
-    WeakPtr<CSSStyleSheet> m_parent_style_sheet;
-
-    String m_title;
-    String m_type_string;
-    String m_media_string;
+    DeprecatedString m_location;
+    DeprecatedString m_title;
+    DeprecatedString m_type_string;
 
     bool m_disabled { false };
     bool m_alternate { false };

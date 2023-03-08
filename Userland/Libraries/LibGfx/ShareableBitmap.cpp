@@ -22,50 +22,49 @@ ShareableBitmap::ShareableBitmap(NonnullRefPtr<Bitmap> bitmap, Tag)
 
 namespace IPC {
 
-bool encode(Encoder& encoder, const Gfx::ShareableBitmap& shareable_bitmap)
+template<>
+ErrorOr<void> encode(Encoder& encoder, Gfx::ShareableBitmap const& shareable_bitmap)
 {
-    encoder << shareable_bitmap.is_valid();
+    TRY(encoder.encode(shareable_bitmap.is_valid()));
     if (!shareable_bitmap.is_valid())
-        return true;
+        return {};
+
     auto& bitmap = *shareable_bitmap.bitmap();
-    encoder << IPC::File(bitmap.anonymous_buffer().fd());
-    encoder << bitmap.size();
-    encoder << bitmap.scale();
-    encoder << (u32)bitmap.format();
+    TRY(encoder.encode(IPC::File(bitmap.anonymous_buffer().fd())));
+    TRY(encoder.encode(bitmap.size()));
+    TRY(encoder.encode(static_cast<u32>(bitmap.scale())));
+    TRY(encoder.encode(static_cast<u32>(bitmap.format())));
     if (bitmap.is_indexed()) {
         auto palette = bitmap.palette_to_vector();
-        encoder << palette;
+        TRY(encoder.encode(palette));
     }
-    return true;
+
+    return {};
 }
 
-ErrorOr<void> decode(Decoder& decoder, Gfx::ShareableBitmap& shareable_bitmap)
+template<>
+ErrorOr<Gfx::ShareableBitmap> decode(Decoder& decoder)
 {
-    bool valid = false;
-    TRY(decoder.decode(valid));
-    if (!valid) {
-        shareable_bitmap = {};
-        return {};
-    }
-    IPC::File anon_file;
-    TRY(decoder.decode(anon_file));
-    Gfx::IntSize size;
-    TRY(decoder.decode(size));
-    u32 scale;
-    TRY(decoder.decode(scale));
-    u32 raw_bitmap_format;
-    TRY(decoder.decode(raw_bitmap_format));
+    if (auto valid = TRY(decoder.decode<bool>()); !valid)
+        return Gfx::ShareableBitmap {};
+
+    auto anon_file = TRY(decoder.decode<IPC::File>());
+    auto size = TRY(decoder.decode<Gfx::IntSize>());
+    auto scale = TRY(decoder.decode<u32>());
+    auto raw_bitmap_format = TRY(decoder.decode<u32>());
     if (!Gfx::is_valid_bitmap_format(raw_bitmap_format))
-        return Error::from_string_literal("IPC: Invalid Gfx::ShareableBitmap format"sv);
-    auto bitmap_format = (Gfx::BitmapFormat)raw_bitmap_format;
-    Vector<Gfx::RGBA32> palette;
-    if (Gfx::Bitmap::is_indexed(bitmap_format)) {
-        TRY(decoder.decode(palette));
-    }
-    auto buffer = TRY(Core::AnonymousBuffer::create_from_anon_fd(anon_file.take_fd(), Gfx::Bitmap::size_in_bytes(Gfx::Bitmap::minimum_pitch(size.width(), bitmap_format), size.height())));
-    auto bitmap = TRY(Gfx::Bitmap::try_create_with_anonymous_buffer(bitmap_format, move(buffer), size, scale, palette));
-    shareable_bitmap = Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
-    return {};
+        return Error::from_string_literal("IPC: Invalid Gfx::ShareableBitmap format");
+
+    auto bitmap_format = static_cast<Gfx::BitmapFormat>(raw_bitmap_format);
+
+    Vector<Gfx::ARGB32> palette;
+    if (Gfx::Bitmap::is_indexed(bitmap_format))
+        palette = TRY(decoder.decode<decltype(palette)>());
+
+    auto buffer = TRY(Core::AnonymousBuffer::create_from_anon_fd(anon_file.take_fd(), Gfx::Bitmap::size_in_bytes(Gfx::Bitmap::minimum_pitch(size.width() * scale, bitmap_format), size.height() * scale)));
+    auto bitmap = TRY(Gfx::Bitmap::create_with_anonymous_buffer(bitmap_format, move(buffer), size, scale, palette));
+
+    return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 
 }

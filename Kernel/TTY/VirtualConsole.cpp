@@ -7,11 +7,13 @@
  */
 
 #include <AK/StdLibExtras.h>
+#include <Kernel/Arch/Delay.h>
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/PCSpeaker.h>
+#endif
 #include <Kernel/CommandLine.h>
-#include <Kernel/Debug.h>
 #include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/HID/HIDManagement.h>
-#include <Kernel/Devices/PCSpeaker.h>
 #include <Kernel/Graphics/GraphicsManagement.h>
 #include <Kernel/Heap/kmalloc.h>
 #include <Kernel/Sections.h>
@@ -102,17 +104,20 @@ void VirtualConsole::set_graphical(bool graphical)
     m_graphical = graphical;
 }
 
-UNMAP_AFTER_INIT NonnullRefPtr<VirtualConsole> VirtualConsole::create(size_t index)
+ErrorOr<NonnullOwnPtr<KString>> VirtualConsole::pseudo_name() const
 {
-    auto pts_name = MUST(KString::formatted("/dev/tty/{}", index));
+    return KString::formatted("tty:{}", m_index);
+}
 
-    auto virtual_console_or_error = DeviceManagement::try_create_device<VirtualConsole>(index, move(pts_name));
+UNMAP_AFTER_INIT NonnullLockRefPtr<VirtualConsole> VirtualConsole::create(size_t index)
+{
+    auto virtual_console_or_error = DeviceManagement::try_create_device<VirtualConsole>(index);
     // FIXME: Find a way to propagate errors
     VERIFY(!virtual_console_or_error.is_error());
     return virtual_console_or_error.release_value();
 }
 
-UNMAP_AFTER_INIT NonnullRefPtr<VirtualConsole> VirtualConsole::create_with_preset_log(size_t index, const CircularQueue<char, 16384>& log)
+UNMAP_AFTER_INIT NonnullLockRefPtr<VirtualConsole> VirtualConsole::create_with_preset_log(size_t index, CircularQueue<char, 16384> const& log)
 {
     auto virtual_console = VirtualConsole::create(index);
     // HACK: We have to go through the TTY layer for correct newline handling.
@@ -132,7 +137,7 @@ UNMAP_AFTER_INIT void VirtualConsole::initialize()
 
     // Allocate twice of the max row * max column * sizeof(Cell) to ensure we can have some sort of history mechanism...
     auto size = GraphicsManagement::the().console()->max_column() * GraphicsManagement::the().console()->max_row() * sizeof(Cell) * 2;
-    m_cells = MM.allocate_kernel_region(Memory::page_round_up(size).release_value_but_fixme_should_propagate_errors(), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
+    m_cells = MM.allocate_kernel_region(Memory::page_round_up(size).release_value_but_fixme_should_propagate_errors(), "Virtual Console Cells"sv, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
 
     // Add the lines, so we also ensure they will be flushed now
     for (size_t row = 0; row < rows(); row++) {
@@ -151,7 +156,7 @@ void VirtualConsole::refresh_after_resolution_change()
     // Note: From now on, columns() and rows() are updated with the new settings.
 
     auto size = GraphicsManagement::the().console()->max_column() * GraphicsManagement::the().console()->max_row() * sizeof(Cell) * 2;
-    auto new_cells = MM.allocate_kernel_region(Memory::page_round_up(size).release_value_but_fixme_should_propagate_errors(), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
+    auto new_cells = MM.allocate_kernel_region(Memory::page_round_up(size).release_value_but_fixme_should_propagate_errors(), "Virtual Console Cells"sv, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
 
     if (rows() < old_rows_count) {
         m_lines.shrink(rows());
@@ -176,10 +181,9 @@ void VirtualConsole::refresh_after_resolution_change()
     flush_dirty_lines();
 }
 
-UNMAP_AFTER_INIT VirtualConsole::VirtualConsole(const unsigned index, NonnullOwnPtr<KString> tty_name)
+UNMAP_AFTER_INIT VirtualConsole::VirtualConsole(unsigned const index)
     : TTY(4, index)
     , m_index(index)
-    , m_tty_name(move(tty_name))
     , m_console_impl(*this)
 {
     initialize();
@@ -256,7 +260,7 @@ void VirtualConsole::on_key_pressed(KeyEvent event)
     });
 }
 
-ErrorOr<size_t> VirtualConsole::on_tty_write(const UserOrKernelBuffer& data, size_t size)
+ErrorOr<size_t> VirtualConsole::on_tty_write(UserOrKernelBuffer const& data, size_t size)
 {
     SpinlockLocker global_lock(ConsoleManagement::the().tty_write_lock());
     auto result = data.read_buffered<512>(size, [&](ReadonlyBytes buffer) {
@@ -306,7 +310,7 @@ void VirtualConsole::flush_dirty_lines()
             auto& cell = cell_at(column, visual_row);
 
             auto foreground_color = terminal_to_standard_color(cell.attribute.effective_foreground_color());
-            if (cell.attribute.flags & VT::Attribute::Flags::Bold)
+            if (has_flag(cell.attribute.flags, VT::Attribute::Flags::Bold))
                 foreground_color = (Graphics::Console::Color)((u8)foreground_color | 0x08);
             GraphicsManagement::the().console()->write(column,
                 visual_row,
@@ -324,9 +328,11 @@ void VirtualConsole::beep()
 {
     if (!kernel_command_line().is_pc_speaker_enabled())
         return;
+#if ARCH(X86_64)
     PCSpeaker::tone_on(440);
-    IO::delay(10000);
+    microseconds_delay(10000);
     PCSpeaker::tone_off();
+#endif
 }
 
 void VirtualConsole::set_window_title(StringView)
@@ -350,13 +356,18 @@ void VirtualConsole::terminal_history_changed(int)
     // Do nothing, I guess?
 }
 
-void VirtualConsole::emit(const u8* data, size_t size)
+void VirtualConsole::emit(u8 const* data, size_t size)
 {
     for (size_t i = 0; i < size; i++)
         TTY::emit(data[i], true);
 }
 
-void VirtualConsole::set_cursor_style(VT::CursorStyle)
+void VirtualConsole::set_cursor_shape(VT::CursorShape)
+{
+    // Do nothing
+}
+
+void VirtualConsole::set_cursor_blinking(bool)
 {
     // Do nothing
 }

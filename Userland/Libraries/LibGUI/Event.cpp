@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,7 +12,7 @@
 
 namespace GUI {
 
-DropEvent::DropEvent(const Gfx::IntPoint& position, const String& text, NonnullRefPtr<Core::MimeData> mime_data)
+DropEvent::DropEvent(Gfx::IntPoint position, DeprecatedString const& text, NonnullRefPtr<Core::MimeData const> mime_data)
     : Event(Event::Drop)
     , m_position(position)
     , m_text(text)
@@ -19,13 +20,9 @@ DropEvent::DropEvent(const Gfx::IntPoint& position, const String& text, NonnullR
 {
 }
 
-DropEvent::~DropEvent()
+DeprecatedString KeyEvent::to_deprecated_string() const
 {
-}
-
-String KeyEvent::to_string() const
-{
-    Vector<String, 8> parts;
+    Vector<DeprecatedString, 8> parts;
 
     if (m_modifiers & Mod_Ctrl)
         parts.append("Ctrl");
@@ -47,16 +44,12 @@ String KeyEvent::to_string() const
         if (i != parts.size() - 1)
             builder.append('+');
     }
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
 ActionEvent::ActionEvent(Type type, Action& action)
     : Event(type)
     , m_action(action)
-{
-}
-
-ActionEvent::~ActionEvent()
 {
 }
 

@@ -15,8 +15,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
 
-    const char* pid_argument = nullptr;
-    const char* cmd_argument = nullptr;
+    StringView pid_argument {};
+    Vector<StringView> command;
     bool wait = false;
     bool free = false;
     bool enable = false;
@@ -28,15 +28,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool seen_event_type_arg = false;
 
     args_parser.add_option(pid_argument, "Target PID", nullptr, 'p', "PID");
-    args_parser.add_option(all_processes, "Profile all processes (super-user only), result at /proc/profile", nullptr, 'a');
+    args_parser.add_option(all_processes, "Profile all processes (super-user only), result at /sys/kernel/profile", nullptr, 'a');
     args_parser.add_option(enable, "Enable", nullptr, 'e');
     args_parser.add_option(disable, "Disable", nullptr, 'd');
     args_parser.add_option(free, "Free the profiling buffer for the associated process(es).", nullptr, 'f');
     args_parser.add_option(wait, "Enable profiling and wait for user input to disable.", nullptr, 'w');
-    args_parser.add_option(cmd_argument, "Command", nullptr, 'c', "command");
     args_parser.add_option(Core::ArgsParser::Option {
-        true, "Enable tracking specific event type", nullptr, 't', "event_type",
-        [&](String event_type) {
+        Core::ArgsParser::OptionArgumentMode::Required,
+        "Enable tracking specific event type", nullptr, 't', "event_type",
+        [&](DeprecatedString event_type) {
             seen_event_type_arg = true;
             if (event_type == "sample")
                 event_mask |= PERF_EVENT_SAMPLE;
@@ -58,6 +58,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
             return true;
         } });
+    args_parser.add_positional_argument(command, "Command to profile", "command", Core::ArgsParser::Required::No);
+    args_parser.set_stop_on_first_non_option(true);
 
     auto print_types = [] {
         outln();
@@ -69,8 +71,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         exit(0);
     }
 
-    if (!pid_argument && !cmd_argument && !all_processes) {
-        args_parser.print_usage(stdout, arguments.argv[0]);
+    if (pid_argument.is_empty() && command.is_empty() && !all_processes) {
+        args_parser.print_usage(stdout, arguments.strings[0]);
         print_types();
         return 0;
     }
@@ -78,13 +80,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (!seen_event_type_arg)
         event_mask |= PERF_EVENT_SAMPLE;
 
-    if (pid_argument || all_processes) {
+    if (!pid_argument.is_empty() || all_processes) {
         if (!(enable ^ disable ^ wait ^ free)) {
             warnln("-p <PID> requires -e xor -d xor -w xor -f.");
             return 1;
         }
 
-        pid_t pid = all_processes ? -1 : atoi(pid_argument);
+        // FIXME: Handle error case.
+        pid_t pid = all_processes ? -1 : pid_argument.to_int().release_value();
 
         if (wait || enable) {
             TRY(Core::System::profiling_enable(pid, event_mask));
@@ -107,20 +110,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 0;
     }
 
-    auto cmd_parts = String(cmd_argument).split(' ');
-    Vector<const char*> cmd_argv;
-
-    for (auto& part : cmd_parts)
-        cmd_argv.append(part.characters());
-
-    cmd_argv.append(nullptr);
-
     dbgln("Enabling profiling for PID {}", getpid());
     TRY(Core::System::profiling_enable(getpid(), event_mask));
-    if (execvp(cmd_argv[0], const_cast<char**>(cmd_argv.data())) < 0) {
-        perror("execv");
-        return 1;
-    }
+    TRY(Core::System::exec(command[0], command, Core::System::SearchInPath::Yes));
 
     return 0;
 }

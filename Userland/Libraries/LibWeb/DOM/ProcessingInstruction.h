@@ -6,24 +6,30 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/CharacterData.h>
 
 namespace Web::DOM {
 
 class ProcessingInstruction final : public CharacterData {
+    WEB_PLATFORM_OBJECT(ProcessingInstruction, CharacterData);
+
 public:
-    using WrapperType = Bindings::ProcessingInstructionWrapper;
+    virtual ~ProcessingInstruction() override = default;
 
-    ProcessingInstruction(Document&, const String& data, const String& target);
-    virtual ~ProcessingInstruction() override;
+    virtual DeprecatedFlyString node_name() const override { return m_target; }
 
-    virtual FlyString node_name() const override { return m_target; }
-
-    const String& target() const { return m_target; }
+    DeprecatedString const& target() const { return m_target; }
 
 private:
-    String m_target;
+    ProcessingInstruction(Document&, DeprecatedString const& data, DeprecatedString const& target);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
+    DeprecatedString m_target;
 };
+
+template<>
+inline bool Node::fast_is<ProcessingInstruction>() const { return node_type() == (u16)NodeType::PROCESSING_INSTRUCTION_NODE; }
 
 }

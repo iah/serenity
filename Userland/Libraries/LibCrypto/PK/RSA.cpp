@@ -47,16 +47,16 @@ RSA::KeyPairType RSA::parse_rsa_key(ReadonlyBytes der)
     // Then enter the sequence
     {
         auto error = decoder.enter();
-        if (error.has_value()) {
+        if (error.is_error()) {
             // Something was weird with the input.
-            dbgln_if(RSA_PARSE_DEBUG, "RSA key parse failed: {}", error.value());
+            dbgln_if(RSA_PARSE_DEBUG, "RSA key parse failed: {}", error.error());
             return keypair;
         }
     }
 
     bool has_read_error = false;
 
-    const auto check_if_pkcs8_rsa_key = [&] {
+    auto const check_if_pkcs8_rsa_key = [&] {
         // see if it's a sequence:
         auto tag_result = decoder.peek();
         if (tag_result.is_error()) {
@@ -74,16 +74,16 @@ RSA::KeyPairType RSA::parse_rsa_key(ReadonlyBytes der)
 
         // It's a sequence, now let's see if it's actually an RSA key.
         auto error = decoder.enter();
-        if (error.has_value()) {
+        if (error.is_error()) {
             // Shenanigans!
-            dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#8 public key parse failed: {}", error.value());
+            dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#8 public key parse failed: {}", error.error());
             return false;
         }
 
         ScopeGuard leave { [&] {
             auto error = decoder.leave();
-            if (error.has_value()) {
-                dbgln_if(RSA_PARSE_DEBUG, "RSA key parse failed: {}", error.value());
+            if (error.is_error()) {
+                dbgln_if(RSA_PARSE_DEBUG, "RSA key parse failed: {}", error.error());
                 has_read_error = true;
             }
         } };

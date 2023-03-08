@@ -7,15 +7,11 @@
 #pragma once
 
 #include <AK/Forward.h>
-#include <AK/StdLibExtras.h>
 
 namespace PDF {
 
 class Document;
 class Object;
-
-// Note: This macro doesn't care about PlainTextStreamObject and EncodedStreamObject because
-//       we never need to work directly with either of them.
 
 #define ENUMERATE_OBJECT_TYPES(V) \
     V(StringObject, string)       \

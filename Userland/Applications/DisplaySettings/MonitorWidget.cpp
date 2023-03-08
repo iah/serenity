@@ -9,7 +9,7 @@
 #include <LibGUI/Desktop.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibThreading/BackgroundAction.h>
 
 REGISTER_WIDGET(DisplaySettings, MonitorWidget)
@@ -19,13 +19,13 @@ namespace DisplaySettings {
 MonitorWidget::MonitorWidget()
 {
     m_desktop_resolution = GUI::Desktop::the().rect().size();
-    m_monitor_bitmap = Gfx::Bitmap::try_load_from_file("/res/graphics/monitor.png").release_value_but_fixme_should_propagate_errors();
-    m_desktop_bitmap = Gfx::Bitmap::try_create(m_monitor_bitmap->format(), { 280, 158 }).release_value_but_fixme_should_propagate_errors();
+    m_monitor_bitmap = Gfx::Bitmap::load_from_file("/res/graphics/monitor.png"sv).release_value_but_fixme_should_propagate_errors();
+    m_desktop_bitmap = Gfx::Bitmap::create(m_monitor_bitmap->format(), { 280, 158 }).release_value_but_fixme_should_propagate_errors();
     m_monitor_rect = { { 12, 13 }, m_desktop_bitmap->size() };
     set_fixed_size(304, 201);
 }
 
-bool MonitorWidget::set_wallpaper(String path)
+bool MonitorWidget::set_wallpaper(DeprecatedString path)
 {
     if (!is_different_to_current_wallpaper_path(path))
         return false;
@@ -34,20 +34,22 @@ bool MonitorWidget::set_wallpaper(String path)
         [path](auto&) -> ErrorOr<NonnullRefPtr<Gfx::Bitmap>> {
             if (path.is_empty())
                 return Error::from_errno(ENOENT);
-            return Gfx::Bitmap::try_load_from_file(path);
+            return Gfx::Bitmap::load_from_file(path);
         },
 
-        [this, path](ErrorOr<NonnullRefPtr<Gfx::Bitmap>> bitmap_or_error) {
+        [this, path](ErrorOr<NonnullRefPtr<Gfx::Bitmap>> bitmap_or_error) -> ErrorOr<void> {
             // If we've been requested to change while we were loading the bitmap, don't bother spending the cost to
             // move and render the now stale bitmap.
             if (is_different_to_current_wallpaper_path(path))
-                return;
+                return {};
             if (bitmap_or_error.is_error())
                 m_wallpaper_bitmap = nullptr;
             else
                 m_wallpaper_bitmap = bitmap_or_error.release_value();
             m_desktop_dirty = true;
             update();
+
+            return bitmap_or_error.is_error() ? bitmap_or_error.release_error() : ErrorOr<void> {};
         });
 
     if (path.is_empty())
@@ -63,7 +65,7 @@ StringView MonitorWidget::wallpaper() const
     return m_desktop_wallpaper_path;
 }
 
-void MonitorWidget::set_wallpaper_mode(String mode)
+void MonitorWidget::set_wallpaper_mode(DeprecatedString mode)
 {
     if (m_desktop_wallpaper_mode == mode)
         return;
@@ -124,12 +126,12 @@ void MonitorWidget::redraw_desktop_if_needed()
     auto scaled_size = m_wallpaper_bitmap->size().to_type<float>().scaled_by(sw, sh).to_type<int>();
     auto scaled_bitmap = m_wallpaper_bitmap->scaled(sw, sh).release_value_but_fixme_should_propagate_errors();
 
-    if (m_desktop_wallpaper_mode == "center") {
+    if (m_desktop_wallpaper_mode == "Center") {
         auto centered_rect = Gfx::IntRect({}, scaled_size).centered_within(m_desktop_bitmap->rect());
         painter.blit(centered_rect.location(), *scaled_bitmap, scaled_bitmap->rect());
-    } else if (m_desktop_wallpaper_mode == "tile") {
+    } else if (m_desktop_wallpaper_mode == "Tile") {
         painter.draw_tiled_bitmap(m_desktop_bitmap->rect(), *scaled_bitmap);
-    } else if (m_desktop_wallpaper_mode == "stretch") {
+    } else if (m_desktop_wallpaper_mode == "Stretch") {
         painter.draw_scaled_bitmap(m_desktop_bitmap->rect(), *m_wallpaper_bitmap, m_wallpaper_bitmap->rect());
     } else {
         VERIFY_NOT_REACHED();
@@ -148,12 +150,12 @@ void MonitorWidget::paint_event(GUI::PaintEvent& event)
 
 #if 0
     if (!m_desktop_resolution.is_null()) {
-        auto displayed_resolution_string = Gfx::IntSize { m_desktop_resolution.width(), m_desktop_resolution.height() }.to_string();
+        auto displayed_resolution_string = Gfx::IntSize { m_desktop_resolution.width(), m_desktop_resolution.height() }.to_deprecated_string();
 
         // Render text label scaled with scale factor to hint at its effect.
         // FIXME: Once bitmaps have intrinsic scale factors, we could create a bitmap with an intrinsic scale factor of m_desktop_scale_factor
         // and that should give us the same effect with less code.
-        auto text_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, Gfx::IntSize { painter.font().width(displayed_resolution_string) + 1, painter.font().glyph_height() + 1 });
+        auto text_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::IntSize { painter.font().width(displayed_resolution_string) + 1, painter.font().pixel_size_rounded_up() + 1 });
         GUI::Painter text_painter(*text_bitmap);
         text_painter.set_font(painter.font());
 

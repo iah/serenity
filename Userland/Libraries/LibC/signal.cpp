@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Format.h>
+#include <AK/StringView.h>
 #include <assert.h>
+#include <bits/pthread_cancel.h>
 #include <errno.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -84,7 +85,7 @@ int sigaddset(sigset_t* set, int sig)
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigaltstack.html
-int sigaltstack(const stack_t* ss, stack_t* old_ss)
+int sigaltstack(stack_t const* ss, stack_t* old_ss)
 {
     int rc = syscall(SC_sigaltstack, ss, old_ss);
     __RETURN_WITH_ERRNO(rc, rc, -1);
@@ -102,7 +103,7 @@ int sigdelset(sigset_t* set, int sig)
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigismember.html
-int sigismember(const sigset_t* set, int sig)
+int sigismember(sigset_t const* set, int sig)
 {
     if (sig < 1 || sig > 32) {
         errno = EINVAL;
@@ -114,7 +115,7 @@ int sigismember(const sigset_t* set, int sig)
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigprocmask.html
-int sigprocmask(int how, const sigset_t* set, sigset_t* old_set)
+int sigprocmask(int how, sigset_t const* set, sigset_t* old_set)
 {
     int rc = syscall(SC_sigprocmask, how, set, old_set);
     __RETURN_WITH_ERRNO(rc, rc, -1);
@@ -127,7 +128,7 @@ int sigpending(sigset_t* set)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-const char* sys_siglist[NSIG] = {
+char const* sys_siglist[NSIG] = {
     "Invalid signal number",
     "Hangup",
     "Interrupt",
@@ -173,14 +174,19 @@ void siglongjmp(jmp_buf env, int val)
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigsuspend.html
-int sigsuspend(const sigset_t* set)
+int sigsuspend(sigset_t const* set)
 {
-    return pselect(0, nullptr, nullptr, nullptr, nullptr, set);
+    __pthread_maybe_cancel();
+
+    int rc = syscall(SC_sigsuspend, set);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
 // https://pubs.opengroup.org/onlinepubs/009604499/functions/sigwait.html
 int sigwait(sigset_t const* set, int* sig)
 {
+    __pthread_maybe_cancel();
+
     int rc = syscall(Syscall::SC_sigtimedwait, set, nullptr, nullptr);
     VERIFY(rc != 0);
     if (rc < 0)
@@ -198,11 +204,13 @@ int sigwaitinfo(sigset_t const* set, siginfo_t* info)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigtimedwait.html
 int sigtimedwait(sigset_t const* set, siginfo_t* info, struct timespec const* timeout)
 {
+    __pthread_maybe_cancel();
+
     int rc = syscall(Syscall::SC_sigtimedwait, set, info, timeout);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-const char* sys_signame[] = {
+char const* sys_signame[] = {
     "INVAL",
     "HUP",
     "INT",
@@ -237,22 +245,22 @@ const char* sys_signame[] = {
     "SYS",
 };
 
-static_assert(sizeof(sys_signame) == sizeof(const char*) * NSIG);
+static_assert(sizeof(sys_signame) == sizeof(char const*) * NSIG);
 
-int getsignalbyname(const char* name)
+int getsignalbyname(char const* name)
 {
     VERIFY(name);
-    StringView name_sv(name);
+    StringView name_sv { name, strlen(name) };
     for (size_t i = 0; i < NSIG; ++i) {
-        auto signal_name = StringView(sys_signame[i]);
-        if (signal_name == name_sv || (name_sv.starts_with("SIG") && signal_name == name_sv.substring_view(3)))
+        StringView signal_name { sys_signame[i], sizeof(sys_signame[i]) - 1 };
+        if (signal_name == name_sv || (name_sv.starts_with("SIG"sv) && signal_name == name_sv.substring_view(3)))
             return i;
     }
     errno = EINVAL;
     return -1;
 }
 
-const char* getsignalname(int signal)
+char const* getsignalname(int signal)
 {
     if (signal < 0 || signal >= NSIG) {
         errno = EINVAL;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Dex♪ <dexes.ttp@gmail.com>
+ * Copyright (c) 2021-2022, Dex♪ <dexes.ttp@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,15 +7,13 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
-#include <AK/RefCounted.h>
 #include <AK/URL.h>
-#include <AK/Weakable.h>
 #include <LibCore/Object.h>
-#include <LibWeb/Bindings/WindowObject.h>
-#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/DOM/EventTarget.h>
-#include <LibWeb/DOM/ExceptionOr.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Window.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 #define ENUMERATE_WEBSOCKET_EVENT_HANDLERS(E) \
     E(onerror, HTML::EventNames::error)       \
@@ -23,32 +21,14 @@
     E(onopen, HTML::EventNames::open)         \
     E(onmessage, HTML::EventNames::message)
 
-namespace Protocol {
-class WebSocketClient;
-class WebSocket;
-}
-
 namespace Web::WebSockets {
 
-class WebSocketClientManager : public Core::Object {
-    C_OBJECT_ABSTRACT(WebSocketClientManager)
-public:
-    static WebSocketClientManager& the();
+class WebSocketClientSocket;
+class WebSocketClientManager;
 
-    RefPtr<Protocol::WebSocket> connect(const AK::URL&);
+class WebSocket final : public DOM::EventTarget {
+    WEB_PLATFORM_OBJECT(WebSocket, DOM::EventTarget);
 
-private:
-    static ErrorOr<NonnullRefPtr<WebSocketClientManager>> try_create();
-    WebSocketClientManager(NonnullRefPtr<Protocol::WebSocketClient>);
-
-    RefPtr<Protocol::WebSocketClient> m_websocket_client;
-};
-
-class WebSocket final
-    : public RefCounted<WebSocket>
-    , public Weakable<WebSocket>
-    , public DOM::EventTarget
-    , public Bindings::Wrappable {
 public:
     enum class ReadyState : u16 {
         Connecting = 0,
@@ -57,56 +37,94 @@ public:
         Closed = 3,
     };
 
-    using WrapperType = Bindings::WebSocketWrapper;
-
-    static NonnullRefPtr<WebSocket> create(DOM::Window& window, AK::URL& url)
-    {
-        return adopt_ref(*new WebSocket(window, url));
-    }
-
-    static DOM::ExceptionOr<NonnullRefPtr<WebSocket>> create_with_global_object(Bindings::WindowObject& window, const String& url);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<WebSocket>> construct_impl(JS::Realm&, DeprecatedString const& url, Optional<Variant<DeprecatedString, Vector<DeprecatedString>>> const& protocols);
 
     virtual ~WebSocket() override;
 
-    using RefCounted::ref;
-    using RefCounted::unref;
-
-    String url() const { return m_url.to_string(); }
+    DeprecatedString url() const { return m_url.to_deprecated_string(); }
 
 #undef __ENUMERATE
-#define __ENUMERATE(attribute_name, event_name)                  \
-    void set_##attribute_name(Optional<Bindings::CallbackType>); \
-    Bindings::CallbackType* attribute_name();
+#define __ENUMERATE(attribute_name, event_name)       \
+    void set_##attribute_name(WebIDL::CallbackType*); \
+    WebIDL::CallbackType* attribute_name();
     ENUMERATE_WEBSOCKET_EVENT_HANDLERS(__ENUMERATE)
 #undef __ENUMERATE
 
     ReadyState ready_state() const;
-    String extensions() const;
-    String protocol() const;
+    DeprecatedString extensions() const;
+    DeprecatedString protocol() const;
 
-    const String& binary_type() { return m_binary_type; };
-    void set_binary_type(const String& type) { m_binary_type = type; };
+    DeprecatedString const& binary_type() { return m_binary_type; };
+    void set_binary_type(DeprecatedString const& type) { m_binary_type = type; };
 
-    DOM::ExceptionOr<void> close(u16 code, const String& reason);
-    DOM::ExceptionOr<void> send(const String& data);
+    WebIDL::ExceptionOr<void> close(Optional<u16> code, Optional<DeprecatedString> reason);
+    WebIDL::ExceptionOr<void> send(DeprecatedString const& data);
 
 private:
-    virtual void ref_event_target() override { ref(); }
-    virtual void unref_event_target() override { unref(); }
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
-
     void on_open();
     void on_message(ByteBuffer message, bool is_text);
     void on_error();
-    void on_close(u16 code, String reason, bool was_clean);
+    void on_close(u16 code, DeprecatedString reason, bool was_clean);
 
-    explicit WebSocket(DOM::Window&, AK::URL&);
+    WebSocket(HTML::Window&, AK::URL&, Vector<DeprecatedString> const& protocols);
 
-    NonnullRefPtr<DOM::Window> m_window;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::NonnullGCPtr<HTML::Window> m_window;
 
     AK::URL m_url;
-    String m_binary_type { "blob" };
-    RefPtr<Protocol::WebSocket> m_websocket;
+    DeprecatedString m_binary_type { "blob" };
+    RefPtr<WebSocketClientSocket> m_websocket;
+};
+
+class WebSocketClientSocket : public RefCounted<WebSocketClientSocket> {
+public:
+    virtual ~WebSocketClientSocket();
+
+    struct CertificateAndKey {
+        DeprecatedString certificate;
+        DeprecatedString key;
+    };
+
+    struct Message {
+        ByteBuffer data;
+        bool is_text { false };
+    };
+
+    enum class Error {
+        CouldNotEstablishConnection,
+        ConnectionUpgradeFailed,
+        ServerClosedSocket,
+    };
+
+    virtual Web::WebSockets::WebSocket::ReadyState ready_state() = 0;
+    virtual DeprecatedString subprotocol_in_use() = 0;
+
+    virtual void send(ByteBuffer binary_or_text_message, bool is_text) = 0;
+    virtual void send(StringView text_message) = 0;
+    virtual void close(u16 code = 1005, DeprecatedString reason = {}) = 0;
+
+    Function<void()> on_open;
+    Function<void(Message)> on_message;
+    Function<void(Error)> on_error;
+    Function<void(u16 code, DeprecatedString reason, bool was_clean)> on_close;
+    Function<CertificateAndKey()> on_certificate_requested;
+
+protected:
+    explicit WebSocketClientSocket();
+};
+
+class WebSocketClientManager : public Core::Object {
+    C_OBJECT_ABSTRACT(WebSocketClientManager)
+public:
+    static void initialize(RefPtr<WebSocketClientManager>);
+    static WebSocketClientManager& the();
+
+    virtual RefPtr<WebSocketClientSocket> connect(AK::URL const&, DeprecatedString const& origin, Vector<DeprecatedString> const& protocols) = 0;
+
+protected:
+    explicit WebSocketClientManager();
 };
 
 }

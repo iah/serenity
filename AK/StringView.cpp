@@ -8,11 +8,13 @@
 #include <AK/ByteBuffer.h>
 #include <AK/Find.h>
 #include <AK/Function.h>
-#include <AK/Memory.h>
+#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
 
 #ifndef KERNEL
+#    include <AK/DeprecatedFlyString.h>
+#    include <AK/DeprecatedString.h>
 #    include <AK/FlyString.h>
 #    include <AK/String.h>
 #endif
@@ -20,35 +22,47 @@
 namespace AK {
 
 #ifndef KERNEL
-StringView::StringView(const String& string)
+StringView::StringView(String const& string)
+    : m_characters(reinterpret_cast<char const*>(string.bytes().data()))
+    , m_length(string.bytes().size())
+{
+}
+
+StringView::StringView(FlyString const& string)
+    : m_characters(reinterpret_cast<char const*>(string.bytes().data()))
+    , m_length(string.bytes().size())
+{
+}
+
+StringView::StringView(DeprecatedString const& string)
     : m_characters(string.characters())
     , m_length(string.length())
 {
 }
 
-StringView::StringView(const FlyString& string)
+StringView::StringView(DeprecatedFlyString const& string)
     : m_characters(string.characters())
     , m_length(string.length())
 {
 }
 #endif
 
-StringView::StringView(const ByteBuffer& buffer)
-    : m_characters((const char*)buffer.data())
+StringView::StringView(ByteBuffer const& buffer)
+    : m_characters((char const*)buffer.data())
     , m_length(buffer.size())
 {
 }
 
-Vector<StringView> StringView::split_view(const char separator, bool keep_empty) const
+Vector<StringView> StringView::split_view(char const separator, SplitBehavior split_behavior) const
 {
     StringView seperator_view { &separator, 1 };
-    return split_view(seperator_view, keep_empty);
+    return split_view(seperator_view, split_behavior);
 }
 
-Vector<StringView> StringView::split_view(StringView separator, bool keep_empty) const
+Vector<StringView> StringView::split_view(StringView separator, SplitBehavior split_behavior) const
 {
     Vector<StringView> parts;
-    for_each_split_view(separator, keep_empty, [&](StringView view) {
+    for_each_split_view(separator, split_behavior, [&](StringView view) {
         parts.append(view);
     });
     return parts;
@@ -60,7 +74,7 @@ Vector<StringView> StringView::lines(bool consider_cr) const
         return {};
 
     if (!consider_cr)
-        return split_view('\n', true);
+        return split_view('\n', SplitBehavior::KeepEmpty);
 
     Vector<StringView> v;
     size_t substart = 0;
@@ -137,6 +151,20 @@ bool StringView::contains(char needle) const
     return false;
 }
 
+bool StringView::contains(u32 needle) const
+{
+    // A code point should be at most four UTF-8 bytes, which easily fits into StringBuilder's inline-buffer.
+    // Therefore, this will not allocate.
+    StringBuilder needle_builder;
+    auto result = needle_builder.try_append_code_point(needle);
+    if (result.is_error()) {
+        // The needle is invalid, therefore the string does not contain it.
+        return false;
+    }
+
+    return contains(needle_builder.string_view());
+}
+
 bool StringView::contains(StringView needle, CaseSensitivity case_sensitivity) const
 {
     return StringUtils::contains(*this, needle, case_sensitivity);
@@ -148,17 +176,17 @@ bool StringView::equals_ignoring_case(StringView other) const
 }
 
 #ifndef KERNEL
-String StringView::to_lowercase_string() const
+DeprecatedString StringView::to_lowercase_string() const
 {
     return StringImpl::create_lowercased(characters_without_null_termination(), length());
 }
 
-String StringView::to_uppercase_string() const
+DeprecatedString StringView::to_uppercase_string() const
 {
     return StringImpl::create_uppercased(characters_without_null_termination(), length());
 }
 
-String StringView::to_titlecase_string() const
+DeprecatedString StringView::to_titlecase_string() const
 {
     return StringUtils::to_titlecase(*this);
 }
@@ -166,7 +194,7 @@ String StringView::to_titlecase_string() const
 
 StringView StringView::substring_view_starting_from_substring(StringView substring) const
 {
-    const char* remaining_characters = substring.characters_without_null_termination();
+    char const* remaining_characters = substring.characters_without_null_termination();
     VERIFY(remaining_characters >= m_characters);
     VERIFY(remaining_characters <= m_characters + m_length);
     size_t remaining_length = m_length - (remaining_characters - m_characters);
@@ -175,11 +203,23 @@ StringView StringView::substring_view_starting_from_substring(StringView substri
 
 StringView StringView::substring_view_starting_after_substring(StringView substring) const
 {
-    const char* remaining_characters = substring.characters_without_null_termination() + substring.length();
+    char const* remaining_characters = substring.characters_without_null_termination() + substring.length();
     VERIFY(remaining_characters >= m_characters);
     VERIFY(remaining_characters <= m_characters + m_length);
     size_t remaining_length = m_length - (remaining_characters - m_characters);
     return { remaining_characters, remaining_length };
+}
+
+bool StringView::copy_characters_to_buffer(char* buffer, size_t buffer_size) const
+{
+    // We must fit at least the NUL-terminator.
+    VERIFY(buffer_size > 0);
+
+    size_t characters_to_copy = min(m_length, buffer_size - 1);
+    __builtin_memcpy(buffer, m_characters, characters_to_copy);
+    buffer[characters_to_copy] = 0;
+
+    return characters_to_copy == m_length;
 }
 
 template<typename T>
@@ -205,20 +245,28 @@ template Optional<u16> StringView::to_uint() const;
 template Optional<u32> StringView::to_uint() const;
 template Optional<unsigned long> StringView::to_uint() const;
 template Optional<unsigned long long> StringView::to_uint() const;
-template Optional<long> StringView::to_uint() const;
-template Optional<long long> StringView::to_uint() const;
 
 #ifndef KERNEL
-bool StringView::operator==(const String& string) const
+Optional<double> StringView::to_double(TrimWhitespace trim_whitespace) const
+{
+    return StringUtils::convert_to_floating_point<double>(*this, trim_whitespace);
+}
+
+Optional<float> StringView::to_float(TrimWhitespace trim_whitespace) const
+{
+    return StringUtils::convert_to_floating_point<float>(*this, trim_whitespace);
+}
+
+bool StringView::operator==(DeprecatedString const& string) const
 {
     return *this == string.view();
 }
 
-String StringView::to_string() const { return String { *this }; }
+DeprecatedString StringView::to_deprecated_string() const { return DeprecatedString { *this }; }
 
-String StringView::replace(StringView needle, StringView replacement, bool all_occurrences) const
+DeprecatedString StringView::replace(StringView needle, StringView replacement, ReplaceMode replace_mode) const
 {
-    return StringUtils::replace(*this, needle, replacement, all_occurrences);
+    return StringUtils::replace(*this, needle, replacement, replace_mode);
 }
 #endif
 
@@ -227,19 +275,21 @@ Vector<size_t> StringView::find_all(StringView needle) const
     return StringUtils::find_all(*this, needle);
 }
 
-Vector<StringView> StringView::split_view_if(Function<bool(char)> const& predicate, bool keep_empty) const
+Vector<StringView> StringView::split_view_if(Function<bool(char)> const& predicate, SplitBehavior split_behavior) const
 {
     if (is_empty())
         return {};
 
     Vector<StringView> v;
     size_t substart = 0;
+    bool keep_empty = has_flag(split_behavior, SplitBehavior::KeepEmpty);
+    bool keep_separator = has_flag(split_behavior, SplitBehavior::KeepTrailingSeparator);
     for (size_t i = 0; i < length(); ++i) {
         char ch = characters_without_null_termination()[i];
         if (predicate(ch)) {
             size_t sublen = i - substart;
             if (sublen != 0 || keep_empty)
-                v.append(substring_view(substart, sublen));
+                v.append(substring_view(substart, keep_separator ? sublen + 1 : sublen));
             substart = i + 1;
         }
     }

@@ -1,9 +1,9 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=git
-version=2.34.1
-useconfigure="true"
-files="https://mirrors.edge.kernel.org/pub/software/scm/git/git-${version}.tar.xz git-${version}.tar.xz 3a0755dd1cfab71a24dd96df3498c29cd0acd13b04f3d08bf933e81286db802c"
-auth_type=sha256
+port='git'
+version='2.39.1'
+files="https://mirrors.edge.kernel.org/pub/software/scm/git/git-${version}.tar.xz git-${version}.tar.xz 40a38a0847b30c371b35873b3afcf123885dd41ea3ecbbf510efa97f3ce5c161"
+auth_type='sha256'
+useconfigure='true'
 configopts=("--target=${SERENITY_ARCH}-pc-serenity" "--with-lib=${SERENITY_INSTALL_ROOT}/usr/local" "CFLAGS=-DNO_IPV6" "LDFLAGS=-L${SERENITY_INSTALL_ROOT}/usr/local/lib")
 depends=("zlib" "curl")
 
@@ -14,7 +14,15 @@ build() {
 
 post_install() {
     run mkdir -p "${SERENITY_INSTALL_ROOT}/home/anon"
-    run cp "../default_gitconfig" "${SERENITY_INSTALL_ROOT}/home/anon/.gitconfig"
+    cat << 'EOF' > "${SERENITY_INSTALL_ROOT}/home/anon/.gitconfig"
+[core]
+    editor = TextEditor
+    pager = less
+
+[user]
+    email = anon
+    name = anon
+EOF
 }
 
 export NO_PERL=YesPlease

@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibC/sys/internals.h>
-#include <LibC/unistd.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/DynamicLinker.h>
 #include <LibELF/Relocation.h>
+#include <sys/internals.h>
+#include <unistd.h>
 
 char* __static_environ[] = { nullptr }; // We don't get the environment without some libc workarounds..
 
@@ -42,7 +42,7 @@ static void perform_self_relocations(auxv_t* auxvp)
 
 static void display_help()
 {
-    const char message[] =
+    char const message[] =
         R"(You have invoked `Loader.so'. This is the helper program for programs that
 use shared libraries. Special directives embedded in executables tell the
 kernel to load this program.
@@ -62,9 +62,14 @@ void _entry(int, char**, char**) __attribute__((used));
 
 NAKED void _start(int, char**, char**)
 {
+#ifdef AK_ARCH_AARCH64
+    asm(
+        "bl _entry\n");
+#else
     asm(
         "push $0\n"
         "jmp _entry@plt\n");
+#endif
 }
 
 void _entry(int argc, char** argv, char** envp)
@@ -78,21 +83,21 @@ void _entry(int argc, char** argv, char** envp)
     init_libc();
 
     int main_program_fd = -1;
-    String main_program_name;
+    DeprecatedString main_program_path;
     bool is_secure = false;
     for (; auxvp->a_type != AT_NULL; ++auxvp) {
         if (auxvp->a_type == ELF::AuxiliaryValue::ExecFileDescriptor) {
             main_program_fd = auxvp->a_un.a_val;
         }
         if (auxvp->a_type == ELF::AuxiliaryValue::ExecFilename) {
-            main_program_name = (const char*)auxvp->a_un.a_ptr;
+            main_program_path = (char const*)auxvp->a_un.a_ptr;
         }
         if (auxvp->a_type == ELF::AuxiliaryValue::Secure) {
             is_secure = auxvp->a_un.a_val == 1;
         }
     }
 
-    if (main_program_name == "/usr/lib/Loader.so"sv) {
+    if (main_program_path == "/usr/lib/Loader.so"sv) {
         // We've been invoked directly as an executable rather than as the
         // ELF interpreter for some other binary. In the future we may want
         // to support launching a program directly from the dynamic loader
@@ -102,9 +107,9 @@ void _entry(int argc, char** argv, char** envp)
     }
 
     VERIFY(main_program_fd >= 0);
-    VERIFY(!main_program_name.is_empty());
+    VERIFY(!main_program_path.is_empty());
 
-    ELF::DynamicLinker::linker_main(move(main_program_name), main_program_fd, is_secure, argc, argv, envp);
+    ELF::DynamicLinker::linker_main(move(main_program_path), main_program_fd, is_secure, argc, argv, envp);
     VERIFY_NOT_REACHED();
 }
 }

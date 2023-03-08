@@ -1,14 +1,17 @@
 /*
  * Copyright (c) 2019-2020, Jesse Buhagiar <jooster669@gmail.com>
  * Copyright (c) 2021, Brandon Pruitt  <brapru@pm.me>
+ * Copyright (c) 2022, Umut İnan Erdoğan <umutinanerdogan62@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Base64.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Random.h>
-#include <AK/String.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/System.h>
+#include <LibMain/Main.h>
 #include <crypt.h>
 #include <ctype.h>
 #include <errno.h>
@@ -22,23 +25,20 @@
 
 constexpr uid_t BASE_UID = 1000;
 constexpr gid_t USERS_GID = 100;
-constexpr const char* DEFAULT_SHELL = "/bin/sh";
+constexpr auto DEFAULT_SHELL = "/bin/sh"sv;
 
-int main(int argc, char** argv)
+ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    if (pledge("stdio wpath rpath cpath chown", nullptr) < 0) {
-        perror("pledge");
-        return 1;
-    }
+    TRY(Core::System::pledge("stdio wpath rpath cpath chown"));
 
-    const char* home_path = nullptr;
+    StringView home_path;
     int uid = 0;
     int gid = USERS_GID;
     bool create_home_dir = false;
-    const char* password = "";
-    const char* shell = DEFAULT_SHELL;
-    const char* gecos = "";
-    const char* username = nullptr;
+    DeprecatedString password = "";
+    DeprecatedString shell = DEFAULT_SHELL;
+    DeprecatedString gecos = "";
+    DeprecatedString username;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(home_path, "Home directory for the new user", "home-dir", 'd', "path");
@@ -50,10 +50,10 @@ int main(int argc, char** argv)
     args_parser.add_option(gecos, "GECOS name of the new user", "gecos", 'n', "general-info");
     args_parser.add_positional_argument(username, "Login user identity (username)", "login");
 
-    args_parser.parse(argc, argv);
+    args_parser.parse(arguments);
 
     // Let's run a quick sanity check on username
-    if (strpbrk(username, "\\/!@#$%^&*()~+=`:\n")) {
+    if (username.find_any_of("\\/!@#$%^&*()~+=`:\n"sv, DeprecatedString::SearchDirection::Forward).has_value()) {
         warnln("invalid character in username, {}", username);
         return 1;
     }
@@ -64,7 +64,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (getpwnam(username)) {
+    auto passwd = TRY(Core::System::getpwnam(username));
+    if (passwd.has_value()) {
         warnln("user {} already exists!", username);
         return 1;
     }
@@ -76,13 +77,16 @@ int main(int argc, char** argv)
 
     // First, let's sort out the uid for the user
     if (uid > 0) {
-        if (getpwuid(static_cast<uid_t>(uid))) {
+        auto pwd = TRY(Core::System::getpwuid(static_cast<uid_t>(uid)));
+        if (pwd.has_value()) {
             warnln("uid {} already exists!", uid);
             return 4;
         }
-
     } else {
-        for (uid = BASE_UID; getpwuid(static_cast<uid_t>(uid)); uid++) {
+        for (uid = BASE_UID;; uid++) {
+            auto pwd = TRY(Core::System::getpwuid(static_cast<uid_t>(uid)));
+            if (!pwd.has_value())
+                break;
         }
     }
 
@@ -103,54 +107,57 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    String home;
-    if (!home_path)
-        home = String::formatted("/home/{}", username);
+    DeprecatedString home;
+    if (home_path.is_empty())
+        home = DeprecatedString::formatted("/home/{}", username);
     else
         home = home_path;
 
     if (create_home_dir) {
-        if (mkdir(home.characters(), 0700) < 0) {
-            auto saved_errno = errno;
-            warnln("Failed to create directory {}: {}", home, strerror(saved_errno));
+        auto mkdir_error = Core::System::mkdir(home, 0700);
+        if (mkdir_error.is_error()) {
+            int code = mkdir_error.release_error().code();
+            warnln("Failed to create directory {}: {}", home, strerror(code));
             return 12;
         }
 
-        if (chown(home.characters(), static_cast<uid_t>(uid), static_cast<gid_t>(gid)) < 0) {
-            warnln("Failed to change owner of {} to {}:{}: {}", home, uid, gid, strerror(errno));
+        auto chown_error = Core::System::chown(home, static_cast<uid_t>(uid), static_cast<gid_t>(gid));
+        if (chown_error.is_error()) {
+            int code = chown_error.release_error().code();
+            warnln("Failed to change owner of {} to {}:{}: {}", home, uid, gid, strerror(code));
 
             if (rmdir(home.characters()) < 0) {
                 warnln("Failed to remove directory {}: {}", home, strerror(errno));
-                return 12;
             }
+
             return 12;
         }
     }
 
-    auto get_salt = []() {
+    auto get_salt = []() -> ErrorOr<DeprecatedString> {
         char random_data[12];
         fill_with_random(random_data, sizeof(random_data));
 
         StringBuilder builder;
-        builder.append("$5$");
-        builder.append(encode_base64(ReadonlyBytes(random_data, sizeof(random_data))));
+        builder.append("$5$"sv);
+        builder.append(TRY(encode_base64({ random_data, sizeof(random_data) })));
 
-        return builder.build();
+        return builder.to_deprecated_string();
     };
 
-    char* hash = crypt(password, get_salt().characters());
+    char* hash = crypt(password.characters(), TRY(get_salt()).characters());
 
     struct passwd p;
-    p.pw_name = const_cast<char*>(username);
+    p.pw_name = const_cast<char*>(username.characters());
     p.pw_passwd = const_cast<char*>("!");
     p.pw_dir = const_cast<char*>(home.characters());
     p.pw_uid = static_cast<uid_t>(uid);
     p.pw_gid = static_cast<gid_t>(gid);
-    p.pw_shell = const_cast<char*>(shell);
-    p.pw_gecos = const_cast<char*>(gecos);
+    p.pw_shell = const_cast<char*>(shell.characters());
+    p.pw_gecos = const_cast<char*>(gecos.characters());
 
     struct spwd s;
-    s.sp_namp = const_cast<char*>(username);
+    s.sp_namp = const_cast<char*>(username.characters());
     s.sp_pwdp = const_cast<char*>(hash);
     s.sp_lstchg = 18727;
     s.sp_min = 0;

@@ -8,12 +8,6 @@
 #include <AK/TypeCasts.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/FunctionObject.h>
-#include <LibWeb/Bindings/EventTargetWrapper.h>
-#include <LibWeb/Bindings/EventTargetWrapperFactory.h>
-#include <LibWeb/Bindings/EventWrapper.h>
-#include <LibWeb/Bindings/EventWrapperFactory.h>
-#include <LibWeb/Bindings/IDLAbstractOperations.h>
-#include <LibWeb/Bindings/WindowObject.h>
 #include <LibWeb/DOM/AbortSignal.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
@@ -22,10 +16,11 @@
 #include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
-#include <LibWeb/DOM/Window.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
+#include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::DOM {
 
@@ -33,25 +28,31 @@ namespace Web::DOM {
 //        When moving this function, it needs to be generalized. https://dom.spec.whatwg.org/#retarget
 static EventTarget* retarget(EventTarget* left, EventTarget* right)
 {
+    // To retarget an object A against an object B, repeat these steps until they return an object:
     for (;;) {
+        // 1. If one of the following is true then return A.
+        // - A is not a node
         if (!is<Node>(left))
             return left;
 
+        // - A’s root is not a shadow root
         auto* left_node = verify_cast<Node>(left);
         auto& left_root = left_node->root();
         if (!is<ShadowRoot>(left_root))
             return left;
 
+        // - B is a node and A’s root is a shadow-including inclusive ancestor of B
         if (is<Node>(right) && left_root.is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*right)))
             return left;
 
+        // 2. Set A to A’s root’s host.
         auto& left_shadow_root = verify_cast<ShadowRoot>(left_root);
         left = left_shadow_root.host();
     }
 }
 
 // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
-bool EventDispatcher::inner_invoke(Event& event, Vector<NonnullRefPtr<DOM::DOMEventListener>>& listeners, Event::Phase phase, bool invocation_target_in_shadow_tree)
+bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEventListener>>& listeners, Event::Phase phase, bool invocation_target_in_shadow_tree)
 {
     // 1. Let found be false.
     bool found = false;
@@ -78,26 +79,26 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<NonnullRefPtr<DOM::DOMEv
 
         // 5. If listener’s once is true, then remove listener from event’s currentTarget attribute value’s event listener list.
         if (listener->once)
-            event.current_target()->remove_from_event_listener_list(listener);
+            event.current_target()->remove_from_event_listener_list(*listener);
 
         // 6. Let global be listener callback’s associated Realm’s global object.
         auto& callback = listener->callback->callback();
-        auto& global = callback.callback.cell()->global_object();
+        auto& realm = callback.callback.shape().realm();
+        auto& global = realm.global_object();
 
         // 7. Let currentEvent be undefined.
-        RefPtr<Event> current_event;
+        Event* current_event = nullptr;
 
         // 8. If global is a Window object, then:
-        if (is<Bindings::WindowObject>(global)) {
-            auto& bindings_window_global = verify_cast<Bindings::WindowObject>(global);
-            auto& window_impl = bindings_window_global.impl();
+        if (is<HTML::Window>(global)) {
+            auto& window = verify_cast<HTML::Window>(global);
 
             // 1. Set currentEvent to global’s current event.
-            current_event = window_impl.current_event();
+            current_event = window.current_event();
 
             // 2. If invocationTargetInShadowTree is false, then set global’s current event to event.
             if (!invocation_target_in_shadow_tree)
-                window_impl.set_current_event(&event);
+                window.set_current_event(&event);
         }
 
         // 9. If listener’s passive is true, then set event’s in passive listener flag.
@@ -106,14 +107,14 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<NonnullRefPtr<DOM::DOMEv
 
         // 10. Call a user object’s operation with listener’s callback, "handleEvent", « event », and event’s currentTarget attribute value. If this throws an exception, then:
         // FIXME: These should be wrapped for us in call_user_object_operation, but it currently doesn't do that.
-        auto* this_value = Bindings::wrap(global, *event.current_target());
-        auto* wrapped_event = Bindings::wrap(global, event);
-        auto result = Bindings::IDL::call_user_object_operation(callback, "handleEvent", this_value, wrapped_event);
+        auto* this_value = event.current_target().ptr();
+        auto* wrapped_event = &event;
+        auto result = WebIDL::call_user_object_operation(callback, "handleEvent", this_value, wrapped_event);
 
         // If this throws an exception, then:
         if (result.is_error()) {
             // 1. Report the exception.
-            HTML::report_exception(result);
+            HTML::report_exception(result, realm);
 
             // FIXME: 2. Set legacyOutputDidListenersThrowFlag if given. (Only used by IndexedDB currently)
         }
@@ -122,10 +123,9 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<NonnullRefPtr<DOM::DOMEv
         event.set_in_passive_listener(false);
 
         // 12. If global is a Window object, then set global’s current event to currentEvent.
-        if (is<Bindings::WindowObject>(global)) {
-            auto& bindings_window_global = verify_cast<Bindings::WindowObject>(global);
-            auto& window_impl = bindings_window_global.impl();
-            window_impl.set_current_event(current_event);
+        if (is<HTML::Window>(global)) {
+            auto& window = verify_cast<HTML::Window>(global);
+            window.set_current_event(current_event);
         }
 
         // 13. If event’s stop immediate propagation flag is set, then return found.
@@ -141,124 +141,178 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<NonnullRefPtr<DOM::DOMEv
 void EventDispatcher::invoke(Event::PathEntry& struct_, Event& event, Event::Phase phase)
 {
     auto last_valid_shadow_adjusted_target = event.path().last_matching([&struct_](auto& entry) {
-        return entry.index <= struct_.index && !entry.shadow_adjusted_target.is_null();
+        return entry.index <= struct_.index && entry.shadow_adjusted_target;
     });
 
     VERIFY(last_valid_shadow_adjusted_target.has_value());
 
-    event.set_target(last_valid_shadow_adjusted_target.value().shadow_adjusted_target);
-    event.set_related_target(struct_.related_target);
+    // 1. Set event’s target to the shadow-adjusted target of the last struct in event’s path,
+    // that is either struct or preceding struct, whose shadow-adjusted target is non-null.
+    event.set_target(last_valid_shadow_adjusted_target.value().shadow_adjusted_target.ptr());
+
+    // 2. Set event’s relatedTarget to struct’s relatedTarget.
+    event.set_related_target(struct_.related_target.ptr());
+
+    // 3. Set event’s touch target list to struct’s touch target list.
     event.set_touch_target_list(struct_.touch_target_list);
 
+    // 4. If event’s stop propagation flag is set, then return.
     if (event.should_stop_propagation())
         return;
 
-    event.set_current_target(struct_.invocation_target);
+    // 5. Initialize event’s currentTarget attribute to struct’s invocation target.
+    event.set_current_target(struct_.invocation_target.ptr());
 
-    // NOTE: This is an intentional copy. Any event listeners added after this point will not be invoked.
+    // 6. Let listeners be a clone of event’s currentTarget attribute value’s event listener list.
+    // NOTE: This avoids event listeners added after this point from being run. Note that removal still has an effect due to the removed field.
     auto listeners = event.current_target()->event_listener_list();
+
+    // 7. Let invocationTargetInShadowTree be struct’s invocation-target-in-shadow-tree.
     bool invocation_target_in_shadow_tree = struct_.invocation_target_in_shadow_tree;
 
+    // 8. Let found be the result of running inner invoke with event, listeners, phase, invocationTargetInShadowTree, and legacyOutputDidListenersThrowFlag if given.
     bool found = inner_invoke(event, listeners, phase, invocation_target_in_shadow_tree);
 
+    // 9. If found is false and event’s isTrusted attribute is true, then:
     if (!found && event.is_trusted()) {
+        // 1. Let originalEventType be event’s type attribute value.
         auto original_event_type = event.type();
 
+        // 2. If event’s type attribute value is a match for any of the strings in the first column in the following table,
+        //    set event’s type attribute value to the string in the second column on the same row as the matching string, and return otherwise.
         if (event.type() == "animationend")
-            event.set_type("webkitAnimationEnd");
+            event.set_type("webkitAnimationEnd"sv);
         else if (event.type() == "animationiteration")
-            event.set_type("webkitAnimationIteration");
+            event.set_type("webkitAnimationIteration"sv);
         else if (event.type() == "animationstart")
-            event.set_type("webkitAnimationStart");
+            event.set_type("webkitAnimationStart"sv);
         else if (event.type() == "transitionend")
-            event.set_type("webkitTransitionEnd");
+            event.set_type("webkitTransitionEnd"sv);
         else
             return;
 
+        // 3. Inner invoke with event, listeners, phase, invocationTargetInShadowTree, and legacyOutputDidListenersThrowFlag if given.
         inner_invoke(event, listeners, phase, invocation_target_in_shadow_tree);
+
+        // 4. Set event’s type attribute value to originalEventType.
         event.set_type(original_event_type);
     }
 }
 
 // https://dom.spec.whatwg.org/#concept-event-dispatch
-bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<Event> event, bool legacy_target_override)
+bool EventDispatcher::dispatch(JS::NonnullGCPtr<EventTarget> target, Event& event, bool legacy_target_override)
 {
-    event->set_dispatched(true);
-    RefPtr<EventTarget> target_override;
+    // 1. Set event’s dispatch flag.
+    event.set_dispatched(true);
 
+    // 2. Let targetOverride be target, if legacy target override flag is not given, and target’s associated Document otherwise. [HTML]
+    // NOTE: legacy target override flag is only used by HTML and only when target is a Window object.
+    JS::GCPtr<EventTarget> target_override;
     if (!legacy_target_override) {
         target_override = target;
     } else {
-        // NOTE: This can be done because legacy_target_override is only set for events targeted at Window.
-        target_override = verify_cast<Window>(*target).associated_document();
+        target_override = &verify_cast<HTML::Window>(*target).associated_document();
     }
 
-    RefPtr<EventTarget> activation_target;
-    RefPtr<EventTarget> related_target = retarget(event->related_target(), target);
+    // 3. Let activationTarget be null.
+    JS::GCPtr<EventTarget> activation_target;
+
+    // 4. Let relatedTarget be the result of retargeting event’s relatedTarget against target.
+    JS::GCPtr<EventTarget> related_target = retarget(event.related_target(), target);
 
     bool clear_targets = false;
-
-    if (related_target != target || event->related_target() == target) {
+    // 5. If target is not relatedTarget or target is event’s relatedTarget, then:
+    if (related_target != target || event.related_target() == target) {
+        // 1. Let touchTargets be a new list.
         Event::TouchTargetList touch_targets;
 
-        for (auto& touch_target : event->touch_target_list()) {
+        // 2. For each touchTarget of event’s touch target list, append the result of retargeting touchTarget against target to touchTargets.
+        for (auto& touch_target : event.touch_target_list()) {
             touch_targets.append(retarget(touch_target, target));
         }
 
-        event->append_to_path(*target, target_override, related_target, touch_targets, false);
+        // 3. Append to an event path with event, target, targetOverride, relatedTarget, touchTargets, and false.
+        event.append_to_path(*target, target_override, related_target, touch_targets, false);
 
-        bool is_activation_event = is<UIEvents::MouseEvent>(*event) && event->type() == HTML::EventNames::click;
+        // 4. Let isActivationEvent be true, if event is a MouseEvent object and event’s type attribute is "click"; otherwise false.
+        bool is_activation_event = is<UIEvents::MouseEvent>(event) && event.type() == HTML::EventNames::click;
 
+        // 5. If isActivationEvent is true and target has activation behavior, then set activationTarget to target.
         if (is_activation_event && target->activation_behavior)
             activation_target = target;
 
-        // FIXME: Let slottable be target, if target is a slottable and is assigned, and null otherwise.
+        // FIXME: 6. Let slottable be target, if target is a slottable and is assigned, and null otherwise.
 
+        // 7. Let slot-in-closed-tree be false
         bool slot_in_closed_tree = false;
+
+        // 8. Let parent be the result of invoking target’s get the parent with event.
         auto* parent = target->get_parent(event);
 
+        // 9. While parent is non-null:
         while (parent) {
-            // FIXME: If slottable is non-null:
+            // FIXME: 1. If slottable is non-null:
+            //     1. Assert: parent is a slot.
+            //     2. Set slottable to null.
+            //     3. If parent’s root is a shadow root whose mode is "closed", then set slot-in-closed-tree to true.
+            // FIXME: 2. If parent is a slottable and is assigned, then set slottable to parent.
 
-            // FIXME: If parent is a slottable and is assigned, then set slottable to parent.
+            // 3. Let relatedTarget be the result of retargeting event’s relatedTarget against parent.
+            related_target = retarget(event.related_target(), parent);
 
-            related_target = retarget(event->related_target(), parent);
+            // 4. Let touchTargets be a new list.
             touch_targets.clear();
 
-            for (auto& touch_target : event->touch_target_list()) {
+            // 5. For each touchTarget of event’s touch target list, append the result of retargeting touchTarget against parent to touchTargets.
+            for (auto& touch_target : event.touch_target_list()) {
                 touch_targets.append(retarget(touch_target, parent));
             }
 
-            if (is<Window>(parent)
+            // 6. If parent is a Window object, or parent is a node and target’s root is a shadow-including inclusive ancestor of parent, then:
+            if (is<HTML::Window>(parent)
                 || (is<Node>(parent) && verify_cast<Node>(*target).root().is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*parent)))) {
-                if (is_activation_event && event->bubbles() && !activation_target && parent->activation_behavior)
+                // 1. If isActivationEvent is true, event’s bubbles attribute is true, activationTarget is null, and parent has activation behavior, then set activationTarget to parent.
+                if (is_activation_event && event.bubbles() && !activation_target && parent->activation_behavior)
                     activation_target = parent;
 
-                event->append_to_path(*parent, nullptr, related_target, touch_targets, slot_in_closed_tree);
-            } else if (related_target == parent) {
+                // 2. Append to an event path with event, parent, null, relatedTarget, touchTargets, and slot-in-closed-tree.
+                event.append_to_path(*parent, nullptr, related_target, touch_targets, slot_in_closed_tree);
+
+            }
+            // 7. Otherwise, if parent is relatedTarget, then set parent to null.
+            else if (related_target.ptr() == parent) {
                 parent = nullptr;
-            } else {
+            }
+            // 8. Otherwise, set target to parent and then:
+            else {
                 target = *parent;
 
+                // 1. If isActivationEvent is true, activationTarget is null, and target has activation behavior, then set activationTarget to target.
                 if (is_activation_event && !activation_target && target->activation_behavior)
                     activation_target = target;
 
-                event->append_to_path(*parent, target, related_target, touch_targets, slot_in_closed_tree);
+                // 2. Append to an event path with event, parent, target, relatedTarget, touchTargets, and slot-in-closed-tree.
+                event.append_to_path(*parent, target, related_target, touch_targets, slot_in_closed_tree);
             }
 
+            // 9. If parent is non-null, then set parent to the result of invoking parent’s get the parent with event.
             if (parent) {
                 parent = parent->get_parent(event);
             }
 
+            // 10. Set slot-in-closed-tree to false.
             slot_in_closed_tree = false;
         }
 
-        auto clear_targets_struct = event->path().last_matching([](auto& entry) {
-            return !entry.shadow_adjusted_target.is_null();
+        // 10. Let clearTargetsStruct be the last struct in event’s path whose shadow-adjusted target is non-null.
+        auto clear_targets_struct = event.path().last_matching([](auto& entry) {
+            return entry.shadow_adjusted_target;
         });
 
         VERIFY(clear_targets_struct.has_value());
 
+        // 11. Let clearTargets be true if clearTargetsStruct’s shadow-adjusted target, clearTargetsStruct’s relatedTarget,
+        //     or an EventTarget object in clearTargetsStruct’s touch target list is a node and its root is a shadow root; otherwise false.
         if (is<Node>(clear_targets_struct.value().shadow_adjusted_target.ptr())) {
             auto& shadow_adjusted_target_node = verify_cast<Node>(*clear_targets_struct.value().shadow_adjusted_target);
             if (is<ShadowRoot>(shadow_adjusted_target_node.root()))
@@ -283,58 +337,85 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
             }
         }
 
-        if (activation_target && activation_target->legacy_pre_activation_behavior)
+        // 12. If activationTarget is non-null and activationTarget has legacy-pre-activation behavior, then run activationTarget’s legacy-pre-activation behavior.
+        if (activation_target)
             activation_target->legacy_pre_activation_behavior();
 
-        for (ssize_t i = event->path().size() - 1; i >= 0; --i) {
-            auto& entry = event->path().at(i);
-
+        // 13. For each struct in event’s path, in reverse order:
+        for (auto& entry : event.path().in_reverse()) {
+            // 1. If struct’s shadow-adjusted target is non-null, then set event’s eventPhase attribute to AT_TARGET.
             if (entry.shadow_adjusted_target)
-                event->set_phase(Event::Phase::AtTarget);
+                event.set_phase(Event::Phase::AtTarget);
+            // 2. Otherwise, set event’s eventPhase attribute to CAPTURING_PHASE.
             else
-                event->set_phase(Event::Phase::CapturingPhase);
+                event.set_phase(Event::Phase::CapturingPhase);
 
+            // 3. Invoke with struct, event, "capturing", and legacyOutputDidListenersThrowFlag if given.
             invoke(entry, event, Event::Phase::CapturingPhase);
         }
 
-        for (auto& entry : event->path()) {
+        // 14. For each struct in event’s path:
+        for (auto& entry : event.path()) {
+            // 1. If struct’s shadow-adjusted target is non-null, then set event’s eventPhase attribute to AT_TARGET.
             if (entry.shadow_adjusted_target) {
-                event->set_phase(Event::Phase::AtTarget);
-            } else {
-                if (!event->bubbles())
+                event.set_phase(Event::Phase::AtTarget);
+            }
+            // 2. Otherwise:
+            else {
+                // 1. If event’s bubbles attribute is false, then continue.
+                if (!event.bubbles())
                     continue;
 
-                event->set_phase(Event::Phase::BubblingPhase);
+                // 2. Set event’s eventPhase attribute to BUBBLING_PHASE.
+                event.set_phase(Event::Phase::BubblingPhase);
             }
 
+            // 3. Invoke with struct, event, "bubbling", and legacyOutputDidListenersThrowFlag if given.
             invoke(entry, event, Event::Phase::BubblingPhase);
         }
     }
 
-    event->set_phase(Event::Phase::None);
-    event->set_current_target(nullptr);
-    event->clear_path();
-    event->set_dispatched(false);
-    event->set_stop_propagation(false);
-    event->set_stop_immediate_propagation(false);
+    // 6. Set event’s eventPhase attribute to NONE.
+    event.set_phase(Event::Phase::None);
 
+    // 7. Set event’s currentTarget attribute to null.
+    event.set_current_target(nullptr);
+
+    // 8. Set event’s path to the empty list.
+    event.clear_path();
+
+    // 9. Unset event’s dispatch flag, stop propagation flag, and stop immediate propagation flag.
+    event.set_dispatched(false);
+    event.set_stop_propagation(false);
+    event.set_stop_immediate_propagation(false);
+
+    // 10. If clearTargets, then:
     if (clear_targets) {
-        event->set_target(nullptr);
-        event->set_related_target(nullptr);
-        event->clear_touch_target_list();
+        // 1. Set event’s target to null.
+        event.set_target(nullptr);
+
+        // 2. Set event’s relatedTarget to null.
+        event.set_related_target(nullptr);
+
+        // 3. Set event’s touch target list to the empty list.
+        event.clear_touch_target_list();
     }
 
+    // 11. If activationTarget is non-null, then:
     if (activation_target) {
-        if (!event->cancelled()) {
-            // NOTE: Since activation_target is set, it will have activation behavior.
+        // 1. If event’s canceled flag is unset, then run activationTarget’s activation behavior with event.
+        if (!event.cancelled()) {
             activation_target->activation_behavior(event);
-        } else {
-            if (activation_target->legacy_cancelled_activation_behavior)
-                activation_target->legacy_cancelled_activation_behavior();
+            activation_target->legacy_cancelled_activation_behavior_was_not_called();
+        }
+        // 2. Otherwise, if activationTarget has legacy-canceled-activation behavior, then run activationTarget’s legacy-canceled-activation behavior.
+        else {
+            activation_target->legacy_cancelled_activation_behavior();
         }
     }
 
-    return !event->cancelled();
+    // 12. Return false if event’s canceled flag is set; otherwise true.
+    return !event.cancelled();
 }
 
 }

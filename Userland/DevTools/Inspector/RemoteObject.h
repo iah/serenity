@@ -6,9 +6,8 @@
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/JsonObject.h>
-#include <AK/NonnullOwnPtrVector.h>
-#include <AK/String.h>
 
 namespace Inspector {
 
@@ -21,12 +20,12 @@ public:
     RemoteObjectPropertyModel& property_model();
 
     RemoteObject* parent { nullptr };
-    NonnullOwnPtrVector<RemoteObject> children;
+    Vector<NonnullOwnPtr<RemoteObject>> children;
 
     FlatPtr address { 0 };
     FlatPtr parent_address { 0 };
-    String class_name;
-    String name;
+    DeprecatedString class_name;
+    DeprecatedString name;
 
     JsonObject json;
 

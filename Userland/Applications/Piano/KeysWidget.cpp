@@ -10,50 +10,28 @@
 #include "TrackManager.h"
 #include <AK/Array.h>
 #include <AK/StringView.h>
+#include <LibDSP/Keyboard.h>
 #include <LibGUI/Painter.h>
 
-KeysWidget::KeysWidget(TrackManager& track_manager)
-    : m_track_manager(track_manager)
+KeysWidget::KeysWidget(NonnullRefPtr<DSP::Keyboard> keyboard)
+    : m_keyboard(move(keyboard))
 {
     set_fill_with_background_color(true);
 }
 
 int KeysWidget::mouse_note() const
 {
-    if (m_mouse_down && m_mouse_note + m_track_manager.octave_base() < note_count)
+    if (m_mouse_down && m_mouse_note + m_keyboard->virtual_keyboard_octave_base() < note_count)
         return m_mouse_note; // Can be -1.
-    else
-        return -1;
+    return -1;
 }
 
-void KeysWidget::set_key(int key, Switch switch_key)
+void KeysWidget::set_key(i8 key, DSP::Keyboard::Switch switch_note)
 {
-    if (key == -1 || key + m_track_manager.octave_base() >= note_count)
-        return;
-
-    if (switch_key == On) {
-        ++m_key_on[key];
-    } else {
-        if (m_key_on[key] >= 1)
-            --m_key_on[key];
-    }
-    VERIFY(m_key_on[key] <= 2);
-
-    m_track_manager.set_keyboard_note(key + m_track_manager.octave_base(), switch_key);
+    m_keyboard->set_keyboard_note_in_active_octave(key, switch_note);
 }
 
-bool KeysWidget::note_is_set(int note) const
-{
-    if (note < m_track_manager.octave_base())
-        return false;
-
-    if (note >= m_track_manager.octave_base() + note_count)
-        return false;
-
-    return m_key_on[note - m_track_manager.octave_base()] != 0;
-}
-
-int KeysWidget::key_code_to_key(int key_code) const
+i8 KeysWidget::key_code_to_key(int key_code)
 {
     switch (key_code) {
     case Key_A:
@@ -108,30 +86,30 @@ constexpr int black_key_height = 60;
 
 constexpr int white_key_labels_count = 12;
 constexpr Array<StringView, white_key_labels_count> white_key_labels = {
-    "A",
-    "S",
-    "D",
-    "F",
-    "G",
-    "H",
-    "J",
-    "K",
-    "L",
-    ";",
-    "\'",
-    "\u23CE", // Return key symbol
+    "A"sv,
+    "S"sv,
+    "D"sv,
+    "F"sv,
+    "G"sv,
+    "H"sv,
+    "J"sv,
+    "K"sv,
+    "L"sv,
+    ";"sv,
+    "\'"sv,
+    "\u23CE"sv, // Return key symbol
 };
 
 constexpr int black_key_labels_count = 8;
 constexpr Array<StringView, black_key_labels_count> black_key_labels = {
-    "W",
-    "E",
-    "T",
-    "Y",
-    "U",
-    "O",
-    "P",
-    "]",
+    "W"sv,
+    "E"sv,
+    "T"sv,
+    "Y"sv,
+    "U"sv,
+    "O"sv,
+    "P"sv,
+    "]"sv,
 };
 
 constexpr int black_key_offsets[] = {
@@ -170,7 +148,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
     int i = 0;
     for (;;) {
         Gfx::IntRect rect(x, 0, white_key_width, frame_inner_rect().height());
-        painter.fill_rect(rect, m_key_on[note] ? note_pressed_color : Color::White);
+        painter.fill_rect(rect, m_keyboard->is_pressed_in_active_octave(note) ? note_pressed_color : Color::White);
         painter.draw_rect(rect, Color::Black);
         if (i < white_key_labels_count) {
             rect.set_height(rect.height() * 1.5);
@@ -181,7 +159,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
         x += white_key_width;
         ++i;
 
-        if (note + m_track_manager.octave_base() >= note_count)
+        if (note + m_keyboard->virtual_keyboard_octave_base() >= note_count)
             break;
         if (x >= frame_inner_rect().width())
             break;
@@ -192,7 +170,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
     i = 0;
     for (;;) {
         Gfx::IntRect rect(x, 0, black_key_width, black_key_height);
-        painter.fill_rect(rect, m_key_on[note] ? note_pressed_color : Color::Black);
+        painter.fill_rect(rect, m_keyboard->is_pressed_in_active_octave(note) ? note_pressed_color : Color::Black);
         painter.draw_rect(rect, Color::Black);
         if (i < black_key_labels_count) {
             rect.set_height(rect.height() * 1.5);
@@ -203,7 +181,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
         x += black_key_offsets[i % black_keys_per_octave];
         ++i;
 
-        if (note + m_track_manager.octave_base() >= note_count)
+        if (note + m_keyboard->virtual_keyboard_octave_base() >= note_count)
             break;
         if (x >= frame_inner_rect().width())
             break;
@@ -235,7 +213,7 @@ static inline int note_from_white_keys(int white_keys)
     return note;
 }
 
-int KeysWidget::note_for_event_position(const Gfx::IntPoint& a_point) const
+int KeysWidget::note_for_event_position(Gfx::IntPoint a_point) const
 {
     if (!frame_inner_rect().contains(a_point))
         return -1;
@@ -274,7 +252,7 @@ void KeysWidget::mousedown_event(GUI::MouseEvent& event)
 
     m_mouse_note = note_for_event_position(event.position());
 
-    set_key(m_mouse_note, On);
+    set_key(m_mouse_note, DSP::Keyboard::Switch::On);
     update();
 }
 
@@ -285,7 +263,7 @@ void KeysWidget::mouseup_event(GUI::MouseEvent& event)
 
     m_mouse_down = false;
 
-    set_key(m_mouse_note, Off);
+    set_key(m_mouse_note, DSP::Keyboard::Switch::Off);
     update();
 }
 
@@ -299,8 +277,8 @@ void KeysWidget::mousemove_event(GUI::MouseEvent& event)
     if (m_mouse_note == new_mouse_note)
         return;
 
-    set_key(m_mouse_note, Off);
-    set_key(new_mouse_note, On);
+    set_key(m_mouse_note, DSP::Keyboard::Switch::Off);
+    set_key(new_mouse_note, DSP::Keyboard::Switch::On);
     update();
 
     m_mouse_note = new_mouse_note;

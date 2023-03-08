@@ -6,39 +6,32 @@
 
 #pragma once
 
-#include <AK/StdLibExtras.h>
 #include <LibCore/ElapsedTimer.h>
-#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/DOM/EventTarget.h>
-#include <LibWeb/NavigationTiming/PerformanceTiming.h>
 
 namespace Web::HighResolutionTime {
 
-class Performance final
-    : public DOM::EventTarget
-    , public Bindings::Wrappable {
+class Performance final : public DOM::EventTarget {
+    WEB_PLATFORM_OBJECT(Performance, DOM::EventTarget);
+
 public:
-    using WrapperType = Bindings::PerformanceWrapper;
-    using AllowOwnPtr = TrueType;
+    virtual ~Performance() override;
 
-    explicit Performance(DOM::Window&);
-    ~Performance();
-
-    double now() const { return m_timer.elapsed(); }
+    double now() const { return static_cast<double>(m_timer.elapsed()); }
     double time_origin() const;
 
-    RefPtr<NavigationTiming::PerformanceTiming> timing() { return *m_timing; }
-
-    virtual void ref_event_target() override;
-    virtual void unref_event_target() override;
-
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
+    JS::GCPtr<NavigationTiming::PerformanceTiming> timing();
 
 private:
-    DOM::Window& m_window;
-    Core::ElapsedTimer m_timer;
+    explicit Performance(HTML::Window&);
 
-    OwnPtr<NavigationTiming::PerformanceTiming> m_timing;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::NonnullGCPtr<HTML::Window> m_window;
+    JS::GCPtr<NavigationTiming::PerformanceTiming> m_timing;
+
+    Core::ElapsedTimer m_timer;
 };
 
 }

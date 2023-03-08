@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2020, Sergey Bugaev <bugaevc@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +15,7 @@
 
 namespace GUI {
 
-static const char* s_arrow_bitmap_data = {
+static constexpr Gfx::CharacterBitmap s_arrow_bitmap {
     "         "
     "   #     "
     "   ##    "
@@ -22,10 +24,9 @@ static const char* s_arrow_bitmap_data = {
     "   ###   "
     "   ##    "
     "   #     "
-    "         "
+    "         "sv,
+    9, 9
 };
-static const int s_arrow_bitmap_width = 9;
-static const int s_arrow_bitmap_height = 9;
 
 ColumnsView::ColumnsView()
 {
@@ -33,10 +34,6 @@ ColumnsView::ColumnsView()
     set_background_role(ColorRole::Base);
     set_foreground_role(ColorRole::BaseText);
     m_columns.append({ {}, 0 });
-}
-
-ColumnsView::~ColumnsView()
-{
 }
 
 void ColumnsView::select_all()
@@ -59,6 +56,37 @@ void ColumnsView::select_all()
             selection().add(index);
         }
     }
+}
+
+void ColumnsView::second_paint_event(PaintEvent& event)
+{
+    if (!m_rubber_banding)
+        return;
+
+    Painter painter(*this);
+    painter.add_clip_rect(event.rect());
+    painter.add_clip_rect(widget_inner_rect());
+
+    // Columns start rendering relative to the widget inner rect. We also account for horizontal scroll here.
+    int column_x = widget_inner_rect().left() - horizontal_scrollbar().value();
+    for (auto const& column : m_columns) {
+        if (m_rubber_band_origin_column.parent_index == column.parent_index)
+            break;
+        column_x += column.width + 1;
+    }
+
+    // After walking all columns to the current one we get its bounds relative to the widget inner rect and scroll position.
+    auto column_left = column_x;
+    auto column_right = column_x + m_rubber_band_origin_column.width;
+
+    // The rubber band rect always stays inside the widget inner rect, the vertical component is handled by mousemove
+    auto rubber_band_left = clamp(column_left, widget_inner_rect().left(), widget_inner_rect().right() + 1);
+    auto rubber_band_right = clamp(column_right, widget_inner_rect().left(), widget_inner_rect().right() + 1);
+
+    auto rubber_band_rect = Gfx::IntRect::from_two_points({ rubber_band_left, m_rubber_band_origin }, { rubber_band_right, m_rubber_band_current });
+
+    painter.fill_rect(rubber_band_rect, palette().rubber_band_fill());
+    painter.draw_rect(rubber_band_rect, palette().rubber_band_border());
 }
 
 void ColumnsView::paint_event(PaintEvent& event)
@@ -128,9 +156,9 @@ void ColumnsView::paint_event(PaintEvent& event)
 
             Gfx::IntRect text_rect = {
                 icon_rect.right() + 1 + icon_spacing(), row * item_height(),
-                column.width - icon_spacing() - icon_size() - icon_spacing() - icon_spacing() - s_arrow_bitmap_width - icon_spacing(), item_height()
+                column.width - icon_spacing() - icon_size() - icon_spacing() - icon_spacing() - static_cast<int>(s_arrow_bitmap.width()) - icon_spacing(), item_height()
             };
-            draw_item_text(painter, index, is_selected_row, text_rect, index.data().to_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::None);
+            draw_item_text(painter, index, is_selected_row, text_rect, index.data().to_deprecated_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::None);
 
             if (is_focused() && index == cursor_index()) {
                 painter.draw_rect(row_rect, palette().color(background_role()));
@@ -145,11 +173,10 @@ void ColumnsView::paint_event(PaintEvent& event)
             if (expandable) {
                 Gfx::IntRect arrow_rect = {
                     text_rect.right() + 1 + icon_spacing(), 0,
-                    s_arrow_bitmap_width, s_arrow_bitmap_height
+                    s_arrow_bitmap.width(), s_arrow_bitmap.height()
                 };
                 arrow_rect.center_vertically_within(row_rect);
-                static auto& arrow_bitmap = Gfx::CharacterBitmap::create_from_ascii(s_arrow_bitmap_data, s_arrow_bitmap_width, s_arrow_bitmap_height).leak_ref();
-                painter.draw_bitmap(arrow_rect.location(), arrow_bitmap, text_color);
+                painter.draw_bitmap(arrow_rect.location(), s_arrow_bitmap, text_color);
             }
         }
 
@@ -157,11 +184,11 @@ void ColumnsView::paint_event(PaintEvent& event)
         if (height() > separator_height)
             separator_height = height();
         painter.draw_line({ column_x + column.width, 0 }, { column_x + column.width, separator_height }, palette().button());
-        column_x += column.width + 1;
+        column_x += column.width + column_separator_width();
     }
 }
 
-void ColumnsView::push_column(const ModelIndex& parent_index)
+void ColumnsView::push_column(ModelIndex const& parent_index)
 {
     VERIFY(model());
 
@@ -178,6 +205,10 @@ void ColumnsView::push_column(const ModelIndex& parent_index)
     dbgln("Adding a new column");
     m_columns.append({ parent_index, 0 });
     update_column_sizes();
+
+    // FIXME: Find a way not to jump the view so much when changing folders within the same directory.
+    scroll_to_right();
+
     update();
 }
 
@@ -200,43 +231,73 @@ void ColumnsView::update_column_sizes()
         for (int row = 0; row < row_count; row++) {
             ModelIndex index = model()->index(row, m_model_column, column.parent_index);
             VERIFY(index.is_valid());
-            auto text = index.data().to_string();
-            int row_width = icon_spacing() + icon_size() + icon_spacing() + font().width(text) + icon_spacing() + s_arrow_bitmap_width + icon_spacing();
+            auto text = index.data().to_deprecated_string();
+            int row_width = icon_spacing() + icon_size() + icon_spacing() + font().width(text) + icon_spacing() + s_arrow_bitmap.width() + icon_spacing();
             if (row_width > column.width)
                 column.width = row_width;
         }
-        total_width += column.width + 1;
+        total_width += column.width + column_separator_width();
     }
+
+    // "Hide" last separator behind a window frame.
+    total_width -= column_separator_width();
 
     set_content_size({ total_width, total_height });
 }
 
-ModelIndex ColumnsView::index_at_event_position(const Gfx::IntPoint& a_position) const
+Optional<ColumnsView::Column> ColumnsView::column_at_event_position(Gfx::IntPoint position) const
 {
     if (!model())
         return {};
 
-    auto position = a_position.translated(horizontal_scrollbar().value() - frame_thickness(), vertical_scrollbar().value() - frame_thickness());
-
     int column_x = 0;
 
-    for (auto& column : m_columns) {
+    for (auto const& column : m_columns) {
         if (position.x() < column_x)
             break;
         if (position.x() > column_x + column.width) {
-            column_x += column.width;
+            column_x += column.width + column_separator_width();
             continue;
         }
 
-        int row = position.y() / item_height();
-        int row_count = model()->row_count(column.parent_index);
-        if (row >= row_count)
-            return {};
-
-        return model()->index(row, m_model_column, column.parent_index);
+        return column;
     }
 
     return {};
+}
+
+void ColumnsView::select_range(ModelIndex const& index)
+{
+    auto min_row = min(selection_start_index().row(), index.row());
+    auto max_row = max(selection_start_index().row(), index.row());
+    auto parent = index.parent();
+
+    clear_selection();
+    for (auto row = min_row; row <= max_row; ++row) {
+        auto new_index = model()->index(row, m_model_column, parent);
+        if (new_index.is_valid())
+            toggle_selection(new_index);
+    }
+}
+
+ModelIndex ColumnsView::index_at_event_position_in_column(Gfx::IntPoint position, Column const& column) const
+{
+    int row = position.y() / item_height();
+    int row_count = model()->row_count(column.parent_index);
+    if (row >= row_count)
+        return {};
+
+    return model()->index(row, m_model_column, column.parent_index);
+}
+
+ModelIndex ColumnsView::index_at_event_position(Gfx::IntPoint widget_position) const
+{
+    auto position = to_content_position(widget_position);
+    auto const& column = column_at_event_position(position);
+    if (!column.has_value())
+        return {};
+
+    return index_at_event_position_in_column(position, *column);
 }
 
 void ColumnsView::mousedown_event(MouseEvent& event)
@@ -249,10 +310,69 @@ void ColumnsView::mousedown_event(MouseEvent& event)
     if (event.button() != MouseButton::Primary)
         return;
 
-    auto index = index_at_event_position(event.position());
+    auto position = to_content_position(event.position());
+    auto column = column_at_event_position(position);
+    if (!column.has_value())
+        return;
+
+    auto index = index_at_event_position_in_column(position, *column);
     if (index.is_valid() && !(event.modifiers() & Mod_Ctrl)) {
-        if (model()->row_count(index))
-            push_column(index);
+        if (model()->row_count(index)) {
+            auto is_index_already_open = m_columns.first_matching([&](auto& column) { return column.parent_index == index; }).has_value();
+            if (is_index_already_open) {
+                set_cursor(index, SelectionUpdate::Set);
+            } else {
+                push_column(index);
+            }
+        }
+        return;
+    }
+
+    if (selection_mode() == SelectionMode::MultiSelection) {
+        m_rubber_banding = true;
+        m_rubber_band_origin_column = *column;
+        m_rubber_band_origin = position.y();
+        m_rubber_band_current = position.y();
+    }
+}
+
+void ColumnsView::mousemove_event(MouseEvent& event)
+{
+    if (m_rubber_banding) {
+        m_rubber_band_current = clamp(event.position().y(), widget_inner_rect().top(), widget_inner_rect().bottom() + 1);
+
+        auto parent = m_rubber_band_origin_column.parent_index;
+        int row_count = model()->row_count(parent);
+
+        clear_selection();
+
+        set_suppress_update_on_selection_change(true);
+
+        for (int row = 0; row < row_count; row++) {
+            auto index = model()->index(row, m_model_column, parent);
+            VERIFY(index.is_valid());
+
+            int row_top = row * item_height();
+            int row_bottom = row * item_height() + item_height();
+
+            if ((m_rubber_band_origin > row_top && m_rubber_band_current < row_top) || (m_rubber_band_origin > row_bottom && m_rubber_band_current < row_bottom)) {
+                add_selection(index);
+            }
+        }
+
+        set_suppress_update_on_selection_change(false);
+
+        update();
+    }
+
+    AbstractView::mousemove_event(event);
+}
+
+void ColumnsView::mouseup_event(MouseEvent& event)
+{
+    if (m_rubber_banding && event.button() == MouseButton::Primary) {
+        m_rubber_banding = false;
+        update();
     }
 }
 
@@ -295,7 +415,14 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
     case CursorMovement::Left:
         new_index = cursor_parent;
         break;
-    case CursorMovement::Right:
+    case CursorMovement::Right: {
+        // Don't reset columns if one already exists.
+        auto maybe_column = m_columns.first_matching([&](auto& column) { return model.parent_index(column.parent_index) == cursor_index(); });
+        if (maybe_column.has_value()) {
+            new_index = maybe_column->parent_index;
+            break;
+        }
+
         new_index = model.index(0, m_model_column, cursor_index());
         if (model.is_within_range(new_index)) {
             if (model.is_within_range(cursor_index()))
@@ -303,6 +430,7 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
             update();
         }
         break;
+    }
     default:
         break;
     }
@@ -311,7 +439,26 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
         set_cursor(new_index, selection_update);
 }
 
-Gfx::IntRect ColumnsView::content_rect(const ModelIndex& index) const
+Gfx::IntRect ColumnsView::index_content_rect(ModelIndex const& index)
+{
+    int column_x = 0;
+    for (auto const& column : m_columns) {
+        if (column.parent_index == index.parent())
+            return { column_x, index.row() * item_height(), column.width, item_height() };
+
+        column_x += column.width + column_separator_width();
+    }
+    return {};
+}
+
+void ColumnsView::scroll_into_view(ModelIndex const& index, bool scroll_horizontally, bool scroll_vertically)
+{
+    if (!model())
+        return;
+    AbstractScrollableWidget::scroll_into_view(index_content_rect(index), scroll_horizontally, scroll_vertically);
+}
+
+Gfx::IntRect ColumnsView::content_rect(ModelIndex const& index) const
 {
     if (!index.is_valid())
         return {};

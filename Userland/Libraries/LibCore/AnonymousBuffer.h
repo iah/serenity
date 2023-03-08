@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -23,7 +24,7 @@ public:
     int fd() const { return m_fd; }
     size_t size() const { return m_size; }
     void* data() { return m_data; }
-    const void* data() const { return m_data; }
+    void const* data() const { return m_data; }
 
 private:
     AnonymousBufferImpl(int fd, size_t, void*);
@@ -38,7 +39,7 @@ public:
     static ErrorOr<AnonymousBuffer> create_with_size(size_t);
     static ErrorOr<AnonymousBuffer> create_from_anon_fd(int fd, size_t);
 
-    AnonymousBuffer() { }
+    AnonymousBuffer() = default;
 
     bool is_valid() const { return m_impl; }
 
@@ -55,12 +56,12 @@ public:
     }
 
     template<typename T>
-    const T* data() const
+    T const* data() const
     {
         static_assert(IsVoid<T> || IsTrivial<T>);
         if (!m_impl)
             return nullptr;
-        return (const T*)m_impl->data();
+        return (T const*)m_impl->data();
     }
 
 private:
@@ -73,7 +74,10 @@ private:
 
 namespace IPC {
 
-bool encode(Encoder&, const Core::AnonymousBuffer&);
-ErrorOr<void> decode(Decoder&, Core::AnonymousBuffer&);
+template<>
+ErrorOr<void> encode(Encoder&, Core::AnonymousBuffer const&);
+
+template<>
+ErrorOr<Core::AnonymousBuffer> decode(Decoder&);
 
 }

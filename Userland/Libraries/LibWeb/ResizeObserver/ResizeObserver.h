@@ -6,28 +6,31 @@
 
 #pragma once
 
-#include <AK/NonnullRefPtr.h>
-#include <AK/RefCounted.h>
-#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 
 namespace Web::ResizeObserver {
 
 struct ResizeObserverOptions {
-    String box;
+    Bindings::ResizeObserverBoxOptions box;
 };
 
 // https://drafts.csswg.org/resize-observer/#resize-observer-interface
-class ResizeObserver
-    : public RefCounted<ResizeObserver>
-    , public Bindings::Wrappable {
-public:
-    using WrapperType = Bindings::ResizeObserverWrapper;
+class ResizeObserver : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(ResizeObserver, Bindings::PlatformObject);
 
-    static NonnullRefPtr<ResizeObserver> create_with_global_object(JS::GlobalObject&, JS::Value callback);
+public:
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<ResizeObserver>> construct_impl(JS::Realm&, WebIDL::CallbackType* callback);
+
+    virtual ~ResizeObserver() override;
 
     void observe(DOM::Element& target, ResizeObserverOptions);
     void unobserve(DOM::Element& target);
     void disconnect();
+
+private:
+    explicit ResizeObserver(JS::Realm&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

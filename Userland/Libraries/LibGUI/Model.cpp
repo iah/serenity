@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,13 +12,9 @@
 
 namespace GUI {
 
-Model::Model()
-{
-}
+Model::Model() = default;
 
-Model::~Model()
-{
-}
+Model::~Model() = default;
 
 void Model::register_view(Badge<AbstractView>, AbstractView& view)
 {
@@ -66,7 +63,7 @@ ModelIndex Model::index(int row, int column, ModelIndex const&) const
     return create_index(row, column);
 }
 
-bool Model::accepts_drag(ModelIndex const&, Vector<String> const&) const
+bool Model::accepts_drag(ModelIndex const&, Vector<DeprecatedString> const&) const
 {
     return false;
 }
@@ -103,7 +100,7 @@ WeakPtr<PersistentHandle> Model::register_persistent_index(Badge<PersistentModel
 RefPtr<Core::MimeData> Model::mime_data(ModelSelection const& selection) const
 {
     auto mime_data = Core::MimeData::construct();
-    RefPtr<Gfx::Bitmap> bitmap;
+    RefPtr<Gfx::Bitmap const> bitmap;
 
     StringBuilder text_builder;
     StringBuilder data_builder;
@@ -111,13 +108,13 @@ RefPtr<Core::MimeData> Model::mime_data(ModelSelection const& selection) const
     selection.for_each_index([&](auto& index) {
         auto text_data = index.data();
         if (!first)
-            text_builder.append(", ");
-        text_builder.append(text_data.to_string());
+            text_builder.append(", "sv);
+        text_builder.append(text_data.to_deprecated_string());
 
         if (!first)
             data_builder.append('\n');
         auto data = index.data(ModelRole::MimeData);
-        data_builder.append(data.to_string());
+        data_builder.append(data.to_deprecated_string());
 
         first = false;
 
@@ -129,9 +126,9 @@ RefPtr<Core::MimeData> Model::mime_data(ModelSelection const& selection) const
     });
 
     mime_data->set_data(drag_data_type(), data_builder.to_byte_buffer());
-    mime_data->set_text(text_builder.to_string());
+    mime_data->set_text(text_builder.to_deprecated_string());
     if (bitmap)
-        mime_data->set_data("image/x-raw-bitmap", bitmap->serialize_to_byte_buffer());
+        mime_data->set_data("image/x-raw-bitmap", bitmap->serialize_to_byte_buffer().release_value_but_fixme_should_propagate_errors());
 
     return mime_data;
 }

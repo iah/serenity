@@ -12,7 +12,7 @@
 #include <LibGUI/Model.h>
 #include <LibGUI/TableView.h>
 #include <LibGUI/Widget.h>
-#include <sys/arch/i386/regs.h>
+#include <sys/arch/regs.h>
 
 namespace HackStudio {
 
@@ -21,18 +21,18 @@ class UnavailableDisassemblyWidget final : public GUI::Frame {
 public:
     virtual ~UnavailableDisassemblyWidget() override { }
 
-    const String& reason() const { return m_reason; }
-    void set_reason(const String& text) { m_reason = text; }
+    DeprecatedString const& reason() const { return m_reason; }
+    void set_reason(DeprecatedString const& text) { m_reason = text; }
 
 private:
-    UnavailableDisassemblyWidget(const String& reason)
+    UnavailableDisassemblyWidget(DeprecatedString const& reason)
         : m_reason(reason)
     {
     }
 
     virtual void paint_event(GUI::PaintEvent& event) override;
 
-    String m_reason;
+    DeprecatedString m_reason;
 };
 
 class DisassemblyWidget final : public GUI::Widget {
@@ -40,14 +40,14 @@ class DisassemblyWidget final : public GUI::Widget {
 public:
     virtual ~DisassemblyWidget() override { }
 
-    void update_state(const Debug::DebugSession&, const PtraceRegisters&);
+    void update_state(Debug::DebugSession const&, PtraceRegisters const&);
     void program_stopped();
 
 private:
     DisassemblyWidget();
 
     void show_disassembly();
-    void hide_disassembly(const String&);
+    void hide_disassembly(DeprecatedString const&);
 
     RefPtr<GUI::Widget> m_top_container;
     RefPtr<GUI::TableView> m_disassembly_view;

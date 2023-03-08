@@ -7,11 +7,15 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Arch/Processor.h>
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/Time/HPET.h>
+#    include <Kernel/Arch/x86_64/Time/RTC.h>
+#elif ARCH(AARCH64)
+#    include <Kernel/Arch/aarch64/ASM_wrapper.h>
+#endif
 #include <Kernel/Devices/RandomDevice.h>
 #include <Kernel/Random.h>
 #include <Kernel/Sections.h>
-#include <Kernel/Time/HPET.h>
-#include <Kernel/Time/RTC.h>
 #include <Kernel/Time/TimeManagement.h>
 
 namespace Kernel {
@@ -26,27 +30,18 @@ KernelRng& KernelRng::the()
 
 UNMAP_AFTER_INIT KernelRng::KernelRng()
 {
-    bool supports_rdseed = Processor::current().has_feature(CPUFeature::RDSEED);
-    bool supports_rdrand = Processor::current().has_feature(CPUFeature::RDRAND);
-    if (supports_rdseed || supports_rdrand) {
-        dmesgln("KernelRng: Using RDSEED or RDRAND as entropy source");
-        for (size_t i = 0; i < pool_count * reseed_threshold; ++i) {
-            u32 value = 0;
-            if (supports_rdseed) {
-                asm volatile(
-                    "1:\n"
-                    "rdseed %0\n"
-                    "jnc 1b\n"
-                    : "=r"(value));
-            } else {
-                asm volatile(
-                    "1:\n"
-                    "rdrand %0\n"
-                    "jnc 1b\n"
-                    : "=r"(value));
-            }
+#if ARCH(X86_64)
+    if (Processor::current().has_feature(CPUFeature::RDSEED)) {
+        dmesgln("KernelRng: Using RDSEED as entropy source");
 
-            add_random_event(value, i % 32);
+        for (size_t i = 0; i < pool_count * reseed_threshold; ++i) {
+            add_random_event(Kernel::read_rdseed(), i % 32);
+        }
+    } else if (Processor::current().has_feature(CPUFeature::RDRAND)) {
+        dmesgln("KernelRng: Using RDRAND as entropy source");
+
+        for (size_t i = 0; i < pool_count * reseed_threshold; ++i) {
+            add_random_event(Kernel::read_rdrand(), i % 32);
         }
     } else if (TimeManagement::the().can_query_precise_time()) {
         // Add HPET as entropy source if we don't have anything better.
@@ -66,6 +61,25 @@ UNMAP_AFTER_INIT KernelRng::KernelRng()
             current_time += 0x40b2u;
         }
     }
+#elif ARCH(AARCH64)
+    if (Processor::current().has_feature(CPUFeature::RNG)) {
+        dmesgln("KernelRng: Using RNDRRS as entropy source");
+        for (size_t i = 0; i < pool_count * reseed_threshold; ++i) {
+            add_random_event(Aarch64::Asm::read_rndrrs(), i % 32);
+        }
+    } else {
+        // Fallback to TimeManagement as entropy
+        dmesgln("KernelRng: Using bad entropy source TimeManagement");
+        auto current_time = static_cast<u64>(TimeManagement::the().now().to_milliseconds());
+        for (size_t i = 0; i < pool_count * reseed_threshold; ++i) {
+            add_random_event(current_time, i % 32);
+            current_time *= 0x574au;
+            current_time += 0x40b2u;
+        }
+    }
+#else
+    dmesgln("KernelRng: No entropy source available!");
+#endif
 }
 
 void KernelRng::wait_for_entropy()
@@ -73,7 +87,7 @@ void KernelRng::wait_for_entropy()
     SpinlockLocker lock(get_lock());
     if (!is_ready()) {
         dbgln("Entropy starvation...");
-        m_seed_queue.wait_forever("KernelRng");
+        m_seed_queue.wait_forever("KernelRng"sv);
     }
 }
 
@@ -116,7 +130,7 @@ bool get_good_random_bytes(Bytes buffer, bool allow_wait, bool fallback_to_fast)
     bool result = false;
     auto& kernel_rng = KernelRng::the();
     // FIXME: What if interrupts are disabled because we're in an interrupt?
-    bool can_wait = are_interrupts_enabled();
+    bool can_wait = Processor::are_interrupts_enabled();
     if (!can_wait && allow_wait) {
         // If we can't wait but the caller would be ok with it, then we
         // need to definitely fallback to *something*, even if it's less

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -23,18 +24,18 @@ public:
         Cancelled,
     };
 
-    virtual ~DragOperation() override;
+    virtual ~DragOperation() override = default;
 
     void set_mime_data(RefPtr<Core::MimeData> mime_data) { m_mime_data = move(mime_data); }
-    void set_text(const String& text);
-    void set_bitmap(const Gfx::Bitmap* bitmap);
-    void set_data(const String& data_type, const String& data);
+    void set_text(DeprecatedString const& text);
+    void set_bitmap(Gfx::Bitmap const* bitmap);
+    void set_data(DeprecatedString const& data_type, DeprecatedString const& data);
 
     Outcome exec();
     Outcome outcome() const { return m_outcome; }
 
-    static void notify_accepted(Badge<WindowServerConnection>);
-    static void notify_cancelled(Badge<WindowServerConnection>);
+    static void notify_accepted(Badge<ConnectionToWindowServer>);
+    static void notify_cancelled(Badge<ConnectionToWindowServer>);
 
 protected:
     explicit DragOperation(Core::Object* parent = nullptr);

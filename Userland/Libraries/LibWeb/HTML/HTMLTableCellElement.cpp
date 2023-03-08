@@ -1,21 +1,29 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/HTML/HTMLTableCellElement.h>
+#include <LibWeb/HTML/Parser/HTMLParser.h>
 
 namespace Web::HTML {
 
-HTMLTableCellElement::HTMLTableCellElement(DOM::Document& document, QualifiedName qualified_name)
+HTMLTableCellElement::HTMLTableCellElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-HTMLTableCellElement::~HTMLTableCellElement()
+HTMLTableCellElement::~HTMLTableCellElement() = default;
+
+JS::ThrowCompletionOr<void> HTMLTableCellElement::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTableCellElementPrototype>(realm, "HTMLTableCellElement"));
+
+    return {};
 }
 
 void HTMLTableCellElement::apply_presentational_hints(CSS::StyleProperties& style) const
@@ -31,18 +39,56 @@ void HTMLTableCellElement::apply_presentational_hints(CSS::StyleProperties& styl
             if (value.equals_ignoring_case("center"sv) || value.equals_ignoring_case("middle"sv)) {
                 style.set_property(CSS::PropertyID::TextAlign, CSS::IdentifierStyleValue::create(CSS::ValueID::LibwebCenter));
             } else {
-                CSS::Parser parser(CSS::ParsingContext(document()), value.view());
-                if (auto parsed_value = parser.parse_as_css_value(CSS::PropertyID::TextAlign))
+                if (auto parsed_value = parse_css_value(CSS::Parser::ParsingContext { document() }, value.view(), CSS::PropertyID::TextAlign))
                     style.set_property(CSS::PropertyID::TextAlign, parsed_value.release_nonnull());
             }
             return;
         }
         if (name == HTML::AttributeNames::width) {
-            if (auto parsed_value = parse_html_length(document(), value))
+            if (auto parsed_value = parse_nonzero_dimension_value(value))
                 style.set_property(CSS::PropertyID::Width, parsed_value.release_nonnull());
+            return;
+        } else if (name == HTML::AttributeNames::height) {
+            if (auto parsed_value = parse_nonzero_dimension_value(value))
+                style.set_property(CSS::PropertyID::Height, parsed_value.release_nonnull());
             return;
         }
     });
+}
+
+unsigned int HTMLTableCellElement::col_span() const
+{
+    return attribute(HTML::AttributeNames::colspan).to_uint().value_or(1);
+}
+
+void HTMLTableCellElement::set_col_span(unsigned int value)
+{
+    MUST(set_attribute(HTML::AttributeNames::colspan, DeprecatedString::number(value)));
+}
+
+unsigned int HTMLTableCellElement::row_span() const
+{
+    return attribute(HTML::AttributeNames::rowspan).to_uint().value_or(1);
+}
+
+void HTMLTableCellElement::set_row_span(unsigned int value)
+{
+    MUST(set_attribute(HTML::AttributeNames::rowspan, DeprecatedString::number(value)));
+}
+
+Optional<ARIA::Role> HTMLTableCellElement::default_role() const
+{
+    // TODO: For td:
+    //       role=cell if the ancestor table element is exposed as a role=table
+    //       role=gridcell if the ancestor table element is exposed as a role=grid or treegrid
+    //       No corresponding role if the ancestor table element is not exposed as a role=table, grid or treegrid
+    //       For th:
+    //       role=columnheader, rowheader or cell if the ancestor table element is exposed as a role=table
+    //        role=columnheader, rowheader or gridcell if the ancestor table element is exposed as a role=grid or treegrid
+    //        No corresponding role if the ancestor table element is not exposed as a role=table, grid or treegrid
+    // https://www.w3.org/TR/html-aria/#el-td
+    // https://www.w3.org/TR/html-aria/#el-th
+    return {};
 }
 
 }

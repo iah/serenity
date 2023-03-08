@@ -6,32 +6,32 @@
 
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
+#include <LibUnicode/Segmentation.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Position.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/BrowsingContext.h>
-#include <LibWeb/Layout/InitialContainingBlock.h>
-#include <LibWeb/Layout/LayoutPosition.h>
+#include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Page/EditEventHandler.h>
 
 namespace Web {
 
-void EditEventHandler::handle_delete_character_after(const DOM::Position& cursor_position)
+void EditEventHandler::handle_delete_character_after(DOM::Position const& cursor_position)
 {
-    if (cursor_position.offset_is_at_end_of_node()) {
+    auto& node = *static_cast<DOM::Text*>(const_cast<DOM::Node*>(cursor_position.node()));
+    auto& text = node.data();
+
+    auto next_grapheme_offset = Unicode::next_grapheme_segmentation_boundary(Utf8View { text }, cursor_position.offset());
+    if (!next_grapheme_offset.has_value()) {
         // FIXME: Move to the next node and delete the first character there.
         return;
     }
 
-    auto& node = *static_cast<DOM::Text*>(const_cast<DOM::Node*>(cursor_position.node()));
-    auto& text = node.data();
-    auto code_point_length = Utf8View(text).iterator_at_byte_offset(cursor_position.offset()).underlying_code_point_length_in_bytes();
-
     StringBuilder builder;
     builder.append(text.substring_view(0, cursor_position.offset()));
-    builder.append(text.substring_view(cursor_position.offset() + code_point_length));
-    node.set_data(builder.to_string());
+    builder.append(text.substring_view(*next_grapheme_offset));
+    node.set_data(builder.to_deprecated_string());
 
     // FIXME: When nodes are removed from the DOM, the associated layout nodes become stale and still
     //        remain in the layout tree. This has to be fixed, this just causes everything to be recomputed
@@ -52,7 +52,7 @@ void EditEventHandler::handle_delete(DOM::Range& range)
         builder.append(start->data().substring_view(0, range.start_offset()));
         builder.append(end->data().substring_view(range.end_offset()));
 
-        start->set_data(builder.to_string());
+        start->set_data(builder.to_deprecated_string());
     } else {
         // Remove all the nodes that are fully enclosed in the range.
         HashTable<DOM::Node*> queued_for_deletion;
@@ -90,7 +90,7 @@ void EditEventHandler::handle_delete(DOM::Range& range)
         builder.append(start->data().substring_view(0, range.start_offset()));
         builder.append(end->data().substring_view(range.end_offset()));
 
-        start->set_data(builder.to_string());
+        start->set_data(builder.to_deprecated_string());
         end->remove();
     }
 
@@ -111,7 +111,7 @@ void EditEventHandler::handle_insert(DOM::Position position, u32 code_point)
         builder.append(node.data().substring_view(0, position.offset()));
         builder.append_code_point(code_point);
         builder.append(node.data().substring_view(position.offset()));
-        node.set_data(builder.to_string());
+        node.set_data(builder.to_deprecated_string());
 
         node.invalidate_style();
     }

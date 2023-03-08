@@ -44,9 +44,10 @@ public:
     virtual RecursionDecision visit(Text::EmphasisNode const&) { return RecursionDecision::Recurse; }
     virtual RecursionDecision visit(Text::LinkNode const&) { return RecursionDecision::Recurse; }
     virtual RecursionDecision visit(Text::MultiNode const&) { return RecursionDecision::Recurse; }
+    virtual RecursionDecision visit(Text::StrikeThroughNode const&) { return RecursionDecision::Recurse; }
     virtual RecursionDecision visit(Text::TextNode const&) { return RecursionDecision::Recurse; }
 
-    virtual RecursionDecision visit(String const&) { return RecursionDecision::Recurse; }
+    virtual RecursionDecision visit(DeprecatedString const&) { return RecursionDecision::Recurse; }
 };
 
 }

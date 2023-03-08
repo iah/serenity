@@ -1,18 +1,18 @@
 /*
- * Copyright (c) 2021, kleines Filmröllchen <filmroellchen@serenityos.org>.
+ * Copyright (c) 2021-2022, kleines Filmröllchen <filmroellchen@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include "LibDSP/Music.h"
 #include <AK/SinglyLinkedList.h>
+#include <LibDSP/Music.h>
 #include <LibDSP/Processor.h>
 #include <LibDSP/ProcessorParameter.h>
 #include <LibDSP/Transport.h>
 
-namespace LibDSP::Synthesizers {
+namespace DSP::Synthesizers {
 
 enum Waveform : u8 {
     Sine,
@@ -42,22 +42,19 @@ class Classic : public SynthesizerProcessor {
 public:
     Classic(NonnullRefPtr<Transport>);
 
-    static Envelope compute_envelope(RollNote&);
-
     Waveform wave() const { return m_waveform.value(); }
 
 private:
-    virtual Signal process_impl(Signal const&) override;
+    virtual void process_impl(Signal const&, Signal&) override;
 
-    double volume_from_envelope(Envelope const&);
-    double wave_position(u8 note);
-    double samples_per_cycle(u8 note);
-    double sin_position(u8 note);
-    double triangle_position(u8 note);
-    double square_position(u8 note);
-    double saw_position(u8 note);
-    double noise_position(u8 note);
-    double get_random_from_seed(u64 note);
+    double volume_from_envelope(Envelope const&) const;
+    double wave_position(u32 sample_time, u8 note);
+    double samples_per_cycle(u8 note) const;
+    double sin_position(u32 sample_time, u8 note) const;
+    double triangle_position(u32 sample_time, u8 note) const;
+    double square_position(u32 sample_time, u8 note) const;
+    double saw_position(u32 sample_time, u8 note) const;
+    double noise_position(u32 sample_time, u8 note);
 
     ProcessorEnumParameter<Waveform> m_waveform;
     ProcessorRangeParameter m_attack;
@@ -66,7 +63,7 @@ private:
     ProcessorRangeParameter m_release;
 
     RollNotes m_playing_notes;
-    Array<double, note_count> last_random;
+    Array<double, note_frequencies.size()> last_random;
 };
 
 }

@@ -7,9 +7,13 @@
 #include <LibGfx/BMPLoader.h>
 #include <stdio.h>
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
+extern "C" int LLVMFuzzerTestOneInput(uint8_t const* data, size_t size)
 {
-    Gfx::BMPImageDecoderPlugin decoder(data, size);
-    (void)decoder.frame(0);
+    auto decoder_or_error = Gfx::BMPImageDecoderPlugin::create({ data, size });
+    if (decoder_or_error.is_error())
+        return 0;
+    auto decoder = decoder_or_error.release_value();
+    decoder->initialize();
+    (void)decoder->frame(0);
     return 0;
 }

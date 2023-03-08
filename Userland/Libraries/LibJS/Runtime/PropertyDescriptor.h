@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Runtime/Value.h>
 
@@ -14,8 +15,8 @@ namespace JS {
 
 // 6.2.5 The Property Descriptor Specification Type, https://tc39.es/ecma262/#sec-property-descriptor-specification-type
 
-Value from_property_descriptor(GlobalObject&, Optional<PropertyDescriptor> const&);
-ThrowCompletionOr<PropertyDescriptor> to_property_descriptor(GlobalObject&, Value);
+Value from_property_descriptor(VM&, Optional<PropertyDescriptor> const&);
+ThrowCompletionOr<PropertyDescriptor> to_property_descriptor(VM&, Value);
 
 class PropertyDescriptor {
 public:
@@ -51,18 +52,18 @@ struct Formatter<JS::PropertyDescriptor> : Formatter<StringView> {
     {
         Vector<String> parts;
         if (property_descriptor.value.has_value())
-            parts.append(String::formatted("[[Value]]: {}", property_descriptor.value->to_string_without_side_effects()));
+            TRY(parts.try_append(TRY(String::formatted("[[Value]]: {}", TRY(property_descriptor.value->to_string_without_side_effects())))));
         if (property_descriptor.get.has_value())
-            parts.append(String::formatted("[[Get]]: JS::Function* @ {:p}", *property_descriptor.get));
+            TRY(parts.try_append(TRY(String::formatted("[[Get]]: JS::Function* @ {:p}", *property_descriptor.get))));
         if (property_descriptor.set.has_value())
-            parts.append(String::formatted("[[Set]]: JS::Function* @ {:p}", *property_descriptor.set));
+            TRY(parts.try_append(TRY(String::formatted("[[Set]]: JS::Function* @ {:p}", *property_descriptor.set))));
         if (property_descriptor.writable.has_value())
-            parts.append(String::formatted("[[Writable]]: {}", *property_descriptor.writable));
+            TRY(parts.try_append(TRY(String::formatted("[[Writable]]: {}", *property_descriptor.writable))));
         if (property_descriptor.enumerable.has_value())
-            parts.append(String::formatted("[[Enumerable]]: {}", *property_descriptor.enumerable));
+            TRY(parts.try_append(TRY(String::formatted("[[Enumerable]]: {}", *property_descriptor.enumerable))));
         if (property_descriptor.configurable.has_value())
-            parts.append(String::formatted("[[Configurable]]: {}", *property_descriptor.configurable));
-        return Formatter<StringView>::format(builder, String::formatted("PropertyDescriptor {{ {} }}", String::join(", ", parts)));
+            TRY(parts.try_append(TRY(String::formatted("[[Configurable]]: {}", *property_descriptor.configurable))));
+        return Formatter<StringView>::format(builder, TRY(String::formatted("PropertyDescriptor {{ {} }}", TRY(String::join(", "sv, parts)))));
     }
 };
 

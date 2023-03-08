@@ -9,13 +9,12 @@
 #include <AK/AllOf.h>
 #include <AK/AnyOf.h>
 #include <AK/Array.h>
-#include <AK/StdLibExtras.h>
 #include <AK/StringView.h>
 
 #ifdef ENABLE_COMPILETIME_FORMAT_CHECK
 // FIXME: Seems like clang doesn't like calling 'consteval' functions inside 'consteval' functions quite the same way as GCC does,
 //        it seems to entirely forget that it accepted that parameters to a 'consteval' function to begin with.
-#    if defined(__clang__) || defined(__CLION_IDE_)
+#    if defined(AK_COMPILER_CLANG) || defined(__CLION_IDE__) || defined(__CLION_IDE_)
 #        undef ENABLE_COMPILETIME_FORMAT_CHECK
 #    endif
 #endif
@@ -27,9 +26,9 @@ namespace AK::Format::Detail {
 template<typename T, size_t Size>
 struct Array {
     constexpr static size_t size() { return Size; }
-    constexpr const T& operator[](size_t index) const { return __data[index]; }
+    constexpr T const& operator[](size_t index) const { return __data[index]; }
     constexpr T& operator[](size_t index) { return __data[index]; }
-    using ConstIterator = SimpleIterator<const Array, const T>;
+    using ConstIterator = SimpleIterator<const Array, T const>;
     using Iterator = SimpleIterator<Array, T>;
 
     constexpr ConstIterator begin() const { return ConstIterator::begin(*this); }
@@ -41,11 +40,8 @@ struct Array {
     T __data[Size];
 };
 
-template<typename... Args>
-void compiletime_fail(Args...);
-
 template<size_t N>
-consteval auto extract_used_argument_index(const char (&fmt)[N], size_t specifier_start_index, size_t specifier_end_index, size_t& next_implicit_argument_index)
+consteval auto extract_used_argument_index(char const (&fmt)[N], size_t specifier_start_index, size_t specifier_end_index, size_t& next_implicit_argument_index)
 {
     struct {
         size_t index_value { 0 };
@@ -69,7 +65,7 @@ consteval auto extract_used_argument_index(const char (&fmt)[N], size_t specifie
 
 // FIXME: We should rather parse these format strings at compile-time if possible.
 template<size_t N>
-consteval auto count_fmt_params(const char (&fmt)[N])
+consteval auto count_fmt_params(char const (&fmt)[N])
 {
     struct {
         // FIXME: Switch to variable-sized storage whenever we can come up with one :)
@@ -118,7 +114,7 @@ consteval auto count_fmt_params(const char (&fmt)[N])
                 if (result.total_used_last_format_specifier_start_count == 0)
                     compiletime_fail("Format-String Checker internal error: Expected location information");
 
-                const auto specifier_start_index = result.last_format_specifier_start[--result.total_used_last_format_specifier_start_count];
+                auto const specifier_start_index = result.last_format_specifier_start[--result.total_used_last_format_specifier_start_count];
 
                 if (result.total_used_argument_count >= result.used_arguments.size())
                     compiletime_fail("Format-String Checker internal error: Too many format arguments in format string");
@@ -146,8 +142,8 @@ namespace AK::Format::Detail {
 template<typename... Args>
 struct CheckedFormatString {
     template<size_t N>
-    consteval CheckedFormatString(const char (&fmt)[N])
-        : m_string { fmt }
+    consteval CheckedFormatString(char const (&fmt)[N])
+        : m_string { fmt, N - 1 }
     {
 #ifdef ENABLE_COMPILETIME_FORMAT_CHECK
         check_format_parameter_consistency<N, sizeof...(Args)>(fmt);
@@ -155,7 +151,8 @@ struct CheckedFormatString {
     }
 
     template<typename T>
-    CheckedFormatString(const T& unchecked_fmt) requires(requires(T t) { StringView { t }; })
+    CheckedFormatString(T const& unchecked_fmt)
+    requires(requires(T t) { StringView { t }; })
         : m_string(unchecked_fmt)
     {
     }
@@ -165,7 +162,7 @@ struct CheckedFormatString {
 private:
 #ifdef ENABLE_COMPILETIME_FORMAT_CHECK
     template<size_t N, size_t param_count>
-    consteval static bool check_format_parameter_consistency(const char (&fmt)[N])
+    consteval static bool check_format_parameter_consistency(char const (&fmt)[N])
     {
         auto check = count_fmt_params<N>(fmt);
         if (check.unclosed_braces != 0)

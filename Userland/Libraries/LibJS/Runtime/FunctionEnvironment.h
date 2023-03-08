@@ -8,7 +8,6 @@
 
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/DeclarativeEnvironment.h>
-#include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 
 namespace JS {
 
@@ -22,8 +21,7 @@ public:
         Uninitialized,
     };
 
-    explicit FunctionEnvironment(Environment* parent_scope);
-    virtual ~FunctionEnvironment() override;
+    virtual ~FunctionEnvironment() override = default;
 
     ThisBindingStatus this_binding_status() const { return m_this_binding_status; }
     void set_this_binding_status(ThisBindingStatus status) { m_this_binding_status = status; }
@@ -43,10 +41,12 @@ public:
     ThrowCompletionOr<Value> get_super_base() const;
     bool has_super_binding() const;
     virtual bool has_this_binding() const override;
-    virtual ThrowCompletionOr<Value> get_this_binding(GlobalObject&) const override;
-    ThrowCompletionOr<Value> bind_this_value(GlobalObject&, Value);
+    virtual ThrowCompletionOr<Value> get_this_binding(VM&) const override;
+    ThrowCompletionOr<Value> bind_this_value(VM&, Value);
 
 private:
+    explicit FunctionEnvironment(Environment* parent_environment);
+
     virtual bool is_function_environment() const override { return true; }
     virtual void visit_edges(Visitor&) override;
 

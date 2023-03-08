@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -47,10 +48,6 @@ MultiView::MultiView()
 
     build_actions();
     set_view_mode(ViewMode::Icon);
-}
-
-MultiView::~MultiView()
-{
 }
 
 void MultiView::set_view_mode(ViewMode mode)
@@ -104,19 +101,19 @@ void MultiView::set_column_visible(int column_index, bool visible)
 void MultiView::build_actions()
 {
     m_view_as_icons_action = Action::create_checkable(
-        "Icon view", { Mod_Ctrl, KeyCode::Key_1 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/icon-view.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+        "Icon view", { Mod_Ctrl, KeyCode::Key_1 }, Gfx::Bitmap::load_from_file("/res/icons/16x16/icon-view.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
             set_view_mode(ViewMode::Icon);
         },
         this);
 
     m_view_as_table_action = Action::create_checkable(
-        "Table view", { Mod_Ctrl, KeyCode::Key_2 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/table-view.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+        "Table view", { Mod_Ctrl, KeyCode::Key_2 }, Gfx::Bitmap::load_from_file("/res/icons/16x16/table-view.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
             set_view_mode(ViewMode::Table);
         },
         this);
 
     m_view_as_columns_action = Action::create_checkable(
-        "Columns view", { Mod_Ctrl, KeyCode::Key_3 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/columns-view.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+        "Columns view", { Mod_Ctrl, KeyCode::Key_3 }, Gfx::Bitmap::load_from_file("/res/icons/16x16/columns-view.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
             set_view_mode(ViewMode::Columns);
         },
         this);

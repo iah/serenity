@@ -8,13 +8,13 @@
 #pragma once
 
 #include <AK/Assertions.h>
+#include <AK/DeprecatedString.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
-#include <AK/String.h>
 #include <LibC/elf.h>
-#include <LibDl/dlfcn_integration.h>
 #include <LibELF/DynamicObject.h>
 #include <LibELF/Image.h>
+#include <bits/dlfcn_integration.h>
 #include <sys/mman.h>
 
 namespace ELF {
@@ -42,10 +42,10 @@ enum class ShouldInitializeWeak {
 
 class DynamicLoader : public RefCounted<DynamicLoader> {
 public:
-    static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> try_create(int fd, String filename);
+    static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> try_create(int fd, DeprecatedString filepath);
     ~DynamicLoader();
 
-    const String& filename() const { return m_filename; }
+    DeprecatedString const& filepath() const { return m_filepath; }
 
     bool is_valid() const { return m_valid; }
 
@@ -67,21 +67,27 @@ public:
 
     void set_tls_offset(size_t offset) { m_tls_offset = offset; };
     size_t tls_size_of_current_object() const { return m_tls_size_of_current_object; }
+    size_t tls_alignment_of_current_object() const { return m_tls_alignment_of_current_object; }
     size_t tls_offset() const { return m_tls_offset; }
-    const ELF::Image& image() const { return m_elf_image; }
+    const ELF::Image& image() const { return *m_elf_image; }
 
     template<typename F>
     void for_each_needed_library(F) const;
 
     VirtualAddress base_address() const { return m_base_address; }
-    const Vector<LoadedSegment> text_segments() const { return m_text_segments; }
-    bool is_dynamic() const { return m_elf_image.is_dynamic(); }
+    Vector<LoadedSegment> const text_segments() const { return m_text_segments; }
+    bool is_dynamic() const { return image().is_dynamic(); }
 
     static Optional<DynamicObject::SymbolLookupResult> lookup_symbol(const ELF::DynamicObject::Symbol&);
     void copy_initial_tls_data_into(ByteBuffer& buffer) const;
 
+    DynamicObject const& dynamic_object() const;
+
+    bool is_fully_relocated() const { return m_fully_relocated; }
+    bool is_fully_initialized() const { return m_fully_initialized; }
+
 private:
-    DynamicLoader(int fd, String filename, void* file_data, size_t file_size);
+    DynamicLoader(int fd, DeprecatedString filepath, void* file_data, size_t file_size);
 
     class ProgramHeaderRegion {
     public:
@@ -107,8 +113,6 @@ private:
         ElfW(Phdr) m_program_header; // Explicitly a copy of the PHDR in the image
     };
 
-    const DynamicObject& dynamic_object() const;
-
     // Stage 1
     void load_program_headers();
 
@@ -129,17 +133,15 @@ private:
         Success = 1,
         ResolveLater = 2,
     };
-    RelocationResult do_relocation(const DynamicObject::Relocation&, ShouldInitializeWeak should_initialize_weak);
+    RelocationResult do_relocation(DynamicObject::Relocation const&, ShouldInitializeWeak should_initialize_weak);
     void do_relr_relocations();
-    size_t calculate_tls_size() const;
-    ssize_t negative_offset_from_tls_block_end(ssize_t tls_offset, size_t value_of_symbol) const;
+    void find_tls_size_and_alignment();
 
-    String m_filename;
-    String m_program_interpreter;
+    DeprecatedString m_filepath;
     size_t m_file_size { 0 };
     int m_image_fd { -1 };
     void* m_file_data { nullptr };
-    ELF::Image m_elf_image;
+    OwnPtr<ELF::Image> m_elf_image;
     bool m_valid { true };
 
     RefPtr<DynamicObject> m_dynamic_object;
@@ -154,10 +156,14 @@ private:
 
     ssize_t m_tls_offset { 0 };
     size_t m_tls_size_of_current_object { 0 };
+    size_t m_tls_alignment_of_current_object { 0 };
 
     Vector<DynamicObject::Relocation> m_unresolved_relocations;
 
     mutable RefPtr<DynamicObject> m_cached_dynamic_object;
+
+    bool m_fully_relocated { false };
+    bool m_fully_initialized { false };
 };
 
 template<typename F>

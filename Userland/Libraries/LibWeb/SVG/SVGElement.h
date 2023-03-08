@@ -7,22 +7,25 @@
 #pragma once
 
 #include <LibWeb/DOM/Element.h>
-#include <LibWeb/HTML/DOMStringMap.h>
 
 namespace Web::SVG {
 
 class SVGElement : public DOM::Element {
-public:
-    using WrapperType = Bindings::SVGElementWrapper;
+    WEB_PLATFORM_OBJECT(SVGElement, DOM::Element);
 
+public:
     virtual bool requires_svg_container() const override { return true; }
 
-    NonnullRefPtr<HTML::DOMStringMap> dataset() const { return m_dataset; }
+    HTML::DOMStringMap* dataset() { return m_dataset.ptr(); }
+    HTML::DOMStringMap const* dataset() const { return m_dataset.ptr(); }
 
 protected:
-    SVGElement(DOM::Document&, QualifiedName);
+    SVGElement(DOM::Document&, DOM::QualifiedName);
 
-    NonnullRefPtr<HTML::DOMStringMap> m_dataset;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::NonnullGCPtr<HTML::DOMStringMap> m_dataset;
 };
 
 }

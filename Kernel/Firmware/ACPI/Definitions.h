@@ -6,9 +6,7 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
 #include <AK/Types.h>
-#include <AK/Vector.h>
 #include <Kernel/PhysicalAddress.h>
 
 namespace Kernel::ACPI {
@@ -321,6 +319,11 @@ struct [[gnu::packed]] MCFG {
     SDTHeader header;
     u64 reserved;
     PCI_MMIO_Descriptor descriptors[];
+};
+
+struct [[gnu::packed]] DSDT {
+    SDTHeader h;
+    unsigned char definition_block[];
 };
 }
 

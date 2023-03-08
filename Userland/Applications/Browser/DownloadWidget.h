@@ -9,11 +9,10 @@
 
 #include <AK/URL.h>
 #include <LibCore/ElapsedTimer.h>
-#include <LibCore/Stream.h>
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Progressbar.h>
 #include <LibGUI/Widget.h>
-#include <LibProtocol/Request.h>
+#include <LibWeb/Loader/ResourceLoader.h>
 
 namespace Browser {
 
@@ -30,15 +29,15 @@ private:
     void did_finish(bool success);
 
     URL m_url;
-    String m_destination_path;
-    RefPtr<Protocol::Request> m_download;
+    DeprecatedString m_destination_path;
+    RefPtr<Web::ResourceLoaderConnectorRequest> m_download;
     RefPtr<GUI::Progressbar> m_progressbar;
     RefPtr<GUI::Label> m_progress_label;
     RefPtr<GUI::Button> m_cancel_button;
     RefPtr<GUI::Button> m_close_button;
     RefPtr<GUI::CheckBox> m_close_on_finish_checkbox;
     RefPtr<GUI::ImageWidget> m_browser_image;
-    OwnPtr<Core::Stream::File> m_output_file_stream;
+    OwnPtr<Core::File> m_output_file_stream;
     Core::ElapsedTimer m_elapsed_timer;
 };
 

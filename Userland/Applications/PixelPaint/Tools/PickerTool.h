@@ -18,11 +18,15 @@ public:
     virtual ~PickerTool() override = default;
 
     virtual void on_mousedown(Layer*, MouseEvent&) override;
+    virtual void on_mouseup(Layer*, MouseEvent&) override;
+    virtual void on_mousemove(Layer*, MouseEvent&) override;
 
-    virtual GUI::Widget* get_properties_widget() override;
-    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> cursor() override { return Gfx::StandardCursor::Eyedropper; }
+    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() override { return Gfx::StandardCursor::Eyedropper; }
 
 private:
+    virtual StringView tool_name() const override { return "Picker Tool"sv; }
+
     RefPtr<GUI::Widget> m_properties_widget;
     bool m_sample_all_layers { false };
 };

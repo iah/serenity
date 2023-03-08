@@ -6,29 +6,16 @@
  */
 
 #include "KeymapStatusWindow.h"
-#include <LibCore/Process.h>
-#include <LibGUI/Painter.h>
-#include <LibGUI/WindowManagerServerConnection.h>
 #include <LibKeyboard/CharacterMap.h>
-
-void KeymapStatusWidget::mousedown_event(GUI::MouseEvent& event)
-{
-    if (event.button() != GUI::MouseButton::Primary)
-        return;
-
-    Core::Process::spawn("/bin/KeyboardSettings");
-}
 
 KeymapStatusWindow::KeymapStatusWindow()
 {
     set_window_type(GUI::WindowType::Applet);
     set_has_alpha_channel(true);
-    m_status_widget = &set_main_widget<KeymapStatusWidget>();
+    m_status_widget = set_main_widget<KeymapStatusWidget>().release_value_but_fixme_should_propagate_errors();
 
     auto current_keymap = MUST(Keyboard::CharacterMap::fetch_system_map());
-    auto current_keymap_name = current_keymap.character_map_name();
-    m_status_widget->set_tooltip(current_keymap_name);
-    m_status_widget->set_text(current_keymap_name.substring(0, 2));
+    m_status_widget->set_current_keymap(current_keymap.character_map_name());
 }
 
 void KeymapStatusWindow::wm_event(GUI::WMEvent& event)
@@ -40,11 +27,7 @@ void KeymapStatusWindow::wm_event(GUI::WMEvent& event)
     }
 }
 
-void KeymapStatusWindow::set_keymap_text(const String& keymap)
+void KeymapStatusWindow::set_keymap_text(DeprecatedString const& keymap)
 {
-    GUI::Painter painter(*m_status_widget);
-    painter.clear_rect(m_status_widget->rect(), Color::from_rgba(0));
-
-    m_status_widget->set_tooltip(keymap);
-    m_status_widget->set_text(keymap.substring(0, 2));
+    m_status_widget->set_current_keymap(keymap);
 }

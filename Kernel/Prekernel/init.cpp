@@ -14,9 +14,14 @@
 #include <LibC/elf.h>
 #include <LibELF/Relocation.h>
 
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/ASM_wrapper.h>
+#    include <Kernel/Arch/x86_64/CPUID.h>
+#endif
+
 // Defined in the linker script
-extern size_t __stack_chk_guard;
-size_t __stack_chk_guard __attribute__((used));
+extern uintptr_t __stack_chk_guard;
+uintptr_t __stack_chk_guard __attribute__((used));
 extern "C" [[noreturn]] void __stack_chk_fail();
 
 extern "C" u8 start_of_prekernel_image[];
@@ -67,6 +72,8 @@ extern "C" [[noreturn]] void init();
 // This is where C++ execution begins, after boot.S transfers control here.
 //
 
+u64 generate_secure_seed();
+
 extern "C" [[noreturn]] void init()
 {
     if (multiboot_info_ptr->mods_count < 1)
@@ -83,11 +90,15 @@ extern "C" [[noreturn]] void init()
     __builtin_memcpy(kernel_program_headers, kernel_image + kernel_elf_header.e_phoff, sizeof(ElfW(Phdr)) * kernel_elf_header.e_phnum);
 
     FlatPtr kernel_physical_base = 0x200000;
-#if ARCH(I386)
-    FlatPtr kernel_load_base = 0xc0200000;
-#else
-    FlatPtr kernel_load_base = 0x2000200000;
-#endif
+    FlatPtr default_kernel_load_base = KERNEL_MAPPING_BASE + 0x200000;
+
+    FlatPtr kernel_load_base = default_kernel_load_base;
+
+    if (__builtin_strstr(kernel_cmdline, "disable_kaslr") == nullptr) {
+        FlatPtr maximum_offset = (FlatPtr)KERNEL_PD_SIZE - MAX_KERNEL_SIZE - 2 * MiB; // The first 2 MiB are used for mapping the pre-kernel
+        kernel_load_base += (generate_secure_seed() % maximum_offset);
+        kernel_load_base &= ~(2 * MiB - 1);
+    }
 
     FlatPtr kernel_load_end = 0;
     for (size_t i = 0; i < kernel_elf_header.e_phnum; i++) {
@@ -110,11 +121,8 @@ extern "C" [[noreturn]] void init()
     VERIFY(kernel_load_base % 0x1000 == 0);
     VERIFY(kernel_load_base >= kernel_mapping_base + 0x200000);
 
-#if ARCH(I386)
-    int pdpt_flags = 0x1;
-#else
     int pdpt_flags = 0x3;
-#endif
+
     boot_pdpt[(kernel_mapping_base >> 30) & 0x1ffu] = (FlatPtr)boot_pd_kernel | pdpt_flags;
 
     boot_pd_kernel[0] = (FlatPtr)boot_pd_kernel_pt0 | 0x3;
@@ -198,13 +206,8 @@ extern "C" [[noreturn]] void init()
     }
 
     asm(
-#if ARCH(I386)
-        "add %0, %%esp"
-#else
-        "movabs %0, %%rax\n"
-        "add %%rax, %%rsp"
-#endif
-        ::"g"(kernel_mapping_base)
+        "mov %0, %%rax\n"
+        "add %%rax, %%rsp" ::"g"(kernel_mapping_base)
         : "ax");
 
     // unmap the 0-1MB region
@@ -223,6 +226,31 @@ extern "C" [[noreturn]] void init()
     entry(*adjust_by_mapping_base(&info));
 
     __builtin_unreachable();
+}
+
+u64 generate_secure_seed()
+{
+    u32 seed = 0xFEEBDAED;
+
+#if ARCH(X86_64)
+    CPUID processor_info(0x1);
+    if (processor_info.edx() & (1 << 4)) // TSC
+        seed ^= read_tsc();
+
+    if (processor_info.ecx() & (1 << 30)) // RDRAND
+        seed ^= read_rdrand();
+
+    CPUID extended_features(0x7);
+    if (extended_features.ebx() & (1 << 18)) // RDSEED
+        seed ^= read_rdseed();
+#else
+#    warning No native randomness source available for this architecture
+#endif
+
+    seed ^= multiboot_info_ptr->mods_addr;
+    seed ^= multiboot_info_ptr->framebuffer_addr;
+
+    return seed;
 }
 
 // Define some Itanium C++ ABI methods to stop the linker from complaining.

@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -17,54 +18,81 @@ public:
     enum TabPosition {
         Top,
         Bottom,
+        Left,
+        Right,
     };
 
-    virtual ~TabWidget() override;
+    virtual ~TabWidget() override = default;
 
     TabPosition tab_position() const { return m_tab_position; }
     void set_tab_position(TabPosition);
+    bool has_vertical_tabs() const { return m_tab_position == TabPosition::Left || m_tab_position == TabPosition::Right; }
 
     Optional<size_t> active_tab_index() const;
+    size_t tab_count() { return m_tabs.size(); }
 
     Widget* active_widget() { return m_active_widget.ptr(); }
-    const Widget* active_widget() const { return m_active_widget.ptr(); }
+    Widget const* active_widget() const { return m_active_widget.ptr(); }
     void set_active_widget(Widget*);
     void set_tab_index(int);
 
-    int bar_height() const { return m_bar_visible ? 21 : 0; }
+    int bar_height() const { return m_bar_visible ? 22 : 0; }
+
+    int get_max_tab_width() const { return m_bar_visible ? m_max_tab_width : 0; }
+    void set_max_tab_width(int width) { m_max_tab_width = width; }
+
+    int get_min_tab_width() const { return m_min_tab_width; }
+    void set_min_tab_width(int width) { m_min_tab_width = width; }
 
     GUI::Margins const& container_margins() const { return m_container_margins; }
     void set_container_margins(GUI::Margins const&);
 
-    ErrorOr<void> try_add_widget(String, Widget&);
+    Optional<UISize> calculated_min_size() const override;
+    Optional<UISize> calculated_preferred_size() const override;
 
-    void add_widget(String, Widget&);
+    ErrorOr<void> try_add_widget(Widget&);
+
+    void add_widget(Widget&);
     void remove_widget(Widget&);
 
     template<class T, class... Args>
-    ErrorOr<NonnullRefPtr<T>> try_add_tab(String title, Args&&... args)
+    ErrorOr<NonnullRefPtr<T>> try_add_tab(DeprecatedString title, Args&&... args)
     {
         auto t = TRY(T::try_create(forward<Args>(args)...));
-        TRY(try_add_widget(move(title), *t));
+        t->set_title(move(title));
+        TRY(try_add_widget(*t));
         return *t;
     }
 
     template<class T, class... Args>
-    T& add_tab(String title, Args&&... args)
+    T& add_tab(DeprecatedString title, Args&&... args)
     {
         auto t = T::construct(forward<Args>(args)...);
-        add_widget(move(title), *t);
+        t->set_title(move(title));
+        add_widget(*t);
         return *t;
+    }
+
+    ErrorOr<void> add_tab(NonnullRefPtr<Widget> const& tab, DeprecatedString title)
+    {
+        tab->set_title(move(title));
+        TRY(try_add_widget(*tab));
+        return {};
     }
 
     void remove_tab(Widget& tab) { remove_widget(tab); }
     void remove_all_tabs_except(Widget& tab);
 
     void set_tab_title(Widget& tab, StringView title);
-    void set_tab_icon(Widget& tab, const Gfx::Bitmap*);
+    void set_tab_icon(Widget& tab, Gfx::Bitmap const*);
+
+    bool is_tab_modified(Widget& tab);
+    void set_tab_modified(Widget& tab, bool modified);
+    bool is_any_tab_modified();
 
     void activate_next_tab();
     void activate_previous_tab();
+    void activate_last_tab();
 
     void set_text_alignment(Gfx::TextAlignment alignment) { m_text_alignment = alignment; }
     Gfx::TextAlignment text_alignment() const { return m_text_alignment; }
@@ -77,6 +105,7 @@ public:
     bool is_bar_visible() const { return m_bar_visible; };
 
     void set_close_button_enabled(bool close_button_enabled) { m_close_button_enabled = close_button_enabled; };
+    bool close_button_enabled() const { return m_close_button_enabled; }
 
     void set_reorder_allowed(bool reorder_allowed) { m_reorder_allowed = reorder_allowed; }
     bool reorder_allowed() const { return m_reorder_allowed; }
@@ -85,7 +114,7 @@ public:
     Function<void(Widget&)> on_change;
     Function<void(Widget&)> on_middle_click;
     Function<void(Widget&)> on_tab_close_click;
-    Function<void(Widget&, const ContextMenuEvent&)> on_context_menu_request;
+    Function<void(Widget&, ContextMenuEvent const&)> on_context_menu_request;
     Function<void(Widget&)> on_double_click;
 
 protected:
@@ -103,8 +132,10 @@ protected:
     virtual void doubleclick_event(MouseEvent&) override;
 
 private:
-    Gfx::IntRect child_rect_for_size(const Gfx::IntSize&) const;
+    Gfx::IntRect child_rect_for_size(Gfx::IntSize) const;
     Gfx::IntRect button_rect(size_t index) const;
+    Gfx::IntRect vertical_button_rect(size_t index) const;
+    Gfx::IntRect horizontal_button_rect(size_t index) const;
     Gfx::IntRect close_button_rect(size_t index) const;
     Gfx::IntRect bar_rect() const;
     Gfx::IntRect container_rect() const;
@@ -115,10 +146,11 @@ private:
     RefPtr<Widget> m_active_widget;
 
     struct TabData {
-        int width(const Gfx::Font&) const;
-        String title;
-        RefPtr<Gfx::Bitmap> icon;
+        int width(Gfx::Font const&) const;
+        DeprecatedString title;
+        RefPtr<Gfx::Bitmap const> icon;
         Widget* widget { nullptr };
+        bool modified { false };
     };
     Vector<TabData> m_tabs;
     TabPosition m_tab_position { TabPosition::Top };
@@ -131,10 +163,13 @@ private:
     bool m_bar_visible { true };
     bool m_close_button_enabled { false };
 
+    int m_max_tab_width { 160 };
+    int m_min_tab_width { 24 };
+
     bool m_reorder_allowed { false };
     bool m_dragging_active_tab { false };
     int m_grab_offset { 0 };
-    int m_mouse_x { 0 };
+    int m_mouse_pos { 0 };
 
     void drag_tab(size_t index);
     void recalculate_tab_order();

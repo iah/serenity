@@ -8,17 +8,13 @@
 
 namespace JS {
 
-Map* Map::create(GlobalObject& global_object)
+NonnullGCPtr<Map> Map::create(Realm& realm)
 {
-    return global_object.heap().allocate<Map>(global_object, *global_object.map_prototype());
+    return realm.heap().allocate<Map>(realm, *realm.intrinsics().map_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 Map::Map(Object& prototype)
-    : Object(prototype)
-{
-}
-
-Map::~Map()
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
 {
 }
 

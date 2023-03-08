@@ -63,7 +63,7 @@ bool Job::print_status(PrintStatusMode mode)
     return true;
 }
 
-Job::Job(pid_t pid, unsigned pgid, String cmd, u64 job_id, AST::Command&& command)
+Job::Job(pid_t pid, unsigned pgid, DeprecatedString cmd, u64 job_id, AST::Command&& command)
     : m_pgid(pgid)
     , m_pid(pid)
     , m_job_id(job_id)
@@ -96,7 +96,7 @@ void Job::set_signalled(int sig)
         on_exit(*this);
 }
 
-void Job::unblock() const
+void Job::unblock()
 {
     if (!m_exited && on_exit)
         on_exit(*this);

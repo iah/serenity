@@ -9,21 +9,8 @@
 
         @GUI::Toolbar {
             name: "main_toolbar"
-        }
-
-        @GUI::Toolbar {
-            name: "location_toolbar"
-            visible: false
-
-            @GUI::Label {
-                text: "Location: "
-                autosize: true
-            }
-
-            @GUI::TextBox {
-                name: "location_textbox"
-                fixed_height: 22
-            }
+            collapsible: true
+            grouped: true
         }
 
         @GUI::Toolbar {
@@ -34,7 +21,7 @@
                 autosize: true
             }
 
-            @GUI::Breadcrumbbar {
+            @GUI::PathBreadcrumbbar {
                 name: "breadcrumbbar"
             }
         }
@@ -42,11 +29,10 @@
 
     @GUI::HorizontalSplitter {
         name: "splitter"
-        first_resizee_minimum_size: 80
 
         @GUI::TreeView {
             name: "tree_view"
-            fixed_width: 175
+            preferred_width: 175
         }
     }
 

@@ -1,11 +1,16 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
-#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
+#include <AK/MemoryStream.h>
+#include <AK/Try.h>
+#include <LibCompress/Brotli.h>
 #include <LibCompress/Gzip.h>
 #include <LibCompress/Zlib.h>
 #include <LibCore/Event.h>
@@ -16,9 +21,14 @@
 
 namespace HTTP {
 
-static Optional<ByteBuffer> handle_content_encoding(const ByteBuffer& buf, const String& content_encoding)
+static ErrorOr<ByteBuffer> handle_content_encoding(ByteBuffer const& buf, DeprecatedString const& content_encoding)
 {
     dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: buf has content_encoding={}", content_encoding);
+
+    // FIXME: Actually do the decompression of the data using streams, instead of all at once when everything has been
+    //        received. This will require that some of the decompression algorithms are implemented in a streaming way.
+    //        Gzip and Deflate are implemented using Stream, while Brotli uses the newer Core::Stream. The Gzip and
+    //        Deflate implementations will likely need to be changed to LibCore::Stream for this to work easily.
 
     if (content_encoding == "gzip") {
         if (!Compress::GzipDecompressor::is_likely_compressed(buf)) {
@@ -27,36 +37,27 @@ static Optional<ByteBuffer> handle_content_encoding(const ByteBuffer& buf, const
 
         dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: buf is gzip compressed!");
 
-        auto uncompressed = Compress::GzipDecompressor::decompress_all(buf);
-        if (!uncompressed.has_value()) {
-            dbgln("Job::handle_content_encoding: Gzip::decompress() failed.");
-            return {};
-        }
+        auto uncompressed = TRY(Compress::GzipDecompressor::decompress_all(buf));
 
         if constexpr (JOB_DEBUG) {
             dbgln("Job::handle_content_encoding: Gzip::decompress() successful.");
             dbgln("  Input size: {}", buf.size());
-            dbgln("  Output size: {}", uncompressed.value().size());
+            dbgln("  Output size: {}", uncompressed.size());
         }
 
-        return uncompressed.release_value();
+        return uncompressed;
     } else if (content_encoding == "deflate") {
         dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: buf is deflate compressed!");
 
         // Even though the content encoding is "deflate", it's actually deflate with the zlib wrapper.
         // https://tools.ietf.org/html/rfc7230#section-4.2.2
-        auto uncompressed = Compress::Zlib::decompress_all(buf);
+        auto uncompressed = Compress::ZlibDecompressor::decompress_all(buf);
         if (!uncompressed.has_value()) {
             // From the RFC:
             // "Note: Some non-conformant implementations send the "deflate"
             //        compressed data without the zlib wrapper."
-            dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: Zlib::decompress_all() failed. Trying DeflateDecompressor::decompress_all()");
-            uncompressed = Compress::DeflateDecompressor::decompress_all(buf);
-
-            if (!uncompressed.has_value()) {
-                dbgln("Job::handle_content_encoding: DeflateDecompressor::decompress_all() failed.");
-                return {};
-            }
+            dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: ZlibDecompressor::decompress_all() failed. Trying DeflateDecompressor::decompress_all()");
+            uncompressed = TRY(Compress::DeflateDecompressor::decompress_all(buf));
         }
 
         if constexpr (JOB_DEBUG) {
@@ -66,25 +67,35 @@ static Optional<ByteBuffer> handle_content_encoding(const ByteBuffer& buf, const
         }
 
         return uncompressed.release_value();
+    } else if (content_encoding == "br") {
+        dbgln_if(JOB_DEBUG, "Job::handle_content_encoding: buf is brotli compressed!");
+
+        FixedMemoryStream bufstream { buf };
+        auto brotli_stream = Compress::BrotliDecompressionStream { bufstream };
+
+        auto uncompressed = TRY(brotli_stream.read_until_eof());
+        if constexpr (JOB_DEBUG) {
+            dbgln("Job::handle_content_encoding: Brotli::decompress() successful.");
+            dbgln("  Input size: {}", buf.size());
+            dbgln("  Output size: {}", uncompressed.size());
+        }
+
+        return uncompressed;
     }
 
     return buf;
 }
 
-Job::Job(HttpRequest&& request, Core::Stream::Stream& output_stream)
+Job::Job(HttpRequest&& request, Stream& output_stream)
     : Core::NetworkJob(output_stream)
     , m_request(move(request))
 {
 }
 
-Job::~Job()
-{
-}
-
-void Job::start(Core::Stream::Socket& socket)
+void Job::start(Core::Socket& socket)
 {
     VERIFY(!m_socket);
-    m_socket = static_cast<Core::Stream::BufferedSocketBase*>(&socket);
+    m_socket = static_cast<Core::BufferedSocketBase*>(&socket);
     dbgln_if(HTTPJOB_DEBUG, "Reusing previous connection for {}", url());
     deferred_invoke([this] {
         dbgln_if(HTTPJOB_DEBUG, "HttpJob: on_connected callback");
@@ -98,6 +109,7 @@ void Job::shutdown(ShutdownMode mode)
         return;
     if (mode == ShutdownMode::CloseSocket) {
         m_socket->close();
+        m_socket->on_ready_to_read = nullptr;
     } else {
         m_socket->on_ready_to_read = nullptr;
         m_socket = nullptr;
@@ -110,7 +122,7 @@ void Job::flush_received_buffers()
         return;
     dbgln_if(JOB_DEBUG, "Job: Flushing received buffers: have {} bytes in {} buffers for {}", m_buffered_size, m_received_buffers.size(), m_request.url());
     for (size_t i = 0; i < m_received_buffers.size(); ++i) {
-        auto& payload = m_received_buffers[i].pending_flush;
+        auto& payload = m_received_buffers[i]->pending_flush;
         auto result = do_write(payload);
         if (result.is_error()) {
             if (!result.error().is_errno()) {
@@ -157,11 +169,11 @@ void Job::register_on_ready_to_read(Function<void()> callback)
     };
 }
 
-ErrorOr<String> Job::read_line(size_t size)
+ErrorOr<DeprecatedString> Job::read_line(size_t size)
 {
     auto buffer = TRY(ByteBuffer::create_uninitialized(size));
-    auto nread = TRY(m_socket->read_until(buffer, "\r\n"sv));
-    return String::copy(buffer.span().slice(0, nread));
+    auto bytes_read = TRY(m_socket->read_until(buffer, "\r\n"sv));
+    return DeprecatedString::copy(bytes_read);
 }
 
 ErrorOr<ByteBuffer> Job::receive(size_t size)
@@ -175,7 +187,7 @@ ErrorOr<ByteBuffer> Job::receive(size_t size)
         auto result = m_socket->read(buffer);
         if (result.is_error() && result.error().is_errno() && result.error().code() == EINTR)
             continue;
-        nread = TRY(result);
+        nread = TRY(result).size();
         break;
     } while (true);
     return buffer.slice(0, nread);
@@ -187,10 +199,10 @@ void Job::on_socket_connected()
 
     if constexpr (JOB_DEBUG) {
         dbgln("Job: raw_request:");
-        dbgln("{}", String::copy(raw_request));
+        dbgln("{}", DeprecatedString::copy(raw_request));
     }
 
-    bool success = m_socket->write_or_error(raw_request);
+    bool success = !m_socket->write_entire_buffer(raw_request).is_error();
     if (!success)
         deferred_invoke([this] { did_fail(Core::NetworkJob::Error::TransmissionFailed); });
 
@@ -219,16 +231,11 @@ void Job::on_socket_connected()
             }
 
             if (!can_read_line.value()) {
-                dbgln_if(JOB_DEBUG, "Job {} cannot read line", m_request.url());
-                auto maybe_buf = receive(64);
-                if (maybe_buf.is_error()) {
-                    dbgln_if(JOB_DEBUG, "Job {} cannot read any bytes!", m_request.url());
-                    return deferred_invoke([this] { did_fail(Core::NetworkJob::Error::TransmissionFailed); });
-                }
-
-                dbgln_if(JOB_DEBUG, "{} bytes was read", maybe_buf.value().bytes().size());
-                return;
+                dbgln_if(JOB_DEBUG, "Job {} cannot read a full line", m_request.url());
+                // TODO: Should we retry here instead of failing instantly?
+                return deferred_invoke([this] { did_fail(Core::NetworkJob::Error::TransmissionFailed); });
             }
+
             auto maybe_line = read_line(PAGE_SIZE);
             if (maybe_line.is_error()) {
                 dbgln_if(JOB_DEBUG, "Job {} could not read line: {}", m_request.url(), maybe_line.error());
@@ -247,6 +254,15 @@ void Job::on_socket_connected()
                 dbgln("Job: Expected 2-part or 3-part HTTP status line, got '{}'", line);
                 return deferred_invoke([this] { did_fail(Core::NetworkJob::Error::ProtocolFailed); });
             }
+
+            if (!parts[0].matches("HTTP/?.?"sv, CaseSensitivity::CaseSensitive) || !is_ascii_digit(parts[0][5]) || !is_ascii_digit(parts[0][7])) {
+                dbgln("Job: Expected HTTP-Version to be of the form 'HTTP/X.Y', got '{}'", parts[0]);
+                return deferred_invoke([this] { did_fail(Core::NetworkJob::Error::ProtocolFailed); });
+            }
+            auto http_major_version = parse_ascii_digit(parts[0][5]);
+            auto http_minor_version = parse_ascii_digit(parts[0][7]);
+            m_legacy_connection = http_major_version < 1 || (http_major_version == 1 && http_minor_version == 0);
+
             auto code = parts[1].to_uint();
             if (!code.has_value()) {
                 dbgln("Job: Expected numeric HTTP status");
@@ -298,7 +314,7 @@ void Job::on_socket_connected()
                 }
                 if (on_headers_received) {
                     if (!m_set_cookie_headers.is_empty())
-                        m_headers.set("Set-Cookie", JsonArray { m_set_cookie_headers }.to_string());
+                        m_headers.set("Set-Cookie", JsonArray { m_set_cookie_headers }.to_deprecated_string());
                     on_headers_received(m_headers, m_code > 0 ? m_code : Optional<u32> {});
                 }
                 m_state = State::InBody;
@@ -341,7 +357,7 @@ void Job::on_socket_connected()
                 return deferred_invoke([this] { did_fail(Core::NetworkJob::Error::ProtocolFailed); });
             }
             auto value = line.substring(name.length() + 2, line.length() - name.length() - 2);
-            if (name.equals_ignoring_case("Set-Cookie")) {
+            if (name.equals_ignoring_case("Set-Cookie"sv)) {
                 dbgln_if(JOB_DEBUG, "Job: Received Set-Cookie header: '{}'", value);
                 m_set_cookie_headers.append(move(value));
 
@@ -355,15 +371,15 @@ void Job::on_socket_connected()
                 builder.append(existing_value.value());
                 builder.append(',');
                 builder.append(value);
-                m_headers.set(name, builder.build());
+                m_headers.set(name, builder.to_deprecated_string());
             } else {
                 m_headers.set(name, value);
             }
-            if (name.equals_ignoring_case("Content-Encoding")) {
+            if (name.equals_ignoring_case("Content-Encoding"sv)) {
                 // Assume that any content-encoding means that we can't decode it as a stream :(
                 dbgln_if(JOB_DEBUG, "Content-Encoding {} detected, cannot stream output :(", value);
                 m_can_stream_response = false;
-            } else if (name.equals_ignoring_case("Content-Length")) {
+            } else if (name.equals_ignoring_case("Content-Length"sv)) {
                 auto length = value.to_uint();
                 if (length.has_value())
                     m_content_length = length.value();
@@ -413,8 +429,8 @@ void Job::on_socket_connected()
                         finish_up();
                         break;
                     } else {
-                        auto chunk = size_lines[0].split_view(';', true);
-                        String size_string = chunk[0];
+                        auto chunk = size_lines[0].split_view(';', SplitBehavior::KeepEmpty);
+                        DeprecatedString size_string = chunk[0];
                         char* endptr;
                         auto size = strtoul(size_string.characters(), &endptr, 16);
                         if (*endptr) {
@@ -456,7 +472,7 @@ void Job::on_socket_connected()
                     auto encoding = transfer_encoding.value().trim_whitespace();
 
                     dbgln_if(JOB_DEBUG, "Job: This content has transfer encoding '{}'", encoding);
-                    if (encoding.equals_ignoring_case("chunked")) {
+                    if (encoding.equals_ignoring_case("chunked"sv)) {
                         m_current_chunk_remaining_size = -1;
                         goto read_chunk_size;
                     } else {
@@ -503,6 +519,14 @@ void Job::on_socket_connected()
 
             if (read_everything) {
                 VERIFY(m_received_size <= m_content_length.value());
+                finish_up();
+                break;
+            }
+
+            // Check after reading all the buffered data if we have reached the end of stream
+            // for cases where the server didn't send a content length, chunked encoding but is
+            // directly closing the connection.
+            if (!m_content_length.has_value() && !m_current_chunk_remaining_size.has_value() && m_socket->is_eof()) {
                 finish_up();
                 break;
             }
@@ -567,8 +591,8 @@ void Job::finish_up()
 
         u8* flat_ptr = flattened_buffer.data();
         for (auto& received_buffer : m_received_buffers) {
-            memcpy(flat_ptr, received_buffer.pending_flush.data(), received_buffer.pending_flush.size());
-            flat_ptr += received_buffer.pending_flush.size();
+            memcpy(flat_ptr, received_buffer->pending_flush.data(), received_buffer->pending_flush.size());
+            flat_ptr += received_buffer->pending_flush.size();
         }
         m_received_buffers.clear();
 
@@ -576,7 +600,7 @@ void Job::finish_up()
         // FIXME: LibCompress exposes a streaming interface, so this can be resolved
         auto content_encoding = m_headers.get("Content-Encoding");
         if (content_encoding.has_value()) {
-            if (auto result = handle_content_encoding(flattened_buffer, content_encoding.value()); result.has_value())
+            if (auto result = handle_content_encoding(flattened_buffer, content_encoding.value()); !result.is_error())
                 flattened_buffer = result.release_value();
             else
                 return did_fail(Core::NetworkJob::Error::TransmissionFailed);
@@ -603,8 +627,9 @@ void Job::finish_up()
     auto response = HttpResponse::create(m_code, move(m_headers), m_received_size);
     deferred_invoke([this, response = move(response)] {
         // If the server responded with "Connection: close", close the connection
-        // as the server may or may not want to close the socket.
-        if (auto result = response->headers().get("Connection"sv); result.has_value() && result.value().equals_ignoring_case("close"sv))
+        // as the server may or may not want to close the socket. Also, if this is
+        // a legacy HTTP server (1.0 or older), assume close is the default value.
+        if (auto result = response->headers().get("Connection"sv); result.has_value() ? result->equals_ignoring_case("close"sv) : m_legacy_connection)
             shutdown(ShutdownMode::CloseSocket);
         did_finish(response);
     });

@@ -16,18 +16,18 @@
 namespace JS {
 
 class FunctionObject : public Object {
-    JS_OBJECT(Function, Object);
+    JS_OBJECT(FunctionObject, Object);
 
 public:
-    virtual ~FunctionObject();
-    virtual void initialize(GlobalObject&) override { }
+    virtual ~FunctionObject() = default;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override { return {}; }
 
     // Table 7: Additional Essential Internal Methods of Function Objects, https://tc39.es/ecma262/#table-additional-essential-internal-methods-of-function-objects
 
     virtual ThrowCompletionOr<Value> internal_call(Value this_argument, MarkedVector<Value> arguments_list) = 0;
-    virtual ThrowCompletionOr<Object*> internal_construct([[maybe_unused]] MarkedVector<Value> arguments_list, [[maybe_unused]] FunctionObject& new_target) { VERIFY_NOT_REACHED(); }
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct([[maybe_unused]] MarkedVector<Value> arguments_list, [[maybe_unused]] FunctionObject& new_target) { VERIFY_NOT_REACHED(); }
 
-    virtual const FlyString& name() const = 0;
+    virtual DeprecatedFlyString const& name() const = 0;
 
     void set_function_name(Variant<PropertyKey, PrivateName> const& name_arg, Optional<StringView> const& prefix = {});
     void set_function_length(double length);
@@ -40,7 +40,7 @@ public:
     virtual Realm* realm() const { return nullptr; }
 
 protected:
-    explicit FunctionObject(GlobalObject&, Object* prototype);
+    explicit FunctionObject(Realm&, Object* prototype);
     explicit FunctionObject(Object& prototype);
 
 private:

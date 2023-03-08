@@ -7,12 +7,13 @@
 
 #pragma once
 
-#include "Common.h"
 #include "PlaybackManager.h"
 #include "Player.h"
 #include "VisualizationWidget.h"
+#include <AK/FixedArray.h>
 #include <AK/NonnullRefPtr.h>
-#include <LibAudio/ClientConnection.h>
+#include <LibAudio/ConnectionToServer.h>
+#include <LibGUI/Slider.h>
 #include <LibGUI/Splitter.h>
 #include <LibGUI/Widget.h>
 
@@ -24,14 +25,16 @@ public:
     void set_nonlinear_volume_slider(bool nonlinear);
     void set_playlist_visible(bool visible);
 
-    template<typename T>
-    void set_visualization()
+    template<typename T, typename... Args>
+    void set_visualization(Args... args)
     {
         m_visualization->remove_from_parent();
         update();
-        auto new_visualization = T::construct();
+        auto new_visualization = T::construct(move(args)...);
         m_player_view->insert_child_before(new_visualization, *static_cast<Core::Object*>(m_playback_progress_slider.ptr()));
         m_visualization = new_visualization;
+        if (!loaded_filename().is_empty())
+            m_visualization->start_new_file(loaded_filename());
     }
 
     virtual void play_state_changed(PlayState) override;
@@ -44,16 +47,17 @@ public:
     virtual void volume_changed(double) override;
     virtual void mute_changed(bool) override;
     virtual void total_samples_changed(int) override;
-    virtual void sound_buffer_played(RefPtr<Audio::Buffer>, int sample_rate, int samples_played) override;
+    virtual void sound_buffer_played(FixedArray<Audio::Sample> const&, int sample_rate, int samples_played) override;
 
 protected:
     void keydown_event(GUI::KeyEvent&) override;
 
 private:
-    SoundPlayerWidgetAdvancedView(GUI::Window&, Audio::ClientConnection&);
+    SoundPlayerWidgetAdvancedView(GUI::Window&, Audio::ConnectionToServer&);
 
-    void sync_previous_next_buttons();
+    void sync_previous_next_actions();
 
+    void drag_enter_event(GUI::DragEvent& event) override;
     void drop_event(GUI::DropEvent& event) override;
     GUI::Window& m_window;
 
@@ -67,12 +71,16 @@ private:
     RefPtr<Gfx::Bitmap> m_stop_icon;
     RefPtr<Gfx::Bitmap> m_back_icon;
     RefPtr<Gfx::Bitmap> m_next_icon;
+    RefPtr<Gfx::Bitmap> m_volume_icon;
+    RefPtr<Gfx::Bitmap> m_muted_icon;
 
-    RefPtr<GUI::Button> m_play_button;
-    RefPtr<GUI::Button> m_stop_button;
-    RefPtr<GUI::Button> m_back_button;
-    RefPtr<GUI::Button> m_next_button;
-    RefPtr<AutoSlider> m_playback_progress_slider;
+    RefPtr<GUI::Action> m_play_action;
+    RefPtr<GUI::Action> m_stop_action;
+    RefPtr<GUI::Action> m_back_action;
+    RefPtr<GUI::Action> m_next_action;
+    RefPtr<GUI::Action> m_mute_action;
+
+    RefPtr<GUI::HorizontalSlider> m_playback_progress_slider;
     RefPtr<GUI::Label> m_volume_label;
     RefPtr<GUI::HorizontalSlider> m_volume_slider;
     RefPtr<GUI::Label> m_timestamp_label;

@@ -5,21 +5,26 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/API/VirtualMemoryAnnotations.h>
+#include <Kernel/Arch/CPU.h>
+#include <Kernel/Arch/PageDirectory.h>
+#include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Arch/SmapDisabler.h>
-#include <Kernel/Arch/x86/MSR.h>
-#include <Kernel/Arch/x86/SafeMem.h>
+#include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/Memory/PageDirectory.h>
 #include <Kernel/Memory/PrivateInodeVMObject.h>
 #include <Kernel/Memory/Region.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/PerformanceEventBuffer.h>
 #include <Kernel/PerformanceManager.h>
 #include <Kernel/Process.h>
-#include <LibC/limits.h>
 #include <LibELF/Validation.h>
+
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/MSR.h>
+#endif
 
 namespace Kernel {
 
@@ -69,58 +74,59 @@ static bool should_make_executable_exception_for_dynamic_loader(bool make_readab
     return true;
 }
 
-static bool validate_mmap_prot(int prot, bool map_stack, bool map_anonymous, Memory::Region const* region = nullptr)
+ErrorOr<void> Process::validate_mmap_prot(int prot, bool map_stack, bool map_anonymous, Memory::Region const* region) const
 {
     bool make_readable = prot & PROT_READ;
     bool make_writable = prot & PROT_WRITE;
     bool make_executable = prot & PROT_EXEC;
 
-    if (map_anonymous && make_executable)
-        return false;
-
-    if (make_writable && make_executable)
-        return false;
+    if (map_anonymous && make_executable && !(executable()->mount_flags() & MS_AXALLOWED))
+        return EINVAL;
 
     if (map_stack && make_executable)
-        return false;
+        return EINVAL;
+
+    if (executable()->mount_flags() & MS_WXALLOWED)
+        return {};
+
+    if (make_writable && make_executable)
+        return EINVAL;
 
     if (region) {
         if (make_writable && region->has_been_executable())
-            return false;
+            return EINVAL;
 
         if (make_executable && region->has_been_writable()) {
-            return should_make_executable_exception_for_dynamic_loader(make_readable, make_writable, make_executable, *region);
+            if (should_make_executable_exception_for_dynamic_loader(make_readable, make_writable, make_executable, *region)) {
+                return {};
+            } else {
+                return EINVAL;
+            };
         }
     }
 
-    return true;
+    return {};
 }
 
-static bool validate_inode_mmap_prot(const Process& process, int prot, const Inode& inode, bool map_shared)
+ErrorOr<void> Process::validate_inode_mmap_prot(int prot, bool readable_description, bool description_writable, bool map_shared) const
 {
-    auto metadata = inode.metadata();
-    if ((prot & PROT_READ) && !metadata.may_read(process))
-        return false;
+    auto credentials = this->credentials();
+    if ((prot & PROT_READ) && !readable_description)
+        return EACCES;
 
     if (map_shared) {
         // FIXME: What about readonly filesystem mounts? We cannot make a
         // decision here without knowing the mount flags, so we would need to
         // keep a Custody or something from mmap time.
-        if ((prot & PROT_WRITE) && !metadata.may_write(process))
-            return false;
-        if (auto shared_vmobject = inode.shared_vmobject()) {
-            if ((prot & PROT_EXEC) && shared_vmobject->writable_mappings())
-                return false;
-            if ((prot & PROT_WRITE) && shared_vmobject->executable_mappings())
-                return false;
-        }
+        if ((prot & PROT_WRITE) && !description_writable)
+            return EACCES;
     }
-    return true;
+    return {};
 }
 
-ErrorOr<FlatPtr> Process::sys$mmap(Userspace<const Syscall::SC_mmap_params*> user_params)
+ErrorOr<FlatPtr> Process::sys$mmap(Userspace<Syscall::SC_mmap_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     auto params = TRY(copy_typed_from_user(user_params));
 
@@ -177,48 +183,38 @@ ErrorOr<FlatPtr> Process::sys$mmap(Userspace<const Syscall::SC_mmap_params*> use
     if ((map_fixed || map_fixed_noreplace) && map_randomized)
         return EINVAL;
 
-    if (!validate_mmap_prot(prot, map_stack, map_anonymous))
-        return EINVAL;
+    TRY(validate_mmap_prot(prot, map_stack, map_anonymous));
 
     if (map_stack && (!map_private || !map_anonymous))
         return EINVAL;
 
+    Memory::VirtualRange requested_range { VirtualAddress { addr }, rounded_size };
+    if (addr && !(map_fixed || map_fixed_noreplace)) {
+        // If there's an address but MAP_FIXED wasn't specified, the address is just a hint.
+        requested_range = { {}, rounded_size };
+    }
+
     Memory::Region* region = nullptr;
 
-    auto range = TRY([&]() -> ErrorOr<Memory::VirtualRange> {
-        if (map_randomized)
-            return address_space().page_directory().range_allocator().try_allocate_randomized(rounded_size, alignment);
-
-        // If MAP_FIXED is specified, existing mappings that intersect the requested range are removed.
-        if (map_fixed)
-            TRY(address_space().unmap_mmap_range(VirtualAddress(addr), size));
-
-        auto range = address_space().try_allocate_range(VirtualAddress(addr), size, alignment);
-        if (range.is_error()) {
-            if (addr && !(map_fixed || map_fixed_noreplace)) {
-                // If there's an address but MAP_FIXED wasn't specified, the address is just a hint.
-                range = address_space().try_allocate_range({}, size, alignment);
-            }
-        }
-        return range;
-    }());
+    RefPtr<OpenFileDescription> description;
+    LockRefPtr<Memory::VMObject> vmobject;
+    u64 used_offset = 0;
 
     if (map_anonymous) {
         auto strategy = map_noreserve ? AllocationStrategy::None : AllocationStrategy::Reserve;
-        RefPtr<Memory::AnonymousVMObject> vmobject;
+
         if (flags & MAP_PURGEABLE) {
             vmobject = TRY(Memory::AnonymousVMObject::try_create_purgeable_with_size(rounded_size, strategy));
         } else {
             vmobject = TRY(Memory::AnonymousVMObject::try_create_with_size(rounded_size, strategy));
         }
-
-        region = TRY(address_space().allocate_region_with_vmobject(range, vmobject.release_nonnull(), 0, {}, prot, map_shared));
     } else {
         if (offset < 0)
             return EINVAL;
+        used_offset = static_cast<u64>(offset);
         if (static_cast<size_t>(offset) & ~PAGE_MASK)
             return EINVAL;
-        auto description = TRY(open_file_description(fd));
+        description = TRY(open_file_description(fd));
         if (description->is_directory())
             return ENODEV;
         // Require read access even when read protection is not requested.
@@ -228,32 +224,52 @@ ErrorOr<FlatPtr> Process::sys$mmap(Userspace<const Syscall::SC_mmap_params*> use
             if ((prot & PROT_WRITE) && !description->is_writable())
                 return EACCES;
         }
-        if (description->inode()) {
-            if (!validate_inode_mmap_prot(*this, prot, *description->inode(), map_shared))
-                return EACCES;
-        }
+        if (description->inode())
+            TRY(validate_inode_mmap_prot(prot, description->is_readable(), description->is_writable(), map_shared));
 
-        region = TRY(description->mmap(*this, range, static_cast<u64>(offset), prot, map_shared));
+        vmobject = TRY(description->vmobject_for_mmap(*this, requested_range, used_offset, map_shared));
     }
 
-    if (!region)
-        return ENOMEM;
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        // If MAP_FIXED is specified, existing mappings that intersect the requested range are removed.
+        if (map_fixed)
+            TRY(space->unmap_mmap_range(VirtualAddress(addr), size));
 
-    region->set_mmap(true);
-    if (map_shared)
-        region->set_shared(true);
-    if (map_stack)
-        region->set_stack(true);
-    region->set_name(move(name));
+        region = TRY(space->allocate_region_with_vmobject(
+            map_randomized ? Memory::RandomizeVirtualAddress::Yes : Memory::RandomizeVirtualAddress::No,
+            requested_range.base(),
+            requested_range.size(),
+            alignment,
+            vmobject.release_nonnull(),
+            used_offset,
+            {},
+            prot,
+            map_shared));
 
-    PerformanceManager::add_mmap_perf_event(*this, *region);
+        if (!region)
+            return ENOMEM;
 
-    return region->vaddr().get();
+        if (description)
+            region->set_mmap(true, description->is_readable(), description->is_writable());
+        else
+            region->set_mmap(true, false, false);
+
+        if (map_shared)
+            region->set_shared(true);
+        if (map_stack)
+            region->set_stack(true);
+        if (name)
+            region->set_name(move(name));
+
+        PerformanceManager::add_mmap_perf_event(*this, *region);
+
+        return region->vaddr().get();
+    });
 }
 
 ErrorOr<FlatPtr> Process::sys$mprotect(Userspace<void*> addr, size_t size, int prot)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
 
     if (prot & PROT_EXEC) {
@@ -267,135 +283,131 @@ ErrorOr<FlatPtr> Process::sys$mprotect(Userspace<void*> addr, size_t size, int p
     if (!is_user_range(range_to_mprotect))
         return EFAULT;
 
-    if (auto* whole_region = address_space().find_region_from_range(range_to_mprotect)) {
-        if (!whole_region->is_mmap())
-            return EPERM;
-        if (!validate_mmap_prot(prot, whole_region->is_stack(), whole_region->vmobject().is_anonymous(), whole_region))
-            return EINVAL;
-        if (whole_region->access() == Memory::prot_to_region_access_flags(prot))
-            return 0;
-        if (whole_region->vmobject().is_inode()
-            && !validate_inode_mmap_prot(*this, prot, static_cast<Memory::InodeVMObject const&>(whole_region->vmobject()).inode(), whole_region->is_shared())) {
-            return EACCES;
-        }
-        whole_region->set_readable(prot & PROT_READ);
-        whole_region->set_writable(prot & PROT_WRITE);
-        whole_region->set_executable(prot & PROT_EXEC);
-
-        whole_region->remap();
-        return 0;
-    }
-
-    // Check if we can carve out the desired range from an existing region
-    if (auto* old_region = address_space().find_region_containing(range_to_mprotect)) {
-        if (!old_region->is_mmap())
-            return EPERM;
-        if (!validate_mmap_prot(prot, old_region->is_stack(), old_region->vmobject().is_anonymous(), old_region))
-            return EINVAL;
-        if (old_region->access() == Memory::prot_to_region_access_flags(prot))
-            return 0;
-        if (old_region->vmobject().is_inode()
-            && !validate_inode_mmap_prot(*this, prot, static_cast<Memory::InodeVMObject const&>(old_region->vmobject()).inode(), old_region->is_shared())) {
-            return EACCES;
-        }
-
-        // Remove the old region from our regions tree, since were going to add another region
-        // with the exact same start address, but do not deallocate it yet
-        auto region = address_space().take_region(*old_region);
-
-        // Unmap the old region here, specifying that we *don't* want the VM deallocated.
-        region->unmap(Memory::Region::ShouldDeallocateVirtualRange::No);
-
-        // This vector is the region(s) adjacent to our range.
-        // We need to allocate a new region for the range we wanted to change permission bits on.
-        auto adjacent_regions = TRY(address_space().try_split_region_around_range(*region, range_to_mprotect));
-
-        size_t new_range_offset_in_vmobject = region->offset_in_vmobject() + (range_to_mprotect.base().get() - region->range().base().get());
-        auto* new_region = TRY(address_space().try_allocate_split_region(*region, range_to_mprotect, new_range_offset_in_vmobject));
-        new_region->set_readable(prot & PROT_READ);
-        new_region->set_writable(prot & PROT_WRITE);
-        new_region->set_executable(prot & PROT_EXEC);
-
-        // Map the new regions using our page directory (they were just allocated and don't have one).
-        for (auto* adjacent_region : adjacent_regions) {
-            TRY(adjacent_region->map(address_space().page_directory()));
-        }
-        TRY(new_region->map(address_space().page_directory()));
-        return 0;
-    }
-
-    if (const auto& regions = TRY(address_space().find_regions_intersecting(range_to_mprotect)); regions.size()) {
-        size_t full_size_found = 0;
-        // Check that all intersecting regions are compatible.
-        for (const auto* region : regions) {
-            if (!region->is_mmap())
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        if (auto* whole_region = space->find_region_from_range(range_to_mprotect)) {
+            if (!whole_region->is_mmap())
                 return EPERM;
-            if (!validate_mmap_prot(prot, region->is_stack(), region->vmobject().is_anonymous(), region))
-                return EINVAL;
-            if (region->vmobject().is_inode()
-                && !validate_inode_mmap_prot(*this, prot, static_cast<Memory::InodeVMObject const&>(region->vmobject()).inode(), region->is_shared())) {
-                return EACCES;
-            }
-            full_size_found += region->range().intersect(range_to_mprotect).size();
+            if (whole_region->is_immutable())
+                return EPERM;
+            TRY(validate_mmap_prot(prot, whole_region->is_stack(), whole_region->vmobject().is_anonymous(), whole_region));
+            if (whole_region->access() == Memory::prot_to_region_access_flags(prot))
+                return 0;
+            if (whole_region->vmobject().is_inode())
+                TRY(validate_inode_mmap_prot(prot, whole_region->mmapped_from_readable(), whole_region->mmapped_from_writable(), whole_region->is_shared()));
+            whole_region->set_readable(prot & PROT_READ);
+            whole_region->set_writable(prot & PROT_WRITE);
+            whole_region->set_executable(prot & PROT_EXEC);
+
+            whole_region->remap();
+            return 0;
         }
 
-        if (full_size_found != range_to_mprotect.size())
-            return ENOMEM;
-
-        // Finally, iterate over each region, either updating its access flags if the range covers it wholly,
-        // or carving out a new subregion with the appropriate access flags set.
-        for (auto* old_region : regions) {
+        // Check if we can carve out the desired range from an existing region
+        if (auto* old_region = space->find_region_containing(range_to_mprotect)) {
+            if (!old_region->is_mmap())
+                return EPERM;
+            if (old_region->is_immutable())
+                return EPERM;
+            TRY(validate_mmap_prot(prot, old_region->is_stack(), old_region->vmobject().is_anonymous(), old_region));
             if (old_region->access() == Memory::prot_to_region_access_flags(prot))
-                continue;
+                return 0;
+            if (old_region->vmobject().is_inode())
+                TRY(validate_inode_mmap_prot(prot, old_region->mmapped_from_readable(), old_region->mmapped_from_writable(), old_region->is_shared()));
 
-            const auto intersection_to_mprotect = range_to_mprotect.intersect(old_region->range());
-            // If the region is completely covered by range, simply update the access flags
-            if (intersection_to_mprotect == old_region->range()) {
-                old_region->set_readable(prot & PROT_READ);
-                old_region->set_writable(prot & PROT_WRITE);
-                old_region->set_executable(prot & PROT_EXEC);
-
-                old_region->remap();
-                continue;
-            }
             // Remove the old region from our regions tree, since were going to add another region
-            // with the exact same start address, but dont deallocate it yet
-            auto region = address_space().take_region(*old_region);
-
-            // Unmap the old region here, specifying that we *don't* want the VM deallocated.
-            region->unmap(Memory::Region::ShouldDeallocateVirtualRange::No);
+            // with the exact same start address.
+            auto region = space->take_region(*old_region);
+            region->unmap();
 
             // This vector is the region(s) adjacent to our range.
             // We need to allocate a new region for the range we wanted to change permission bits on.
-            auto adjacent_regions = TRY(address_space().try_split_region_around_range(*old_region, intersection_to_mprotect));
+            auto adjacent_regions = TRY(space->try_split_region_around_range(*region, range_to_mprotect));
 
-            // Since the range is not contained in a single region, it can only partially cover its starting and ending region,
-            // therefore carving out a chunk from the region will always produce a single extra region, and not two.
-            VERIFY(adjacent_regions.size() == 1);
-
-            size_t new_range_offset_in_vmobject = old_region->offset_in_vmobject() + (intersection_to_mprotect.base().get() - old_region->range().base().get());
-            auto* new_region = TRY(address_space().try_allocate_split_region(*region, intersection_to_mprotect, new_range_offset_in_vmobject));
-
+            size_t new_range_offset_in_vmobject = region->offset_in_vmobject() + (range_to_mprotect.base().get() - region->range().base().get());
+            auto* new_region = TRY(space->try_allocate_split_region(*region, range_to_mprotect, new_range_offset_in_vmobject));
             new_region->set_readable(prot & PROT_READ);
             new_region->set_writable(prot & PROT_WRITE);
             new_region->set_executable(prot & PROT_EXEC);
 
-            // Map the new region using our page directory (they were just allocated and don't have one) if any.
-            if (adjacent_regions.size())
-                TRY(adjacent_regions[0]->map(address_space().page_directory()));
-
-            TRY(new_region->map(address_space().page_directory()));
+            // Map the new regions using our page directory (they were just allocated and don't have one).
+            for (auto* adjacent_region : adjacent_regions) {
+                TRY(adjacent_region->map(space->page_directory()));
+            }
+            TRY(new_region->map(space->page_directory()));
+            return 0;
         }
 
-        return 0;
-    }
+        if (auto const& regions = TRY(space->find_regions_intersecting(range_to_mprotect)); regions.size()) {
+            size_t full_size_found = 0;
+            // Check that all intersecting regions are compatible.
+            for (auto const* region : regions) {
+                if (!region->is_mmap())
+                    return EPERM;
+                if (region->is_immutable())
+                    return EPERM;
+                TRY(validate_mmap_prot(prot, region->is_stack(), region->vmobject().is_anonymous(), region));
+                if (region->vmobject().is_inode())
+                    TRY(validate_inode_mmap_prot(prot, region->mmapped_from_readable(), region->mmapped_from_writable(), region->is_shared()));
 
-    return EINVAL;
+                full_size_found += region->range().intersect(range_to_mprotect).size();
+            }
+
+            if (full_size_found != range_to_mprotect.size())
+                return ENOMEM;
+
+            // Finally, iterate over each region, either updating its access flags if the range covers it wholly,
+            // or carving out a new subregion with the appropriate access flags set.
+            for (auto* old_region : regions) {
+                if (old_region->access() == Memory::prot_to_region_access_flags(prot))
+                    continue;
+
+                auto const intersection_to_mprotect = range_to_mprotect.intersect(old_region->range());
+                // If the region is completely covered by range, simply update the access flags
+                if (intersection_to_mprotect == old_region->range()) {
+                    old_region->set_readable(prot & PROT_READ);
+                    old_region->set_writable(prot & PROT_WRITE);
+                    old_region->set_executable(prot & PROT_EXEC);
+
+                    old_region->remap();
+                    continue;
+                }
+                // Remove the old region from our regions tree, since were going to add another region
+                // with the exact same start address.
+                auto region = space->take_region(*old_region);
+                region->unmap();
+
+                // This vector is the region(s) adjacent to our range.
+                // We need to allocate a new region for the range we wanted to change permission bits on.
+                auto adjacent_regions = TRY(space->try_split_region_around_range(*old_region, intersection_to_mprotect));
+
+                // Since the range is not contained in a single region, it can only partially cover its starting and ending region,
+                // therefore carving out a chunk from the region will always produce a single extra region, and not two.
+                VERIFY(adjacent_regions.size() == 1);
+
+                size_t new_range_offset_in_vmobject = old_region->offset_in_vmobject() + (intersection_to_mprotect.base().get() - old_region->range().base().get());
+                auto* new_region = TRY(space->try_allocate_split_region(*region, intersection_to_mprotect, new_range_offset_in_vmobject));
+
+                new_region->set_readable(prot & PROT_READ);
+                new_region->set_writable(prot & PROT_WRITE);
+                new_region->set_executable(prot & PROT_EXEC);
+
+                // Map the new region using our page directory (they were just allocated and don't have one) if any.
+                if (adjacent_regions.size())
+                    TRY(adjacent_regions[0]->map(space->page_directory()));
+
+                TRY(new_region->map(space->page_directory()));
+            }
+
+            return 0;
+        }
+
+        return EINVAL;
+    });
 }
 
 ErrorOr<FlatPtr> Process::sys$madvise(Userspace<void*> address, size_t size, int advice)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
 
     auto range_to_madvise = TRY(Memory::expand_range_to_page_boundaries(address.ptr(), size));
@@ -406,27 +418,31 @@ ErrorOr<FlatPtr> Process::sys$madvise(Userspace<void*> address, size_t size, int
     if (!is_user_range(range_to_madvise))
         return EFAULT;
 
-    auto* region = address_space().find_region_from_range(range_to_madvise);
-    if (!region)
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        auto* region = space->find_region_from_range(range_to_madvise);
+        if (!region)
+            return EINVAL;
+        if (!region->is_mmap())
+            return EPERM;
+        if (region->is_immutable())
+            return EPERM;
+        if (advice == MADV_SET_VOLATILE || advice == MADV_SET_NONVOLATILE) {
+            if (!region->vmobject().is_anonymous())
+                return EINVAL;
+            auto& vmobject = static_cast<Memory::AnonymousVMObject&>(region->vmobject());
+            if (!vmobject.is_purgeable())
+                return EINVAL;
+            bool was_purged = false;
+            TRY(vmobject.set_volatile(advice == MADV_SET_VOLATILE, was_purged));
+            return was_purged ? 1 : 0;
+        }
         return EINVAL;
-    if (!region->is_mmap())
-        return EPERM;
-    if (advice == MADV_SET_VOLATILE || advice == MADV_SET_NONVOLATILE) {
-        if (!region->vmobject().is_anonymous())
-            return EINVAL;
-        auto& vmobject = static_cast<Memory::AnonymousVMObject&>(region->vmobject());
-        if (!vmobject.is_purgeable())
-            return EINVAL;
-        bool was_purged = false;
-        TRY(vmobject.set_volatile(advice == MADV_SET_VOLATILE, was_purged));
-        return was_purged ? 1 : 0;
-    }
-    return EINVAL;
+    });
 }
 
-ErrorOr<FlatPtr> Process::sys$set_mmap_name(Userspace<const Syscall::SC_set_mmap_name_params*> user_params)
+ErrorOr<FlatPtr> Process::sys$set_mmap_name(Userspace<Syscall::SC_set_mmap_name_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     auto params = TRY(copy_typed_from_user(user_params));
 
@@ -436,66 +452,80 @@ ErrorOr<FlatPtr> Process::sys$set_mmap_name(Userspace<const Syscall::SC_set_mmap
     auto name = TRY(try_copy_kstring_from_user(params.name));
     auto range = TRY(Memory::expand_range_to_page_boundaries((FlatPtr)params.addr, params.size));
 
-    auto* region = address_space().find_region_from_range(range);
-    if (!region)
-        return EINVAL;
-    if (!region->is_mmap())
-        return EPERM;
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        auto* region = space->find_region_from_range(range);
+        if (!region)
+            return EINVAL;
+        if (!region->is_mmap())
+            return EPERM;
 
-    region->set_name(move(name));
-    PerformanceManager::add_mmap_perf_event(*this, *region);
+        if (region->is_immutable())
+            return EPERM;
 
-    return 0;
+        region->set_name(move(name));
+        PerformanceManager::add_mmap_perf_event(*this, *region);
+
+        return 0;
+    });
 }
 
 ErrorOr<FlatPtr> Process::sys$munmap(Userspace<void*> addr, size_t size)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
-    TRY(address_space().unmap_mmap_range(addr.vaddr(), size));
+    TRY(address_space().with([&](auto& space) {
+        return space->unmap_mmap_range(addr.vaddr(), size);
+    }));
     return 0;
 }
 
-ErrorOr<FlatPtr> Process::sys$mremap(Userspace<const Syscall::SC_mremap_params*> user_params)
+ErrorOr<FlatPtr> Process::sys$mremap(Userspace<Syscall::SC_mremap_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     auto params = TRY(copy_typed_from_user(user_params));
 
     auto old_range = TRY(Memory::expand_range_to_page_boundaries((FlatPtr)params.old_address, params.old_size));
 
-    auto* old_region = address_space().find_region_from_range(old_range);
-    if (!old_region)
-        return EINVAL;
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        auto* old_region = space->find_region_from_range(old_range);
+        if (!old_region)
+            return EINVAL;
 
-    if (!old_region->is_mmap())
-        return EPERM;
+        if (!old_region->is_mmap())
+            return EPERM;
 
-    if (old_region->vmobject().is_shared_inode() && params.flags & MAP_PRIVATE && !(params.flags & (MAP_ANONYMOUS | MAP_NORESERVE))) {
-        auto range = old_region->range();
-        auto old_prot = region_access_flags_to_prot(old_region->access());
-        auto old_offset = old_region->offset_in_vmobject();
-        NonnullRefPtr inode = static_cast<Memory::SharedInodeVMObject&>(old_region->vmobject()).inode();
+        if (old_region->is_immutable())
+            return EPERM;
 
-        auto new_vmobject = TRY(Memory::PrivateInodeVMObject::try_create_with_inode(inode));
-        auto old_name = old_region->take_name();
+        if (old_region->vmobject().is_shared_inode() && params.flags & MAP_PRIVATE && !(params.flags & (MAP_ANONYMOUS | MAP_NORESERVE))) {
+            auto range = old_region->range();
+            auto old_prot = region_access_flags_to_prot(old_region->access());
+            auto old_offset = old_region->offset_in_vmobject();
+            NonnullLockRefPtr inode = static_cast<Memory::SharedInodeVMObject&>(old_region->vmobject()).inode();
 
-        // Unmap without deallocating the VM range since we're going to reuse it.
-        old_region->unmap(Memory::Region::ShouldDeallocateVirtualRange::No);
-        address_space().deallocate_region(*old_region);
+            auto new_vmobject = TRY(Memory::PrivateInodeVMObject::try_create_with_inode(inode));
+            auto old_name = old_region->take_name();
 
-        auto* new_region = TRY(address_space().allocate_region_with_vmobject(range, move(new_vmobject), old_offset, old_name->view(), old_prot, false));
-        new_region->set_mmap(true);
-        return new_region->vaddr().get();
-    }
+            bool old_region_was_mmapped_from_readable = old_region->mmapped_from_readable();
+            bool old_region_was_mmapped_from_writable = old_region->mmapped_from_writable();
 
-    dbgln("sys$mremap: Unimplemented remap request (flags={})", params.flags);
-    return ENOTIMPL;
+            old_region->unmap();
+            space->deallocate_region(*old_region);
+
+            auto* new_region = TRY(space->allocate_region_with_vmobject(range, move(new_vmobject), old_offset, old_name->view(), old_prot, false));
+            new_region->set_mmap(true, old_region_was_mmapped_from_readable, old_region_was_mmapped_from_writable);
+            return new_region->vaddr().get();
+        }
+
+        dbgln("sys$mremap: Unimplemented remap request (flags={})", params.flags);
+        return ENOTIMPL;
+    });
 }
 
-ErrorOr<FlatPtr> Process::sys$allocate_tls(Userspace<const char*> initial_data, size_t size)
+ErrorOr<FlatPtr> Process::sys$allocate_tls(Userspace<char const*> initial_data, size_t size)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
 
     if (!size || size % PAGE_SIZE != 0)
@@ -520,57 +550,59 @@ ErrorOr<FlatPtr> Process::sys$allocate_tls(Userspace<const char*> initial_data, 
     if (multiple_threads)
         return EINVAL;
 
-    auto range = TRY(address_space().try_allocate_range({}, size));
-    auto* region = TRY(address_space().allocate_region(range, "Master TLS"sv, PROT_READ | PROT_WRITE));
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        auto* region = TRY(space->allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, size, PAGE_SIZE, "Master TLS"sv, PROT_READ | PROT_WRITE));
 
-    m_master_tls_region = TRY(region->try_make_weak_ptr());
-    m_master_tls_size = size;
-    m_master_tls_alignment = PAGE_SIZE;
+        m_master_tls_region = TRY(region->try_make_weak_ptr());
+        m_master_tls_size = size;
+        m_master_tls_alignment = PAGE_SIZE;
 
-    {
-        Kernel::SmapDisabler disabler;
-        void* fault_at;
-        if (!Kernel::safe_memcpy((char*)m_master_tls_region.unsafe_ptr()->vaddr().as_ptr(), (char*)initial_data.ptr(), size, fault_at))
-            return EFAULT;
-    }
+        {
+            Kernel::SmapDisabler disabler;
+            void* fault_at;
+            if (!Kernel::safe_memcpy((char*)m_master_tls_region.unsafe_ptr()->vaddr().as_ptr(), (char*)initial_data.ptr(), size, fault_at))
+                return EFAULT;
+        }
 
-    TRY(main_thread->make_thread_specific_region({}));
+        TRY(main_thread->make_thread_specific_region({}));
 
-#if ARCH(I386)
-    auto& tls_descriptor = Processor::current().get_gdt_entry(GDT_SELECTOR_TLS);
-    tls_descriptor.set_base(main_thread->thread_specific_data());
-    tls_descriptor.set_limit(main_thread->thread_specific_region_size());
-#else
-    MSR fs_base_msr(MSR_FS_BASE);
-    fs_base_msr.set(main_thread->thread_specific_data().get());
-#endif
+        Processor::set_thread_specific_data(main_thread->thread_specific_data());
 
-    return m_master_tls_region.unsafe_ptr()->vaddr().get();
+        return m_master_tls_region.unsafe_ptr()->vaddr().get();
+    });
 }
 
-ErrorOr<FlatPtr> Process::sys$msyscall(Userspace<void*> address)
+ErrorOr<FlatPtr> Process::sys$annotate_mapping(Userspace<void*> address, int flags)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
-    if (address_space().enforces_syscall_regions())
-        return EPERM;
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
+    if (flags == to_underlying(VirtualMemoryRangeFlags::None))
+        return EINVAL;
 
-    if (!address) {
-        address_space().set_enforces_syscall_regions(true);
-        return 0;
-    }
+    if (!address)
+        return EINVAL;
 
     if (!Memory::is_user_address(address.vaddr()))
         return EFAULT;
 
-    auto* region = address_space().find_region_containing(Memory::VirtualRange { address.vaddr(), 1 });
-    if (!region)
-        return EINVAL;
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        if (space->enforces_syscall_regions() && (flags & to_underlying(VirtualMemoryRangeFlags::SyscallCode)))
+            return EPERM;
 
-    if (!region->is_mmap())
-        return EINVAL;
+        auto* region = space->find_region_containing(Memory::VirtualRange { address.vaddr(), 1 });
+        if (!region)
+            return EINVAL;
 
-    region->set_syscall_region(true);
-    return 0;
+        if (!region->is_mmap())
+            return EINVAL;
+        if (region->is_immutable())
+            return EPERM;
+
+        if (flags & to_underlying(VirtualMemoryRangeFlags::SyscallCode))
+            region->set_syscall_region(true);
+        if (flags & to_underlying(VirtualMemoryRangeFlags::Immutable))
+            region->set_immutable();
+        return 0;
+    });
 }
 
 ErrorOr<FlatPtr> Process::sys$msync(Userspace<void*> address, size_t size, int flags)
@@ -589,24 +621,39 @@ ErrorOr<FlatPtr> Process::sys$msync(Userspace<void*> address, size_t size, int f
     // Note: This is not specified
     auto rounded_size = TRY(Memory::page_round_up(size));
 
-    // FIXME: We probably want to sync all mappings in the address+size range.
-    auto* region = address_space().find_region_containing(Memory::VirtualRange { address.vaddr(), rounded_size });
-    // All regions from address upto address+size shall be mapped
-    if (!region)
-        return ENOMEM;
+    return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
+        auto regions = TRY(space->find_regions_intersecting(Memory::VirtualRange { address.vaddr(), rounded_size }));
+        // All regions from address up to address+size shall be mapped
+        if (regions.is_empty())
+            return ENOMEM;
 
-    auto& vmobject = region->vmobject();
-    if (!vmobject.is_shared_inode())
+        size_t total_intersection_size = 0;
+        Memory::VirtualRange range_to_sync { address.vaddr(), rounded_size };
+        for (auto const* region : regions) {
+            // Region was not mapped
+            if (!region->is_mmap())
+                return ENOMEM;
+            total_intersection_size += region->range().intersect(range_to_sync).size();
+        }
+        // Part of the indicated range was not mapped
+        if (total_intersection_size != size)
+            return ENOMEM;
+
+        for (auto* region : regions) {
+            auto& vmobject = region->vmobject();
+            if (!vmobject.is_shared_inode())
+                continue;
+
+            off_t offset = region->offset_in_vmobject() + address.ptr() - region->range().base().get();
+
+            auto& inode_vmobject = static_cast<Memory::SharedInodeVMObject&>(vmobject);
+            // FIXME: If multiple regions belong to the same vmobject we might want to coalesce these writes
+            // FIXME: Handle MS_ASYNC
+            TRY(inode_vmobject.sync(offset / PAGE_SIZE, rounded_size / PAGE_SIZE));
+            // FIXME: Handle MS_INVALIDATE
+        }
         return 0;
-
-    off_t offset = region->offset_in_vmobject() + address.ptr() - region->range().base().get();
-
-    auto& inode_vmobject = static_cast<Memory::SharedInodeVMObject&>(vmobject);
-    // FIXME: Handle MS_ASYNC
-    TRY(inode_vmobject.sync(offset / PAGE_SIZE, size / PAGE_SIZE));
-    // FIXME: Handle MS_INVALIDATE
-    // FIXME: If msync() causes any write to a file, the file's st_ctime and st_mtime fields shall be marked for update.
-    return 0;
+    });
 }
 
 }

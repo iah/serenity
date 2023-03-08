@@ -16,7 +16,7 @@
 #    include <AK/Error.h>
 #    include <Kernel/KString.h>
 #else
-#    include <AK/String.h>
+#    include <AK/DeprecatedString.h>
 #endif
 
 namespace AK {
@@ -65,18 +65,18 @@ public:
             octet(SubnetClass::D));
     }
 #else
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
-        return String::formatted("{}.{}.{}.{}",
+        return DeprecatedString::formatted("{}.{}.{}.{}",
             octet(SubnetClass::A),
             octet(SubnetClass::B),
             octet(SubnetClass::C),
             octet(SubnetClass::D));
     }
 
-    String to_string_reversed() const
+    DeprecatedString to_deprecated_string_reversed() const
     {
-        return String::formatted("{}.{}.{}.{}",
+        return DeprecatedString::formatted("{}.{}.{}.{}",
             octet(SubnetClass::D),
             octet(SubnetClass::C),
             octet(SubnetClass::B),
@@ -89,7 +89,7 @@ public:
         if (string.is_null())
             return {};
 
-        const auto parts = string.split_view('.');
+        auto const parts = string.split_view('.');
 
         u32 a {};
         u32 b {};
@@ -119,11 +119,18 @@ public:
         return IPv4Address(a, b, c, d);
     }
 
+    static constexpr IPv4Address netmask_from_cidr(int cidr)
+    {
+        VERIFY(cidr >= 0 && cidr <= 32);
+        u32 value = 0xffffffffull << (32 - cidr);
+        return IPv4Address((value & 0xff000000) >> 24, (value & 0xff0000) >> 16, (value & 0xff00) >> 8, (value & 0xff));
+    }
+
     constexpr in_addr_t to_in_addr_t() const { return m_data; }
     constexpr u32 to_u32() const { return m_data; }
 
-    constexpr bool operator==(const IPv4Address& other) const = default;
-    constexpr bool operator!=(const IPv4Address& other) const = default;
+    constexpr bool operator==(IPv4Address const& other) const = default;
+    constexpr bool operator!=(IPv4Address const& other) const = default;
 
     constexpr bool is_zero() const
     {
@@ -133,9 +140,8 @@ public:
 private:
     constexpr u32 octet(const SubnetClass subnet) const
     {
-        NetworkOrdered<u32> address(m_data);
         constexpr auto bits_per_byte = 8;
-        const auto bits_to_shift = bits_per_byte * int(subnet);
+        auto const bits_to_shift = bits_per_byte * int(subnet);
         return (m_data >> bits_to_shift) & 0x0000'00FF;
     }
 
@@ -146,27 +152,29 @@ static_assert(sizeof(IPv4Address) == 4);
 
 template<>
 struct Traits<IPv4Address> : public GenericTraits<IPv4Address> {
-    static constexpr unsigned hash(const IPv4Address& address) { return int_hash(address.to_u32()); }
+    static constexpr unsigned hash(IPv4Address const& address) { return int_hash(address.to_u32()); }
 };
 
 #ifdef KERNEL
 template<>
-struct Formatter<IPv4Address> : Formatter<ErrorOr<NonnullOwnPtr<Kernel::KString>>> {
+struct Formatter<IPv4Address> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, IPv4Address value)
     {
-        return Formatter<ErrorOr<NonnullOwnPtr<Kernel::KString>>>::format(builder, value.to_string());
+        return Formatter<StringView>::format(builder, TRY(value.to_string())->view());
     }
 };
 #else
 template<>
-struct Formatter<IPv4Address> : Formatter<String> {
+struct Formatter<IPv4Address> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, IPv4Address value)
     {
-        return Formatter<String>::format(builder, value.to_string());
+        return Formatter<StringView>::format(builder, value.to_deprecated_string());
     }
 };
 #endif
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::IPv4Address;
+#endif

@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Jakob-Niklas See <git@nwex.de>
+ * Copyright (c) 2021, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,27 +11,24 @@
 #include <LibGUI/InputBox.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/TextBox.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 
 namespace GUI {
 
-InputBox::InputBox(Window* parent_window, String& text_value, StringView prompt, StringView title, StringView placeholder, InputType input_type)
+InputBox::InputBox(Window* parent_window, DeprecatedString text_value, StringView prompt, StringView title, InputType input_type, StringView placeholder)
     : Dialog(parent_window)
-    , m_text_value(text_value)
+    , m_text_value(move(text_value))
     , m_prompt(prompt)
+    , m_input_type(input_type)
     , m_placeholder(placeholder)
 {
     set_title(title);
-    build(input_type);
+    build();
 }
 
-InputBox::~InputBox()
+Dialog::ExecResult InputBox::show(Window* parent_window, DeprecatedString& text_value, StringView prompt, StringView title, InputType input_type, StringView placeholder)
 {
-}
-
-int InputBox::show(Window* parent_window, String& text_value, StringView prompt, StringView title, StringView placeholder, InputType input_type)
-{
-    auto box = InputBox::construct(parent_window, text_value, prompt, title, placeholder, input_type);
+    auto box = InputBox::construct(parent_window, text_value, prompt, title, input_type, placeholder);
     box->set_resizable(false);
     if (parent_window)
         box->set_icon(parent_window->icon());
@@ -39,30 +37,50 @@ int InputBox::show(Window* parent_window, String& text_value, StringView prompt,
     return result;
 }
 
-void InputBox::build(InputType input_type)
+void InputBox::set_text_value(DeprecatedString text_value)
 {
-    auto& widget = set_main_widget<Widget>();
+    m_text_editor->set_text(move(text_value));
+}
 
-    int text_width = widget.font().width(m_prompt);
-    int title_width = widget.font().width(title()) + 24 /* icon, plus a little padding -- not perfect */;
+void InputBox::on_done(ExecResult result)
+{
+    if (result == ExecResult::OK) {
+        m_text_value = m_text_editor->text();
+
+        switch (m_input_type) {
+        case InputType::Text:
+        case InputType::Password:
+            break;
+
+        case InputType::NonemptyText:
+            VERIFY(!m_text_value.is_empty());
+            break;
+        }
+    }
+}
+
+void InputBox::build()
+{
+    auto widget = set_main_widget<Widget>().release_value_but_fixme_should_propagate_errors();
+
+    int text_width = widget->font().width(m_prompt);
+    int title_width = widget->font().width(title()) + 24 /* icon, plus a little padding -- not perfect */;
     int max_width = max(text_width, title_width);
 
-    set_rect(x(), y(), max_width + 140, 66);
+    widget->set_layout<VerticalBoxLayout>(6, 6);
+    widget->set_fill_with_background_color(true);
+    widget->set_preferred_height(SpecialDimension::Fit);
 
-    widget.set_layout<VerticalBoxLayout>();
-    widget.set_fill_with_background_color(true);
-
-    widget.layout()->set_margins(6);
-    widget.layout()->set_spacing(6);
-
-    auto& label_editor_container = widget.add<Widget>();
+    auto& label_editor_container = widget->add<Widget>();
     label_editor_container.set_layout<HorizontalBoxLayout>();
+    label_editor_container.set_preferred_height(SpecialDimension::Fit);
 
     auto& label = label_editor_container.add<Label>(m_prompt);
-    label.set_fixed_size(text_width, 16);
+    label.set_preferred_width(text_width);
 
-    switch (input_type) {
+    switch (m_input_type) {
     case InputType::Text:
+    case InputType::NonemptyText:
         m_text_editor = label_editor_container.add<TextBox>();
         break;
     case InputType::Password:
@@ -75,36 +93,43 @@ void InputBox::build(InputType input_type)
     if (!m_placeholder.is_null())
         m_text_editor->set_placeholder(m_placeholder);
 
-    auto& button_container_outer = widget.add<Widget>();
-    button_container_outer.set_fixed_height(22);
+    auto& button_container_outer = widget->add<Widget>();
+    button_container_outer.set_preferred_height(SpecialDimension::Fit);
     button_container_outer.set_layout<VerticalBoxLayout>();
 
     auto& button_container_inner = button_container_outer.add<Widget>();
-    button_container_inner.set_layout<HorizontalBoxLayout>();
-    button_container_inner.layout()->set_spacing(6);
-    button_container_inner.layout()->set_margins({ 4, 0, 4, 4 });
-    button_container_inner.layout()->add_spacer();
+    button_container_inner.set_layout<HorizontalBoxLayout>(GUI::Margins {}, 6);
+    button_container_inner.set_preferred_height(SpecialDimension::Fit);
+    button_container_inner.add_spacer().release_value_but_fixme_should_propagate_errors();
 
-    m_ok_button = button_container_inner.add<Button>();
-    m_ok_button->set_text("OK");
+    m_ok_button = button_container_inner.add<DialogButton>();
+    m_ok_button->set_text("OK"_short_string);
     m_ok_button->on_click = [this](auto) {
         dbgln("GUI::InputBox: OK button clicked");
-        m_text_value = m_text_editor->text();
-        done(ExecOK);
+        done(ExecResult::OK);
     };
     m_ok_button->set_default(true);
 
-    m_cancel_button = button_container_inner.add<Button>();
-    m_cancel_button->set_text("Cancel");
+    m_cancel_button = button_container_inner.add<DialogButton>();
+    m_cancel_button->set_text("Cancel"_short_string);
     m_cancel_button->on_click = [this](auto) {
         dbgln("GUI::InputBox: Cancel button clicked");
-        done(ExecCancel);
+        done(ExecResult::Cancel);
     };
 
     m_text_editor->on_escape_pressed = [this] {
         m_cancel_button->click();
     };
     m_text_editor->set_focus(true);
+
+    if (m_input_type == InputType::NonemptyText) {
+        m_text_editor->on_change = [this] {
+            m_ok_button->set_enabled(!m_text_editor->text().is_empty());
+        };
+        m_text_editor->on_change();
+    }
+
+    set_rect(x(), y(), max_width + 140, widget->effective_preferred_size().height().as_int());
 }
 
 }

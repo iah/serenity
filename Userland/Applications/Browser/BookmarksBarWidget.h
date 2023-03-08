@@ -26,16 +26,28 @@ public:
     GUI::Model* model() { return m_model.ptr(); }
     const GUI::Model* model() const { return m_model.ptr(); }
 
-    Function<void(const String& url, unsigned modifiers)> on_bookmark_click;
-    Function<void(const String&, const String&)> on_bookmark_hover;
+    enum class Open {
+        InNewTab,
+        InSameTab,
+        InNewWindow
+    };
 
-    bool contains_bookmark(const String& url);
-    bool remove_bookmark(const String& url);
-    bool add_bookmark(const String& url, const String& title);
-    bool edit_bookmark(const String& url);
+    Function<void(DeprecatedString const& url, Open)> on_bookmark_click;
+    Function<void(DeprecatedString const&, DeprecatedString const&)> on_bookmark_hover;
+
+    bool contains_bookmark(DeprecatedString const& url);
+    bool remove_bookmark(DeprecatedString const& url);
+    bool add_bookmark(DeprecatedString const& url, DeprecatedString const& title);
+    bool edit_bookmark(DeprecatedString const& url);
+
+    virtual Optional<GUI::UISize> calculated_min_size() const override
+    {
+        // Large enough to fit the `m_additional` button.
+        return GUI::UISize(20, 20);
+    }
 
 private:
-    BookmarksBarWidget(const String&, bool enabled);
+    BookmarksBarWidget(DeprecatedString const&, bool enabled);
 
     // ^GUI::ModelClient
     virtual void model_did_update(unsigned) override;
@@ -52,9 +64,9 @@ private:
 
     RefPtr<GUI::Menu> m_context_menu;
     RefPtr<GUI::Action> m_context_menu_default_action;
-    String m_context_menu_url;
+    DeprecatedString m_context_menu_url;
 
-    NonnullRefPtrVector<GUI::Button> m_bookmarks;
+    Vector<NonnullRefPtr<GUI::Button>> m_bookmarks;
 
     int m_last_visible_index { -1 };
 };

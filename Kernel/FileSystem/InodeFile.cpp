@@ -1,10 +1,11 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringView.h>
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/API/POSIX/errno.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeFile.h>
@@ -13,18 +14,15 @@
 #include <Kernel/Memory/PrivateInodeVMObject.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Process.h>
-#include <LibC/sys/ioctl_numbers.h>
 
 namespace Kernel {
 
-InodeFile::InodeFile(NonnullRefPtr<Inode>&& inode)
+InodeFile::InodeFile(NonnullLockRefPtr<Inode>&& inode)
     : m_inode(move(inode))
 {
 }
 
-InodeFile::~InodeFile()
-{
-}
+InodeFile::~InodeFile() = default;
 
 ErrorOr<size_t> InodeFile::read(OpenFileDescription& description, u64 offset, UserOrKernelBuffer& buffer, size_t count)
 {
@@ -39,14 +37,14 @@ ErrorOr<size_t> InodeFile::read(OpenFileDescription& description, u64 offset, Us
     return nread;
 }
 
-ErrorOr<size_t> InodeFile::write(OpenFileDescription& description, u64 offset, const UserOrKernelBuffer& data, size_t count)
+ErrorOr<size_t> InodeFile::write(OpenFileDescription& description, u64 offset, UserOrKernelBuffer const& data, size_t count)
 {
     if (Checked<off_t>::addition_would_overflow(offset, count))
         return EOVERFLOW;
 
-    auto nwritten = TRY(m_inode->write_bytes(offset, count, data, &description));
+    size_t nwritten = TRY(m_inode->write_bytes(offset, count, data, &description));
     if (nwritten > 0) {
-        auto mtime_result = m_inode->set_mtime(kgettimeofday().to_truncated_seconds());
+        auto mtime_result = m_inode->update_timestamps({}, {}, kgettimeofday());
         Thread::current()->did_file_write(nwritten);
         evaluate_block_conditions();
         if (mtime_result.is_error())
@@ -59,7 +57,8 @@ ErrorOr<void> InodeFile::ioctl(OpenFileDescription& description, unsigned reques
 {
     switch (request) {
     case FIBMAP: {
-        if (!Process::current().is_superuser())
+        auto current_process_credentials = Process::current().credentials();
+        if (!current_process_credentials->is_superuser())
             return EPERM;
 
         auto user_block_number = static_ptr_cast<int*>(arg);
@@ -81,19 +80,14 @@ ErrorOr<void> InodeFile::ioctl(OpenFileDescription& description, unsigned reques
     }
 }
 
-ErrorOr<Memory::Region*> InodeFile::mmap(Process& process, OpenFileDescription& description, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
+ErrorOr<NonnullLockRefPtr<Memory::VMObject>> InodeFile::vmobject_for_mmap(Process&, Memory::VirtualRange const& range, u64& offset, bool shared)
 {
-    // FIXME: If PROT_EXEC, check that the underlying file system isn't mounted noexec.
-    RefPtr<Memory::InodeVMObject> vmobject;
     if (shared)
-        vmobject = TRY(Memory::SharedInodeVMObject::try_create_with_inode(inode()));
-    else
-        vmobject = TRY(Memory::PrivateInodeVMObject::try_create_with_inode(inode()));
-    auto path = TRY(description.pseudo_path());
-    return process.address_space().allocate_region_with_vmobject(range, vmobject.release_nonnull(), offset, path->view(), prot, shared);
+        return TRY(Memory::SharedInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size()));
+    return TRY(Memory::PrivateInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size()));
 }
 
-ErrorOr<NonnullOwnPtr<KString>> InodeFile::pseudo_path(const OpenFileDescription&) const
+ErrorOr<NonnullOwnPtr<KString>> InodeFile::pseudo_path(OpenFileDescription const&) const
 {
     // If it has an inode, then it has a path, and therefore the caller should have been able to get a custody at some point.
     VERIFY_NOT_REACHED();
@@ -102,7 +96,7 @@ ErrorOr<NonnullOwnPtr<KString>> InodeFile::pseudo_path(const OpenFileDescription
 ErrorOr<void> InodeFile::truncate(u64 size)
 {
     TRY(m_inode->truncate(size));
-    TRY(m_inode->set_mtime(kgettimeofday().to_truncated_seconds()));
+    TRY(m_inode->update_timestamps({}, {}, kgettimeofday()));
     return {};
 }
 
@@ -112,18 +106,23 @@ ErrorOr<void> InodeFile::sync()
     return {};
 }
 
-ErrorOr<void> InodeFile::chown(OpenFileDescription& description, UserID uid, GroupID gid)
+ErrorOr<void> InodeFile::chown(Credentials const& credentials, OpenFileDescription& description, UserID uid, GroupID gid)
 {
     VERIFY(description.inode() == m_inode);
     VERIFY(description.custody());
-    return VirtualFileSystem::the().chown(*description.custody(), uid, gid);
+    return VirtualFileSystem::the().chown(credentials, *description.custody(), uid, gid);
 }
 
-ErrorOr<void> InodeFile::chmod(OpenFileDescription& description, mode_t mode)
+ErrorOr<void> InodeFile::chmod(Credentials const& credentials, OpenFileDescription& description, mode_t mode)
 {
     VERIFY(description.inode() == m_inode);
     VERIFY(description.custody());
-    return VirtualFileSystem::the().chmod(*description.custody(), mode);
+    return VirtualFileSystem::the().chmod(credentials, *description.custody(), mode);
+}
+
+bool InodeFile::is_regular_file() const
+{
+    return inode().metadata().is_regular_file();
 }
 
 }

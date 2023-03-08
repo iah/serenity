@@ -21,8 +21,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::pledge("stdio cpath rpath"));
 
     bool create_parents = false;
-    String mode_string;
-    Vector<const char*> directories;
+    DeprecatedString mode_string;
+    Vector<DeprecatedString> directories;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(create_parents, "Create parent directories if they don't exist", "parents", 'p');
@@ -54,7 +54,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
         StringBuilder path_builder;
         if (lexical_path.is_absolute())
-            path_builder.append("/");
+            path_builder.append('/');
 
         auto& parts = lexical_path.parts_view();
         size_t num_parts = parts.size();
@@ -63,7 +63,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             auto& part = parts[idx];
 
             path_builder.append(part);
-            auto path = path_builder.build();
+            auto path = path_builder.to_deprecated_string();
 
             struct stat st;
             if (stat(path.characters(), &st) < 0) {
@@ -88,7 +88,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     break;
                 }
             }
-            path_builder.append("/");
+            path_builder.append('/');
         }
     }
     return has_errors ? 1 : 0;

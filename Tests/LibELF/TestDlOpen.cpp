@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibDl/dlfcn.h>
 #include <LibTest/TestCase.h>
+#include <dlfcn.h>
 
 TEST_CASE(test_dlopen)
 {
@@ -22,4 +22,25 @@ TEST_CASE(test_dlopen)
     dynlib_func_t func_b = (dynlib_func_t)dlsym(libb, "dynlibb_function");
     EXPECT_NE(func_b, nullptr);
     EXPECT_EQ(0, func_b());
+}
+
+TEST_CASE(test_dlsym_rtld_default)
+{
+    auto libd = dlopen("/usr/Tests/LibELF/libDynlibD.so", 0);
+    EXPECT_NE(libd, nullptr);
+    if (libd == nullptr) {
+        warnln("can't open libDynlibD.so, {}", dlerror());
+        return;
+    }
+
+    typedef int (*dynlib_func_t)();
+    dynlib_func_t func_c = (dynlib_func_t)dlsym(RTLD_DEFAULT, "dynlibc_function");
+    EXPECT_NE(func_c, nullptr);
+    EXPECT_EQ(0, func_c());
+
+    dynlib_func_t func_d = (dynlib_func_t)dlsym(RTLD_DEFAULT, "dynlibd_function");
+    EXPECT_NE(func_d, nullptr);
+    EXPECT_EQ(0, func_d());
+
+    dlclose(libd);
 }

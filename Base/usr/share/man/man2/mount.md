@@ -20,7 +20,7 @@ over `target`.
 * `Ext2FS` (or `ext2`): The ext2 filesystem.
 * `ProcFS` (or `proc`): The process pseudo-filesystem (normally mounted at `/proc`).
 * `DevPtsFS` (or `devpts`): The pseudoterminal pseudo-filesystem (normally mounted at `/dev/pts`).
-* `TmpFS` (or `tmp`): A non-persistent filesystem that stores all its data in RAM. An instance of this filesystem is normally mounted at `/tmp`.
+* `RAMFS` (or `ram`): A non-persistent filesystem that stores all its data in RAM. An instance of this filesystem is normally mounted at `/tmp`.
 * `Plan9FS` (or `9p`): A remote filesystem served over the 9P protocol.
 
 For Ext2FS, `source_fd` must refer to an open file descriptor to a file
@@ -37,6 +37,9 @@ The following `flags` are supported:
 * `MS_BIND`: Perform a bind-mount (see below).
 * `MS_RDONLY`: Mount the filesystem read-only.
 * `MS_REMOUNT`: Remount an already mounted filesystem (see below).
+* `MS_WXALLOWED`: Allow W^X protection circumvention for executables on this file system.
+* `MS_AXALLOWED`: Allow anonymous executable mappings for executables on this file system.
+* `MS_NOREGULAR`: Disallow opening any regular files from this file system.
 
 These flags can be used as a security measure to limit the possible abuses of the newly
 mounted file system.

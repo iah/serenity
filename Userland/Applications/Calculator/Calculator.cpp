@@ -6,97 +6,144 @@
  */
 
 #include "Calculator.h"
-#include "KeypadValue.h"
 #include <AK/Assertions.h>
 #include <AK/Math.h>
+#include <LibCrypto/BigFraction/BigFraction.h>
 
-KeypadValue Calculator::begin_operation(Operation operation, KeypadValue argument)
+Optional<Crypto::BigFraction> Calculator::operation_with_literal_argument(Operation operation, Crypto::BigFraction argument)
 {
-    KeypadValue res = 0;
+    // Support binary operations with percentages, for example "2+3%" == 2.06
+    if (m_binary_operation_in_progress != Operation::None && operation == Operation::Percent) {
+        argument = m_binary_operation_saved_left_side * Crypto::BigFraction { 1, 100 } * argument;
+        operation = Operation::None; // Don't apply the "%" operation twice
+    }
+
+    // If a previous operation is still in progress, finish it
+    // Makes hitting "1+2+3=" equivalent to hitting "1+2=+3="
+    if (m_binary_operation_in_progress != Operation::None) {
+        argument = finish_binary_operation(m_binary_operation_saved_left_side, m_binary_operation_in_progress, argument);
+    }
 
     switch (operation) {
     case Operation::None:
-        VERIFY_NOT_REACHED();
+        m_current_value = argument;
+        break;
 
     case Operation::Add:
     case Operation::Subtract:
     case Operation::Multiply:
     case Operation::Divide:
-        m_saved_argument = argument;
-        m_operation_in_progress = operation;
-        return argument;
+        m_binary_operation_saved_left_side = argument;
+        m_binary_operation_in_progress = operation;
+        m_current_value = argument;
+        break;
 
     case Operation::Sqrt:
-        if (argument < 0) {
+        if (argument < Crypto::BigFraction {}) {
             m_has_error = true;
-            return argument;
+            m_current_value = argument;
+            break;
         }
-        res = argument.sqrt();
+        m_current_value = argument.sqrt();
         clear_operation();
         break;
     case Operation::Inverse:
-        if (argument == 0) {
+        if (argument == Crypto::BigFraction {}) {
             m_has_error = true;
-            return argument;
+            m_current_value = argument;
+            break;
         }
-        res = argument.invert();
+        m_current_value = argument.invert();
         clear_operation();
         break;
     case Operation::Percent:
-        res = argument * KeypadValue { 1, 2 }; // also known as `KeypadValue{0.01}`
+        m_current_value = argument * Crypto::BigFraction { 1, 100 };
         break;
     case Operation::ToggleSign:
-        res = -argument;
+        m_current_value = -argument;
         break;
 
     case Operation::MemClear:
-        m_mem = 0;
-        res = argument;
+        m_mem.set_to_0();
+        m_current_value = argument;
         break;
     case Operation::MemRecall:
-        res = m_mem;
+        m_current_value = m_mem;
         break;
     case Operation::MemSave:
         m_mem = argument;
-        res = argument;
+        m_current_value = argument;
         break;
     case Operation::MemAdd:
         m_mem = m_mem + argument; // avoids the need for operator+=()
-        res = m_mem;
+        m_current_value = m_mem;
+        break;
+    case Operation::Equals:
+        m_current_value = argument;
         break;
     }
 
-    if (should_be_rounded(res))
-        round(res);
-
-    return res;
+    return m_current_value;
 }
 
-KeypadValue Calculator::finish_operation(KeypadValue argument)
+static bool operation_is_binary(Calculator::Operation operation)
 {
-    KeypadValue res = 0;
+    switch (operation) {
 
-    switch (m_operation_in_progress) {
-    case Operation::None:
-        return argument;
+    case Calculator::Operation::Add:
+    case Calculator::Operation::Subtract:
+    case Calculator::Operation::Multiply:
+    case Calculator::Operation::Divide:
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+Optional<Crypto::BigFraction> Calculator::operation_without_argument(Operation operation)
+{
+    bool in_binary_operation = m_binary_operation_in_progress != Operation::None;
+    bool entering_new_binary_operation = operation_is_binary(operation);
+    bool previous_operation_was_binary = operation_is_binary(m_previous_operation);
+
+    if (in_binary_operation && entering_new_binary_operation) {
+        m_binary_operation_in_progress = operation;
+        return {};
+    }
+    if (!in_binary_operation && previous_operation_was_binary && operation == Operation::Equals) {
+        m_current_value = finish_binary_operation(m_current_value, m_previous_operation, m_previous_binary_operation_right_side);
+        return m_current_value;
+    }
+    return operation_with_literal_argument(operation, m_current_value);
+}
+
+Crypto::BigFraction Calculator::finish_binary_operation(Crypto::BigFraction const& left_side, Operation operation, Crypto::BigFraction const& right_side)
+{
+    Crypto::BigFraction res {};
+
+    m_previous_binary_operation_right_side = right_side;
+
+    switch (operation) {
 
     case Operation::Add:
-        res = m_saved_argument + argument;
+        res = left_side + right_side;
         break;
     case Operation::Subtract:
-        res = m_saved_argument - argument;
+        res = left_side - right_side;
         break;
     case Operation::Multiply:
-        res = m_saved_argument * argument;
+        res = left_side * right_side;
         break;
     case Operation::Divide:
-        if (argument == 0) {
+        if (right_side == Crypto::BigFraction {}) {
             m_has_error = true;
-            return argument;
+        } else {
+            res = left_side / right_side;
         }
-        res = m_saved_argument / argument;
         break;
 
+    case Operation::None:
     case Operation::Sqrt:
     case Operation::Inverse:
     case Operation::Percent:
@@ -105,11 +152,9 @@ KeypadValue Calculator::finish_operation(KeypadValue argument)
     case Operation::MemRecall:
     case Operation::MemSave:
     case Operation::MemAdd:
+    case Operation::Equals:
         VERIFY_NOT_REACHED();
     }
-
-    if (should_be_rounded(res))
-        round(res);
 
     clear_operation();
     return res;
@@ -117,33 +162,10 @@ KeypadValue Calculator::finish_operation(KeypadValue argument)
 
 void Calculator::clear_operation()
 {
-    m_operation_in_progress = Operation::None;
-    m_saved_argument = 0;
-    clear_error();
-}
-
-bool Calculator::should_be_rounded(KeypadValue value)
-{
-    // We check if pow(10, value.m_decimal_places) overflow.
-    // If it does, the value can't be displayed (and provoke a division by zero), see Keypad::set_value()
-    // For u64, the threshold is 19
-    return value.m_decimal_places > rounding_threshold;
-}
-
-void Calculator::round(KeypadValue& value)
-{
-    while (value.m_decimal_places > rounding_threshold) {
-        bool const need_increment = value.m_value % 10 > 4;
-
-        value.m_value /= 10;
-        if (need_increment)
-            value.m_value++;
-
-        value.m_decimal_places--;
-
-        if (value.m_value == 0) {
-            value = 0;
-            return;
-        }
+    if (m_binary_operation_in_progress != Operation::None) {
+        m_previous_operation = m_binary_operation_in_progress;
+        m_binary_operation_in_progress = Operation::None;
     }
+    m_binary_operation_saved_left_side.set_to_0();
+    clear_error();
 }

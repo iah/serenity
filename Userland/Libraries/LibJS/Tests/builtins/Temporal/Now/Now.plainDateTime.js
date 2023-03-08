@@ -33,16 +33,19 @@ describe("correct behavior", () => {
         const calendar = new Temporal.Calendar("iso8601");
         const timeZone = {
             getOffsetNanosecondsFor() {
-                return 86400000000000;
+                return 86399999999999;
             },
         };
 
-        const plainDateTime = Temporal.Now.plainDateTime(calendar, "UTC");
-        const plainDateTimeWithOffset = Temporal.Now.plainDateTime(calendar, timeZone);
+        const [plainDateTime, plainDateTimeWithOffset] = withinSameSecond(() => {
+            return [
+                Temporal.Now.plainDateTime(calendar, "UTC"),
+                Temporal.Now.plainDateTime(calendar, timeZone),
+            ];
+        });
 
         if (plainDateTime.year !== plainDateTimeWithOffset.year) return;
 
-        // Let's hope the duration between the above two lines is less than a second :^)
         const differenceSeconds =
             plainDateTimeToEpochSeconds(plainDateTimeWithOffset) -
             plainDateTimeToEpochSeconds(plainDateTime);
@@ -54,16 +57,19 @@ describe("correct behavior", () => {
         const calendar = new Temporal.Calendar("iso8601");
         const timeZone = {
             getOffsetNanosecondsFor() {
-                return -86400000000000;
+                return -86399999999999;
             },
         };
 
-        const plainDateTime = Temporal.Now.plainDateTime(calendar, "UTC");
-        const plainDateTimeWithOffset = Temporal.Now.plainDateTime(calendar, timeZone);
+        const [plainDateTime, plainDateTimeWithOffset] = withinSameSecond(() => {
+            return [
+                Temporal.Now.plainDateTime(calendar, "UTC"),
+                Temporal.Now.plainDateTime(calendar, timeZone),
+            ];
+        });
 
         if (plainDateTime.year !== plainDateTimeWithOffset.year) return;
 
-        // Let's hope the duration between the above two lines is less than a second :^)
         const differenceSeconds =
             plainDateTimeToEpochSeconds(plainDateTimeWithOffset) -
             plainDateTimeToEpochSeconds(plainDateTime);
@@ -72,6 +78,21 @@ describe("correct behavior", () => {
     });
 
     expect(timeZoneTested).toBeTrue();
+
+    test("cannot have a time zone with more than a day", () => {
+        [86400000000000, -86400000000000, 86400000000001, 86400000000002].forEach(offset => {
+            const calendar = new Temporal.Calendar("iso8601");
+            const timeZone = {
+                getOffsetNanosecondsFor() {
+                    return offset;
+                },
+            };
+            expect(() => Temporal.Now.plainDateTime(calendar, timeZone)).toThrowWithMessage(
+                RangeError,
+                "Invalid offset nanoseconds value, must be in range -86400 * 10^9 + 1 to 86400 * 10^9 - 1"
+            );
+        });
+    });
 });
 
 describe("errors", () => {

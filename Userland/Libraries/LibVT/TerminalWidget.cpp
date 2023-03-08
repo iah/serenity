@@ -1,13 +1,14 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "TerminalWidget.h"
+#include <AK/DeprecatedString.h>
 #include <AK/LexicalPath.h>
 #include <AK/StdLibExtras.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Utf32View.h>
@@ -26,14 +27,13 @@
 #include <LibGUI/Painter.h>
 #include <LibGUI/Scrollbar.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/Font.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/Font.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -83,21 +83,24 @@ TerminalWidget::TerminalWidget(int ptm_fd, bool automatic_size_policy)
 
     set_override_cursor(Gfx::StandardCursor::IBeam);
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
-    set_accepts_emoji_input(true);
     set_pty_master_fd(ptm_fd);
+
+    on_emoji_input = [this](auto emoji) {
+        inject_string(emoji);
+    };
+
     m_cursor_blink_timer = add<Core::Timer>();
     m_visual_beep_timer = add<Core::Timer>();
     m_auto_scroll_timer = add<Core::Timer>();
 
     m_scrollbar = add<GUI::Scrollbar>(Orientation::Vertical);
+    m_scrollbar->set_scroll_animation(GUI::Scrollbar::Animation::CoarseScroll);
     m_scrollbar->set_relative_rect(0, 0, 16, 0);
     m_scrollbar->on_change = [this](int) {
         update();
     };
 
-    m_cursor_blink_timer->set_interval(Config::read_i32("Terminal", "Text",
-        "CursorBlinkInterval",
-        500));
+    m_cursor_blink_timer->set_interval(Config::read_i32("Terminal"sv, "Text"sv, "CursorBlinkInterval"sv, 500));
     m_cursor_blink_timer->on_timeout = [this] {
         m_cursor_blink_state = !m_cursor_blink_state;
         update_cursor();
@@ -112,22 +115,22 @@ TerminalWidget::TerminalWidget(int ptm_fd, bool automatic_size_policy)
     };
     m_auto_scroll_timer->start();
 
-    auto font_entry = Config::read_string("Terminal", "Text", "Font", "default");
+    auto font_entry = Config::read_string("Terminal"sv, "Text"sv, "Font"sv, "default"sv);
     if (font_entry == "default")
         set_font(Gfx::FontDatabase::default_fixed_width_font());
     else
         set_font(Gfx::FontDatabase::the().get_by_name(font_entry));
 
-    m_line_height = font().glyph_height() + m_line_spacing;
+    update_cached_font_metrics();
 
-    m_terminal.set_size(Config::read_i32("Terminal", "Window", "Width", 80), Config::read_i32("Terminal", "Window", "Height", 25));
+    m_terminal.set_size(Config::read_i32("Terminal"sv, "Window"sv, "Width"sv, 80), Config::read_i32("Terminal"sv, "Window"sv, "Height"sv, 25));
 
-    m_copy_action = GUI::Action::create("&Copy", { Mod_Ctrl | Mod_Shift, Key_C }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/edit-copy.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+    m_copy_action = GUI::Action::create("&Copy", { Mod_Ctrl | Mod_Shift, Key_C }, Gfx::Bitmap::load_from_file("/res/icons/16x16/edit-copy.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
         copy();
     });
     m_copy_action->set_swallow_key_event_when_disabled(true);
 
-    m_paste_action = GUI::Action::create("&Paste", { Mod_Ctrl | Mod_Shift, Key_V }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/paste.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+    m_paste_action = GUI::Action::create("&Paste", { Mod_Ctrl | Mod_Shift, Key_V }, Gfx::Bitmap::load_from_file("/res/icons/16x16/paste.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
         paste();
     });
     m_paste_action->set_swallow_key_event_when_disabled(true);
@@ -144,25 +147,20 @@ TerminalWidget::TerminalWidget(int ptm_fd, bool automatic_size_policy)
 
     update_copy_action();
     update_paste_action();
-
-    set_color_scheme(Config::read_string("Terminal", "Window", "ColorScheme", "Default"));
-}
-
-TerminalWidget::~TerminalWidget()
-{
+    update_color_scheme();
 }
 
 Gfx::IntRect TerminalWidget::glyph_rect(u16 row, u16 column)
 {
     int y = row * m_line_height;
-    int x = column * font().glyph_width('x');
-    return { x + frame_thickness() + m_inset, y + frame_thickness() + m_inset, font().glyph_width('x'), font().glyph_height() };
+    int x = column * m_column_width;
+    return { x + frame_thickness() + m_inset, y + frame_thickness() + m_inset, m_column_width, m_cell_height };
 }
 
 Gfx::IntRect TerminalWidget::row_rect(u16 row)
 {
     int y = row * m_line_height;
-    Gfx::IntRect rect = { frame_thickness() + m_inset, y + frame_thickness() + m_inset, font().glyph_width('x') * m_terminal.columns(), font().glyph_height() };
+    Gfx::IntRect rect = { frame_thickness() + m_inset, y + frame_thickness() + m_inset, m_column_width * m_terminal.columns(), m_cell_height };
     rect.inflate(0, m_line_spacing);
     return rect;
 }
@@ -172,7 +170,9 @@ void TerminalWidget::set_logical_focus(bool focus)
     m_has_logical_focus = focus;
     if (!m_has_logical_focus) {
         m_cursor_blink_timer->stop();
-    } else {
+        m_cursor_blink_state = true;
+    } else if (m_cursor_is_blinking_set) {
+        m_cursor_blink_timer->stop();
         m_cursor_blink_state = true;
         m_cursor_blink_timer->start();
     }
@@ -195,7 +195,9 @@ void TerminalWidget::focusout_event(GUI::FocusEvent& event)
 
 void TerminalWidget::event(Core::Event& event)
 {
-    if (event.type() == GUI::Event::WindowBecameActive)
+    if (event.type() == GUI::Event::ThemeChange)
+        update_color_scheme();
+    else if (event.type() == GUI::Event::WindowBecameActive)
         set_logical_focus(true);
     else if (event.type() == GUI::Event::WindowBecameInactive)
         set_logical_focus(false);
@@ -204,15 +206,22 @@ void TerminalWidget::event(Core::Event& event)
 
 void TerminalWidget::keydown_event(GUI::KeyEvent& event)
 {
+    // We specifically need to process shortcuts before input to the Terminal is done
+    // since otherwise escape sequences will eat all our shortcuts for dinner.
+    window()->propagate_shortcuts_up_to_application(event, this);
+    if (event.is_accepted())
+        return;
+
     if (m_ptm_fd == -1) {
-        event.ignore();
         return GUI::Frame::keydown_event(event);
     }
 
     // Reset timer so cursor doesn't blink while typing.
-    m_cursor_blink_timer->stop();
-    m_cursor_blink_state = true;
-    m_cursor_blink_timer->start();
+    if (m_cursor_is_blinking_set) {
+        m_cursor_blink_timer->stop();
+        m_cursor_blink_state = true;
+        m_cursor_blink_timer->start();
+    }
 
     if (event.key() == KeyCode::Key_PageUp && event.modifiers() == Mod_Shift) {
         m_scrollbar->decrease_slider_by(m_terminal.rows());
@@ -317,7 +326,7 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
 
         for (size_t column = 0; column < line.length(); ++column) {
             bool should_reverse_fill_for_cursor_or_selection = m_cursor_blink_state
-                && (m_cursor_style == VT::CursorStyle::SteadyBlock || m_cursor_style == VT::CursorStyle::BlinkingBlock)
+                && m_cursor_shape == VT::CursorShape::Block
                 && m_has_logical_focus
                 && visual_row == row_with_cursor
                 && column == m_terminal.cursor_column();
@@ -344,7 +353,7 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
             auto underline_style = UnderlineStyle::None;
             auto underline_color = text_color;
 
-            if (attribute.flags & VT::Attribute::Underline) {
+            if (has_flag(attribute.flags, VT::Attribute::Flags::Underline)) {
                 // Content has specified underline
                 underline_style = UnderlineStyle::Solid;
             } else if (!attribute.href.is_empty()) {
@@ -391,7 +400,7 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
         for (size_t column = 0; column < line.length(); ++column) {
             auto attribute = line.attribute_at(column);
             bool should_reverse_fill_for_cursor_or_selection = m_cursor_blink_state
-                && (m_cursor_style == VT::CursorStyle::SteadyBlock || m_cursor_style == VT::CursorStyle::BlinkingBlock)
+                && m_cursor_shape == VT::CursorShape::Block
                 && m_has_logical_focus
                 && visual_row == row_with_cursor
                 && column == m_terminal.cursor_column();
@@ -412,7 +421,7 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
             painter.draw_glyph_or_emoji(
                 character_rect.location(),
                 code_point,
-                attribute.flags & VT::Attribute::Bold ? bold_font : font,
+                has_flag(attribute.flags, VT::Attribute::Flags::Bold) ? bold_font : font,
                 text_color);
         }
     }
@@ -423,18 +432,18 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
         if (m_terminal.cursor_row() >= (m_terminal.rows() - rows_from_history))
             return;
 
-        if (m_has_logical_focus && (m_cursor_style == VT::CursorStyle::BlinkingBlock || m_cursor_style == VT::CursorStyle::SteadyBlock))
+        if (m_has_logical_focus && m_cursor_shape == VT::CursorShape::Block)
             return; // This has already been handled by inverting the cell colors
 
         auto cursor_color = terminal_color_to_rgb(cursor_line.attribute_at(m_terminal.cursor_column()).effective_foreground_color());
         auto cell_rect = glyph_rect(row_with_cursor, m_terminal.cursor_column()).inflated(0, m_line_spacing);
-        if (m_cursor_style == VT::CursorStyle::BlinkingUnderline || m_cursor_style == VT::CursorStyle::SteadyUnderline) {
+        if (m_cursor_shape == VT::CursorShape::Underline) {
             auto x1 = cell_rect.bottom_left().x();
             auto x2 = cell_rect.bottom_right().x();
             auto y = cell_rect.bottom_left().y();
             for (auto x = x1; x <= x2; ++x)
                 painter.set_pixel({ x, y }, cursor_color);
-        } else if (m_cursor_style == VT::CursorStyle::BlinkingBar || m_cursor_style == VT::CursorStyle::SteadyBar) {
+        } else if (m_cursor_shape == VT::CursorShape::Bar) {
             auto x = cell_rect.bottom_left().x();
             auto y1 = cell_rect.top_left().y();
             auto y2 = cell_rect.bottom_left().y();
@@ -494,7 +503,7 @@ void TerminalWidget::resize_event(GUI::ResizeEvent& event)
     relayout(event.size());
 }
 
-void TerminalWidget::relayout(const Gfx::IntSize& size)
+void TerminalWidget::relayout(Gfx::IntSize size)
 {
     if (!m_scrollbar)
         return;
@@ -502,7 +511,7 @@ void TerminalWidget::relayout(const Gfx::IntSize& size)
     TemporaryChange change(m_in_relayout, true);
 
     auto base_size = compute_base_size();
-    int new_columns = (size.width() - base_size.width()) / font().glyph_width('x');
+    int new_columns = (size.width() - base_size.width()) / m_column_width;
     int new_rows = (size.height() - base_size.height()) / m_line_height;
     m_terminal.set_size(new_columns, new_rows);
 
@@ -525,7 +534,7 @@ Gfx::IntSize TerminalWidget::compute_base_size() const
 
 void TerminalWidget::apply_size_increments_to_window(GUI::Window& window)
 {
-    window.set_size_increment({ font().glyph_width('x'), m_line_height });
+    window.set_size_increment({ m_column_width, m_line_height });
     window.set_base_size(compute_base_size());
 }
 
@@ -582,11 +591,11 @@ bool TerminalWidget::selection_contains(const VT::Position& position) const
     return position >= normalized_selection.start() && position <= normalized_selection.end();
 }
 
-VT::Position TerminalWidget::buffer_position_at(const Gfx::IntPoint& position) const
+VT::Position TerminalWidget::buffer_position_at(Gfx::IntPoint position) const
 {
     auto adjusted_position = position.translated(-(frame_thickness() + m_inset), -(frame_thickness() + m_inset));
     int row = adjusted_position.y() / m_line_height;
-    int column = adjusted_position.x() / font().glyph_width('x');
+    int column = adjusted_position.x() / m_column_width;
     if (row < 0)
         row = 0;
     if (column < 0)
@@ -662,15 +671,27 @@ VT::Range TerminalWidget::find_next(StringView needle, const VT::Position& start
     VT::Position start_of_potential_match;
     size_t needle_index = 0;
 
+    Utf8View unicode_needle(needle);
+    Vector<u32> needle_code_points;
+    for (u32 code_point : unicode_needle)
+        needle_code_points.append(code_point);
+
     do {
         auto ch = code_point_at(position);
-        // FIXME: This is not the right way to use a Unicode needle!
-        auto needle_ch = (u32)needle[needle_index];
-        if (case_sensitivity ? ch == needle_ch : to_lowercase_code_point(ch) == to_lowercase_code_point(needle_ch)) {
+
+        bool code_point_matches = false;
+        if (needle_index >= needle_code_points.size())
+            code_point_matches = false;
+        else if (case_sensitivity)
+            code_point_matches = ch == needle_code_points[needle_index];
+        else
+            code_point_matches = to_lowercase_code_point(ch) == to_lowercase_code_point(needle_code_points[needle_index]);
+
+        if (code_point_matches) {
             if (needle_index == 0)
                 start_of_potential_match = position;
             ++needle_index;
-            if (needle_index >= needle.length())
+            if (needle_index >= needle_code_points.size())
                 return { start_of_potential_match, position };
         } else {
             if (needle_index > 0)
@@ -691,23 +712,35 @@ VT::Range TerminalWidget::find_previous(StringView needle, const VT::Position& s
     VT::Position position = start.is_valid() ? start : VT::Position(m_terminal.line_count() - 1, m_terminal.line(m_terminal.line_count() - 1).length() - 1);
     VT::Position original_position = position;
 
+    Utf8View unicode_needle(needle);
+    Vector<u32> needle_code_points;
+    for (u32 code_point : unicode_needle)
+        needle_code_points.append(code_point);
+
     VT::Position end_of_potential_match;
-    size_t needle_index = needle.length() - 1;
+    size_t needle_index = needle_code_points.size() - 1;
 
     do {
         auto ch = code_point_at(position);
-        // FIXME: This is not the right way to use a Unicode needle!
-        auto needle_ch = (u32)needle[needle_index];
-        if (case_sensitivity ? ch == needle_ch : to_lowercase_code_point(ch) == to_lowercase_code_point(needle_ch)) {
-            if (needle_index == needle.length() - 1)
+
+        bool code_point_matches = false;
+        if (needle_index >= needle_code_points.size())
+            code_point_matches = false;
+        else if (case_sensitivity)
+            code_point_matches = ch == needle_code_points[needle_index];
+        else
+            code_point_matches = to_lowercase_code_point(ch) == to_lowercase_code_point(needle_code_points[needle_index]);
+
+        if (code_point_matches) {
+            if (needle_index == needle_code_points.size() - 1)
                 end_of_potential_match = position;
             if (needle_index == 0)
                 return { position, end_of_potential_match };
             --needle_index;
         } else {
-            if (needle_index < needle.length() - 1)
+            if (needle_index < needle_code_points.size() - 1)
                 position = end_of_potential_match;
-            needle_index = needle.length() - 1;
+            needle_index = needle_code_points.size() - 1;
         }
         position = previous_position_before(position, should_wrap);
     } while (position.is_valid() && position != original_position);
@@ -755,7 +788,7 @@ void TerminalWidget::paste()
         return;
 
     auto [data, mime_type, _] = GUI::Clipboard::the().fetch_data_and_type();
-    if (!mime_type.starts_with("text/"))
+    if (!mime_type.starts_with("text/"sv))
         return;
     if (data.is_empty())
         return;
@@ -786,6 +819,8 @@ void TerminalWidget::mouseup_event(GUI::MouseEvent& event)
 
 void TerminalWidget::mousedown_event(GUI::MouseEvent& event)
 {
+    using namespace AK::TimeLiterals;
+
     if (event.button() == GUI::MouseButton::Primary) {
         m_left_mousedown_position = event.position();
         m_left_mousedown_position_buffer = buffer_position_at(m_left_mousedown_position);
@@ -800,7 +835,7 @@ void TerminalWidget::mousedown_event(GUI::MouseEvent& event)
         m_active_href = {};
         m_active_href_id = {};
 
-        if (m_triple_click_timer.is_valid() && m_triple_click_timer.elapsed() < 250) {
+        if (m_triple_click_timer.is_valid() && m_triple_click_timer.elapsed_time() < 250_ms) {
             int start_column = 0;
             int end_column = m_terminal.columns() - 1;
 
@@ -825,22 +860,34 @@ void TerminalWidget::mousemove_event(GUI::MouseEvent& event)
     auto attribute = m_terminal.attribute_at(position);
 
     if (attribute.href_id != m_hovered_href_id) {
-        if (m_active_href_id.is_null() || m_active_href_id == attribute.href_id) {
+        if (!attribute.href_id.is_null()) {
             m_hovered_href_id = attribute.href_id;
             m_hovered_href = attribute.href;
 
             auto handlers = Desktop::Launcher::get_handlers_for_url(attribute.href);
             if (!handlers.is_empty()) {
-                auto path = URL(attribute.href).path();
-                auto name = LexicalPath::basename(path);
-                if (path == handlers[0])
-                    set_tooltip(String::formatted("Execute {}", name));
-                else
-                    set_tooltip(String::formatted("Open {} with {}", name, LexicalPath::basename(handlers[0])));
+                auto url = URL(attribute.href);
+                auto path = url.path();
+
+                auto app_file = Desktop::AppFile::get_for_app(LexicalPath::basename(handlers[0]));
+                auto app_name = app_file->is_valid() ? app_file->name() : LexicalPath::basename(handlers[0]);
+
+                if (url.scheme() == "file") {
+                    auto file_name = LexicalPath::basename(path);
+
+                    if (path == handlers[0]) {
+                        set_tooltip(DeprecatedString::formatted("Execute {}", app_name));
+                    } else {
+                        set_tooltip(DeprecatedString::formatted("Open {} with {}", file_name, app_name));
+                    }
+                } else {
+                    set_tooltip(DeprecatedString::formatted("Open {} with {}", attribute.href, app_name));
+                }
             }
         } else {
             m_hovered_href_id = {};
             m_hovered_href = {};
+            set_tooltip({});
         }
         show_or_hide_tooltip();
         if (!m_hovered_href.is_empty())
@@ -933,7 +980,7 @@ int TerminalWidget::scroll_length() const
     return m_scrollbar->step();
 }
 
-String TerminalWidget::selected_text() const
+DeprecatedString TerminalWidget::selected_text() const
 {
     StringBuilder builder;
 
@@ -959,7 +1006,7 @@ String TerminalWidget::selected_text() const
         }
     }
 
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
 int TerminalWidget::first_selection_column_on_row(int row) const
@@ -1020,7 +1067,7 @@ void TerminalWidget::beep()
         return;
     }
     if (m_bell_mode == BellMode::AudibleBeep) {
-        sysbeep();
+        sysbeep(440);
         return;
     }
     m_visual_beep_timer->restart(200);
@@ -1031,37 +1078,33 @@ void TerminalWidget::beep()
     update();
 }
 
-void TerminalWidget::emit(const u8* data, size_t size)
+void TerminalWidget::emit(u8 const* data, size_t size)
 {
     if (write(m_ptm_fd, data, size) < 0) {
         perror("TerminalWidget::emit: write");
     }
 }
 
-void TerminalWidget::set_cursor_style(CursorStyle style)
+void TerminalWidget::set_cursor_blinking(bool blinking)
 {
-    switch (style) {
-    case None:
-        m_cursor_blink_timer->stop();
-        m_cursor_blink_state = false;
-        break;
-    case SteadyBlock:
-    case SteadyUnderline:
-    case SteadyBar:
+    if (blinking) {
         m_cursor_blink_timer->stop();
         m_cursor_blink_state = true;
-        break;
-    case BlinkingBlock:
-    case BlinkingUnderline:
-    case BlinkingBar:
+        m_cursor_blink_timer->start();
+        m_cursor_is_blinking_set = true;
+    } else {
+        m_cursor_blink_timer->stop();
         m_cursor_blink_state = true;
-        m_cursor_blink_timer->restart();
-        break;
-    default:
-        dbgln("Cursor style not implemented");
+        m_cursor_is_blinking_set = false;
     }
-    m_cursor_style = style;
     invalidate_cursor();
+}
+
+void TerminalWidget::set_cursor_shape(CursorShape shape)
+{
+    m_cursor_shape = shape;
+    invalidate_cursor();
+    update();
 }
 
 void TerminalWidget::context_menu_event(GUI::ContextMenuEvent& event)
@@ -1088,7 +1131,7 @@ void TerminalWidget::context_menu_event(GUI::ContextMenuEvent& event)
             auto af = Desktop::AppFile::get_for_app(LexicalPath::basename(handler));
             if (!af->is_valid())
                 continue;
-            auto action = GUI::Action::create(String::formatted("&Open in {}", af->name()), af->icon().bitmap_for_size(16), [this, handler](auto&) {
+            auto action = GUI::Action::create(DeprecatedString::formatted("&Open in {}", af->name()), af->icon().bitmap_for_size(16), [this, handler](auto&) {
                 Desktop::Launcher::open(m_context_menu_href, handler);
             });
 
@@ -1116,6 +1159,13 @@ void TerminalWidget::context_menu_event(GUI::ContextMenuEvent& event)
     }
 }
 
+void TerminalWidget::drag_enter_event(GUI::DragEvent& event)
+{
+    auto const& mime_types = event.mime_types();
+    if (mime_types.contains_slow("text/plain") || mime_types.contains_slow("text/uri-list"))
+        event.accept();
+}
+
 void TerminalWidget::drop_event(GUI::DropEvent& event)
 {
     if (event.mime_data().has_urls()) {
@@ -1126,10 +1176,10 @@ void TerminalWidget::drop_event(GUI::DropEvent& event)
             if (!first)
                 send_non_user_input(" "sv.bytes());
 
-            if (url.protocol() == "file")
+            if (url.scheme() == "file")
                 send_non_user_input(url.path().bytes());
             else
-                send_non_user_input(url.to_string().bytes());
+                send_non_user_input(url.to_deprecated_string().bytes());
 
             first = false;
         }
@@ -1143,9 +1193,22 @@ void TerminalWidget::drop_event(GUI::DropEvent& event)
 void TerminalWidget::did_change_font()
 {
     GUI::Frame::did_change_font();
-    m_line_height = font().glyph_height() + m_line_spacing;
+    update_cached_font_metrics();
     if (!size().is_empty())
         relayout(size());
+}
+
+static void collect_font_metrics(Gfx::Font const& font, int& column_width, int& cell_height, int& line_height, int& line_spacing)
+{
+    line_spacing = 4;
+    column_width = static_cast<int>(ceilf(font.glyph_width('x')));
+    cell_height = font.pixel_size_rounded_up();
+    line_height = cell_height + line_spacing;
+}
+
+void TerminalWidget::update_cached_font_metrics()
+{
+    collect_font_metrics(font(), m_column_width, m_cell_height, m_line_height, m_line_spacing);
 }
 
 void TerminalWidget::clear_including_history()
@@ -1171,70 +1234,49 @@ void TerminalWidget::update_copy_action()
 void TerminalWidget::update_paste_action()
 {
     auto [data, mime_type, _] = GUI::Clipboard::the().fetch_data_and_type();
-    m_paste_action->set_enabled(mime_type.starts_with("text/") && !data.is_empty());
+    m_paste_action->set_enabled(mime_type.starts_with("text/"sv) && !data.is_empty());
 }
 
-void TerminalWidget::set_color_scheme(StringView name)
+void TerminalWidget::update_color_scheme()
 {
-    if (name.contains('/')) {
-        dbgln("Shenanigans! Color scheme names can't contain slashes.");
-        return;
-    }
+    auto const& palette = GUI::Widget::palette();
 
-    m_color_scheme_name = name;
+    m_show_bold_text_as_bright = palette.bold_text_as_bright();
 
-    constexpr StringView color_names[] = {
-        "Black",
-        "Red",
-        "Green",
-        "Yellow",
-        "Blue",
-        "Magenta",
-        "Cyan",
-        "White"
-    };
+    m_default_background_color = palette.background();
+    m_default_foreground_color = palette.foreground();
 
-    auto path = String::formatted("/res/terminal-colors/{}.ini", name);
-    auto color_config_or_error = Core::ConfigFile::open(path);
-    if (color_config_or_error.is_error()) {
-        dbgln("Unable to read color scheme file '{}': {}", path, color_config_or_error.error());
-        return;
-    }
-    auto color_config = color_config_or_error.release_value();
+    m_colors[0] = palette.black();
+    m_colors[1] = palette.red();
+    m_colors[2] = palette.green();
+    m_colors[3] = palette.yellow();
+    m_colors[4] = palette.blue();
+    m_colors[5] = palette.magenta();
+    m_colors[6] = palette.cyan();
+    m_colors[7] = palette.white();
+    m_colors[8] = palette.bright_black();
+    m_colors[9] = palette.bright_red();
+    m_colors[10] = palette.bright_green();
+    m_colors[11] = palette.bright_yellow();
+    m_colors[12] = palette.bright_blue();
+    m_colors[13] = palette.bright_magenta();
+    m_colors[14] = palette.bright_cyan();
+    m_colors[15] = palette.bright_white();
 
-    m_show_bold_text_as_bright = color_config->read_bool_entry("Options", "ShowBoldTextAsBright", true);
-
-    auto default_background = Gfx::Color::from_string(color_config->read_entry("Primary", "Background"));
-    if (default_background.has_value())
-        m_default_background_color = default_background.value();
-    else
-        m_default_background_color = Gfx::Color::from_rgb(m_colors[(u8)VT::Color::ANSIColor::Black]);
-
-    auto default_foreground = Gfx::Color::from_string(color_config->read_entry("Primary", "Foreground"));
-    if (default_foreground.has_value())
-        m_default_foreground_color = default_foreground.value();
-    else
-        m_default_foreground_color = Gfx::Color::from_rgb(m_colors[(u8)VT::Color::ANSIColor::White]);
-
-    for (u8 color_idx = 0; color_idx < 8; ++color_idx) {
-        auto rgb = Gfx::Color::from_string(color_config->read_entry("Normal", color_names[color_idx]));
-        if (rgb.has_value())
-            m_colors[color_idx] = rgb.value().value();
-    }
-
-    for (u8 color_idx = 0; color_idx < 8; ++color_idx) {
-        auto rgb = Gfx::Color::from_string(color_config->read_entry("Bright", color_names[color_idx]));
-        if (rgb.has_value())
-            m_colors[color_idx + 8] = rgb.value().value();
-    }
     update();
 }
 
-Gfx::IntSize TerminalWidget::widget_size_for_font(const Gfx::Font& font) const
+Gfx::IntSize TerminalWidget::widget_size_for_font(Gfx::Font const& font) const
 {
+    int column_width = 0;
+    int line_height = 0;
+    int cell_height = 0;
+    int line_spacing = 0;
+    collect_font_metrics(font, column_width, cell_height, line_height, line_spacing);
+    auto base_size = compute_base_size();
     return {
-        (frame_thickness() * 2) + (m_inset * 2) + (m_terminal.columns() * font.glyph_width('x')) + m_scrollbar->width(),
-        (frame_thickness() * 2) + (m_inset * 2) + (m_terminal.rows() * (font.glyph_height() + m_line_spacing))
+        base_size.width() + (m_terminal.columns() * column_width),
+        base_size.height() + (m_terminal.rows() * line_height),
     };
 }
 
@@ -1244,11 +1286,11 @@ constexpr Gfx::Color TerminalWidget::terminal_color_to_rgb(VT::Color color) cons
     case VT::Color::Kind::RGB:
         return Gfx::Color::from_rgb(color.as_rgb());
     case VT::Color::Kind::Indexed:
-        return Gfx::Color::from_rgb(m_colors[color.as_indexed()]);
+        return m_colors[color.as_indexed()];
     case VT::Color::Kind::Named: {
         auto ansi = color.as_named();
         if ((u16)ansi < 256)
-            return Gfx::Color::from_rgb(m_colors[(u16)ansi]);
+            return m_colors[(u16)ansi];
         else if (ansi == VT::Color::ANSIColor::DefaultForeground)
             return m_default_foreground_color;
         else if (ansi == VT::Color::ANSIColor::DefaultBackground)
@@ -1261,18 +1303,18 @@ constexpr Gfx::Color TerminalWidget::terminal_color_to_rgb(VT::Color color) cons
     }
 };
 
-void TerminalWidget::set_font_and_resize_to_fit(const Gfx::Font& font)
+void TerminalWidget::set_font_and_resize_to_fit(Gfx::Font const& font)
 {
-    set_font(font);
     resize(widget_size_for_font(font));
+    set_font(font);
 }
 
 // Used for sending data that was not directly typed by the user.
 // This basically wraps the code that handles sending the escape sequence in bracketed paste mode.
 void TerminalWidget::send_non_user_input(ReadonlyBytes bytes)
 {
-    constexpr StringView leading_control_sequence = "\e[200~";
-    constexpr StringView trailing_control_sequence = "\e[201~";
+    constexpr StringView leading_control_sequence = "\e[200~"sv;
+    constexpr StringView trailing_control_sequence = "\e[201~"sv;
 
     int nwritten;
     if (m_terminal.needs_bracketed_paste()) {
@@ -1300,6 +1342,35 @@ void TerminalWidget::set_auto_scroll_direction(AutoScrollDirection direction)
 {
     m_auto_scroll_direction = direction;
     m_auto_scroll_timer->set_active(direction != AutoScrollDirection::None);
+}
+
+Optional<VT::CursorShape> TerminalWidget::parse_cursor_shape(StringView cursor_shape_string)
+{
+    if (cursor_shape_string == "Block"sv)
+        return VT::CursorShape::Block;
+
+    if (cursor_shape_string == "Underline"sv)
+        return VT::CursorShape::Underline;
+
+    if (cursor_shape_string == "Bar"sv)
+        return VT::CursorShape::Bar;
+
+    return {};
+}
+
+DeprecatedString TerminalWidget::stringify_cursor_shape(VT::CursorShape cursor_shape)
+{
+    switch (cursor_shape) {
+    case VT::CursorShape::Block:
+        return "Block";
+    case VT::CursorShape::Underline:
+        return "Underline";
+    case VT::CursorShape::Bar:
+        return "Bar";
+    case VT::CursorShape::None:
+        return "None";
+    }
+    VERIFY_NOT_REACHED();
 }
 
 }

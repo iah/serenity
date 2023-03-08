@@ -16,16 +16,17 @@ class DataView : public Object {
     JS_OBJECT(DataView, Object);
 
 public:
-    static DataView* create(GlobalObject&, ArrayBuffer*, size_t byte_length, size_t byte_offset);
+    static NonnullGCPtr<DataView> create(Realm&, ArrayBuffer*, size_t byte_length, size_t byte_offset);
 
-    explicit DataView(ArrayBuffer*, size_t byte_length, size_t byte_offset, Object& prototype);
-    virtual ~DataView() override;
+    virtual ~DataView() override = default;
 
     ArrayBuffer* viewed_array_buffer() const { return m_viewed_array_buffer; }
     size_t byte_length() const { return m_byte_length; }
     size_t byte_offset() const { return m_byte_offset; }
 
 private:
+    DataView(ArrayBuffer*, size_t byte_length, size_t byte_offset, Object& prototype);
+
     virtual void visit_edges(Visitor& visitor) override;
 
     ArrayBuffer* m_viewed_array_buffer { nullptr };

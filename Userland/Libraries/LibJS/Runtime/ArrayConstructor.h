@@ -14,14 +14,15 @@ class ArrayConstructor final : public NativeFunction {
     JS_OBJECT(ArrayConstructor, NativeFunction);
 
 public:
-    explicit ArrayConstructor(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
-    virtual ~ArrayConstructor() override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~ArrayConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
-    virtual ThrowCompletionOr<Object*> construct(FunctionObject& new_target) override;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> construct(FunctionObject& new_target) override;
 
 private:
+    explicit ArrayConstructor(Realm&);
+
     virtual bool has_constructor() const override { return true; }
 
     JS_DECLARE_NATIVE_FUNCTION(from);

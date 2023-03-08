@@ -5,15 +5,28 @@
  */
 
 #include "MCTSTree.h"
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <stdlib.h>
 
-MCTSTree::MCTSTree(const Chess::Board& board, MCTSTree* parent)
+MCTSTree::MCTSTree(Chess::Board const& board, MCTSTree* parent)
     : m_parent(parent)
     , m_board(make<Chess::Board>(board))
     , m_last_move(board.last_move())
     , m_turn(board.turn())
 {
+}
+
+MCTSTree::MCTSTree(MCTSTree&& other)
+    : m_children(move(other.m_children))
+    , m_parent(other.m_parent)
+    , m_white_points(other.m_white_points)
+    , m_simulations(other.m_simulations)
+    , m_board(move(other.m_board))
+    , m_last_move(move(other.m_last_move))
+    , m_turn(other.m_turn)
+    , m_moves_generated(other.m_moves_generated)
+{
+    other.m_parent = nullptr;
 }
 
 MCTSTree& MCTSTree::select_leaf()
@@ -24,10 +37,10 @@ MCTSTree& MCTSTree::select_leaf()
     MCTSTree* node = nullptr;
     double max_uct = -double(INFINITY);
     for (auto& child : m_children) {
-        double uct = child.uct(m_turn);
+        double uct = child->uct(m_turn);
         if (uct >= max_uct) {
             max_uct = uct;
-            node = &child;
+            node = child;
         }
     }
     VERIFY(node);
@@ -39,10 +52,10 @@ MCTSTree& MCTSTree::expand()
     VERIFY(!expanded() || m_children.size() == 0);
 
     if (!m_moves_generated) {
-        m_board->generate_moves([&](Chess::Move move) {
-            Chess::Board clone = *m_board;
-            clone.apply_move(move);
-            m_children.append(make<MCTSTree>(clone, this));
+        m_board->generate_moves([&](Chess::Move chess_move) {
+            auto clone = m_board->clone_without_history();
+            clone.apply_move(chess_move);
+            m_children.append(make<MCTSTree>(move(clone), this));
             return IterationDecision::Continue;
         });
         m_moves_generated = true;
@@ -55,8 +68,8 @@ MCTSTree& MCTSTree::expand()
     }
 
     for (auto& child : m_children) {
-        if (child.m_simulations == 0) {
-            return child;
+        if (child->m_simulations == 0) {
+            return *child;
         }
     }
     VERIFY_NOT_REACHED();
@@ -98,7 +111,15 @@ void MCTSTree::apply_result(int game_score)
 
 void MCTSTree::do_round()
 {
-    auto& node = select_leaf().expand();
+
+    // Note: Limit expansion to spare some memory
+    //       Efficient Selectivity and Backup Operators in Monte-Carlo Tree Search.
+    //       Rémi Coulom.
+    auto* node_ptr = &select_leaf();
+    if (node_ptr->m_simulations > s_number_of_visit_parameter)
+        node_ptr = &select_leaf().expand();
+
+    auto& node = *node_ptr;
 
     int result;
     if constexpr (s_eval_method == EvalMethod::Simulation) {
@@ -109,22 +130,37 @@ void MCTSTree::do_round()
     node.apply_result(result);
 }
 
-Chess::Move MCTSTree::best_move() const
+Optional<MCTSTree&> MCTSTree::child_with_move(Chess::Move chess_move)
+{
+    for (auto& node : m_children) {
+        if (node->last_move() == chess_move)
+            return *node;
+    }
+    return {};
+}
+
+MCTSTree& MCTSTree::best_node()
 {
     int score_multiplier = (m_turn == Chess::Color::White) ? 1 : -1;
 
-    Chess::Move best_move = { { 0, 0 }, { 0, 0 } };
+    MCTSTree* best_node_ptr = nullptr;
     double best_score = -double(INFINITY);
     VERIFY(m_children.size());
     for (auto& node : m_children) {
-        double node_score = node.expected_value() * score_multiplier;
+        double node_score = node->expected_value() * score_multiplier;
         if (node_score >= best_score) {
-            best_move = node.m_last_move.value();
+            best_node_ptr = node;
             best_score = node_score;
         }
     }
+    VERIFY(best_node_ptr);
 
-    return best_move;
+    return *best_node_ptr;
+}
+
+Chess::Move MCTSTree::last_move() const
+{
+    return m_last_move.value();
 }
 
 double MCTSTree::expected_value() const
@@ -151,7 +187,7 @@ bool MCTSTree::expanded() const
         return false;
 
     for (auto& child : m_children) {
-        if (child.m_simulations == 0)
+        if (child->m_simulations == 0)
             return false;
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -8,6 +8,7 @@
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
+#include <LibWeb/CSS/CSSFontFaceRule.h>
 #include <LibWeb/CSS/CSSImportRule.h>
 #include <LibWeb/CSS/CSSMediaRule.h>
 #include <LibWeb/CSS/CSSRule.h>
@@ -23,9 +24,11 @@
 #include <LibWeb/Dump.h>
 #include <LibWeb/HTML/HTMLTemplateElement.h>
 #include <LibWeb/Layout/BlockContainer.h>
+#include <LibWeb/Layout/FrameBox.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/SVGBox.h>
 #include <LibWeb/Layout/TextNode.h>
+#include <LibWeb/Painting/PaintableBox.h>
 #include <stdio.h>
 
 namespace Web {
@@ -33,7 +36,7 @@ namespace Web {
 static void indent(StringBuilder& builder, int levels)
 {
     for (int i = 0; i < levels; i++)
-        builder.append("  ");
+        builder.append("  "sv);
 }
 
 void dump_tree(DOM::Node const& node)
@@ -47,13 +50,13 @@ void dump_tree(StringBuilder& builder, DOM::Node const& node)
 {
     static int indent = 0;
     for (int i = 0; i < indent; ++i)
-        builder.append("  ");
+        builder.append("  "sv);
     if (is<DOM::Element>(node)) {
         builder.appendff("<{}", verify_cast<DOM::Element>(node).local_name());
         verify_cast<DOM::Element>(node).for_each_attribute([&](auto& name, auto& value) {
             builder.appendff(" {}={}", name, value);
         });
-        builder.append(">\n");
+        builder.append(">\n"sv);
     } else if (is<DOM::Text>(node)) {
         builder.appendff("\"{}\"\n", verify_cast<DOM::Text>(node).data());
     } else {
@@ -87,9 +90,9 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
 {
     static size_t indent = 0;
     for (size_t i = 0; i < indent; ++i)
-        builder.append("  ");
+        builder.append("  "sv);
 
-    FlyString tag_name;
+    DeprecatedFlyString tag_name;
     if (layout_node.is_anonymous())
         tag_name = "(anonymous)";
     else if (is<DOM::Element>(layout_node.dom_node()))
@@ -97,7 +100,7 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
     else
         tag_name = layout_node.dom_node()->node_name();
 
-    String identifier = "";
+    DeprecatedString identifier = "";
     if (layout_node.dom_node() && is<DOM::Element>(*layout_node.dom_node())) {
         auto& element = verify_cast<DOM::Element>(*layout_node.dom_node());
         StringBuilder builder;
@@ -110,37 +113,37 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
             builder.append('.');
             builder.append(class_name);
         }
-        identifier = builder.to_string();
+        identifier = builder.to_deprecated_string();
     }
 
-    char const* nonbox_color_on = "";
-    char const* box_color_on = "";
-    char const* svg_box_color_on = "";
-    char const* positioned_color_on = "";
-    char const* floating_color_on = "";
-    char const* inline_block_color_on = "";
-    char const* line_box_color_on = "";
-    char const* fragment_color_on = "";
-    char const* flex_color_on = "";
-    char const* color_off = "";
+    StringView nonbox_color_on = ""sv;
+    StringView box_color_on = ""sv;
+    StringView svg_box_color_on = ""sv;
+    StringView positioned_color_on = ""sv;
+    StringView floating_color_on = ""sv;
+    StringView inline_color_on = ""sv;
+    StringView line_box_color_on = ""sv;
+    StringView fragment_color_on = ""sv;
+    StringView flex_color_on = ""sv;
+    StringView color_off = ""sv;
 
     if (interactive) {
-        nonbox_color_on = "\033[33m";
-        box_color_on = "\033[34m";
-        svg_box_color_on = "\033[31m";
-        positioned_color_on = "\033[31;1m";
-        floating_color_on = "\033[32;1m";
-        inline_block_color_on = "\033[36;1m";
-        line_box_color_on = "\033[34;1m";
-        fragment_color_on = "\033[35;1m";
-        flex_color_on = "\033[34;1m";
-        color_off = "\033[0m";
+        nonbox_color_on = "\033[33m"sv;
+        box_color_on = "\033[34m"sv;
+        svg_box_color_on = "\033[31m"sv;
+        positioned_color_on = "\033[31;1m"sv;
+        floating_color_on = "\033[32;1m"sv;
+        inline_color_on = "\033[36;1m"sv;
+        line_box_color_on = "\033[34;1m"sv;
+        fragment_color_on = "\033[35;1m"sv;
+        flex_color_on = "\033[34;1m"sv;
+        color_off = "\033[0m"sv;
     }
 
     if (!is<Layout::Box>(layout_node)) {
         builder.appendff("{}{}{} <{}{}{}{}>",
             nonbox_color_on,
-            layout_node.class_name().substring_view(13),
+            layout_node.class_name(),
             color_off,
             tag_name,
             nonbox_color_on,
@@ -148,36 +151,37 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
             color_off);
         if (interactive)
             builder.appendff(" @{:p}", &layout_node);
-        builder.append("\n");
+        builder.append("\n"sv);
     } else {
         auto& box = verify_cast<Layout::Box>(layout_node);
         StringView color_on = is<Layout::SVGBox>(box) ? svg_box_color_on : box_color_on;
 
         builder.appendff("{}{}{} <{}{}{}{}> ",
             color_on,
-            box.class_name().substring_view(13),
+            box.class_name(),
             color_off,
             color_on,
             tag_name,
             color_off,
             identifier.characters());
 
-        if (interactive)
-            builder.appendff("@{:p} ", &layout_node);
-
-        builder.appendff("at ({},{}) size {}x{}",
-            box.absolute_x(),
-            box.absolute_y(),
-            box.content_width(),
-            box.content_height());
+        if (auto const* paint_box = box.paint_box()) {
+            builder.appendff("at ({},{}) content-size {}x{}",
+                paint_box->absolute_x(),
+                paint_box->absolute_y(),
+                paint_box->content_width(),
+                paint_box->content_height());
+        }
 
         if (box.is_positioned())
             builder.appendff(" {}positioned{}", positioned_color_on, color_off);
         if (box.is_floating())
             builder.appendff(" {}floating{}", floating_color_on, color_off);
         if (box.is_inline_block())
-            builder.appendff(" {}inline-block{}", inline_block_color_on, color_off);
-        if (box.computed_values().display().is_flex_inside()) {
+            builder.appendff(" {}inline-block{}", inline_color_on, color_off);
+        if (box.is_inline_table())
+            builder.appendff(" {}inline-table{}", inline_color_on, color_off);
+        if (box.display().is_flex_inside()) {
             StringView direction;
             switch (box.computed_values().flex_direction()) {
             case CSS::FlexDirection::Column:
@@ -204,7 +208,7 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
                 box.box_model().margin.left,
                 box.box_model().border.left,
                 box.box_model().padding.left,
-                box.content_width(),
+                box.paint_box() ? box.paint_box()->content_width() : 0,
                 box.box_model().padding.right,
                 box.box_model().border.right,
                 box.box_model().margin.right);
@@ -214,30 +218,44 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
                 box.box_model().margin.top,
                 box.box_model().border.top,
                 box.box_model().padding.top,
-                box.content_height(),
+                box.paint_box() ? box.paint_box()->content_height() : 0,
                 box.box_model().padding.bottom,
                 box.box_model().border.bottom,
                 box.box_model().margin.bottom);
         }
 
-        builder.append("\n");
+        builder.appendff(" children: {}", box.children_are_inline() ? "inline" : "not-inline");
+
+        if (is<Layout::FrameBox>(box)) {
+            auto const& frame_box = static_cast<Layout::FrameBox const&>(box);
+            if (auto* nested_browsing_context = frame_box.dom_node().nested_browsing_context()) {
+                if (auto* document = nested_browsing_context->active_document()) {
+                    builder.appendff(" (url: {})", document->url());
+                }
+            }
+        }
+
+        builder.append("\n"sv);
     }
 
     if (is<Layout::BlockContainer>(layout_node) && static_cast<Layout::BlockContainer const&>(layout_node).children_are_inline()) {
         auto& block = static_cast<Layout::BlockContainer const&>(layout_node);
-        for (size_t line_box_index = 0; line_box_index < block.line_boxes().size(); ++line_box_index) {
-            auto& line_box = block.line_boxes()[line_box_index];
+        for (size_t line_box_index = 0; block.paint_box() && line_box_index < block.paint_box()->line_boxes().size(); ++line_box_index) {
+            auto& line_box = block.paint_box()->line_boxes()[line_box_index];
             for (size_t i = 0; i < indent; ++i)
-                builder.append("  ");
-            builder.appendff("  {}line {}{} width: {}\n",
+                builder.append("  "sv);
+            builder.appendff("  {}line {}{} width: {}, height: {}, bottom: {}, baseline: {}\n",
                 line_box_color_on,
                 line_box_index,
                 color_off,
-                (int)line_box.width());
+                line_box.width(),
+                line_box.height(),
+                line_box.bottom(),
+                line_box.baseline());
             for (size_t fragment_index = 0; fragment_index < line_box.fragments().size(); ++fragment_index) {
                 auto& fragment = line_box.fragments()[fragment_index];
                 for (size_t i = 0; i < indent; ++i)
-                    builder.append("  ");
+                    builder.append("  "sv);
                 builder.appendff("    {}frag {}{} from {} ",
                     fragment_color_on,
                     fragment_index,
@@ -248,10 +266,10 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
                 builder.appendff("start: {}, length: {}, rect: {}\n",
                     fragment.start(),
                     fragment.length(),
-                    fragment.absolute_rect().to_string());
+                    fragment.absolute_rect());
                 if (is<Layout::TextNode>(fragment.layout_node())) {
                     for (size_t i = 0; i < indent; ++i)
-                        builder.append("  ");
+                        builder.append("  "sv);
                     auto& layout_text = static_cast<Layout::TextNode const&>(fragment.layout_node());
                     auto fragment_text = layout_text.text_for_rendering().substring(fragment.start(), fragment.length());
                     builder.appendff("      \"{}\"\n", fragment_text);
@@ -260,20 +278,20 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
         }
     }
 
-    if (show_specified_style && layout_node.dom_node() && layout_node.dom_node()->is_element() && verify_cast<DOM::Element>(layout_node.dom_node())->specified_css_values()) {
+    if (show_specified_style && layout_node.dom_node() && layout_node.dom_node()->is_element() && verify_cast<DOM::Element>(layout_node.dom_node())->computed_css_values()) {
         struct NameAndValue {
-            String name;
-            String value;
+            DeprecatedString name;
+            DeprecatedString value;
         };
         Vector<NameAndValue> properties;
-        verify_cast<DOM::Element>(*layout_node.dom_node()).specified_css_values()->for_each_property([&](auto property_id, auto& value) {
-            properties.append({ CSS::string_from_property_id(property_id), value.to_string() });
+        verify_cast<DOM::Element>(*layout_node.dom_node()).computed_css_values()->for_each_property([&](auto property_id, auto& value) {
+            properties.append({ CSS::string_from_property_id(property_id), value.to_string().release_value_but_fixme_should_propagate_errors().to_deprecated_string() });
         });
         quick_sort(properties, [](auto& a, auto& b) { return a.name < b.name; });
 
         for (auto& property : properties) {
             for (size_t i = 0; i < indent; ++i)
-                builder.append("    ");
+                builder.append("    "sv);
             builder.appendff("  ({}: {})\n", property.name, property.value);
         }
     }
@@ -294,10 +312,10 @@ void dump_selector(CSS::Selector const& selector)
 
 void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
 {
-    builder.append("  CSS::Selector:\n");
+    builder.append("  CSS::Selector:\n"sv);
 
     for (auto& relative_selector : selector.compound_selectors()) {
-        builder.append("    ");
+        builder.append("    "sv);
 
         char const* relation_description = "";
         switch (relative_selector.combinator) {
@@ -328,9 +346,6 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
             auto& simple_selector = relative_selector.simple_selectors[i];
             char const* type_description = "Unknown";
             switch (simple_selector.type) {
-            case CSS::Selector::SimpleSelector::Type::Invalid:
-                type_description = "Invalid";
-                break;
             case CSS::Selector::SimpleSelector::Type::Universal:
                 type_description = "Universal";
                 break;
@@ -354,10 +369,13 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                 break;
             }
 
-            builder.appendff("{}:{}", type_description, simple_selector.value);
+            builder.appendff("{}:", type_description);
+            // FIXME: This is goofy
+            if (simple_selector.value.has<CSS::Selector::SimpleSelector::Name>())
+                builder.append(simple_selector.name());
 
             if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoClass) {
-                auto const& pseudo_class = simple_selector.pseudo_class;
+                auto const& pseudo_class = simple_selector.pseudo_class();
 
                 char const* pseudo_class_description = "";
                 switch (pseudo_class.type) {
@@ -369,9 +387,6 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                     break;
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::Active:
                     pseudo_class_description = "Active";
-                    break;
-                case CSS::Selector::SimpleSelector::PseudoClass::Type::None:
-                    pseudo_class_description = "None";
                     break;
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::Root:
                     pseudo_class_description = "Root";
@@ -385,6 +400,12 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::OnlyOfType:
                     pseudo_class_description = "OnlyOfType";
                     break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::NthOfType:
+                    pseudo_class_description = "NthOfType";
+                    break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::NthLastOfType:
+                    pseudo_class_description = "NthLastOfType";
+                    break;
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::NthChild:
                     pseudo_class_description = "NthChild";
                     break;
@@ -393,6 +414,9 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                     break;
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::Focus:
                     pseudo_class_description = "Focus";
+                    break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::FocusWithin:
+                    pseudo_class_description = "FocusWithin";
                     break;
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::Empty:
                     pseudo_class_description = "Empty";
@@ -421,37 +445,73 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                 case CSS::Selector::SimpleSelector::PseudoClass::Type::Not:
                     pseudo_class_description = "Not";
                     break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::Is:
+                    pseudo_class_description = "Is";
+                    break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::Where:
+                    pseudo_class_description = "Where";
+                    break;
+                case CSS::Selector::SimpleSelector::PseudoClass::Type::Lang:
+                    pseudo_class_description = "Lang";
+                    break;
                 }
 
                 builder.appendff(" pseudo_class={}", pseudo_class_description);
-                if (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::Not) {
-                    builder.append("([");
-                    for (auto& selector : pseudo_class.not_selector)
+                if (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::Lang) {
+                    builder.append('(');
+                    builder.join(',', pseudo_class.languages);
+                    builder.append(')');
+                } else if (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::Not
+                    || pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::Is
+                    || pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::Where) {
+                    builder.append("(["sv);
+                    for (auto& selector : pseudo_class.argument_selector_list)
                         dump_selector(builder, selector);
-                    builder.append("])");
+                    builder.append("])"sv);
                 } else if ((pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::NthChild)
-                    || (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::NthLastChild)) {
-                    builder.appendff("(step={}, offset={})", pseudo_class.nth_child_pattern.step_size, pseudo_class.nth_child_pattern.offset);
+                    || (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::NthLastChild)
+                    || (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::NthOfType)
+                    || (pseudo_class.type == CSS::Selector::SimpleSelector::PseudoClass::Type::NthLastOfType)) {
+                    builder.appendff("(step={}, offset={}", pseudo_class.nth_child_pattern.step_size, pseudo_class.nth_child_pattern.offset);
+                    if (!pseudo_class.argument_selector_list.is_empty()) {
+                        builder.append(", selectors=["sv);
+                        for (auto const& child_selector : pseudo_class.argument_selector_list)
+                            dump_selector(builder, child_selector);
+                        builder.append("]"sv);
+                    }
+                    builder.append(")"sv);
                 }
             }
 
             if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoElement) {
                 char const* pseudo_element_description = "";
-                switch (simple_selector.pseudo_element) {
-                case CSS::Selector::SimpleSelector::PseudoElement::None:
-                    pseudo_element_description = "NONE";
-                    break;
-                case CSS::Selector::SimpleSelector::PseudoElement::Before:
+                switch (simple_selector.pseudo_element()) {
+                case CSS::Selector::PseudoElement::Before:
                     pseudo_element_description = "before";
                     break;
-                case CSS::Selector::SimpleSelector::PseudoElement::After:
+                case CSS::Selector::PseudoElement::After:
                     pseudo_element_description = "after";
                     break;
-                case CSS::Selector::SimpleSelector::PseudoElement::FirstLine:
+                case CSS::Selector::PseudoElement::FirstLine:
                     pseudo_element_description = "first-line";
                     break;
-                case CSS::Selector::SimpleSelector::PseudoElement::FirstLetter:
+                case CSS::Selector::PseudoElement::FirstLetter:
                     pseudo_element_description = "first-letter";
+                    break;
+                case CSS::Selector::PseudoElement::Marker:
+                    pseudo_element_description = "marker";
+                    break;
+                case CSS::Selector::PseudoElement::ProgressBar:
+                    pseudo_element_description = "-webkit-progress-bar";
+                    break;
+                case CSS::Selector::PseudoElement::ProgressValue:
+                    pseudo_element_description = "-webkit-progress-value";
+                    break;
+                case CSS::Selector::PseudoElement::Placeholder:
+                    pseudo_element_description = "placeholder";
+                    break;
+                case CSS::Selector::PseudoElement::PseudoElementCount:
+                    VERIFY_NOT_REACHED();
                     break;
                 }
 
@@ -459,12 +519,10 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
             }
 
             if (simple_selector.type == CSS::Selector::SimpleSelector::Type::Attribute) {
+                auto const& attribute = simple_selector.attribute();
                 char const* attribute_match_type_description = "";
 
-                switch (simple_selector.attribute.match_type) {
-                case CSS::Selector::SimpleSelector::Attribute::MatchType::None:
-                    attribute_match_type_description = "NONE";
-                    break;
+                switch (attribute.match_type) {
                 case CSS::Selector::SimpleSelector::Attribute::MatchType::HasAttribute:
                     attribute_match_type_description = "HasAttribute";
                     break;
@@ -488,43 +546,67 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector)
                     break;
                 }
 
-                builder.appendff(" [{}, name='{}', value='{}']", attribute_match_type_description, simple_selector.attribute.name, simple_selector.attribute.value);
+                builder.appendff(" [{}, name='{}', value='{}']", attribute_match_type_description, attribute.name, attribute.value);
             }
 
             if (i != relative_selector.simple_selectors.size() - 1)
-                builder.append(", ");
+                builder.append(", "sv);
         }
-        builder.append("\n");
+        builder.append("\n"sv);
     }
 }
 
-void dump_rule(CSS::CSSRule const& rule)
+ErrorOr<void> dump_rule(CSS::CSSRule const& rule)
 {
     StringBuilder builder;
-    dump_rule(builder, rule);
+    TRY(dump_rule(builder, rule));
     dbgln("{}", builder.string_view());
+    return {};
 }
 
-void dump_rule(StringBuilder& builder, CSS::CSSRule const& rule, int indent_levels)
+ErrorOr<void> dump_rule(StringBuilder& builder, CSS::CSSRule const& rule, int indent_levels)
 {
     indent(builder, indent_levels);
     builder.appendff("{}:\n", rule.class_name());
 
     switch (rule.type()) {
-    case CSS::CSSRule::Type::Style:
-        dump_style_rule(builder, verify_cast<CSS::CSSStyleRule const>(rule), indent_levels);
+    case CSS::CSSRule::Type::FontFace:
+        dump_font_face_rule(builder, verify_cast<CSS::CSSFontFaceRule const>(rule), indent_levels);
         break;
     case CSS::CSSRule::Type::Import:
         dump_import_rule(builder, verify_cast<CSS::CSSImportRule const>(rule), indent_levels);
         break;
     case CSS::CSSRule::Type::Media:
-        dump_media_rule(builder, verify_cast<CSS::CSSMediaRule const>(rule), indent_levels);
+        TRY(dump_media_rule(builder, verify_cast<CSS::CSSMediaRule const>(rule), indent_levels));
+        break;
+    case CSS::CSSRule::Type::Style:
+        TRY(dump_style_rule(builder, verify_cast<CSS::CSSStyleRule const>(rule), indent_levels));
         break;
     case CSS::CSSRule::Type::Supports:
-        dump_supports_rule(builder, verify_cast<CSS::CSSSupportsRule const>(rule), indent_levels);
+        TRY(dump_supports_rule(builder, verify_cast<CSS::CSSSupportsRule const>(rule), indent_levels));
         break;
-    case CSS::CSSRule::Type::__Count:
-        VERIFY_NOT_REACHED();
+    }
+    return {};
+}
+
+void dump_font_face_rule(StringBuilder& builder, CSS::CSSFontFaceRule const& rule, int indent_levels)
+{
+    auto& font_face = rule.font_face();
+    indent(builder, indent_levels + 1);
+    builder.appendff("font-family: {}\n", font_face.font_family());
+
+    indent(builder, indent_levels + 1);
+    builder.append("sources:\n"sv);
+    for (auto const& source : font_face.sources()) {
+        indent(builder, indent_levels + 2);
+        builder.appendff("url={}, format={}\n", source.url, source.format.value_or("???"_short_string));
+    }
+
+    indent(builder, indent_levels + 1);
+    builder.append("unicode-ranges:\n"sv);
+    for (auto const& unicode_range : font_face.unicode_ranges()) {
+        indent(builder, indent_levels + 2);
+        builder.appendff("{}\n", unicode_range.to_string().release_value_but_fixme_should_propagate_errors());
     }
 }
 
@@ -534,66 +616,68 @@ void dump_import_rule(StringBuilder& builder, CSS::CSSImportRule const& rule, in
     builder.appendff("  Document URL: {}\n", rule.url());
 }
 
-void dump_media_rule(StringBuilder& builder, CSS::CSSMediaRule const& media, int indent_levels)
+ErrorOr<void> dump_media_rule(StringBuilder& builder, CSS::CSSMediaRule const& media, int indent_levels)
 {
     indent(builder, indent_levels);
     builder.appendff("  Media: {}\n  Rules ({}):\n", media.condition_text(), media.css_rules().length());
 
-    for (auto& rule : media.css_rules()) {
-        dump_rule(builder, rule, indent_levels + 1);
-    }
+    for (auto& rule : media.css_rules())
+        TRY(dump_rule(builder, rule, indent_levels + 1));
+    return {};
 }
 
-void dump_supports_rule(StringBuilder& builder, CSS::CSSSupportsRule const& supports, int indent_levels)
+ErrorOr<void> dump_supports_rule(StringBuilder& builder, CSS::CSSSupportsRule const& supports, int indent_levels)
 {
     indent(builder, indent_levels);
     builder.appendff("  Supports: {}\n  Rules ({}):\n", supports.condition_text(), supports.css_rules().length());
 
-    for (auto& rule : supports.css_rules()) {
-        dump_rule(builder, rule, indent_levels + 1);
-    }
+    for (auto& rule : supports.css_rules())
+        TRY(dump_rule(builder, rule, indent_levels + 1));
+    return {};
 }
 
-void dump_style_rule(StringBuilder& builder, CSS::CSSStyleRule const& rule, int indent_levels)
+ErrorOr<void> dump_style_rule(StringBuilder& builder, CSS::CSSStyleRule const& rule, int indent_levels)
 {
     for (auto& selector : rule.selectors()) {
         dump_selector(builder, selector);
     }
     indent(builder, indent_levels);
-    builder.append("  Declarations:\n");
+    builder.append("  Declarations:\n"sv);
     auto& style_declaration = verify_cast<CSS::PropertyOwningCSSStyleDeclaration>(rule.declaration());
     for (auto& property : style_declaration.properties()) {
         indent(builder, indent_levels);
-        builder.appendff("    {}: '{}'", CSS::string_from_property_id(property.property_id), property.value->to_string());
+        builder.appendff("    {}: '{}'", CSS::string_from_property_id(property.property_id), TRY(property.value->to_string()));
         if (property.important == CSS::Important::Yes)
-            builder.append(" \033[31;1m!important\033[0m");
+            builder.append(" \033[31;1m!important\033[0m"sv);
         builder.append('\n');
     }
     for (auto& property : style_declaration.custom_properties()) {
         indent(builder, indent_levels);
-        builder.appendff("    {}: '{}'", property.key, property.value.value->to_string());
+        builder.appendff("    {}: '{}'", property.key, TRY(property.value.value->to_string()));
         if (property.value.important == CSS::Important::Yes)
-            builder.append(" \033[31;1m!important\033[0m");
+            builder.append(" \033[31;1m!important\033[0m"sv);
         builder.append('\n');
     }
+    return {};
 }
 
-void dump_sheet(CSS::StyleSheet const& sheet)
+ErrorOr<void> dump_sheet(CSS::StyleSheet const& sheet)
 {
     StringBuilder builder;
-    dump_sheet(builder, sheet);
+    TRY(dump_sheet(builder, sheet));
     dbgln("{}", builder.string_view());
+    return {};
 }
 
-void dump_sheet(StringBuilder& builder, CSS::StyleSheet const& sheet)
+ErrorOr<void> dump_sheet(StringBuilder& builder, CSS::StyleSheet const& sheet)
 {
     auto& css_stylesheet = verify_cast<CSS::CSSStyleSheet>(sheet);
 
     builder.appendff("CSSStyleSheet{{{}}}: {} rule(s)\n", &sheet, css_stylesheet.rules().length());
 
-    for (auto& rule : css_stylesheet.rules()) {
-        dump_rule(builder, rule);
-    }
+    for (auto& rule : css_stylesheet.rules())
+        TRY(dump_rule(builder, rule));
+    return {};
 }
 
 }

@@ -12,10 +12,10 @@
 ErrorOr<int> serenity_main(Main::Arguments)
 {
     TRY(Core::System::pledge("stdio rpath"));
-    auto file = TRY(Core::File::open("/proc/cpuinfo", Core::OpenMode::ReadOnly));
+    auto file = TRY(Core::File::open("/sys/kernel/cpuinfo"sv, Core::File::OpenMode::Read));
 
-    auto buffer = file->read_all();
-    auto json = TRY(JsonValue::from_string({ buffer }));
+    auto buffer = TRY(file->read_until_eof());
+    auto json = TRY(JsonValue::from_string(buffer));
     auto const& cpuinfo_array = json.as_array();
     outln("{}", cpuinfo_array.size());
 

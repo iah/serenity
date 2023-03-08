@@ -7,6 +7,7 @@ env:
   # runner.workspace = /home/runner/work/serenity
   # github.workspace = /home/runner/work/serenity/serenity
   SERENITY_SOURCE_DIR: ${{ github.workspace }}
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 concurrency:
   group: ${{ github.head_ref || format('{0}-{1}', github.ref, github.run_number) }}
@@ -15,51 +16,55 @@ concurrency:
 jobs:
   build_and_test_serenity:
     runs-on: ${{ matrix.os }}
-    if: always() && github.repository == 'SerenityOS/serenity' 
+    if: github.repository == 'SerenityOS/serenity'
     strategy:
       fail-fast: false
       matrix:
         debug-options: ['ALL_DEBUG', 'NORMAL_DEBUG']
-        os: [ubuntu-20.04]
-        arch: ['i686', 'x86_64']
+        os: [ubuntu-22.04]
+        arch: ['x86_64']
         # If ccache is broken and you would like to bust the ccache cache on Github Actions, increment this:
         ccache-mark: [0]
-        exclude:
-          # We currently manually disable the ALL_DEBUG build on x86_64 for sake of saving CI time, as it is not our main target right now
-          - debug-options: 'ALL_DEBUG'
-            arch: 'x86_64'
 
     steps:
-      - uses: actions/checkout@v2
+      # Pull requests can trail behind `master` and can cause breakage if merging before running the CI checks on an updated branch.
+      # Luckily, GitHub creates and maintains a merge branch that is updated whenever the target or source branch is modified. By
+      # checking this branch out, we gain a stabler `master` at the cost of reproducibility.
+      - uses: actions/checkout@v3
+        if: ${{ github.event_name != 'pull_request' }}
+
+      - uses: actions/checkout@v3
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
       # Set default Python to python 3.x, and set Python path such that pip install works properly
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
 
       # === OS SETUP ===
 
       # Do we need to update the package cache first?
       # sudo apt-get update -qq
       - name: "Install Ubuntu dependencies"
-        # These packages are already part of the ubuntu-20.04 image:
-        # cmake clang-format-11 libgmp-dev npm shellcheck
+        # These packages are already part of the ubuntu-22.04 image:
+        # cmake libgmp-dev npm shellcheck
         # Packages below aren't.
-        #
-        # We add the canonical-server/server-backports PPA to get updated QEMU releases without having to manage
-        #    yet another cache in github actions
-        # We add the ubuntu-toolchain-r/test PPA to get gcc-11 on 20.04
         run: |
-          sudo add-apt-repository ppa:canonical-server/server-backports
-          sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository 'deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-15 main'
           sudo apt-get update
-          sudo apt-get install -y ccache e2fsprogs gcc-11 g++-11 libstdc++-11-dev libmpfr-dev libmpc-dev ninja-build qemu-utils qemu-system-i386 unzip
+          sudo apt-get install -y clang-format-15 ccache e2fsprogs gcc-12 g++-12 libstdc++-12-dev libmpfr-dev libmpc-dev ninja-build optipng qemu-utils qemu-system-i386 unzip
       - name: Install JS dependencies
-        run: sudo npm install -g prettier@2.5.1
+        run: sudo npm install -g prettier@2.7.1
       - name: Install Python dependencies
         # The setup-python action set default python to python3.x. Note that we are not using system python here.
         run: |
           python -m pip install --upgrade pip
           pip install flake8 requests
       - name: Check versions
-        run: set +e; g++ --version; g++-11 --version; clang-format --version; clang-format-11 --version; prettier --version; python --version; python3 --version; ninja --version; flake8 --version; ccache --version; qemu-system-i386 --version
+        run: set +e; g++ --version; g++-12 --version; clang-format --version; clang-format-15 --version; prettier --version; python --version; python3 --version; ninja --version; flake8 --version; ccache --version; qemu-system-i386 --version
 
       # === PREPARE FOR BUILDING ===
 
@@ -74,8 +79,8 @@ jobs:
           # *and* as actual output variable, in this order.
           message("  set-output name=time::${current_date}")
           message("::set-output name=time::${current_date}")
-          message("  set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/[!llvm]*.patch', 'Toolchain/BuildIt.sh') }}")
-          message("::set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/[!llvm]*.patch', 'Toolchain/BuildIt.sh') }}")
+          message("  set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*.patch', 'Toolchain/Patches/gcc/*.patch', 'Toolchain/BuildIt.sh') }}")
+          message("::set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*.patch', 'Toolchain/Patches/gcc/*.patch', 'Toolchain/BuildIt.sh') }}")
 
       - name: Toolchain cache
         # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
@@ -99,7 +104,7 @@ jobs:
         env:
           CACHE_SKIP_SAVE: ${{ github.event_name == 'pull_request' }}
         with:
-          path: /home/runner/.ccache
+          path: ${{ github.workspace }}/.ccache
           # If you're here because ccache broke (it never should), increment matrix.ccache-mark.
           # We want to always reuse the last cache, but upload a new one.
           # This is achieved by using the "prefix-timestamp" format,
@@ -112,8 +117,8 @@ jobs:
       - name: Show ccache stats before build and configure
         run: |
           # We only have 5 GiB of cache available *in total*. Beyond that, GitHub deletes caches.
-          # Currently, we use about 130 MB for the two toolchains (i686 & x86_64), and three ccache caches:
-          # One with ALL_DEBUG (i686) and two with NORMAL_DEBUG (i686 & x86_64).
+          # Currently, we use about 130 MB for the toolchains (x86_64), and 2 ccache caches:
+          # One with ALL_DEBUG (x86_64), and one with NORMAL_DEBUG (x86_64).
           # Therefore, using 1.6 GB or more per cache causes disaster.
           # Building from scratch fills the ccache cache from 0 to about 0.7 GB, and after compression it comes out to
           # about 0.25 GB, so 3 GB (1GB after compression) should be plenty, all while comfortably fitting in the cache.
@@ -121,27 +126,28 @@ jobs:
           ccache -s
       - name: Create build directory
         run: |
-          mkdir -p ${{ github.workspace }}/Build/${{ matrix.arch }}/TZDB
-          mkdir -p ${{ github.workspace }}/Build/${{ matrix.arch }}/UCD
-          mkdir -p ${{ github.workspace }}/Build/${{ matrix.arch }}/CLDR
+          mkdir -p ${{ github.workspace }}/Build/${{ matrix.arch }}
+          mkdir -p ${{ github.workspace }}/Build/caches/TZDB
+          mkdir -p ${{ github.workspace }}/Build/caches/UCD
+          mkdir -p ${{ github.workspace }}/Build/caches/CLDR
       - name: TimeZoneData cache
         # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
         uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
         with:
-          path: ${{ github.workspace }}/Build/${{ matrix.arch }}/TZDB
+          path: ${{ github.workspace }}/Build/caches/TZDB
           key: TimeZoneData-${{ hashFiles('Meta/CMake/time_zone_data.cmake') }}
       - name: UnicodeData cache
         # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
         uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
         with:
-          path: ${{ github.workspace }}/Build/${{ matrix.arch }}/UCD
+          path: ${{ github.workspace }}/Build/caches/UCD
           key: UnicodeData-${{ hashFiles('Meta/CMake/unicode_data.cmake') }}
       - name: UnicodeLocale Cache
         # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
         uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
         with:
-          path: ${{ github.workspace }}/Build/${{ matrix.arch }}/CLDR
-          key: UnicodeLocale-${{ hashFiles('Meta/CMake/unicode_data.cmake') }}
+          path: ${{ github.workspace }}/Build/caches/CLDR
+          key: UnicodeLocale-${{ hashFiles('Meta/CMake/locale_data.cmake') }}
       - name: Create build environment with extra debug options
         # Build the entire project with all available debug options turned on, to prevent code rot.
         # However, it is unwieldy and slow to run tests with them enabled, so we will build twice.
@@ -150,8 +156,8 @@ jobs:
             -DSERENITY_ARCH=${{ matrix.arch }} \
             -DSERENITY_TOOLCHAIN=GNU \
             -DBUILD_LAGOM=ON \
-            -DCMAKE_C_COMPILER=gcc-11 \
-            -DCMAKE_CXX_COMPILER=g++-11 \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
             -DENABLE_ALL_DEBUG_FACILITIES=ON \
             -DENABLE_PCI_IDS_DOWNLOAD=OFF \
             -DENABLE_USB_IDS_DOWNLOAD=OFF
@@ -164,9 +170,10 @@ jobs:
           cmake -S Meta/CMake/Superbuild -B Build/superbuild -GNinja \
             -DSERENITY_ARCH=${{ matrix.arch }} \
             -DSERENITY_TOOLCHAIN=GNU \
-            -DCMAKE_C_COMPILER=gcc-11 \
-            -DCMAKE_CXX_COMPILER=g++-11 \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
             -DENABLE_UNDEFINED_SANITIZER=ON \
+            -DDUMP_REGIONS_ON_CRASH=ON \
             -DENABLE_PCI_IDS_DOWNLOAD=OFF \
             -DENABLE_USB_IDS_DOWNLOAD=OFF
         if: ${{ matrix.debug-options == 'NORMAL_DEBUG' }}
@@ -194,7 +201,7 @@ jobs:
         working-directory: ${{ github.workspace }}/Build/${{ matrix.arch }}
         env:
           SERENITY_QEMU_CPU: "max,vmx=off"
-          SERENITY_KERNEL_CMDLINE: "fbdev=off panic=shutdown system_mode=self-test"
+          SERENITY_KERNEL_CMDLINE: "graphics_subsystem_mode=off panic=shutdown system_mode=self-test"
           SERENITY_RUN: "ci"
         run: |
           echo "::group::ninja run # Qemu output"
@@ -220,7 +227,7 @@ jobs:
         run: '[ ! -e debug.log ] || cat debug.log'
 
       - name: Check manpages for completeness
-        if: ${{ matrix.debug-options == 'NORMAL_DEBUG' && matrix.arch == 'i686'}}
+        if: ${{ matrix.debug-options == 'NORMAL_DEBUG' && matrix.arch == 'x86_64'}}
         working-directory: ${{ github.workspace }}/Build/${{ matrix.arch }}
         env:
           # The script already sets the correct SERENITY_RUN and SERENITY_KERNEL_CMDLINE envvars.

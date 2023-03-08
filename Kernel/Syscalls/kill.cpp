@@ -4,19 +4,27 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
 
 ErrorOr<void> Process::do_kill(Process& process, int signal)
 {
-    // FIXME: Allow sending SIGCONT to everyone in the process group.
     // FIXME: Should setuid processes have some special treatment here?
-    if (!is_superuser() && euid() != process.uid() && uid() != process.uid())
+    auto credentials = this->credentials();
+    auto kill_process_credentials = process.credentials();
+
+    bool can_send_signal = credentials->is_superuser()
+        || credentials->euid() == kill_process_credentials->uid()
+        || credentials->uid() == kill_process_credentials->uid()
+        || (signal == SIGCONT && credentials->pgid() == kill_process_credentials->pgid());
+    if (!can_send_signal)
         return EPERM;
     if (process.is_kernel_process()) {
-        dbgln("Attempted to send signal {} to kernel process {} ({})", signal, process.name(), process.pid());
+        process.name().with([&](auto& process_name) {
+            dbgln("Attempted to send signal {} to kernel process {} ({})", signal, process_name->view(), process.pid());
+        });
         return EPERM;
     }
     if (signal != 0)
@@ -40,7 +48,7 @@ ErrorOr<void> Process::do_killpg(ProcessGroupID pgrp, int signal)
     bool any_succeeded = false;
     ErrorOr<void> error;
 
-    Process::for_each_in_pgrp(pgrp, [&](auto& process) {
+    TRY(Process::current().for_each_in_pgrp_in_same_jail(pgrp, [&](auto& process) -> ErrorOr<void> {
         group_was_empty = false;
 
         ErrorOr<void> res = do_kill(process, signal);
@@ -48,7 +56,8 @@ ErrorOr<void> Process::do_killpg(ProcessGroupID pgrp, int signal)
             any_succeeded = true;
         else
             error = move(res);
-    });
+        return {};
+    }));
 
     if (group_was_empty)
         return ESRCH;
@@ -65,7 +74,7 @@ ErrorOr<void> Process::do_killall(int signal)
     ErrorOr<void> error;
 
     // Send the signal to all processes we have access to for.
-    Process::all_instances().for_each([&](auto& process) {
+    TRY(Process::for_each_in_same_jail([&](auto& process) -> ErrorOr<void> {
         ErrorOr<void> res;
         if (process.pid() == pid())
             res = do_killself(signal);
@@ -76,7 +85,8 @@ ErrorOr<void> Process::do_killall(int signal)
             any_succeeded = true;
         else
             error = move(res);
-    });
+        return {};
+    }));
 
     if (any_succeeded)
         return {};
@@ -97,7 +107,7 @@ ErrorOr<void> Process::do_killself(int signal)
 
 ErrorOr<FlatPtr> Process::sys$kill(pid_t pid_or_pgid, int signal)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     if (pid_or_pgid == pid().value())
         TRY(require_promise(Pledge::stdio));
     else
@@ -120,7 +130,7 @@ ErrorOr<FlatPtr> Process::sys$kill(pid_t pid_or_pgid, int signal)
         return 0;
     }
     VERIFY(pid_or_pgid >= 0);
-    auto peer = Process::from_pid(pid_or_pgid);
+    auto peer = Process::from_pid_in_same_jail(pid_or_pgid);
     if (!peer)
         return ESRCH;
     TRY(do_kill(*peer, signal));
@@ -129,7 +139,7 @@ ErrorOr<FlatPtr> Process::sys$kill(pid_t pid_or_pgid, int signal)
 
 ErrorOr<FlatPtr> Process::sys$killpg(pid_t pgrp, int signum)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::proc));
     if (signum < 1 || signum >= 32)
         return EINVAL;

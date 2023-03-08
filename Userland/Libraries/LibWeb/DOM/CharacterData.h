@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <LibWeb/DOM/ChildNode.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NonDocumentTypeChildNode.h>
@@ -17,21 +17,29 @@ class CharacterData
     : public Node
     , public ChildNode<CharacterData>
     , public NonDocumentTypeChildNode<CharacterData> {
+    WEB_PLATFORM_OBJECT(CharacterData, Node);
+
 public:
-    using WrapperType = Bindings::CharacterDataWrapper;
+    virtual ~CharacterData() override = default;
 
-    virtual ~CharacterData() override;
-
-    const String& data() const { return m_data; }
-    void set_data(String);
+    DeprecatedString const& data() const { return m_data; }
+    void set_data(DeprecatedString);
 
     unsigned length() const { return m_data.length(); }
 
+    WebIDL::ExceptionOr<DeprecatedString> substring_data(size_t offset, size_t count) const;
+    WebIDL::ExceptionOr<void> append_data(DeprecatedString const&);
+    WebIDL::ExceptionOr<void> insert_data(size_t offset, DeprecatedString const&);
+    WebIDL::ExceptionOr<void> delete_data(size_t offset, size_t count);
+    WebIDL::ExceptionOr<void> replace_data(size_t offset, size_t count, DeprecatedString const&);
+
 protected:
-    explicit CharacterData(Document&, NodeType, const String&);
+    CharacterData(Document&, NodeType, DeprecatedString const&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 
 private:
-    String m_data;
+    DeprecatedString m_data;
 };
 
 }

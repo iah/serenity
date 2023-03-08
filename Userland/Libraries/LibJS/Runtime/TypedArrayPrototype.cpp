@@ -1,13 +1,14 @@
 /*
- * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2021, Luke Wilde <lukew@serenityos.org>
  * Copyright (c) 2021-2022, Idan Horowitz <idan.horowitz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/TypeCasts.h>
 #include <LibJS/Runtime/AbstractOperations.h>
-#include <LibJS/Runtime/ArrayBufferConstructor.h>
+#include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayIterator.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/TypedArray.h>
@@ -15,102 +16,103 @@
 
 namespace JS {
 
-TypedArrayPrototype::TypedArrayPrototype(GlobalObject& global_object)
-    : Object(*global_object.object_prototype())
+TypedArrayPrototype::TypedArrayPrototype(Realm& realm)
+    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
 {
 }
 
-void TypedArrayPrototype::initialize(GlobalObject& object)
+ThrowCompletionOr<void> TypedArrayPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    Object::initialize(object);
+    MUST_OR_THROW_OOM(Base::initialize(realm));
     u8 attr = Attribute::Writable | Attribute::Configurable;
 
-    define_native_accessor(vm.names.length, length_getter, nullptr, Attribute::Configurable);
-    define_native_accessor(vm.names.buffer, buffer_getter, nullptr, Attribute::Configurable);
-    define_native_accessor(vm.names.byteLength, byte_length_getter, nullptr, Attribute::Configurable);
-    define_native_accessor(vm.names.byteOffset, byte_offset_getter, nullptr, Attribute::Configurable);
-    define_native_function(vm.names.at, at, 1, attr);
-    define_native_function(vm.names.every, every, 1, attr);
-    define_native_function(vm.names.fill, fill, 1, attr);
-    define_native_function(vm.names.find, find, 1, attr);
-    define_native_function(vm.names.findIndex, find_index, 1, attr);
-    define_native_function(vm.names.findLast, find_last, 1, attr);
-    define_native_function(vm.names.findLastIndex, find_last_index, 1, attr);
-    define_native_function(vm.names.forEach, for_each, 1, attr);
-    define_native_function(vm.names.includes, includes, 1, attr);
-    define_native_function(vm.names.indexOf, index_of, 1, attr);
-    define_native_function(vm.names.lastIndexOf, last_index_of, 1, attr);
-    define_native_function(vm.names.reduce, reduce, 1, attr);
-    define_native_function(vm.names.reduceRight, reduce_right, 1, attr);
-    define_native_function(vm.names.some, some, 1, attr);
-    define_native_function(vm.names.join, join, 1, attr);
-    define_native_function(vm.names.keys, keys, 0, attr);
-    define_native_function(vm.names.values, values, 0, attr);
-    define_native_function(vm.names.entries, entries, 0, attr);
-    define_native_function(vm.names.set, set, 1, attr);
-    define_native_function(vm.names.slice, slice, 2, attr);
-    define_native_function(vm.names.sort, sort, 1, attr);
-    define_native_function(vm.names.subarray, subarray, 2, attr);
-    define_native_function(vm.names.reverse, reverse, 0, attr);
-    define_native_function(vm.names.copyWithin, copy_within, 2, attr);
-    define_native_function(vm.names.filter, filter, 1, attr);
-    define_native_function(vm.names.map, map, 1, attr);
-    define_native_function(vm.names.toLocaleString, to_locale_string, 0, attr);
+    define_native_accessor(realm, vm.names.buffer, buffer_getter, nullptr, Attribute::Configurable);
+    define_native_accessor(realm, vm.names.byteLength, byte_length_getter, nullptr, Attribute::Configurable);
+    define_native_accessor(realm, vm.names.byteOffset, byte_offset_getter, nullptr, Attribute::Configurable);
+    define_native_accessor(realm, vm.names.length, length_getter, nullptr, Attribute::Configurable);
 
-    define_native_accessor(*vm.well_known_symbol_to_string_tag(), to_string_tag_getter, nullptr, Attribute::Configurable);
+    define_native_function(realm, vm.names.at, at, 1, attr);
+    define_native_function(realm, vm.names.copyWithin, copy_within, 2, attr);
+    define_native_function(realm, vm.names.entries, entries, 0, attr);
+    define_native_function(realm, vm.names.every, every, 1, attr);
+    define_native_function(realm, vm.names.fill, fill, 1, attr);
+    define_native_function(realm, vm.names.filter, filter, 1, attr);
+    define_native_function(realm, vm.names.find, find, 1, attr);
+    define_native_function(realm, vm.names.findIndex, find_index, 1, attr);
+    define_native_function(realm, vm.names.findLast, find_last, 1, attr);
+    define_native_function(realm, vm.names.findLastIndex, find_last_index, 1, attr);
+    define_native_function(realm, vm.names.forEach, for_each, 1, attr);
+    define_native_function(realm, vm.names.includes, includes, 1, attr);
+    define_native_function(realm, vm.names.indexOf, index_of, 1, attr);
+    define_native_function(realm, vm.names.join, join, 1, attr);
+    define_native_function(realm, vm.names.keys, keys, 0, attr);
+    define_native_function(realm, vm.names.lastIndexOf, last_index_of, 1, attr);
+    define_native_function(realm, vm.names.map, map, 1, attr);
+    define_native_function(realm, vm.names.reduce, reduce, 1, attr);
+    define_native_function(realm, vm.names.reduceRight, reduce_right, 1, attr);
+    define_native_function(realm, vm.names.reverse, reverse, 0, attr);
+    define_native_function(realm, vm.names.set, set, 1, attr);
+    define_native_function(realm, vm.names.slice, slice, 2, attr);
+    define_native_function(realm, vm.names.some, some, 1, attr);
+    define_native_function(realm, vm.names.sort, sort, 1, attr);
+    define_native_function(realm, vm.names.subarray, subarray, 2, attr);
+    define_native_function(realm, vm.names.toLocaleString, to_locale_string, 0, attr);
+    define_native_function(realm, vm.names.toReversed, to_reversed, 0, attr);
+    define_native_function(realm, vm.names.toSorted, to_sorted, 1, attr);
+    define_native_function(realm, vm.names.with, with, 2, attr);
+    define_native_function(realm, vm.names.values, values, 0, attr);
 
-    // 23.2.3.30 %TypedArray%.prototype.toString ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.tostring
-    define_direct_property(vm.names.toString, global_object().array_prototype()->get_without_side_effects(vm.names.toString), attr);
+    define_native_accessor(realm, *vm.well_known_symbol_to_string_tag(), to_string_tag_getter, nullptr, Attribute::Configurable);
 
-    // 23.2.3.32 %TypedArray%.prototype [ @@iterator ] ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype-@@iterator
+    // 23.2.3.32 %TypedArray%.prototype.toString ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.tostring
+    define_direct_property(vm.names.toString, realm.intrinsics().array_prototype()->get_without_side_effects(vm.names.toString), attr);
+
+    // 23.2.3.34 %TypedArray%.prototype [ @@iterator ] ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype-@@iterator
     define_direct_property(*vm.well_known_symbol_iterator(), get_without_side_effects(vm.names.values), attr);
+
+    return {};
 }
 
-TypedArrayPrototype::~TypedArrayPrototype()
+static ThrowCompletionOr<TypedArrayBase*> typed_array_from_this(VM& vm)
 {
+    auto this_value = vm.this_value();
+    return typed_array_from(vm, this_value);
 }
 
-static ThrowCompletionOr<TypedArrayBase*> typed_array_from_this(GlobalObject& global_object)
+static ThrowCompletionOr<TypedArrayBase*> validate_typed_array_from_this(VM& vm)
 {
-    auto this_value = global_object.vm().this_value(global_object);
-    return typed_array_from(global_object, this_value);
-}
+    auto* typed_array = TRY(typed_array_from_this(vm));
 
-static ThrowCompletionOr<TypedArrayBase*> validate_typed_array_from_this(GlobalObject& global_object)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-
-    TRY(validate_typed_array(global_object, *typed_array));
+    TRY(validate_typed_array(vm, *typed_array));
 
     return typed_array;
 }
 
-static ThrowCompletionOr<FunctionObject*> callback_from_args(GlobalObject& global_object, const String& name)
+static ThrowCompletionOr<FunctionObject*> callback_from_args(VM& vm, DeprecatedString const& name)
 {
-    auto& vm = global_object.vm();
     if (vm.argument_count() < 1)
-        return vm.throw_completion<TypeError>(global_object, ErrorType::TypedArrayPrototypeOneArg, name);
+        return vm.throw_completion<TypeError>(ErrorType::TypedArrayPrototypeOneArg, name);
     auto callback = vm.argument(0);
     if (!callback.is_function())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAFunction, callback.to_string_without_side_effects());
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, callback.to_string_without_side_effects()));
     return &callback.as_function();
 }
 
-static ThrowCompletionOr<void> for_each_item(VM& vm, GlobalObject& global_object, const String& name, Function<IterationDecision(size_t index, Value value, Value callback_result)> callback)
+static ThrowCompletionOr<void> for_each_item(VM& vm, DeprecatedString const& name, Function<IterationDecision(size_t index, Value value, Value callback_result)> callback)
 {
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
     auto initial_length = typed_array->array_length();
 
-    auto* callback_function = TRY(callback_from_args(global_object, name));
+    auto* callback_function = TRY(callback_from_args(vm, name));
 
     auto this_value = vm.argument(1);
 
     for (size_t i = 0; i < initial_length; ++i) {
         auto value = TRY(typed_array->get(i));
 
-        auto callback_result = TRY(call(global_object, *callback_function, this_value, value, Value((i32)i), typed_array));
+        auto callback_result = TRY(call(vm, *callback_function, this_value, value, Value((i32)i), typed_array));
 
         if (callback(i, value, callback_result) == IterationDecision::Break)
             break;
@@ -119,20 +121,20 @@ static ThrowCompletionOr<void> for_each_item(VM& vm, GlobalObject& global_object
     return {};
 }
 
-static ThrowCompletionOr<void> for_each_item_from_last(VM& vm, GlobalObject& global_object, const String& name, Function<IterationDecision(size_t index, Value value, Value callback_result)> callback)
+static ThrowCompletionOr<void> for_each_item_from_last(VM& vm, DeprecatedString const& name, Function<IterationDecision(size_t index, Value value, Value callback_result)> callback)
 {
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
     auto initial_length = typed_array->array_length();
 
-    auto* callback_function = TRY(callback_from_args(global_object, name));
+    auto* callback_function = TRY(callback_from_args(vm, name));
 
     auto this_value = vm.argument(1);
 
     for (ssize_t i = (ssize_t)initial_length - 1; i >= 0; --i) {
         auto value = TRY(typed_array->get(i));
 
-        auto callback_result = TRY(call(global_object, *callback_function, this_value, value, Value((i32)i), typed_array));
+        auto callback_result = TRY(call(vm, *callback_function, this_value, value, Value((i32)i), typed_array));
 
         if (callback(i, value, callback_result) == IterationDecision::Break)
             break;
@@ -142,48 +144,34 @@ static ThrowCompletionOr<void> for_each_item_from_last(VM& vm, GlobalObject& glo
 }
 
 // 23.2.4.1 TypedArraySpeciesCreate ( exemplar, argumentList ), https://tc39.es/ecma262/#typedarray-species-create
-static ThrowCompletionOr<TypedArrayBase*> typed_array_species_create(GlobalObject& global_object, TypedArrayBase const& exemplar, MarkedVector<Value> arguments)
+static ThrowCompletionOr<TypedArrayBase*> typed_array_species_create(VM& vm, TypedArrayBase const& exemplar, MarkedVector<Value> arguments)
 {
-    auto& vm = global_object.vm();
+    auto& realm = *vm.current_realm();
 
-    TypedArrayConstructor* typed_array_default_constructor = nullptr;
+    // 1. Let defaultConstructor be the intrinsic object listed in column one of Table 72 for exemplar.[[TypedArrayName]].
+    auto* default_constructor = (realm.intrinsics().*exemplar.intrinsic_constructor())();
 
-    // FIXME: This kinda sucks.
-#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, Type) \
-    if (is<ClassName>(exemplar))                                                    \
-        typed_array_default_constructor = global_object.snake_name##_constructor();
-    JS_ENUMERATE_TYPED_ARRAYS
-#undef __JS_ENUMERATE
+    // 2. Let constructor be ? SpeciesConstructor(exemplar, defaultConstructor).
+    auto* constructor = TRY(species_constructor(vm, exemplar, *default_constructor));
 
-    VERIFY(typed_array_default_constructor);
+    // 3. Let result be ? TypedArrayCreate(constructor, argumentList).
+    auto* result = TRY(typed_array_create(vm, *constructor, move(arguments)));
 
-    auto* constructor = TRY(species_constructor(global_object, exemplar, *typed_array_default_constructor));
-
-    auto* result = TRY(typed_array_create(global_object, *constructor, move(arguments)));
-
+    // 4. Assert: result has [[TypedArrayName]] and [[ContentType]] internal slots.
+    // 5. If result.[[ContentType]] ≠ exemplar.[[ContentType]], throw a TypeError exception.
     if (result->content_type() != exemplar.content_type())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::TypedArrayContentTypeMismatch, result->class_name(), exemplar.class_name());
+        return vm.throw_completion<TypeError>(ErrorType::TypedArrayContentTypeMismatch, result->class_name(), exemplar.class_name());
 
+    // 6. Return result.
     return result;
-}
-
-// 23.2.3.19 get %TypedArray%.prototype.length, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.length
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::length_getter)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-    auto* array_buffer = typed_array->viewed_array_buffer();
-    VERIFY(array_buffer);
-    if (array_buffer->is_detached())
-        return Value(0);
-    return Value(typed_array->array_length());
 }
 
 // 23.2.3.1 %TypedArray%.prototype.at ( index ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.at
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::at)
 {
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
     auto length = typed_array->array_length();
-    auto relative_index = TRY(vm.argument(0).to_integer_or_infinity(global_object));
+    auto relative_index = TRY(vm.argument(0).to_integer_or_infinity(vm));
     if (Value(relative_index).is_infinity())
         return js_undefined();
     Checked<size_t> index { 0 };
@@ -198,11 +186,223 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::at)
     return TRY(typed_array->get(index.value()));
 }
 
+// 23.2.3.2 get %TypedArray%.prototype.buffer, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.buffer
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::buffer_getter)
+{
+    auto* typed_array = TRY(typed_array_from_this(vm));
+    auto* array_buffer = typed_array->viewed_array_buffer();
+    VERIFY(array_buffer);
+    return Value(array_buffer);
+}
+
+// 23.2.3.3 get %TypedArray%.prototype.byteLength, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.bytelength
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::byte_length_getter)
+{
+    auto* typed_array = TRY(typed_array_from_this(vm));
+    auto* array_buffer = typed_array->viewed_array_buffer();
+    VERIFY(array_buffer);
+    if (array_buffer->is_detached())
+        return Value(0);
+    return Value(typed_array->byte_length());
+}
+
+// 23.2.3.4 get %TypedArray%.prototype.byteOffset, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.byteoffset
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::byte_offset_getter)
+{
+    auto* typed_array = TRY(typed_array_from_this(vm));
+    auto* array_buffer = typed_array->viewed_array_buffer();
+    VERIFY(array_buffer);
+    if (array_buffer->is_detached())
+        return Value(0);
+    return Value(typed_array->byte_offset());
+}
+
+// 23.2.3.6 %TypedArray%.prototype.copyWithin ( target, start [ , end ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.copywithin
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::copy_within)
+{
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let len be O.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 4. Let relativeTarget be ? ToIntegerOrInfinity(target).
+    auto relative_target = TRY(vm.argument(0).to_integer_or_infinity(vm));
+
+    double to;
+    if (Value(relative_target).is_negative_infinity()) {
+        // 5. If relativeTarget is -∞, let to be 0.
+        to = 0.0;
+    } else if (relative_target < 0) {
+        // 6. Else if relativeTarget < 0, let to be max(len + relativeTarget, 0)
+        to = max(length + relative_target, 0.0);
+    } else {
+        // 7. Else, let to be min(relativeTarget, len).
+        to = min(relative_target, (double)length);
+    }
+
+    // 8. Let relativeStart be ? ToIntegerOrInfinity(start).
+    auto relative_start = TRY(vm.argument(1).to_integer_or_infinity(vm));
+
+    double from;
+    if (Value(relative_start).is_negative_infinity()) {
+        // 9. If relativeStart is -∞, let from be 0.
+        from = 0.0;
+    } else if (relative_start < 0) {
+        // 10. Else if relativeStart < 0, let from be max(len + relativeStart, 0).
+        from = max(length + relative_start, 0.0);
+    } else {
+        // 11. Else, let from be min(relativeStart, len).
+        from = min(relative_start, (double)length);
+    }
+
+    double relative_end;
+
+    // 12. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
+    if (vm.argument(2).is_undefined())
+        relative_end = length;
+    else
+        relative_end = TRY(vm.argument(2).to_integer_or_infinity(vm));
+
+    double final;
+    if (Value(relative_end).is_negative_infinity()) {
+        // 13. If relativeEnd is -∞, let final be 0.
+        final = 0.0;
+    } else if (relative_end < 0) {
+        // 14. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
+        final = max(length + relative_end, 0.0);
+    } else {
+        // 15. Else, let final be min(relativeEnd, len).
+        final = min(relative_end, (double)length);
+    }
+
+    // 16. Let count be min(final - from, len - to).
+    double count = min(final - from, length - to);
+
+    // 17. If count > 0, then
+    if (count > 0.0) {
+        // a. NOTE: The copying must be performed in a manner that preserves the bit-level encoding of the source data.
+
+        // b. Let buffer be O.[[ViewedArrayBuffer]].
+        auto buffer = typed_array->viewed_array_buffer();
+
+        // c. If IsDetachedBuffer(buffer) is true, throw a TypeError exception.
+        if (buffer->is_detached())
+            return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+
+        // d. Let elementSize be TypedArrayElementSize(O).
+        auto element_size = typed_array->element_size();
+
+        // e. Let byteOffset be O.[[ByteOffset]].
+        auto byte_offset = typed_array->byte_offset();
+
+        // FIXME: Not exactly sure what we should do when overflow occurs.
+        //        Just return as if succeeded for now. (This goes for steps g to j)
+
+        // f. Let toByteIndex be to × elementSize + byteOffset.
+        Checked<size_t> to_byte_index_checked = static_cast<size_t>(to);
+        to_byte_index_checked *= element_size;
+        to_byte_index_checked += byte_offset;
+        if (to_byte_index_checked.has_overflow()) {
+            dbgln("TypedArrayPrototype::copy_within: to_byte_index overflowed, returning as if succeeded.");
+            return typed_array;
+        }
+
+        // g. Let fromByteIndex be from × elementSize + byteOffset.
+        Checked<size_t> from_byte_index_checked = static_cast<size_t>(from);
+        from_byte_index_checked *= element_size;
+        from_byte_index_checked += byte_offset;
+        if (from_byte_index_checked.has_overflow()) {
+            dbgln("TypedArrayPrototype::copy_within: from_byte_index_checked overflowed, returning as if succeeded.");
+            return typed_array;
+        }
+
+        // h. Let countBytes be count × elementSize.
+        Checked<size_t> count_bytes_checked = static_cast<size_t>(count);
+        count_bytes_checked *= element_size;
+        if (count_bytes_checked.has_overflow()) {
+            dbgln("TypedArrayPrototype::copy_within: count_bytes_checked overflowed, returning as if succeeded.");
+            return typed_array;
+        }
+
+        auto to_byte_index = to_byte_index_checked.value();
+        auto from_byte_index = from_byte_index_checked.value();
+        auto count_bytes = count_bytes_checked.value();
+
+        Checked<size_t> from_plus_count = from_byte_index;
+        from_plus_count += count_bytes;
+        if (from_plus_count.has_overflow()) {
+            dbgln("TypedArrayPrototype::copy_within: from_plus_count overflowed, returning as if succeeded.");
+            return typed_array;
+        }
+
+        i8 direction;
+
+        // i. If fromByteIndex < toByteIndex and toByteIndex < fromByteIndex + countBytes, then
+        if (from_byte_index < to_byte_index && to_byte_index < from_plus_count.value()) {
+            // i. Let direction be -1.
+            direction = -1;
+
+            // ii. Set fromByteIndex to fromByteIndex + countBytes - 1.
+            from_byte_index = from_plus_count.value() - 1;
+
+            Checked<size_t> to_plus_count = to_byte_index;
+            to_plus_count += count_bytes;
+            if (to_plus_count.has_overflow()) {
+                dbgln("TypedArrayPrototype::copy_within: to_plus_count overflowed, returning as if succeeded.");
+                return typed_array;
+            }
+
+            // iii. Set toByteIndex to toByteIndex + countBytes - 1.
+            to_byte_index = to_plus_count.value() - 1;
+        }
+        // j. Else,
+        else {
+            // i. Let direction be 1.
+            direction = 1;
+        }
+
+        // k. Repeat, while countBytes > 0,
+        for (; count_bytes > 0; --count_bytes) {
+            // i. Let value be GetValueFromBuffer(buffer, fromByteIndex, Uint8, true, Unordered).
+            auto value = buffer->get_value<u8>(from_byte_index, true, ArrayBuffer::Order::Unordered);
+
+            // ii. Perform SetValueInBuffer(buffer, toByteIndex, Uint8, value, true, Unordered).
+            buffer->set_value<u8>(to_byte_index, value, true, ArrayBuffer::Order::Unordered);
+
+            // iii. Set fromByteIndex to fromByteIndex + direction.
+            from_byte_index += direction;
+
+            // iv. Set toByteIndex to toByteIndex + direction.
+            to_byte_index += direction;
+
+            // v. Set countBytes to countBytes - 1.
+        }
+    }
+
+    // 18. Return O.
+    return typed_array;
+}
+
+// 23.2.3.7 %TypedArray%.prototype.entries ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.entries
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::entries)
+{
+    auto& realm = *vm.current_realm();
+
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Return CreateArrayIterator(O, key+value).
+    return ArrayIterator::create(realm, typed_array, Object::PropertyKind::KeyAndValue);
+}
+
 // 23.2.3.8 %TypedArray%.prototype.every ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.every
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::every)
 {
     auto result = true;
-    TRY(for_each_item(vm, global_object, "every", [&](auto, auto, auto callback_result) {
+    TRY(for_each_item(vm, "every", [&](auto, auto, auto callback_result) {
         if (!callback_result.to_boolean()) {
             result = false;
             return IterationDecision::Break;
@@ -215,54 +415,139 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::every)
 // 23.2.3.9 %TypedArray%.prototype.fill ( value [ , start [ , end ] ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.fill
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::fill)
 {
-    auto typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto typed_array = TRY(validate_typed_array_from_this(vm));
 
+    // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
     Value value;
+    // 4. If O.[[ContentType]] is BigInt, set value to ? ToBigInt(value).
     if (typed_array->content_type() == TypedArrayBase::ContentType::BigInt)
-        value = TRY(vm.argument(0).to_bigint(global_object));
+        value = TRY(vm.argument(0).to_bigint(vm));
+    // 5. Otherwise, set value to ? ToNumber(value).
     else
-        value = TRY(vm.argument(0).to_number(global_object));
+        value = TRY(vm.argument(0).to_number(vm));
 
-    auto relative_start = TRY(vm.argument(1).to_integer_or_infinity(global_object));
+    // 6. Let relativeStart be ? ToIntegerOrInfinity(start).
+    auto relative_start = TRY(vm.argument(1).to_integer_or_infinity(vm));
 
     u32 k;
+    // 7. If relativeStart is -∞, let k be 0.
     if (Value(relative_start).is_negative_infinity())
         k = 0;
+    // 8. Else if relativeStart < 0, let k be max(len + relativeStart, 0).
     else if (relative_start < 0)
         k = max(length + relative_start, 0);
+    // 9. Else, let k be min(relativeStart, len).
     else
         k = min(relative_start, length);
 
+    // 10. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
     double relative_end;
     if (vm.argument(2).is_undefined())
         relative_end = length;
     else
-        relative_end = TRY(vm.argument(2).to_integer_or_infinity(global_object));
+        relative_end = TRY(vm.argument(2).to_integer_or_infinity(vm));
 
     u32 final;
+    // 11. If relativeEnd is -∞, let final be 0.
     if (Value(relative_end).is_negative_infinity())
         final = 0;
+    // 12. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
     else if (relative_end < 0)
         final = max(length + relative_end, 0);
+    // 13. Else, let final be min(relativeEnd, len).
     else
         final = min(relative_end, length);
 
+    // 14. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, throw a TypeError exception.
     if (typed_array->viewed_array_buffer()->is_detached())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
+        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
 
-    for (; k < final; ++k)
-        TRY(typed_array->set(k, value, Object::ShouldThrowExceptions::Yes));
+    // 15. Repeat, while k < final,
+    for (; k < final; ++k) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Perform ! Set(O, Pk, value, true).
+        MUST(typed_array->set(k, value, Object::ShouldThrowExceptions::Yes));
 
+        // c. Set k to k + 1.
+    }
+
+    // 16. Return O.
     return typed_array;
+}
+
+// 23.2.3.10 %TypedArray%.prototype.filter ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.filter
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::filter)
+{
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let len be O.[[ArrayLength]].
+    auto initial_length = typed_array->array_length();
+
+    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
+    auto* callback_function = TRY(callback_from_args(vm, "filter"));
+
+    // 5. Let kept be a new empty List.
+    MarkedVector<Value> kept(vm.heap());
+
+    // 7. Let captured be 0.
+    size_t captured = 0;
+
+    auto this_value = vm.argument(1);
+
+    // 5. Let k be 0.
+    // 8. Repeat, while k < len,
+    for (size_t i = 0; i < initial_length; ++i) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Let kValue be ! Get(O, Pk).
+        auto value = MUST(typed_array->get(i));
+
+        // c. Let selected be ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
+        auto callback_result = TRY(call(vm, *callback_function, this_value, value, Value((i32)i), typed_array)).to_boolean();
+
+        // d. If selected is true, then
+        if (callback_result) {
+            // i. Append kValue to the end of kept.
+            kept.append(value);
+
+            // ii. Set captured to captured + 1.
+            ++captured;
+        }
+
+        // e. Set k to k + 1.
+    }
+
+    // 9. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(captured) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(captured);
+    auto* filter_array = TRY(typed_array_species_create(vm, *typed_array, move(arguments)));
+
+    // 10. Let n be 0.
+    size_t index = 0;
+
+    // 11. For each element e of kept, do
+    for (auto& value : kept) {
+        // a. Perform ! Set(A, ! ToString(𝔽(n)), e, true).
+        MUST(filter_array->set(index, value, Object::ShouldThrowExceptions::Yes));
+
+        // b. Set n to n + 1.
+        ++index;
+    }
+
+    // 12. Return A.
+    return filter_array;
 }
 
 // 23.2.3.11 %TypedArray%.prototype.find ( predicate [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.find
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find)
 {
     auto result = js_undefined();
-    TRY(for_each_item(vm, global_object, "find", [&](auto, auto value, auto callback_result) {
+    TRY(for_each_item(vm, "find", [&](auto, auto value, auto callback_result) {
         if (callback_result.to_boolean()) {
             result = value;
             return IterationDecision::Break;
@@ -276,7 +561,7 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find)
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_index)
 {
     auto result_index = -1;
-    TRY(for_each_item(vm, global_object, "findIndex", [&](auto index, auto, auto callback_result) {
+    TRY(for_each_item(vm, "findIndex", [&](auto index, auto, auto callback_result) {
         if (callback_result.to_boolean()) {
             result_index = index;
             return IterationDecision::Break;
@@ -286,11 +571,11 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_index)
     return Value(result_index);
 }
 
-// 4 %TypedArray%.prototype.findLast ( predicate [ , thisArg ] ), https://tc39.es/proposal-array-find-from-last/#sec-%typedarray%.prototype.findlast
+// 23.2.3.13 %TypedArray%.prototype.findLast ( predicate [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.findlast
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_last)
 {
     auto result = js_undefined();
-    TRY(for_each_item_from_last(vm, global_object, "findLast", [&](auto, auto value, auto callback_result) {
+    TRY(for_each_item_from_last(vm, "findLast", [&](auto, auto value, auto callback_result) {
         if (callback_result.to_boolean()) {
             result = value;
             return IterationDecision::Break;
@@ -300,11 +585,11 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_last)
     return result;
 }
 
-// 5 %TypedArray%.prototype.findLastIndex ( predicate [ , thisArg ] ), https://tc39.es/proposal-array-find-from-last/#sec-%typedarray%.prototype.findlastindex
+// 23.2.3.14 %TypedArray%.prototype.findLastIndex ( predicate [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.findlastindex
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_last_index)
 {
     auto result_index = -1;
-    TRY(for_each_item_from_last(vm, global_object, "findLastIndex", [&](auto index, auto, auto callback_result) {
+    TRY(for_each_item_from_last(vm, "findLastIndex", [&](auto index, auto, auto callback_result) {
         if (callback_result.to_boolean()) {
             result_index = index;
             return IterationDecision::Break;
@@ -314,100 +599,209 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::find_last_index)
     return Value(result_index);
 }
 
-// 23.2.3.13 %TypedArray%.prototype.forEach ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.foreach
+// 23.2.3.15 %TypedArray%.prototype.forEach ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.foreach
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::for_each)
 {
-    TRY(for_each_item(vm, global_object, "forEach", [](auto, auto, auto) {
+    TRY(for_each_item(vm, "forEach", [](auto, auto, auto) {
         return IterationDecision::Continue;
     }));
     return js_undefined();
 }
 
-// 23.2.3.14 %TypedArray%.prototype.includes ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.includes
+// 23.2.3.16 %TypedArray%.prototype.includes ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.includes
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::includes)
 {
-    auto typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto typed_array = TRY(validate_typed_array_from_this(vm));
 
+    // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
+    // 4. If len is 0, return false.
     if (length == 0)
         return Value(false);
 
-    auto n = TRY(vm.argument(1).to_integer_or_infinity(global_object));
+    // 5. Let n be ? ToIntegerOrInfinity(fromIndex).
+    auto n = TRY(vm.argument(1).to_integer_or_infinity(vm));
+
+    // 6. Assert: If fromIndex is undefined, then n is 0.
+    if (vm.argument(1).is_undefined())
+        VERIFY(n == 0);
 
     auto value_n = Value(n);
+    // 7. If n is +∞, return false.
     if (value_n.is_positive_infinity())
         return Value(false);
+    // 8. Else if n is -∞, set n to 0.
     else if (value_n.is_negative_infinity())
         n = 0;
 
     u32 k;
+    // 9. If n ≥ 0, then
     if (n >= 0) {
+        // a. Let k be n.
         k = n;
-    } else {
+    }
+    // 10. Else,
+    else {
+        // a. Let k be len + n.
         auto relative_k = length + n;
+
+        // b. If k < 0, set k to 0.
         if (relative_k < 0)
             relative_k = 0;
         k = relative_k;
     }
 
     auto search_element = vm.argument(0);
+    // 11. Repeat, while k < len,
     for (; k < length; ++k) {
+        // a. Let elementK be ! Get(O, ! ToString(𝔽(k))).
         auto element_k = MUST(typed_array->get(k));
 
+        // b. If SameValueZero(searchElement, elementK) is true, return true.
         if (same_value_zero(search_element, element_k))
             return Value(true);
+
+        // c. Set k to k + 1.
     }
 
+    // 12. Return false.
     return Value(false);
 }
 
-// 23.2.3.15 %TypedArray%.prototype.indexOf ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.indexof
+// 23.2.3.17 %TypedArray%.prototype.indexOf ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.indexof
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::index_of)
 {
-    auto typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto typed_array = TRY(validate_typed_array_from_this(vm));
 
+    // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
+    // 4. If len is 0, return -1𝔽.
     if (length == 0)
         return Value(-1);
 
-    auto n = TRY(vm.argument(1).to_integer_or_infinity(global_object));
+    // 5. Let n be ? ToIntegerOrInfinity(fromIndex).
+    auto n = TRY(vm.argument(1).to_integer_or_infinity(vm));
+
+    // 6. Assert: If fromIndex is undefined, then n is 0.
+    if (vm.argument(1).is_undefined())
+        VERIFY(n == 0);
 
     auto value_n = Value(n);
+    // 7. If n is +∞, return -1𝔽.
     if (value_n.is_positive_infinity())
         return Value(-1);
+    // 8. Else if n is -∞, set n to 0.
     else if (value_n.is_negative_infinity())
         n = 0;
 
     u32 k;
+    // 9. If n ≥ 0, then
     if (n >= 0) {
+        // a. Let k be n.
         k = n;
-    } else {
+    }
+    // 10. Else,
+    else {
+        // a. Let k be len + n.
         auto relative_k = length + n;
+
+        // b. If k < 0, set k to 0.
         if (relative_k < 0)
             relative_k = 0;
         k = relative_k;
     }
 
+    // 11. Repeat, while k < len,
     auto search_element = vm.argument(0);
     for (; k < length; ++k) {
+        // a. Let kPresent be ! HasProperty(O, ! ToString(𝔽(k))).
         auto k_present = MUST(typed_array->has_property(k));
+
+        // b. If kPresent is true, then
         if (k_present) {
+            // i. Let elementK be ! Get(O, ! ToString(𝔽(k))).
             auto element_k = MUST(typed_array->get(k));
 
+            // ii. Let same be IsStrictlyEqual(searchElement, elementK).
+            // iii. If same is true, return 𝔽(k).
             if (is_strictly_equal(search_element, element_k))
                 return Value(k);
         }
+
+        // c. Set k to k + 1.
     }
 
+    // 12. Return -1𝔽.
     return Value(-1);
 }
 
-// 23.2.3.18 %TypedArray%.prototype.lastIndexOf ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.lastindexof
+// 23.2.3.18 %TypedArray%.prototype.join ( separator ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.join
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::join)
+{
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let len be O.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 4. If separator is undefined, let sep be ",".
+    // 5. Else, let sep be ? ToString(separator).
+    DeprecatedString separator = ",";
+    if (!vm.argument(0).is_undefined())
+        separator = TRY(vm.argument(0).to_deprecated_string(vm));
+
+    // 6. Let R be the empty String.
+    StringBuilder builder;
+
+    // 7. Let k be 0.
+    // 8. Repeat, while k < len,
+    for (size_t i = 0; i < length; ++i) {
+        // a. If k > 0, set R to the string-concatenation of R and sep.
+        if (i > 0)
+            builder.append(separator);
+
+        // b. Let element be ! Get(O, ! ToString(𝔽(k))).
+        auto element = MUST(typed_array->get(i));
+
+        // c. If element is undefined, let next be the empty String; otherwise, let next be ! ToString(element).
+        if (element.is_undefined())
+            continue;
+        auto next = MUST(element.to_deprecated_string(vm));
+
+        // d. Set R to the string-concatenation of R and next.
+        builder.append(next);
+
+        // e. Set k to k + 1.
+    }
+
+    // 9. Return R.
+    return PrimitiveString::create(vm, builder.to_deprecated_string());
+}
+
+// 23.2.3.19 %TypedArray%.prototype.keys ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.keys
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::keys)
+{
+    auto& realm = *vm.current_realm();
+
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Return CreateArrayIterator(O, key).
+    return ArrayIterator::create(realm, typed_array, Object::PropertyKind::Key);
+}
+
+// 23.2.3.20 %TypedArray%.prototype.lastIndexOf ( searchElement [ , fromIndex ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.lastindexof
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::last_index_of)
 {
-    auto typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto typed_array = TRY(validate_typed_array_from_this(vm));
 
     auto length = typed_array->array_length();
 
@@ -416,7 +810,7 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::last_index_of)
 
     double n;
     if (vm.argument_count() > 1)
-        n = TRY(vm.argument(1).to_integer_or_infinity(global_object));
+        n = TRY(vm.argument(1).to_integer_or_infinity(vm));
     else
         n = length - 1;
 
@@ -447,649 +841,171 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::last_index_of)
     return Value(-1);
 }
 
-// 23.2.3.21 %TypedArray%.prototype.reduce ( callbackfn [ , initialValue ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reduce
+// 23.2.3.21 get %TypedArray%.prototype.length, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.length
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::length_getter)
+{
+    auto* typed_array = TRY(typed_array_from_this(vm));
+    auto* array_buffer = typed_array->viewed_array_buffer();
+    VERIFY(array_buffer);
+    if (array_buffer->is_detached())
+        return Value(0);
+    return Value(typed_array->array_length());
+}
+
+// 23.2.3.22 %TypedArray%.prototype.map ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.map
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::map)
+{
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let len be O.[[ArrayLength]].
+    auto initial_length = typed_array->array_length();
+
+    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
+    auto* callback_function = TRY(callback_from_args(vm, "map"));
+
+    // 5. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(len) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(initial_length);
+    auto* return_array = TRY(typed_array_species_create(vm, *typed_array, move(arguments)));
+
+    auto this_value = vm.argument(1);
+
+    // 6. Let k be 0.
+    // 7. Repeat, while k < len,
+    for (size_t i = 0; i < initial_length; ++i) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Let kValue be ! Get(O, Pk).
+        auto value = MUST(typed_array->get(i));
+
+        // c. Let mappedValue be ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
+        auto mapped_value = TRY(call(vm, *callback_function, this_value, value, Value((i32)i), typed_array));
+
+        // d. Perform ? Set(A, Pk, mappedValue, true).
+        TRY(return_array->set(i, mapped_value, Object::ShouldThrowExceptions::Yes));
+
+        // e. Set k to k + 1.
+    }
+
+    // 8. Return A.
+    return return_array;
+}
+
+// 23.2.3.23 %TypedArray%.prototype.reduce ( callbackfn [ , initialValue ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reduce
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::reduce)
 {
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
+    // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
-    auto* callback_function = TRY(callback_from_args(global_object, vm.names.reduce.as_string()));
+    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
+    auto* callback_function = TRY(callback_from_args(vm, vm.names.reduce.as_string()));
 
+    // 5. If len = 0 and initialValue is not present, throw a TypeError exception.
     if (length == 0 && vm.argument_count() <= 1)
-        return vm.throw_completion<TypeError>(global_object, ErrorType::ReduceNoInitial);
+        return vm.throw_completion<TypeError>(ErrorType::ReduceNoInitial);
 
+    // 6. Let k be 0.
     u32 k = 0;
+
+    // 7. Let accumulator be undefined.
     Value accumulator;
+
+    // 8. If initialValue is present, then
     if (vm.argument_count() > 1) {
+        // a. Set accumulator to initialValue.
         accumulator = vm.argument(1);
-    } else {
+    }
+    // 9. Else,
+    else {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Set accumulator to ! Get(O, Pk).
         accumulator = MUST(typed_array->get(k));
+
+        // c. Set k to k + 1.
         ++k;
     }
 
+    // 10. Repeat, while k < len,
     for (; k < length; ++k) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Let kValue be ! Get(O, Pk).
         auto k_value = MUST(typed_array->get(k));
 
-        accumulator = TRY(call(global_object, *callback_function, js_undefined(), accumulator, k_value, Value(k), typed_array));
+        // c. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
+        accumulator = TRY(call(vm, *callback_function, js_undefined(), accumulator, k_value, Value(k), typed_array));
+
+        // d. Set k to k + 1.
     }
 
+    // 11. Return accumulator.
     return accumulator;
 }
 
-// 23.2.3.22 %TypedArray%.prototype.reduceRight ( callbackfn [ , initialValue ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reduce
+// 23.2.3.24 %TypedArray%.prototype.reduceRight ( callbackfn [ , initialValue ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reduce
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::reduce_right)
 {
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
+    // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
-    auto* callback_function = TRY(callback_from_args(global_object, vm.names.reduce.as_string()));
+    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
+    auto* callback_function = TRY(callback_from_args(vm, vm.names.reduce.as_string()));
 
+    // 5. If len is 0 and initialValue is not present, throw a TypeError exception.
     if (length == 0 && vm.argument_count() <= 1)
-        return vm.throw_completion<TypeError>(global_object, ErrorType::ReduceNoInitial);
+        return vm.throw_completion<TypeError>(ErrorType::ReduceNoInitial);
 
+    // 6. Let k be len - 1.
     i32 k = (i32)length - 1;
+
+    // 7. Let accumulator be undefined.
     Value accumulator;
+
+    // 8. If initialValue is present, then
     if (vm.argument_count() > 1) {
+        // a. Set accumulator to initialValue.
         accumulator = vm.argument(1);
-    } else {
+    }
+    // 9. Else,
+    else {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Set accumulator to ! Get(O, Pk).
         accumulator = MUST(typed_array->get(k));
+
+        // c. Set k to k - 1.
         --k;
     }
 
+    // 10. Repeat, while k ≥ 0,
     for (; k >= 0; --k) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Let kValue be ! Get(O, Pk).
         auto k_value = MUST(typed_array->get(k));
 
-        accumulator = TRY(call(global_object, *callback_function, js_undefined(), accumulator, k_value, Value(k), typed_array));
+        // c. Set accumulator to ? Call(callbackfn, undefined, « accumulator, kValue, 𝔽(k), O »).
+        accumulator = TRY(call(vm, *callback_function, js_undefined(), accumulator, k_value, Value(k), typed_array));
+
+        // d. Set k to k - 1.
     }
 
+    // 11. Return accumulator.
     return accumulator;
 }
 
-// 23.2.3.26 %TypedArray%.prototype.some ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.some
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::some)
-{
-    auto result = false;
-    TRY(for_each_item(vm, global_object, "some", [&](auto, auto, auto callback_result) {
-        if (callback_result.to_boolean()) {
-            result = true;
-            return IterationDecision::Break;
-        }
-        return IterationDecision::Continue;
-    }));
-    return Value(result);
-}
-
-// 23.2.3.16 %TypedArray%.prototype.join ( separator ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.join
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::join)
-{
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-    auto length = typed_array->array_length();
-    String separator = ",";
-    if (!vm.argument(0).is_undefined())
-        separator = TRY(vm.argument(0).to_string(global_object));
-
-    StringBuilder builder;
-    for (size_t i = 0; i < length; ++i) {
-        if (i > 0)
-            builder.append(separator);
-        auto value = TRY(typed_array->get(i));
-        if (value.is_nullish())
-            continue;
-        auto string = TRY(value.to_string(global_object));
-        builder.append(string);
-    }
-
-    return js_string(vm, builder.to_string());
-}
-
-// 23.2.3.17 %TypedArray%.prototype.keys ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.keys
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::keys)
-{
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-    return ArrayIterator::create(global_object, typed_array, Object::PropertyKind::Key);
-}
-
-// 23.2.3.31 %TypedArray%.prototype.values ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.values
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::values)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-    return ArrayIterator::create(global_object, typed_array, Object::PropertyKind::Value);
-}
-
-// 23.2.3.7 %TypedArray%.prototype.entries ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.entries
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::entries)
-{
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-    return ArrayIterator::create(global_object, typed_array, Object::PropertyKind::KeyAndValue);
-}
-
-// 23.2.3.2 get %TypedArray%.prototype.buffer, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.buffer
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::buffer_getter)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-    auto* array_buffer = typed_array->viewed_array_buffer();
-    VERIFY(array_buffer);
-    return Value(array_buffer);
-}
-
-// 23.2.3.3 get %TypedArray%.prototype.byteLength, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.bytelength
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::byte_length_getter)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-    auto* array_buffer = typed_array->viewed_array_buffer();
-    VERIFY(array_buffer);
-    if (array_buffer->is_detached())
-        return Value(0);
-    return Value(typed_array->byte_length());
-}
-
-// 23.2.3.4 get %TypedArray%.prototype.byteOffset, https://tc39.es/ecma262/#sec-get-%typedarray%.prototype.byteoffset
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::byte_offset_getter)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-    auto* array_buffer = typed_array->viewed_array_buffer();
-    VERIFY(array_buffer);
-    if (array_buffer->is_detached())
-        return Value(0);
-    return Value(typed_array->byte_offset());
-}
-
-// 23.2.3.33 get %TypedArray%.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-get-%typedarray%.prototype-@@tostringtag
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_string_tag_getter)
-{
-    auto this_value = vm.this_value(global_object);
-    if (!this_value.is_object())
-        return js_undefined();
-    auto& this_object = this_value.as_object();
-    if (!this_object.is_typed_array())
-        return js_undefined();
-    return js_string(vm, static_cast<TypedArrayBase&>(this_object).element_name());
-}
-
-// 23.2.3.24 %TypedArray%.prototype.set ( source [ , offset ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.set
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::set)
-{
-    auto source = vm.argument(0);
-
-    // 1. Let target be the this value.
-    // 2. Perform ? RequireInternalSlot(target, [[TypedArrayName]]).
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-
-    // 3. Assert: target has a [[ViewedArrayBuffer]] internal slot.
-
-    // 4. Let targetOffset be ? ToIntegerOrInfinity(offset).
-    auto target_offset = TRY(vm.argument(1).to_integer_or_infinity(global_object));
-
-    // 5. If targetOffset < 0, throw a RangeError exception.
-    if (target_offset < 0)
-        return vm.throw_completion<RangeError>(global_object, "Invalid target offset");
-
-    // 6. If source is an Object that has a [[TypedArrayName]] internal slot, then
-    if (source.is_object() && is<TypedArrayBase>(source.as_object())) {
-        // a. Perform ? SetTypedArrayFromTypedArray(target, targetOffset, source).
-
-        // 23.2.3.23.1 SetTypedArrayFromTypedArray ( target, targetOffset, source ), https://tc39.es/ecma262/#sec-settypedarrayfromtypedarray
-
-        auto& source_typed_array = static_cast<TypedArrayBase&>(source.as_object());
-
-        // 1. Let targetBuffer be target.[[ViewedArrayBuffer]].
-        auto* target_buffer = typed_array->viewed_array_buffer();
-
-        // 2. If IsDetachedBuffer(targetBuffer) is true, throw a TypeError exception.
-        if (target_buffer->is_detached())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-        // 3. Let targetLength be target.[[ArrayLength]].
-        auto target_length = typed_array->array_length();
-
-        // 4. Let srcBuffer be source.[[ViewedArrayBuffer]].
-        auto* source_buffer = source_typed_array.viewed_array_buffer();
-
-        // 5. If IsDetachedBuffer(srcBuffer) is true, throw a TypeError exception.
-        if (source_buffer->is_detached())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-        // 6. Let targetName be the String value of target.[[TypedArrayName]].
-        // 7. Let targetType be the Element Type value in Table 69 for targetName.
-        // 8. Let targetElementSize be the Element Size value specified in Table 69 for targetName.
-        auto target_element_size = typed_array->element_size();
-
-        // 9. Let targetByteOffset be target.[[ByteOffset]].
-        auto target_byte_offset = typed_array->byte_offset();
-
-        // 10. Let srcName be the String value of source.[[TypedArrayName]].
-        // 11. Let srcType be the Element Type value in Table 69 for srcName.
-        // 12. Let srcElementSize be the Element Size value specified in Table 69 for srcName.
-        auto source_element_size = source_typed_array.element_size();
-
-        // 13. Let srcLength be source.[[ArrayLength]].
-        auto source_length = source_typed_array.array_length();
-
-        // 14. Let srcByteOffset be source.[[ByteOffset]].
-        auto source_byte_offset = source_typed_array.byte_offset();
-
-        // 15. If targetOffset is +∞, throw a RangeError exception.
-        if (isinf(target_offset))
-            return vm.throw_completion<RangeError>(global_object, "Invalid target offset");
-
-        // 16. If srcLength + targetOffset > targetLength, throw a RangeError exception.
-        Checked<size_t> checked = source_length;
-        checked += static_cast<u32>(target_offset);
-        if (checked.has_overflow() || checked.value() > target_length)
-            return vm.throw_completion<RangeError>(global_object, "Overflow or out of bounds in target length");
-
-        // 17. If target.[[ContentType]] ≠ source.[[ContentType]], throw a TypeError exception.
-        if (typed_array->content_type() != source_typed_array.content_type())
-            return vm.throw_completion<TypeError>(global_object, "Copy between arrays of different content types is prohibited");
-
-        // FIXME: 18. If both IsSharedArrayBuffer(srcBuffer) and IsSharedArrayBuffer(targetBuffer) are true, then
-        // FIXME: a. If srcBuffer.[[ArrayBufferData]] and targetBuffer.[[ArrayBufferData]] are the same Shared Data Block values, let same be true; else let same be false.
-
-        // 19. Else, let same be SameValue(srcBuffer, targetBuffer).
-        auto same = same_value(source_buffer, target_buffer);
-
-        size_t source_byte_index;
-
-        // 20. If same is true, then
-        if (same) {
-            // a. Let srcByteLength be source.[[ByteLength]].
-            auto source_byte_length = source_typed_array.byte_length();
-
-            // b. Set srcBuffer to ? CloneArrayBuffer(srcBuffer, srcByteOffset, srcByteLength, %ArrayBuffer%).
-            source_buffer = TRY(clone_array_buffer(global_object, *source_buffer, source_byte_offset, source_byte_length, *global_object.array_buffer_constructor()));
-            // c. NOTE: %ArrayBuffer% is used to clone srcBuffer because is it known to not have any observable side-effects.
-
-            // d. Let srcByteIndex be 0.
-            source_byte_index = 0;
-        } else {
-            // 21. Else, let srcByteIndex be srcByteOffset.
-            source_byte_index = source_byte_offset;
-        }
-
-        // 22. Let targetByteIndex be targetOffset × targetElementSize + targetByteOffset.
-        Checked<size_t> checked_target_byte_index(static_cast<size_t>(target_offset));
-        checked_target_byte_index *= target_element_size;
-        checked_target_byte_index += target_byte_offset;
-        if (checked_target_byte_index.has_overflow())
-            return vm.throw_completion<RangeError>(global_object, "Overflow in target byte index");
-        auto target_byte_index = checked_target_byte_index.value();
-
-        // 23. Let limit be targetByteIndex + targetElementSize × srcLength.
-        Checked<size_t> checked_limit(source_length);
-        checked_limit *= target_element_size;
-        checked_limit += target_byte_index;
-        if (checked_limit.has_overflow())
-            return vm.throw_completion<RangeError>(global_object, "Overflow in target limit");
-        auto limit = checked_limit.value();
-
-        // 24. If srcType is the same as targetType, then
-        if (source_typed_array.element_name() == typed_array->element_name()) {
-            // a. NOTE: If srcType and targetType are the same, the transfer must be performed in a manner that preserves the bit-level encoding of the source data.
-            // b. Repeat, while targetByteIndex < limit,
-            //     i. Let value be GetValueFromBuffer(srcBuffer, srcByteIndex, Uint8, true, Unordered).
-            //     ii. Perform SetValueInBuffer(targetBuffer, targetByteIndex, Uint8, value, true, Unordered).
-            //     iii. Set srcByteIndex to srcByteIndex + 1.
-            //     iv. Set targetByteIndex to targetByteIndex + 1.
-            target_buffer->buffer().overwrite(target_byte_index, source_buffer->buffer().data(), limit - target_byte_index);
-        } else {
-            // a. Repeat, while targetByteIndex < limit,
-            while (target_byte_index < limit) {
-                // i. Let value be GetValueFromBuffer(srcBuffer, srcByteIndex, srcType, true, Unordered).
-                auto value = source_typed_array.get_value_from_buffer(source_byte_index, ArrayBuffer::Unordered);
-                // ii. Perform SetValueInBuffer(targetBuffer, targetByteIndex, targetType, value, true, Unordered).
-                typed_array->set_value_in_buffer(target_byte_index, value, ArrayBuffer::Unordered);
-                // iii. Set srcByteIndex to srcByteIndex + srcElementSize.
-                source_byte_index += source_element_size;
-                // iv. Set targetByteIndex to targetByteIndex + targetElementSize.
-                target_byte_index += typed_array->element_size();
-            }
-        }
-    }
-    // 7. Else,
-    else {
-        // a. Perform ? SetTypedArrayFromArrayLike(target, targetOffset, source).
-
-        // 23.2.3.23.2 SetTypedArrayFromArrayLike ( target, targetOffset, source ), https://tc39.es/ecma262/#sec-settypedarrayfromarraylike
-
-        // 1. Let targetBuffer be target.[[ViewedArrayBuffer]].
-        auto* target_buffer = typed_array->viewed_array_buffer();
-
-        // 2. If IsDetachedBuffer(targetBuffer) is true, throw a TypeError exception.
-        if (target_buffer->is_detached())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-        // 3. Let targetLength be target.[[ArrayLength]].
-        auto target_length = typed_array->array_length();
-
-        // 4. Let targetName be the String value of target.[[TypedArrayName]].
-        // 5. Let targetElementSize be the Element Size value specified in Table 69 for targetName.
-        // 6. Let targetType be the Element Type value in Table 69 for targetName.
-        auto target_element_size = typed_array->element_size();
-
-        // 7. Let targetByteOffset be target.[[ByteOffset]].
-        auto target_byte_offset = typed_array->byte_offset();
-
-        // 8. Let src be ? ToObject(source).
-        auto* src = TRY(source.to_object(global_object));
-
-        // 9. Let srcLength be ? LengthOfArrayLike(src).
-        auto source_length = TRY(length_of_array_like(global_object, *src));
-
-        // 10. If targetOffset is +∞, throw a RangeError exception.
-        if (isinf(target_offset))
-            return vm.throw_completion<RangeError>(global_object, "Invalid target offset");
-
-        // 11. If srcLength + targetOffset > targetLength, throw a RangeError exception.
-        Checked<size_t> checked = source_length;
-        checked += static_cast<u32>(target_offset);
-        if (checked.has_overflow() || checked.value() > target_length)
-            return vm.throw_completion<RangeError>(global_object, "Overflow or out of bounds in target length");
-
-        // 12. Let targetByteIndex be targetOffset × targetElementSize + targetByteOffset.
-        Checked<size_t> checked_target_byte_index(static_cast<size_t>(target_offset));
-        checked_target_byte_index *= target_element_size;
-        checked_target_byte_index += target_byte_offset;
-        if (checked_target_byte_index.has_overflow())
-            return vm.throw_completion<RangeError>(global_object, "Overflow in target byte index");
-        auto target_byte_index = checked_target_byte_index.value();
-
-        // 13. Let k be 0.
-        auto k = 0;
-
-        // 14. Let limit be targetByteIndex + targetElementSize × srcLength.
-        Checked<size_t> checked_limit(source_length);
-        checked_limit *= target_element_size;
-        checked_limit += target_byte_index;
-        if (checked_limit.has_overflow())
-            return vm.throw_completion<RangeError>(global_object, "Overflow in target limit");
-        auto limit = checked_limit.value();
-
-        // 15. Repeat, while targetByteIndex < limit,
-        while (target_byte_index < limit) {
-            // a. Let Pk be ! ToString(𝔽(k)).
-            // b. Let value be ? Get(src, Pk).
-            auto value = TRY(src->get(k));
-
-            // c. If target.[[ContentType]] is BigInt, set value to ? ToBigInt(value).
-            if (typed_array->content_type() == TypedArrayBase::ContentType::BigInt)
-                value = TRY(value.to_bigint(global_object));
-            // d. Otherwise, set value to ? ToNumber(value).
-            else
-                value = TRY(value.to_number(global_object));
-
-            // e. If IsDetachedBuffer(targetBuffer) is true, throw a TypeError exception.
-            if (target_buffer->is_detached())
-                return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-            // f. Perform SetValueInBuffer(targetBuffer, targetByteIndex, targetType, value, true, Unordered).
-            typed_array->set_value_in_buffer(target_byte_index, value, ArrayBuffer::Unordered);
-
-            // g. Set k to k + 1.
-            ++k;
-
-            // h. Set targetByteIndex to targetByteIndex + targetElementSize.
-            target_byte_index += target_element_size;
-        }
-    }
-
-    // 8. Return undefined.
-    return js_undefined();
-}
-
-// 23.2.3.25 %TypedArray%.prototype.slice ( start, end ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.slice
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::slice)
-{
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-
-    auto length = typed_array->array_length();
-
-    auto relative_start = TRY(vm.argument(0).to_integer_or_infinity(global_object));
-
-    i32 k;
-    if (Value(relative_start).is_negative_infinity())
-        k = 0;
-    else if (relative_start < 0)
-        k = max(length + relative_start, 0);
-    else
-        k = min(relative_start, length);
-
-    double relative_end;
-    if (vm.argument(1).is_undefined())
-        relative_end = length;
-    else
-        relative_end = TRY(vm.argument(1).to_integer_or_infinity(global_object));
-
-    i32 final;
-    if (Value(relative_end).is_negative_infinity())
-        final = 0;
-    else if (relative_end < 0)
-        final = max(length + relative_end, 0);
-    else
-        final = min(relative_end, length);
-
-    auto count = max(final - k, 0);
-
-    MarkedVector<Value> arguments(vm.heap());
-    arguments.empend(count);
-    auto* new_array = TRY(typed_array_species_create(global_object, *typed_array, move(arguments)));
-
-    if (count > 0) {
-        if (typed_array->viewed_array_buffer()->is_detached())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-        if (typed_array->element_name() != new_array->element_name()) {
-            for (i32 n = 0; k < final; ++k, ++n) {
-                auto k_value = MUST(typed_array->get(k));
-                MUST(new_array->set(n, k_value, Object::ShouldThrowExceptions::Yes));
-            }
-        } else {
-            auto element_size = typed_array->element_size();
-
-            Checked<u32> source_byte_index = k;
-            source_byte_index *= element_size;
-            source_byte_index += typed_array->byte_offset();
-            if (source_byte_index.has_overflow()) {
-                dbgln("TypedArrayPrototype::slice: source_byte_index overflowed, returning as if succeeded.");
-                return new_array;
-            }
-
-            auto target_byte_index = new_array->byte_offset();
-
-            Checked<u32> limit = count;
-            limit *= element_size;
-            limit += target_byte_index;
-            if (limit.has_overflow()) {
-                dbgln("TypedArrayPrototype::slice: limit overflowed, returning as if succeeded.");
-                return new_array;
-            }
-
-            auto& source_buffer = *typed_array->viewed_array_buffer();
-            auto& target_buffer = *new_array->viewed_array_buffer();
-            for (; target_byte_index < limit.value(); ++source_byte_index, ++target_byte_index) {
-                auto value = source_buffer.get_value<u8>(source_byte_index.value(), true, ArrayBuffer::Unordered);
-                target_buffer.set_value<u8>(target_byte_index, value, true, ArrayBuffer::Unordered);
-            }
-        }
-    }
-
-    return new_array;
-}
-
-static ThrowCompletionOr<void> typed_array_merge_sort(GlobalObject& global_object, FunctionObject* compare_function, ArrayBuffer& buffer, MarkedVector<Value>& arr_to_sort)
-{
-    auto& vm = global_object.vm();
-    if (arr_to_sort.size() <= 1)
-        return {};
-
-    MarkedVector<Value> left(vm.heap());
-    MarkedVector<Value> right(vm.heap());
-
-    left.ensure_capacity(arr_to_sort.size() / 2);
-    right.ensure_capacity(arr_to_sort.size() / 2 + (arr_to_sort.size() & 1));
-
-    for (size_t i = 0; i < arr_to_sort.size(); ++i) {
-        if (i < arr_to_sort.size() / 2) {
-            left.append(arr_to_sort[i]);
-        } else {
-            right.append(arr_to_sort[i]);
-        }
-    }
-
-    TRY(typed_array_merge_sort(global_object, compare_function, buffer, left));
-    TRY(typed_array_merge_sort(global_object, compare_function, buffer, right));
-
-    arr_to_sort.clear();
-
-    size_t left_index = 0, right_index = 0;
-
-    while (left_index < left.size() && right_index < right.size()) {
-        auto x = left[left_index];
-        auto y = right[right_index];
-
-        bool number_comparison = x.is_number();
-        double comparison_result;
-
-        if (compare_function) {
-            auto result = TRY(call(global_object, *compare_function, js_undefined(), x, y));
-
-            auto value = TRY(result.to_number(global_object));
-
-            if (buffer.is_detached())
-                return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
-
-            if (value.is_nan())
-                comparison_result = 0;
-            else
-                comparison_result = value.as_double();
-        } else if (x.is_nan() && y.is_nan()) {
-            comparison_result = 0;
-        } else if (x.is_nan()) {
-            comparison_result = 1;
-        } else if (y.is_nan()) {
-            comparison_result = -1;
-        } else if (number_comparison ? (x.as_double() < y.as_double()) : (x.as_bigint().big_integer() < y.as_bigint().big_integer())) {
-            comparison_result = -1;
-        } else if (number_comparison ? (x.as_double() > y.as_double()) : (x.as_bigint().big_integer() > y.as_bigint().big_integer())) {
-            comparison_result = 1;
-        } else if (x.is_negative_zero() && y.is_positive_zero()) {
-            comparison_result = -1;
-        } else if (x.is_positive_zero() && y.is_negative_zero()) {
-            comparison_result = 1;
-        } else {
-            comparison_result = 0;
-        }
-
-        if (comparison_result <= 0) {
-            arr_to_sort.append(left[left_index]);
-            left_index++;
-        } else {
-            arr_to_sort.append(right[right_index]);
-            right_index++;
-        }
-    }
-
-    while (left_index < left.size()) {
-        arr_to_sort.append(left[left_index]);
-        left_index++;
-    }
-
-    while (right_index < right.size()) {
-        arr_to_sort.append(right[right_index]);
-        right_index++;
-    }
-
-    return {};
-}
-
-// 23.2.3.27 %TypedArray%.prototype.sort ( comparefn ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.sort
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::sort)
-{
-    auto compare_fn = vm.argument(0);
-    if (!compare_fn.is_undefined() && !compare_fn.is_function())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAFunction, compare_fn.to_string_without_side_effects());
-
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-
-    auto length = typed_array->array_length();
-
-    MarkedVector<Value> items(vm.heap());
-    for (u32 k = 0; k < length; ++k) {
-        auto k_present = TRY(typed_array->has_property(k));
-
-        if (k_present) {
-            auto k_value = TRY(typed_array->get(k));
-            items.append(k_value);
-        }
-    }
-
-    TRY(typed_array_merge_sort(global_object, compare_fn.is_undefined() ? nullptr : &compare_fn.as_function(), *typed_array->viewed_array_buffer(), items));
-
-    u32 j;
-    for (j = 0; j < items.size(); ++j)
-        TRY(typed_array->set(j, items[j], Object::ShouldThrowExceptions::Yes));
-
-    for (; j < length; ++j)
-        TRY(typed_array->delete_property_or_throw(j));
-
-    return typed_array;
-}
-
-// 23.2.3.28 %TypedArray%.prototype.subarray ( begin, end ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.subarray
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::subarray)
-{
-    auto* typed_array = TRY(typed_array_from_this(global_object));
-
-    auto length = typed_array->array_length();
-
-    auto relative_begin = TRY(vm.argument(0).to_integer_or_infinity(global_object));
-
-    i32 begin_index;
-    if (Value(relative_begin).is_negative_infinity())
-        begin_index = 0;
-    else if (relative_begin < 0)
-        begin_index = max(length + relative_begin, 0);
-    else
-        begin_index = min(relative_begin, length);
-
-    double relative_end;
-    if (vm.argument(1).is_undefined())
-        relative_end = length;
-    else
-        relative_end = TRY(vm.argument(1).to_integer_or_infinity(global_object));
-
-    i32 end_index;
-    if (Value(relative_end).is_negative_infinity())
-        end_index = 0;
-    else if (relative_end < 0)
-        end_index = max(length + relative_end, 0);
-    else
-        end_index = min(relative_end, length);
-
-    auto new_length = max(end_index - begin_index, 0);
-
-    Checked<u32> begin_byte_offset = begin_index;
-    begin_byte_offset *= typed_array->element_size();
-    begin_byte_offset += typed_array->byte_offset();
-    if (begin_byte_offset.has_overflow()) {
-        dbgln("TypedArrayPrototype::begin_byte_offset: limit overflowed, returning as if succeeded.");
-        return typed_array;
-    }
-
-    MarkedVector<Value> arguments(vm.heap());
-    arguments.empend(typed_array->viewed_array_buffer());
-    arguments.empend(begin_byte_offset.value());
-    arguments.empend(new_length);
-    return TRY(typed_array_species_create(global_object, *typed_array, move(arguments)));
-}
-
-// 23.2.3.23 %TypedArray%.prototype.reverse ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reverse
+// 23.2.3.25 %TypedArray%.prototype.reverse ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.reverse
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::reverse)
 {
     // 1. Let O be the this value.
     // 2. Perform ? ValidateTypedArray(O).
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
     // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
@@ -1124,279 +1040,484 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::reverse)
     return typed_array;
 }
 
-// 23.2.3.6 %TypedArray%.prototype.copyWithin ( target, start [ , end ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.copywithin
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::copy_within)
+// 23.2.3.26.1 SetTypedArrayFromTypedArray ( target, targetOffset, source ), https://tc39.es/ecma262/#sec-settypedarrayfromtypedarray
+static ThrowCompletionOr<void> set_typed_array_from_typed_array(VM& vm, TypedArrayBase& target, double target_offset, TypedArrayBase& source)
 {
+    // 1. Let targetBuffer be target.[[ViewedArrayBuffer]].
+    auto* target_buffer = target.viewed_array_buffer();
+
+    // 2. If IsDetachedBuffer(targetBuffer) is true, throw a TypeError exception.
+    if (target_buffer->is_detached())
+        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+
+    // 3. Let targetLength be target.[[ArrayLength]].
+    auto target_length = target.array_length();
+
+    // 4. Let srcBuffer be source.[[ViewedArrayBuffer]].
+    auto* source_buffer = source.viewed_array_buffer();
+
+    // 5. If IsDetachedBuffer(srcBuffer) is true, throw a TypeError exception.
+    if (source_buffer->is_detached())
+        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+
+    // 6. Let targetType be TypedArrayElementType(target).
+    // 7. Let targetElementSize be TypedArrayElementSize(target).
+    auto target_element_size = target.element_size();
+
+    // 8. Let targetByteOffset be target.[[ByteOffset]].
+    auto target_byte_offset = target.byte_offset();
+
+    // 9. Let srcType be TypedArrayElementType(source).
+    // 10. Let srcElementSize be TypedArrayElementSize(source).
+    auto source_element_size = source.element_size();
+
+    // 11. Let srcLength be source.[[ArrayLength]].
+    auto source_length = source.array_length();
+
+    // 12. Let srcByteOffset be source.[[ByteOffset]].
+    auto source_byte_offset = source.byte_offset();
+
+    // 13. If targetOffset is +∞, throw a RangeError exception.
+    if (isinf(target_offset))
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayInvalidTargetOffset, "finite");
+
+    // 14. If srcLength + targetOffset > targetLength, throw a RangeError exception.
+    Checked<size_t> checked = source_length;
+    checked += static_cast<u32>(target_offset);
+    if (checked.has_overflow() || checked.value() > target_length)
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayOverflowOrOutOfBounds, "target length");
+
+    // 15. If target.[[ContentType]] ≠ source.[[ContentType]], throw a TypeError exception.
+    if (target.content_type() != source.content_type())
+        return vm.throw_completion<TypeError>(ErrorType::TypedArrayInvalidCopy, target.class_name(), source.class_name());
+
+    // FIXME: 16. If both IsSharedArrayBuffer(srcBuffer) and IsSharedArrayBuffer(targetBuffer) are true, then
+    // FIXME: a. If srcBuffer.[[ArrayBufferData]] and targetBuffer.[[ArrayBufferData]] are the same Shared Data Block values, let same be true; else let same be false.
+
+    // 17. Else, let same be SameValue(srcBuffer, targetBuffer).
+    auto same = same_value(source_buffer, target_buffer);
+
+    size_t source_byte_index = 0;
+
+    // 18. If same is true, then
+    if (same) {
+        // a. Let srcByteLength be source.[[ByteLength]].
+        auto source_byte_length = source.byte_length();
+
+        // b. Set srcBuffer to ? CloneArrayBuffer(srcBuffer, srcByteOffset, srcByteLength).
+        source_buffer = TRY(clone_array_buffer(vm, *source_buffer, source_byte_offset, source_byte_length));
+
+        // c. Let srcByteIndex be 0.
+        source_byte_index = 0;
+    }
+    // 19. Else, let srcByteIndex be srcByteOffset.
+    else {
+        source_byte_index = source_byte_offset;
+    }
+
+    // 20. Let targetByteIndex be targetOffset × targetElementSize + targetByteOffset.
+    Checked<size_t> checked_target_byte_index(static_cast<size_t>(target_offset));
+    checked_target_byte_index *= target_element_size;
+    checked_target_byte_index += target_byte_offset;
+    if (checked_target_byte_index.has_overflow())
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayOverflow, "target byte index");
+    auto target_byte_index = checked_target_byte_index.value();
+
+    // 21. Let limit be targetByteIndex + targetElementSize × srcLength.
+    Checked<size_t> checked_limit(source_length);
+    checked_limit *= target_element_size;
+    checked_limit += target_byte_index;
+    if (checked_limit.has_overflow())
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayOverflow, "target limit");
+    auto limit = checked_limit.value();
+
+    // 22. If srcType is the same as targetType, then
+    if (source.element_name() == target.element_name()) {
+        // a. NOTE: If srcType and targetType are the same, the transfer must be performed in a manner that preserves the bit-level encoding of the source data.
+        // b. Repeat, while targetByteIndex < limit,
+        //     i. Let value be GetValueFromBuffer(srcBuffer, srcByteIndex, Uint8, true, Unordered).
+        //     ii. Perform SetValueInBuffer(targetBuffer, targetByteIndex, Uint8, value, true, Unordered).
+        //     iii. Set srcByteIndex to srcByteIndex + 1.
+        //     iv. Set targetByteIndex to targetByteIndex + 1.
+        target_buffer->buffer().overwrite(target_byte_index, source_buffer->buffer().data() + source_byte_index, limit - target_byte_index);
+    }
+    // 23. Else,
+    else {
+        // a. Repeat, while targetByteIndex < limit,
+        while (target_byte_index < limit) {
+            // i. Let value be GetValueFromBuffer(srcBuffer, srcByteIndex, srcType, true, Unordered).
+            auto value = source.get_value_from_buffer(source_byte_index, ArrayBuffer::Unordered);
+            // ii. Perform SetValueInBuffer(targetBuffer, targetByteIndex, targetType, value, true, Unordered).
+            target.set_value_in_buffer(target_byte_index, value, ArrayBuffer::Unordered);
+            // iii. Set srcByteIndex to srcByteIndex + srcElementSize.
+            source_byte_index += source_element_size;
+            // iv. Set targetByteIndex to targetByteIndex + targetElementSize.
+            target_byte_index += target.element_size();
+        }
+    }
+
+    // 24. Return unused.
+    return {};
+}
+
+// 23.2.3.26.2 SetTypedArrayFromArrayLike ( target, targetOffset, source ), https://tc39.es/ecma262/#sec-settypedarrayfromarraylike
+static ThrowCompletionOr<void> set_typed_array_from_array_like(VM& vm, TypedArrayBase& target, double target_offset, Value source)
+{
+    // 1. Let targetBuffer be target.[[ViewedArrayBuffer]].
+    auto* target_buffer = target.viewed_array_buffer();
+
+    // 2. If IsDetachedBuffer(targetBuffer) is true, throw a TypeError exception.
+    if (target_buffer->is_detached())
+        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+
+    // 3. Let targetLength be target.[[ArrayLength]].
+    auto target_length = target.array_length();
+
+    // 4. Let src be ? ToObject(source).
+    auto* src = TRY(source.to_object(vm));
+
+    // 5. Let srcLength be ? LengthOfArrayLike(src).
+    auto source_length = TRY(length_of_array_like(vm, *src));
+
+    // 6. If targetOffset is +∞, throw a RangeError exception.
+    if (isinf(target_offset))
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayInvalidTargetOffset, "finite");
+
+    // 7. If srcLength + targetOffset > targetLength, throw a RangeError exception.
+    Checked<size_t> checked = source_length;
+    checked += static_cast<u32>(target_offset);
+    if (checked.has_overflow() || checked.value() > target_length)
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayOverflowOrOutOfBounds, "target length");
+
+    // 8. Let k be 0.
+    size_t k = 0;
+
+    // 9. Repeat, while k < srcLength,
+    while (k < source_length) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        // b. Let value be ? Get(src, Pk).
+        auto value = TRY(src->get(k));
+
+        // c. Let targetIndex be 𝔽(targetOffset + k).
+        // NOTE: We verify above that target_offset + source_length is valid, so this cannot fail.
+        auto target_index = MUST(CanonicalIndex::from_double(vm, CanonicalIndex::Type::Index, target_offset + k));
+
+        // d. Perform ? IntegerIndexedElementSet(target, targetIndex, value).
+        // FIXME: This is very awkward.
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, Type) \
+    if (is<ClassName>(target))                                                      \
+        TRY(integer_indexed_element_set<Type>(target, target_index, value));
+        JS_ENUMERATE_TYPED_ARRAYS
+#undef __JS_ENUMERATE
+
+        // e. Set k to k + 1.
+        ++k;
+    }
+
+    // 10. Return unused.
+    return {};
+}
+
+// 23.2.3.26 %TypedArray%.prototype.set ( source [ , offset ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.set
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::set)
+{
+    auto source = vm.argument(0);
+
+    // 1. Let target be the this value.
+    // 2. Perform ? RequireInternalSlot(target, [[TypedArrayName]]).
+    auto* typed_array = TRY(typed_array_from_this(vm));
+
+    // 3. Assert: target has a [[ViewedArrayBuffer]] internal slot.
+
+    // 4. Let targetOffset be ? ToIntegerOrInfinity(offset).
+    auto target_offset = TRY(vm.argument(1).to_integer_or_infinity(vm));
+
+    // 5. If targetOffset < 0, throw a RangeError exception.
+    if (target_offset < 0)
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayInvalidTargetOffset, "positive");
+
+    // 6. If source is an Object that has a [[TypedArrayName]] internal slot, then
+    if (source.is_object() && is<TypedArrayBase>(source.as_object())) {
+        auto& source_typed_array = static_cast<TypedArrayBase&>(source.as_object());
+
+        // a. Perform ? SetTypedArrayFromTypedArray(target, targetOffset, source).
+        TRY(set_typed_array_from_typed_array(vm, *typed_array, target_offset, source_typed_array));
+    }
+    // 7. Else,
+    else {
+        // a. Perform ? SetTypedArrayFromArrayLike(target, targetOffset, source).
+        TRY(set_typed_array_from_array_like(vm, *typed_array, target_offset, source));
+    }
+
+    // 8. Return undefined.
+    return js_undefined();
+}
+
+// 23.2.3.27 %TypedArray%.prototype.slice ( start, end ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.slice
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::slice)
+{
+    auto start = vm.argument(0);
+    auto end = vm.argument(1);
+
     // 1. Let O be the this value.
     // 2. Perform ? ValidateTypedArray(O).
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
     // 3. Let len be O.[[ArrayLength]].
     auto length = typed_array->array_length();
 
-    // 4. Let relativeTarget be ? ToIntegerOrInfinity(target).
-    auto relative_target = TRY(vm.argument(0).to_integer_or_infinity(global_object));
+    // 4. Let relativeStart be ? ToIntegerOrInfinity(start).
+    auto relative_start = TRY(start.to_integer_or_infinity(vm));
 
-    double to;
-    if (Value(relative_target).is_negative_infinity()) {
-        // 5. If relativeTarget is -∞, let to be 0.
-        to = 0.0;
-    } else if (relative_target < 0) {
-        // 6. Else if relativeTarget < 0, let to be max(len + relativeTarget, 0)
-        to = max(length + relative_target, 0.0);
-    } else {
-        // 7. Else, let to be min(relativeTarget, len).
-        to = min(relative_target, (double)length);
-    }
+    i32 k = 0;
 
-    // 8. Let relativeStart be ? ToIntegerOrInfinity(start).
-    auto relative_start = TRY(vm.argument(1).to_integer_or_infinity(global_object));
+    // 5. If relativeStart is -∞, let k be 0.
+    if (Value(relative_start).is_negative_infinity())
+        k = 0;
+    // 6. Else if relativeStart < 0, let k be max(len + relativeStart, 0).
+    else if (relative_start < 0)
+        k = max(length + relative_start, 0);
+    // 7. Else, let k be min(relativeStart, len).
+    else
+        k = min(relative_start, length);
 
-    double from;
-    if (Value(relative_start).is_negative_infinity()) {
-        // 9. If relativeStart is -∞, let from be 0.
-        from = 0.0;
-    } else if (relative_start < 0) {
-        // 10. Else if relativeStart < 0, let from be max(len + relativeStart, 0).
-        from = max(length + relative_start, 0.0);
-    } else {
-        // 11. Else, let from be min(relativeStart, len).
-        from = min(relative_start, (double)length);
-    }
+    double relative_end = 0;
 
-    double relative_end;
-
-    // 12. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
-    if (vm.argument(2).is_undefined())
+    // 8. If end is undefined, let relativeEnd be len; else let relativeEnd be ? ToIntegerOrInfinity(end).
+    if (end.is_undefined())
         relative_end = length;
     else
-        relative_end = TRY(vm.argument(2).to_integer_or_infinity(global_object));
+        relative_end = TRY(end.to_integer_or_infinity(vm));
 
-    double final;
-    if (Value(relative_end).is_negative_infinity()) {
-        // 13. If relativeEnd is -∞, let final be 0.
-        final = 0.0;
-    } else if (relative_end < 0) {
-        // 14. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
-        final = max(length + relative_end, 0.0);
-    } else {
-        // 15. Else, let final be min(relativeEnd, len).
-        final = min(relative_end, (double)length);
-    }
+    i32 final = 0;
 
-    // 16. Let count be min(final - from, len - to).
-    double count = min(final - from, length - to);
+    // 9. If relativeEnd is -∞, let final be 0.
+    if (Value(relative_end).is_negative_infinity())
+        final = 0;
+    // 10. Else if relativeEnd < 0, let final be max(len + relativeEnd, 0).
+    else if (relative_end < 0)
+        final = max(length + relative_end, 0);
+    // 11. Else, let final be min(relativeEnd, len).
+    else
+        final = min(relative_end, length);
 
-    // 17. If count > 0, then
-    if (count > 0.0) {
-        // a. NOTE: The copying must be performed in a manner that preserves the bit-level encoding of the source data.
+    // 12. Let count be max(final - k, 0).
+    auto count = max(final - k, 0);
 
-        // b. Let buffer be O.[[ViewedArrayBuffer]].
-        auto buffer = typed_array->viewed_array_buffer();
+    // 13. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(count) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(count);
+    auto* new_array = TRY(typed_array_species_create(vm, *typed_array, move(arguments)));
 
-        // c. If IsDetachedBuffer(buffer) is true, throw a TypeError exception.
-        if (buffer->is_detached())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
+    // 14. If count > 0, then
+    if (count > 0) {
+        // a. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is true, throw a TypeError exception.
+        if (typed_array->viewed_array_buffer()->is_detached())
+            return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
 
-        // d. Let typedArrayName be the String value of O.[[TypedArrayName]].
-        // e. Let elementSize be the Element Size value specified in Table 64 for typedArrayName.
-        auto element_size = typed_array->element_size();
+        // b. Let srcType be TypedArrayElementType(O).
+        // c. Let targetType be TypedArrayElementType(A).
 
-        // f. Let byteOffset be O.[[ByteOffset]].
-        auto byte_offset = typed_array->byte_offset();
+        // d. If srcType is different from targetType, then
+        if (typed_array->element_name() != new_array->element_name()) {
+            // i. Let n be 0.
+            // ii. Repeat, while k < final,
+            for (i32 n = 0; k < final; ++k, ++n) {
+                // 1. Let Pk be ! ToString(𝔽(k)).
+                // 2. Let kValue be ! Get(O, Pk).
+                auto k_value = MUST(typed_array->get(k));
 
-        // FIXME: Not exactly sure what we should do when overflow occurs.
-        //        Just return as if succeeded for now. (This goes for steps g to j)
+                // 3. Perform ! Set(A, ! ToString(𝔽(n)), kValue, true).
+                MUST(new_array->set(n, k_value, Object::ShouldThrowExceptions::Yes));
 
-        // g. Let toByteIndex be to × elementSize + byteOffset.
-        Checked<size_t> to_byte_index_checked = static_cast<size_t>(to);
-        to_byte_index_checked *= element_size;
-        to_byte_index_checked += byte_offset;
-        if (to_byte_index_checked.has_overflow()) {
-            dbgln("TypedArrayPrototype::copy_within: to_byte_index overflowed, returning as if succeeded.");
-            return typed_array;
+                // 4. Set k to k + 1.
+                // 5. Set n to n + 1.
+            }
         }
+        // e. Else,
+        else {
+            // i. Let srcBuffer be O.[[ViewedArrayBuffer]].
+            auto& source_buffer = *typed_array->viewed_array_buffer();
 
-        // h. Let fromByteIndex be from × elementSize + byteOffset.
-        Checked<size_t> from_byte_index_checked = static_cast<size_t>(from);
-        from_byte_index_checked *= element_size;
-        from_byte_index_checked += byte_offset;
-        if (from_byte_index_checked.has_overflow()) {
-            dbgln("TypedArrayPrototype::copy_within: from_byte_index_checked overflowed, returning as if succeeded.");
-            return typed_array;
-        }
+            // ii. Let targetBuffer be A.[[ViewedArrayBuffer]].
+            auto& target_buffer = *new_array->viewed_array_buffer();
 
-        // i. Let countBytes be count × elementSize.
-        Checked<size_t> count_bytes_checked = static_cast<size_t>(count);
-        count_bytes_checked *= element_size;
-        if (count_bytes_checked.has_overflow()) {
-            dbgln("TypedArrayPrototype::copy_within: count_bytes_checked overflowed, returning as if succeeded.");
-            return typed_array;
-        }
+            // iii. Let elementSize be TypedArrayElementSize(O).
+            auto element_size = typed_array->element_size();
 
-        auto to_byte_index = to_byte_index_checked.value();
-        auto from_byte_index = from_byte_index_checked.value();
-        auto count_bytes = count_bytes_checked.value();
+            // iv. NOTE: If srcType and targetType are the same, the transfer must be performed in a manner that preserves the bit-level encoding of the source data.
 
-        Checked<size_t> from_plus_count = from_byte_index;
-        from_plus_count += count_bytes;
-        if (from_plus_count.has_overflow()) {
-            dbgln("TypedArrayPrototype::copy_within: from_plus_count overflowed, returning as if succeeded.");
-            return typed_array;
-        }
+            // v. Let srcByteOffset be O.[[ByteOffset]].
+            auto source_byte_offset = typed_array->byte_offset();
 
-        i8 direction;
+            // vi. Let targetByteIndex be A.[[ByteOffset]].
+            auto target_byte_index = new_array->byte_offset();
 
-        // j. If fromByteIndex < toByteIndex and toByteIndex < fromByteIndex + countBytes, then
-        if (from_byte_index < to_byte_index && to_byte_index < from_plus_count.value()) {
-            // i. Let direction be -1.
-            direction = -1;
-
-            // ii. Set fromByteIndex to fromByteIndex + countBytes - 1.
-            from_byte_index = from_plus_count.value() - 1;
-
-            Checked<size_t> to_plus_count = to_byte_index;
-            to_plus_count += count_bytes;
-            if (to_plus_count.has_overflow()) {
-                dbgln("TypedArrayPrototype::copy_within: to_plus_count overflowed, returning as if succeeded.");
-                return typed_array;
+            // vii. Let srcByteIndex be (k × elementSize) + srcByteOffset.
+            Checked<u32> source_byte_index = k;
+            source_byte_index *= element_size;
+            source_byte_index += source_byte_offset;
+            if (source_byte_index.has_overflow()) {
+                dbgln("TypedArrayPrototype::slice: source_byte_index overflowed, returning as if succeeded.");
+                return new_array;
             }
 
-            // iii. Set toByteIndex to toByteIndex + countBytes - 1.
-            to_byte_index = to_plus_count.value() - 1;
-        } else {
-            // k. Else,
-            // i. Let direction be 1.
-            direction = 1;
-        }
+            // viii. Let limit be targetByteIndex + count × elementSize.
+            Checked<u32> limit = count;
+            limit *= element_size;
+            limit += target_byte_index;
+            if (limit.has_overflow()) {
+                dbgln("TypedArrayPrototype::slice: limit overflowed, returning as if succeeded.");
+                return new_array;
+            }
 
-        // l. Repeat, while countBytes > 0,
-        for (; count_bytes > 0; --count_bytes) {
-            // i. Let value be GetValueFromBuffer(buffer, fromByteIndex, Uint8, true, Unordered).
-            auto value = buffer->get_value<u8>(from_byte_index, true, ArrayBuffer::Order::Unordered);
+            // ix. Repeat, while targetByteIndex < limit,
+            for (; target_byte_index < limit.value(); ++source_byte_index, ++target_byte_index) {
+                // 1. Let value be GetValueFromBuffer(srcBuffer, srcByteIndex, Uint8, true, Unordered).
+                auto value = source_buffer.get_value<u8>(source_byte_index.value(), true, ArrayBuffer::Unordered);
 
-            // ii. Perform SetValueInBuffer(buffer, toByteIndex, Uint8, value, true, Unordered).
-            buffer->set_value<u8>(to_byte_index, value, true, ArrayBuffer::Order::Unordered);
+                // 2. Perform SetValueInBuffer(targetBuffer, targetByteIndex, Uint8, value, true, Unordered).
+                target_buffer.set_value<u8>(target_byte_index, value, true, ArrayBuffer::Unordered);
 
-            // iii. Set fromByteIndex to fromByteIndex + direction.
-            from_byte_index += direction;
-
-            // iv. Set toByteIndex to toByteIndex + direction.
-            to_byte_index += direction;
-
-            // v. Set countBytes to countBytes - 1.
+                // 3. Set srcByteIndex to srcByteIndex + 1.
+                // 4. Set targetByteIndex to targetByteIndex + 1.
+            }
         }
     }
 
-    // 18. Return O.
+    // 15. Return A.
+    return new_array;
+}
+
+// 23.2.3.28 %TypedArray%.prototype.some ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.some
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::some)
+{
+    auto result = false;
+    TRY(for_each_item(vm, "some", [&](auto, auto, auto callback_result) {
+        if (callback_result.to_boolean()) {
+            result = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    }));
+    return Value(result);
+}
+
+// 23.2.3.29 %TypedArray%.prototype.sort ( comparefn ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.sort
+// 1.2.2.1.1 %TypedArray%.prototype.sort ( comparefn ), https://tc39.es/proposal-change-array-by-copy/#sec-%typedarray%.prototype.sort
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::sort)
+{
+    // 1. If comparefn is not undefined and IsCallable(comparefn) is false, throw a TypeError exception.
+    auto compare_fn = vm.argument(0);
+    if (!compare_fn.is_undefined() && !compare_fn.is_function())
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, compare_fn.to_string_without_side_effects()));
+
+    // 2. Let obj be the this value.
+    // 3. Perform ? ValidateTypedArray(obj).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 4. Let len be obj.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 5. NOTE: The following closure performs a numeric comparison rather than the string comparison used in 23.1.3.30.
+    // 6. Let SortCompare be a new Abstract Closure with parameters (x, y) that captures comparefn and performs the following steps when called:
+    Function<ThrowCompletionOr<double>(Value, Value)> sort_compare = [&](auto x, auto y) -> ThrowCompletionOr<double> {
+        // a. Return ? CompareTypedArrayElements(x, y, comparefn).
+        return TRY(compare_typed_array_elements(vm, x, y, compare_fn.is_undefined() ? nullptr : &compare_fn.as_function()));
+    };
+
+    // 7. Let sortedList be ? SortIndexedProperties(obj, len, SortCompare, false).
+    auto sorted_list = TRY(sort_indexed_properties(vm, *typed_array, length, sort_compare, false));
+
+    // 8. Let j be 0.
+    // 9. Repeat, while j < len,
+    for (size_t j = 0; j < length; j++) {
+        // a. Perform ! Set(obj, ! ToString(𝔽(j)), sortedList[j], true).
+        MUST(typed_array->set(j, sorted_list[j], Object::ShouldThrowExceptions::Yes));
+        // b. Set j to j + 1.
+    }
+
+    // 10. Return obj.
     return typed_array;
 }
 
-// 23.2.3.10 %TypedArray%.prototype.filter ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.filter
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::filter)
+// 23.2.3.30 %TypedArray%.prototype.subarray ( begin, end ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.subarray
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::subarray)
 {
+    auto begin = vm.argument(0);
+    auto end = vm.argument(1);
+
     // 1. Let O be the this value.
-    // 2. Perform ? ValidateTypedArray(O).
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    // 2. Perform ? RequireInternalSlot(O, [[TypedArrayName]]).
+    auto* typed_array = TRY(typed_array_from_this(vm));
 
-    // 3. Let len be O.[[ArrayLength]].
-    auto initial_length = typed_array->array_length();
+    // 3. Assert: O has a [[ViewedArrayBuffer]] internal slot.
+    // 4. Let buffer be O.[[ViewedArrayBuffer]].
+    auto* buffer = typed_array->viewed_array_buffer();
 
-    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
-    auto* callback_function = TRY(callback_from_args(global_object, "filter"));
+    // 5. Let srcLength be O.[[ArrayLength]].
+    auto source_length = typed_array->array_length();
 
-    // 5. Let kept be a new empty List.
-    MarkedVector<Value> kept(vm.heap());
+    // 6. Let relativeBegin be ? ToIntegerOrInfinity(begin).
+    auto relative_begin = TRY(begin.to_integer_or_infinity(vm));
 
-    // 7. Let captured be 0.
-    size_t captured = 0;
+    i32 begin_index = 0;
 
-    auto this_value = vm.argument(1);
+    // 7. If relativeBegin is -∞, let beginIndex be 0.
+    if (Value(relative_begin).is_negative_infinity())
+        begin_index = 0;
+    // 8. Else if relativeBegin < 0, let beginIndex be max(srcLength + relativeBegin, 0).
+    else if (relative_begin < 0)
+        begin_index = max(source_length + relative_begin, 0);
+    // 9. Else, let beginIndex be min(relativeBegin, srcLength).
+    else
+        begin_index = min(relative_begin, source_length);
 
-    // 5. Let k be 0.
-    // 8. Repeat, while k < len,
-    for (size_t i = 0; i < initial_length; ++i) {
-        // a. Let Pk be ! ToString(𝔽(k)).
-        // b. Let kValue be ! Get(O, Pk).
-        auto value = MUST(typed_array->get(i));
+    double relative_end = 0;
 
-        // c. Let selected be ! ToBoolean(? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »)).
-        auto callback_result = TRY(call(global_object, *callback_function, this_value, value, Value((i32)i), typed_array)).to_boolean();
+    // 10. If end is undefined, let relativeEnd be srcLength; else let relativeEnd be ? ToIntegerOrInfinity(end).
+    if (end.is_undefined())
+        relative_end = source_length;
+    else
+        relative_end = TRY(end.to_integer_or_infinity(vm));
 
-        // d. If selected is true, then
-        if (callback_result) {
-            // i. Append kValue to the end of kept.
-            kept.append(value);
+    i32 end_index = 0;
 
-            // ii. Set captured to captured + 1.
-            ++captured;
-        }
+    // 11. If relativeEnd is -∞, let endIndex be 0.
+    if (Value(relative_end).is_negative_infinity())
+        end_index = 0;
+    // 12. Else if relativeEnd < 0, let endIndex be max(srcLength + relativeEnd, 0).
+    else if (relative_end < 0)
+        end_index = max(source_length + relative_end, 0);
+    // 13. Else, let endIndex be min(relativeEnd, srcLength).
+    else
+        end_index = min(relative_end, source_length);
 
-        // e. Set k to k + 1.
+    // 14. Let newLength be max(endIndex - beginIndex, 0).
+    auto new_length = max(end_index - begin_index, 0);
+
+    // 15. Let elementSize be TypedArrayElementSize(O).
+    // 16. Let srcByteOffset be O.[[ByteOffset]].
+    // 17. Let beginByteOffset be srcByteOffset + beginIndex × elementSize.
+    Checked<u32> begin_byte_offset = begin_index;
+    begin_byte_offset *= typed_array->element_size();
+    begin_byte_offset += typed_array->byte_offset();
+    if (begin_byte_offset.has_overflow()) {
+        dbgln("TypedArrayPrototype::begin_byte_offset: limit overflowed, returning as if succeeded.");
+        return typed_array;
     }
 
-    // 9. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(captured) »).
+    // 18. Let argumentsList be « buffer, 𝔽(beginByteOffset), 𝔽(newLength) ».
     MarkedVector<Value> arguments(vm.heap());
-    arguments.empend(captured);
-    auto* filter_array = TRY(typed_array_species_create(global_object, *typed_array, move(arguments)));
+    arguments.empend(buffer);
+    arguments.empend(begin_byte_offset.value());
+    arguments.empend(new_length);
 
-    // 10. Let n be 0.
-    size_t index = 0;
-
-    // 11. For each element e of kept, do
-    for (auto& value : kept) {
-        // a. Perform ! Set(A, ! ToString(𝔽(n)), e, true).
-        MUST(filter_array->set(index, value, Object::ShouldThrowExceptions::Yes));
-
-        // b. Set n to n + 1.
-        ++index;
-    }
-
-    // 12. Return A.
-    return filter_array;
+    // 19. Return ? TypedArraySpeciesCreate(O, argumentsList).
+    return TRY(typed_array_species_create(vm, *typed_array, move(arguments)));
 }
 
-// 23.2.3.20 %TypedArray%.prototype.map ( callbackfn [ , thisArg ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.map
-JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::map)
-{
-    // 1. Let O be the this value.
-    // 2. Perform ? ValidateTypedArray(O).
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
-
-    // 3. Let len be O.[[ArrayLength]].
-    auto initial_length = typed_array->array_length();
-
-    // 4. If IsCallable(callbackfn) is false, throw a TypeError exception.
-    auto* callback_function = TRY(callback_from_args(global_object, "map"));
-
-    // 5. Let A be ? TypedArraySpeciesCreate(O, « 𝔽(len) »).
-    MarkedVector<Value> arguments(vm.heap());
-    arguments.empend(initial_length);
-    auto* return_array = TRY(typed_array_species_create(global_object, *typed_array, move(arguments)));
-
-    auto this_value = vm.argument(1);
-
-    // 6. Let k be 0.
-    // 7. Repeat, while k < len,
-    for (size_t i = 0; i < initial_length; ++i) {
-        // a. Let Pk be ! ToString(𝔽(k)).
-        // b. Let kValue be ! Get(O, Pk).
-        auto value = MUST(typed_array->get(i));
-
-        // c. Let mappedValue be ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
-        auto mapped_value = TRY(call(global_object, *callback_function, this_value, value, Value((i32)i), typed_array));
-
-        // d. Perform ? Set(A, Pk, mappedValue, true).
-        TRY(return_array->set(i, mapped_value, Object::ShouldThrowExceptions::Yes));
-
-        // e. Set k to k + 1.
-    }
-
-    // 8. Return A.
-    return return_array;
-}
-
-// 23.2.3.29 %TypedArray%.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.tolocalestring
+// 23.2.3.31 %TypedArray%.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.tolocalestring
 // 19.5.1 Array.prototype.toLocaleString ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sup-array.prototype.tolocalestring
 JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_locale_string)
 {
@@ -1405,7 +1526,7 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_locale_string)
 
     // This function is not generic. ValidateTypedArray is applied to the this value prior to evaluating the algorithm.
     // If its result is an abrupt completion that exception is thrown instead of evaluating the algorithm.
-    auto* typed_array = TRY(validate_typed_array_from_this(global_object));
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
 
     // 1. Let array be ? ToObject(this value).
     // NOTE: Handled by ValidateTypedArray
@@ -1415,7 +1536,7 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_locale_string)
     // has a fixed length and whose integer-indexed properties are not sparse.
     auto length = typed_array->array_length();
 
-    // 3. Let separator be the String value for the list-separator String appropriate for the host environment's current locale (this is derived in an implementation-defined way).
+    // 3. Let separator be the implementation-defined list-separator String value appropriate for the host environment's current locale (such as ", ").
     constexpr auto separator = ',';
 
     // 4. Let R be the empty String.
@@ -1436,8 +1557,8 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_locale_string)
         // c. If nextElement is not undefined or null, then
         if (!next_element.is_nullish()) {
             // i. Let S be ? ToString(? Invoke(nextElement, "toLocaleString", « locales, options »)).
-            auto locale_string_value = TRY(next_element.invoke(global_object, vm.names.toLocaleString, locales, options));
-            auto locale_string = TRY(locale_string_value.to_string(global_object));
+            auto locale_string_value = TRY(next_element.invoke(vm, vm.names.toLocaleString, locales, options));
+            auto locale_string = TRY(locale_string_value.to_deprecated_string(vm));
 
             // ii. Set R to the string-concatenation of R and S.
             builder.append(locale_string);
@@ -1447,7 +1568,175 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_locale_string)
     }
 
     // 7. Return R.
-    return js_string(vm, builder.to_string());
+    return PrimitiveString::create(vm, builder.to_deprecated_string());
+}
+
+// 1.2.2.1.3 %TypedArray%.prototype.toReversed ( ), https://tc39.es/proposal-change-array-by-copy/#sec-%typedarray%.prototype.toReversed
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_reversed)
+{
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let length be O.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 4. Let A be ? TypedArrayCreateSameType(O, « 𝔽(length) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(length);
+    auto* return_array = TRY(typed_array_create_same_type(vm, *typed_array, move(arguments)));
+
+    // 5. Let k be 0.
+    // 6. Repeat, while k < length
+    for (size_t k = 0; k < length; k++) {
+        // a. Let from be ! ToString(𝔽(length - k - 1)).
+        auto from = PropertyKey { length - k - 1 };
+
+        // b. Let Pk be ! ToString(𝔽(k)).
+        auto property_key = PropertyKey { k };
+
+        // c. Let fromValue be ! Get(O, from).
+        auto from_value = MUST(typed_array->get(from));
+
+        // d. Perform ! Set(A, Pk, fromValue, true).
+        MUST(return_array->set(property_key, from_value, Object::ShouldThrowExceptions::Yes));
+
+        // e. Set k to k + 1.
+    }
+
+    // 7. Return A.
+    return return_array;
+}
+
+// 1.2.2.1.4 %TypedArray%.prototype.toSorted ( comparefn ), https://tc39.es/proposal-change-array-by-copy/#sec-%typedarray%.prototype.toSorted
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_sorted)
+{
+    auto comparefn = vm.argument(0);
+    // 1. If comparefn is not undefined and IsCallable(comparefn) is false, throw a TypeError exception.
+    if (!comparefn.is_undefined() && !comparefn.is_function())
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, comparefn);
+
+    // 2. Let O be the this value.
+    auto* object = TRY(vm.this_value().to_object(vm));
+
+    // 3. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 4. Let len be O.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 5. Let A be ? TypedArrayCreateSameType(O, « 𝔽(len) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(length);
+    auto* return_array = TRY(typed_array_create_same_type(vm, *typed_array, move(arguments)));
+
+    // 6. NOTE: The following closure performs a numeric comparison rather than the string comparison used in  Array.prototype.toSorted
+    // 7. Let SortCompare be a new Abstract Closure with parameters (x, y) that captures comparefn and performs the following steps when called:
+    Function<ThrowCompletionOr<double>(Value, Value)> sort_compare = [&](auto x, auto y) -> ThrowCompletionOr<double> {
+        // a. Return ? CompareTypedArrayElements(x, y, comparefn).
+        return TRY(compare_typed_array_elements(vm, x, y, comparefn.is_undefined() ? nullptr : &comparefn.as_function()));
+    };
+
+    // 8. Let sortedList be ? SortIndexedProperties(obj, len, SortCompare, false).
+    auto sorted_list = TRY(sort_indexed_properties(vm, *object, length, sort_compare, false));
+
+    // 9. Let j be 0.
+    // 10. Repeat, while j < len,
+    for (size_t j = 0; j < length; j++) {
+        // a. Perform ! Set(A, ! ToString(𝔽(j)), sortedList[j], true).
+        MUST(return_array->set(j, sorted_list[j], Object::ShouldThrowExceptions::Yes));
+        // b. Set j to j + 1.
+    }
+
+    return return_array;
+}
+
+// 1.2.2.1.5 %TypedArray%.prototype.with ( index, value ), https://tc39.es/proposal-change-array-by-copy/#sec-%typedarray%.prototype.with
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::with)
+{
+    auto index = vm.argument(0);
+    auto value = vm.argument(1);
+
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Let len be O.[[ArrayLength]].
+    auto length = typed_array->array_length();
+
+    // 4. Let relativeIndex be ? ToIntegerOrInfinity(index).
+    auto relative_index = TRY(index.to_integer_or_infinity(vm));
+
+    double actual_index = 0;
+    // 5. If relativeIndex ≥ 0, let actualIndex be relativeIndex.
+    if (relative_index >= 0)
+        actual_index = relative_index;
+    else
+        actual_index = length + relative_index;
+
+    // 7. If O.[[ContentType]] is BigInt, set value to ? ToBigInt(value).
+    if (typed_array->content_type() == TypedArrayBase::ContentType::BigInt)
+        value = TRY(value.to_bigint(vm));
+    // 8. Else, set value to ? ToNumber(value).
+    else
+        value = TRY(value.to_number(vm));
+
+    // 9. If ! IsValidIntegerIndex(O, 𝔽(actualIndex)) is false, throw a RangeError exception.
+    if (!is_valid_integer_index(*typed_array, TRY(CanonicalIndex::from_double(vm, CanonicalIndex::Type::Index, actual_index))))
+        return vm.throw_completion<RangeError>(ErrorType::TypedArrayInvalidIntegerIndex, actual_index);
+
+    // 10. Let A be ? TypedArrayCreateSameType(O, « 𝔽(len) »).
+    MarkedVector<Value> arguments(vm.heap());
+    arguments.empend(length);
+    auto* return_array = TRY(typed_array_create_same_type(vm, *typed_array, move(arguments)));
+
+    // 11. Let k be 0.
+    // 12. Repeat, while k < len,
+    for (size_t k = 0; k < length; k++) {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        auto property_key = PropertyKey { k };
+
+        Value from_value;
+        // b. If k is actualIndex, let fromValue be value.
+        if (k == actual_index)
+            from_value = value;
+        // c. Else, let fromValue be ! Get(O, Pk).
+        else
+            from_value = MUST(typed_array->get(property_key));
+
+        // d. Perform ! Set(A, Pk, fromValue, true).
+        MUST(return_array->set(property_key, from_value, Object::ShouldThrowExceptions::Yes));
+
+        // e. Set k to k + 1.
+    }
+
+    // 13. Return A.
+    return return_array;
+}
+
+// 23.2.3.33 %TypedArray%.prototype.values ( ), https://tc39.es/ecma262/#sec-%typedarray%.prototype.values
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::values)
+{
+    auto& realm = *vm.current_realm();
+
+    // 1. Let O be the this value.
+    // 2. Perform ? ValidateTypedArray(O).
+    auto* typed_array = TRY(validate_typed_array_from_this(vm));
+
+    // 3. Return CreateArrayIterator(O, value).
+    return ArrayIterator::create(realm, typed_array, Object::PropertyKind::Value);
+}
+
+// 23.2.3.35 get %TypedArray%.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-get-%typedarray%.prototype-@@tostringtag
+JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::to_string_tag_getter)
+{
+    auto this_value = vm.this_value();
+    if (!this_value.is_object())
+        return js_undefined();
+    auto& this_object = this_value.as_object();
+    if (!this_object.is_typed_array())
+        return js_undefined();
+    return PrimitiveString::create(vm, static_cast<TypedArrayBase&>(this_object).element_name());
 }
 
 }

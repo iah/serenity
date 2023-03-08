@@ -10,24 +10,26 @@
 
 namespace JS {
 
-ModuleNamespaceObject::ModuleNamespaceObject(GlobalObject& global_object, Module* module, Vector<FlyString> exports)
-    : Object(*global_object.object_prototype())
+ModuleNamespaceObject::ModuleNamespaceObject(Realm& realm, Module* module, Vector<DeprecatedFlyString> exports)
+    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
     , m_module(module)
     , m_exports(move(exports))
 {
     // Note: We just perform step 6 of 10.4.6.12 ModuleNamespaceCreate ( module, exports ), https://tc39.es/ecma262/#sec-modulenamespacecreate
     // 6. Let sortedExports be a List whose elements are the elements of exports ordered as if an Array of the same values had been sorted using %Array.prototype.sort% using undefined as comparefn.
-    quick_sort(m_exports, [&](FlyString const& lhs, FlyString const& rhs) {
+    quick_sort(m_exports, [&](DeprecatedFlyString const& lhs, DeprecatedFlyString const& rhs) {
         return lhs.view() < rhs.view();
     });
 }
 
-void ModuleNamespaceObject::initialize(GlobalObject& global_object)
+ThrowCompletionOr<void> ModuleNamespaceObject::initialize(Realm& realm)
 {
-    Object::initialize(global_object);
+    MUST_OR_THROW_OOM(Base::initialize(realm));
 
     // 28.3.1 @@toStringTag, https://tc39.es/ecma262/#sec-@@tostringtag
-    define_direct_property(*vm().well_known_symbol_to_string_tag(), js_string(vm(), "Module"sv), 0);
+    define_direct_property(*vm().well_known_symbol_to_string_tag(), MUST_OR_THROW_OOM(PrimitiveString::create(vm(), "Module"sv)), 0);
+
+    return {};
 }
 
 // 10.4.6.1 [[GetPrototypeOf]] ( ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-getprototypeof
@@ -40,8 +42,8 @@ ThrowCompletionOr<Object*> ModuleNamespaceObject::internal_get_prototype_of() co
 // 10.4.6.2 [[SetPrototypeOf]] ( V ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-setprototypeof-v
 ThrowCompletionOr<bool> ModuleNamespaceObject::internal_set_prototype_of(Object* prototype)
 {
-    // 1. Return ? SetImmutablePrototype(O, V).
-    return set_immutable_prototype(prototype);
+    // 1. Return ! SetImmutablePrototype(O, V).
+    return MUST(set_immutable_prototype(prototype));
 }
 
 // 10.4.6.3 [[IsExtensible]] ( ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-isextensible
@@ -81,9 +83,9 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> ModuleNamespaceObject::internal_
 // 10.4.6.6 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-defineownproperty-p-desc
 ThrowCompletionOr<bool> ModuleNamespaceObject::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& descriptor)
 {
-    // 1. If Type(P) is Symbol, return OrdinaryDefineOwnProperty(O, P, Desc).
+    // 1. If Type(P) is Symbol, return ! OrdinaryDefineOwnProperty(O, P, Desc).
     if (property_key.is_symbol())
-        return Object::internal_define_own_property(property_key, descriptor);
+        return MUST(Object::internal_define_own_property(property_key, descriptor));
 
     // 2. Let current be ? O.[[GetOwnProperty]](P).
     auto current = TRY(internal_get_own_property(property_key));
@@ -100,7 +102,7 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_define_own_property(Prop
     if (descriptor.enumerable.has_value() && !descriptor.enumerable.value())
         return false;
 
-    // 6. If ! IsAccessorDescriptor(Desc) is true, return false.
+    // 6. If IsAccessorDescriptor(Desc) is true, return false.
     if (descriptor.is_accessor_descriptor())
         return false;
 
@@ -119,9 +121,9 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_define_own_property(Prop
 // 10.4.6.7 [[HasProperty]] ( P ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-hasproperty-p
 ThrowCompletionOr<bool> ModuleNamespaceObject::internal_has_property(PropertyKey const& property_key) const
 {
-    // 1. If Type(P) is Symbol, return OrdinaryHasProperty(O, P).
+    // 1. If Type(P) is Symbol, return ! OrdinaryHasProperty(O, P).
     if (property_key.is_symbol())
-        return Object::internal_has_property(property_key);
+        return MUST(Object::internal_has_property(property_key));
 
     // 2. Let exports be O.[[Exports]].
     // 3. If P is an element of exports, return true.
@@ -136,10 +138,12 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_has_property(PropertyKey
 // 10.4.6.8 [[Get]] ( P, Receiver ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-get-p-receiver
 ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& property_key, Value receiver) const
 {
+    auto& vm = this->vm();
+
     // 1. If Type(P) is Symbol, then
     if (property_key.is_symbol()) {
-        // a. Return ? OrdinaryGet(O, P, Receiver).
-        return Object::internal_get(property_key, receiver);
+        // a. Return ! OrdinaryGet(O, P, Receiver).
+        return MUST(Object::internal_get(property_key, receiver));
     }
 
     // 2. Let exports be O.[[Exports]].
@@ -150,7 +154,7 @@ ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& 
 
     // 4. Let m be O.[[Module]].
     // 5. Let binding be ! m.ResolveExport(P).
-    auto binding = MUST(m_module->resolve_export(vm(), property_key.to_string()));
+    auto binding = MUST(m_module->resolve_export(vm, property_key.to_string()));
 
     // 6. Assert: binding is a ResolvedBinding Record.
     VERIFY(binding.is_valid());
@@ -164,7 +168,7 @@ ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& 
     // 9. If binding.[[BindingName]] is namespace, then
     if (binding.is_namespace()) {
         // a. Return ? GetModuleNamespace(targetModule).
-        return TRY(target_module->get_module_namespace(vm()));
+        return TRY(target_module->get_module_namespace(vm));
     }
 
     // 10. Let targetEnv be targetModule.[[Environment]].
@@ -172,10 +176,10 @@ ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& 
 
     // 11. If targetEnv is empty, throw a ReferenceError exception.
     if (!target_environment)
-        return vm().throw_completion<ReferenceError>(global_object(), ErrorType::ModuleNoEnvironment);
+        return vm.throw_completion<ReferenceError>(ErrorType::ModuleNoEnvironment);
 
     // 12. Return ? targetEnv.GetBindingValue(binding.[[BindingName]], true).
-    return target_environment->get_binding_value(global_object(), binding.export_name, true);
+    return target_environment->get_binding_value(vm, binding.export_name, true);
 }
 
 // 10.4.6.9 [[Set]] ( P, V, Receiver ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-set-p-v-receiver
@@ -190,8 +194,8 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_delete(PropertyKey const
 {
     // 1. If Type(P) is Symbol, then
     if (property_key.is_symbol()) {
-        // a. Return ? OrdinaryDelete(O, P).
-        return Object::internal_delete(property_key);
+        // a. Return ! OrdinaryDelete(O, P).
+        return MUST(Object::internal_delete(property_key));
     }
 
     // 2. Let exports be O.[[Exports]].
@@ -208,16 +212,19 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_delete(PropertyKey const
 ThrowCompletionOr<MarkedVector<Value>> ModuleNamespaceObject::internal_own_property_keys() const
 {
     // 1. Let exports be O.[[Exports]].
+    // NOTE: We only add the exports after we know the size of symbolKeys
+    MarkedVector<Value> exports { vm().heap() };
 
-    // 2. Let symbolKeys be ! OrdinaryOwnPropertyKeys(O).
+    // 2. Let symbolKeys be OrdinaryOwnPropertyKeys(O).
     auto symbol_keys = MUST(Object::internal_own_property_keys());
 
     // 3. Return the list-concatenation of exports and symbolKeys.
-    for (auto& export_name : m_exports) {
-        symbol_keys.append(js_string(vm(), export_name));
-    }
+    exports.ensure_capacity(m_exports.size() + symbol_keys.size());
+    for (auto const& export_name : m_exports)
+        exports.unchecked_append(PrimitiveString::create(vm(), export_name));
+    exports.extend(symbol_keys);
 
-    return symbol_keys;
+    return exports;
 }
 
 }

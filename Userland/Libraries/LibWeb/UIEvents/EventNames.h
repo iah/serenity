@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 
 namespace Web::UIEvents::EventNames {
 
@@ -15,7 +15,9 @@ namespace Web::UIEvents::EventNames {
 
 #define ENUMERATE_UI_EVENTS          \
     __ENUMERATE_UI_EVENT(click)      \
+    __ENUMERATE_UI_EVENT(dblclick)   \
     __ENUMERATE_UI_EVENT(keydown)    \
+    __ENUMERATE_UI_EVENT(keypress)   \
     __ENUMERATE_UI_EVENT(keyup)      \
     __ENUMERATE_UI_EVENT(mousedown)  \
     __ENUMERATE_UI_EVENT(mouseenter) \
@@ -24,9 +26,10 @@ namespace Web::UIEvents::EventNames {
     __ENUMERATE_UI_EVENT(mouseout)   \
     __ENUMERATE_UI_EVENT(mouseover)  \
     __ENUMERATE_UI_EVENT(mouseup)    \
-    __ENUMERATE_UI_EVENT(resize)
+    __ENUMERATE_UI_EVENT(resize)     \
+    __ENUMERATE_UI_EVENT(wheel)
 
-#define __ENUMERATE_UI_EVENT(name) extern FlyString name;
+#define __ENUMERATE_UI_EVENT(name) extern DeprecatedFlyString name;
 ENUMERATE_UI_EVENTS
 #undef __ENUMERATE_UI_EVENT
 

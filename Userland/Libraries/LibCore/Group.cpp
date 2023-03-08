@@ -1,24 +1,80 @@
 /*
- * Copyright (c) 2022, Kenneth Myhra <kennethmyhra@gmail.com>
+ * Copyright (c) 2022, Kenneth Myhra <kennethmyhra@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/CharacterTypes.h>
 #include <AK/ScopeGuard.h>
+#include <AK/StringBuilder.h>
 #include <LibCore/Group.h>
 #include <LibCore/System.h>
+#include <LibCore/UmaskScope.h>
+#include <errno.h>
+#include <unistd.h>
 
 namespace Core {
 
-#ifndef AK_OS_BSD_GENERIC
+ErrorOr<DeprecatedString> Group::generate_group_file() const
+{
+    StringBuilder builder;
+    char buffer[1024] = { 0 };
+
+    ScopeGuard grent_guard([] { endgrent(); });
+    setgrent();
+
+    while (true) {
+        auto group = TRY(Core::System::getgrent({ buffer, sizeof(buffer) }));
+        if (!group.has_value())
+            break;
+
+        if (group->gr_name == m_name)
+            builder.appendff("{}:x:{}:{}\n", m_name, m_id, DeprecatedString::join(',', m_members));
+        else {
+            Vector<DeprecatedString> members;
+            if (group->gr_mem) {
+                for (size_t i = 0; group->gr_mem[i]; ++i)
+                    members.append(group->gr_mem[i]);
+            }
+
+            builder.appendff("{}:x:{}:{}\n", group->gr_name, group->gr_gid, DeprecatedString::join(',', members));
+        }
+    }
+
+    return builder.to_deprecated_string();
+}
+
+ErrorOr<void> Group::sync()
+{
+    Core::UmaskScope umask_scope(0777);
+
+    auto new_group_file_content = TRY(generate_group_file());
+
+    char new_group_file[] = "/etc/group.XXXXXX";
+    auto new_group_file_view = StringView { new_group_file, sizeof(new_group_file) };
+
+    {
+        auto new_group_fd = TRY(Core::System::mkstemp(new_group_file));
+        ScopeGuard new_group_fd_guard([new_group_fd] { close(new_group_fd); });
+        TRY(Core::System::fchmod(new_group_fd, 0664));
+
+        auto nwritten = TRY(Core::System::write(new_group_fd, new_group_file_content.bytes()));
+        VERIFY(static_cast<size_t>(nwritten) == new_group_file_content.length());
+    }
+
+    TRY(Core::System::rename(new_group_file_view, "/etc/group"sv));
+
+    return {};
+}
+
+#if !defined(AK_OS_BSD_GENERIC) && !defined(AK_OS_ANDROID)
 ErrorOr<void> Group::add_group(Group& group)
 {
     if (group.name().is_empty())
         return Error::from_string_literal("Group name can not be empty.");
 
     // A quick sanity check on group name
-    if (strpbrk(group.name().characters(), "\\/!@#$%^&*()~+=`:\n"))
+    if (group.name().find_any_of("\\/!@#$%^&*()~+=`:\n"sv, DeprecatedString::SearchDirection::Forward).has_value())
         return Error::from_string_literal("Group name has invalid characters.");
 
     // Disallow names starting with '_', '-' or other non-alpha characters.
@@ -60,7 +116,32 @@ ErrorOr<void> Group::add_group(Group& group)
 }
 #endif
 
-Group::Group(String name, gid_t id, Vector<String> members)
+ErrorOr<Vector<Group>> Group::all()
+{
+    Vector<Group> groups;
+    char buffer[1024] = { 0 };
+
+    ScopeGuard grent_guard([] { endgrent(); });
+    setgrent();
+
+    while (true) {
+        auto group = TRY(Core::System::getgrent({ buffer, sizeof(buffer) }));
+        if (!group.has_value())
+            break;
+
+        Vector<DeprecatedString> members;
+        if (group->gr_mem) {
+            for (size_t i = 0; group->gr_mem[i]; ++i)
+                members.append(group->gr_mem[i]);
+        }
+
+        groups.append({ group->gr_name, group->gr_gid, move(members) });
+    }
+
+    return groups;
+}
+
+Group::Group(DeprecatedString name, gid_t id, Vector<DeprecatedString> members)
     : m_name(move(name))
     , m_id(id)
     , m_members(move(members))

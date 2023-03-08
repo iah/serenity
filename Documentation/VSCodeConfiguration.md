@@ -10,14 +10,17 @@ Both C++ comprehension tools listed below report fake errors.
 
 ### clangd
 
-The official clangd extension can be used for C++ comprehension. You'll have to use the following .clangd:
+The official clangd extension can be used for C++ comprehension. It is recommended in general, as it is most likely to work on all platforms. You'll have to use the following .clangd:
 
 ```yaml
 CompileFlags:
-  CompilationDatabase: Build/i686
+  Add: [-D__serenity__, -I/path/to/serenity/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/12.2.0, -I/path/to/serenity/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/12.2.0/x86_64-pc-serenity]
+  CompilationDatabase: Build/x86_64
 ```
 
-Run cmake at least once for this to work. clangd has difficulty finding specific methods and types, especially with inheritance trees. Also, include errors are wrong in 90% of cases.
+You only need the `Add:` line if you're using GCC. Run cmake at least once for this to work. There's some configuring to do for the include paths: First, replace `/path/to/serenity` with the actual path to the Serenity source folder. Then, you should replace the toolchain subdirectory and target triple architecture, here `x86_64`, with the one you're compiling most often. And finally, the compiler version (`12.2.0`) might need to be updated in the future. Just look in the `c++` parent folder and see what's currently there.
+
+A known issue with clangd in general is that it likes to crash. You can usually just restart it via the command palette. If that doesn't help, close currently open C++ files and/or switch branches before restarting, which helps sometimes.
 
 ### Microsoft C/C++ tools
 
@@ -33,53 +36,49 @@ These extensions can be used as-is, but you need to point them to the custom Ser
             "name": "userland-i386-gcc",
             "includePath": [
                 "${workspaceFolder}",
-                "${workspaceFolder}/Build/i686/",
-                "${workspaceFolder}/Build/i686/Userland",
-                "${workspaceFolder}/Build/i686/Userland/Applications",
-                "${workspaceFolder}/Build/i686/Userland/Libraries",
-                "${workspaceFolder}/Build/i686/Userland/Services",
-                "${workspaceFolder}/Build/i686/Root/usr/include/**",
+                "${workspaceFolder}/Build/x86_64/",
+                "${workspaceFolder}/Build/x86_64/Userland",
+                "${workspaceFolder}/Build/x86_64/Userland/Applications",
+                "${workspaceFolder}/Build/x86_64/Userland/Libraries",
+                "${workspaceFolder}/Build/x86_64/Userland/Services",
+                "${workspaceFolder}/Build/x86_64/Root/usr/include/**",
                 "${workspaceFolder}/Userland",
                 "${workspaceFolder}/Userland/Libraries",
                 "${workspaceFolder}/Userland/Libraries/LibC",
-                "${workspaceFolder}/Userland/Libraries/LibM",
-                "${workspaceFolder}/Userland/Libraries/LibPthread",
                 "${workspaceFolder}/Userland/Services",
-                "${workspaceFolder}/Toolchain/Local/i686/i686-pc-serenity/include/c++/**"
+                "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/**"
             ],
             "defines": [
                 "DEBUG",
                 "__serenity__"
             ],
-            "compilerPath": "${workspaceFolder}/Toolchain/Local/i686/bin/i686-pc-serenity-g++",
+            "compilerPath": "${workspaceFolder}/Toolchain/Local/x86_64/bin/x86_64-pc-serenity-g++",
             "cStandard": "c17",
             "cppStandard": "c++20",
             "intelliSenseMode": "linux-gcc-x86",
-            "compileCommands": "Build/i686/compile_commands.json",
+            "compileCommands": "Build/x86_64/compile_commands.json",
             "compilerArgs": [
-                "-wall",
-                "-wextra",
-                "-werror"
+                "-Wall",
+                "-Wextra",
+                "-Werror"
             ],
             "browse": {
                 "path": [
                     "${workspaceFolder}",
-                    "${workspaceFolder}/Build/i686/",
-                    "${workspaceFolder}/Build/i686/Userland",
-                    "${workspaceFolder}/Build/i686/Userland/Applications",
-                    "${workspaceFolder}/Build/i686/Userland/Libraries",
-                    "${workspaceFolder}/Build/i686/Userland/Services",
-                    "${workspaceFolder}/Build/i686/Root/usr/include/**",
+                    "${workspaceFolder}/Build/x86_64/",
+                    "${workspaceFolder}/Build/x86_64/Userland",
+                    "${workspaceFolder}/Build/x86_64/Userland/Applications",
+                    "${workspaceFolder}/Build/x86_64/Userland/Libraries",
+                    "${workspaceFolder}/Build/x86_64/Userland/Services",
+                    "${workspaceFolder}/Build/x86_64/Root/usr/include/**",
                     "${workspaceFolder}/Userland",
                     "${workspaceFolder}/Userland/Libraries",
                     "${workspaceFolder}/Userland/Libraries/LibC",
-                    "${workspaceFolder}/Userland/Libraries/LibM",
-                    "${workspaceFolder}/Userland/Libraries/LibPthread",
                     "${workspaceFolder}/Userland/Services",
-                    "${workspaceFolder}/Toolchain/Local/i686/i686-pc-serenity/include/c++/**"
+                    "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/**"
                 ],
                 "limitSymbolsToIncludedHeaders": true,
-                "databaseFilename": "${workspaceFolder}/Build/i686/"
+                "databaseFilename": "${workspaceFolder}/Build/x86_64/"
             }
         }
     ],
@@ -96,7 +95,7 @@ There's a syntax highlighter extension for both IPC and GML called "SerenityOS D
 
 ## Formatting
 
-clang-format is included with the Microsoft tools (see above). The settings below include a key that makes it use the proper style. Alternatively, you can use the clang-format extension itself, which should work out of the box.
+clang-format is included with the Microsoft tools (see above); there's also a separate extension which works well. The settings below include a key that makes it use the proper style. Alternatively, you can use the clang-format extension itself, which should work out of the box.
 
 ## Settings
 
@@ -121,11 +120,17 @@ These belong in the `.vscode/settings.json` of Serenity.
         "Build/**": true,
         "build/**": true,
     },
-    // Force clang-format to respect Serenity's .clang-format style file.
+    // Force clang-format to respect Serenity's .clang-format style file. This is not necessary if you're not using the Microsoft C++ extension.
     "C_Cpp.clang_format_style": "file",
     // Tab settings
     "editor.tabSize": 4,
-    "editor.useTabStops": false
+    "editor.useTabStops": false,
+    // format trailing new lines
+    "files.trimFinalNewlines": true,
+    "files.insertFinalNewline": true,
+    // git commit message length
+    "git.inputValidationLength": 72,
+    "git.inputValidationSubjectLength": 72
 }
 ```
 
@@ -139,7 +144,7 @@ The following three example tasks should suffice in most situations, and allow y
 Note: The Assertion und KUBSan Problem matchers will only run after you have closed qemu.
 
 <details>
-<summary>tasks.json</summary>
+<summary>.vscode/tasks.json</summary>
 
 ```json
 {
@@ -309,9 +314,8 @@ Note: The Assertion und KUBSan Problem matchers will only run after you have clo
             "id": "arch",
             "description": "Architecture to compile for",
             "type": "pickString",
-            "default": "i686",
+            "default": "x86_64",
             "options": [
-                "i686",
                 "x86_64",
                 "aarch64"
             ]

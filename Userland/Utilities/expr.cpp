@@ -5,11 +5,11 @@
  */
 
 #include <AK/Assertions.h>
+#include <AK/DeprecatedString.h>
 #include <AK/GenericLexer.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/Queue.h>
-#include <AK/String.h>
 #include <AK/StringView.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
@@ -31,7 +31,7 @@ template<typename Fmt, typename... Args>
 [[noreturn]] void fail(Fmt&& fmt, Args&&... args)
 {
     warn("ERROR: \e[31m");
-    warnln(StringView { fmt }, args...);
+    warnln(StringView { fmt, strlen(fmt) }, args...);
     warn("\e[0m");
     exit(2);
 }
@@ -56,9 +56,9 @@ public:
 
     virtual bool truth() const = 0;
     virtual int integer() const = 0;
-    virtual String string() const = 0;
+    virtual DeprecatedString string() const = 0;
     virtual Type type() const = 0;
-    virtual ~Expression() { }
+    virtual ~Expression() = default;
 };
 
 class ValueExpression : public Expression {
@@ -69,13 +69,13 @@ public:
     {
     }
 
-    ValueExpression(String&& v)
+    ValueExpression(DeprecatedString&& v)
         : as_string(move(v))
         , m_type(Type::String)
     {
     }
 
-    virtual ~ValueExpression() { }
+    virtual ~ValueExpression() {};
 
 private:
     virtual bool truth() const override
@@ -96,11 +96,11 @@ private:
         }
         VERIFY_NOT_REACHED();
     }
-    virtual String string() const override
+    virtual DeprecatedString string() const override
     {
         switch (m_type) {
         case Type::Integer:
-            return String::formatted("{}", as_integer);
+            return DeprecatedString::formatted("{}", as_integer);
         case Type::String:
             return as_string;
         }
@@ -110,7 +110,7 @@ private:
 
     union {
         int as_integer;
-        String as_string;
+        DeprecatedString as_string;
     };
     Type m_type { Type::String };
 };
@@ -161,7 +161,7 @@ private:
         VERIFY_NOT_REACHED();
     }
 
-    virtual String string() const override
+    virtual DeprecatedString string() const override
     {
         switch (m_op) {
         case BooleanOperator::And:
@@ -230,7 +230,7 @@ public:
 
 private:
     template<typename T>
-    bool compare(const T& left, const T& right) const
+    bool compare(T const& left, T const& right) const
     {
         switch (m_op) {
         case ComparisonOperation::Less:
@@ -260,7 +260,7 @@ private:
         VERIFY_NOT_REACHED();
     }
     virtual int integer() const override { return truth(); }
-    virtual String string() const override { return truth() ? "1" : "0"; }
+    virtual DeprecatedString string() const override { return truth() ? "1" : "0"; }
     virtual Type type() const override { return Type::Integer; }
 
     ComparisonOperation m_op { ComparisonOperation::Less };
@@ -330,9 +330,9 @@ private:
         }
         VERIFY_NOT_REACHED();
     }
-    virtual String string() const override
+    virtual DeprecatedString string() const override
     {
-        return String::formatted("{}", integer());
+        return DeprecatedString::formatted("{}", integer());
     }
     virtual Type type() const override
     {
@@ -388,7 +388,7 @@ private:
 
         VERIFY_NOT_REACHED();
     }
-    static auto safe_substring(const String& str, int start, int length)
+    static auto safe_substring(DeprecatedString const& str, int start, int length)
     {
         if (start < 1 || (size_t)start > str.length())
             fail("Index out of range");
@@ -397,7 +397,7 @@ private:
             fail("Index out of range");
         return str.substring(start, length);
     }
-    virtual String string() const override
+    virtual DeprecatedString string() const override
     {
         if (m_op == StringOperation::Substring)
             return safe_substring(m_str->string(), m_pos_or_chars->integer(), m_length->integer());
@@ -412,7 +412,7 @@ private:
                 for (auto& m : match.matches)
                     count += m.view.length();
 
-                return String::number(count);
+                return DeprecatedString::number(count);
             } else {
                 if (!match.success)
                     return "";
@@ -421,11 +421,11 @@ private:
                 for (auto& e : match.capture_group_matches[0])
                     result.append(e.view.string_view());
 
-                return result.build();
+                return result.to_deprecated_string();
             }
         }
 
-        return String::number(integer());
+        return DeprecatedString::number(integer());
     }
     virtual Type type() const override
     {

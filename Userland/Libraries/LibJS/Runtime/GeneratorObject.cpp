@@ -10,41 +10,40 @@
 #include <LibJS/Runtime/GeneratorObject.h>
 #include <LibJS/Runtime/GeneratorPrototype.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/IteratorOperations.h>
 
 namespace JS {
 
-ThrowCompletionOr<GeneratorObject*> GeneratorObject::create(GlobalObject& global_object, Value initial_value, ECMAScriptFunctionObject* generating_function, ExecutionContext execution_context, Bytecode::RegisterWindow frame)
+ThrowCompletionOr<NonnullGCPtr<GeneratorObject>> GeneratorObject::create(Realm& realm, Value initial_value, ECMAScriptFunctionObject* generating_function, ExecutionContext execution_context, Bytecode::RegisterWindow frame)
 {
+    auto& vm = realm.vm();
     // This is "g1.prototype" in figure-2 (https://tc39.es/ecma262/img/figure-2.png)
     Value generating_function_prototype;
     if (generating_function->kind() == FunctionKind::Async) {
         // We implement async functions by transforming them to generator function in the bytecode
         // interpreter. However an async function does not have a prototype and should not be
         // changed thus we hardcode the prototype.
-        generating_function_prototype = global_object.generator_prototype();
+        generating_function_prototype = realm.intrinsics().generator_prototype();
     } else {
-        generating_function_prototype = TRY(generating_function->get(global_object.vm().names.prototype));
+        generating_function_prototype = TRY(generating_function->get(vm.names.prototype));
     }
-    auto* generating_function_prototype_object = TRY(generating_function_prototype.to_object(global_object));
-    auto object = global_object.heap().allocate<GeneratorObject>(global_object, global_object, *generating_function_prototype_object, move(execution_context));
+    auto* generating_function_prototype_object = TRY(generating_function_prototype.to_object(vm));
+    auto object = MUST_OR_THROW_OOM(realm.heap().allocate<GeneratorObject>(realm, realm, *generating_function_prototype_object, move(execution_context)));
     object->m_generating_function = generating_function;
     object->m_frame = move(frame);
     object->m_previous_value = initial_value;
     return object;
 }
 
-GeneratorObject::GeneratorObject(GlobalObject&, Object& prototype, ExecutionContext context)
-    : Object(prototype)
+GeneratorObject::GeneratorObject(Realm&, Object& prototype, ExecutionContext context)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_execution_context(move(context))
 {
 }
 
-void GeneratorObject::initialize(GlobalObject&)
+ThrowCompletionOr<void> GeneratorObject::initialize(Realm&)
 {
-}
-
-GeneratorObject::~GeneratorObject()
-{
+    return {};
 }
 
 void GeneratorObject::visit_edges(Cell::Visitor& visitor)
@@ -52,77 +51,206 @@ void GeneratorObject::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_generating_function);
     visitor.visit(m_previous_value);
+    m_execution_context.visit_edges(visitor);
 }
 
-ThrowCompletionOr<Value> GeneratorObject::next_impl(VM& vm, GlobalObject& global_object, Optional<Value> next_argument, Optional<Value> value_to_throw)
+// 27.5.3.2 GeneratorValidate ( generator, generatorBrand ), https://tc39.es/ecma262/#sec-generatorvalidate
+ThrowCompletionOr<GeneratorObject::GeneratorState> GeneratorObject::validate(VM& vm, Optional<DeprecatedString> const& generator_brand)
 {
-    auto bytecode_interpreter = Bytecode::Interpreter::current();
-    VERIFY(bytecode_interpreter);
+    // 1. Perform ? RequireInternalSlot(generator, [[GeneratorState]]).
+    // 2. Perform ? RequireInternalSlot(generator, [[GeneratorBrand]]).
+    // NOTE: Already done by the caller of resume or resume_abrupt, as they wouldn't have a GeneratorObject otherwise.
 
-    auto generated_value = [](Value value) -> ThrowCompletionOr<Value> {
+    // 3. If generator.[[GeneratorBrand]] is not the same value as generatorBrand, throw a TypeError exception.
+    if (m_generator_brand != generator_brand)
+        return vm.throw_completion<TypeError>(ErrorType::GeneratorBrandMismatch, m_generator_brand.value_or("<empty>"), generator_brand.value_or("<empty>"));
+
+    // 4. Assert: generator also has a [[GeneratorContext]] internal slot.
+    // NOTE: Done by already being a GeneratorObject.
+
+    // 5. Let state be generator.[[GeneratorState]].
+    auto state = m_generator_state;
+
+    // 6. If state is executing, throw a TypeError exception.
+    if (state == GeneratorState::Executing)
+        return vm.throw_completion<TypeError>(ErrorType::GeneratorAlreadyExecuting);
+
+    // 7. Return state.
+    return state;
+}
+
+ThrowCompletionOr<Value> GeneratorObject::execute(VM& vm, Completion const& completion)
+{
+    // Loosely based on step 4 of https://tc39.es/ecma262/#sec-generatorstart mixed with https://tc39.es/ecma262/#sec-generatoryield at the end.
+
+    VERIFY(completion.value().has_value());
+
+    auto generated_value = [](Value value) -> Value {
         if (value.is_object())
-            return TRY(value.as_object().get("result"));
+            return value.as_object().get_without_side_effects("result");
         return value.is_empty() ? js_undefined() : value;
     };
 
-    auto generated_continuation = [&](Value value) -> ThrowCompletionOr<Bytecode::BasicBlock const*> {
+    auto generated_continuation = [&](Value value) -> Bytecode::BasicBlock const* {
         if (value.is_object()) {
-            auto number_value = TRY(value.as_object().get("continuation"));
-            return reinterpret_cast<Bytecode::BasicBlock const*>(static_cast<u64>(TRY(number_value.to_double(global_object))));
+            auto number_value = value.as_object().get_without_side_effects("continuation");
+            return reinterpret_cast<Bytecode::BasicBlock const*>(static_cast<u64>(number_value.as_double()));
         }
         return nullptr;
     };
 
-    auto previous_generated_value = TRY(generated_value(m_previous_value));
+    auto& realm = *vm.current_realm();
+    auto completion_object = Object::create(realm, nullptr);
+    completion_object->define_direct_property(vm.names.type, Value(to_underlying(completion.type())), default_attributes);
+    completion_object->define_direct_property(vm.names.value, completion.value().value(), default_attributes);
 
-    auto result = Object::create(global_object, global_object.object_prototype());
-    result->define_direct_property("value", previous_generated_value, JS::default_attributes);
+    auto* bytecode_interpreter = Bytecode::Interpreter::current();
 
-    if (m_done) {
-        result->define_direct_property("done", Value(true), JS::default_attributes);
-        return result;
+    // If we're coming from a context which has no bytecode interpreter, e.g. from AST mode calling Generate.prototype.next,
+    // we need to make one to be able to continue, as generators are only supported in bytecode mode.
+    // See also ECMAScriptFunctionObject::ordinary_call_evaluate_body where this is done as well.
+    OwnPtr<Bytecode::Interpreter> temp_bc_interpreter;
+    if (!bytecode_interpreter) {
+        temp_bc_interpreter = make<Bytecode::Interpreter>(realm);
+        bytecode_interpreter = temp_bc_interpreter.ptr();
     }
 
-    // Extract the continuation
-    auto next_block = TRY(generated_continuation(m_previous_value));
+    VERIFY(bytecode_interpreter);
 
-    if (!next_block) {
-        // The generator has terminated, now we can simply return done=true.
-        m_done = true;
-        result->define_direct_property("done", Value(true), JS::default_attributes);
-        return result;
-    }
+    auto const* next_block = generated_continuation(m_previous_value);
 
-    // Make sure it's an actual block
+    // We should never enter `execute` again after the generator is complete.
+    VERIFY(next_block);
+
     VERIFY(!m_generating_function->bytecode_executable()->basic_blocks.find_if([next_block](auto& block) { return block == next_block; }).is_end());
 
-    // Restore the snapshot registers
-    bytecode_interpreter->enter_frame(*m_frame);
+    Bytecode::RegisterWindow* frame = nullptr;
+    if (m_frame.has_value())
+        frame = &m_frame.value();
 
-    // Temporarily switch to the captured execution context
-    TRY(vm.push_execution_context(m_execution_context, global_object));
+    if (frame)
+        frame->registers[0] = completion_object;
+    else
+        bytecode_interpreter->accumulator() = completion_object;
 
-    // Pretend that 'yield' returned the passed value, or threw
-    if (value_to_throw.has_value()) {
-        bytecode_interpreter->accumulator() = js_undefined();
-        return throw_completion(value_to_throw.release_value());
-    } else {
-        bytecode_interpreter->accumulator() = next_argument.value_or(js_undefined());
-    }
-
-    auto next_result = bytecode_interpreter->run(*m_generating_function->bytecode_executable(), next_block);
-
-    m_frame = move(*bytecode_interpreter->pop_frame());
+    auto next_result = bytecode_interpreter->run_and_return_frame(*m_generating_function->bytecode_executable(), next_block, frame);
 
     vm.pop_execution_context();
 
-    m_done = TRY(generated_continuation(m_previous_value)) == nullptr;
+    if (!m_frame.has_value())
+        m_frame = move(*next_result.frame);
 
-    m_previous_value = TRY(next_result);
+    auto result_value = move(next_result.value);
+    if (result_value.is_throw_completion()) {
+        // Uncaught exceptions disable the generator.
+        m_generator_state = GeneratorState::Completed;
+        return result_value;
+    }
+    m_previous_value = result_value.release_value();
+    bool done = generated_continuation(m_previous_value) == nullptr;
 
-    result->define_direct_property("value", TRY(generated_value(m_previous_value)), JS::default_attributes);
-    result->define_direct_property("done", Value(m_done), JS::default_attributes);
+    m_generator_state = done ? GeneratorState::Completed : GeneratorState::SuspendedYield;
+    return create_iterator_result_object(vm, generated_value(m_previous_value), done);
+}
 
+// 27.5.3.3 GeneratorResume ( generator, value, generatorBrand ), https://tc39.es/ecma262/#sec-generatorresume
+ThrowCompletionOr<Value> GeneratorObject::resume(VM& vm, Value value, Optional<DeprecatedString> generator_brand)
+{
+    // 1. Let state be ? GeneratorValidate(generator, generatorBrand).
+    auto state = TRY(validate(vm, generator_brand));
+
+    // 2. If state is completed, return CreateIterResultObject(undefined, true).
+    if (state == GeneratorState::Completed)
+        return create_iterator_result_object(vm, js_undefined(), true);
+
+    // 3. Assert: state is either suspendedStart or suspendedYield.
+    VERIFY(state == GeneratorState::SuspendedStart || state == GeneratorState::SuspendedYield);
+
+    // 4. Let genContext be generator.[[GeneratorContext]].
+    auto& generator_context = m_execution_context;
+
+    // 5. Let methodContext be the running execution context.
+    auto const& method_context = vm.running_execution_context();
+
+    // FIXME: 6. Suspend methodContext.
+
+    // 8. Push genContext onto the execution context stack; genContext is now the running execution context.
+    // NOTE: This is done out of order as to not permanently disable the generator if push_execution_context throws,
+    //       as `resume` will immediately throw when [[GeneratorState]] is "executing", never allowing the state to change.
+    TRY(vm.push_execution_context(generator_context, {}));
+
+    // 7. Set generator.[[GeneratorState]] to executing.
+    m_generator_state = GeneratorState::Executing;
+
+    // 9. Resume the suspended evaluation of genContext using NormalCompletion(value) as the result of the operation that suspended it. Let result be the value returned by the resumed computation.
+    auto result = execute(vm, normal_completion(value));
+
+    // 10. Assert: When we return here, genContext has already been removed from the execution context stack and methodContext is the currently running execution context.
+    VERIFY(&vm.running_execution_context() == &method_context);
+
+    // 11. Return ? result.
+    return result;
+}
+
+// 27.5.3.4 GeneratorResumeAbrupt ( generator, abruptCompletion, generatorBrand ), https://tc39.es/ecma262/#sec-generatorresumeabrupt
+ThrowCompletionOr<Value> GeneratorObject::resume_abrupt(JS::VM& vm, JS::Completion abrupt_completion, Optional<AK::DeprecatedString> generator_brand)
+{
+    // Not part of the spec, but the spec assumes abruptCompletion.[[Value]] is not empty.
+    VERIFY(abrupt_completion.value().has_value());
+
+    // 1. Let state be ? GeneratorValidate(generator, generatorBrand).
+    auto state = TRY(validate(vm, generator_brand));
+
+    // 2. If state is suspendedStart, then
+    if (state == GeneratorState::SuspendedStart) {
+        // a. Set generator.[[GeneratorState]] to completed.
+        m_generator_state = GeneratorState::Completed;
+
+        // b. Once a generator enters the completed state it never leaves it and its associated execution context is never resumed. Any execution state associated with generator can be discarded at this point.
+        // We don't currently discard anything.
+
+        // c. Set state to completed.
+        state = GeneratorState::Completed;
+    }
+
+    // 3. If state is completed, then
+    if (state == GeneratorState::Completed) {
+        // a. If abruptCompletion.[[Type]] is return, then
+        if (abrupt_completion.type() == Completion::Type::Return) {
+            // i. Return CreateIterResultObject(abruptCompletion.[[Value]], true).
+            return create_iterator_result_object(vm, abrupt_completion.value().value(), true);
+        }
+
+        // b. Return ? abruptCompletion.
+        return abrupt_completion;
+    }
+
+    // 4. Assert: state is suspendedYield.
+    VERIFY(state == GeneratorState::SuspendedYield);
+
+    // 5. Let genContext be generator.[[GeneratorContext]].
+    auto& generator_context = m_execution_context;
+
+    // 6. Let methodContext be the running execution context.
+    auto const& method_context = vm.running_execution_context();
+
+    // FIXME: 7. Suspend methodContext.
+
+    // 9. Push genContext onto the execution context stack; genContext is now the running execution context.
+    // NOTE: This is done out of order as to not permanently disable the generator if push_execution_context throws,
+    //       as `resume_abrupt` will immediately throw when [[GeneratorState]] is "executing", never allowing the state to change.
+    TRY(vm.push_execution_context(generator_context, {}));
+
+    // 8. Set generator.[[GeneratorState]] to executing.
+    m_generator_state = GeneratorState::Executing;
+
+    // 10. Resume the suspended evaluation of genContext using abruptCompletion as the result of the operation that suspended it. Let result be the Completion Record returned by the resumed computation.
+    auto result = execute(vm, abrupt_completion);
+
+    // 11. Assert: When we return here, genContext has already been removed from the execution context stack and methodContext is the currently running execution context.
+    VERIFY(&vm.running_execution_context() == &method_context);
+
+    // 12. Return ? result.
     return result;
 }
 

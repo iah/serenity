@@ -6,9 +6,10 @@
 
 #include <LibTest/TestCase.h>
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,10 +21,10 @@ static constexpr char PATH_LOREM_250[] = "This-is-an-annoyingly-long-name-that-s
 
 static constexpr size_t ITERATION_DEPTH = 17;
 
-static void check_result(const char* what, const String& expected, const char* actual)
+static void check_result(char const* what, DeprecatedString const& expected, char const* actual)
 {
     if (expected != actual)
-        FAIL(String::formatted("Expected {} to be \"{}\" ({} characters)", what, actual, actual ? strlen(actual) : 0));
+        FAIL(DeprecatedString::formatted("Expected {} to be \"{}\" ({} characters)", what, actual, actual ? strlen(actual) : 0));
 }
 
 TEST_CASE(overlong_realpath)
@@ -46,10 +47,10 @@ TEST_CASE(overlong_realpath)
 
     // Then, create a long path.
     StringBuilder expected;
-    expected.append(tmp_dir);
+    expected.append({ tmp_dir, strlen(tmp_dir) });
 
     // But first, demonstrate the functionality at a reasonable depth:
-    auto expected_str = expected.build();
+    auto expected_str = expected.to_deprecated_string();
     check_result("getwd", expected_str, getwd(static_cast<char*>(calloc(1, PATH_MAX))));
     check_result("getcwd", expected_str, getcwd(nullptr, 0));
     check_result("realpath", expected_str, realpath(".", nullptr));
@@ -58,22 +59,22 @@ TEST_CASE(overlong_realpath)
         ret = mkdir(PATH_LOREM_250, S_IRWXU);
         if (ret < 0) {
             perror("mkdir iter");
-            FAIL(String::formatted("Unable to mkdir the overlong path fragment in iteration {}", i));
+            FAIL(DeprecatedString::formatted("Unable to mkdir the overlong path fragment in iteration {}", i));
             return;
         }
         expected.append('/');
-        expected.append(PATH_LOREM_250);
+        expected.append({ PATH_LOREM_250, strlen(PATH_LOREM_250) });
         ret = chdir(PATH_LOREM_250);
         if (ret < 0) {
             perror("chdir iter");
-            FAIL(String::formatted("Unable to chdir to the overlong path fragment in iteration {}", i));
+            FAIL(DeprecatedString::formatted("Unable to chdir to the overlong path fragment in iteration {}", i));
             return;
         }
     }
     outln("cwd should now be ridiculously large");
 
     // Evaluate
-    expected_str = expected.build();
+    expected_str = expected.to_deprecated_string();
 
     check_result("getwd", {}, getwd(static_cast<char*>(calloc(1, PATH_MAX))));
     check_result("getcwd", expected_str, getcwd(nullptr, 0));

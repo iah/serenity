@@ -7,7 +7,6 @@
 #pragma once
 
 #include <AK/CircularQueue.h>
-#include <AK/DoublyLinkedList.h>
 #include <AK/Types.h>
 #include <Kernel/API/KeyCode.h>
 #include <Kernel/API/MousePacket.h>
@@ -24,9 +23,9 @@ public:
 
     // ^CharacterDevice
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual bool can_read(const OpenFileDescription&, u64) const override;
-    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override { return EINVAL; }
-    virtual bool can_write(const OpenFileDescription&, u64) const override { return true; }
+    virtual bool can_read(OpenFileDescription const&, u64) const override;
+    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override { return EINVAL; }
+    virtual bool can_write(OpenFileDescription const&, u64) const override { return true; }
 
     // ^HIDDevice
     virtual Type instrument_type() const override { return Type::Mouse; }
@@ -36,7 +35,7 @@ protected:
     // ^CharacterDevice
     virtual StringView class_name() const override { return "MouseDevice"sv; }
 
-    mutable Spinlock m_queue_lock;
+    mutable Spinlock<LockRank::None> m_queue_lock {};
     CircularQueue<MousePacket, 100> m_queue;
 };
 

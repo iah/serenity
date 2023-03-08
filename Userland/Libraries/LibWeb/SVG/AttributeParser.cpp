@@ -6,6 +6,7 @@
  */
 
 #include "AttributeParser.h"
+#include <AK/FloatingPointStringConversions.h>
 #include <AK/StringBuilder.h>
 #include <ctype.h>
 
@@ -230,7 +231,8 @@ void AttributeParser::parse_elliptical_arc()
 
 float AttributeParser::parse_length()
 {
-    return parse_sign() * parse_number();
+    // https://www.w3.org/TR/SVG11/types.html#DataTypeLength
+    return parse_number();
 }
 
 float AttributeParser::parse_coordinate()
@@ -302,10 +304,10 @@ Vector<float> AttributeParser::parse_coordinate_pair_triplet()
 Vector<float> AttributeParser::parse_elliptical_arg_argument()
 {
     Vector<float> numbers;
-    numbers.append(parse_number());
+    numbers.append(parse_nonnegative_number());
     if (match_comma_whitespace())
         parse_comma_whitespace();
-    numbers.append(parse_number());
+    numbers.append(parse_nonnegative_number());
     if (match_comma_whitespace())
         parse_comma_whitespace();
     numbers.append(parse_number());
@@ -345,61 +347,28 @@ void AttributeParser::parse_comma_whitespace()
     }
 }
 
-float AttributeParser::parse_fractional_constant()
-{
-    StringBuilder builder;
-    bool floating_point = false;
-
-    while (!done() && isdigit(ch()))
-        builder.append(consume());
-
-    if (match('.')) {
-        floating_point = true;
-        builder.append('.');
-        consume();
-        while (!done() && isdigit(ch()))
-            builder.append(consume());
-    } else {
-        VERIFY(builder.length() > 0);
-    }
-
-    if (floating_point)
-        return strtof(builder.to_string().characters(), nullptr);
-    return builder.to_string().to_int().value();
-}
-
+// https://www.w3.org/TR/SVG11/types.html#DataTypeNumber
 float AttributeParser::parse_number()
 {
-    auto number = parse_fractional_constant();
+    auto sign = parse_sign();
+    return sign * parse_nonnegative_number();
+}
 
-    if (!match('e') && !match('E'))
-        return number;
-    consume();
+// https://www.w3.org/TR/SVG11/paths.html#PathDataBNF
+float AttributeParser::parse_nonnegative_number()
+{
+    // NOTE: The grammar is almost a floating point except we cannot have a sign
+    //       at the start. That condition should have been checked by the caller.
+    VERIFY(!match('+') && !match('-'));
 
-    auto exponent_sign = parse_sign();
+    auto remaining_source_text = m_source.substring_view(m_cursor);
+    char const* start = remaining_source_text.characters_without_null_termination();
 
-    StringBuilder exponent_builder;
-    while (!done() && isdigit(ch()))
-        exponent_builder.append(consume());
-    VERIFY(exponent_builder.length() > 0);
+    auto maybe_float = parse_first_floating_point<float>(start, start + remaining_source_text.length());
+    VERIFY(maybe_float.parsed_value());
+    m_cursor += maybe_float.end_ptr - start;
 
-    auto exponent = exponent_builder.to_string().to_int().value();
-
-    // Fast path: If the number is 0, there's no point in computing the exponentiation.
-    if (number == 0)
-        return number;
-
-    if (exponent_sign < 0) {
-        for (int i = 0; i < exponent; ++i) {
-            number /= 10;
-        }
-    } else if (exponent_sign > 0) {
-        for (int i = 0; i < exponent; ++i) {
-            number *= 10;
-        }
-    }
-
-    return number;
+    return maybe_float.value;
 }
 
 float AttributeParser::parse_flag()

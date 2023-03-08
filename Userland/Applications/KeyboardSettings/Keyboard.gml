@@ -1,8 +1,7 @@
 @GUI::Frame {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
-        margins: [10]
-        spacing: 5
+        margins: [8]
     }
 
     @GUI::GroupBox {
@@ -40,6 +39,12 @@
                 }
 
                 @GUI::Button {
+                    name: "activate_keymap_button"
+                    text: "Activate keymap"
+                    enabled: false
+                }
+
+                @GUI::Button {
                     name: "add_keymap_button"
                     text: "Add keymap"
                 }
@@ -54,7 +59,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Test input"
+        title: "Test Input"
         layout: @GUI::HorizontalBoxLayout {
             margins: [16, 8, 8]
             spacing: 16

@@ -31,32 +31,40 @@ struct QOILoadingContext {
         Error,
     };
     State state { State::NotDecoded };
-    u8 const* data { nullptr };
-    size_t data_size { 0 };
+    OwnPtr<Stream> stream {};
     QOIHeader header {};
     RefPtr<Bitmap> bitmap;
-    Optional<Error> error;
 };
 
 class QOIImageDecoderPlugin final : public ImageDecoderPlugin {
 public:
+    static bool sniff(ReadonlyBytes);
+    static ErrorOr<NonnullOwnPtr<ImageDecoderPlugin>> create(ReadonlyBytes);
+
     virtual ~QOIImageDecoderPlugin() override = default;
-    QOIImageDecoderPlugin(u8 const*, size_t);
 
     virtual IntSize size() override;
     virtual void set_volatile() override;
     [[nodiscard]] virtual bool set_nonvolatile(bool& was_purged) override;
-    virtual bool sniff() override;
+    virtual bool initialize() override;
     virtual bool is_animated() override { return false; }
     virtual size_t loop_count() override { return 0; }
     virtual size_t frame_count() override { return 1; }
     virtual ErrorOr<ImageFrameDescriptor> frame(size_t index) override;
+    virtual ErrorOr<Optional<ReadonlyBytes>> icc_data() override;
 
 private:
-    ErrorOr<void> decode_header_and_update_context(InputMemoryStream&);
-    ErrorOr<void> decode_image_and_update_context(InputMemoryStream&);
+    ErrorOr<void> decode_header_and_update_context(Stream&);
+    ErrorOr<void> decode_image_and_update_context(Stream&);
+
+    QOIImageDecoderPlugin(NonnullOwnPtr<Stream>);
 
     OwnPtr<QOILoadingContext> m_context;
 };
 
 }
+
+template<>
+struct AK::Traits<Gfx::QOIHeader> : public GenericTraits<Gfx::QOIHeader> {
+    static constexpr bool is_trivially_serializable() { return true; }
+};

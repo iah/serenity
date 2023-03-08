@@ -4,19 +4,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Format.h>
-#include <AK/HashMap.h>
 #include <AK/LexicalPath.h>
-#include <AK/String.h>
-#include <AK/StringBuilder.h>
-#include <AK/Utf8View.h>
-#include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
+#include <LibLine/Editor.h>
 #include <LibMain/Main.h>
 #include <csignal>
-#include <ctype.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -57,45 +50,18 @@ static ErrorOr<void> teardown_tty(bool switch_buffer)
     return {};
 }
 
-static Vector<StringView> wrap_line(String const& string, size_t width)
+static Vector<StringView> wrap_line(DeprecatedString const& string, size_t width)
 {
-    Utf8View utf8(string);
-    Vector<size_t> splits;
-
-    size_t offset = 0;
-
-    bool in_ansi = false;
-    // for (auto codepoint : string) {
-    for (auto it = utf8.begin(); it != utf8.end(); ++it) {
-        if (offset >= width) {
-            splits.append(utf8.byte_offset_of(it));
-            offset = 0;
-        }
-
-        if (*it == '\e')
-            in_ansi = true;
-
-        if (!in_ansi) {
-            if (*it == '\t') {
-                // Tabs are a special case, because their width is variable.
-                offset += (8 - (offset % 8));
-            } else {
-                // FIXME: calculate the printed width of the character.
-                offset++;
-            }
-        }
-
-        if (isalpha(*it))
-            in_ansi = false;
-    }
+    auto const result = Line::Editor::actual_rendered_string_metrics(string, {}, width);
 
     Vector<StringView> spans;
     size_t span_start = 0;
-    for (auto split : splits) {
-        spans.append(string.substring_view(span_start, split - span_start));
-        span_start = split;
+    for (auto const& line_metric : result.line_metrics) {
+        VERIFY(line_metric.bit_length.has_value());
+        auto const bit_length = line_metric.bit_length.value();
+        spans.append(string.substring_view(span_start, bit_length));
+        span_start += bit_length;
     }
-    spans.append(string.substring_view(span_start));
 
     return spans;
 }
@@ -298,7 +264,7 @@ public:
         if (line[size - 1] == '\n')
             --size;
 
-        m_lines.append(String(line, size));
+        m_lines.append(DeprecatedString(line, size));
         return true;
     }
 
@@ -324,7 +290,7 @@ private:
     void read_enough_for_line(size_t line)
     {
         // This might read a bounded number of extra lines.
-        while (m_lines.size() < line + m_height - 1) {
+        while (m_lines.size() < line + m_height) {
             if (!read_line())
                 break;
         }
@@ -332,7 +298,7 @@ private:
 
     size_t render_status_line(StringView prompt, size_t off = 0, char end = '\0', bool ignored = false)
     {
-        for (; prompt[off] != end && off < prompt.length(); ++off) {
+        for (; off < prompt.length() && prompt[off] != end; ++off) {
             if (ignored)
                 continue;
 
@@ -365,7 +331,7 @@ private:
                     out(m_tty, "{}", m_filename);
                     break;
                 case 'l':
-                    out(m_tty, "{}", m_line);
+                    out(m_tty, "{}", m_line + 1);
                     break;
                 default:
                     out(m_tty, "?");
@@ -470,7 +436,7 @@ private:
     }
 
     // FIXME: Don't save scrollback when emulating more.
-    Vector<String> m_lines;
+    Vector<DeprecatedString> m_lines;
 
     size_t m_line { 0 };
     size_t m_subline { 0 };
@@ -485,20 +451,20 @@ private:
     size_t m_width { 0 };
     size_t m_height { 0 };
 
-    String m_filename;
-    String m_prompt;
+    DeprecatedString m_filename;
+    DeprecatedString m_prompt;
 };
 
 /// Return the next key sequence, or nothing if a signal is received while waiting
 /// to read the next sequence.
-static Optional<String> get_key_sequence()
+static Optional<DeprecatedString> get_key_sequence()
 {
     // We need a buffer to handle ansi sequences.
     char buff[8];
 
     ssize_t n = read(STDOUT_FILENO, buff, sizeof(buff));
     if (n > 0) {
-        return String(buff, n);
+        return DeprecatedString(buff, n);
     } else {
         return {};
     }
@@ -524,10 +490,11 @@ static void cat_file(FILE* file)
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio rpath tty sigaction", nullptr));
+    TRY(Core::System::pledge("stdio rpath tty sigaction"));
 
-    char const* filename = "-";
-    char const* prompt = "?f%f :.(line %l)?e (END):.";
+    // FIXME: Make these into StringViews once we stop using fopen below.
+    DeprecatedString filename = "-";
+    DeprecatedString prompt = "?f%f :.(line %l)?e (END):.";
     bool dont_switch_buffer = false;
     bool quit_at_eof = false;
     bool emulate_more = false;
@@ -544,9 +511,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.parse(arguments);
 
     FILE* file;
-    if (String("-") == filename) {
+    if (DeprecatedString("-") == filename) {
         file = stdin;
-    } else if ((file = fopen(filename, "r")) == nullptr) {
+    } else if ((file = fopen(filename.characters(), "r")) == nullptr) {
         perror("fopen");
         exit(1);
     }
@@ -557,7 +524,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         g_resized = true;
     });
 
-    TRY(Core::System::pledge("stdio tty", nullptr));
+    TRY(Core::System::pledge("stdio tty"));
 
     if (emulate_more) {
         // Configure options that match more's behavior
@@ -577,7 +544,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     pager.init();
 
     StringBuilder modifier_buffer = StringBuilder(10);
-    for (Optional<String> sequence_value;; sequence_value = get_key_sequence()) {
+    for (Optional<DeprecatedString> sequence_value;; sequence_value = get_key_sequence()) {
         if (g_resized) {
             g_resized = false;
             pager.resize();
@@ -587,7 +554,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             continue;
         }
 
-        const auto& sequence = sequence_value.value();
+        auto const& sequence = sequence_value.value();
 
         if (sequence.to_uint().has_value()) {
             modifier_buffer.append(sequence);
@@ -597,28 +564,28 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             } else if (sequence == "j" || sequence == "\e[B" || sequence == "\n") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.down_n(modifier_buffer.build().to_uint().value_or(1));
+                        pager.down_n(modifier_buffer.to_deprecated_string().to_uint().value_or(1));
                     else
                         pager.down();
                 }
             } else if (sequence == "k" || sequence == "\e[A") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.up_n(modifier_buffer.build().to_uint().value_or(1));
+                        pager.up_n(modifier_buffer.to_deprecated_string().to_uint().value_or(1));
                     else
                         pager.up();
                 }
             } else if (sequence == "g") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.go_to_line(modifier_buffer.build().to_uint().value());
+                        pager.go_to_line(modifier_buffer.to_deprecated_string().to_uint().value());
                     else
                         pager.top();
                 }
             } else if (sequence == "G") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.go_to_line(modifier_buffer.build().to_uint().value());
+                        pager.go_to_line(modifier_buffer.to_deprecated_string().to_uint().value());
                     else
                         pager.bottom();
                 }

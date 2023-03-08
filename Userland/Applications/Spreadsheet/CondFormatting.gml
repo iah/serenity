@@ -6,17 +6,20 @@
         spacing: 4
     }
 
-    @Spreadsheet::ConditionsView {
-        name: "conditions_view"
+    @GUI::ScrollableContainerWidget {
+        should_hide_unnecessary_scrollbars: true
+        content_widget: @Spreadsheet::ConditionsView {
+            name: "conditions_view"
+        }
     }
 
     @GUI::Widget {
-        shrink_to_fit: true
+        preferred_height: "fit"
         layout: @GUI::HorizontalBoxLayout {
             spacing: 10
         }
 
-        @GUI::Widget {}
+        @GUI::Layout::Spacer {}
 
         @GUI::Button {
             name: "add_button"
@@ -30,6 +33,6 @@
             fixed_width: 70
         }
 
-        @GUI::Widget {}
+        @GUI::Layout::Spacer {}
     }
 }

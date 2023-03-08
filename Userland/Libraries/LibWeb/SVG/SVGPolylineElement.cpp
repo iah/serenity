@@ -4,18 +4,27 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "SVGPolylineElement.h"
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/AttributeParser.h>
+#include <LibWeb/SVG/SVGPolylineElement.h>
 
 namespace Web::SVG {
 
-SVGPolylineElement::SVGPolylineElement(DOM::Document& document, QualifiedName qualified_name)
+SVGPolylineElement::SVGPolylineElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGGeometryElement(document, qualified_name)
 {
 }
 
-void SVGPolylineElement::parse_attribute(FlyString const& name, String const& value)
+JS::ThrowCompletionOr<void> SVGPolylineElement::initialize(JS::Realm& realm)
+{
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGPolylineElementPrototype>(realm, "SVGPolylineElement"));
+
+    return {};
+}
+
+void SVGPolylineElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
 {
     SVGGeometryElement::parse_attribute(name, value);
 

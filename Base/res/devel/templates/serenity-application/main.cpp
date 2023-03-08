@@ -20,15 +20,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     window->resize(96, 44);
     window->set_resizable(false);
 
-    auto main_widget = TRY(window->try_set_main_widget<GUI::Widget>());
+    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
     main_widget->set_fill_with_background_color(true);
 
-    auto layout = TRY(main_widget->try_set_layout<GUI::VerticalBoxLayout>());
-    layout->set_margins(16);
+    TRY(main_widget->try_set_layout<GUI::VerticalBoxLayout>(16));
 
     auto button = TRY(main_widget->try_add<GUI::Button>("Click me!"));
     button->on_click = [&](auto) {
-        GUI::MessageBox::show(window, "Hello friends!", ":^)");
+        GUI::MessageBox::show(window, "Hello friends!"sv, ":^)"sv);
     };
 
     window->show();

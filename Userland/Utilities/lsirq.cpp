@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
+ * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,24 +14,37 @@
 ErrorOr<int> serenity_main(Main::Arguments)
 {
     TRY(Core::System::pledge("stdio rpath"));
-    TRY(Core::System::unveil("/proc/interrupts", "r"));
+    TRY(Core::System::unveil("/sys/kernel/interrupts", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto proc_interrupts = TRY(Core::File::open("/proc/interrupts", Core::OpenMode::ReadOnly));
+    auto proc_interrupts = TRY(Core::File::open("/sys/kernel/interrupts"sv, Core::File::OpenMode::Read));
 
     TRY(Core::System::pledge("stdio"));
 
-    outln("      CPU0");
-    auto file_contents = proc_interrupts->read_all();
+    auto file_contents = TRY(proc_interrupts->read_until_eof());
     auto json = TRY(JsonValue::from_string(file_contents));
-    json.as_array().for_each([](auto& value) {
-        auto& handler = value.as_object();
-        auto purpose = handler.get("purpose").to_string();
-        auto interrupt = handler.get("interrupt_line").to_string();
-        auto controller = handler.get("controller").to_string();
-        auto call_count = handler.get("call_count").to_string();
 
-        outln("{:>4}: {:10} {:10}  {:30}", interrupt, call_count, controller, purpose);
+    auto cpu_count = json.as_array().at(0).as_object().get_array("per_cpu_call_counts"sv)->size();
+
+    out("      "sv);
+    for (size_t i = 0; i < cpu_count; ++i) {
+        out("{:>10}", DeprecatedString::formatted("CPU{}", i));
+    }
+    outln("");
+
+    json.as_array().for_each([cpu_count](JsonValue const& value) {
+        auto& handler = value.as_object();
+        auto purpose = handler.get_deprecated_string("purpose"sv).value_or({});
+        auto interrupt = handler.get_deprecated_string("interrupt_line"sv).value_or({});
+        auto controller = handler.get_deprecated_string("controller"sv).value_or({});
+        auto call_counts = handler.get_array("per_cpu_call_counts"sv).value();
+
+        out("{:>4}: ", interrupt);
+
+        for (size_t i = 0; i < cpu_count; ++i)
+            out("{:>10}", call_counts[i].to_deprecated_string());
+
+        outln("  {:10}  {:30}", controller, purpose);
     });
 
     return 0;

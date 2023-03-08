@@ -10,29 +10,19 @@ namespace Cards {
 
 CardStack::CardStack()
     : m_position({ 0, 0 })
-    , m_type(Invalid)
+    , m_type(Type::Invalid)
     , m_base(m_position, { Card::width, Card::height })
 {
 }
 
-CardStack::CardStack(const Gfx::IntPoint& position, Type type)
-    : m_position(position)
-    , m_type(type)
-    , m_rules(rules_for_type(type))
-    , m_base(m_position, { Card::width, Card::height })
-{
-    VERIFY(type != Invalid);
-    calculate_bounding_box();
-}
-
-CardStack::CardStack(const Gfx::IntPoint& position, Type type, NonnullRefPtr<CardStack> associated_stack)
-    : m_associated_stack(move(associated_stack))
+CardStack::CardStack(Gfx::IntPoint position, Type type, RefPtr<CardStack> covered_stack)
+    : m_covered_stack(move(covered_stack))
     , m_position(position)
     , m_type(type)
     , m_rules(rules_for_type(type))
     , m_base(m_position, { Card::width, Card::height })
 {
-    VERIFY(type != Invalid);
+    VERIFY(type != Type::Invalid);
     calculate_bounding_box();
 }
 
@@ -42,30 +32,40 @@ void CardStack::clear()
     m_stack_positions.clear();
 }
 
-void CardStack::draw(GUI::Painter& painter, const Gfx::Color& background_color)
+void CardStack::paint(GUI::Painter& painter, Gfx::Color background_color)
 {
     auto draw_background_if_empty = [&]() {
         size_t number_of_moving_cards = 0;
-        for (const auto& card : m_stack)
-            number_of_moving_cards += card.is_moving();
+        for (auto const& card : m_stack)
+            number_of_moving_cards += card->is_moving() ? 1 : 0;
 
-        if (m_associated_stack && !m_associated_stack->is_empty())
+        if (m_covered_stack && !m_covered_stack->is_empty())
             return false;
         if (!is_empty() && (m_stack.size() != number_of_moving_cards))
             return false;
-        painter.fill_rect_with_rounded_corners(m_base, background_color.darkened(0.5), Card::card_radius);
-        painter.fill_rect_with_rounded_corners(m_base.shrunken(2, 2), background_color, Card::card_radius - 1);
+
+        auto paint_rect = m_base;
+        painter.fill_rect_with_rounded_corners(paint_rect, background_color.darkened(0.5), Card::card_radius);
+        paint_rect.shrink(2, 2);
+
+        if (m_highlighted) {
+            auto background_complement = background_color.xored(Color::White);
+            painter.fill_rect_with_rounded_corners(paint_rect, background_complement, Card::card_radius - 1);
+            paint_rect.shrink(4, 4);
+        }
+
+        painter.fill_rect_with_rounded_corners(paint_rect, background_color, Card::card_radius - 1);
         return true;
     };
 
     switch (m_type) {
-    case Stock:
+    case Type::Stock:
         if (draw_background_if_empty()) {
             painter.fill_rect(m_base.shrunken(Card::width / 4, Card::height / 4), background_color.lightened(1.5));
             painter.fill_rect(m_base.shrunken(Card::width / 2, Card::height / 2), background_color);
         }
         break;
-    case Foundation:
+    case Type::Foundation:
         if (draw_background_if_empty()) {
             for (int y = 0; y < (m_base.height() - 4) / 8; ++y) {
                 for (int x = 0; x < (m_base.width() - 4) / 5; ++x) {
@@ -74,11 +74,11 @@ void CardStack::draw(GUI::Painter& painter, const Gfx::Color& background_color)
             }
         }
         break;
-    case Play:
-    case Normal:
+    case Type::Play:
+    case Type::Normal:
         draw_background_if_empty();
         break;
-    case Waste:
+    case Type::Waste:
         break;
     default:
         VERIFY_NOT_REACHED();
@@ -89,14 +89,27 @@ void CardStack::draw(GUI::Painter& painter, const Gfx::Color& background_color)
 
     if (m_rules.shift_x == 0 && m_rules.shift_y == 0) {
         auto& card = peek();
-        card.draw(painter);
+        card.paint(painter);
         return;
     }
 
-    for (auto& card : m_stack) {
-        if (!card.is_moving())
-            card.clear_and_draw(painter, Gfx::Color::Transparent);
+    RefPtr<Card> previewed_card;
+
+    for (size_t i = 0; i < m_stack.size(); ++i) {
+        if (auto& card = m_stack[i]; !card->is_moving()) {
+            if (card->is_previewed()) {
+                VERIFY(!previewed_card);
+                previewed_card = card;
+                continue;
+            }
+
+            auto highlighted = m_highlighted && (i == m_stack.size() - 1);
+            card->clear_and_paint(painter, Gfx::Color::Transparent, highlighted);
+        }
     }
+
+    if (previewed_card)
+        previewed_card->clear_and_paint(painter, Gfx::Color::Transparent, false);
 }
 
 void CardStack::rebound_cards()
@@ -105,48 +118,48 @@ void CardStack::rebound_cards()
 
     size_t card_index = 0;
     for (auto& card : m_stack)
-        card.set_position(m_stack_positions.at(card_index++));
+        card->set_position(m_stack_positions.at(card_index++));
 }
 
-void CardStack::add_all_grabbed_cards(const Gfx::IntPoint& click_location, NonnullRefPtrVector<Card>& grabbed, MovementRule movement_rule)
+ErrorOr<void> CardStack::add_all_grabbed_cards(Gfx::IntPoint click_location, Vector<NonnullRefPtr<Card>>& grabbed, MovementRule movement_rule)
 {
     VERIFY(grabbed.is_empty());
 
-    if (m_type != Normal) {
+    if (m_type != Type::Normal) {
         auto& top_card = peek();
         if (top_card.rect().contains(click_location)) {
             top_card.set_moving(true);
-            grabbed.append(top_card);
+            TRY(grabbed.try_append(top_card));
         }
-        return;
+        return {};
     }
 
     RefPtr<Card> last_intersect;
 
     for (auto& card : m_stack) {
-        if (card.rect().contains(click_location)) {
-            if (card.is_upside_down())
+        if (card->rect().contains(click_location)) {
+            if (card->is_upside_down())
                 continue;
 
             last_intersect = card;
         } else if (!last_intersect.is_null()) {
             if (grabbed.is_empty()) {
-                grabbed.append(*last_intersect);
+                TRY(grabbed.try_append(*last_intersect));
                 last_intersect->set_moving(true);
             }
 
-            if (card.is_upside_down()) {
+            if (card->is_upside_down()) {
                 grabbed.clear();
-                return;
+                return {};
             }
 
-            card.set_moving(true);
-            grabbed.append(card);
+            card->set_moving(true);
+            TRY(grabbed.try_append(card));
         }
     }
 
     if (grabbed.is_empty() && !last_intersect.is_null()) {
-        grabbed.append(*last_intersect);
+        TRY(grabbed.try_append(*last_intersect));
         last_intersect->set_moving(true);
     }
 
@@ -159,75 +172,78 @@ void CardStack::add_all_grabbed_cards(const Gfx::IntPoint& click_location, Nonnu
         if (i != 0) {
             bool color_match;
             switch (movement_rule) {
-            case Alternating:
-                color_match = card.color() != last_color;
+            case MovementRule::Alternating:
+                color_match = card->color() != last_color;
                 break;
-            case Same:
-                color_match = card.color() == last_color;
+            case MovementRule::Same:
+                color_match = card->color() == last_color;
                 break;
-            case Any:
+            case MovementRule::Any:
                 color_match = true;
                 break;
             }
 
-            if (!color_match || card.value() != last_value - 1) {
+            if (!color_match || to_underlying(card->rank()) != last_value - 1) {
                 valid_stack = false;
                 break;
             }
         }
-        last_value = card.value();
-        last_color = card.color();
+        last_value = to_underlying(card->rank());
+        last_color = card->color();
     }
 
     if (!valid_stack) {
         for (auto& card : grabbed) {
-            card.set_moving(false);
+            card->set_moving(false);
         }
         grabbed.clear();
     }
+
+    return {};
 }
 
-bool CardStack::is_allowed_to_push(const Card& card, size_t stack_size, MovementRule movement_rule) const
+bool CardStack::is_allowed_to_push(Card const& card, size_t stack_size, MovementRule movement_rule) const
 {
-    if (m_type == Stock || m_type == Waste || m_type == Play)
+    if (m_type == Type::Stock || m_type == Type::Waste || m_type == Type::Play)
         return false;
 
-    if (m_type == Normal && is_empty()) {
+    if (m_type == Type::Normal && is_empty()) {
         // FIXME: proper solution for this
-        if (movement_rule == Alternating) {
-            return card.value() == 12;
+        if (movement_rule == MovementRule::Alternating) {
+            return card.rank() == Rank::King;
         }
         return true;
     }
 
-    if (m_type == Foundation && is_empty())
-        return card.value() == 0;
+    if (m_type == Type::Foundation && is_empty())
+        return card.rank() == Rank::Ace;
 
     if (!is_empty()) {
-        auto& top_card = peek();
+        auto const& top_card = peek();
         if (top_card.is_upside_down())
             return false;
 
-        if (m_type == Foundation) {
+        if (m_type == Type::Foundation) {
             // Prevent player from dragging an entire stack of cards to the foundation stack
             if (stack_size > 1)
                 return false;
-            return top_card.type() == card.type() && m_stack.size() == card.value();
-        } else if (m_type == Normal) {
+            return top_card.suit() == card.suit() && m_stack.size() == to_underlying(card.rank());
+        }
+        if (m_type == Type::Normal) {
             bool color_match;
             switch (movement_rule) {
-            case Alternating:
+            case MovementRule::Alternating:
                 color_match = card.color() != top_card.color();
                 break;
-            case Same:
+            case MovementRule::Same:
                 color_match = card.color() == top_card.color();
                 break;
-            case Any:
+            case MovementRule::Any:
                 color_match = true;
                 break;
             }
 
-            return color_match && top_card.value() == card.value() + 1;
+            return color_match && to_underlying(top_card.rank()) == to_underlying(card.rank()) + 1;
         }
 
         VERIFY_NOT_REACHED();
@@ -236,26 +252,66 @@ bool CardStack::is_allowed_to_push(const Card& card, size_t stack_size, Movement
     return true;
 }
 
-void CardStack::push(NonnullRefPtr<Card> card)
+bool CardStack::preview_card(Gfx::IntPoint click_location)
 {
-    auto size = m_stack.size();
+    RefPtr<Card> last_intersect;
+
+    for (auto& card : m_stack) {
+        if (!card->rect().contains(click_location))
+            continue;
+        if (card->is_upside_down())
+            continue;
+
+        last_intersect = card;
+    }
+
+    if (!last_intersect)
+        return false;
+
+    last_intersect->set_previewed(true);
+    return true;
+}
+
+void CardStack::clear_card_preview()
+{
+    for (auto& card : m_stack)
+        card->set_previewed(false);
+}
+
+bool CardStack::make_top_card_visible()
+{
+    if (is_empty())
+        return false;
+
+    auto& top_card = peek();
+    if (top_card.is_upside_down()) {
+        top_card.set_upside_down(false);
+        return true;
+    }
+
+    return false;
+}
+
+ErrorOr<void> CardStack::push(NonnullRefPtr<Card> card)
+{
     auto top_most_position = m_stack_positions.is_empty() ? m_position : m_stack_positions.last();
 
-    if (size && size % m_rules.step == 0) {
+    if (!m_stack.is_empty() && m_stack.size() % m_rules.step == 0) {
         if (peek().is_upside_down())
             top_most_position.translate_by(m_rules.shift_x, m_rules.shift_y_upside_down);
         else
             top_most_position.translate_by(m_rules.shift_x, m_rules.shift_y);
     }
 
-    if (m_type == Stock)
+    if (m_type == Type::Stock)
         card->set_upside_down(true);
 
     card->set_position(top_most_position);
 
-    m_stack.append(card);
-    m_stack_positions.append(top_most_position);
+    TRY(m_stack.try_append(card));
+    TRY(m_stack_positions.try_append(top_most_position));
     calculate_bounding_box();
+    return {};
 }
 
 NonnullRefPtr<Card> CardStack::pop()
@@ -263,22 +319,23 @@ NonnullRefPtr<Card> CardStack::pop()
     auto card = m_stack.take_last();
 
     calculate_bounding_box();
-    if (m_type == Stock)
+    if (m_type == Type::Stock)
         card->set_upside_down(false);
 
     m_stack_positions.take_last();
     return card;
 }
 
-void CardStack::move_to_stack(CardStack& stack)
+ErrorOr<void> CardStack::take_all(CardStack& stack)
 {
     while (!m_stack.is_empty()) {
         auto card = m_stack.take_first();
         m_stack_positions.take_first();
-        stack.push(move(card));
+        TRY(stack.push(move(card)));
     }
 
     calculate_bounding_box();
+    return {};
 }
 
 void CardStack::calculate_bounding_box()
@@ -292,8 +349,8 @@ void CardStack::calculate_bounding_box()
     uint16_t height = 0;
     size_t card_position = 0;
     for (auto& card : m_stack) {
-        if (card_position % m_rules.step == 0 && card_position) {
-            if (card.is_upside_down()) {
+        if (card_position % m_rules.step == 0 && card_position != 0) {
+            if (card->is_upside_down()) {
                 width += m_rules.shift_x;
                 height += m_rules.shift_y_upside_down;
             } else {

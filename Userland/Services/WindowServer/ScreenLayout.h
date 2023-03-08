@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 #include <LibCore/ConfigFile.h>
 #include <LibGfx/Rect.h>
@@ -18,7 +18,12 @@ namespace WindowServer {
 class ScreenLayout {
 public:
     struct Screen {
-        String device;
+        enum class Mode {
+            Invalid,
+            Device,
+            Virtual,
+        } mode;
+        Optional<DeprecatedString> device;
         Gfx::IntPoint location;
         Gfx::IntSize resolution;
         int scale_factor;
@@ -28,21 +33,37 @@ public:
             return { location, { resolution.width() / scale_factor, resolution.height() / scale_factor } };
         }
 
-        bool operator==(const Screen&) const = default;
+        static StringView mode_to_string(Mode mode)
+        {
+#define __ENUMERATE_MODE_ENUM(val) \
+    case Mode::val:                \
+        return #val##sv;
+
+            switch (mode) {
+                __ENUMERATE_MODE_ENUM(Invalid)
+                __ENUMERATE_MODE_ENUM(Device)
+                __ENUMERATE_MODE_ENUM(Virtual)
+            }
+            VERIFY_NOT_REACHED();
+
+#undef __ENUMERATE_MODE_ENUM
+        }
+
+        bool operator==(Screen const&) const = default;
     };
 
     Vector<Screen> screens;
     unsigned main_screen_index { 0 };
 
-    bool is_valid(String* error_msg = nullptr) const;
+    bool is_valid(DeprecatedString* error_msg = nullptr) const;
     bool normalize();
-    bool load_config(const Core::ConfigFile& config_file, String* error_msg = nullptr);
+    bool load_config(Core::ConfigFile const& config_file, DeprecatedString* error_msg = nullptr);
     bool save_config(Core::ConfigFile& config_file, bool sync = true) const;
-    bool try_auto_add_framebuffer(String const&);
+    bool try_auto_add_display_connector(DeprecatedString const&);
 
     // TODO: spaceship operator
-    bool operator!=(const ScreenLayout& other) const;
-    bool operator==(const ScreenLayout& other) const
+    bool operator!=(ScreenLayout const& other) const;
+    bool operator==(ScreenLayout const& other) const
     {
         return !(*this != other);
     }
@@ -52,9 +73,16 @@ public:
 
 namespace IPC {
 
-bool encode(Encoder&, const WindowServer::ScreenLayout::Screen&);
-ErrorOr<void> decode(Decoder&, WindowServer::ScreenLayout::Screen&);
-bool encode(Encoder&, const WindowServer::ScreenLayout&);
-ErrorOr<void> decode(Decoder&, WindowServer::ScreenLayout&);
+template<>
+ErrorOr<void> encode(Encoder&, WindowServer::ScreenLayout::Screen const&);
+
+template<>
+ErrorOr<WindowServer::ScreenLayout::Screen> decode(Decoder&);
+
+template<>
+ErrorOr<void> encode(Encoder&, WindowServer::ScreenLayout const&);
+
+template<>
+ErrorOr<WindowServer::ScreenLayout> decode(Decoder&);
 
 }

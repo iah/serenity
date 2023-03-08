@@ -31,13 +31,11 @@ UNMAP_AFTER_INIT PTYMultiplexer::PTYMultiplexer()
     });
 }
 
-UNMAP_AFTER_INIT PTYMultiplexer::~PTYMultiplexer()
-{
-}
+UNMAP_AFTER_INIT PTYMultiplexer::~PTYMultiplexer() = default;
 
 UNMAP_AFTER_INIT void PTYMultiplexer::initialize()
 {
-    the().after_inserting();
+    MUST(the().after_inserting());
 }
 
 ErrorOr<NonnullRefPtr<OpenFileDescription>> PTYMultiplexer::open(int options)

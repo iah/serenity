@@ -11,14 +11,19 @@
 #include "Tools/CloneTool.h"
 #include "Tools/EllipseTool.h"
 #include "Tools/EraseTool.h"
+#include "Tools/GradientTool.h"
 #include "Tools/GuideTool.h"
+#include "Tools/LassoSelectTool.h"
 #include "Tools/LineTool.h"
 #include "Tools/MoveTool.h"
 #include "Tools/PenTool.h"
 #include "Tools/PickerTool.h"
+#include "Tools/PolygonalSelectTool.h"
 #include "Tools/RectangleSelectTool.h"
 #include "Tools/RectangleTool.h"
 #include "Tools/SprayTool.h"
+#include "Tools/TextTool.h"
+#include "Tools/WandSelectTool.h"
 #include "Tools/ZoomTool.h"
 #include <LibGUI/Action.h>
 #include <LibGUI/BoxLayout.h>
@@ -34,22 +39,20 @@ ToolboxWidget::ToolboxWidget()
     set_fill_with_background_color(true);
 
     set_fixed_width(26);
-
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_spacing(0);
-    layout()->set_margins(2);
+    set_layout<GUI::VerticalBoxLayout>(2, 0);
 
     m_action_group.set_exclusive(true);
     m_action_group.set_unchecking_allowed(false);
 
     m_toolbar = add<GUI::Toolbar>(Gfx::Orientation::Vertical);
+    m_toolbar->set_collapsible(true);
     setup_tools();
 }
 
 void ToolboxWidget::setup_tools()
 {
-    auto add_tool = [&](String name, StringView icon_name, GUI::Shortcut const& shortcut, NonnullOwnPtr<Tool> tool) {
-        auto action = GUI::Action::create_checkable(move(name), shortcut, Gfx::Bitmap::try_load_from_file(String::formatted("/res/icons/pixelpaint/{}.png", icon_name)).release_value_but_fixme_should_propagate_errors(),
+    auto add_tool = [&](StringView icon_name, GUI::Shortcut const& shortcut, NonnullOwnPtr<Tool> tool, bool is_default_tool = false) {
+        auto action = GUI::Action::create_checkable(tool->tool_name(), shortcut, Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/pixelpaint/{}.png", icon_name)).release_value_but_fixme_should_propagate_errors(),
             [this, tool = tool.ptr()](auto& action) {
                 if (action.is_checked()) {
                     on_tool_selection(tool);
@@ -66,22 +69,32 @@ void ToolboxWidget::setup_tools()
         };
         tool->set_action(action);
         m_tools.append(move(tool));
+        if (is_default_tool) {
+            VERIFY(m_active_tool == nullptr);
+            m_active_tool = m_tools[m_tools.size() - 1];
+            action->set_checked(true);
+        }
     };
 
-    add_tool("Move", "move", { 0, Key_M }, make<MoveTool>());
-    add_tool("Pen", "pen", { 0, Key_N }, make<PenTool>());
-    add_tool("Brush", "brush", { 0, Key_P }, make<BrushTool>());
-    add_tool("Bucket Fill", "bucket", { Mod_Shift, Key_B }, make<BucketTool>());
-    add_tool("Spray", "spray", { Mod_Shift, Key_S }, make<SprayTool>());
-    add_tool("Color Picker", "picker", { 0, Key_O }, make<PickerTool>());
-    add_tool("Erase", "eraser", { Mod_Shift, Key_E }, make<EraseTool>());
-    add_tool("Line", "line", { Mod_Ctrl | Mod_Shift, Key_L }, make<LineTool>());
-    add_tool("Rectangle", "rectangle", { Mod_Ctrl | Mod_Shift, Key_R }, make<RectangleTool>());
-    add_tool("Ellipse", "circle", { Mod_Ctrl | Mod_Shift, Key_E }, make<EllipseTool>());
-    add_tool("Zoom", "zoom", { 0, Key_Z }, make<ZoomTool>());
-    add_tool("Rectangle Select", "rectangle-select", { 0, Key_R }, make<RectangleSelectTool>());
-    add_tool("Guides", "guides", { 0, Key_G }, make<GuideTool>());
-    add_tool("Clone Tool", "clone", { 0, Key_C }, make<CloneTool>());
+    add_tool("move"sv, { 0, Key_M }, make<MoveTool>());
+    add_tool("pen"sv, { 0, Key_N }, make<PenTool>(), true);
+    add_tool("brush"sv, { 0, Key_P }, make<BrushTool>());
+    add_tool("bucket"sv, { Mod_Shift, Key_B }, make<BucketTool>());
+    add_tool("spray"sv, { Mod_Shift, Key_S }, make<SprayTool>());
+    add_tool("picker"sv, { 0, Key_O }, make<PickerTool>());
+    add_tool("eraser"sv, { Mod_Shift, Key_E }, make<EraseTool>());
+    add_tool("line"sv, { Mod_Ctrl | Mod_Shift, Key_L }, make<LineTool>());
+    add_tool("rectangle"sv, { Mod_Ctrl | Mod_Shift, Key_R }, make<RectangleTool>());
+    add_tool("circle"sv, { Mod_Ctrl | Mod_Shift, Key_E }, make<EllipseTool>());
+    add_tool("text"sv, { Mod_Ctrl | Mod_Shift, Key_T }, make<TextTool>());
+    add_tool("zoom"sv, { 0, Key_Z }, make<ZoomTool>());
+    add_tool("rectangle-select"sv, { 0, Key_R }, make<RectangleSelectTool>());
+    add_tool("wand-select"sv, { 0, Key_W }, make<WandSelectTool>());
+    add_tool("polygonal-select"sv, { Mod_Shift, Key_P }, make<PolygonalSelectTool>());
+    add_tool("lasso-select"sv, { 0, Key_L }, make<LassoSelectTool>());
+    add_tool("guides"sv, { 0, Key_G }, make<GuideTool>());
+    add_tool("clone"sv, { 0, Key_C }, make<CloneTool>());
+    add_tool("gradients"sv, { Mod_Ctrl, Key_G }, make<GradientTool>());
 }
 
 }

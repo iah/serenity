@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,11 +15,12 @@ class DatePrototype final : public PrototypeObject<DatePrototype, Date> {
     JS_PROTOTYPE_OBJECT(DatePrototype, Date, Date);
 
 public:
-    explicit DatePrototype(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
-    virtual ~DatePrototype() override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~DatePrototype() override = default;
 
 private:
+    explicit DatePrototype(Realm&);
+
     JS_DECLARE_NATIVE_FUNCTION(get_date);
     JS_DECLARE_NATIVE_FUNCTION(get_day);
     JS_DECLARE_NATIVE_FUNCTION(get_full_year);
@@ -71,10 +72,10 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(symbol_to_primitive);
 };
 
-ThrowCompletionOr<Value> this_time_value(GlobalObject& global_object, Value value);
-String time_string(double time);
-String date_string(double time);
-String time_zone_string(double time);
-String to_date_string(double time);
+ThrowCompletionOr<double> this_time_value(VM&, Value value);
+DeprecatedString time_string(double time);
+DeprecatedString date_string(double time);
+DeprecatedString time_zone_string(double time);
+DeprecatedString to_date_string(double time);
 
 }

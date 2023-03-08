@@ -111,3 +111,75 @@ test("private identifier not followed by 'in' throws", () => {
 test("cannot have static and non static field with the same description", () => {
     expect("class A { static #simple; #simple; }").not.toEval();
 });
+
+test("'arguments' is not allowed in class field initializer", () => {
+    expect("class A { #a = arguments; }").not.toEval();
+    expect("class B { static #b = arguments; }").not.toEval();
+
+    class C {
+        #c = eval("arguments");
+    }
+
+    expect(() => {
+        new C();
+    }).toThrowWithMessage(SyntaxError, "'arguments' is not allowed in class field initializer");
+
+    expect(() => {
+        class D {
+            static #d = eval("arguments");
+        }
+    }).toThrowWithMessage(SyntaxError, "'arguments' is not allowed in class field initializer");
+});
+
+test("using 'arguments' via indirect eval throws at runtime instead of parse time", () => {
+    const indirect = eval;
+
+    class A {
+        #a = indirect("arguments");
+    }
+
+    expect(() => {
+        new A();
+    }).toThrowWithMessage(ReferenceError, "'arguments' is not defined");
+
+    expect(() => {
+        class B {
+            static #b = indirect("arguments");
+        }
+    }).toThrowWithMessage(ReferenceError, "'arguments' is not defined");
+});
+
+test("unknown private name gives SyntaxError", () => {
+    expect(`#n`).not.toEval();
+    expect(`obj.#n`).not.toEval();
+    expect(`this.#n`).not.toEval();
+    expect(`if (#n) 1;`).not.toEval();
+    expect(`1?.#n`).not.toEval();
+    expect(`1?.n.#n`).not.toEval();
+});
+
+// OSS-FUZZ Issue 53363: top level unknown private names seg faults
+expect(() => eval(`#n`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);
+expect(() => eval(`obj.#n`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);
+expect(() => eval(`this.#n`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);
+expect(() => eval(`if (#n) 1;`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);
+expect(() => eval(`1?.#n`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);
+expect(() => eval(`1?.n.#n`)).toThrowWithMessage(
+    SyntaxError,
+    "Reference to undeclared private field or method '#n'"
+);

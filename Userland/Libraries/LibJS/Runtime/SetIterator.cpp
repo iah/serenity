@@ -9,20 +9,16 @@
 
 namespace JS {
 
-SetIterator* SetIterator::create(GlobalObject& global_object, Set& set, Object::PropertyKind iteration_kind)
+NonnullGCPtr<SetIterator> SetIterator::create(Realm& realm, Set& set, Object::PropertyKind iteration_kind)
 {
-    return global_object.heap().allocate<SetIterator>(global_object, set, iteration_kind, *global_object.set_iterator_prototype());
+    return realm.heap().allocate<SetIterator>(realm, set, iteration_kind, *realm.intrinsics().set_iterator_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 SetIterator::SetIterator(Set& set, Object::PropertyKind iteration_kind, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_set(set)
     , m_iteration_kind(iteration_kind)
     , m_iterator(static_cast<Set const&>(set).begin())
-{
-}
-
-SetIterator::~SetIterator()
 {
 }
 

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Dex♪ <dexes.ttp@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -24,12 +25,14 @@ enum class ReadyState {
 class WebSocket final : public Core::Object {
     C_OBJECT(WebSocket)
 public:
-    static NonnullRefPtr<WebSocket> create(ConnectionInfo);
-    virtual ~WebSocket() override;
+    static NonnullRefPtr<WebSocket> create(ConnectionInfo, RefPtr<WebSocketImpl> = nullptr);
+    virtual ~WebSocket() override = default;
 
     URL const& url() const { return m_connection.url(); }
 
     ReadyState ready_state();
+
+    DeprecatedString subprotocol_in_use();
 
     // Call this to start the WebSocket connection.
     void start();
@@ -38,10 +41,10 @@ public:
     void send(Message const&);
 
     // This can only be used if the `ready_state` is `ReadyState::Open`
-    void close(u16 code = 1005, String const& reason = {});
+    void close(u16 code = 1005, DeprecatedString const& reason = {});
 
     Function<void()> on_open;
-    Function<void(u16 code, String reason, bool was_clean)> on_close;
+    Function<void(u16 code, DeprecatedString reason, bool was_clean)> on_close;
     Function<void(Message message)> on_message;
 
     enum class Error {
@@ -53,7 +56,7 @@ public:
     Function<void(Error)> on_error;
 
 private:
-    explicit WebSocket(ConnectionInfo);
+    WebSocket(ConnectionInfo, RefPtr<WebSocketImpl>);
 
     // As defined in section 5.2
     enum class OpCode : u8 {
@@ -74,7 +77,7 @@ private:
     void send_frame(OpCode, ReadonlyBytes, bool is_final);
 
     void notify_open();
-    void notify_close(u16 code, String reason, bool was_clean);
+    void notify_close(u16 code, DeprecatedString reason, bool was_clean);
     void notify_error(Error);
     void notify_message(Message);
 
@@ -94,17 +97,21 @@ private:
 
     InternalState m_state { InternalState::NotStarted };
 
-    String m_websocket_key;
+    DeprecatedString m_subprotocol_in_use { DeprecatedString::empty() };
+
+    DeprecatedString m_websocket_key;
     bool m_has_read_server_handshake_first_line { false };
     bool m_has_read_server_handshake_upgrade { false };
     bool m_has_read_server_handshake_connection { false };
     bool m_has_read_server_handshake_accept { false };
 
     u16 m_last_close_code { 1005 };
-    String m_last_close_message;
+    DeprecatedString m_last_close_message;
 
     ConnectionInfo m_connection;
     RefPtr<WebSocketImpl> m_impl;
+
+    Vector<u8> m_buffered_data;
 };
 
 }

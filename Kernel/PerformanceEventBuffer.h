@@ -110,11 +110,11 @@ class PerformanceEventBuffer {
 public:
     static OwnPtr<PerformanceEventBuffer> try_create_with_size(size_t buffer_size);
 
-    ErrorOr<void> append(int type, FlatPtr arg1, FlatPtr arg2, StringView arg3, Thread* current_thread = Thread::current(), FlatPtr arg4 = 0, u64 arg5 = 0, ErrorOr<FlatPtr> arg6 = 0);
+    ErrorOr<void> append(int type, FlatPtr arg1, FlatPtr arg2, StringView arg3, Thread* current_thread = Thread::current(), FlatPtr arg4 = 0, u64 arg5 = 0, ErrorOr<FlatPtr> const& arg6 = 0);
     ErrorOr<void> append_with_ip_and_bp(ProcessID pid, ThreadID tid, FlatPtr eip, FlatPtr ebp,
-        int type, u32 lost_samples, FlatPtr arg1, FlatPtr arg2, StringView arg3, FlatPtr arg4 = 0, u64 arg5 = {}, ErrorOr<FlatPtr> arg6 = 0);
-    ErrorOr<void> append_with_ip_and_bp(ProcessID pid, ThreadID tid, const RegisterState& regs,
-        int type, u32 lost_samples, FlatPtr arg1, FlatPtr arg2, StringView arg3, FlatPtr arg4 = 0, u64 arg5 = {}, ErrorOr<FlatPtr> arg6 = 0);
+        int type, u32 lost_samples, FlatPtr arg1, FlatPtr arg2, StringView arg3, FlatPtr arg4 = 0, u64 arg5 = {}, ErrorOr<FlatPtr> const& arg6 = 0);
+    ErrorOr<void> append_with_ip_and_bp(ProcessID pid, ThreadID tid, RegisterState const& regs,
+        int type, u32 lost_samples, FlatPtr arg1, FlatPtr arg2, StringView arg3, FlatPtr arg4 = 0, u64 arg5 = {}, ErrorOr<FlatPtr> const& arg6 = 0);
 
     void clear()
     {
@@ -123,14 +123,14 @@ public:
 
     size_t capacity() const { return m_buffer->size() / sizeof(PerformanceEvent); }
     size_t count() const { return m_count; }
-    const PerformanceEvent& at(size_t index) const
+    PerformanceEvent const& at(size_t index) const
     {
         return const_cast<PerformanceEventBuffer&>(*this).at(index);
     }
 
     ErrorOr<void> to_json(KBufferBuilder&) const;
 
-    ErrorOr<void> add_process(const Process&, ProcessEventType event_type);
+    ErrorOr<void> add_process(Process const&, ProcessEventType event_type);
 
     ErrorOr<FlatPtr> register_string(NonnullOwnPtr<KString>);
 
@@ -145,7 +145,7 @@ private:
     size_t m_count { 0 };
     NonnullOwnPtr<KBuffer> m_buffer;
 
-    HashTable<NonnullOwnPtr<KString>> m_strings;
+    HashMap<NonnullOwnPtr<KString>, size_t> m_strings;
 };
 
 extern bool g_profiling_all_threads;

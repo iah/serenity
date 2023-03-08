@@ -10,16 +10,14 @@
 
 namespace Web::Layout {
 
-class InlineNode : public NodeWithStyleAndBoxModelMetrics {
+class InlineNode final : public NodeWithStyleAndBoxModelMetrics {
+    JS_CELL(InlineNode, NodeWithStyleAndBoxModelMetrics);
+
 public:
-    InlineNode(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>);
+    InlineNode(DOM::Document&, DOM::Element*, NonnullRefPtr<CSS::StyleProperties>);
     virtual ~InlineNode() override;
 
-    virtual void paint(PaintContext&, PaintPhase) override;
-
-private:
-    template<typename Callback>
-    void for_each_fragment(Callback);
+    virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
 };
 
 }

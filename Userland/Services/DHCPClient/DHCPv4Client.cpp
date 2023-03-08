@@ -1,28 +1,31 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DHCPv4Client.h"
+#include <AK/Array.h>
 #include <AK/Debug.h>
+#include <AK/IPv4Address.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
 #include <AK/Random.h>
+#include <AK/ScopeGuard.h>
 #include <AK/Try.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Timer.h>
 #include <stdio.h>
 
-static u8 mac_part(const Vector<String>& parts, size_t index)
+static u8 mac_part(Vector<DeprecatedString> const& parts, size_t index)
 {
     auto result = AK::StringUtils::convert_to_uint_from_hex(parts.at(index));
     VERIFY(result.has_value());
     return result.value();
 }
 
-static MACAddress mac_from_string(const String& str)
+static MACAddress mac_from_string(DeprecatedString const& str)
 {
     auto chunks = str.split(':');
     VERIFY(chunks.size() == 6); // should we...worry about this?
@@ -32,13 +35,15 @@ static MACAddress mac_from_string(const String& str)
     };
 }
 
-static bool send(const InterfaceDescriptor& iface, const DHCPv4Packet& packet, Core::Object*)
+static bool send(InterfaceDescriptor const& iface, DHCPv4Packet const& packet, Core::Object*)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) {
         dbgln("ERROR: socket :: {}", strerror(errno));
         return false;
     }
+
+    ScopeGuard socket_close_guard = [&] { close(fd); };
 
     if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, iface.ifname.characters(), IFNAMSIZ) < 0) {
         dbgln("ERROR: setsockopt(SO_BINDTODEVICE) :: {}", strerror(errno));
@@ -63,7 +68,7 @@ static bool send(const InterfaceDescriptor& iface, const DHCPv4Packet& packet, C
     return true;
 }
 
-static void set_params(const InterfaceDescriptor& iface, const IPv4Address& ipv4_addr, const IPv4Address& netmask, const IPv4Address& gateway)
+static void set_params(InterfaceDescriptor const& iface, IPv4Address const& ipv4_addr, IPv4Address const& netmask, Optional<IPv4Address> const& gateway)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (fd < 0) {
@@ -95,13 +100,16 @@ static void set_params(const InterfaceDescriptor& iface, const IPv4Address& ipv4
         dbgln("ERROR: ioctl(SIOCSIFNETMASK) :: {}", strerror(errno));
     }
 
+    if (!gateway.has_value())
+        return;
+
     // set the default gateway
     struct rtentry rt;
     memset(&rt, 0, sizeof(rt));
 
     rt.rt_dev = const_cast<char*>(iface.ifname.characters());
     rt.rt_gateway.sa_family = AF_INET;
-    ((sockaddr_in&)rt.rt_gateway).sin_addr.s_addr = gateway.to_in_addr_t();
+    ((sockaddr_in&)rt.rt_gateway).sin_addr.s_addr = gateway.value().to_in_addr_t();
     rt.rt_flags = RTF_UP | RTF_GATEWAY;
 
     if (ioctl(fd, SIOCADDRT, &rt) < 0) {
@@ -109,11 +117,13 @@ static void set_params(const InterfaceDescriptor& iface, const IPv4Address& ipv4
     }
 }
 
-DHCPv4Client::DHCPv4Client()
+DHCPv4Client::DHCPv4Client(Vector<DeprecatedString> interfaces_with_dhcp_enabled)
+    : m_interfaces_with_dhcp_enabled(move(interfaces_with_dhcp_enabled))
 {
     m_server = Core::UDPServer::construct(this);
     m_server->on_ready_to_receive = [this] {
-        auto buffer = m_server->receive(sizeof(DHCPv4Packet));
+        // TODO: we need to handle possible errors here somehow
+        auto buffer = MUST(m_server->receive(sizeof(DHCPv4Packet)));
         dbgln_if(DHCPV4CLIENT_DEBUG, "Received {} bytes", buffer.size());
         if (buffer.size() < sizeof(DHCPv4Packet) - DHCPV4_OPTION_FIELD_MAX_LENGTH + 1 || buffer.size() > sizeof(DHCPv4Packet)) {
             dbgln("we expected {}-{} bytes, this is a bad packet", sizeof(DHCPv4Packet) - DHCPV4_OPTION_FIELD_MAX_LENGTH + 1, sizeof(DHCPv4Packet));
@@ -129,7 +139,8 @@ DHCPv4Client::DHCPv4Client()
     }
 
     m_check_timer = Core::Timer::create_repeating(
-        1000, [this] { try_discover_ifs(); }, this);
+        1000, [this] { try_discover_ifs(); }, this)
+                        .release_value_but_fixme_should_propagate_errors();
 
     m_check_timer->start();
 
@@ -142,9 +153,13 @@ void DHCPv4Client::try_discover_ifs()
     if (ifs_result.is_error())
         return;
 
+    dbgln_if(DHCPV4CLIENT_DEBUG, "Interfaces with DHCP enabled: {}", m_interfaces_with_dhcp_enabled);
     bool sent_discover_request = false;
     Interfaces& ifs = ifs_result.value();
     for (auto& iface : ifs.ready) {
+        dbgln_if(DHCPV4CLIENT_DEBUG, "Checking interface {} / {}", iface.ifname, iface.current_ip_address);
+        if (!m_interfaces_with_dhcp_enabled.contains_slow(iface.ifname))
+            continue;
         if (iface.current_ip_address != IPv4Address { 0, 0, 0, 0 })
             continue;
 
@@ -164,27 +179,27 @@ void DHCPv4Client::try_discover_ifs()
 
 ErrorOr<DHCPv4Client::Interfaces> DHCPv4Client::get_discoverable_interfaces()
 {
-    auto file = TRY(Core::File::open("/proc/net/adapters", Core::OpenMode::ReadOnly));
+    auto file = TRY(Core::DeprecatedFile::open("/sys/kernel/net/adapters", Core::OpenMode::ReadOnly));
 
     auto file_contents = file->read_all();
     auto json = JsonValue::from_string(file_contents);
 
     if (json.is_error() || !json.value().is_array()) {
         dbgln("Error: No network adapters available");
-        return Error::from_string_literal("No network adapters available"sv);
+        return Error::from_string_literal("No network adapters available");
     }
 
     Vector<InterfaceDescriptor> ifnames_to_immediately_discover, ifnames_to_attempt_later;
     json.value().as_array().for_each([&ifnames_to_immediately_discover, &ifnames_to_attempt_later](auto& value) {
         auto if_object = value.as_object();
 
-        if (if_object.get("class_name").to_string() == "LoopbackAdapter")
+        if (if_object.get_deprecated_string("class_name"sv).value_or({}) == "LoopbackAdapter")
             return;
 
-        auto name = if_object.get("name").to_string();
-        auto mac = if_object.get("mac_address").to_string();
-        auto is_up = if_object.get("link_up").to_bool();
-        auto ipv4_addr_maybe = IPv4Address::from_string(if_object.get("ipv4_address").to_string());
+        auto name = if_object.get_deprecated_string("name"sv).value_or({});
+        auto mac = if_object.get_deprecated_string("mac_address"sv).value_or({});
+        auto is_up = if_object.get_bool("link_up"sv).value_or(false);
+        auto ipv4_addr_maybe = IPv4Address::from_string(if_object.get_deprecated_string("ipv4_address"sv).value_or({}));
         auto ipv4_addr = ipv4_addr_maybe.has_value() ? ipv4_addr_maybe.value() : IPv4Address { 0, 0, 0, 0 };
         if (is_up) {
             dbgln_if(DHCPV4_DEBUG, "Found adapter '{}' with mac {}, and it was up!", name, mac);
@@ -201,13 +216,9 @@ ErrorOr<DHCPv4Client::Interfaces> DHCPv4Client::get_discoverable_interfaces()
     };
 }
 
-DHCPv4Client::~DHCPv4Client()
+void DHCPv4Client::handle_offer(DHCPv4Packet const& packet, ParsedDHCPv4Options const& options)
 {
-}
-
-void DHCPv4Client::handle_offer(const DHCPv4Packet& packet, const ParsedDHCPv4Options& options)
-{
-    dbgln("We were offered {} for {}", packet.yiaddr().to_string(), options.get<u32>(DHCPOption::IPAddressLeaseTime).value_or(0));
+    dbgln("We were offered {} for {}", packet.yiaddr().to_deprecated_string(), options.get<u32>(DHCPOption::IPAddressLeaseTime).value_or(0));
     auto* transaction = const_cast<DHCPv4Transaction*>(m_ongoing_transactions.get(packet.xid()).value_or(nullptr));
     if (!transaction) {
         dbgln("we're not looking for {}", packet.xid());
@@ -225,11 +236,11 @@ void DHCPv4Client::handle_offer(const DHCPv4Packet& packet, const ParsedDHCPv4Op
     dhcp_request(*transaction, packet);
 }
 
-void DHCPv4Client::handle_ack(const DHCPv4Packet& packet, const ParsedDHCPv4Options& options)
+void DHCPv4Client::handle_ack(DHCPv4Packet const& packet, ParsedDHCPv4Options const& options)
 {
     if constexpr (DHCPV4CLIENT_DEBUG) {
-        dbgln("The DHCP server handed us {}", packet.yiaddr().to_string());
-        dbgln("Here are the options: {}", options.to_string());
+        dbgln("The DHCP server handed us {}", packet.yiaddr().to_deprecated_string());
+        dbgln("Here are the options: {}", options.to_deprecated_string());
     }
 
     auto* transaction = const_cast<DHCPv4Transaction*>(m_ongoing_transactions.get(packet.xid()).value_or(nullptr));
@@ -250,14 +261,20 @@ void DHCPv4Client::handle_ack(const DHCPv4Packet& packet, const ParsedDHCPv4Opti
             transaction->has_ip = false;
             dhcp_discover(interface);
         },
-        this);
-    set_params(transaction->interface, new_ip, options.get<IPv4Address>(DHCPOption::SubnetMask).value(), options.get_many<IPv4Address>(DHCPOption::Router, 1).first());
+        this)
+        .release_value_but_fixme_should_propagate_errors();
+
+    Optional<IPv4Address> gateway;
+    if (auto routers = options.get_many<IPv4Address>(DHCPOption::Router, 1); !routers.is_empty())
+        gateway = routers.first();
+
+    set_params(transaction->interface, new_ip, options.get<IPv4Address>(DHCPOption::SubnetMask).value(), gateway);
 }
 
-void DHCPv4Client::handle_nak(const DHCPv4Packet& packet, const ParsedDHCPv4Options& options)
+void DHCPv4Client::handle_nak(DHCPv4Packet const& packet, ParsedDHCPv4Options const& options)
 {
-    dbgln("The DHCP server told us to go chase our own tail about {}", packet.yiaddr().to_string());
-    dbgln("Here are the options: {}", options.to_string());
+    dbgln("The DHCP server told us to go chase our own tail about {}", packet.yiaddr().to_deprecated_string());
+    dbgln("Here are the options: {}", options.to_deprecated_string());
     // make another request a bit later :shrug:
     auto* transaction = const_cast<DHCPv4Transaction*>(m_ongoing_transactions.get(packet.xid()).value_or(nullptr));
     if (!transaction) {
@@ -272,14 +289,15 @@ void DHCPv4Client::handle_nak(const DHCPv4Packet& packet, const ParsedDHCPv4Opti
         [this, iface = InterfaceDescriptor { iface }] {
             dhcp_discover(iface);
         },
-        this);
+        this)
+        .release_value_but_fixme_should_propagate_errors();
 }
 
-void DHCPv4Client::process_incoming(const DHCPv4Packet& packet)
+void DHCPv4Client::process_incoming(DHCPv4Packet const& packet)
 {
     auto options = packet.parse_options();
 
-    dbgln_if(DHCPV4CLIENT_DEBUG, "Here are the options: {}", options.to_string());
+    dbgln_if(DHCPV4CLIENT_DEBUG, "Here are the options: {}", options.to_deprecated_string());
 
     auto value_or_error = options.get<DHCPMessageType>(DHCPOption::DHCPMessageType);
     if (!value_or_error.has_value())
@@ -311,14 +329,14 @@ void DHCPv4Client::process_incoming(const DHCPv4Packet& packet)
     }
 }
 
-void DHCPv4Client::dhcp_discover(const InterfaceDescriptor& iface)
+void DHCPv4Client::dhcp_discover(InterfaceDescriptor const& iface)
 {
     auto transaction_id = get_random<u32>();
 
     if constexpr (DHCPV4CLIENT_DEBUG) {
         dbgln("Trying to lease an IP for {} with ID {}", iface.ifname, transaction_id);
         if (!iface.current_ip_address.is_zero())
-            dbgln("going to request the server to hand us {}", iface.current_ip_address.to_string());
+            dbgln("going to request the server to hand us {}", iface.current_ip_address.to_deprecated_string());
     }
 
     DHCPv4PacketBuilder builder;
@@ -343,10 +361,10 @@ void DHCPv4Client::dhcp_discover(const InterfaceDescriptor& iface)
     m_ongoing_transactions.set(transaction_id, make<DHCPv4Transaction>(iface));
 }
 
-void DHCPv4Client::dhcp_request(DHCPv4Transaction& transaction, const DHCPv4Packet& offer)
+void DHCPv4Client::dhcp_request(DHCPv4Transaction& transaction, DHCPv4Packet const& offer)
 {
     auto& iface = transaction.interface;
-    dbgln("Leasing the IP {} for adapter {}", offer.yiaddr().to_string(), iface.ifname);
+    dbgln("Leasing the IP {} for adapter {}", offer.yiaddr().to_deprecated_string(), iface.ifname);
     DHCPv4PacketBuilder builder;
 
     DHCPv4Packet& packet = builder.peek();
@@ -362,6 +380,17 @@ void DHCPv4Client::dhcp_request(DHCPv4Transaction& transaction, const DHCPv4Pack
     // set packet options
     builder.set_message_type(DHCPMessageType::DHCPRequest);
     builder.add_option(DHCPOption::RequestedIPAddress, sizeof(IPv4Address), &offer.yiaddr());
+
+    auto maybe_dhcp_server_ip = offer.parse_options().get<IPv4Address>(DHCPOption::ServerIdentifier);
+    if (maybe_dhcp_server_ip.has_value())
+        builder.add_option(DHCPOption::ServerIdentifier, sizeof(IPv4Address), &maybe_dhcp_server_ip.value());
+
+    AK::Array<DHCPOption, 2> parameter_request_list = {
+        DHCPOption::SubnetMask,
+        DHCPOption::Router,
+    };
+    builder.add_option(DHCPOption::ParameterRequestList, parameter_request_list.size(), &parameter_request_list);
+
     auto& dhcp_packet = builder.build();
 
     // broadcast the "request" request

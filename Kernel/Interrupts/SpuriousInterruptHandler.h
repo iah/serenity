@@ -8,8 +8,8 @@
 
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Arch/IRQController.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
-#include <Kernel/Interrupts/IRQController.h>
 
 namespace Kernel {
 
@@ -19,7 +19,7 @@ public:
     static void initialize_for_disabled_master_pic();
     static void initialize_for_disabled_slave_pic();
     virtual ~SpuriousInterruptHandler();
-    virtual bool handle_interrupt(const RegisterState& regs) override;
+    virtual bool handle_interrupt(RegisterState const& regs) override;
 
     void register_handler(GenericInterruptHandler&);
     void unregister_handler(GenericInterruptHandler&);
@@ -42,7 +42,7 @@ private:
     explicit SpuriousInterruptHandler(u8 interrupt_number);
     bool m_enabled { false };
     bool m_real_irq { false };
-    RefPtr<IRQController> m_responsible_irq_controller;
+    NonnullLockRefPtr<IRQController> m_responsible_irq_controller;
     OwnPtr<GenericInterruptHandler> m_real_handler;
 };
 }

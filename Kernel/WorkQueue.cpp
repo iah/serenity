@@ -13,15 +13,17 @@
 namespace Kernel {
 
 WorkQueue* g_io_work;
+WorkQueue* g_ata_work;
 
 UNMAP_AFTER_INIT void WorkQueue::initialize()
 {
-    g_io_work = new WorkQueue("IO WorkQueue");
+    g_io_work = new WorkQueue("IO WorkQueue Task"sv);
+    g_ata_work = new WorkQueue("ATA WorkQueue Task"sv);
 }
 
 UNMAP_AFTER_INIT WorkQueue::WorkQueue(StringView name)
 {
-    RefPtr<Thread> thread;
+    LockRefPtr<Thread> thread;
     auto name_kstring = KString::try_create(name);
     if (name_kstring.is_error())
         TODO();
@@ -47,10 +49,10 @@ UNMAP_AFTER_INIT WorkQueue::WorkQueue(StringView name)
     m_thread = thread.release_nonnull();
 }
 
-void WorkQueue::do_queue(WorkItem* item)
+void WorkQueue::do_queue(WorkItem& item)
 {
     m_items.with([&](auto& items) {
-        items.append(*item);
+        items.append(item);
     });
     m_wait_queue.wake_one();
 }

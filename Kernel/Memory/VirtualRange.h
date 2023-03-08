@@ -13,8 +13,6 @@
 namespace Kernel::Memory {
 
 class VirtualRange {
-    friend class VirtualRangeAllocator;
-
 public:
     VirtualRange() = delete;
     VirtualRange(VirtualAddress base, size_t size)
@@ -51,6 +49,8 @@ public:
     Vector<VirtualRange, 2> carve(VirtualRange const&) const;
     VirtualRange intersect(VirtualRange const&) const;
 
+    bool intersects(VirtualRange const&) const;
+
     static ErrorOr<VirtualRange> expand_to_page_boundaries(FlatPtr address, size_t size);
 
 private:
@@ -64,6 +64,6 @@ template<>
 struct AK::Formatter<Kernel::Memory::VirtualRange> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, Kernel::Memory::VirtualRange value)
     {
-        return Formatter<FormatString>::format(builder, "{} - {} (size {:p})", value.base().as_ptr(), value.base().offset(value.size() - 1).as_ptr(), value.size());
+        return Formatter<FormatString>::format(builder, "{} - {} (size {:p})"sv, value.base().as_ptr(), value.base().offset(value.size() - 1).as_ptr(), value.size());
     }
 };

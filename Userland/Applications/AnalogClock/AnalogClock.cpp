@@ -130,7 +130,7 @@ void AnalogClock::paint_event(GUI::PaintEvent& event)
 
 void AnalogClock::update_title_date()
 {
-    window()->set_title(Core::DateTime::now().to_string("%Y-%m-%d"));
+    window()->set_title(Core::DateTime::now().to_deprecated_string("%Y-%m-%d"sv));
 }
 
 void AnalogClock::context_menu_event(GUI::ContextMenuEvent& event)
@@ -147,5 +147,4 @@ void AnalogClock::set_show_window_frame(bool show)
     auto& w = *window();
     w.set_frameless(!m_show_window_frame);
     w.set_has_alpha_channel(!m_show_window_frame);
-    w.set_alpha_hit_threshold(m_show_window_frame ? 0 : 1);
 }

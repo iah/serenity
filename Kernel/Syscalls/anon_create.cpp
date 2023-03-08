@@ -13,7 +13,7 @@ namespace Kernel {
 
 ErrorOr<FlatPtr> Process::sys$anon_create(size_t size, int options)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::stdio));
 
     if (!size)
@@ -25,8 +25,7 @@ ErrorOr<FlatPtr> Process::sys$anon_create(size_t size, int options)
     if (size > NumericLimits<ssize_t>::max())
         return EINVAL;
 
-    auto new_fd = TRY(allocate_fd());
-    auto vmobject = TRY(Memory::AnonymousVMObject::try_create_purgeable_with_size(size, AllocationStrategy::Reserve));
+    auto vmobject = TRY(Memory::AnonymousVMObject::try_create_purgeable_with_size(size, AllocationStrategy::AllocateNow));
     auto anon_file = TRY(AnonymousFile::try_create(move(vmobject)));
     auto description = TRY(OpenFileDescription::try_create(move(anon_file)));
 
@@ -37,8 +36,11 @@ ErrorOr<FlatPtr> Process::sys$anon_create(size_t size, int options)
     if (options & O_CLOEXEC)
         fd_flags |= FD_CLOEXEC;
 
-    m_fds.with_exclusive([&](auto& fds) { fds[new_fd.fd].set(move(description), fd_flags); });
-    return new_fd.fd;
+    return m_fds.with_exclusive([&](auto& fds) -> ErrorOr<FlatPtr> {
+        auto new_fd = TRY(fds.allocate());
+        fds[new_fd.fd].set(description, fd_flags);
+        return new_fd.fd;
+    });
 }
 
 }

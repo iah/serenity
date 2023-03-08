@@ -8,6 +8,7 @@
 #include <AK/IPv4Address.h>
 #include <AK/Types.h>
 #include <LibCore/Notifier.h>
+#include <LibCore/Socket.h>
 #include <LibCore/System.h>
 #include <LibCore/TCPServer.h>
 
@@ -39,13 +40,19 @@ TCPServer::~TCPServer()
     MUST(Core::System::close(m_fd));
 }
 
-ErrorOr<void> TCPServer::listen(IPv4Address const& address, u16 port)
+ErrorOr<void> TCPServer::listen(IPv4Address const& address, u16 port, AllowAddressReuse allow_address_reuse)
 {
     if (m_listening)
         return Error::from_errno(EADDRINUSE);
 
     auto socket_address = SocketAddress(address, port);
     auto in = socket_address.to_sockaddr_in();
+
+    if (allow_address_reuse == AllowAddressReuse::Yes) {
+        int option = 1;
+        TRY(Core::System::setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)));
+    }
+
     TRY(Core::System::bind(m_fd, (sockaddr const*)&in, sizeof(in)));
     TRY(Core::System::listen(m_fd, 5));
     m_listening = true;
@@ -68,7 +75,7 @@ ErrorOr<void> TCPServer::set_blocking(bool blocking)
     return {};
 }
 
-ErrorOr<NonnullOwnPtr<Stream::TCPSocket>> TCPServer::accept()
+ErrorOr<NonnullOwnPtr<TCPSocket>> TCPServer::accept()
 {
     VERIFY(m_listening);
     sockaddr_in in;
@@ -79,7 +86,7 @@ ErrorOr<NonnullOwnPtr<Stream::TCPSocket>> TCPServer::accept()
     int accepted_fd = TRY(Core::System::accept(m_fd, (sockaddr*)&in, &in_size));
 #endif
 
-    auto socket = TRY(Stream::TCPSocket::adopt_fd(accepted_fd));
+    auto socket = TRY(TCPSocket::adopt_fd(accepted_fd));
 
 #ifdef AK_OS_MACOS
     // FIXME: Ideally, we should let the caller decide whether it wants the

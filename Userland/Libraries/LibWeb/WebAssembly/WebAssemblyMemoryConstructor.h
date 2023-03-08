@@ -14,12 +14,12 @@ class WebAssemblyMemoryConstructor : public JS::NativeFunction {
     JS_OBJECT(WebAssemblyMemoryConstructor, JS::NativeFunction);
 
 public:
-    explicit WebAssemblyMemoryConstructor(JS::GlobalObject&);
-    virtual void initialize(JS::GlobalObject&) override;
+    explicit WebAssemblyMemoryConstructor(JS::Realm&);
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
     virtual ~WebAssemblyMemoryConstructor() override;
 
     virtual JS::ThrowCompletionOr<JS::Value> call() override;
-    virtual JS::ThrowCompletionOr<JS::Object*> construct(JS::FunctionObject& new_target) override;
+    virtual JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Object>> construct(JS::FunctionObject& new_target) override;
 
 private:
     virtual bool has_constructor() const override { return true; }

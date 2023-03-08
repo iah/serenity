@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Alex McGrath <amk@amk.ie>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,14 +12,14 @@
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
 REGISTER_WIDGET(GUI, LinkLabel)
 
 namespace GUI {
 
-LinkLabel::LinkLabel(String text)
+LinkLabel::LinkLabel(DeprecatedString text)
     : Label(move(text))
 {
     set_foreground_role(Gfx::ColorRole::Link);
@@ -28,10 +29,12 @@ LinkLabel::LinkLabel(String text)
 
 void LinkLabel::setup_actions()
 {
-    m_open_action = GUI::Action::create("Show in File Manager", {}, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-file-manager.png").release_value_but_fixme_should_propagate_errors(), [&](const GUI::Action&) {
-        if (on_click)
-            on_click();
-    });
+    m_open_action = GUI::Action::create(
+        "Show in File Manager", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv).release_value_but_fixme_should_propagate_errors(), [&](const GUI::Action&) {
+            if (on_click)
+                on_click();
+        },
+        this);
 
     m_copy_action = CommonActions::make_copy_action([this](auto&) { Clipboard::the().set_plain_text(text()); }, this);
 }
@@ -48,7 +51,7 @@ void LinkLabel::set_hovered(bool hover)
 
 void LinkLabel::mousemove_event(MouseEvent& event)
 {
-    static const int extra_target_width = 3;
+    constexpr int extra_target_width = 3;
     set_hovered(event.position().x() <= font().width(text()) + extra_target_width);
 }
 
@@ -78,7 +81,7 @@ void LinkLabel::paint_event(PaintEvent& event)
     GUI::Painter painter(*this);
 
     if (m_hovered)
-        painter.draw_line({ 0, rect().bottom() }, { font().width(text()), rect().bottom() }, palette().link());
+        painter.draw_line({ 0, rect().bottom() }, { static_cast<int>(ceilf(font().width(text()))), rect().bottom() }, palette().link());
 
     if (is_focused())
         painter.draw_focus_rect(text_rect(), palette().focus_outline());

@@ -6,7 +6,7 @@
 
 #include <AK/BumpAllocator.h>
 #include <AK/Debug.h>
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <LibRegex/RegexMatcher.h>
 #include <LibRegex/RegexParser.h>
@@ -31,7 +31,7 @@ regex::Parser::Result Regex<Parser>::parse_pattern(StringView pattern, typename 
 }
 
 template<class Parser>
-Regex<Parser>::Regex(String pattern, typename ParserTraits<Parser>::OptionsType regex_options)
+Regex<Parser>::Regex(DeprecatedString pattern, typename ParserTraits<Parser>::OptionsType regex_options)
     : pattern_value(move(pattern))
 {
     regex::Lexer lexer(pattern_value);
@@ -45,7 +45,7 @@ Regex<Parser>::Regex(String pattern, typename ParserTraits<Parser>::OptionsType 
 }
 
 template<class Parser>
-Regex<Parser>::Regex(regex::Parser::Result parse_result, String pattern, typename ParserTraits<Parser>::OptionsType regex_options)
+Regex<Parser>::Regex(regex::Parser::Result parse_result, DeprecatedString pattern, typename ParserTraits<Parser>::OptionsType regex_options)
     : pattern_value(move(pattern))
     , parser_result(move(parse_result))
 {
@@ -87,16 +87,16 @@ typename ParserTraits<Parser>::OptionsType Regex<Parser>::options() const
 }
 
 template<class Parser>
-String Regex<Parser>::error_string(Optional<String> message) const
+DeprecatedString Regex<Parser>::error_string(Optional<DeprecatedString> message) const
 {
     StringBuilder eb;
-    eb.append("Error during parsing of regular expression:\n");
+    eb.append("Error during parsing of regular expression:\n"sv);
     eb.appendff("    {}\n    ", pattern_value);
     for (size_t i = 0; i < parser_result.error_token.position(); ++i)
         eb.append(' ');
 
     eb.appendff("^---- {}", message.value_or(get_error_string(parser_result.error)));
-    return eb.build();
+    return eb.to_deprecated_string();
 }
 
 template<typename Parser>
@@ -156,7 +156,7 @@ RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optiona
 
         for (size_t j = 0; j < c_match_preallocation_count; ++j) {
             state.matches.empend();
-            state.capture_group_matches.unchecked_append({});
+            state.capture_group_matches.empend();
             state.capture_group_matches.at(j).ensure_capacity(capture_groups_count);
             for (size_t k = 0; k < capture_groups_count; ++k)
                 state.capture_group_matches.at(j).unchecked_append({});
@@ -169,7 +169,7 @@ RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optiona
 
         VERIFY(start_position + state.string_position - start_position <= input.view.length());
         if (input.regex_options.has_flag_set(AllFlags::StringCopyMatches)) {
-            state.matches.at(input.match_index) = { input.view.substring_view(start_position, state.string_position - start_position).to_string(), input.line, start_position, input.global_offset + start_position };
+            state.matches.at(input.match_index) = { input.view.substring_view(start_position, state.string_position - start_position).to_deprecated_string(), input.line, start_position, input.global_offset + start_position };
         } else { // let the view point to the original string ...
             state.matches.at(input.match_index) = { input.view.substring_view(start_position, state.string_position - start_position), input.line, start_position, input.global_offset + start_position };
         }
@@ -222,6 +222,11 @@ RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optiona
                     // Nothing was *actually* matched, so append an empty match.
                     append_match(input, state, view_index);
                     ++match_count;
+
+                    // This prevents a regex pattern like ".*" from matching the empty string
+                    // multiple times, once in this block and once in the following for loop.
+                    if (view_index == 0 && view_length == 0)
+                        ++view_index;
                 }
             }
         }
@@ -306,8 +311,8 @@ RegexResult Matcher<Parser>::match(Vector<RegexStringView> const& views, Optiona
     RegexResult result {
         match_count != 0,
         match_count,
-        move(state.matches),
-        move(state.capture_group_matches),
+        move(state.matches).release(),
+        move(state.capture_group_matches).release(),
         operations,
         m_pattern->parser_result.capture_groups_count,
         m_pattern->parser_result.named_capture_groups_count,
@@ -415,7 +420,9 @@ template<class Parser>
 bool Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t& operations) const
 {
     BumpAllocatedLinkedList<MatchState> states_to_try_next;
+#if REGEX_DEBUG
     size_t recursion_level = 0;
+#endif
 
     auto& bytecode = m_pattern->parser_result.bytecode;
 
@@ -450,8 +457,6 @@ bool Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t
                         (*it) = state;
                         it->instruction_position = state.fork_at_position;
                         it->initiating_fork = *input.fork_to_replace;
-                        it->capture_group_matches = state.capture_group_matches;
-                        it->matches = state.matches;
                         found = true;
                         break;
                     }
@@ -483,7 +488,9 @@ bool Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t
                 states_to_try_next.last().initiating_fork = state.instruction_position - opcode.size();
             }
             state.instruction_position = state.fork_at_position;
+#if REGEX_DEBUG
             ++recursion_level;
+#endif
             continue;
         }
         case ExecutionResult::Continue:
@@ -501,7 +508,9 @@ bool Matcher<Parser>::execute(MatchInput const& input, MatchState& state, size_t
                 return false;
             }
             state = states_to_try_next.take_last();
+#if REGEX_DEBUG
             ++recursion_level;
+#endif
             continue;
         }
         }

@@ -16,7 +16,7 @@
 
 namespace PixelPaint {
 
-RefPtr<Guide> GuideTool::closest_guide(const Gfx::IntPoint& point)
+RefPtr<Guide> GuideTool::closest_guide(Gfx::IntPoint point)
 {
     auto guides = editor()->guides();
     Guide* closest_guide = nullptr;
@@ -24,15 +24,15 @@ RefPtr<Guide> GuideTool::closest_guide(const Gfx::IntPoint& point)
 
     for (auto& guide : guides) {
         int relevant_position = 0;
-        if (guide.orientation() == Guide::Orientation::Horizontal)
+        if (guide->orientation() == Guide::Orientation::Horizontal)
             relevant_position = point.y();
-        else if (guide.orientation() == Guide::Orientation::Vertical)
+        else if (guide->orientation() == Guide::Orientation::Vertical)
             relevant_position = point.x();
 
-        auto distance = abs(relevant_position - (int)guide.offset());
+        auto distance = abs(relevant_position - (int)guide->offset());
 
         if (distance < closest_guide_distance) {
-            closest_guide = &guide;
+            closest_guide = guide;
             closest_guide_distance = distance;
         }
     }
@@ -74,7 +74,7 @@ void GuideTool::on_mousedown(Layer*, MouseEvent& event)
 
     if (m_selected_guide) {
         m_guide_origin = m_selected_guide->offset();
-        GUI::Application::the()->show_tooltip_immediately(String::formatted("{}", m_guide_origin), GUI::Application::the()->tooltip_source_widget());
+        GUI::Application::the()->show_tooltip_immediately(DeprecatedString::formatted("{}", m_guide_origin), GUI::Application::the()->tooltip_source_widget());
     }
 }
 
@@ -91,7 +91,7 @@ void GuideTool::on_mouseup(Layer*, MouseEvent&)
         || (m_selected_guide->orientation() == Guide::Orientation::Horizontal && m_selected_guide->offset() > editor()->image().size().height())
         || (m_selected_guide->orientation() == Guide::Orientation::Vertical && m_selected_guide->offset() > editor()->image().size().width())) {
         editor()->remove_guide(*m_selected_guide);
-        editor()->layers_did_change();
+        editor()->update();
     }
 
     m_selected_guide = nullptr;
@@ -120,9 +120,9 @@ void GuideTool::on_mousemove(Layer*, MouseEvent& event)
 
     m_selected_guide->set_offset(new_offset);
 
-    GUI::Application::the()->show_tooltip_immediately(String::formatted("{}", new_offset), GUI::Application::the()->tooltip_source_widget());
+    GUI::Application::the()->show_tooltip_immediately(DeprecatedString::formatted("{}", new_offset), GUI::Application::the()->tooltip_source_widget());
 
-    editor()->layers_did_change();
+    editor()->update();
 }
 
 void GuideTool::on_context_menu(Layer*, GUI::ContextMenuEvent& event)
@@ -135,14 +135,14 @@ void GuideTool::on_context_menu(Layer*, GUI::ContextMenuEvent& event)
     if (!m_context_menu) {
         m_context_menu = GUI::Menu::construct();
         m_context_menu->add_action(GUI::Action::create(
-            "Set &Offset", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/gear.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+            "Set &Offset", Gfx::Bitmap::load_from_file("/res/icons/16x16/gear.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
                 if (!m_context_menu_guide)
                     return;
                 auto dialog = EditGuideDialog::construct(
                     editor()->window(),
-                    String::formatted("{}", m_context_menu_guide->offset()),
+                    DeprecatedString::formatted("{}", m_context_menu_guide->offset()),
                     m_context_menu_guide->orientation());
-                if (dialog->exec() != GUI::Dialog::ExecOK)
+                if (dialog->exec() != GUI::Dialog::ExecResult::OK)
                     return;
                 auto offset = dialog->offset_as_pixel(*editor());
                 if (!offset.has_value())
@@ -153,7 +153,7 @@ void GuideTool::on_context_menu(Layer*, GUI::ContextMenuEvent& event)
             },
             editor()));
         m_context_menu->add_action(GUI::Action::create(
-            "&Delete Guide", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/delete.png").release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+            "&Delete Guide", Gfx::Bitmap::load_from_file("/res/icons/16x16/delete.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
                 if (!m_context_menu_guide)
                     return;
                 editor()->remove_guide(*m_context_menu_guide);
@@ -176,29 +176,30 @@ void GuideTool::on_tool_activation()
         m_editor->set_guide_visibility(true);
 }
 
-GUI::Widget* GuideTool::get_properties_widget()
+ErrorOr<GUI::Widget*> GuideTool::get_properties_widget()
 {
     if (!m_properties_widget) {
-        m_properties_widget = GUI::Widget::construct();
-        m_properties_widget->set_layout<GUI::VerticalBoxLayout>();
+        auto properties_widget = TRY(GUI::Widget::try_create());
+        (void)TRY(properties_widget->try_set_layout<GUI::VerticalBoxLayout>());
 
-        auto& snapping_container = m_properties_widget->add<GUI::Widget>();
-        snapping_container.set_fixed_height(20);
-        snapping_container.set_layout<GUI::HorizontalBoxLayout>();
+        auto snapping_container = TRY(properties_widget->try_add<GUI::Widget>());
+        snapping_container->set_fixed_height(20);
+        (void)TRY(snapping_container->try_set_layout<GUI::HorizontalBoxLayout>());
 
-        auto& snapping_label = snapping_container.add<GUI::Label>("Snap offset:");
-        snapping_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        snapping_label.set_fixed_size(80, 20);
-        snapping_label.set_tooltip("Press Shift to snap");
+        auto snapping_label = TRY(snapping_container->try_add<GUI::Label>("Snap offset:"));
+        snapping_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        snapping_label->set_fixed_size(80, 20);
+        snapping_label->set_tooltip("Press Shift to snap");
 
-        auto& snapping_slider = snapping_container.add<GUI::ValueSlider>(Orientation::Horizontal, "px");
-        snapping_slider.set_range(0, 50);
-        snapping_slider.set_value(m_snap_size);
+        auto snapping_slider = TRY(snapping_container->try_add<GUI::ValueSlider>(Orientation::Horizontal, "px"_short_string));
+        snapping_slider->set_range(0, 50);
+        snapping_slider->set_value(m_snap_size);
 
-        snapping_slider.on_change = [&](int value) {
+        snapping_slider->on_change = [this](int value) {
             m_snap_size = value;
         };
-        set_primary_slider(&snapping_slider);
+        set_primary_slider(snapping_slider);
+        m_properties_widget = properties_widget;
     }
 
     return m_properties_widget.ptr();

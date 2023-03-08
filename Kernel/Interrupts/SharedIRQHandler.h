@@ -7,10 +7,10 @@
 #pragma once
 
 #include <AK/NonnullOwnPtr.h>
-#include <AK/RefPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Arch/IRQController.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
-#include <Kernel/Interrupts/IRQController.h>
+#include <Kernel/Library/LockRefPtr.h>
 
 namespace Kernel {
 class IRQHandler;
@@ -18,7 +18,7 @@ class SharedIRQHandler final : public GenericInterruptHandler {
 public:
     static void initialize(u8 interrupt_number);
     virtual ~SharedIRQHandler();
-    virtual bool handle_interrupt(const RegisterState& regs) override;
+    virtual bool handle_interrupt(RegisterState const& regs) override;
 
     void register_handler(GenericInterruptHandler&);
     void unregister_handler(GenericInterruptHandler&);
@@ -41,6 +41,6 @@ private:
     explicit SharedIRQHandler(u8 interrupt_number);
     bool m_enabled { true };
     GenericInterruptHandler::List m_handlers;
-    RefPtr<IRQController> m_responsible_irq_controller;
+    NonnullLockRefPtr<IRQController> m_responsible_irq_controller;
 };
 }

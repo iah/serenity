@@ -10,22 +10,31 @@
 
 #include "Calculator.h"
 #include "Keypad.h"
-#include "KeypadValue.h"
 #include <AK/Vector.h>
+#include <LibCrypto/BigFraction/BigFraction.h>
+#include <LibGUI/Action.h>
 #include <LibGUI/Widget.h>
 
 class CalculatorWidget final : public GUI::Widget {
     C_OBJECT(CalculatorWidget)
 public:
     virtual ~CalculatorWidget() override = default;
-    String get_entry();
-    void set_entry(KeypadValue);
+    DeprecatedString get_entry();
+    void set_entry(Crypto::BigFraction);
+    void set_typed_entry(Crypto::BigFraction);
+
+    void shrink(unsigned);
+    unsigned rounding_length() const;
+    void set_rounding_length(unsigned);
+
+    void set_rounding_custom(GUI::Action& action, StringView);
 
 private:
     CalculatorWidget();
     void add_operation_button(GUI::Button&, Calculator::Operation);
     void add_digit_button(GUI::Button&, int digit);
 
+    void perform_operation(Calculator::Operation operation);
     void update_display();
 
     virtual void keydown_event(GUI::KeyEvent&) override;
@@ -54,4 +63,7 @@ private:
     RefPtr<GUI::Button> m_inverse_button;
     RefPtr<GUI::Button> m_percent_button;
     RefPtr<GUI::Button> m_equals_button;
+
+    StringView m_format;
+    RefPtr<GUI::Action> m_rounding_custom;
 };

@@ -7,15 +7,17 @@
 
 #include "Editor.h"
 #include "Debugger/Debugger.h"
-#include "Debugger/EvaluateExpressionDialog.h"
 #include "EditorWrapper.h"
 #include "HackStudio.h"
 #include "Language.h"
 #include <AK/ByteBuffer.h>
 #include <AK/Debug.h>
+#include <AK/JsonParser.h>
 #include <AK/LexicalPath.h>
+#include <LibCMake/SyntaxHighlighter.h>
+#include <LibConfig/Client.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/DirIterator.h>
-#include <LibCore/File.h>
 #include <LibCore/Timer.h>
 #include <LibCpp/SemanticSyntaxHighlighter.h>
 #include <LibCpp/SyntaxHighlighter.h>
@@ -37,17 +39,25 @@
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
-#include <LibWeb/OutOfProcessWebView.h>
+#include <LibWebView/OutOfProcessWebView.h>
 #include <Shell/SyntaxHighlighter.h>
 #include <fcntl.h>
 
 namespace HackStudio {
 
+enum class TooltipRole {
+    Documentation,
+    ParametersHint,
+};
+
+static RefPtr<GUI::Window> s_tooltip_window;
+static RefPtr<WebView::OutOfProcessWebView> s_tooltip_page_view;
+static Optional<TooltipRole> m_tooltip_role;
+
 ErrorOr<NonnullRefPtr<Editor>> Editor::try_create()
 {
     NonnullRefPtr<Editor> editor = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Editor()));
-    TRY(editor->initialize_documentation_tooltip());
-    TRY(editor->initialize_parameters_hint_tooltip());
+    TRY(initialize_tooltip_window());
     return editor;
 }
 
@@ -56,44 +66,36 @@ Editor::Editor()
     create_tokens_info_timer();
 
     set_document(CodeDocument::create());
-    m_evaluate_expression_action = GUI::Action::create("Evaluate expression", { Mod_Ctrl, Key_E }, [this](auto&) {
-        VERIFY(is_program_running());
-        auto dialog = EvaluateExpressionDialog::construct(window());
-        dialog->exec();
-    });
     m_move_execution_to_line_action = GUI::Action::create("Set execution point to line", [this](auto&) {
         VERIFY(is_program_running());
         auto success = Debugger::the().set_execution_position(currently_open_file(), cursor().line());
         if (success) {
             set_execution_position(cursor().line());
         } else {
-            GUI::MessageBox::show(window(), "Failed to set execution position", "Error", GUI::MessageBox::Type::Error);
+            GUI::MessageBox::show(window(), "Failed to set execution position"sv, "Error"sv, GUI::MessageBox::Type::Error);
         }
     });
 
     set_debug_mode(false);
 
-    add_custom_context_menu_action(*m_evaluate_expression_action);
     add_custom_context_menu_action(*m_move_execution_to_line_action);
 
     set_gutter_visible(true);
+
+    if (Config::read_string("HackStudio"sv, "Global"sv, "DocumentationSearchPaths"sv).is_empty()) {
+        Config::write_string("HackStudio"sv, "Global"sv, "DocumentationSearchPaths"sv, "[\"/usr/share/man/man2\", \"/usr/share/man/man3\"]"sv);
+    }
 }
 
-ErrorOr<void> Editor::initialize_documentation_tooltip()
+ErrorOr<void> Editor::initialize_tooltip_window()
 {
-    m_documentation_tooltip_window = GUI::Window::construct();
-    m_documentation_tooltip_window->set_rect(0, 0, 500, 400);
-    m_documentation_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
-    m_documentation_page_view = TRY(m_documentation_tooltip_window->try_set_main_widget<Web::OutOfProcessWebView>());
-    return {};
-}
-
-ErrorOr<void> Editor::initialize_parameters_hint_tooltip()
-{
-    m_parameters_hint_tooltip_window = GUI::Window::construct();
-    m_parameters_hint_tooltip_window->set_rect(0, 0, 280, 35);
-    m_parameters_hint_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
-    m_parameter_hint_page_view = TRY(m_parameters_hint_tooltip_window->try_set_main_widget<Web::OutOfProcessWebView>());
+    if (s_tooltip_window.is_null()) {
+        s_tooltip_window = GUI::Window::construct();
+        s_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
+    }
+    if (s_tooltip_page_view.is_null()) {
+        s_tooltip_page_view = TRY(s_tooltip_window->set_main_widget<WebView::OutOfProcessWebView>());
+    }
     return {};
 }
 
@@ -101,14 +103,13 @@ EditorWrapper& Editor::wrapper()
 {
     return static_cast<EditorWrapper&>(*parent());
 }
-const EditorWrapper& Editor::wrapper() const
+EditorWrapper const& Editor::wrapper() const
 {
-    return static_cast<const EditorWrapper&>(*parent());
+    return static_cast<EditorWrapper const&>(*parent());
 }
 
 void Editor::focusin_event(GUI::FocusEvent& event)
 {
-    wrapper().set_editor_has_focus({}, true);
     if (on_focus)
         on_focus();
     GUI::TextEditor::focusin_event(event);
@@ -116,13 +117,12 @@ void Editor::focusin_event(GUI::FocusEvent& event)
 
 void Editor::focusout_event(GUI::FocusEvent& event)
 {
-    wrapper().set_editor_has_focus({}, false);
     GUI::TextEditor::focusout_event(event);
 }
 
 Gfx::IntRect Editor::gutter_icon_rect(size_t line_number) const
 {
-    return gutter_content_rect(line_number).translated(ruler_width() + gutter_width() + frame_thickness(), -vertical_scrollbar().value());
+    return gutter_content_rect(line_number).translated(frame_thickness(), 0);
 }
 
 void Editor::paint_event(GUI::PaintEvent& event)
@@ -149,11 +149,11 @@ void Editor::paint_event(GUI::PaintEvent& event)
             if (line < first_visible_line || line > last_visible_line) {
                 continue;
             }
-            const auto& icon = breakpoint_icon_bitmap();
+            auto const& icon = breakpoint_icon_bitmap();
             painter.blit(gutter_icon_rect(line).top_left(), icon, icon.rect());
         }
         if (execution_position().has_value()) {
-            const auto& icon = current_position_icon_bitmap();
+            auto const& icon = current_position_icon_bitmap();
             painter.blit(gutter_icon_rect(execution_position().value()).top_left(), icon, icon.rect());
         }
 
@@ -170,13 +170,13 @@ void Editor::paint_event(GUI::PaintEvent& event)
                     if (line < first_visible_line || line > last_visible_line) {
                         continue;
                     }
-                    char const* sign = (line_offset < deletions) ? "!" : "+";
+                    auto sign = (line_offset < deletions) ? "!"sv : "+"sv;
                     painter.draw_text(gutter_icon_rect(line), sign, font(), Gfx::TextAlignment::Center);
                 }
                 if (additions < deletions) {
                     auto deletions_line = min(finish_line, line_count() - 1);
                     if (deletions_line <= last_visible_line) {
-                        painter.draw_text(gutter_icon_rect(deletions_line), "-", font(), Gfx::TextAlignment::Center);
+                        painter.draw_text(gutter_icon_rect(deletions_line), "-"sv, font(), Gfx::TextAlignment::Center);
                     }
                 }
             }
@@ -184,60 +184,78 @@ void Editor::paint_event(GUI::PaintEvent& event)
     }
 }
 
-static HashMap<String, String>& man_paths()
+static HashMap<DeprecatedString, DeprecatedString>& man_paths()
 {
-    static HashMap<String, String> paths;
+    static HashMap<DeprecatedString, DeprecatedString> paths;
     if (paths.is_empty()) {
-        // FIXME: This should also search man3, possibly other places..
-        Core::DirIterator it("/usr/share/man/man2", Core::DirIterator::Flags::SkipDots);
-        while (it.has_next()) {
-            auto path = it.next_full_path();
-            auto title = LexicalPath::title(path);
-            paths.set(title, path);
+        auto json = Config::read_string("HackStudio"sv, "Global"sv, "DocumentationSearchPaths"sv);
+        AK::JsonParser parser(json);
+
+        auto value_or_error = parser.parse();
+        if (value_or_error.is_error())
+            return paths;
+
+        auto value = value_or_error.release_value();
+        if (!value.is_array())
+            return paths;
+
+        for (auto& json_value : value.as_array().values()) {
+            if (!json_value.is_string())
+                continue;
+
+            Core::DirIterator it(json_value.as_string(), Core::DirIterator::Flags::SkipDots);
+            while (it.has_next()) {
+                auto path = it.next_full_path();
+                auto title = LexicalPath::title(path);
+                paths.set(title, path);
+            }
         }
     }
 
     return paths;
 }
 
-void Editor::show_documentation_tooltip_if_available(const String& hovered_token, const Gfx::IntPoint& screen_location)
+void Editor::show_documentation_tooltip_if_available(DeprecatedString const& hovered_token, Gfx::IntPoint screen_location)
 {
     auto it = man_paths().find(hovered_token);
     if (it == man_paths().end()) {
         dbgln_if(EDITOR_DEBUG, "no man path for {}", hovered_token);
-        m_documentation_tooltip_window->hide();
+        if (m_tooltip_role == TooltipRole::Documentation) {
+            s_tooltip_window->hide();
+            m_tooltip_role.clear();
+        }
         return;
     }
 
-    if (m_documentation_tooltip_window->is_visible() && hovered_token == m_last_parsed_token) {
+    if (s_tooltip_window->is_visible() && m_tooltip_role == TooltipRole::Documentation && hovered_token == m_last_parsed_token) {
         return;
     }
 
     dbgln_if(EDITOR_DEBUG, "opening {}", it->value);
-    auto file = Core::File::construct(it->value);
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        dbgln("failed to open {}, {}", it->value, file->error_string());
+    auto file_or_error = Core::File::open(it->value, Core::File::OpenMode::Read);
+    if (file_or_error.is_error()) {
+        dbgln("Failed to open {}, {}", it->value, file_or_error.error());
         return;
     }
 
-    auto man_document = Markdown::Document::parse(file->read_all());
+    auto buffer_or_error = file_or_error.release_value()->read_until_eof();
+    if (buffer_or_error.is_error()) {
+        dbgln("Couldn't read file: {}", buffer_or_error.error());
+        return;
+    }
 
+    auto man_document = Markdown::Document::parse(buffer_or_error.release_value());
     if (!man_document) {
         dbgln("failed to parse markdown");
         return;
     }
 
-    StringBuilder html;
-    // FIXME: With the InProcessWebView we used to manipulate the document body directly,
-    // With OutOfProcessWebView this isn't possible (at the moment). The ideal solution
-    // is probably to tweak Markdown::Document::render_to_html() so we can inject styles
-    // into the rendered HTML easily.
-    html.append(man_document->render_to_html());
-    html.append("<style>body { background-color: #dac7b5; }</style>");
-    m_documentation_page_view->load_html(html.build(), {});
+    s_tooltip_page_view->load_html(man_document->render_to_html("<style>body { background-color: #dac7b5; }</style>"sv), {});
 
-    m_documentation_tooltip_window->move_to(screen_location.translated(4, 4));
-    m_documentation_tooltip_window->show();
+    s_tooltip_window->set_rect(0, 0, 500, 400);
+    s_tooltip_window->move_to(screen_location.translated(4, 4));
+    m_tooltip_role = TooltipRole::Documentation;
+    s_tooltip_window->show();
 
     m_last_parsed_token = hovered_token;
 }
@@ -250,8 +268,9 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
         return;
 
     auto text_position = text_position_at(event.position());
-    if (!text_position.is_valid()) {
-        m_documentation_tooltip_window->hide();
+    if (!text_position.is_valid() && m_tooltip_role == TooltipRole::Documentation) {
+        s_tooltip_window->hide();
+        m_tooltip_role.clear();
         return;
     }
 
@@ -259,7 +278,7 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
     if (!highlighter)
         return;
 
-    bool hide_tooltip = true;
+    bool hide_tooltip = (m_tooltip_role == TooltipRole::Documentation);
     bool is_over_clickable = false;
 
     auto ruler_line_rect = ruler_content_rect(text_position.line());
@@ -279,11 +298,8 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
         }
 
         if (span.range.contains(text_position)) {
-            auto adjusted_range = span.range;
-            auto end_line_length = document().line(span.range.end().line()).length();
-            adjusted_range.end().set_column(min(end_line_length, adjusted_range.end().column() + 1));
-            auto hovered_span_text = document().text_in_range(adjusted_range);
-            dbgln_if(EDITOR_DEBUG, "Hovering: {} \"{}\"", adjusted_range, hovered_span_text);
+            auto hovered_span_text = document().text_in_range(span.range);
+            dbgln_if(EDITOR_DEBUG, "Hovering: {} \"{}\"", span.range, hovered_span_text);
 
             if (is_clickable) {
                 is_over_clickable = true;
@@ -302,15 +318,20 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
     }
 
     m_previous_text_position = text_position;
-    if (hide_tooltip)
-        m_documentation_tooltip_window->hide();
+    if (hide_tooltip) {
+        s_tooltip_window->hide();
+        m_tooltip_role.clear();
+    }
 
     m_hovering_clickable = (is_over_clickable) && (event.modifiers() & Mod_Ctrl);
 }
 
 void Editor::mousedown_event(GUI::MouseEvent& event)
 {
-    m_parameters_hint_tooltip_window->hide();
+    if (m_tooltip_role == TooltipRole::ParametersHint) {
+        s_tooltip_window->hide();
+        m_tooltip_role.clear();
+    }
 
     auto highlighter = wrapper().editor().syntax_highlighter();
     if (!highlighter) {
@@ -323,10 +344,10 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
     if (event.button() == GUI::MouseButton::Primary && event.position().x() < ruler_line_rect.width()) {
         if (!breakpoint_lines().contains_slow(text_position.line())) {
             breakpoint_lines().append(text_position.line());
-            Debugger::the().on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
+            Debugger::the().on_breakpoint_change(wrapper().filename_title(), text_position.line(), BreakpointChange::Added);
         } else {
             breakpoint_lines().remove_first_matching([&](size_t line) { return line == text_position.line(); });
-            Debugger::the().on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
+            Debugger::the().on_breakpoint_change(wrapper().filename_title(), text_position.line(), BreakpointChange::Removed);
         }
     }
 
@@ -354,6 +375,13 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
     GUI::TextEditor::mousedown_event(event);
 }
 
+void Editor::drag_enter_event(GUI::DragEvent& event)
+{
+    auto const& mime_types = event.mime_types();
+    if (mime_types.contains_slow("text/uri-list"))
+        event.accept();
+}
+
 void Editor::drop_event(GUI::DropEvent& event)
 {
     event.accept();
@@ -364,7 +392,7 @@ void Editor::drop_event(GUI::DropEvent& event)
             return;
         window()->move_to_front();
         if (urls.size() > 1) {
-            GUI::MessageBox::show(window(), "HackStudio can only open one file at a time!", "One at a time please!", GUI::MessageBox::Type::Error);
+            GUI::MessageBox::show(window(), "HackStudio can only open one file at a time!"sv, "One at a time please!"sv, GUI::MessageBox::Type::Error);
             return;
         }
         set_current_editor_wrapper(static_cast<EditorWrapper*>(parent()));
@@ -384,15 +412,15 @@ void Editor::leave_event(Core::Event& event)
     GUI::TextEditor::leave_event(event);
 }
 
-static HashMap<String, String>& include_paths()
+static HashMap<DeprecatedString, DeprecatedString>& include_paths()
 {
-    static HashMap<String, String> paths;
+    static HashMap<DeprecatedString, DeprecatedString> paths;
 
-    auto add_directory = [](String base, Optional<String> recursive, auto handle_directory) -> void {
+    auto add_directory = [](DeprecatedString base, Optional<DeprecatedString> recursive, auto handle_directory) -> void {
         Core::DirIterator it(recursive.value_or(base), Core::DirIterator::Flags::SkipDots);
         while (it.has_next()) {
             auto path = it.next_full_path();
-            if (!Core::File::is_directory(path)) {
+            if (!Core::DeprecatedFile::is_directory(path)) {
                 auto key = path.substring(base.length() + 1, path.length() - base.length() - 1);
                 dbgln_if(EDITOR_DEBUG, "Adding header \"{}\" in path \"{}\"", key, path);
                 paths.set(key, path);
@@ -412,7 +440,7 @@ static HashMap<String, String>& include_paths()
     return paths;
 }
 
-void Editor::navigate_to_include_if_available(String path)
+void Editor::navigate_to_include_if_available(DeprecatedString path)
 {
     auto it = include_paths().find(path);
     if (it == include_paths().end()) {
@@ -440,28 +468,28 @@ void Editor::clear_execution_position()
     update(gutter_icon_rect(previous_position));
 }
 
-const Gfx::Bitmap& Editor::breakpoint_icon_bitmap()
+Gfx::Bitmap const& Editor::breakpoint_icon_bitmap()
 {
-    static auto bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/breakpoint.png").release_value_but_fixme_should_propagate_errors();
+    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/breakpoint.png"sv).release_value_but_fixme_should_propagate_errors();
     return *bitmap;
 }
 
-const Gfx::Bitmap& Editor::current_position_icon_bitmap()
+Gfx::Bitmap const& Editor::current_position_icon_bitmap()
 {
-    static auto bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-forward.png").release_value_but_fixme_should_propagate_errors();
+    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png"sv).release_value_but_fixme_should_propagate_errors();
     return *bitmap;
 }
 
-const CodeDocument& Editor::code_document() const
+CodeDocument const& Editor::code_document() const
 {
-    const auto& doc = document();
+    auto const& doc = document();
     VERIFY(doc.is_code_document());
-    return static_cast<const CodeDocument&>(doc);
+    return static_cast<CodeDocument const&>(doc);
 }
 
 CodeDocument& Editor::code_document()
 {
-    return const_cast<CodeDocument&>(static_cast<const Editor&>(*this).code_document());
+    return const_cast<CodeDocument&>(static_cast<Editor const&>(*this).code_document());
 }
 
 void Editor::set_document(GUI::TextDocument& doc)
@@ -506,7 +534,7 @@ Optional<Editor::AutoCompleteRequestData> Editor::get_autocomplete_request_data(
     return Editor::AutoCompleteRequestData { cursor() };
 }
 
-void Editor::LanguageServerAidedAutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> callback)
+void Editor::LanguageServerAidedAutocompleteProvider::provide_completions(Function<void(Vector<CodeComprehension::AutocompleteResultEntry>)> callback)
 {
     auto& editor = static_cast<Editor&>(*m_editor).wrapper().editor();
     auto data = editor.get_autocomplete_request_data();
@@ -587,7 +615,7 @@ void Editor::on_identifier_click(const GUI::TextDocumentSpan& span)
     if (!m_language_client)
         return;
 
-    m_language_client->on_declaration_found = [](const String& file, size_t line, size_t column) {
+    m_language_client->on_declaration_found = [](DeprecatedString const& file, size_t line, size_t column) {
         HackStudio::open_file(file, line, column);
     };
     m_language_client->search_declaration(code_document().file_path(), span.range.start().line(), span.range.start().column());
@@ -598,7 +626,7 @@ void Editor::set_cursor(const GUI::TextPosition& a_position)
     TextEditor::set_cursor(a_position);
 }
 
-void Editor::set_syntax_highlighter_for(const CodeDocument& document)
+void Editor::set_syntax_highlighter_for(CodeDocument const& document)
 {
     switch (document.language()) {
     case Language::Cpp:
@@ -609,6 +637,9 @@ void Editor::set_syntax_highlighter_for(const CodeDocument& document)
         } else
             set_syntax_highlighter(make<Cpp::SyntaxHighlighter>());
 
+        break;
+    case Language::CMake:
+        set_syntax_highlighter(make<CMake::SyntaxHighlighter>());
         break;
     case Language::CSS:
         set_syntax_highlighter(make<Web::CSS::SyntaxHighlighter>());
@@ -652,19 +683,19 @@ void Editor::set_autocomplete_provider_for(CodeDocument const& document)
     }
 }
 
-void Editor::set_language_client_for(const CodeDocument& document)
+void Editor::set_language_client_for(CodeDocument const& document)
 {
     if (m_language_client && m_language_client->language() == document.language())
         return;
 
     if (document.language() == Language::Cpp)
-        m_language_client = get_language_client<LanguageClients::Cpp::ServerConnection>(project().root_path());
+        m_language_client = get_language_client<LanguageClients::Cpp::ConnectionToServer>(project().root_path());
 
     if (document.language() == Language::Shell)
-        m_language_client = get_language_client<LanguageClients::Shell::ServerConnection>(project().root_path());
+        m_language_client = get_language_client<LanguageClients::Shell::ConnectionToServer>(project().root_path());
 
     if (m_language_client) {
-        m_language_client->on_tokens_info_result = [this](Vector<GUI::AutocompleteProvider::TokenInfo> const& tokens_info) {
+        m_language_client->on_tokens_info_result = [this](Vector<CodeComprehension::TokenInfo> const& tokens_info) {
             on_tokens_info_result(tokens_info);
         };
     }
@@ -674,7 +705,10 @@ void Editor::keydown_event(GUI::KeyEvent& event)
 {
     TextEditor::keydown_event(event);
 
-    m_parameters_hint_tooltip_window->hide();
+    if (m_tooltip_role == TooltipRole::ParametersHint) {
+        s_tooltip_window->hide();
+        m_tooltip_role.clear();
+    }
 
     if (!event.shift() && !event.alt() && event.ctrl() && event.key() == KeyCode::Key_P) {
         handle_function_parameters_hint_request();
@@ -688,32 +722,34 @@ void Editor::handle_function_parameters_hint_request()
     if (!m_language_client)
         return;
 
-    m_language_client->on_function_parameters_hint_result = [this](Vector<String> const& params, size_t argument_index) {
+    m_language_client->on_function_parameters_hint_result = [this](Vector<DeprecatedString> const& params, size_t argument_index) {
         dbgln("on_function_parameters_hint_result");
 
         StringBuilder html;
         for (size_t i = 0; i < params.size(); ++i) {
             if (i == argument_index)
-                html.append("<b>");
+                html.append("<b>"sv);
 
             html.appendff("{}", params[i]);
 
             if (i == argument_index)
-                html.append("</b>");
+                html.append("</b>"sv);
 
             if (i < params.size() - 1)
-                html.append(", ");
+                html.append(", "sv);
         }
-        html.append("<style>body { background-color: #dac7b5; }</style>");
+        html.append("<style>body { background-color: #dac7b5; }</style>"sv);
 
-        m_parameter_hint_page_view->load_html(html.build(), {});
+        s_tooltip_page_view->load_html(html.to_deprecated_string(), {});
 
         auto cursor_rect = current_editor().cursor_content_rect().location().translated(screen_relative_rect().location());
 
-        Gfx::Rect content(cursor_rect.x(), cursor_rect.y(), m_parameter_hint_page_view->children_clip_rect().width(), m_parameter_hint_page_view->children_clip_rect().height());
-        m_parameters_hint_tooltip_window->move_to(cursor_rect.x(), cursor_rect.y() - m_parameters_hint_tooltip_window->height() - vertical_scrollbar().value());
+        Gfx::Rect content(cursor_rect.x(), cursor_rect.y(), s_tooltip_page_view->children_clip_rect().width(), s_tooltip_page_view->children_clip_rect().height());
 
-        m_parameters_hint_tooltip_window->show();
+        m_tooltip_role = TooltipRole::ParametersHint;
+        s_tooltip_window->set_rect(0, 0, 280, 35);
+        s_tooltip_window->move_to(cursor_rect.x(), cursor_rect.y() - s_tooltip_window->height() - vertical_scrollbar().value());
+        s_tooltip_window->show();
     };
 
     m_language_client->get_parameters_hint(
@@ -724,7 +760,6 @@ void Editor::handle_function_parameters_hint_request()
 
 void Editor::set_debug_mode(bool enabled)
 {
-    m_evaluate_expression_action->set_enabled(enabled);
     m_move_execution_to_line_action->set_enabled(enabled);
 }
 
@@ -738,7 +773,7 @@ void Editor::on_token_info_timer_tick()
     m_language_client->get_tokens_info(code_document().file_path());
 }
 
-void Editor::on_tokens_info_result(Vector<GUI::AutocompleteProvider::TokenInfo> const& tokens_info)
+void Editor::on_tokens_info_result(Vector<CodeComprehension::TokenInfo> const& tokens_info)
 {
     auto highlighter = syntax_highlighter();
     if (highlighter && highlighter->is_cpp_semantic_highlighter()) {
@@ -754,7 +789,7 @@ void Editor::create_tokens_info_timer()
     m_tokens_info_timer = Core::Timer::create_repeating((int)token_info_timer_interval_ms, [this] {
         on_token_info_timer_tick();
         m_tokens_info_timer->stop();
-    });
+    }).release_value_but_fixme_should_propagate_errors();
     m_tokens_info_timer->start();
 }
 

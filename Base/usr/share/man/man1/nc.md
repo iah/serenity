@@ -14,8 +14,6 @@ Network cat: Connect to network sockets as if it were a file.
 
 ## Options:
 
-* `--help`: Display help message and exit
-* `--version`: Print version
 * `-l`, `--listen`: Listen instead of connecting
 * `-v`, `--verbose`: Log everything that's happening
 * `-u`, `--udp`: UDP mode

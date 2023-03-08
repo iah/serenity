@@ -15,7 +15,9 @@ namespace ELF {
 class DynamicLinker {
 public:
     static Optional<DynamicObject::SymbolLookupResult> lookup_global_symbol(StringView symbol);
-    [[noreturn]] static void linker_main(String&& main_program_name, int fd, bool is_secure, int argc, char** argv, char** envp);
+    [[noreturn]] static void linker_main(DeprecatedString&& main_program_path, int fd, bool is_secure, int argc, char** argv, char** envp);
+
+    static Optional<DeprecatedString> resolve_library(DeprecatedString const& name, DynamicObject const& parent_object);
 
 private:
     DynamicLinker() = delete;

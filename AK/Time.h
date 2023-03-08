@@ -11,20 +11,22 @@
 #include <AK/Platform.h>
 #include <AK/Types.h>
 
-// Kernel and Userspace pull in the definitions from different places.
-// Avoid trying to figure out which one.
-struct timeval;
-struct timespec;
+#if defined(AK_OS_SERENITY) && defined(KERNEL)
+#    include <Kernel/API/POSIX/sys/time.h>
+#    include <Kernel/API/POSIX/time.h>
+#else
+#    include <sys/time.h>
+#    include <time.h>
+#endif
 
 namespace AK {
 
 // Concept to detect types which look like timespec without requiring the type.
 template<typename T>
-concept TimeSpecType = requires(T t)
-{
-    t.tv_sec;
-    t.tv_nsec;
-};
+concept TimeSpecType = requires(T t) {
+                           t.tv_sec;
+                           t.tv_nsec;
+                       };
 
 constexpr bool is_leap_year(int year)
 {
@@ -63,17 +65,50 @@ constexpr int days_in_year(int year)
     return 365 + (is_leap_year(year) ? 1 : 0);
 }
 
-constexpr int years_to_days_since_epoch(int year)
+namespace Detail {
+// Integer division rounding towards negative infinity.
+// TODO: This feels like there should be an easier way to do this.
+template<int divisor>
+constexpr i64 floor_div_by(i64 dividend)
 {
-    int days = 0;
-    for (int current_year = 1970; current_year < year; ++current_year)
-        days += days_in_year(current_year);
-    for (int current_year = year; current_year < 1970; ++current_year)
-        days -= days_in_year(current_year);
-    return days;
+    static_assert(divisor > 1);
+    int is_negative = dividend < 0;
+    return (dividend + is_negative) / divisor - is_negative;
 }
 
-constexpr int days_since_epoch(int year, int month, int day)
+// Counts how many integers n are in the interval [begin, end) with n % positive_mod == 0.
+// NOTE: "end" is not considered to be part of the range, hence "[begin, end)".
+template<int positive_mod>
+constexpr i64 mod_zeros_in_range(i64 begin, i64 end)
+{
+    return floor_div_by<positive_mod>(end - 1) - floor_div_by<positive_mod>(begin - 1);
+}
+}
+
+constexpr i64 years_to_days_since_epoch(int year)
+{
+    int begin_year, end_year, leap_sign;
+    if (year < 1970) {
+        begin_year = year;
+        end_year = 1970;
+        leap_sign = -1;
+    } else {
+        begin_year = 1970;
+        end_year = year;
+        leap_sign = +1;
+    }
+    i64 year_i64 = year;
+    // This duplicates the logic of 'is_leap_year', with the advantage of not needing any loops.
+    // Given that the definition of leap years is not expected to change, this should be a good trade-off.
+    i64 days = 365 * (year_i64 - 1970);
+    i64 extra_leap_days = 0;
+    extra_leap_days += Detail::mod_zeros_in_range<4>(begin_year, end_year);
+    extra_leap_days -= Detail::mod_zeros_in_range<100>(begin_year, end_year);
+    extra_leap_days += Detail::mod_zeros_in_range<400>(begin_year, end_year);
+    return days + extra_leap_days * leap_sign;
+}
+
+constexpr i64 days_since_epoch(int year, int month, int day)
 {
     return years_to_days_since_epoch(year) + day_of_year(year, month, day);
 }
@@ -106,8 +141,8 @@ constexpr i64 seconds_since_epoch_to_year(i64 seconds)
 class Time {
 public:
     Time() = default;
-    Time(const Time&) = default;
-    Time& operator=(const Time&) = default;
+    Time(Time const&) = default;
+    Time& operator=(Time const&) = default;
 
     Time(Time&& other)
         : m_seconds(exchange(other.m_seconds, 0))
@@ -187,6 +222,7 @@ public:
         i64 seconds = sane_mod(milliseconds, 1'000);
         return Time(seconds, milliseconds * 1'000'000);
     }
+    [[nodiscard]] static Time from_ticks(clock_t, time_t);
     [[nodiscard]] static Time from_timespec(const struct timespec&);
     [[nodiscard]] static Time from_timeval(const struct timeval&);
     // We don't pull in <stdint.h> for the pretty min/max definitions because this file is also included in the Kernel
@@ -217,16 +253,24 @@ public:
     [[nodiscard]] bool is_zero() const { return (m_seconds == 0) && (m_nanoseconds == 0); }
     [[nodiscard]] bool is_negative() const { return m_seconds < 0; }
 
-    bool operator==(const Time& other) const { return this->m_seconds == other.m_seconds && this->m_nanoseconds == other.m_nanoseconds; }
-    bool operator!=(const Time& other) const { return !(*this == other); }
-    Time operator+(const Time& other) const;
-    Time& operator+=(const Time& other);
-    Time operator-(const Time& other) const;
-    Time& operator-=(const Time& other);
-    bool operator<(const Time& other) const;
-    bool operator<=(const Time& other) const;
-    bool operator>(const Time& other) const;
-    bool operator>=(const Time& other) const;
+    Time operator+(Time const& other) const;
+    Time& operator+=(Time const& other);
+    Time operator-(Time const& other) const;
+    Time& operator-=(Time const& other);
+
+    constexpr bool operator==(Time const& other) const = default;
+    constexpr int operator<=>(Time const& other) const
+    {
+        if (int cmp = (m_seconds > other.m_seconds ? 1 : m_seconds < other.m_seconds ? -1
+                                                                                     : 0);
+            cmp != 0)
+            return cmp;
+        if (int cmp = (m_nanoseconds > other.m_nanoseconds ? 1 : m_nanoseconds < other.m_nanoseconds ? -1
+                                                                                                     : 0);
+            cmp != 0)
+            return cmp;
+        return 0;
+    }
 
 private:
     constexpr explicit Time(i64 seconds, u32 nanoseconds)
@@ -242,7 +286,7 @@ private:
 };
 
 template<typename TimevalType>
-inline void timeval_sub(const TimevalType& a, const TimevalType& b, TimevalType& result)
+inline void timeval_sub(TimevalType const& a, TimevalType const& b, TimevalType& result)
 {
     result.tv_sec = a.tv_sec - b.tv_sec;
     result.tv_usec = a.tv_usec - b.tv_usec;
@@ -253,7 +297,7 @@ inline void timeval_sub(const TimevalType& a, const TimevalType& b, TimevalType&
 }
 
 template<typename TimevalType>
-inline void timeval_add(const TimevalType& a, const TimevalType& b, TimevalType& result)
+inline void timeval_add(TimevalType const& a, TimevalType const& b, TimevalType& result)
 {
     result.tv_sec = a.tv_sec + b.tv_sec;
     result.tv_usec = a.tv_usec + b.tv_usec;
@@ -264,7 +308,7 @@ inline void timeval_add(const TimevalType& a, const TimevalType& b, TimevalType&
 }
 
 template<typename TimespecType>
-inline void timespec_sub(const TimespecType& a, const TimespecType& b, TimespecType& result)
+inline void timespec_sub(TimespecType const& a, TimespecType const& b, TimespecType& result)
 {
     result.tv_sec = a.tv_sec - b.tv_sec;
     result.tv_nsec = a.tv_nsec - b.tv_nsec;
@@ -275,7 +319,7 @@ inline void timespec_sub(const TimespecType& a, const TimespecType& b, TimespecT
 }
 
 template<typename TimespecType>
-inline void timespec_add(const TimespecType& a, const TimespecType& b, TimespecType& result)
+inline void timespec_add(TimespecType const& a, TimespecType const& b, TimespecType& result)
 {
     result.tv_sec = a.tv_sec + b.tv_sec;
     result.tv_nsec = a.tv_nsec + b.tv_nsec;
@@ -286,7 +330,7 @@ inline void timespec_add(const TimespecType& a, const TimespecType& b, TimespecT
 }
 
 template<typename TimespecType, typename TimevalType>
-inline void timespec_add_timeval(const TimespecType& a, const TimevalType& b, TimespecType& result)
+inline void timespec_add_timeval(TimespecType const& a, TimevalType const& b, TimespecType& result)
 {
     result.tv_sec = a.tv_sec + b.tv_sec;
     result.tv_nsec = a.tv_nsec + b.tv_usec * 1000;
@@ -297,58 +341,32 @@ inline void timespec_add_timeval(const TimespecType& a, const TimevalType& b, Ti
 }
 
 template<typename TimevalType, typename TimespecType>
-inline void timeval_to_timespec(const TimevalType& tv, TimespecType& ts)
+inline void timeval_to_timespec(TimevalType const& tv, TimespecType& ts)
 {
     ts.tv_sec = tv.tv_sec;
     ts.tv_nsec = tv.tv_usec * 1000;
 }
 
 template<typename TimespecType, typename TimevalType>
-inline void timespec_to_timeval(const TimespecType& ts, TimevalType& tv)
+inline void timespec_to_timeval(TimespecType const& ts, TimevalType& tv)
 {
     tv.tv_sec = ts.tv_sec;
     tv.tv_usec = ts.tv_nsec / 1000;
 }
 
-template<TimeSpecType T>
-inline bool operator>=(const T& a, const T& b)
-{
-    return a.tv_sec > b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec >= b.tv_nsec);
-}
+// To use these, add a ``using namespace AK::TimeLiterals`` at block or file scope
+namespace TimeLiterals {
 
-template<TimeSpecType T>
-inline bool operator>(const T& a, const T& b)
-{
-    return a.tv_sec > b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec > b.tv_nsec);
-}
+constexpr Time operator""_ns(unsigned long long nanoseconds) { return Time::from_nanoseconds(static_cast<i64>(nanoseconds)); }
+constexpr Time operator""_us(unsigned long long microseconds) { return Time::from_microseconds(static_cast<i64>(microseconds)); }
+constexpr Time operator""_ms(unsigned long long milliseconds) { return Time::from_milliseconds(static_cast<i64>(milliseconds)); }
+constexpr Time operator""_sec(unsigned long long seconds) { return Time::from_seconds(static_cast<i64>(seconds)); }
 
-template<TimeSpecType T>
-inline bool operator<(const T& a, const T& b)
-{
-    return a.tv_sec < b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec < b.tv_nsec);
-}
-
-template<TimeSpecType T>
-inline bool operator<=(const T& a, const T& b)
-
-{
-    return a.tv_sec < b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec <= b.tv_nsec);
-}
-
-template<TimeSpecType T>
-inline bool operator==(const T& a, const T& b)
-{
-    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
-}
-
-template<TimeSpecType T>
-inline bool operator!=(const T& a, const T& b)
-{
-    return a.tv_sec != b.tv_sec || a.tv_nsec != b.tv_nsec;
 }
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::day_of_week;
 using AK::day_of_year;
 using AK::days_in_month;
@@ -365,9 +383,4 @@ using AK::timeval_add;
 using AK::timeval_sub;
 using AK::timeval_to_timespec;
 using AK::years_to_days_since_epoch;
-using AK::operator<=;
-using AK::operator<;
-using AK::operator>;
-using AK::operator>=;
-using AK::operator==;
-using AK::operator!=;
+#endif

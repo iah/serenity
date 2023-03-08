@@ -11,15 +11,16 @@
 
 namespace Kernel {
 
-ErrorOr<FlatPtr> Process::sys$writev(int fd, Userspace<const struct iovec*> iov, int iov_count)
+// NOTE: The offset is passed by pointer because off_t is 64bit,
+// hence it can't be passed by register on 32bit platforms.
+ErrorOr<FlatPtr> Process::sys$pwritev(int fd, Userspace<const struct iovec*> iov, int iov_count, Userspace<off_t const*> userspace_offset)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     if (iov_count < 0)
         return EINVAL;
 
-    // Arbitrary pain threshold.
-    if (iov_count > (int)MiB)
+    if (iov_count > IOV_MAX)
         return EFAULT;
 
     u64 total_length = 0;
@@ -32,26 +33,32 @@ ErrorOr<FlatPtr> Process::sys$writev(int fd, Userspace<const struct iovec*> iov,
             return EINVAL;
     }
 
+    // NOTE: Negative offset means "operate like writev" which seeks the file.
+    auto base_offset = TRY(copy_typed_from_user(userspace_offset));
     auto description = TRY(open_file_description(fd));
     if (!description->is_writable())
         return EBADF;
+    if (base_offset >= 0 && !description->file().is_seekable())
+        return EINVAL;
 
     int nwritten = 0;
+    off_t current_offset = base_offset;
     for (auto& vec : vecs) {
         auto buffer = TRY(UserOrKernelBuffer::for_user_buffer((u8*)vec.iov_base, vec.iov_len));
-        auto result = do_write(*description, buffer, vec.iov_len);
+        auto result = do_write(*description, buffer, vec.iov_len, base_offset >= 0 ? current_offset : Optional<off_t> {});
         if (result.is_error()) {
             if (nwritten == 0)
                 return result.release_error();
             return nwritten;
         }
         nwritten += result.value();
+        current_offset += result.value();
     }
 
     return nwritten;
 }
 
-ErrorOr<FlatPtr> Process::do_write(OpenFileDescription& description, const UserOrKernelBuffer& data, size_t data_size)
+ErrorOr<FlatPtr> Process::do_write(OpenFileDescription& description, UserOrKernelBuffer const& data, size_t data_size, Optional<off_t> offset)
 {
     size_t total_nwritten = 0;
 
@@ -73,12 +80,16 @@ ErrorOr<FlatPtr> Process::do_write(OpenFileDescription& description, const UserO
             }
             // TODO: handle exceptions in unblock_flags
         }
-        auto nwritten_or_error = description.write(data.offset(total_nwritten), data_size - total_nwritten);
+        auto nwritten_or_error = offset.has_value()
+            ? description.write(offset.value() + total_nwritten, data.offset(total_nwritten), data_size - total_nwritten)
+            : description.write(data.offset(total_nwritten), data_size - total_nwritten);
         if (nwritten_or_error.is_error()) {
             if (total_nwritten > 0)
                 return total_nwritten;
             if (nwritten_or_error.error().code() == EAGAIN)
                 continue;
+            if (nwritten_or_error.error().code() == EPIPE)
+                Thread::current()->send_signal(SIGPIPE, &Process::current());
             return nwritten_or_error.release_error();
         }
         VERIFY(nwritten_or_error.value() > 0);
@@ -87,9 +98,9 @@ ErrorOr<FlatPtr> Process::do_write(OpenFileDescription& description, const UserO
     return total_nwritten;
 }
 
-ErrorOr<FlatPtr> Process::sys$write(int fd, Userspace<const u8*> data, size_t size)
+ErrorOr<FlatPtr> Process::sys$write(int fd, Userspace<u8 const*> data, size_t size)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     if (size == 0)
         return 0;

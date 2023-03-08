@@ -8,90 +8,71 @@
  */
 
 #include "TrackManager.h"
-#include "Applications/Piano/Music.h"
+#include "Music.h"
+#include <AK/NoAllocationGuard.h>
+#include <AK/NonnullRefPtr.h>
+#include <AK/TypedTransfer.h>
+#include <LibDSP/Effects.h>
+#include <LibDSP/Synthesizers.h>
 
 TrackManager::TrackManager()
+    : m_transport(make_ref_counted<DSP::Transport>(120, 4))
+    , m_keyboard(make_ref_counted<DSP::Keyboard>(m_transport))
+    , m_temporary_track_buffer(FixedArray<DSP::Sample>::must_create_but_fixme_should_propagate_errors(sample_count))
 {
     add_track();
 }
 
 void TrackManager::time_forward(int amount)
 {
-    int new_value = (static_cast<int>(m_time) + amount) % roll_length;
+    int new_value = (static_cast<int>(m_transport->time()) + amount) % roll_length;
 
     if (new_value < 0) { // If the new time value is negative add roll_length to wrap around
-        m_time = roll_length + new_value;
+        m_transport->set_time(roll_length + new_value);
     } else {
-        m_time = new_value;
+        m_transport->set_time(new_value);
     }
 }
 
-void TrackManager::fill_buffer(Span<Sample> buffer)
+void TrackManager::fill_buffer(FixedArray<DSP::Sample>& buffer)
 {
-    memset(buffer.data(), 0, buffer_size);
+    NoAllocationGuard guard;
+    VERIFY(buffer.size() == m_temporary_track_buffer.size());
+    size_t sample_count = buffer.size();
+    // No need to zero the temp buffer as the track overwrites it anyways.
+    buffer.fill_with({});
 
-    for (size_t i = 0; i < buffer.size(); ++i) {
-        for (auto& track : m_tracks)
-            track->fill_sample(buffer[i]);
-
-        if (++m_time >= roll_length) {
-            m_time = 0;
-            if (!m_should_loop)
-                break;
-        }
+    for (auto& track : m_tracks) {
+        track->current_signal(m_temporary_track_buffer);
+        for (size_t i = 0; i < sample_count; ++i)
+            buffer[i] += m_temporary_track_buffer[i];
     }
 
-    memcpy(m_current_back_buffer.data(), buffer.data(), buffer_size);
-    swap(m_current_front_buffer, m_current_back_buffer);
+    m_transport->set_time(m_transport->time() + sample_count);
+    // FIXME: This should be handled automatically by Transport. It will also advance slightly past the loop point if we're unlucky.
+    if (m_transport->time() >= roll_length)
+        m_transport->set_time(0);
 }
 
 void TrackManager::reset()
 {
-    memset(m_front_buffer.data(), 0, buffer_size);
-    memset(m_back_buffer.data(), 0, buffer_size);
-
-    m_current_front_buffer = m_front_buffer.span();
-    m_current_back_buffer = m_back_buffer.span();
-
-    m_time = 0;
-
-    for (auto& track : m_tracks)
-        track->reset();
-}
-
-void TrackManager::set_keyboard_note(int note, Switch note_switch)
-{
-    m_tracks[m_current_track]->set_keyboard_note(note, note_switch);
-}
-
-void TrackManager::set_octave(Direction direction)
-{
-    if (direction == Up) {
-        if (m_octave < octave_max)
-            ++m_octave;
-    } else {
-        if (m_octave > octave_min)
-            --m_octave;
-    }
-}
-
-void TrackManager::set_octave(int octave)
-{
-    if (octave <= octave_max && octave >= octave_min) {
-        m_octave = octave;
-    }
+    m_transport->set_time(0);
 }
 
 void TrackManager::add_track()
 {
-    m_tracks.append(make<Track>(m_time));
+    auto new_track = make_ref_counted<DSP::NoteTrack>(m_transport, m_keyboard);
+    MUST(new_track->resize_internal_buffers_to(m_temporary_track_buffer.size()));
+    new_track->add_processor(make_ref_counted<DSP::Synthesizers::Classic>(m_transport));
+    new_track->add_processor(make_ref_counted<DSP::Effects::Delay>(m_transport));
+    new_track->add_clip(0, roll_length);
+    m_tracks.append(move(new_track));
 }
 
-int TrackManager::next_track_index()
+int TrackManager::next_track_index() const
 {
     auto next_track_index = m_current_track + 1;
     if (next_track_index >= m_tracks.size())
         return 0;
-    else
-        return next_track_index;
+    return static_cast<int>(next_track_index);
 }

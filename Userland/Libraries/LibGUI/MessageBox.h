@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -29,13 +30,13 @@ public:
         YesNoCancel,
     };
 
-    virtual ~MessageBox() override;
+    virtual ~MessageBox() override = default;
 
-    static int show(Window* parent_window, StringView text, StringView title, Type type = Type::None, InputType input_type = InputType::OK);
-    static int show_error(Window* parent_window, StringView text);
-    static int ask_about_unsaved_changes(Window* parent_window, StringView path, Optional<Time> last_unmodified_timestamp = {});
+    static ExecResult show(Window* parent_window, StringView text, StringView title, Type type = Type::None, InputType input_type = InputType::OK);
+    static ExecResult show_error(Window* parent_window, StringView text);
+    static ExecResult ask_about_unsaved_changes(Window* parent_window, StringView path, Optional<Time> last_unmodified_timestamp = {});
 
-    void set_text(String text);
+    void set_text(DeprecatedString text);
 
 private:
     explicit MessageBox(Window* parent_window, StringView text, StringView title, Type type = Type::None, InputType input_type = InputType::OK);
@@ -47,7 +48,7 @@ private:
     void build();
     RefPtr<Gfx::Bitmap> icon() const;
 
-    String m_text;
+    DeprecatedString m_text;
     Type m_type { Type::None };
     InputType m_input_type { InputType::OK };
 

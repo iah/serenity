@@ -13,19 +13,22 @@
 
 namespace PixelPaint {
 
-class Filter {
+class FilterApplicationCommand;
+
+class Filter : public RefCounted<Filter> {
+    friend class FilterApplicationCommand;
+
 public:
-    virtual void apply() const;
+    void apply();
     virtual void apply(Gfx::Bitmap& target_bitmap, Gfx::Bitmap const& source_bitmap) const = 0;
 
-    virtual RefPtr<GUI::Widget> get_settings_widget();
+    virtual ErrorOr<RefPtr<GUI::Widget>> get_settings_widget();
 
-    virtual StringView filter_name() = 0;
+    virtual StringView filter_name() const = 0;
 
     virtual ~Filter() {};
 
-    Filter(ImageEditor* editor)
-        : m_editor(editor) {};
+    Filter(ImageEditor* editor);
 
     Function<void(void)> on_settings_change;
 
@@ -33,6 +36,9 @@ protected:
     ImageEditor* m_editor { nullptr };
     RefPtr<GUI::Widget> m_settings_widget { nullptr };
     void update_preview();
+
+private:
+    NonnullRefPtr<Core::Timer> m_update_timer;
 };
 
 }

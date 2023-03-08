@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -19,9 +20,9 @@ public:
         SelectAll,
     };
 
-    virtual ~ModelEditingDelegate() { }
+    virtual ~ModelEditingDelegate() = default;
 
-    void bind(Model& model, const ModelIndex& index)
+    void bind(Model& model, ModelIndex const& index)
     {
         if (m_model.ptr() == &model && m_index == index)
             return;
@@ -31,7 +32,7 @@ public:
     }
 
     Widget* widget() { return m_widget; }
-    const Widget* widget() const { return m_widget; }
+    Widget const* widget() const { return m_widget; }
 
     Function<void()> on_commit;
     Function<void()> on_rollback;
@@ -43,7 +44,7 @@ public:
     virtual void will_begin_editing() { }
 
 protected:
-    ModelEditingDelegate() { }
+    ModelEditingDelegate() = default;
 
     virtual RefPtr<Widget> create_widget() = 0;
     void commit()
@@ -62,7 +63,7 @@ protected:
             on_change();
     }
 
-    const ModelIndex& index() const { return m_index; }
+    ModelIndex const& index() const { return m_index; }
 
 private:
     RefPtr<Model> m_model;
@@ -72,8 +73,8 @@ private:
 
 class StringModelEditingDelegate : public ModelEditingDelegate {
 public:
-    StringModelEditingDelegate() { }
-    virtual ~StringModelEditingDelegate() override { }
+    StringModelEditingDelegate() = default;
+    virtual ~StringModelEditingDelegate() override = default;
 
     virtual RefPtr<Widget> create_widget() override
     {
@@ -91,11 +92,11 @@ public:
         };
         return textbox;
     }
-    virtual Variant value() const override { return static_cast<const TextBox*>(widget())->text(); }
+    virtual Variant value() const override { return static_cast<TextBox const*>(widget())->text(); }
     virtual void set_value(Variant const& value, SelectionBehavior selection_behavior) override
     {
         auto& textbox = static_cast<TextBox&>(*widget());
-        textbox.set_text(value.to_string());
+        textbox.set_text(value.to_deprecated_string());
         if (selection_behavior == SelectionBehavior::SelectAll)
             textbox.select_all();
     }

@@ -58,7 +58,7 @@ NonnullRefPtr<Statement> Parser::parse_statement()
     case TokenType::Select:
         return parse_select_statement({});
     default:
-        expected("CREATE, ALTER, DROP, DESCRIBE, INSERT, UPDATE, DELETE, or SELECT");
+        expected("CREATE, ALTER, DROP, DESCRIBE, INSERT, UPDATE, DELETE, or SELECT"sv);
         return create_ast_node<ErrorStatement>();
     }
 }
@@ -75,7 +75,7 @@ NonnullRefPtr<Statement> Parser::parse_statement_with_expression_list(RefPtr<Com
     case TokenType::Select:
         return parse_select_statement(move(common_table_expression_list));
     default:
-        expected("INSERT, UPDATE, DELETE, or SELECT");
+        expected("INSERT, UPDATE, DELETE, or SELECT"sv);
         return create_ast_node<ErrorStatement>();
     }
 }
@@ -91,7 +91,7 @@ NonnullRefPtr<CreateSchema> Parser::parse_create_schema_statement()
         is_error_if_exists = false;
     }
 
-    String schema_name = consume(TokenType::Identifier).value();
+    DeprecatedString schema_name = consume(TokenType::Identifier).value();
     return create_ast_node<CreateSchema>(move(schema_name), is_error_if_exists);
 }
 
@@ -112,8 +112,8 @@ NonnullRefPtr<CreateTable> Parser::parse_create_table_statement()
         is_error_if_table_exists = false;
     }
 
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
     if (consume_if(TokenType::As)) {
@@ -121,7 +121,7 @@ NonnullRefPtr<CreateTable> Parser::parse_create_table_statement()
         return create_ast_node<CreateTable>(move(schema_name), move(table_name), move(select_statement), is_temporary, is_error_if_table_exists);
     }
 
-    NonnullRefPtrVector<ColumnDefinition> column_definitions;
+    Vector<NonnullRefPtr<ColumnDefinition>> column_definitions;
     parse_comma_separated_list(true, [&]() { column_definitions.append(parse_column_definition()); });
 
     // FIXME: Parse "table-constraint".
@@ -135,8 +135,8 @@ NonnullRefPtr<AlterTable> Parser::parse_alter_table_statement()
     consume(TokenType::Alter);
     consume(TokenType::Table);
 
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
     if (consume_if(TokenType::Add)) {
@@ -177,8 +177,8 @@ NonnullRefPtr<DropTable> Parser::parse_drop_table_statement()
         is_error_if_table_does_not_exist = false;
     }
 
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
     return create_ast_node<DropTable>(move(schema_name), move(table_name), is_error_if_table_does_not_exist);
@@ -201,19 +201,19 @@ NonnullRefPtr<Insert> Parser::parse_insert_statement(RefPtr<CommonTableExpressio
     auto conflict_resolution = parse_conflict_resolution();
     consume(TokenType::Into);
 
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
-    String alias;
+    DeprecatedString alias;
     if (consume_if(TokenType::As))
         alias = consume(TokenType::Identifier).value();
 
-    Vector<String> column_names;
+    Vector<DeprecatedString> column_names;
     if (match(TokenType::ParenOpen))
         parse_comma_separated_list(true, [&]() { column_names.append(consume(TokenType::Identifier).value()); });
 
-    NonnullRefPtrVector<ChainedExpression> chained_expressions;
+    Vector<NonnullRefPtr<ChainedExpression>> chained_expressions;
     RefPtr<Select> select_statement;
 
     if (consume_if(TokenType::Values)) {
@@ -226,7 +226,7 @@ NonnullRefPtr<Insert> Parser::parse_insert_statement(RefPtr<CommonTableExpressio
                     chained_expressions.append(static_ptr_cast<ChainedExpression>(chained_expression.release_nonnull()));
                 }
             } else {
-                expected("Chained expression");
+                expected("Chained expression"sv);
             }
         });
     } else if (match(TokenType::Select)) {
@@ -260,7 +260,7 @@ NonnullRefPtr<Update> Parser::parse_update_statement(RefPtr<CommonTableExpressio
 
     Vector<Update::UpdateColumns> update_columns;
     parse_comma_separated_list(false, [&]() {
-        Vector<String> column_names;
+        Vector<DeprecatedString> column_names;
         if (match(TokenType::ParenOpen)) {
             parse_comma_separated_list(true, [&]() { column_names.append(consume(TokenType::Identifier).value()); });
         } else {
@@ -271,7 +271,7 @@ NonnullRefPtr<Update> Parser::parse_update_statement(RefPtr<CommonTableExpressio
         update_columns.append({ move(column_names), parse_expression() });
     });
 
-    NonnullRefPtrVector<TableOrSubquery> table_or_subquery_list;
+    Vector<NonnullRefPtr<TableOrSubquery>> table_or_subquery_list;
     if (consume_if(TokenType::From)) {
         // FIXME: Parse join-clause.
         parse_comma_separated_list(false, [&]() { table_or_subquery_list.append(parse_table_or_subquery()); });
@@ -314,10 +314,10 @@ NonnullRefPtr<Select> Parser::parse_select_statement(RefPtr<CommonTableExpressio
     bool select_all = !consume_if(TokenType::Distinct);
     consume_if(TokenType::All); // ALL is the default, so ignore it if specified.
 
-    NonnullRefPtrVector<ResultColumn> result_column_list;
+    Vector<NonnullRefPtr<ResultColumn>> result_column_list;
     parse_comma_separated_list(false, [&]() { result_column_list.append(parse_result_column()); });
 
-    NonnullRefPtrVector<TableOrSubquery> table_or_subquery_list;
+    Vector<NonnullRefPtr<TableOrSubquery>> table_or_subquery_list;
     if (consume_if(TokenType::From)) {
         // FIXME: Parse join-clause.
         parse_comma_separated_list(false, [&]() { table_or_subquery_list.append(parse_table_or_subquery()); });
@@ -331,7 +331,7 @@ NonnullRefPtr<Select> Parser::parse_select_statement(RefPtr<CommonTableExpressio
     if (consume_if(TokenType::Group)) {
         consume(TokenType::By);
 
-        NonnullRefPtrVector<Expression> group_by_list;
+        Vector<NonnullRefPtr<Expression>> group_by_list;
         parse_comma_separated_list(false, [&]() { group_by_list.append(parse_expression()); });
 
         if (!group_by_list.is_empty()) {
@@ -346,7 +346,7 @@ NonnullRefPtr<Select> Parser::parse_select_statement(RefPtr<CommonTableExpressio
     // FIXME: Parse 'WINDOW window-name AS window-defn'.
     // FIXME: Parse 'compound-operator'.
 
-    NonnullRefPtrVector<OrderingTerm> ordering_term_list;
+    Vector<NonnullRefPtr<OrderingTerm>> ordering_term_list;
     if (consume_if(TokenType::Order)) {
         consume(TokenType::By);
         parse_comma_separated_list(false, [&]() { ordering_term_list.append(parse_ordering_term()); });
@@ -377,11 +377,11 @@ RefPtr<CommonTableExpressionList> Parser::parse_common_table_expression_list()
     consume(TokenType::With);
     bool recursive = consume_if(TokenType::Recursive);
 
-    NonnullRefPtrVector<CommonTableExpression> common_table_expression;
+    Vector<NonnullRefPtr<CommonTableExpression>> common_table_expression;
     parse_comma_separated_list(false, [&]() { common_table_expression.append(parse_common_table_expression()); });
 
     if (common_table_expression.is_empty()) {
-        expected("Common table expression list");
+        expected("Common table expression list"sv);
         return {};
     }
 
@@ -391,7 +391,7 @@ RefPtr<CommonTableExpressionList> Parser::parse_common_table_expression_list()
 NonnullRefPtr<Expression> Parser::parse_expression()
 {
     if (++m_parser_state.m_current_expression_depth > Limits::maximum_expression_tree_depth) {
-        syntax_error(String::formatted("Exceeded maximum expression tree depth of {}", Limits::maximum_expression_tree_depth));
+        syntax_error(DeprecatedString::formatted("Exceeded maximum expression tree depth of {}", Limits::maximum_expression_tree_depth));
         return create_ast_node<ErrorExpression>();
     }
 
@@ -401,7 +401,6 @@ NonnullRefPtr<Expression> Parser::parse_expression()
     if (match_secondary_expression())
         expression = parse_secondary_expression(move(expression));
 
-    // FIXME: Parse 'bind-parameter'.
     // FIXME: Parse 'function-name'.
     // FIXME: Parse 'raise-function'.
 
@@ -412,6 +411,9 @@ NonnullRefPtr<Expression> Parser::parse_expression()
 NonnullRefPtr<Expression> Parser::parse_primary_expression()
 {
     if (auto expression = parse_literal_value_expression())
+        return expression.release_nonnull();
+
+    if (auto expression = parse_bind_parameter_expression())
         return expression.release_nonnull();
 
     if (auto expression = parse_column_name_expression())
@@ -432,7 +434,7 @@ NonnullRefPtr<Expression> Parser::parse_primary_expression()
     if (auto expression = parse_exists_expression(false))
         return expression.release_nonnull();
 
-    expected("Primary Expression");
+    expected("Primary Expression"sv);
     consume();
 
     return create_ast_node<ErrorExpression>();
@@ -465,7 +467,7 @@ NonnullRefPtr<Expression> Parser::parse_secondary_expression(NonnullRefPtr<Expre
     if (auto expression = parse_in_expression(primary, invert_expression))
         return expression.release_nonnull();
 
-    expected("Secondary Expression");
+    expected("Secondary Expression"sv);
     consume();
 
     return create_ast_node<ErrorExpression>();
@@ -522,29 +524,48 @@ RefPtr<Expression> Parser::parse_literal_value_expression()
         auto value = consume().value();
         return create_ast_node<BlobLiteral>(value);
     }
+    if (consume_if(TokenType::True))
+        return create_ast_node<BooleanLiteral>(true);
+    if (consume_if(TokenType::False))
+        return create_ast_node<BooleanLiteral>(false);
     if (consume_if(TokenType::Null))
         return create_ast_node<NullLiteral>();
 
     return {};
 }
 
-RefPtr<Expression> Parser::parse_column_name_expression(String with_parsed_identifier, bool with_parsed_period)
+// https://sqlite.org/lang_expr.html#varparam
+RefPtr<Expression> Parser::parse_bind_parameter_expression()
+{
+    // FIXME: Support ?NNN, :AAAA, @AAAA, and $AAAA forms.
+    if (consume_if(TokenType::Placeholder)) {
+        auto parameter = m_parser_state.m_bound_parameters;
+        if (++m_parser_state.m_bound_parameters > Limits::maximum_bound_parameters)
+            syntax_error(DeprecatedString::formatted("Exceeded maximum number of bound parameters {}", Limits::maximum_bound_parameters));
+
+        return create_ast_node<Placeholder>(parameter);
+    }
+
+    return {};
+}
+
+RefPtr<Expression> Parser::parse_column_name_expression(DeprecatedString with_parsed_identifier, bool with_parsed_period)
 {
     if (with_parsed_identifier.is_null() && !match(TokenType::Identifier))
         return {};
 
-    String first_identifier;
+    DeprecatedString first_identifier;
     if (with_parsed_identifier.is_null())
         first_identifier = consume(TokenType::Identifier).value();
     else
         first_identifier = move(with_parsed_identifier);
 
-    String schema_name;
-    String table_name;
-    String column_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
+    DeprecatedString column_name;
 
     if (with_parsed_period || consume_if(TokenType::Period)) {
-        String second_identifier = consume(TokenType::Identifier).value();
+        DeprecatedString second_identifier = consume(TokenType::Identifier).value();
 
         if (consume_if(TokenType::Period)) {
             schema_name = move(first_identifier);
@@ -649,7 +670,7 @@ RefPtr<Expression> Parser::parse_chained_expression()
     if (match(TokenType::Select))
         return parse_exists_expression(false, TokenType::Select);
 
-    NonnullRefPtrVector<Expression> expressions;
+    Vector<NonnullRefPtr<Expression>> expressions;
     parse_comma_separated_list(false, [&]() { expressions.append(parse_expression()); });
     consume(TokenType::ParenClose);
 
@@ -726,7 +747,7 @@ RefPtr<Expression> Parser::parse_collate_expression(NonnullRefPtr<Expression> ex
         return {};
 
     consume();
-    String collation_name = consume(TokenType::Identifier).value();
+    DeprecatedString collation_name = consume(TokenType::Identifier).value();
 
     return create_ast_node<CollateExpression>(move(expression), move(collation_name));
 }
@@ -805,13 +826,13 @@ RefPtr<Expression> Parser::parse_between_expression(NonnullRefPtr<Expression> ex
 
     auto nested = parse_expression();
     if (!is<BinaryOperatorExpression>(*nested)) {
-        expected("Binary Expression");
+        expected("Binary Expression"sv);
         return create_ast_node<ErrorExpression>();
     }
 
-    const auto& binary_expression = static_cast<const BinaryOperatorExpression&>(*nested);
+    auto const& binary_expression = static_cast<BinaryOperatorExpression const&>(*nested);
     if (binary_expression.type() != BinaryOperator::And) {
-        expected("AND Expression");
+        expected("AND Expression"sv);
         return create_ast_node<ErrorExpression>();
     }
 
@@ -833,7 +854,7 @@ RefPtr<Expression> Parser::parse_in_expression(NonnullRefPtr<Expression> express
 
         // FIXME: Consolidate this with parse_chained_expression(). That method consumes the opening paren as
         //        well, and also requires at least one expression (whereas this allows for an empty chain).
-        NonnullRefPtrVector<Expression> expressions;
+        Vector<NonnullRefPtr<Expression>> expressions;
         if (!match(TokenType::ParenClose))
             parse_comma_separated_list(false, [&]() { expressions.append(parse_expression()); });
 
@@ -843,8 +864,8 @@ RefPtr<Expression> Parser::parse_in_expression(NonnullRefPtr<Expression> express
         return create_ast_node<InChainedExpression>(move(expression), move(chain), invert_expression);
     }
 
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
     if (match(TokenType::ParenOpen)) {
@@ -863,7 +884,7 @@ NonnullRefPtr<ColumnDefinition> Parser::parse_column_definition()
     auto type_name = match(TokenType::Identifier)
         ? parse_type_name()
         // https://www.sqlite.org/datatype3.html: If no type is specified then the column has affinity BLOB.
-        : create_ast_node<TypeName>("BLOB", NonnullRefPtrVector<SignedNumber> {});
+        : create_ast_node<TypeName>("BLOB", Vector<NonnullRefPtr<SignedNumber>> {});
 
     // FIXME: Parse "column-constraint".
 
@@ -874,7 +895,7 @@ NonnullRefPtr<TypeName> Parser::parse_type_name()
 {
     // https: //sqlite.org/syntax/type-name.html
     auto name = consume(TokenType::Identifier).value();
-    NonnullRefPtrVector<SignedNumber> signed_numbers;
+    Vector<NonnullRefPtr<SignedNumber>> signed_numbers;
 
     if (consume_if(TokenType::ParenOpen)) {
         signed_numbers.append(parse_signed_number());
@@ -903,7 +924,7 @@ NonnullRefPtr<SignedNumber> Parser::parse_signed_number()
         return create_ast_node<SignedNumber>(is_positive ? number : (number * -1));
     }
 
-    expected("NumericLiteral");
+    expected("NumericLiteral"sv);
     return create_ast_node<SignedNumber>(0);
 }
 
@@ -912,7 +933,7 @@ NonnullRefPtr<CommonTableExpression> Parser::parse_common_table_expression()
     // https://sqlite.org/syntax/common-table-expression.html
     auto table_name = consume(TokenType::Identifier).value();
 
-    Vector<String> column_names;
+    Vector<DeprecatedString> column_names;
     if (match(TokenType::ParenOpen))
         parse_comma_separated_list(true, [&]() { column_names.append(consume(TokenType::Identifier).value()); });
 
@@ -927,11 +948,11 @@ NonnullRefPtr<CommonTableExpression> Parser::parse_common_table_expression()
 NonnullRefPtr<QualifiedTableName> Parser::parse_qualified_table_name()
 {
     // https://sqlite.org/syntax/qualified-table-name.html
-    String schema_name;
-    String table_name;
+    DeprecatedString schema_name;
+    DeprecatedString table_name;
     parse_schema_and_table_name(schema_name, table_name);
 
-    String alias;
+    DeprecatedString alias;
     if (consume_if(TokenType::As))
         alias = consume(TokenType::Identifier).value();
 
@@ -955,7 +976,7 @@ NonnullRefPtr<ReturningClause> Parser::parse_returning_clause()
     parse_comma_separated_list(false, [&]() {
         auto expression = parse_expression();
 
-        String column_alias;
+        DeprecatedString column_alias;
         if (consume_if(TokenType::As) || match(TokenType::Identifier))
             column_alias = consume(TokenType::Identifier).value();
 
@@ -974,7 +995,7 @@ NonnullRefPtr<ResultColumn> Parser::parse_result_column()
     // If we match an identifier now, we don't know whether it is a table-name of the form "table-name.*", or if it is the start of a
     // column-name-expression, until we try to parse the asterisk. So if we consume an identifier and a period, but don't find an
     // asterisk, hold onto that information to form a column-name-expression later.
-    String table_name;
+    DeprecatedString table_name;
     bool parsed_period = false;
 
     if (match(TokenType::Identifier)) {
@@ -988,7 +1009,7 @@ NonnullRefPtr<ResultColumn> Parser::parse_result_column()
         ? parse_expression()
         : static_cast<NonnullRefPtr<Expression>>(*parse_column_name_expression(move(table_name), parsed_period));
 
-    String column_alias;
+    DeprecatedString column_alias;
     if (consume_if(TokenType::As) || match(TokenType::Identifier))
         column_alias = consume(TokenType::Identifier).value();
 
@@ -998,17 +1019,17 @@ NonnullRefPtr<ResultColumn> Parser::parse_result_column()
 NonnullRefPtr<TableOrSubquery> Parser::parse_table_or_subquery()
 {
     if (++m_parser_state.m_current_subquery_depth > Limits::maximum_subquery_depth)
-        syntax_error(String::formatted("Exceeded maximum subquery depth of {}", Limits::maximum_subquery_depth));
+        syntax_error(DeprecatedString::formatted("Exceeded maximum subquery depth of {}", Limits::maximum_subquery_depth));
 
     ScopeGuard guard([&]() { --m_parser_state.m_current_subquery_depth; });
 
     // https://sqlite.org/syntax/table-or-subquery.html
     if (match(TokenType::Identifier)) {
-        String schema_name;
-        String table_name;
+        DeprecatedString schema_name;
+        DeprecatedString table_name;
         parse_schema_and_table_name(schema_name, table_name);
 
-        String table_alias;
+        DeprecatedString table_alias;
         if (consume_if(TokenType::As) || match(TokenType::Identifier))
             table_alias = consume(TokenType::Identifier).value();
 
@@ -1017,7 +1038,7 @@ NonnullRefPtr<TableOrSubquery> Parser::parse_table_or_subquery()
 
     // FIXME: Parse join-clause.
 
-    NonnullRefPtrVector<TableOrSubquery> subqueries;
+    Vector<NonnullRefPtr<TableOrSubquery>> subqueries;
     parse_comma_separated_list(true, [&]() { subqueries.append(parse_table_or_subquery()); });
 
     return create_ast_node<TableOrSubquery>(move(subqueries));
@@ -1028,9 +1049,9 @@ NonnullRefPtr<OrderingTerm> Parser::parse_ordering_term()
     // https://sqlite.org/syntax/ordering-term.html
     auto expression = parse_expression();
 
-    String collation_name;
+    DeprecatedString collation_name;
     if (is<CollateExpression>(*expression)) {
-        const auto& collate = static_cast<const CollateExpression&>(*expression);
+        auto const& collate = static_cast<CollateExpression const&>(*expression);
         collation_name = collate.collation_name();
         expression = collate.expression();
     } else if (consume_if(TokenType::Collate)) {
@@ -1047,15 +1068,15 @@ NonnullRefPtr<OrderingTerm> Parser::parse_ordering_term()
         else if (consume_if(TokenType::Last))
             nulls = Nulls::Last;
         else
-            expected("FIRST or LAST");
+            expected("FIRST or LAST"sv);
     }
 
     return create_ast_node<OrderingTerm>(move(expression), move(collation_name), order, nulls);
 }
 
-void Parser::parse_schema_and_table_name(String& schema_name, String& table_name)
+void Parser::parse_schema_and_table_name(DeprecatedString& schema_name, DeprecatedString& table_name)
 {
-    String schema_or_table_name = consume(TokenType::Identifier).value();
+    DeprecatedString schema_or_table_name = consume(TokenType::Identifier).value();
 
     if (consume_if(TokenType::Period)) {
         schema_name = move(schema_or_table_name);
@@ -1080,7 +1101,7 @@ ConflictResolution Parser::parse_conflict_resolution()
         if (consume_if(TokenType::Rollback))
             return ConflictResolution::Rollback;
 
-        expected("ABORT, FAIL, IGNORE, REPLACE, or ROLLBACK");
+        expected("ABORT, FAIL, IGNORE, REPLACE, or ROLLBACK"sv);
     }
 
     return ConflictResolution::Abort;
@@ -1117,10 +1138,10 @@ bool Parser::match(TokenType type) const
 
 void Parser::expected(StringView what)
 {
-    syntax_error(String::formatted("Unexpected token {}, expected {}", m_parser_state.m_token.name(), what));
+    syntax_error(DeprecatedString::formatted("Unexpected token {}, expected {}", m_parser_state.m_token.name(), what));
 }
 
-void Parser::syntax_error(String message)
+void Parser::syntax_error(DeprecatedString message)
 {
     m_parser_state.m_errors.append({ move(message), position() });
 }

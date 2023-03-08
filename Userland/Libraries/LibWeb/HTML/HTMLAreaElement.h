@@ -15,20 +15,34 @@ namespace Web::HTML {
 class HTMLAreaElement final
     : public HTMLElement
     , public HTMLHyperlinkElementUtils {
-public:
-    using WrapperType = Bindings::HTMLAreaElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLAreaElement, HTMLElement);
 
-    HTMLAreaElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLAreaElement() override;
 
 private:
+    HTMLAreaElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
     // ^DOM::Element
-    virtual void parse_attribute(FlyString const& name, String const& value) override;
+    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual i32 default_tab_index_value() const override;
 
     // ^HTML::HTMLHyperlinkElementUtils
-    virtual DOM::Document const& hyperlink_element_utils_document() const override { return document(); }
-    virtual String hyperlink_element_utils_href() const override;
-    virtual void set_hyperlink_element_utils_href(String) override;
+    virtual DOM::Document& hyperlink_element_utils_document() override { return document(); }
+    virtual DeprecatedString hyperlink_element_utils_href() const override;
+    virtual void set_hyperlink_element_utils_href(DeprecatedString) override;
+    virtual bool hyperlink_element_utils_is_html_anchor_element() const override { return false; }
+    virtual bool hyperlink_element_utils_is_connected() const override { return is_connected(); }
+    virtual DeprecatedString hyperlink_element_utils_target() const override { return ""; }
+    virtual DeprecatedString hyperlink_element_utils_rel() const override { return ""; }
+    virtual void hyperlink_element_utils_queue_an_element_task(HTML::Task::Source source, Function<void()> steps) override
+    {
+        queue_an_element_task(source, move(steps));
+    }
+
+    virtual Optional<ARIA::Role> default_role() const override;
 };
 
 }

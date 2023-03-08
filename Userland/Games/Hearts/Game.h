@@ -2,6 +2,7 @@
  * Copyright (c) 2020, Till Mayer <till.mayer@web.de>
  * Copyright (c) 2021, Gunnar Beutner <gbeutner@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,14 +11,14 @@
 
 #include "Player.h"
 #include <LibCards/Card.h>
+#include <LibCards/CardGame.h>
 #include <LibCore/Timer.h>
-#include <LibGUI/Frame.h>
 
 using Cards::Card;
 
 namespace Hearts {
 
-class Game final : public GUI::Frame {
+class Game final : public Cards::CardGame {
     C_OBJECT(Game)
 public:
     static constexpr int width = 640;
@@ -25,9 +26,9 @@ public:
 
     virtual ~Game() override = default;
 
-    void setup(String player_name, int hand_number = 0);
+    void setup(DeprecatedString player_name, int hand_number = 0);
 
-    Function<void(String const&)> on_status_change;
+    Function<void(DeprecatedString const&)> on_status_change;
 
 private:
     Game();
@@ -40,7 +41,7 @@ private:
 
     void play_card(Player& player, size_t card_index);
     bool are_hearts_broken() const;
-    bool is_valid_play(Player& player, Card& card, String* explanation = nullptr) const;
+    bool is_valid_play(Player& player, Card& card, DeprecatedString* explanation = nullptr) const;
     void let_player_play_card();
     void continue_game_after_delay(int interval_ms = 750);
     void advance_game();
@@ -63,7 +64,7 @@ private:
     void pass_cards();
     PassingDirection passing_direction() const;
 
-    void start_animation(NonnullRefPtrVector<Card> cards, Gfx::IntPoint const& end, Function<void()> did_finish_callback, int initial_delay_ms, int steps = 30);
+    void start_animation(Vector<NonnullRefPtr<Card>> cards, Gfx::IntPoint end, Function<void()> did_finish_callback, int initial_delay_ms, int steps = 30);
     void stop_animation();
 
     virtual void paint_event(GUI::PaintEvent&) override;
@@ -91,7 +92,7 @@ private:
     HashTable<NonnullRefPtr<Card>> m_cards_highlighted;
 
     Player m_players[4];
-    NonnullRefPtrVector<Card> m_trick;
+    Vector<NonnullRefPtr<Card>> m_trick;
     Player* m_leading_player { nullptr };
     u8 m_trick_number { 0 };
     RefPtr<Core::Timer> m_delay_timer;

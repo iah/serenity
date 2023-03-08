@@ -5,7 +5,6 @@
  */
 
 #include <AK/Singleton.h>
-#include <Kernel/Arch/x86/IO.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/KString.h>
@@ -14,9 +13,7 @@
 #include <Kernel/Net/Intel/E1000ENetworkAdapter.h>
 #include <Kernel/Net/Intel/E1000NetworkAdapter.h>
 #include <Kernel/Net/LoopbackAdapter.h>
-#include <Kernel/Net/NE2000/NetworkAdapter.h>
 #include <Kernel/Net/NetworkingManagement.h>
-#include <Kernel/Net/Realtek/RTL8139NetworkAdapter.h>
 #include <Kernel/Net/Realtek/RTL8168NetworkAdapter.h>
 #include <Kernel/Sections.h>
 
@@ -38,7 +35,7 @@ UNMAP_AFTER_INIT NetworkingManagement::NetworkingManagement()
 {
 }
 
-NonnullRefPtr<NetworkAdapter> NetworkingManagement::loopback_adapter() const
+NonnullLockRefPtr<NetworkAdapter> NetworkingManagement::loopback_adapter() const
 {
     return *m_loopback_adapter;
 }
@@ -50,26 +47,35 @@ void NetworkingManagement::for_each(Function<void(NetworkAdapter&)> callback)
     });
 }
 
-RefPtr<NetworkAdapter> NetworkingManagement::from_ipv4_address(IPv4Address const& address) const
+ErrorOr<void> NetworkingManagement::try_for_each(Function<ErrorOr<void>(NetworkAdapter&)> callback)
+{
+    return m_adapters.with([&](auto& adapters) -> ErrorOr<void> {
+        for (auto& adapter : adapters)
+            TRY(callback(adapter));
+        return {};
+    });
+}
+
+LockRefPtr<NetworkAdapter> NetworkingManagement::from_ipv4_address(IPv4Address const& address) const
 {
     if (address[0] == 0 && address[1] == 0 && address[2] == 0 && address[3] == 0)
         return m_loopback_adapter;
     if (address[0] == 127)
         return m_loopback_adapter;
-    return m_adapters.with([&](auto& adapters) -> RefPtr<NetworkAdapter> {
+    return m_adapters.with([&](auto& adapters) -> LockRefPtr<NetworkAdapter> {
         for (auto& adapter : adapters) {
-            if (adapter.ipv4_address() == address || adapter.ipv4_broadcast() == address)
+            if (adapter->ipv4_address() == address || adapter->ipv4_broadcast() == address)
                 return adapter;
         }
         return nullptr;
     });
 }
 
-RefPtr<NetworkAdapter> NetworkingManagement::lookup_by_name(StringView name) const
+LockRefPtr<NetworkAdapter> NetworkingManagement::lookup_by_name(StringView name) const
 {
-    return m_adapters.with([&](auto& adapters) -> RefPtr<NetworkAdapter> {
+    return m_adapters.with([&](auto& adapters) -> LockRefPtr<NetworkAdapter> {
         for (auto& adapter : adapters) {
-            if (adapter.name() == name)
+            if (adapter->name() == name)
                 return adapter;
         }
         return nullptr;
@@ -85,31 +91,50 @@ ErrorOr<NonnullOwnPtr<KString>> NetworkingManagement::generate_interface_name_fr
     return name;
 }
 
-UNMAP_AFTER_INIT RefPtr<NetworkAdapter> NetworkingManagement::determine_network_device(PCI::DeviceIdentifier const& device_identifier) const
+struct PCINetworkDriverInitializer {
+    ErrorOr<bool> (*probe)(PCI::DeviceIdentifier const&) = nullptr;
+    ErrorOr<NonnullLockRefPtr<NetworkAdapter>> (*create)(PCI::DeviceIdentifier const&) = nullptr;
+};
+
+static constexpr PCINetworkDriverInitializer s_initializers[] = {
+    { RTL8168NetworkAdapter::probe, RTL8168NetworkAdapter::create },
+    { E1000NetworkAdapter::probe, E1000NetworkAdapter::create },
+    { E1000ENetworkAdapter::probe, E1000ENetworkAdapter::create },
+};
+
+UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<NetworkAdapter>> NetworkingManagement::determine_network_device(PCI::DeviceIdentifier const& device_identifier) const
 {
-    if (auto candidate = E1000NetworkAdapter::try_to_initialize(device_identifier); !candidate.is_null())
-        return candidate;
-    if (auto candidate = E1000ENetworkAdapter::try_to_initialize(device_identifier); !candidate.is_null())
-        return candidate;
-    if (auto candidate = RTL8139NetworkAdapter::try_to_initialize(device_identifier); !candidate.is_null())
-        return candidate;
-    if (auto candidate = RTL8168NetworkAdapter::try_to_initialize(device_identifier); !candidate.is_null())
-        return candidate;
-    if (auto candidate = NE2000NetworkAdapter::try_to_initialize(device_identifier); !candidate.is_null())
-        return candidate;
-    return {};
+    for (auto& initializer : s_initializers) {
+        auto initializer_probe_found_driver_match_or_error = initializer.probe(device_identifier);
+        if (initializer_probe_found_driver_match_or_error.is_error()) {
+            dmesgln("Networking: Failed to probe device {}, due to {}", device_identifier.address(), initializer_probe_found_driver_match_or_error.error());
+            continue;
+        }
+        auto initializer_probe_found_driver_match = initializer_probe_found_driver_match_or_error.release_value();
+        if (initializer_probe_found_driver_match) {
+            auto adapter = TRY(initializer.create(device_identifier));
+            TRY(adapter->initialize({}));
+            return adapter;
+        }
+    }
+    dmesgln("Networking: Failed to initialize device {}, unsupported network adapter", device_identifier.address());
+    return Error::from_errno(ENODEV);
 }
 
 bool NetworkingManagement::initialize()
 {
-    if (!kernel_command_line().is_physical_networking_disabled()) {
-        PCI::enumerate([&](PCI::DeviceIdentifier const& device_identifier) {
+    if (!kernel_command_line().is_physical_networking_disabled() && !PCI::Access::is_disabled()) {
+        MUST(PCI::enumerate([&](PCI::DeviceIdentifier const& device_identifier) {
             // Note: PCI class 2 is the class of Network devices
             if (device_identifier.class_code().value() != 0x02)
                 return;
-            if (auto adapter = determine_network_device(device_identifier); !adapter.is_null())
-                m_adapters.with([&](auto& adapters) { adapters.append(adapter.release_nonnull()); });
-        });
+            auto result = determine_network_device(device_identifier);
+            if (result.is_error()) {
+                dmesgln("Failed to initialize network adapter ({} {}): {}", device_identifier.address(), device_identifier.hardware_id(), result.error());
+                return;
+            }
+            m_adapters.with([&](auto& adapters) { adapters.append(result.release_value()); });
+        }));
     }
     auto loopback = LoopbackAdapter::try_create();
     VERIFY(loopback);

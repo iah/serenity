@@ -6,14 +6,13 @@
 
 #pragma once
 
-#include <AK/NonnullRefPtr.h>
-#include <AK/NonnullRefPtrVector.h>
 #include <AK/OwnPtr.h>
-#include <AK/RefPtr.h>
 #include <AK/Time.h>
 #include <AK/Tuple.h>
 #include <AK/Types.h>
 #include <Kernel/Bus/PCI/Device.h>
+#include <Kernel/Library/LockRefPtr.h>
+#include <Kernel/Library/NonnullLockRefPtr.h>
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/TypedMapping.h>
 #include <Kernel/Storage/NVMe/NVMeDefinitions.h>
@@ -26,11 +25,11 @@ namespace Kernel {
 class NVMeController : public PCI::Device
     , public StorageController {
 public:
-    static ErrorOr<NonnullRefPtr<NVMeController>> try_initialize(PCI::DeviceIdentifier const&, bool is_queue_polled);
+    static ErrorOr<NonnullLockRefPtr<NVMeController>> try_initialize(PCI::DeviceIdentifier const&, bool is_queue_polled);
     ErrorOr<void> initialize(bool is_queue_polled);
-    explicit NVMeController(PCI::DeviceIdentifier const&);
-    RefPtr<StorageDevice> device(u32 index) const override;
+    LockRefPtr<StorageDevice> device(u32 index) const override;
     size_t devices_count() const override;
+    virtual StringView device_name() const override { return "NVMeController"sv; }
 
 protected:
     bool reset() override;
@@ -56,6 +55,8 @@ public:
     void set_admin_queue_ready_flag() { m_admin_queue_ready = true; };
 
 private:
+    NVMeController(PCI::DeviceIdentifier const&, u32 hardware_relative_controller_id);
+
     ErrorOr<void> identify_and_init_namespaces();
     Tuple<u64, u8> get_ns_features(IdentifyNamespace& identify_data_struct);
     ErrorOr<void> create_admin_queue(Optional<u8> irq);
@@ -67,16 +68,15 @@ private:
     bool wait_for_ready(bool);
 
 private:
-    PCI::DeviceIdentifier m_pci_device_id;
-    RefPtr<NVMeQueue> m_admin_queue;
-    NonnullRefPtrVector<NVMeQueue> m_queues;
-    NonnullRefPtrVector<NVMeNameSpace> m_namespaces;
-    Memory::TypedMapping<volatile ControllerRegister> m_controller_regs;
+    LockRefPtr<NVMeQueue> m_admin_queue;
+    Vector<NonnullLockRefPtr<NVMeQueue>> m_queues;
+    Vector<NonnullLockRefPtr<NVMeNameSpace>> m_namespaces;
+    Memory::TypedMapping<ControllerRegister volatile> m_controller_regs;
     bool m_admin_queue_ready { false };
-    size_t m_device_count {};
+    size_t m_device_count { 0 };
     AK::Time m_ready_timeout;
-    u32 m_bar;
-    u8 m_dbl_stride;
-    static Atomic<u8> controller_id;
+    u32 m_bar { 0 };
+    u8 m_dbl_stride { 0 };
+    static Atomic<u8> s_controller_id;
 };
 }

@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Debug.h>
 #include <AK/SourceGenerator.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
@@ -24,11 +23,11 @@ struct ApprovalDate {
 };
 
 struct PnpIdData {
-    String manufacturer_name;
+    DeprecatedString manufacturer_name;
     ApprovalDate approval_date;
 };
 
-static ErrorOr<String> decode_html_entities(StringView const& str)
+static ErrorOr<DeprecatedString> decode_html_entities(StringView const& str)
 {
     static constexpr struct {
         StringView entity_name;
@@ -79,7 +78,7 @@ static ErrorOr<String> decode_html_entities(StringView const& str)
             }
 
             if (!found_entity)
-                return Error::from_string_literal("Failed to decode html entity"sv);
+                return Error::from_string_literal("Failed to decode html entity");
 
             if (entity_start.value() != start)
                 decoded_str.append(str.substring_view(start, entity_start.value() - start));
@@ -87,107 +86,107 @@ static ErrorOr<String> decode_html_entities(StringView const& str)
 
         start = entity_end.value() + 1;
     }
-    return decoded_str.build();
+    return decoded_str.to_deprecated_string();
 }
 
 static ErrorOr<ApprovalDate> parse_approval_date(StringView const& str)
 {
-    auto parts = str.trim_whitespace().split_view('/', true);
+    auto parts = str.trim_whitespace().split_view('/', SplitBehavior::KeepEmpty);
     if (parts.size() != 3)
-        return Error::from_string_literal("Failed to parse approval date parts (mm/dd/yyyy)"sv);
+        return Error::from_string_literal("Failed to parse approval date parts (mm/dd/yyyy)");
 
     auto month = parts[0].to_uint();
     if (!month.has_value())
-        return Error::from_string_literal("Failed to parse month from approval date"sv);
+        return Error::from_string_literal("Failed to parse month from approval date");
     if (month.value() == 0 || month.value() > 12)
-        return Error::from_string_literal("Invalid month in approval date"sv);
+        return Error::from_string_literal("Invalid month in approval date");
 
     auto day = parts[1].to_uint();
     if (!day.has_value())
-        return Error::from_string_literal("Failed to parse day from approval date"sv);
+        return Error::from_string_literal("Failed to parse day from approval date");
     if (day.value() == 0 || day.value() > 31)
-        return Error::from_string_literal("Invalid day in approval date"sv);
+        return Error::from_string_literal("Invalid day in approval date");
 
     auto year = parts[2].to_uint();
     if (!year.has_value())
-        return Error::from_string_literal("Failed to parse year from approval date"sv);
+        return Error::from_string_literal("Failed to parse year from approval date");
     if (year.value() < 1900 || year.value() > 2999)
-        return Error::from_string_literal("Invalid year approval date"sv);
+        return Error::from_string_literal("Invalid year approval date");
 
     return ApprovalDate { .year = year.value(), .month = month.value(), .day = day.value() };
 }
 
-static ErrorOr<HashMap<String, PnpIdData>> parse_pnp_ids_database(Core::File& pnp_ids_file)
+static ErrorOr<HashMap<DeprecatedString, PnpIdData>> parse_pnp_ids_database(Core::File& pnp_ids_file)
 {
-    auto pnp_ids_file_bytes = pnp_ids_file.read_all();
+    auto pnp_ids_file_bytes = TRY(pnp_ids_file.read_until_eof());
     StringView pnp_ids_file_contents(pnp_ids_file_bytes);
 
-    HashMap<String, PnpIdData> pnp_id_data;
+    HashMap<DeprecatedString, PnpIdData> pnp_id_data;
 
     for (size_t row_content_offset = 0;;) {
-        static const auto row_start_tag = "<tr class=\""sv;
+        static auto const row_start_tag = "<tr class=\""sv;
         auto row_start = pnp_ids_file_contents.find(row_start_tag, row_content_offset);
         if (!row_start.has_value())
             break;
 
         auto row_start_tag_end = pnp_ids_file_contents.find(">"sv, row_start.value() + row_start_tag.length());
         if (!row_start_tag_end.has_value())
-            return Error::from_string_literal("Incomplete row start tag"sv);
+            return Error::from_string_literal("Incomplete row start tag");
 
-        static const auto row_end_tag = "</tr>"sv;
+        static auto const row_end_tag = "</tr>"sv;
         auto row_end = pnp_ids_file_contents.find(row_end_tag, row_start.value());
         if (!row_end.has_value())
-            return Error::from_string_literal("No matching row end tag found"sv);
+            return Error::from_string_literal("No matching row end tag found");
 
         if (row_start_tag_end.value() > row_end.value() + row_end_tag.length())
-            return Error::from_string_literal("Invalid row start tag"sv);
+            return Error::from_string_literal("Invalid row start tag");
 
         auto row_string = pnp_ids_file_contents.substring_view(row_start_tag_end.value() + 1, row_end.value() - row_start_tag_end.value() - 1);
-        Vector<String, (size_t)PnpIdColumns::ColumnCount> columns;
+        Vector<DeprecatedString, (size_t)PnpIdColumns::ColumnCount> columns;
         for (size_t column_row_offset = 0;;) {
-            static const auto column_start_tag = "<td>"sv;
+            static auto const column_start_tag = "<td>"sv;
             auto column_start = row_string.find(column_start_tag, column_row_offset);
             if (!column_start.has_value())
                 break;
 
-            static const auto column_end_tag = "</td>"sv;
+            static auto const column_end_tag = "</td>"sv;
             auto column_end = row_string.find(column_end_tag, column_start.value() + column_start_tag.length());
             if (!column_end.has_value())
-                return Error::from_string_literal("No matching column end tag found"sv);
+                return Error::from_string_literal("No matching column end tag found");
 
             auto column_content_row_offset = column_start.value() + column_start_tag.length();
             auto column_str = row_string.substring_view(column_content_row_offset, column_end.value() - column_content_row_offset).trim_whitespace();
             if (column_str.find('\"').has_value())
-                return Error::from_string_literal("Found '\"' in column content, escaping not supported!"sv);
+                return Error::from_string_literal("Found '\"' in column content, escaping not supported!");
             columns.append(column_str);
 
             column_row_offset = column_end.value() + column_end_tag.length();
         }
 
         if (columns.size() != (size_t)PnpIdColumns::ColumnCount)
-            return Error::from_string_literal("Unexpected number of columns found"sv);
+            return Error::from_string_literal("Unexpected number of columns found");
 
         auto approval_date = TRY(parse_approval_date(columns[(size_t)PnpIdColumns::ApprovalDate]));
         auto decoded_manufacturer_name = TRY(decode_html_entities(columns[(size_t)PnpIdColumns::ManufacturerName]));
         auto hash_set_result = pnp_id_data.set(columns[(size_t)PnpIdColumns::ManufacturerId], PnpIdData { .manufacturer_name = decoded_manufacturer_name, .approval_date = move(approval_date) });
         if (hash_set_result != AK::HashSetResult::InsertedNewEntry)
-            return Error::from_string_literal("Duplicate manufacturer ID encountered"sv);
+            return Error::from_string_literal("Duplicate manufacturer ID encountered");
 
         row_content_offset = row_end.value() + row_end_tag.length();
     }
 
     if (pnp_id_data.size() <= 1)
-        return Error::from_string_literal("Expected more than one row"sv);
+        return Error::from_string_literal("Expected more than one row");
 
     return pnp_id_data;
 }
 
-static void generate_header(Core::File& file, HashMap<String, PnpIdData> const& pnp_ids)
+static ErrorOr<void> generate_header(Core::File& file, HashMap<DeprecatedString, PnpIdData> const& pnp_ids)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
 
-    generator.set("pnp_id_count", String::formatted("{}", pnp_ids.size()));
+    generator.set("pnp_id_count", DeprecatedString::formatted("{}", pnp_ids.size()));
     generator.append(R"~~~(
 #pragma once
 
@@ -212,10 +211,11 @@ namespace PnpIDs {
 }
 )~~~");
 
-    VERIFY(file.write(generator.as_string_view()));
+    TRY(file.write(generator.as_string_view().bytes()));
+    return {};
 }
 
-static void generate_source(Core::File& file, HashMap<String, PnpIdData> const& pnp_ids)
+static ErrorOr<void> generate_source(Core::File& file, HashMap<DeprecatedString, PnpIdData> const& pnp_ids)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -231,9 +231,9 @@ static constexpr PnpIDData s_pnp_ids[] = {
     for (auto& pnp_id_data : pnp_ids) {
         generator.set("manufacturer_id", pnp_id_data.key);
         generator.set("manufacturer_name", pnp_id_data.value.manufacturer_name);
-        generator.set("approval_year", String::formatted("{}", pnp_id_data.value.approval_date.year));
-        generator.set("approval_month", String::formatted("{}", pnp_id_data.value.approval_date.month));
-        generator.set("approval_day", String::formatted("{}", pnp_id_data.value.approval_date.day));
+        generator.set("approval_year", DeprecatedString::formatted("{}", pnp_id_data.value.approval_date.year));
+        generator.set("approval_month", DeprecatedString::formatted("{}", pnp_id_data.value.approval_date.month));
+        generator.set("approval_day", DeprecatedString::formatted("{}", pnp_id_data.value.approval_date.day));
 
         generator.append(R"~~~(
 { "@manufacturer_id@"sv, "@manufacturer_name@"sv, { @approval_year@, @approval_month@, @approval_day@ } },
@@ -265,7 +265,8 @@ IterationDecision for_each(Function<IterationDecision(PnpIDData const&)> callbac
 }
 )~~~");
 
-    VERIFY(file.write(generator.as_string_view()));
+    TRY(file.write(generator.as_string_view().bytes()));
+    return {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -280,22 +281,22 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(pnp_ids_file_path, "Path to the input PNP ID database file", "pnp-ids-file", 'p', "pnp-ids-file");
     args_parser.parse(arguments);
 
-    auto open_file = [&](StringView path, Core::OpenMode mode = Core::OpenMode::ReadOnly) -> ErrorOr<NonnullRefPtr<Core::File>> {
+    auto open_file = [&](StringView path, Core::File::OpenMode mode = Core::File::OpenMode::Read) -> ErrorOr<NonnullOwnPtr<Core::File>> {
         if (path.is_empty()) {
-            args_parser.print_usage(stderr, arguments.argv[0]);
-            return Error::from_string_literal("Must provide all command line options"sv);
+            args_parser.print_usage(stderr, arguments.strings[0]);
+            return Error::from_string_literal("Must provide all command line options");
         }
 
         return Core::File::open(path, mode);
     };
 
-    auto generated_header_file = TRY(open_file(generated_header_path, Core::OpenMode::ReadWrite));
-    auto generated_implementation_file = TRY(open_file(generated_implementation_path, Core::OpenMode::ReadWrite));
+    auto generated_header_file = TRY(open_file(generated_header_path, Core::File::OpenMode::ReadWrite));
+    auto generated_implementation_file = TRY(open_file(generated_implementation_path, Core::File::OpenMode::ReadWrite));
     auto pnp_ids_file = TRY(open_file(pnp_ids_file_path));
 
     auto pnp_id_map = TRY(parse_pnp_ids_database(*pnp_ids_file));
 
-    generate_header(*generated_header_file, pnp_id_map);
-    generate_source(*generated_implementation_file, pnp_id_map);
+    TRY(generate_header(*generated_header_file, pnp_id_map));
+    TRY(generate_source(*generated_implementation_file, pnp_id_map));
     return 0;
 }

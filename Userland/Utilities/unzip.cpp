@@ -5,29 +5,44 @@
  */
 
 #include <AK/Assertions.h>
+#include <AK/DOSPackedTime.h>
 #include <AK/NumberFormat.h>
 #include <AK/StringUtils.h>
 #include <LibArchive/Zip.h>
 #include <LibCompress/Deflate.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
+#include <LibCore/Directory.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/System.h>
+#include <LibCrypto/Checksum/CRC32.h>
 #include <sys/stat.h>
-#include <unistd.h>
+
+static ErrorOr<void> adjust_modification_time(Archive::ZipMember const& zip_member)
+{
+    auto time = time_from_packed_dos(zip_member.modification_date, zip_member.modification_time);
+    auto seconds = static_cast<time_t>(time.to_seconds());
+    struct utimbuf buf {
+        .actime = seconds,
+        .modtime = seconds
+    };
+
+    return Core::System::utime(zip_member.name, buf);
+}
 
 static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
 {
     if (zip_member.is_directory) {
-        if (mkdir(zip_member.name.characters(), 0755) < 0) {
-            perror("mkdir");
+        if (auto maybe_error = Core::System::mkdir(zip_member.name, 0755); maybe_error.is_error()) {
+            warnln("Failed to create directory '{}': {}", zip_member.name, maybe_error.error());
             return false;
         }
         if (!quiet)
             outln(" extracting: {}", zip_member.name);
         return true;
     }
-    auto new_file = Core::File::construct(zip_member.name);
+    MUST(Core::Directory::create(LexicalPath(zip_member.name.to_deprecated_string()).parent(), Core::Directory::CreateDirectories::Yes));
+    auto new_file = Core::DeprecatedFile::construct(zip_member.name.to_deprecated_string());
     if (!new_file->open(Core::OpenMode::WriteOnly)) {
         warnln("Can't write file {}: {}", zip_member.name, new_file->error_string());
         return false;
@@ -36,19 +51,20 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
     if (!quiet)
         outln(" extracting: {}", zip_member.name);
 
-    // TODO: verify CRC32s match!
+    Crypto::Checksum::CRC32 checksum;
     switch (zip_member.compression_method) {
     case Archive::ZipCompressionMethod::Store: {
         if (!new_file->write(zip_member.compressed_data.data(), zip_member.compressed_data.size())) {
             warnln("Can't write file contents in {}: {}", zip_member.name, new_file->error_string());
             return false;
         }
+        checksum.update({ zip_member.compressed_data.data(), zip_member.compressed_data.size() });
         break;
     }
     case Archive::ZipCompressionMethod::Deflate: {
         auto decompressed_data = Compress::DeflateDecompressor::decompress_all(zip_member.compressed_data);
-        if (!decompressed_data.has_value()) {
-            warnln("Failed decompressing file {}", zip_member.name);
+        if (decompressed_data.is_error()) {
+            warnln("Failed decompressing file {}: {}", zip_member.name, decompressed_data.error());
             return false;
         }
         if (decompressed_data.value().size() != zip_member.uncompressed_size) {
@@ -59,14 +75,26 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
             warnln("Can't write file contents in {}: {}", zip_member.name, new_file->error_string());
             return false;
         }
+        checksum.update({ decompressed_data.value().data(), decompressed_data.value().size() });
         break;
     }
     default:
         VERIFY_NOT_REACHED();
     }
 
+    if (adjust_modification_time(zip_member).is_error()) {
+        warnln("Failed setting modification_time for file {}", zip_member.name);
+        return false;
+    }
+
     if (!new_file->close()) {
         warnln("Can't close file {}: {}", zip_member.name, new_file->error_string());
+        return false;
+    }
+
+    if (checksum.digest() != zip_member.crc32) {
+        warnln("Failed decompressing file {}: CRC32 mismatch", zip_member.name);
+        MUST(Core::DeprecatedFile::remove(zip_member.name, Core::DeprecatedFile::RecursionMode::Disallowed));
         return false;
     }
 
@@ -75,34 +103,23 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    const char* path;
-    int map_size_limit = 32 * MiB;
+    StringView zip_file_path;
     bool quiet { false };
-    String output_directory_path;
+    StringView output_directory_path;
     Vector<StringView> file_filters;
 
     Core::ArgsParser args_parser;
-    args_parser.add_option(map_size_limit, "Maximum chunk size to map", "map-size-limit", 0, "size");
     args_parser.add_option(output_directory_path, "Directory to receive the archive content", "output-directory", 'd', "path");
     args_parser.add_option(quiet, "Be less verbose", "quiet", 'q');
-    args_parser.add_positional_argument(path, "File to unzip", "path", Core::ArgsParser::Required::Yes);
+    args_parser.add_positional_argument(zip_file_path, "File to unzip", "path", Core::ArgsParser::Required::Yes);
     args_parser.add_positional_argument(file_filters, "Files or filters in the archive to extract", "files", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
-
-    String zip_file_path { path };
 
     struct stat st = TRY(Core::System::stat(zip_file_path));
 
     // FIXME: Map file chunk-by-chunk once we have mmap() with offset.
     //        This will require mapping some parts then unmapping them repeatedly,
     //        but it would be significantly faster and less syscall heavy than seek()/read() at every read.
-    if (st.st_size >= map_size_limit) {
-        warnln("unzip warning: Refusing to map file since it is larger than {}, pass '--map-size-limit {}' to get around this",
-            human_readable_size(map_size_limit),
-            round_up_to_power_of_two(st.st_size, 16));
-        return 1;
-    }
-
     RefPtr<Core::MappedFile> mapped_file;
     ReadonlyBytes input_bytes;
     if (st.st_size > 0) {
@@ -120,20 +137,20 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     if (!output_directory_path.is_null()) {
-        auto mkdir_error = Core::System::mkdir(output_directory_path, 0755);
-        if (mkdir_error.is_error() && mkdir_error.error().code() != EEXIST)
-            return mkdir_error.release_error();
+        TRY(Core::Directory::create(output_directory_path, Core::Directory::CreateDirectories::Yes));
         TRY(Core::System::chdir(output_directory_path));
     }
 
-    auto success = zip_file->for_each_member([&](auto zip_member) {
+    Vector<Archive::ZipMember> zip_directories;
+
+    auto success = TRY(zip_file->for_each_member([&](auto zip_member) {
         bool keep_file = false;
 
         if (!file_filters.is_empty()) {
             for (auto& filter : file_filters) {
                 // Convert underscore wildcards (usual unzip convention) to question marks (as used by StringUtils)
-                auto string_filter = filter.replace("_", "?", true);
-                if (zip_member.name.matches(string_filter, CaseSensitivity::CaseSensitive)) {
+                auto string_filter = filter.replace("_"sv, "?"sv, ReplaceMode::All);
+                if (zip_member.name.bytes_as_string_view().matches(string_filter, CaseSensitivity::CaseSensitive)) {
                     keep_file = true;
                     break;
                 }
@@ -145,10 +162,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (keep_file) {
             if (!unpack_zip_member(zip_member, quiet))
                 return IterationDecision::Break;
+            if (zip_member.is_directory)
+                zip_directories.append(zip_member);
         }
 
         return IterationDecision::Continue;
-    });
+    }));
+
+    if (!success) {
+        return 1;
+    }
+
+    for (auto& directory : zip_directories) {
+        if (adjust_modification_time(directory).is_error()) {
+            warnln("Failed setting modification time for directory {}", directory.name);
+            return 1;
+        }
+    }
 
     return success ? 0 : 1;
 }

@@ -17,7 +17,7 @@ class Inspector : public Debug::ProcessInspector {
     AK_MAKE_NONMOVABLE(Inspector);
 
 public:
-    static OwnPtr<Inspector> create(String const& coredump_path, Function<void(float)> on_progress = {});
+    static OwnPtr<Inspector> create(DeprecatedString const& coredump_path, Function<void(float)> on_progress = {});
     virtual ~Inspector() override = default;
 
     // ^Debug::ProcessInspector
@@ -35,7 +35,7 @@ private:
 
     NonnullOwnPtr<Reader> m_reader;
 
-    NonnullOwnPtrVector<Debug::LoadedLibrary> m_loaded_libraries;
+    Vector<NonnullOwnPtr<Debug::LoadedLibrary>> m_loaded_libraries;
 };
 
 }

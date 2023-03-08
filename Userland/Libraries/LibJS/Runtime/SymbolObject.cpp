@@ -10,18 +10,14 @@
 
 namespace JS {
 
-SymbolObject* SymbolObject::create(GlobalObject& global_object, Symbol& primitive_symbol)
+NonnullGCPtr<SymbolObject> SymbolObject::create(Realm& realm, Symbol& primitive_symbol)
 {
-    return global_object.heap().allocate<SymbolObject>(global_object, primitive_symbol, *global_object.symbol_prototype());
+    return realm.heap().allocate<SymbolObject>(realm, primitive_symbol, *realm.intrinsics().symbol_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 SymbolObject::SymbolObject(Symbol& symbol, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_symbol(symbol)
-{
-}
-
-SymbolObject::~SymbolObject()
 {
 }
 

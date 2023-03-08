@@ -8,19 +8,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
+extern "C" int LLVMFuzzerTestOneInput(uint8_t const* data, size_t size)
 {
     auto flac_data = ByteBuffer::copy(data, size).release_value();
-    auto flac = make<Audio::FlacLoaderPlugin>(flac_data);
+    auto flac_or_error = Audio::FlacLoaderPlugin::create(flac_data.bytes());
 
-    if (flac->initialize().is_error())
-        return 1;
+    if (flac_or_error.is_error())
+        return 0;
+
+    auto flac = flac_or_error.release_value();
 
     for (;;) {
         auto samples = flac->get_more_samples();
         if (samples.is_error())
-            return 2;
-        if (samples.value()->sample_count() > 0)
+            return 0;
+        if (samples.value().size() > 0)
             break;
     }
 

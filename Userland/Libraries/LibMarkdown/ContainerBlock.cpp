@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Forward.h>
 #include <LibMarkdown/BlockQuote.h>
 #include <LibMarkdown/CodeBlock.h>
 #include <LibMarkdown/ContainerBlock.h>
@@ -16,39 +17,39 @@
 
 namespace Markdown {
 
-String ContainerBlock::render_to_html(bool tight) const
+DeprecatedString ContainerBlock::render_to_html(bool tight) const
 {
     StringBuilder builder;
 
     for (size_t i = 0; i + 1 < m_blocks.size(); ++i) {
-        auto s = m_blocks[i].render_to_html(tight);
+        auto s = m_blocks[i]->render_to_html(tight);
         builder.append(s);
     }
 
     // I don't like this edge case.
     if (m_blocks.size() != 0) {
         auto& block = m_blocks[m_blocks.size() - 1];
-        auto s = block.render_to_html(tight);
-        if (tight && dynamic_cast<Paragraph const*>(&block)) {
+        auto s = block->render_to_html(tight);
+        if (tight && dynamic_cast<Paragraph const*>(block.ptr())) {
             builder.append(s.substring_view(0, s.length() - 1));
         } else {
             builder.append(s);
         }
     }
 
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
-String ContainerBlock::render_for_terminal(size_t view_width) const
+Vector<DeprecatedString> ContainerBlock::render_lines_for_terminal(size_t view_width) const
 {
-    StringBuilder builder;
+    Vector<DeprecatedString> lines;
 
     for (auto& block : m_blocks) {
-        auto s = block.render_for_terminal(view_width);
-        builder.append(s);
+        for (auto& line : block->render_lines_for_terminal(view_width))
+            lines.append(move(line));
     }
 
-    return builder.build();
+    return lines;
 }
 
 RecursionDecision ContainerBlock::walk(Visitor& visitor) const
@@ -58,7 +59,7 @@ RecursionDecision ContainerBlock::walk(Visitor& visitor) const
         return rd;
 
     for (auto const& block : m_blocks) {
-        rd = block.walk(visitor);
+        rd = block->walk(visitor);
         if (rd == RecursionDecision::Break)
             return rd;
     }
@@ -66,8 +67,18 @@ RecursionDecision ContainerBlock::walk(Visitor& visitor) const
     return RecursionDecision::Continue;
 }
 
+template<class CodeBlock>
+static bool try_parse_block(LineIterator& lines, Vector<NonnullOwnPtr<Block>>& blocks, Heading* current_section)
+{
+    OwnPtr<CodeBlock> block = CodeBlock::parse(lines, current_section);
+    if (!block)
+        return false;
+    blocks.append(block.release_nonnull());
+    return true;
+}
+
 template<typename BlockType>
-static bool try_parse_block(LineIterator& lines, NonnullOwnPtrVector<Block>& blocks)
+static bool try_parse_block(LineIterator& lines, Vector<NonnullOwnPtr<Block>>& blocks)
 {
     OwnPtr<BlockType> block = BlockType::parse(lines);
     if (!block)
@@ -78,14 +89,15 @@ static bool try_parse_block(LineIterator& lines, NonnullOwnPtrVector<Block>& blo
 
 OwnPtr<ContainerBlock> ContainerBlock::parse(LineIterator& lines)
 {
-    NonnullOwnPtrVector<Block> blocks;
+    Vector<NonnullOwnPtr<Block>> blocks;
 
     StringBuilder paragraph_text;
+    Heading* current_section = nullptr;
 
     auto flush_paragraph = [&] {
         if (paragraph_text.is_empty())
             return;
-        auto paragraph = make<Paragraph>(Text::parse(paragraph_text.build()));
+        auto paragraph = make<Paragraph>(Text::parse(paragraph_text.to_deprecated_string()));
         blocks.append(move(paragraph));
         paragraph_text.clear();
     };
@@ -97,7 +109,7 @@ OwnPtr<ContainerBlock> ContainerBlock::parse(LineIterator& lines)
         if (lines.is_end())
             break;
 
-        if ((*lines).is_empty()) {
+        if ((*lines).is_whitespace()) {
             has_trailing_blank_lines = true;
             ++lines;
 
@@ -107,12 +119,17 @@ OwnPtr<ContainerBlock> ContainerBlock::parse(LineIterator& lines)
             has_blank_lines = has_blank_lines || has_trailing_blank_lines;
         }
 
-        bool any = try_parse_block<Table>(lines, blocks)
-            || try_parse_block<List>(lines, blocks)
-            || try_parse_block<CodeBlock>(lines, blocks)
-            || try_parse_block<CommentBlock>(lines, blocks)
-            || try_parse_block<Heading>(lines, blocks)
+        bool heading = false;
+        if ((heading = try_parse_block<Heading>(lines, blocks)))
+            current_section = dynamic_cast<Heading*>(blocks.last().ptr());
+
+        bool any = heading
+            || try_parse_block<Table>(lines, blocks)
             || try_parse_block<HorizontalRule>(lines, blocks)
+            || try_parse_block<List>(lines, blocks)
+            // CodeBlock needs to know the current section's name for proper indentation
+            || try_parse_block<CodeBlock>(lines, blocks, current_section)
+            || try_parse_block<CommentBlock>(lines, blocks)
             || try_parse_block<BlockQuote>(lines, blocks);
 
         if (any) {
@@ -125,7 +142,7 @@ OwnPtr<ContainerBlock> ContainerBlock::parse(LineIterator& lines)
         }
 
         if (!paragraph_text.is_empty())
-            paragraph_text.append("\n");
+            paragraph_text.append('\n');
         paragraph_text.append(*lines++);
     }
 

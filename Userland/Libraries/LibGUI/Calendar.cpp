@@ -1,49 +1,43 @@
 /*
  * Copyright (c) 2019-2020, Ryan Grieb <ryan.m.grieb@gmail.com>
- * Copyright (c) 2020-2021, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
+ * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DateConstants.h>
+#include <AK/String.h>
+#include <LibConfig/Client.h>
 #include <LibCore/DateTime.h>
 #include <LibGUI/Calendar.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 
 REGISTER_WIDGET(GUI, Calendar);
 
 namespace GUI {
 
-static const char* long_day_names[] = {
-    "Sunday", "Monday", "Tuesday", "Wednesday",
-    "Thursday", "Friday", "Saturday"
-};
-
-static const char* short_day_names[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-static const char* mini_day_names[] = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
-static const char* micro_day_names[] = { "S", "M", "T", "W", "T", "F", "S" };
-
-static const char* long_month_names[] = {
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-};
-
-static const char* short_month_names[] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-};
-
-static const auto extra_large_font = Gfx::BitmapFont::load_from_file("/res/fonts/MarietaRegular36.font");
-static const auto large_font = Gfx::BitmapFont::load_from_file("/res/fonts/MarietaRegular24.font");
-static const auto medium_font = Gfx::BitmapFont::load_from_file("/res/fonts/PebbletonRegular14.font");
-static const auto small_font = Gfx::BitmapFont::load_from_file("/res/fonts/KaticaRegular10.font");
+static auto const extra_large_font = Gfx::BitmapFont::load_from_file("/res/fonts/MarietaRegular36.font");
+static auto const large_font = Gfx::BitmapFont::load_from_file("/res/fonts/MarietaRegular24.font");
+static auto const medium_font = Gfx::BitmapFont::load_from_file("/res/fonts/PebbletonRegular14.font");
+static auto const small_font = Gfx::BitmapFont::load_from_file("/res/fonts/KaticaRegular10.font");
 
 Calendar::Calendar(Core::DateTime date_time, Mode mode)
     : m_selected_date(date_time)
     , m_mode(mode)
 {
+    auto first_day_of_week = Config::read_string("Calendar"sv, "View"sv, "FirstDayOfWeek"sv, "Sunday"sv);
+    m_first_day_of_week = static_cast<DayOfWeek>(day_of_week_index(first_day_of_week));
+
+    auto first_day_of_weekend = Config::read_string("Calendar"sv, "View"sv, "FirstDayOfWeekend"sv, "Saturday"sv);
+    m_first_day_of_weekend = static_cast<DayOfWeek>(day_of_week_index(first_day_of_weekend));
+
+    auto weekend_length = Config::read_i32("Calendar"sv, "View"sv, "WeekendLength"sv, 2);
+    m_weekend_length = weekend_length;
+
     set_fill_with_background_color(true);
 
     for (int i = 0; i < 7; i++) {
@@ -59,11 +53,15 @@ Calendar::Calendar(Core::DateTime date_time, Mode mode)
         }
     }
 
-    update_tiles(m_selected_date.year(), m_selected_date.month());
-}
+    auto default_view = Config::read_string("Calendar"sv, "View"sv, "DefaultView"sv, "Month"sv);
+    if (default_view == "Year") {
+        m_mode = Year;
+        m_show_days = false;
+        m_show_year = true;
+        m_show_month_year = true;
+    }
 
-Calendar::~Calendar()
-{
+    update_tiles(m_selected_date.year(), m_selected_date.month());
 }
 
 void Calendar::set_grid(bool show)
@@ -97,7 +95,7 @@ void Calendar::resize_event(GUI::ResizeEvent& event)
 
         set_show_year(false);
 
-        const int GRID_LINES = 6;
+        int const GRID_LINES = 6;
         int tile_width = (m_event_size.width() - GRID_LINES) / 7;
         int width_remainder = (m_event_size.width() - GRID_LINES) % 7;
         int y_offset = is_showing_days_of_the_week() ? 16 : 0;
@@ -146,10 +144,10 @@ void Calendar::resize_event(GUI::ResizeEvent& event)
 
         set_show_month_and_year(false);
 
-        const int VERT_GRID_LINES = 27;
-        const int HORI_GRID_LINES = 15;
-        const int THREADING = 3;
-        const int MONTH_TITLE = 19;
+        int const VERT_GRID_LINES = 27;
+        int const HORI_GRID_LINES = 15;
+        int const THREADING = 3;
+        int const MONTH_TITLE = 19;
         int tile_width = (m_event_size.width() - VERT_GRID_LINES) / 28;
         int width_remainder = (m_event_size.width() - VERT_GRID_LINES) % 28;
         int y_offset = is_showing_year() ? 22 : 0;
@@ -286,55 +284,56 @@ void Calendar::update_tiles(unsigned view_year, unsigned view_month)
 {
     set_view_date(view_year, view_month);
 
-    unsigned months;
-    mode() == Month ? months = 1 : months = 12;
+    auto now = Core::DateTime::now();
+    unsigned months = mode() == Month ? 1 : 12;
     for (unsigned i = 0; i < months; i++) {
         if (mode() == Year)
             view_month = i + 1;
+
+        auto first_day_of_current_month = Core::DateTime::create(view_year, view_month, 1);
+        unsigned start_of_month = (first_day_of_current_month.weekday() - to_underlying(m_first_day_of_week) + 7) % 7;
+        unsigned days_from_previous_month_to_show = start_of_month == 0 ? 7 : start_of_month;
+
         for (unsigned j = 0; j < 42; j++) {
-            auto date_time = Core::DateTime::create(view_year, view_month, 1);
-            unsigned start_of_month = date_time.weekday();
             unsigned year;
             unsigned month;
             unsigned day;
 
-            if (start_of_month == 0 && mode() != Year) {
+            if (j + 1 <= days_from_previous_month_to_show) {
+                // Day from previous month.
                 month = (view_month - 1 == 0) ? 12 : view_month - 1;
                 year = (month == 12) ? view_year - 1 : view_year;
-                date_time.set_time(year, month, 1);
-                day = (date_time.days_in_month() - 6 + j);
-            } else if (start_of_month > j) {
-                month = (view_month - 1 == 0) ? 12 : view_month - 1;
-                year = (month == 12) ? view_year - 1 : view_year;
-                date_time.set_time(year, month, 1);
-                day = (date_time.days_in_month() - (start_of_month) + j) + 1;
-            } else if ((j - start_of_month) + 1 > date_time.days_in_month()) {
+                day = days_in_month(year, month) + j + 1 - days_from_previous_month_to_show;
+            } else if (j + 1 > days_from_previous_month_to_show + first_day_of_current_month.days_in_month()) {
+                // Day from next month.
                 month = (view_month + 1) > 12 ? 1 : view_month + 1;
                 year = (month == 1) ? view_year + 1 : view_year;
-                day = ((j - start_of_month) + 1) - date_time.days_in_month();
+                day = j + 1 - days_from_previous_month_to_show - first_day_of_current_month.days_in_month();
             } else {
+                // Day from current month.
                 month = view_month;
                 year = view_year;
-                day = (j - start_of_month) + 1;
+                day = j + 1 - days_from_previous_month_to_show;
             }
-            date_time.set_time(year, month, day);
 
-            m_tiles[i][j].date_time = date_time;
-            m_tiles[i][j].is_outside_selected_month = (date_time.month() != view_month
-                || date_time.year() != view_year);
-            m_tiles[i][j].is_selected = (date_time.year() == m_selected_date.year()
-                && date_time.month() == m_selected_date.month()
-                && date_time.day() == m_selected_date.day()
+            m_tiles[i][j].year = year;
+            m_tiles[i][j].month = month;
+            m_tiles[i][j].day = day;
+            m_tiles[i][j].is_outside_selected_month = (month != view_month
+                || year != view_year);
+            m_tiles[i][j].is_selected = (year == m_selected_date.year()
+                && month == m_selected_date.month()
+                && day == m_selected_date.day()
                 && (mode() == Year ? !m_tiles[i][j].is_outside_selected_month : true));
-            m_tiles[i][j].is_today = (date_time.day() == Core::DateTime::now().day()
-                && date_time.month() == Core::DateTime::now().month()
-                && date_time.year() == Core::DateTime::now().year());
+            m_tiles[i][j].is_today = (day == now.day()
+                && month == now.month()
+                && year == now.year());
         }
     }
     update();
 }
 
-String Calendar::formatted_date(Format format)
+ErrorOr<String> Calendar::formatted_date(Format format)
 {
     switch (format) {
     case ShortMonthYear:
@@ -345,9 +344,8 @@ String Calendar::formatted_date(Format format)
         return String::formatted("{}", long_month_names[view_month() - 1]);
     case YearOnly:
         return String::number(view_year());
-    default:
-        VERIFY_NOT_REACHED();
     }
+    VERIFY_NOT_REACHED();
 }
 
 void Calendar::paint_event(GUI::PaintEvent& event)
@@ -378,7 +376,7 @@ void Calendar::paint_event(GUI::PaintEvent& event)
             22);
         y_offset += year_only_rect.height();
         painter.fill_rect(year_only_rect, palette().hover_highlight());
-        painter.draw_text(year_only_rect, formatted_date(YearOnly), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
+        painter.draw_text(year_only_rect, formatted_date(YearOnly).release_value_but_fixme_should_propagate_errors(), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
         painter.draw_line({ 0, y_offset }, { frame_inner_rect().width(), y_offset }, (!m_show_month_tiles ? palette().threed_shadow1() : palette().threed_shadow2()), 1);
         y_offset += 1;
         if (!m_show_month_tiles) {
@@ -393,9 +391,9 @@ void Calendar::paint_event(GUI::PaintEvent& event)
             22);
         painter.fill_rect(month_year_rect, palette().hover_highlight());
         month_year_rect.set_width(frame_inner_rect().width() / 2);
-        painter.draw_text(month_year_rect, formatted_date(MonthOnly), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
+        painter.draw_text(month_year_rect, formatted_date(MonthOnly).release_value_but_fixme_should_propagate_errors(), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
         month_year_rect.set_x(month_year_rect.width() + (frame_inner_rect().width() % 2 ? 1 : 0));
-        painter.draw_text(month_year_rect, formatted_date(YearOnly), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
+        painter.draw_text(month_year_rect, formatted_date(YearOnly).release_value_but_fixme_should_propagate_errors(), medium_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
         y_offset += 22;
         painter.draw_line({ 0, y_offset }, { frame_inner_rect().width(), y_offset }, palette().threed_shadow1(), 1);
         y_offset += 1;
@@ -446,7 +444,8 @@ void Calendar::paint_event(GUI::PaintEvent& event)
                 y_offset,
                 m_days[i].width,
                 16);
-            painter.draw_text(day_rect, m_days[i].name, small_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
+            auto const& day_name = m_days[(i + to_underlying(m_first_day_of_week)) % 7].name;
+            painter.draw_text(day_rect, day_name, small_font->bold_variant(), Gfx::TextAlignment::Center, palette().base_text());
         }
         y_offset += days_of_the_week_rect.height();
         painter.draw_line({ 0, y_offset }, { frame_inner_rect().width(), y_offset }, palette().threed_shadow2(), 1);
@@ -460,6 +459,7 @@ void Calendar::paint_event(GUI::PaintEvent& event)
             if (j > 0)
                 y_offset += m_tiles[0][(j - 1) * 7].height + 1;
             for (int k = 0; k < 7; k++) {
+                bool is_weekend = is_day_in_weekend((DayOfWeek)((k + to_underlying(m_first_day_of_week)) % 7));
                 if (k > 0)
                     x_offset += m_tiles[0][k - 1].width + 1;
                 auto tile_rect = Gfx::IntRect(
@@ -468,17 +468,23 @@ void Calendar::paint_event(GUI::PaintEvent& event)
                     m_tiles[0][i].width,
                     m_tiles[0][i].height);
                 m_tiles[0][i].rect = tile_rect.translated(frame_thickness(), frame_thickness());
-                if (m_tiles[0][i].is_hovered || m_tiles[0][i].is_selected)
-                    painter.fill_rect(tile_rect, palette().hover_highlight());
-                else
-                    painter.fill_rect(tile_rect, palette().base());
+
+                Color background_color = palette().base();
+
+                if (m_tiles[0][i].is_hovered || m_tiles[0][i].is_selected) {
+                    background_color = palette().hover_highlight();
+                } else if (is_weekend) {
+                    background_color = palette().gutter();
+                }
+
+                painter.fill_rect(tile_rect, background_color);
 
                 auto text_alignment = Gfx::TextAlignment::TopRight;
                 auto text_rect = Gfx::IntRect(
                     x_offset,
                     y_offset + 4,
                     m_tiles[0][i].width - 4,
-                    font().glyph_height() + 4);
+                    font().pixel_size_rounded_up() + 4);
 
                 if (width > 150 && height > 150) {
                     set_font(extra_large_font);
@@ -494,7 +500,7 @@ void Calendar::paint_event(GUI::PaintEvent& event)
                     text_rect = Gfx::IntRect(tile_rect);
                 }
 
-                auto display_date = String::number(m_tiles[0][i].date_time.day());
+                auto display_date = DeprecatedString::number(m_tiles[0][i].day);
                 if (m_tiles[0][i].is_selected && (width < 30 || height < 30))
                     painter.draw_rect(tile_rect, palette().base_text());
 
@@ -603,7 +609,7 @@ void Calendar::paint_event(GUI::PaintEvent& event)
                         set_font(small_font);
                     }
 
-                    auto display_date = String::number(m_tiles[l][i].date_time.day());
+                    auto display_date = DeprecatedString::number(m_tiles[l][i].day);
                     if (m_tiles[l][i].is_selected)
                         painter.draw_rect(tile_rect, palette().base_text());
 
@@ -709,7 +715,7 @@ void Calendar::mouseup_event(GUI::MouseEvent& event)
                     continue;
                 if (m_tiles[i][j].rect.contains(event.position())) {
                     m_previous_selected_date = m_selected_date;
-                    m_selected_date = m_tiles[i][j].date_time;
+                    m_selected_date = Core::DateTime::create(m_tiles[i][j].year, m_tiles[i][j].month, m_tiles[i][j].day);
                     update_tiles(m_selected_date.year(), m_selected_date.month());
                     if (on_tile_click)
                         on_tile_click();
@@ -745,7 +751,7 @@ void Calendar::doubleclick_event(GUI::MouseEvent& event)
     mode() == Month ? months = 1 : months = 12;
     for (int i = 0; i < months; i++) {
         for (int j = 0; j < 42; j++) {
-            if (m_tiles[i][j].date_time.day() != m_previous_selected_date.day())
+            if (m_tiles[i][j].day != m_previous_selected_date.day())
                 continue;
             if (mode() == Year && m_tiles[i][j].is_outside_selected_month)
                 continue;
@@ -756,4 +762,42 @@ void Calendar::doubleclick_event(GUI::MouseEvent& event)
         }
     }
 }
+
+size_t Calendar::day_of_week_index(DeprecatedString const& day_name)
+{
+    auto const& day_names = AK::long_day_names;
+    return AK::find_index(day_names.begin(), day_names.end(), day_name);
+}
+
+void Calendar::config_string_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, DeprecatedString const& value)
+{
+    if (domain == "Calendar" && group == "View" && key == "FirstDayOfWeek") {
+        m_first_day_of_week = static_cast<DayOfWeek>(day_of_week_index(value));
+        update_tiles(m_view_year, m_view_month);
+    } else if (domain == "Calendar" && group == "View" && key == "FirstDayOfWeekend") {
+        m_first_day_of_weekend = static_cast<DayOfWeek>(day_of_week_index(value));
+        update();
+    }
+}
+
+void Calendar::config_i32_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, i32 value)
+{
+    if (domain == "Calendar" && group == "View" && key == "WeekendLength") {
+        m_weekend_length = value;
+        update();
+    }
+}
+
+bool Calendar::is_day_in_weekend(DayOfWeek day)
+{
+    auto day_index = to_underlying(day);
+    auto weekend_start_index = to_underlying(m_first_day_of_weekend);
+    auto weekend_end_index = weekend_start_index + m_weekend_length;
+
+    if (day_index < weekend_start_index)
+        day_index += 7;
+
+    return day_index < weekend_end_index;
+}
+
 }

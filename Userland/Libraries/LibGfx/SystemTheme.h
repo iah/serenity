@@ -8,9 +8,10 @@
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Forward.h>
-#include <AK/String.h>
 #include <AK/Types.h>
+#include <AK/Vector.h>
 #include <LibCore/AnonymousBuffer.h>
 #include <LibCore/ConfigFile.h>
 #include <LibGfx/Color.h>
@@ -28,10 +29,26 @@ namespace Gfx {
     C(ActiveWindowTitleStripes)    \
     C(Base)                        \
     C(BaseText)                    \
+    C(Black)                       \
+    C(Blue)                        \
+    C(BrightBlack)                 \
+    C(BrightBlue)                  \
+    C(BrightCyan)                  \
+    C(BrightGreen)                 \
+    C(BrightMagenta)               \
+    C(BrightRed)                   \
+    C(BrightWhite)                 \
+    C(BrightYellow)                \
     C(Button)                      \
     C(ButtonText)                  \
+    C(ColorSchemeBackground)       \
+    C(ColorSchemeForeground)       \
+    C(Cyan)                        \
+    C(DisabledTextFront)           \
+    C(DisabledTextBack)            \
     C(DesktopBackground)           \
     C(FocusOutline)                \
+    C(Green)                       \
     C(Gutter)                      \
     C(GutterBorder)                \
     C(HighlightWindowBorder1)      \
@@ -50,6 +67,7 @@ namespace Gfx {
     C(InactiveWindowTitleShadow)   \
     C(InactiveWindowTitleStripes)  \
     C(Link)                        \
+    C(Magenta)                     \
     C(MenuBase)                    \
     C(MenuBaseText)                \
     C(MenuSelection)               \
@@ -61,6 +79,7 @@ namespace Gfx {
     C(MovingWindowTitleShadow)     \
     C(MovingWindowTitleStripes)    \
     C(PlaceholderText)             \
+    C(Red)                         \
     C(RubberBandBorder)            \
     C(RubberBandFill)              \
     C(Ruler)                       \
@@ -95,14 +114,18 @@ namespace Gfx {
     C(Tray)                        \
     C(TrayText)                    \
     C(VisitedLink)                 \
+    C(White)                       \
     C(Window)                      \
-    C(WindowText)
+    C(WindowText)                  \
+    C(Yellow)
 
 #define ENUMERATE_ALIGNMENT_ROLES(C) \
     C(TitleAlignment)
 
 #define ENUMERATE_FLAG_ROLES(C) \
-    C(IsDark)
+    C(BoldTextAsBright)         \
+    C(IsDark)                   \
+    C(TitleButtonsIconOnly)
 
 #define ENUMERATE_METRIC_ROLES(C) \
     C(BorderThickness)            \
@@ -117,7 +140,8 @@ namespace Gfx {
     C(ActiveWindowShadow)       \
     C(TaskbarShadow)            \
     C(MenuShadow)               \
-    C(TooltipShadow)
+    C(TooltipShadow)            \
+    C(ColorScheme)
 
 enum class ColorRole {
     NoRole,
@@ -133,7 +157,7 @@ enum class ColorRole {
     DisabledText = ThreedShadow1,
 };
 
-inline const char* to_string(ColorRole role)
+inline char const* to_string(ColorRole role)
 {
     switch (role) {
     case ColorRole::NoRole:
@@ -160,7 +184,7 @@ enum class AlignmentRole {
         __Count,
 };
 
-inline const char* to_string(AlignmentRole role)
+inline char const* to_string(AlignmentRole role)
 {
     switch (role) {
     case AlignmentRole::NoRole:
@@ -187,7 +211,7 @@ enum class FlagRole {
         __Count,
 };
 
-inline const char* to_string(FlagRole role)
+inline char const* to_string(FlagRole role)
 {
     switch (role) {
     case FlagRole::NoRole:
@@ -214,7 +238,7 @@ enum class MetricRole {
         __Count,
 };
 
-inline const char* to_string(MetricRole role)
+inline char const* to_string(MetricRole role)
 {
     switch (role) {
     case MetricRole::NoRole:
@@ -241,15 +265,15 @@ enum class PathRole {
         __Count,
 };
 
-inline const char* to_string(PathRole role)
+inline StringView to_string(PathRole role)
 {
     switch (role) {
     case PathRole::NoRole:
-        return "NoRole";
+        return "NoRole"sv;
 #undef __ENUMERATE_PATH_ROLE
 #define __ENUMERATE_PATH_ROLE(role) \
     case PathRole::role:            \
-        return #role;
+        return #role##sv;
         ENUMERATE_PATH_ROLES(__ENUMERATE_PATH_ROLE)
 #undef __ENUMERATE_PATH_ROLE
     default:
@@ -258,7 +282,7 @@ inline const char* to_string(PathRole role)
 }
 
 struct SystemTheme {
-    RGBA32 color[(int)ColorRole::__Count];
+    ARGB32 color[(int)ColorRole::__Count];
     Gfx::TextAlignment alignment[(int)AlignmentRole::__Count];
     bool flag[(int)FlagRole::__Count];
     int metric[(int)MetricRole::__Count];
@@ -267,8 +291,15 @@ struct SystemTheme {
 
 Core::AnonymousBuffer& current_system_theme_buffer();
 void set_system_theme(Core::AnonymousBuffer);
-Core::AnonymousBuffer load_system_theme(Core::ConfigFile const&);
-Core::AnonymousBuffer load_system_theme(String const& path);
+ErrorOr<Core::AnonymousBuffer> load_system_theme(Core::ConfigFile const&);
+ErrorOr<Core::AnonymousBuffer> load_system_theme(DeprecatedString const& path);
+
+struct SystemThemeMetaData {
+    DeprecatedString name;
+    DeprecatedString path;
+};
+
+ErrorOr<Vector<SystemThemeMetaData>> list_installed_system_themes();
 
 }
 

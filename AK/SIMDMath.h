@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <AK/Math.h>
 #include <AK/SIMD.h>
+#include <AK/SIMDExtras.h>
 #include <math.h>
 
 // Functions returning vectors or accepting vector arguments have different calling conventions
@@ -48,6 +50,11 @@ ALWAYS_INLINE static f32x4 clamp(f32x4 v, f32x4 min, f32x4 max)
     return v < min ? min : (v > max ? max : v);
 }
 
+ALWAYS_INLINE static f32x4 clamp(f32x4 v, float min, float max)
+{
+    return v < min ? min : (v > max ? max : v);
+}
+
 ALWAYS_INLINE static f32x4 exp(f32x4 v)
 {
     // FIXME: This should be replaced with a vectorized algorithm instead of calling the scalar expf 4 times
@@ -57,6 +64,43 @@ ALWAYS_INLINE static f32x4 exp(f32x4 v)
         expf(v[2]),
         expf(v[3]),
     };
+}
+
+ALWAYS_INLINE static f32x4 exp_approximate(f32x4 v)
+{
+    static constexpr int number_of_iterations = 10;
+    auto result = 1.f + v / (1 << number_of_iterations);
+    for (int i = 0; i < number_of_iterations; ++i)
+        result *= result;
+    return result;
+}
+
+ALWAYS_INLINE static f32x4 sqrt(f32x4 v)
+{
+#if ARCH(X86_64)
+    return __builtin_ia32_sqrtps(v);
+#else
+    return f32x4 {
+        AK::sqrt(v[0]),
+        AK::sqrt(v[1]),
+        AK::sqrt(v[2]),
+        AK::sqrt(v[3]),
+    };
+#endif
+}
+
+ALWAYS_INLINE static f32x4 rsqrt(f32x4 v)
+{
+#if ARCH(X86_64)
+    return __builtin_ia32_rsqrtps(v);
+#else
+    return f32x4 {
+        1.f / AK::sqrt(v[0]),
+        1.f / AK::sqrt(v[1]),
+        1.f / AK::sqrt(v[2]),
+        1.f / AK::sqrt(v[3]),
+    };
+#endif
 }
 
 }

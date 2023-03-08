@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2022, Brian Gianforcaro <bgianf@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,7 +10,7 @@
 #include <LibGfx/Palette.h>
 
 namespace GUI {
-static Syntax::TextStyle style_for_token_type(const Gfx::Palette& palette, GitCommitToken::Type type)
+static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, GitCommitToken::Type type)
 {
     switch (type) {
     case GitCommitToken::Type::Comment:
@@ -50,10 +51,6 @@ Vector<GitCommitSyntaxHighlighter::MatchingTokenPair> GitCommitSyntaxHighlighter
 bool GitCommitSyntaxHighlighter::token_types_equal(u64 token1, u64 token2) const
 {
     return static_cast<GUI::GitCommitToken::Type>(token1) == static_cast<GUI::GitCommitToken::Type>(token2);
-}
-
-GitCommitSyntaxHighlighter::~GitCommitSyntaxHighlighter()
-{
 }
 
 }

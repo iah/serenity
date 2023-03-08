@@ -4,15 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/LexicalPath.h>
 #include <AK/QuickSort.h>
 #include <AK/Result.h>
-#include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <spawn.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -25,18 +25,18 @@ enum class ComponentCategory {
 };
 
 struct ComponentData {
-    String name;
-    String description;
+    DeprecatedString name;
+    DeprecatedString description;
     ComponentCategory category { ComponentCategory::Optional };
     bool was_selected { false };
-    Vector<String> dependencies;
+    Vector<DeprecatedString> dependencies;
     bool is_selected { false };
 };
 
 struct WhiptailOption {
-    String tag;
-    String name;
-    String description;
+    DeprecatedString tag;
+    DeprecatedString name;
+    DeprecatedString description;
     bool checked { false };
 };
 
@@ -77,7 +77,7 @@ static Vector<ComponentData> read_component_data(Core::ConfigFile const& config_
     return components;
 }
 
-static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<WhiptailOption> const& options, StringView title, StringView description)
+static Result<Vector<DeprecatedString>, int> run_whiptail(WhiptailMode mode, Vector<WhiptailOption> const& options, StringView title, StringView description)
 {
     struct winsize w;
     if (ioctl(0, TIOCGWINSZ, &w) < 0) {
@@ -97,7 +97,7 @@ static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<Whipta
     int read_fd = pipefd[0];
     int write_fd = pipefd[1];
 
-    Vector<String> arguments = { "whiptail", "--notags", "--separate-output", "--output-fd", String::number(write_fd) };
+    Vector<DeprecatedString> arguments = { "whiptail", "--notags", "--separate-output", "--output-fd", DeprecatedString::number(write_fd) };
 
     if (!title.is_empty()) {
         arguments.append("--title");
@@ -116,13 +116,13 @@ static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<Whipta
     }
 
     if (description.is_empty())
-        arguments.append(String::empty());
+        arguments.append(DeprecatedString::empty());
     else
-        arguments.append(String::formatted("\n {}", description));
+        arguments.append(DeprecatedString::formatted("\n {}", description));
 
-    arguments.append(String::number(height));
-    arguments.append(String::number(width));
-    arguments.append(String::number(height - 9));
+    arguments.append(DeprecatedString::number(height));
+    arguments.append(DeprecatedString::number(width));
+    arguments.append(DeprecatedString::number(height - 9));
 
     // Check how wide the name field needs to be.
     size_t max_name_width = 0;
@@ -133,7 +133,7 @@ static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<Whipta
 
     for (auto& option : options) {
         arguments.append(option.tag);
-        arguments.append(String::formatted("{:{2}}    {}", option.name, option.description, max_name_width));
+        arguments.append(DeprecatedString::formatted("{:{2}}    {}", option.name, option.description, max_name_width));
         if (mode == WhiptailMode::Checklist)
             arguments.append(option.checked ? "1" : "0");
     }
@@ -151,7 +151,7 @@ static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<Whipta
         return -1;
     }
 
-    auto full_term_variable = String::formatted("TERM={}", term_variable);
+    auto full_term_variable = DeprecatedString::formatted("TERM={}", term_variable);
     auto colors = "NEWT_COLORS=root=,black\ncheckbox=black,lightgray";
 
     char* env[3];
@@ -192,15 +192,22 @@ static Result<Vector<String>, int> run_whiptail(WhiptailMode mode, Vector<Whipta
         return return_code;
     }
 
-    auto file = Core::File::construct();
-    file->open(read_fd, Core::OpenMode::ReadOnly, Core::File::ShouldCloseFileDescriptor::Yes);
-    auto data = String::copy(file->read_all());
-    return data.split('\n', false);
+    auto file_or_error = Core::File::adopt_fd(read_fd, Core::File::OpenMode::Read);
+    if (file_or_error.is_error()) {
+        warnln("\e[31mError:\e[0m Could not adopt file descriptor for reading: {}", file_or_error.error());
+        return -1;
+    }
+    auto data_or_error = file_or_error.value()->read_until_eof();
+    if (data_or_error.is_error()) {
+        warnln("\e[31mError:\e[0m Could not read data from file descriptor: {}", data_or_error.error());
+        return -1;
+    }
+    return DeprecatedString::copy(data_or_error.value()).split('\n');
 }
 
-static bool run_system_command(String const& command, StringView command_name)
+static bool run_system_command(DeprecatedString const& command, StringView command_name)
 {
-    if (command.starts_with("cmake"))
+    if (command.starts_with("cmake"sv))
         warnln("\e[34mRunning CMake...\e[0m");
     else
         warnln("\e[34mRunning '{}'...\e[0m", command);
@@ -224,7 +231,7 @@ int main()
         return 1;
     }
 
-    auto current_working_directory = Core::File::current_working_directory();
+    auto current_working_directory = Core::DeprecatedFile::current_working_directory();
     if (current_working_directory.is_null())
         return 1;
     auto lexical_cwd = LexicalPath(current_working_directory);
@@ -234,7 +241,7 @@ int main()
         return 1;
     }
 
-    if (!Core::File::exists("components.ini")) {
+    if (!Core::DeprecatedFile::exists("components.ini"sv)) {
         warnln("\e[31mError:\e[0m There is no 'components.ini' in the current working directory.");
         warnln("       It can be generated by running CMake with 'cmake ../.. -G Ninja'");
         return 1;
@@ -261,7 +268,7 @@ int main()
     configs.append({ "CUSTOM_FULL", "Full", "Customizable.", false });
     configs.append({ "CUSTOM_CURRENT", "Current", "Customize current configuration.", false });
 
-    auto configs_result = run_whiptail(WhiptailMode::Menu, configs, "SerenityOS - System Configurations", "Which system configuration do you want to use or customize?");
+    auto configs_result = run_whiptail(WhiptailMode::Menu, configs, "SerenityOS - System Configurations"sv, "Which system configuration do you want to use or customize?"sv);
     if (configs_result.is_error()) {
         warnln("ConfigureComponents cancelled.");
         return 0;
@@ -270,11 +277,11 @@ int main()
     VERIFY(configs_result.value().size() == 1);
     auto type = configs_result.value().first();
 
-    bool customize = type.starts_with("CUSTOM_");
+    bool customize = type.starts_with("CUSTOM_"sv);
     StringView build_type = customize ? type.substring_view(7) : type.view();
 
     // Step 4: Customize the configuration if the user requested to. In any case, set the components component.is_selected value correctly.
-    Vector<String> activated_components;
+    Vector<DeprecatedString> activated_components;
 
     if (customize) {
         Vector<WhiptailOption> options;
@@ -286,11 +293,11 @@ int main()
             if (is_required) {
                 if (!description_builder.is_empty())
                     description_builder.append(' ');
-                description_builder.append("[required]");
+                description_builder.append("[required]"sv);
             }
 
             // NOTE: Required components will always be preselected.
-            WhiptailOption option { component.name, component.name, description_builder.to_string(), is_required };
+            WhiptailOption option { component.name, component.name, description_builder.to_deprecated_string(), is_required };
             if (build_type == "REQUIRED") {
                 // noop
             } else if (build_type == "RECOMMENDED") {
@@ -307,7 +314,7 @@ int main()
             options.append(move(option));
         }
 
-        auto result = run_whiptail(WhiptailMode::Checklist, options, "SerenityOS - System Components", "Which optional system components do you want to include?");
+        auto result = run_whiptail(WhiptailMode::Checklist, options, "SerenityOS - System Components"sv, "Which optional system components do you want to include?"sv);
         if (result.is_error()) {
             warnln("ConfigureComponents cancelled.");
             return 0;
@@ -336,13 +343,13 @@ int main()
     }
 
     // Step 5: Generate the cmake command.
-    Vector<String> cmake_arguments = { "cmake", "../..", "-G", "Ninja", "-DBUILD_EVERYTHING=OFF" };
+    Vector<DeprecatedString> cmake_arguments = { "cmake", "../..", "-G", "Ninja", "-DBUILD_EVERYTHING=OFF" };
     for (auto& component : components)
-        cmake_arguments.append(String::formatted("-DBUILD_{}={}", component.name.to_uppercase(), component.is_selected ? "ON" : "OFF"));
+        cmake_arguments.append(DeprecatedString::formatted("-DBUILD_{}={}", component.name.to_uppercase(), component.is_selected ? "ON" : "OFF"));
 
     warnln("\e[34mThe following command will be run:\e[0m");
-    outln("{} \\", String::join(' ', cmake_arguments));
-    outln("  && ninja clean\n  && rm -rf Root");
+    outln("ninja clean \\\n  && rm -rf Root \\");
+    outln("  && {}", DeprecatedString::join(' ', cmake_arguments));
     warn("\e[34mDo you want to run the command?\e[0m [Y/n] ");
     auto character = getchar();
     if (character == 'n' || character == 'N') {
@@ -350,13 +357,13 @@ int main()
         return 0;
     }
 
-    // Step 6: Run CMake, 'ninja clean' and 'rm -rf Root'
-    auto command = String::join(' ', cmake_arguments);
-    if (!run_system_command(command, "CMake"))
+    // Step 6: Run 'ninja clean', 'rm -rf Root' and CMake
+    auto command = DeprecatedString::join(' ', cmake_arguments);
+    if (!run_system_command("ninja clean"sv, "Ninja"sv))
         return 1;
-    if (!run_system_command("ninja clean", "Ninja"))
+    if (!run_system_command("rm -rf Root"sv, "rm"sv))
         return 1;
-    if (!run_system_command("rm -rf Root", "rm"))
+    if (!run_system_command(command, "CMake"sv))
         return 1;
     return 0;
 }

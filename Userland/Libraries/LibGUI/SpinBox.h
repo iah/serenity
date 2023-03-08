@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,7 @@ namespace GUI {
 class SpinBox : public Widget {
     C_OBJECT(SpinBox)
 public:
-    virtual ~SpinBox() override;
+    virtual ~SpinBox() override = default;
 
     int value() const { return m_value; }
     void set_value(int, AllowCallback = AllowCallback::Yes);
@@ -25,6 +26,7 @@ public:
     void set_range(int min, int max, AllowCallback = AllowCallback::Yes);
 
     Function<void(int value)> on_change;
+    Function<void()> on_return_pressed;
 
 protected:
     SpinBox();

@@ -16,7 +16,7 @@
 #include <LibGUI/Button.h>
 #include <LibGUI/Dialog.h>
 #include <LibGUI/Painter.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
 REGISTER_WIDGET(Hearts, Game);
@@ -28,7 +28,7 @@ Game::Game()
     m_delay_timer = Core::Timer::create_single_shot(0, [this] {
         dbgln_if(HEARTS_DEBUG, "Continuing game after delay...");
         advance_game();
-    });
+    }).release_value_but_fixme_should_propagate_errors();
 
     constexpr int card_overlap = 20;
     constexpr int outer_border_size = 15;
@@ -78,7 +78,7 @@ Game::Game()
     m_players[3].name = "Lisa";
     m_players[3].taken_cards_target = { width, height / 2 - Card::height / 2 };
 
-    m_passing_button = add<GUI::Button>("Pass Left");
+    m_passing_button = add<GUI::Button>("Pass Left"_string.release_value_but_fixme_should_propagate_errors());
     constexpr int button_width = 120;
     constexpr int button_height = 30;
     m_passing_button->set_relative_rect(width / 2 - button_width / 2, height - 3 * outer_border_size - Card::height - button_height, button_width, button_height);
@@ -122,22 +122,20 @@ void Game::show_score_card(bool game_over)
     score_dialog->set_resizable(false);
     score_dialog->set_icon(window()->icon());
 
-    auto& score_widget = score_dialog->set_main_widget<GUI::Widget>();
-    score_widget.set_fill_with_background_color(true);
-    auto& layout = score_widget.set_layout<GUI::HorizontalBoxLayout>();
-    layout.set_margins(10);
-    layout.set_spacing(15);
+    auto score_widget = score_dialog->set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    score_widget->set_fill_with_background_color(true);
+    score_widget->set_layout<GUI::HorizontalBoxLayout>(10, 15);
 
-    auto& card_container = score_widget.add<GUI::Widget>();
+    auto& card_container = score_widget->add<GUI::Widget>();
     auto& score_card = card_container.add<ScoreCard>(m_players, game_over);
 
-    auto& button_container = score_widget.add<GUI::Widget>();
+    auto& button_container = score_widget->add<GUI::Widget>();
     button_container.set_shrink_to_fit(true);
     button_container.set_layout<GUI::VerticalBoxLayout>();
 
-    auto& close_button = button_container.add<GUI::Button>("OK");
+    auto& close_button = button_container.add<GUI::Button>("OK"_short_string);
     close_button.on_click = [&score_dialog](auto) {
-        score_dialog->done(GUI::Dialog::ExecOK);
+        score_dialog->done(GUI::Dialog::ExecResult::OK);
     };
     close_button.set_min_width(70);
     close_button.resize(70, 30);
@@ -146,23 +144,23 @@ void Game::show_score_card(bool game_over)
     score_dialog->resize({ 20 + score_card.width() + 15 + close_button.width(), 20 + score_card.height() });
 
     StringBuilder title_builder;
-    title_builder.append("Score Card");
+    title_builder.append("Score Card"sv);
     if (game_over)
-        title_builder.append(" - Game Over");
-    score_dialog->set_title(title_builder.to_string());
+        title_builder.append(" - Game Over"sv);
+    score_dialog->set_title(title_builder.to_deprecated_string());
 
     RefPtr<Core::Timer> close_timer;
     if (!m_players[0].is_human) {
         close_timer = Core::Timer::create_single_shot(2000, [&] {
             score_dialog->close();
-        });
+        }).release_value_but_fixme_should_propagate_errors();
         close_timer->start();
     }
 
     score_dialog->exec();
 }
 
-void Game::setup(String player_name, int hand_number)
+void Game::setup(DeprecatedString player_name, int hand_number)
 {
     m_players[0].name = move(player_name);
 
@@ -180,13 +178,13 @@ void Game::setup(String player_name, int hand_number)
         m_human_can_play = true;
         switch (passing_direction()) {
         case PassingDirection::Left:
-            m_passing_button->set_text("Pass Left");
+            m_passing_button->set_text("Pass Left"_string.release_value_but_fixme_should_propagate_errors());
             break;
         case PassingDirection::Across:
-            m_passing_button->set_text("Pass Across");
+            m_passing_button->set_text("Pass Across"_string.release_value_but_fixme_should_propagate_errors());
             break;
         case PassingDirection::Right:
-            m_passing_button->set_text("Pass Right");
+            m_passing_button->set_text("Pass Right"_string.release_value_but_fixme_should_propagate_errors());
             break;
         default:
             VERIFY_NOT_REACHED();
@@ -199,20 +197,12 @@ void Game::setup(String player_name, int hand_number)
         m_passing_button->set_focus(false);
     }
 
-    NonnullRefPtrVector<Card> deck;
-    deck.ensure_capacity(Card::card_count * 4);
-
-    for (int i = 0; i < Card::card_count; ++i) {
-        deck.append(Card::construct(Card::Type::Clubs, i));
-        deck.append(Card::construct(Card::Type::Spades, i));
-        deck.append(Card::construct(Card::Type::Hearts, i));
-        deck.append(Card::construct(Card::Type::Diamonds, i));
-    }
+    Vector<NonnullRefPtr<Card>> deck = Cards::create_standard_deck(Cards::Shuffle::Yes).release_value_but_fixme_should_propagate_errors();
 
     for (auto& player : m_players) {
         player.hand.ensure_capacity(Card::card_count);
         for (uint8_t i = 0; i < Card::card_count; ++i) {
-            auto card = deck.take(get_random_uniform(deck.size()));
+            auto card = deck.take_last();
             if constexpr (!HEARTS_DEBUG) {
                 if (&player != &m_players[0])
                     card->set_upside_down(true);
@@ -230,7 +220,7 @@ void Game::setup(String player_name, int hand_number)
     continue_game_after_delay();
 }
 
-void Game::start_animation(NonnullRefPtrVector<Card> cards, Gfx::IntPoint const& end, Function<void()> did_finish_callback, int initial_delay_ms, int steps)
+void Game::start_animation(Vector<NonnullRefPtr<Card>> cards, Gfx::IntPoint end, Function<void()> did_finish_callback, int initial_delay_ms, int steps)
 {
     stop_animation();
 
@@ -239,12 +229,12 @@ void Game::start_animation(NonnullRefPtrVector<Card> cards, Gfx::IntPoint const&
     m_animation_steps = steps;
     m_animation_cards.clear_with_capacity();
     for (auto& card : cards)
-        m_animation_cards.empend(card, card.position());
+        m_animation_cards.empend(card, card->position());
     m_animation_did_finish = make<Function<void()>>(move(did_finish_callback));
     m_animation_delay_timer = Core::Timer::create_single_shot(initial_delay_ms, [&] {
         m_animation_playing = true;
         start_timer(10);
-    });
+    }).release_value_but_fixme_should_propagate_errors();
     m_animation_delay_timer->start();
 }
 
@@ -288,7 +278,7 @@ bool Game::other_player_has_lower_value_card(Player& player, Card& card)
     for (auto& other_player : m_players) {
         if (&player != &other_player) {
             for (auto& other_card : other_player.hand) {
-                if (other_card && card.type() == other_card->type() && hearts_card_value(*other_card) < hearts_card_value(card))
+                if (other_card && card.suit() == other_card->suit() && hearts_card_value(*other_card) < hearts_card_value(card))
                     return true;
             }
         }
@@ -301,7 +291,7 @@ bool Game::other_player_has_higher_value_card(Player& player, Card& card)
     for (auto& other_player : m_players) {
         if (&player != &other_player) {
             for (auto& other_card : other_player.hand) {
-                if (other_card && card.type() == other_card->type() && hearts_card_value(*other_card) > hearts_card_value(card))
+                if (other_card && card.suit() == other_card->suit() && hearts_card_value(*other_card) > hearts_card_value(card))
                     return true;
             }
         }
@@ -314,7 +304,7 @@ bool Game::other_player_has_queen_of_spades(Player& player)
     for (auto& other_player : m_players) {
         if (&player != &other_player) {
             for (auto& other_card : other_player.hand) {
-                if (other_card && other_card->type() == Card::Type::Spades && hearts_card_value(*other_card) == CardValue::Queen)
+                if (other_card && other_card->suit() == Cards::Suit::Spades && hearts_card_value(*other_card) == CardValue::Queen)
                     return true;
             }
         }
@@ -335,7 +325,7 @@ size_t Game::pick_card(Player& player)
     bool is_first_trick = m_trick_number == 0;
     if (is_leading_player) {
         if (is_first_trick) {
-            auto clubs_2 = player.pick_specific_card(Card::Type::Clubs, CardValue::Number_2);
+            auto clubs_2 = player.pick_specific_card(Cards::Suit::Clubs, CardValue::Number_2);
             VERIFY(clubs_2.has_value());
             return clubs_2.value();
         } else {
@@ -348,17 +338,17 @@ size_t Game::pick_card(Player& player)
             return player.pick_lead_card(move(valid_card), move(prefer_card));
         }
     }
-    auto* high_card = &m_trick[0];
+    auto* high_card = m_trick[0].ptr();
     for (auto& card : m_trick)
-        if (high_card->type() == card.type() && hearts_card_value(card) > hearts_card_value(*high_card))
-            high_card = &card;
-    if (high_card->type() == Card::Type::Spades && hearts_card_value(*high_card) > CardValue::Queen)
-        RETURN_CARD_IF_VALID(player.pick_specific_card(Card::Type::Spades, CardValue::Queen));
+        if (high_card->suit() == card->suit() && hearts_card_value(card) > hearts_card_value(*high_card))
+            high_card = card;
+    if (high_card->suit() == Cards::Suit::Spades && hearts_card_value(*high_card) > CardValue::Queen)
+        RETURN_CARD_IF_VALID(player.pick_specific_card(Cards::Suit::Spades, CardValue::Queen));
     auto card_has_points = [](Card& card) { return hearts_card_points(card) > 0; };
     auto trick_has_points = m_trick.first_matching(card_has_points).has_value();
     bool is_trailing_player = m_trick.size() == 3;
     if (!trick_has_points && is_trailing_player) {
-        RETURN_CARD_IF_VALID(player.pick_low_points_high_value_card(m_trick[0].type()));
+        RETURN_CARD_IF_VALID(player.pick_low_points_high_value_card(m_trick[0]->suit()));
         if (is_first_trick)
             return player.pick_low_points_high_value_card().value();
         else {
@@ -376,8 +366,8 @@ size_t Game::pick_card(Player& player)
     if (is_third_player && !trick_has_points) {
         play_highest_value_card = true;
 
-        if (high_card->type() == Card::Type::Spades && other_player_has_queen_of_spades(player)) {
-            Optional<size_t> chosen_card_index = player.pick_low_points_high_value_card(high_card->type());
+        if (high_card->suit() == Cards::Suit::Spades && other_player_has_queen_of_spades(player)) {
+            Optional<size_t> chosen_card_index = player.pick_low_points_high_value_card(high_card->suit());
             if (chosen_card_index.has_value()) {
                 auto& card = player.hand[chosen_card_index.value()];
                 if (hearts_card_value(*card) > CardValue::Queen)
@@ -386,7 +376,7 @@ size_t Game::pick_card(Player& player)
         }
     }
     if (play_highest_value_card)
-        RETURN_CARD_IF_VALID(player.pick_low_points_high_value_card(high_card->type()));
+        RETURN_CARD_IF_VALID(player.pick_low_points_high_value_card(high_card->suit()));
     else
         RETURN_CARD_IF_VALID(player.pick_slightly_higher_value_card(*high_card));
     if (is_first_trick)
@@ -417,7 +407,7 @@ void Game::let_player_play_card()
     if (&player == &m_players[0])
         on_status_change("Select a card to play.");
     else
-        on_status_change(String::formatted("Waiting for {} to play a card...", player));
+        on_status_change(DeprecatedString::formatted("Waiting for {} to play a card...", player));
 
     if (player.is_human) {
         m_human_can_play = true;
@@ -518,7 +508,7 @@ void Game::advance_game()
         // Find whoever has 2 of Clubs, they get to play the first card
         for (auto& player : m_players) {
             auto clubs_2_card = player.hand.first_matching([](auto& card) {
-                return card->type() == Card::Type::Clubs && hearts_card_value(*card) == CardValue::Number_2;
+                return card->suit() == Cards::Suit::Clubs && hearts_card_value(*card) == CardValue::Number_2;
             });
             if (clubs_2_card.has_value()) {
                 m_leading_player = &player;
@@ -533,11 +523,11 @@ void Game::advance_game()
         return;
     }
 
-    auto leading_card_type = m_trick[0].type();
+    auto leading_card_suit = m_trick[0]->suit();
     size_t taker_index = 0;
     auto taker_value = hearts_card_value(m_trick[0]);
     for (size_t i = 1; i < 4; i++) {
-        if (m_trick[i].type() != leading_card_type)
+        if (m_trick[i]->suit() != leading_card_suit)
             continue;
         if (hearts_card_value(m_trick[i]) <= taker_value)
             continue;
@@ -588,8 +578,11 @@ void Game::keydown_event(GUI::KeyEvent& event)
     } else if (event.key() == KeyCode::Key_Space) {
         if (m_human_can_play && m_state == State::Play)
             play_card(m_players[0], pick_first_card_ltr(m_players[0]));
-    } else if (event.shift() && event.key() == KeyCode::Key_F11)
+    } else if (event.shift() && event.key() == KeyCode::Key_F11) {
         dump_state();
+    } else {
+        event.ignore();
+    }
 }
 
 void Game::play_card(Player& player, size_t card_index)
@@ -615,7 +608,7 @@ void Game::play_card(Player& player, size_t card_index)
     VERIFY(m_leading_player);
     size_t leading_player_index = player_index(*m_leading_player);
 
-    NonnullRefPtrVector<Card> cards;
+    Vector<NonnullRefPtr<Card>> cards;
     cards.append(*card);
     start_animation(
         cards,
@@ -626,13 +619,13 @@ void Game::play_card(Player& player, size_t card_index)
         0);
 }
 
-bool Game::is_valid_play(Player& player, Card& card, String* explanation) const
+bool Game::is_valid_play(Player& player, Card& card, DeprecatedString* explanation) const
 {
     // First card must be 2 of Clubs.
     if (m_trick_number == 0 && m_trick.is_empty()) {
         if (explanation)
             *explanation = "The first card must be Two of Clubs.";
-        return card.type() == Card::Type::Clubs && hearts_card_value(card) == CardValue::Number_2;
+        return card.suit() == Cards::Suit::Clubs && hearts_card_value(card) == CardValue::Number_2;
     }
 
     // Can't play hearts or The Queen in the first trick.
@@ -646,7 +639,7 @@ bool Game::is_valid_play(Player& player, Card& card, String* explanation) const
         }
         // ... unless the player only has points cards (e.g. all Hearts or
         // 12 Hearts + Queen of Spades), in which case they're allowed to play Hearts.
-        if (all_points_cards && card.type() == Card::Type::Hearts)
+        if (all_points_cards && card.suit() == Cards::Suit::Hearts)
             return true;
         if (explanation)
             *explanation = "You can't play a card worth points in the first trick.";
@@ -656,10 +649,10 @@ bool Game::is_valid_play(Player& player, Card& card, String* explanation) const
     // Leading card can't be hearts until hearts are broken
     // unless the player only has hearts cards.
     if (m_trick.is_empty()) {
-        if (are_hearts_broken() || card.type() != Card::Type::Hearts)
+        if (are_hearts_broken() || card.suit() != Cards::Suit::Hearts)
             return true;
         auto non_hearts_card = player.hand.first_matching([](auto const& other_card) {
-            return !other_card.is_null() && other_card->type() != Card::Type::Hearts;
+            return !other_card.is_null() && other_card->suit() != Cards::Suit::Hearts;
         });
         auto only_has_hearts = !non_hearts_card.has_value();
         if (!only_has_hearts && explanation)
@@ -668,10 +661,10 @@ bool Game::is_valid_play(Player& player, Card& card, String* explanation) const
     }
 
     // Player must follow suit unless they don't have any matching cards.
-    auto leading_card_type = m_trick[0].type();
-    if (leading_card_type == card.type())
+    auto leading_card_suit = m_trick[0]->suit();
+    if (leading_card_suit == card.suit())
         return true;
-    auto has_matching_card = player.has_card_of_type(leading_card_type);
+    auto has_matching_card = player.has_card_of_suit(leading_card_suit);
     if (has_matching_card && explanation)
         *explanation = "You must follow suit.";
     return !has_matching_card;
@@ -681,7 +674,7 @@ bool Game::are_hearts_broken() const
 {
     for (auto& player : m_players)
         for (auto& card : player.cards_taken)
-            if (card->type() == Card::Type::Hearts)
+            if (card->suit() == Cards::Suit::Hearts)
                 return true;
     return false;
 }
@@ -699,14 +692,14 @@ void Game::card_clicked_during_passing(size_t, Card& card)
 
 void Game::card_clicked_during_play(size_t card_index, Card& card)
 {
-    String explanation;
+    DeprecatedString explanation;
     if (!is_valid_play(m_players[0], card, &explanation)) {
         if (m_inverted_card)
             m_inverted_card->set_inverted(false);
         card.set_inverted(true);
         update(card.rect());
         m_inverted_card = card;
-        on_status_change(String::formatted("You can't play this card: {}", explanation));
+        on_status_change(DeprecatedString::formatted("You can't play this card: {}", explanation));
         continue_game_after_delay();
         return;
     }
@@ -750,9 +743,9 @@ int Game::calculate_score(Player& player)
     for (auto& other_player : m_players) {
         int score = 0;
         for (auto& card : other_player.cards_taken)
-            if (card->type() == Card::Type::Spades && card->value() == 11)
+            if (card->suit() == Cards::Suit::Spades && card->rank() == Cards::Rank::Queen)
                 score += 13;
-            else if (card->type() == Card::Type::Hearts)
+            else if (card->suit() == Cards::Suit::Hearts)
                 score++;
         if (!min_score.has_value() || score < min_score.value())
             min_score = score;
@@ -825,13 +818,13 @@ void Game::select_cards_for_passing()
 
 void Game::pass_cards()
 {
-    NonnullRefPtrVector<Card> first_player_cards;
+    Vector<NonnullRefPtr<Card>> first_player_cards;
     for (auto& card : m_cards_highlighted)
         first_player_cards.append(*card);
     clear_highlighted_cards();
     VERIFY(first_player_cards.size() == 3);
 
-    NonnullRefPtrVector<Card> passed_cards[4];
+    Vector<NonnullRefPtr<Card>> passed_cards[4];
     passed_cards[0] = first_player_cards;
     passed_cards[1] = m_players[1].pick_cards_to_pass(passing_direction());
     passed_cards[2] = m_players[2].pick_cards_to_pass(passing_direction());
@@ -859,7 +852,7 @@ void Game::pass_cards()
         for (auto& card : passed_cards[i]) {
             m_players[destination_player_index].hand.append(card);
             if constexpr (!HEARTS_DEBUG)
-                card.set_upside_down(destination_player_index != 0);
+                card->set_upside_down(destination_player_index != 0);
             if (destination_player_index == 0)
                 highlight_card(card);
         }
@@ -876,7 +869,7 @@ void Game::pass_cards()
     }
 
     m_state = State::PassingAccept;
-    m_passing_button->set_text("OK");
+    m_passing_button->set_text("OK"_short_string);
     m_passing_button->set_enabled(true);
 }
 
@@ -894,8 +887,8 @@ void Game::paint_event(GUI::PaintEvent& event)
     painter.add_clip_rect(frame_inner_rect());
     painter.add_clip_rect(event.rect());
 
-    static Gfx::Color s_background_color = palette().color(background_role());
-    painter.clear_rect(frame_inner_rect(), s_background_color);
+    Gfx::Color background_color = this->background_color();
+    painter.clear_rect(frame_inner_rect(), background_color);
 
     for (auto& player : m_players) {
         auto& font = painter.font().bold_variant();
@@ -904,21 +897,21 @@ void Game::paint_event(GUI::PaintEvent& event)
         if (!game_ended()) {
             for (auto& card : player.hand)
                 if (!card.is_null())
-                    card->draw(painter);
+                    card->paint(painter);
         } else {
             // FIXME: reposition cards in advance_game() maybe
             auto card_position = player.first_card_position;
             for (auto& card : player.cards_taken) {
                 card->set_upside_down(false);
                 card->set_position(card_position);
-                card->draw(painter);
+                card->paint(painter);
                 card_position.translate_by(player.card_offset);
             }
         }
     }
 
     for (size_t i = 0; i < m_trick.size(); i++)
-        m_trick[i].draw(painter);
+        m_trick[i]->paint(painter);
 }
 
 void Game::dump_state() const
@@ -929,13 +922,13 @@ void Game::dump_state() const
             auto& player = m_players[i];
             dbgln("Player {}", player.name);
             dbgln("Hand:");
-            for (const auto& card : player.hand)
+            for (auto const& card : player.hand)
                 if (card.is_null())
                     dbgln("  <empty>");
                 else
                     dbgln("  {}", *card);
             dbgln("Taken:");
-            for (const auto& card : player.cards_taken)
+            for (auto const& card : player.cards_taken)
                 dbgln("  {}", card);
         }
     }

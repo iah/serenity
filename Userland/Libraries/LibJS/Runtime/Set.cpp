@@ -8,25 +8,39 @@
 
 namespace JS {
 
-Set* Set::create(GlobalObject& global_object)
+NonnullGCPtr<Set> Set::create(Realm& realm)
 {
-    return global_object.heap().allocate<Set>(global_object, *global_object.set_prototype());
+    return realm.heap().allocate<Set>(realm, *realm.intrinsics().set_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 Set::Set(Object& prototype)
-    : Object(prototype)
-    , m_values(*prototype.global_object().map_prototype())
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
 {
 }
 
-Set::~Set()
+ThrowCompletionOr<void> Set::initialize(Realm& realm)
 {
+    m_values = Map::create(realm);
+
+    return {};
+}
+
+NonnullGCPtr<Set> Set::copy() const
+{
+    auto& vm = this->vm();
+    auto& realm = *vm.current_realm();
+    // FIXME: This is very inefficient, but there's no better way to do this at the moment, as the underlying Map
+    //  implementation of m_values uses a non-copyable RedBlackTree.
+    auto result = Set::create(realm);
+    for (auto const& entry : *this)
+        result->set_add(entry.key);
+    return *result;
 }
 
 void Set::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    static_cast<Object&>(m_values).visit_edges(visitor);
+    visitor.visit(m_values);
 }
 
 }

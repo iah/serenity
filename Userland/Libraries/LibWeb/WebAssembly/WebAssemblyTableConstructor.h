@@ -14,12 +14,12 @@ class WebAssemblyTableConstructor : public JS::NativeFunction {
     JS_OBJECT(WebAssemblyTableConstructor, JS::NativeFunction);
 
 public:
-    explicit WebAssemblyTableConstructor(JS::GlobalObject&);
-    virtual void initialize(JS::GlobalObject&) override;
+    explicit WebAssemblyTableConstructor(JS::Realm&);
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
     virtual ~WebAssemblyTableConstructor() override;
 
     virtual JS::ThrowCompletionOr<JS::Value> call() override;
-    virtual JS::ThrowCompletionOr<JS::Object*> construct(JS::FunctionObject& new_target) override;
+    virtual JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Object>> construct(JS::FunctionObject& new_target) override;
 
 private:
     virtual bool has_constructor() const override { return true; }

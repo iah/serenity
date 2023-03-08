@@ -12,7 +12,7 @@ command used to initialize the build directory.
 For a full build, pass `-DBUILD_LAGOM=ON` to the CMake command.
 
 ```sh
-cmake -GNinja -S Meta/CMake/Superbuild -B Build/superbuild-i686 -DBUILD_LAGOM=ON
+cmake -GNinja -S Meta/CMake/Superbuild -B Build/superbuild-x86_64 -DBUILD_LAGOM=ON
 ```
 
 For a Lagom-only build, pass the Lagom directory to CMake. The `BUILD_LAGOM` CMake option is still required.
@@ -28,6 +28,7 @@ to the root of the serenity source tree when running on a non-SerenityOS host.
 # /path/to/serenity repository
 export SERENITY_SOURCE_DIR=${PWD}
 cd Build/lagom
+ninja
 ninja test
 ```
 
@@ -69,22 +70,22 @@ Tests built for the SerenityOS target get installed either into `/usr/Tests` or 
 some system tests are installed into `/bin` for historical reasons.
 
 The easiest way to run all of the known tests in the system is to use the `run-tests-and-shutdown.sh` script that gets
-installed into `/home/anon/tests`. When running in CI, the environment variable `$DO_SHUTDOWN_AFTER_TESTS` is set, which
+installed into `/home/anon/Tests`. When running in CI, the environment variable `$DO_SHUTDOWN_AFTER_TESTS` is set, which
 will run `shutdown -n` after running all the tests.
 
 For completeness, a basic on-target test run will need the SerenityOS image built and run via QEMU.
 
 ```sh
-cmake -GNinja -S Meta/CMake/Superbuild -B Build/superbuild-i686
-cmake --build Build/superbuild-i686
-cd Build/i686
+cmake -GNinja -S Meta/CMake/Superbuild -B Build/superbuild-x86_64
+cmake --build Build/superbuild-x86_64
+cd Build/x86_64
 ninja install && ninja image && ninja run
 ```
 
 In the initial terminal, one can easily run the test runner script:
 
 ```
-courage ~ $ ./tests/run-tests-and-shutdown.sh
+courage ~ $ ./Tests/run-tests-and-shutdown.sh
 === Running Tests on SerenityOS ===
 ...
 ```
@@ -96,7 +97,7 @@ The system server entry looks as below:
 
 ```ini
 [TestRunner@ttyS0]
-Executable=/home/anon/tests/run-tests-and-shutdown.sh
+Executable=/home/anon/Tests/run-tests-and-shutdown.sh
 StdIO=/dev/ttyS0
 Environment=DO_SHUTDOWN_AFTER_TESTS=1 TERM=xterm PATH=/usr/local/bin:/usr/bin:/bin
 User=anon
@@ -115,6 +116,6 @@ the default value `halt` keeps qemu around, which allows you to inspect the stat
 
 ```sh
 export SERENITY_RUN=ci
-export SERENITY_KERNEL_CMDLINE="fbdev=off system_mode=self-test"
+export SERENITY_KERNEL_CMDLINE="graphics_subsystem_mode=off system_mode=self-test"
 ninja run
 ```

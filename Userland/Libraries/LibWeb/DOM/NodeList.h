@@ -1,37 +1,46 @@
 /*
- * Copyright (c) 2021, Luke Wilde <lukew@serenityos.org>
+ * Copyright (c) 2021-2023, Luke Wilde <lukew@serenityos.org>
+ * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/Noncopyable.h>
-#include <AK/RefCounted.h>
-#include <LibWeb/Bindings/Wrappable.h>
-#include <LibWeb/Forward.h>
+#include <LibWeb/Bindings/LegacyPlatformObject.h>
 
 namespace Web::DOM {
 
 // https://dom.spec.whatwg.org/#nodelist
-class NodeList
-    : public RefCounted<NodeList>
-    , public Bindings::Wrappable {
-    AK_MAKE_NONCOPYABLE(NodeList);
-    AK_MAKE_NONMOVABLE(NodeList);
+class NodeList : public Bindings::LegacyPlatformObject {
+    WEB_PLATFORM_OBJECT(NodeList, Bindings::LegacyPlatformObject);
 
 public:
-    using WrapperType = Bindings::NodeListWrapper;
-
-    virtual ~NodeList() override = default;
+    virtual ~NodeList() override;
 
     virtual u32 length() const = 0;
     virtual Node const* item(u32 index) const = 0;
 
-    virtual bool is_supported_property_index(u32) const = 0;
+    virtual WebIDL::ExceptionOr<JS::Value> item_value(size_t index) const override;
+    virtual bool is_supported_property_index(u32) const override;
 
 protected:
-    NodeList() = default;
+    explicit NodeList(JS::Realm&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
+    // ^Bindings::LegacyPlatformObject
+    virtual bool supports_indexed_properties() const final override { return true; }
+    virtual bool supports_named_properties() const final override { return false; }
+    virtual bool has_indexed_property_setter() const final override { return false; }
+    virtual bool has_named_property_setter() const final override { return false; }
+    virtual bool has_named_property_deleter() const final override { return false; }
+    virtual bool has_legacy_override_built_ins_interface_extended_attribute() const final override { return false; }
+    virtual bool has_legacy_unenumerable_named_properties_interface_extended_attribute() const final override { return false; }
+    virtual bool has_global_interface_extended_attribute() const final override { return false; }
+    virtual bool indexed_property_setter_has_identifier() const final override { return false; }
+    virtual bool named_property_setter_has_identifier() const final override { return false; }
+    virtual bool named_property_deleter_has_identifier() const final override { return false; }
 };
 
 }

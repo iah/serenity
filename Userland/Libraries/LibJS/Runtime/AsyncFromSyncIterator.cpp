@@ -11,20 +11,21 @@
 
 namespace JS {
 
-AsyncFromSyncIterator* AsyncFromSyncIterator::create(GlobalObject& global_object, Iterator sync_iterator_record)
+NonnullGCPtr<AsyncFromSyncIterator> AsyncFromSyncIterator::create(Realm& realm, Iterator sync_iterator_record)
 {
-    return global_object.heap().allocate<AsyncFromSyncIterator>(global_object, global_object, sync_iterator_record);
+    return realm.heap().allocate<AsyncFromSyncIterator>(realm, realm, sync_iterator_record).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
-AsyncFromSyncIterator::AsyncFromSyncIterator(GlobalObject& global_object, Iterator sync_iterator_record)
-    : Object(*global_object.async_from_sync_iterator_prototype())
+AsyncFromSyncIterator::AsyncFromSyncIterator(Realm& realm, Iterator sync_iterator_record)
+    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().async_from_sync_iterator_prototype())
     , m_sync_iterator_record(sync_iterator_record)
 {
 }
 
-void AsyncFromSyncIterator::initialize(GlobalObject& global_object)
+ThrowCompletionOr<void> AsyncFromSyncIterator::initialize(Realm& realm)
 {
-    Object::initialize(global_object);
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    return {};
 }
 
 void AsyncFromSyncIterator::visit_edges(Cell::Visitor& visitor)

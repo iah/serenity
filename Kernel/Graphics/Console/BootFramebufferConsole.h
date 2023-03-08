@@ -23,7 +23,14 @@ public:
     virtual void flush(size_t, size_t, size_t, size_t) override { }
     virtual void set_resolution(size_t, size_t, size_t) override { }
 
+    u8* unsafe_framebuffer_data() { return m_framebuffer_data; }
+
     BootFramebufferConsole(PhysicalAddress framebuffer_addr, size_t width, size_t height, size_t pitch);
+
+private:
+    virtual void set_cursor(size_t x, size_t y) override;
+    virtual void hide_cursor() override;
+    virtual void show_cursor() override;
 
 protected:
     virtual void clear_glyph(size_t x, size_t y) override;
@@ -32,7 +39,7 @@ protected:
 
     OwnPtr<Memory::Region> m_framebuffer;
     u8* m_framebuffer_data {};
-    mutable Spinlock m_lock;
+    mutable Spinlock<LockRank::None> m_lock {};
 };
 
 }

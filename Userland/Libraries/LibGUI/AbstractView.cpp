@@ -7,6 +7,7 @@
 #include <AK/Debug.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
+#include <LibCore/Object.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/AbstractView.h>
 #include <LibGUI/DragOperation.h>
@@ -24,6 +25,21 @@ AbstractView::AbstractView()
     , m_selection(*this)
 {
     REGISTER_BOOL_PROPERTY("activates_on_selection", activates_on_selection, set_activates_on_selection);
+    REGISTER_BOOL_PROPERTY("editable", is_editable, set_editable);
+    REGISTER_BOOL_PROPERTY("searchable", is_searchable, set_searchable);
+    REGISTER_ENUM_PROPERTY("selection_behavior", selection_behavior, set_selection_behavior, SelectionBehavior,
+        { SelectionBehavior::SelectItems, "SelectItems" },
+        { SelectionBehavior::SelectRows, "SelectRows" });
+    REGISTER_ENUM_PROPERTY("selection_mode", selection_mode, set_selection_mode, SelectionMode,
+        { SelectionMode::SingleSelection, "SingleSelection" },
+        { SelectionMode::MultiSelection, "MultiSeleciton" },
+        { SelectionMode::NoSelection, "NoSelection" });
+    REGISTER_INT_PROPERTY("key_column", key_column, set_key_column);
+    REGISTER_ENUM_PROPERTY("sort_order", sort_order, set_sort_order, SortOrder,
+        { SortOrder::Ascending, "Ascending" },
+        { SortOrder::Descending, "Descending" });
+    REGISTER_BOOL_PROPERTY("tab_key_navigation_enabled", is_tab_key_navigation_enabled, set_tab_key_navigation_enabled);
+    REGISTER_BOOL_PROPERTY("draw_item_text_with_shadow", does_draw_item_text_with_shadow, set_draw_item_text_with_shadow);
 
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
 }
@@ -205,7 +221,7 @@ void AbstractView::notify_selection_changed(Badge<ModelSelection>)
         update();
 }
 
-NonnullRefPtr<Gfx::Font> AbstractView::font_for_index(ModelIndex const& index) const
+NonnullRefPtr<Gfx::Font const> AbstractView::font_for_index(ModelIndex const& index) const
 {
     if (!model())
         return font();
@@ -335,7 +351,7 @@ void AbstractView::mouseup_event(MouseEvent& event)
     if (!model())
         return;
 
-    set_automatic_scrolling_timer(false);
+    set_automatic_scrolling_timer_active(false);
 
     if (m_might_drag) {
         // We were unsure about unselecting items other than the current one
@@ -343,8 +359,7 @@ void AbstractView::mouseup_event(MouseEvent& event)
         // Since we're here, it was not that; so fix up the selection now.
         auto index = index_at_event_position(event.position());
         if (index.is_valid()) {
-            set_selection(index);
-            set_selection_start_index(index);
+            set_cursor(index, SelectionUpdate::Set, true);
         } else
             clear_selection();
         m_might_drag = false;
@@ -437,6 +452,23 @@ void AbstractView::set_key_column_and_sort_order(int column, SortOrder sort_orde
     update();
 }
 
+void AbstractView::select_range(ModelIndex const& index)
+{
+    auto min_row = min(selection_start_index().row(), index.row());
+    auto max_row = max(selection_start_index().row(), index.row());
+    auto min_column = min(selection_start_index().column(), index.column());
+    auto max_column = max(selection_start_index().column(), index.column());
+
+    clear_selection();
+    for (auto row = min_row; row <= max_row; ++row) {
+        for (auto column = min_column; column <= max_column; ++column) {
+            auto new_index = model()->index(row, column);
+            if (new_index.is_valid())
+                toggle_selection(new_index);
+        }
+    }
+}
+
 void AbstractView::set_cursor(ModelIndex index, SelectionUpdate selection_update, bool scroll_cursor_into_view)
 {
     if (!model() || !index.is_valid() || selection_mode() == SelectionMode::NoSelection) {
@@ -461,19 +493,9 @@ void AbstractView::set_cursor(ModelIndex index, SelectionUpdate selection_update
             if (!m_selection.contains(index))
                 clear_selection();
         } else if (selection_update == SelectionUpdate::Shift) {
-            auto min_row = min(selection_start_index().row(), index.row());
-            auto max_row = max(selection_start_index().row(), index.row());
-            auto min_column = min(selection_start_index().column(), index.column());
-            auto max_column = max(selection_start_index().column(), index.column());
-
-            clear_selection();
-            for (auto row = min_row; row <= max_row; ++row) {
-                for (auto column = min_column; column <= max_column; ++column) {
-                    auto new_index = model()->index(row, column);
-                    if (new_index.is_valid())
-                        toggle_selection(new_index);
-                }
-            }
+            if (!selection_start_index().is_valid())
+                set_selection_start_index(index);
+            select_range(index);
         }
 
         // FIXME: Support the other SelectionUpdate types
@@ -569,9 +591,9 @@ void AbstractView::keydown_event(KeyEvent& event)
     if (is_searchable()) {
         if (event.key() == KeyCode::Key_Backspace) {
             if (!m_highlighted_search.is_null()) {
-                //if (event.modifiers() == Mod_Ctrl) {
-                // TODO: delete last word
-                //}
+                // if (event.modifiers() == Mod_Ctrl) {
+                //  TODO: delete last word
+                // }
                 Utf8View view(m_highlighted_search);
                 size_t n_code_points = view.length();
                 if (n_code_points > 1) {
@@ -585,7 +607,7 @@ void AbstractView::keydown_event(KeyEvent& event)
                     }
                     auto index = find_next_search_match(sb.string_view());
                     if (index.is_valid()) {
-                        m_highlighted_search = sb.to_string();
+                        m_highlighted_search = sb.to_deprecated_string();
                         highlight_search(index);
                         start_highlighted_search_timer();
                     }
@@ -610,9 +632,10 @@ void AbstractView::keydown_event(KeyEvent& event)
 
             auto index = find_next_search_match(sb.string_view());
             if (index.is_valid()) {
-                m_highlighted_search = sb.to_string();
+                m_highlighted_search = sb.to_deprecated_string();
                 highlight_search(index);
                 start_highlighted_search_timer();
+                set_cursor(index, SelectionUpdate::None, true);
             }
 
             event.accept();
@@ -704,10 +727,10 @@ void AbstractView::draw_item_text(Gfx::Painter& painter, ModelIndex const& index
 
         // Highlight the text background first
         auto background_searching_length = searching_length;
-        painter.draw_text([&](Gfx::IntRect const& rect, u32) {
+        painter.draw_text([&](Gfx::FloatRect const& rect, Utf8CodePointIterator&) {
             if (background_searching_length > 0) {
                 background_searching_length--;
-                painter.fill_rect(rect.inflated(0, 2), palette().highlight_searching());
+                painter.fill_rect(rect.to_type<int>().inflated(0, 2), palette().highlight_searching());
             }
         },
             text_rect, item_text, font, alignment, elision);
@@ -716,12 +739,12 @@ void AbstractView::draw_item_text(Gfx::Painter& painter, ModelIndex const& index
         auto text_searching_length = searching_length;
         auto highlight_text_color = palette().highlight_searching_text();
         searching_length = searching_text.length();
-        painter.draw_text([&](Gfx::IntRect const& rect, u32 code_point) {
+        painter.draw_text([&](auto const& rect, Utf8CodePointIterator& it) {
             if (text_searching_length > 0) {
                 text_searching_length--;
-                painter.draw_glyph_or_emoji(rect.location(), code_point, font, highlight_text_color);
+                painter.draw_glyph_or_emoji(rect.location(), it, font, highlight_text_color);
             } else {
-                painter.draw_glyph_or_emoji(rect.location(), code_point, font, text_color);
+                painter.draw_glyph_or_emoji(rect.location(), it, font, text_color);
             }
         },
             text_rect, item_text, font, alignment, elision);
@@ -749,7 +772,11 @@ void AbstractView::drag_enter_event(DragEvent& event)
 {
     if (!model())
         return;
-    // NOTE: Right now, AbstractView always accepts drags since we won't get "drag move" events
+
+    if (!is_editable())
+        return;
+
+    // NOTE: Right now, AbstractView accepts drags since we won't get "drag move" events
     //       unless we accept the "drag enter" event.
     //       We might be able to reduce event traffic by communicating the set of drag-accepting
     //       rects in this widget to the windowing system somehow.
@@ -771,7 +798,7 @@ void AbstractView::drag_move_event(DragEvent& event)
 
     if (acceptable) {
         m_automatic_scroll_delta = automatic_scroll_delta_from_position(event.position());
-        set_automatic_scrolling_timer(!m_automatic_scroll_delta.is_null());
+        set_automatic_scrolling_timer_active(!m_automatic_scroll_delta.is_zero());
     }
 
     if (m_drop_candidate_index != new_drop_candidate_index) {
@@ -789,12 +816,12 @@ void AbstractView::drag_leave_event(Event&)
         update();
     }
 
-    set_automatic_scrolling_timer(false);
+    set_automatic_scrolling_timer_active(false);
 }
 
-void AbstractView::on_automatic_scrolling_timer_fired()
+void AbstractView::automatic_scrolling_timer_did_fire()
 {
-    if (m_automatic_scroll_delta.is_null())
+    if (m_automatic_scroll_delta.is_zero())
         return;
 
     vertical_scrollbar().increase_slider_by(m_automatic_scroll_delta.y());

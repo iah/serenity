@@ -12,34 +12,46 @@
 
 namespace Markdown {
 
-String Document::render_to_html() const
+DeprecatedString Document::render_to_html(StringView extra_head_contents) const
 {
     StringBuilder builder;
-
-    builder.append("<!DOCTYPE html>\n");
-    builder.append("<html>\n");
-    builder.append("<head>\n");
-    builder.append("<style>\n");
-    builder.append("code { white-space: pre; }\n");
-    builder.append("</style>\n");
-    builder.append("</head>\n");
-    builder.append("<body>\n");
+    builder.append(R"~~~(<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        code { white-space: pre; }
+    </style>
+)~~~"sv);
+    if (!extra_head_contents.is_empty())
+        builder.append(extra_head_contents);
+    builder.append(R"~~~(
+</head>
+<body>
+)~~~"sv);
 
     builder.append(render_to_inline_html());
 
-    builder.append("</body>\n");
-    builder.append("</html>\n");
-    return builder.build();
+    builder.append(R"~~~(
+</body>
+</html>)~~~"sv);
+
+    return builder.to_deprecated_string();
 }
 
-String Document::render_to_inline_html() const
+DeprecatedString Document::render_to_inline_html() const
 {
     return m_container->render_to_html();
 }
 
-String Document::render_for_terminal(size_t view_width) const
+DeprecatedString Document::render_for_terminal(size_t view_width) const
 {
-    return m_container->render_for_terminal(view_width);
+    StringBuilder builder;
+    for (auto& line : m_container->render_lines_for_terminal(view_width)) {
+        builder.append(line);
+        builder.append("\n"sv);
+    }
+
+    return builder.to_deprecated_string();
 }
 
 RecursionDecision Document::walk(Visitor& visitor) const
@@ -53,7 +65,7 @@ RecursionDecision Document::walk(Visitor& visitor) const
 
 OwnPtr<Document> Document::parse(StringView str)
 {
-    const Vector<StringView> lines_vec = str.lines();
+    Vector<StringView> const lines_vec = str.lines();
     LineIterator lines(lines_vec.begin());
     return make<Document>(ContainerBlock::parse(lines));
 }

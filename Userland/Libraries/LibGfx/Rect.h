@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,6 +10,7 @@
 
 #include <AK/Format.h>
 #include <LibGfx/AffineTransform.h>
+#include <LibGfx/Line.h>
 #include <LibGfx/Orientation.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Size.h>
@@ -74,7 +76,6 @@ public:
     [[nodiscard]] ALWAYS_INLINE Point<T> const& location() const { return m_location; }
     [[nodiscard]] ALWAYS_INLINE Size<T> const& size() const { return m_size; }
 
-    [[nodiscard]] ALWAYS_INLINE bool is_null() const { return width() == 0 && height() == 0; }
     [[nodiscard]] ALWAYS_INLINE bool is_empty() const { return width() <= 0 || height() <= 0; }
 
     ALWAYS_INLINE void translate_by(T dx, T dy) { m_location.translate_by(dx, dy); }
@@ -105,8 +106,6 @@ public:
     {
         m_size = size;
     }
-
-    void set_size_around(Size<T> const&, Point<T> const& fixed_point);
 
     void set_size(T width, T height)
     {
@@ -166,6 +165,13 @@ public:
     {
         Rect<T> rect = *this;
         rect.translate_by(dx, dy);
+        return rect;
+    }
+
+    [[nodiscard]] Rect<T> translated(T dboth) const
+    {
+        Rect<T> rect = *this;
+        rect.translate_by(dboth);
         return rect;
     }
 
@@ -323,15 +329,15 @@ public:
         return have_any;
     }
 
-    [[nodiscard]] ALWAYS_INLINE int primary_offset_for_orientation(Orientation orientation) const { return m_location.primary_offset_for_orientation(orientation); }
-    ALWAYS_INLINE void set_primary_offset_for_orientation(Orientation orientation, int value) { m_location.set_primary_offset_for_orientation(orientation, value); }
-    [[nodiscard]] ALWAYS_INLINE int secondary_offset_for_orientation(Orientation orientation) const { return m_location.secondary_offset_for_orientation(orientation); }
-    ALWAYS_INLINE void set_secondary_offset_for_orientation(Orientation orientation, int value) { m_location.set_secondary_offset_for_orientation(orientation, value); }
+    [[nodiscard]] ALWAYS_INLINE T primary_offset_for_orientation(Orientation orientation) const { return m_location.primary_offset_for_orientation(orientation); }
+    ALWAYS_INLINE void set_primary_offset_for_orientation(Orientation orientation, T value) { m_location.set_primary_offset_for_orientation(orientation, value); }
+    [[nodiscard]] ALWAYS_INLINE T secondary_offset_for_orientation(Orientation orientation) const { return m_location.secondary_offset_for_orientation(orientation); }
+    ALWAYS_INLINE void set_secondary_offset_for_orientation(Orientation orientation, T value) { m_location.set_secondary_offset_for_orientation(orientation, value); }
 
-    [[nodiscard]] ALWAYS_INLINE int primary_size_for_orientation(Orientation orientation) const { return m_size.primary_size_for_orientation(orientation); }
-    [[nodiscard]] ALWAYS_INLINE int secondary_size_for_orientation(Orientation orientation) const { return m_size.secondary_size_for_orientation(orientation); }
-    ALWAYS_INLINE void set_primary_size_for_orientation(Orientation orientation, int value) { m_size.set_primary_size_for_orientation(orientation, value); }
-    ALWAYS_INLINE void set_secondary_size_for_orientation(Orientation orientation, int value) { m_size.set_secondary_size_for_orientation(orientation, value); }
+    [[nodiscard]] ALWAYS_INLINE T primary_size_for_orientation(Orientation orientation) const { return m_size.primary_size_for_orientation(orientation); }
+    [[nodiscard]] ALWAYS_INLINE T secondary_size_for_orientation(Orientation orientation) const { return m_size.secondary_size_for_orientation(orientation); }
+    ALWAYS_INLINE void set_primary_size_for_orientation(Orientation orientation, T value) { m_size.set_primary_size_for_orientation(orientation, value); }
+    ALWAYS_INLINE void set_secondary_size_for_orientation(Orientation orientation, T value) { m_size.set_secondary_size_for_orientation(orientation, value); }
 
     [[nodiscard]] T first_edge_for_orientation(Orientation orientation) const
     {
@@ -374,13 +380,13 @@ public:
 
     void set_right_without_resize(T new_right)
     {
-        int delta = new_right - right();
+        auto delta = new_right - right();
         translate_by(delta, 0);
     }
 
     void set_bottom_without_resize(T new_bottom)
     {
-        int delta = new_bottom - bottom();
+        auto delta = new_bottom - bottom();
         translate_by(0, delta);
     }
 
@@ -428,18 +434,53 @@ public:
         return IterationDecision::Continue;
     }
 
-    [[nodiscard]] Vector<Rect<T>, 4> shatter(Rect<T> const& hammer) const;
+    [[nodiscard]] Vector<Rect<T>, 4> shatter(Rect<T> const& hammer) const
+    {
+        Vector<Rect<T>, 4> pieces;
+        if (!intersects(hammer)) {
+            pieces.unchecked_append(*this);
+            return pieces;
+        }
+        Rect<T> top_shard {
+            x(),
+            y(),
+            width(),
+            hammer.y() - y()
+        };
+        Rect<T> bottom_shard {
+            x(),
+            hammer.y() + hammer.height(),
+            width(),
+            (y() + height()) - (hammer.y() + hammer.height())
+        };
+        Rect<T> left_shard {
+            x(),
+            max(hammer.y(), y()),
+            hammer.x() - x(),
+            min((hammer.y() + hammer.height()), (y() + height())) - max(hammer.y(), y())
+        };
+        Rect<T> right_shard {
+            hammer.x() + hammer.width(),
+            max(hammer.y(), y()),
+            right() - hammer.right(),
+            min((hammer.y() + hammer.height()), (y() + height())) - max(hammer.y(), y())
+        };
+        if (!top_shard.is_empty())
+            pieces.unchecked_append(top_shard);
+        if (!bottom_shard.is_empty())
+            pieces.unchecked_append(bottom_shard);
+        if (!left_shard.is_empty())
+            pieces.unchecked_append(left_shard);
+        if (!right_shard.is_empty())
+            pieces.unchecked_append(right_shard);
+
+        return pieces;
+    }
 
     template<class U>
     [[nodiscard]] bool operator==(Rect<U> const& other) const
     {
         return location() == other.location() && size() == other.size();
-    }
-
-    template<class U>
-    [[nodiscard]] bool operator!=(Rect<U> const& other) const
-    {
-        return !(*this == other);
     }
 
     [[nodiscard]] Rect<T> operator*(T factor) const { return { m_location * factor, m_size * factor }; }
@@ -451,7 +492,24 @@ public:
         return *this;
     }
 
-    void intersect(Rect<T> const&);
+    void intersect(Rect<T> const& other)
+    {
+        T l = max(left(), other.left());
+        T r = min(right(), other.right());
+        T t = max(top(), other.top());
+        T b = min(bottom(), other.bottom());
+
+        if (l > r || t > b) {
+            m_location = {};
+            m_size = {};
+            return;
+        }
+
+        m_location.set_x(l);
+        m_location.set_y(t);
+        m_size.set_width((r - l) + 1);
+        m_size.set_height((b - t) + 1);
+    }
 
     [[nodiscard]] static Rect<T> centered_on(Point<T> const& center, Size<T> const& size)
     {
@@ -475,18 +533,175 @@ public:
         return intersection(*this, other);
     }
 
-    [[nodiscard]] Vector<Point<T>, 2> intersected(Line<T> const&) const;
-    [[nodiscard]] float center_point_distance_to(Rect<T> const&) const;
-    [[nodiscard]] Vector<Point<T>, 2> closest_outside_center_points(Rect<T> const&) const;
-    [[nodiscard]] float outside_center_point_distance_to(Rect<T> const&) const;
-    [[nodiscard]] Rect<T> constrained_to(Rect<T> const&) const;
-    [[nodiscard]] Rect<T> aligned_within(Size<T> const&, Point<T> const&, TextAlignment = TextAlignment::Center) const;
-    [[nodiscard]] Point<T> closest_to(Point<T> const&) const;
+    [[nodiscard]] Vector<Point<T>, 2> intersected(Line<T> const& line) const
+    {
+        if (is_empty())
+            return {};
+        Vector<Point<T>, 2> points;
+        if (auto point = line.intersected({ top_left(), top_right() }); point.has_value())
+            points.append({ point.value().x(), y() });
+        if (auto point = line.intersected({ bottom_left(), bottom_right() }); point.has_value()) {
+            points.append({ point.value().x(), bottom() });
+            if (points.size() == 2)
+                return points;
+        }
+        if (height() > 2) {
+            if (auto point = line.intersected({ { x(), y() + 1 }, { x(), bottom() - 1 } }); point.has_value()) {
+                points.append({ x(), point.value().y() });
+                if (points.size() == 2)
+                    return points;
+            }
+            if (auto point = line.intersected({ { right(), y() + 1 }, { right(), bottom() - 1 } }); point.has_value())
+                points.append({ right(), point.value().y() });
+        }
+        return points;
+    }
+
+    [[nodiscard]] float center_point_distance_to(Rect<T> const& other) const
+    {
+        return Line { center(), other.center() }.length();
+    }
+
+    [[nodiscard]] Vector<Point<T>, 2> closest_outside_center_points(Rect<T> const& other) const
+    {
+        if (intersects(other))
+            return {};
+        Line centers_line { center(), other.center() };
+        auto points_this = intersected(centers_line);
+        VERIFY(points_this.size() == 1);
+        auto points_other = other.intersected(centers_line);
+        VERIFY(points_other.size() == 1);
+        return { points_this[0], points_other[0] };
+    }
+
+    [[nodiscard]] float outside_center_point_distance_to(Rect<T> const& other) const
+    {
+        auto points = closest_outside_center_points(other);
+        if (points.is_empty())
+            return 0.0;
+        return Line { points[0], points[0] }.length();
+    }
+
+    [[nodiscard]] Rect<T> constrained_to(Rect<T> const& constrain_rect) const
+    {
+        if (constrain_rect.contains(*this))
+            return *this;
+        T move_x = 0, move_y = 0;
+        if (right() > constrain_rect.right())
+            move_x = constrain_rect.right() - right();
+        if (bottom() > constrain_rect.bottom())
+            move_y = constrain_rect.bottom() - bottom();
+        if (x() < constrain_rect.x())
+            move_x = x() - constrain_rect.x();
+        if (y() < constrain_rect.y())
+            move_y = y() - constrain_rect.y();
+        auto rect = *this;
+        if (move_x != 0 || move_y != 0)
+            rect.translate_by(move_x, move_y);
+        return rect;
+    }
+
+    [[nodiscard]] Rect<T> aligned_within(Size<T> const& rect_size, Point<T> const& align_at, TextAlignment alignment = TextAlignment::Center) const
+    {
+        if (rect_size.is_empty())
+            return {};
+        if (!size().contains(rect_size))
+            return {};
+        if (!contains(align_at))
+            return {};
+
+        Rect<T> rect;
+        switch (alignment) {
+        case TextAlignment::TopCenter:
+            rect = { { align_at.x() - rect_size.width() / 2, align_at.y() }, rect_size };
+            break;
+        case TextAlignment::TopLeft:
+            rect = { align_at, rect_size };
+            break;
+        case TextAlignment::TopRight:
+            rect = { { align_at.x() - rect_size.width(), align_at.y() }, rect_size };
+            break;
+        case TextAlignment::CenterLeft:
+            rect = { { align_at.x(), align_at.y() - rect_size.height() / 2 }, rect_size };
+            break;
+        case TextAlignment::Center:
+            rect = { { align_at.x() - rect_size.width() / 2, align_at.y() - rect_size.height() / 2 }, rect_size };
+            break;
+        case TextAlignment::CenterRight:
+            rect = { { align_at.x() - rect_size.width() / 2, align_at.y() }, rect_size };
+            break;
+        case TextAlignment::BottomCenter:
+            rect = { { align_at.x() - rect_size.width() / 2, align_at.y() - rect_size.width() }, rect_size };
+            break;
+        case TextAlignment::BottomLeft:
+            rect = { { align_at.x(), align_at.y() - rect_size.width() }, rect_size };
+            break;
+        case TextAlignment::BottomRight:
+            rect = { { align_at.x() - rect_size.width(), align_at.y() - rect_size.width() }, rect_size };
+            break;
+        }
+        return rect.constrained_to(*this);
+    }
+
+    [[nodiscard]] Point<T> closest_to(Point<T> const& point) const
+    {
+        if (is_empty())
+            return {};
+        Optional<Point<T>> closest_point;
+        float closest_distance = 0.0;
+        auto check_distance = [&](Line<T> const& line) {
+            auto point_on_line = line.closest_to(point);
+            auto distance = Line { point_on_line, point }.length();
+            if (!closest_point.has_value() || distance < closest_distance) {
+                closest_point = point_on_line;
+                closest_distance = distance;
+            }
+        };
+
+        check_distance({ top_left(), top_right() });
+        check_distance({ bottom_left(), bottom_right() });
+        if (height() > 2) {
+            check_distance({ { x(), y() + 1 }, { x(), bottom() - 1 } });
+            check_distance({ { right(), y() + 1 }, { right(), bottom() - 1 } });
+        }
+        VERIFY(closest_point.has_value());
+        VERIFY(side(closest_point.value()) != Side::None);
+        return closest_point.value();
+    }
 
     class RelativeLocation {
         friend class Rect<T>;
 
-        RelativeLocation(Rect<T> const& base_rect, Rect<T> const& other_rect);
+        RelativeLocation(Rect<T> const& base_rect, Rect<T> const& other_rect)
+        {
+            if (base_rect.is_empty() || other_rect.is_empty())
+                return;
+            auto parts = base_rect.shatter(other_rect);
+            for (auto& part : parts) {
+                if (part.x() < other_rect.x()) {
+                    if (part.y() < other_rect.y())
+                        m_top_left = true;
+                    if ((part.y() >= other_rect.y() && part.y() < other_rect.bottom()) || (part.y() <= other_rect.bottom() && part.bottom() > other_rect.y()))
+                        m_left = true;
+                    if (part.y() >= other_rect.bottom() || part.bottom() > other_rect.y())
+                        m_bottom_left = true;
+                }
+                if (part.x() >= other_rect.x() || part.right() > other_rect.x()) {
+                    if (part.y() < other_rect.y())
+                        m_top = true;
+                    if (part.y() >= other_rect.bottom() || part.bottom() > other_rect.bottom())
+                        m_bottom = true;
+                }
+                if (part.x() >= other_rect.right() || part.right() > other_rect.right()) {
+                    if (part.y() < other_rect.y())
+                        m_top_right = true;
+                    if ((part.y() >= other_rect.y() && part.y() < other_rect.bottom()) || (part.y() <= other_rect.bottom() && part.bottom() > other_rect.y()))
+                        m_right = true;
+                    if (part.y() >= other_rect.bottom() || part.bottom() > other_rect.y())
+                        m_bottom_right = true;
+                }
+            }
+        }
 
     public:
         RelativeLocation() = default;
@@ -622,7 +837,7 @@ public:
             deltas.clear_with_capacity();
             for (auto& rect : rects) {
                 auto delta = calc_delta(rect);
-                if (!delta.is_null())
+                if (!delta.is_zero())
                     changes = true;
                 deltas.append(delta);
             }
@@ -657,14 +872,64 @@ public:
         return { { point.x() - size.width() / 2, point.y() - size.height() / 2 }, size };
     }
 
-    [[nodiscard]] Rect<T> united(Rect<T> const&) const;
+    [[nodiscard]] Rect<T> united(Rect<T> const& other) const
+    {
+        if (is_empty())
+            return other;
+        if (other.is_empty())
+            return *this;
+        Rect<T> rect;
+        rect.set_left(min(left(), other.left()));
+        rect.set_top(min(top(), other.top()));
+        rect.set_right(max(right(), other.right()));
+        rect.set_bottom(max(bottom(), other.bottom()));
+        return rect;
+    }
 
     [[nodiscard]] Point<T> top_left() const { return { left(), top() }; }
     [[nodiscard]] Point<T> top_right() const { return { right(), top() }; }
     [[nodiscard]] Point<T> bottom_left() const { return { left(), bottom() }; }
     [[nodiscard]] Point<T> bottom_right() const { return { right(), bottom() }; }
 
-    void align_within(Rect<T> const&, TextAlignment);
+    void align_within(Rect<T> const& other, TextAlignment alignment)
+    {
+        switch (alignment) {
+        case TextAlignment::Center:
+            center_within(other);
+            return;
+        case TextAlignment::TopCenter:
+            center_horizontally_within(other);
+            set_y(other.y());
+            return;
+        case TextAlignment::TopLeft:
+            set_location(other.location());
+            return;
+        case TextAlignment::TopRight:
+            set_x(other.x() + other.width() - width());
+            set_y(other.y());
+            return;
+        case TextAlignment::CenterLeft:
+            set_x(other.x());
+            center_vertically_within(other);
+            return;
+        case TextAlignment::CenterRight:
+            set_x(other.x() + other.width() - width());
+            center_vertically_within(other);
+            return;
+        case TextAlignment::BottomCenter:
+            center_horizontally_within(other);
+            set_y(other.y() + other.height() - height());
+            return;
+        case TextAlignment::BottomLeft:
+            set_x(other.x());
+            set_y(other.y() + other.height() - height());
+            return;
+        case TextAlignment::BottomRight:
+            set_x(other.x() + other.width() - width());
+            set_y(other.y() + other.height() - height());
+            return;
+        }
+    }
 
     void center_within(Rect<T> const& other)
     {
@@ -691,12 +956,55 @@ public:
     }
 
     template<typename U>
+    requires(!IsSame<T, U>)
     [[nodiscard]] ALWAYS_INLINE Rect<U> to_type() const
     {
         return Rect<U>(*this);
     }
 
-    [[nodiscard]] String to_string() const;
+    template<FloatingPoint U>
+    [[nodiscard]] ALWAYS_INLINE Rect<U> to_rounded() const
+    {
+        // FIXME: We may get away with `rint[lf]?()` here.
+        //        This would even give us some more control of these internals,
+        //        while the break-tie algorithm does not really matter
+        if constexpr (IsSame<T, float>) {
+            return {
+                static_cast<U>(roundf(x())),
+                static_cast<U>(roundf(y())),
+                static_cast<U>(roundf(width())),
+                static_cast<U>(roundf(height())),
+            };
+        }
+        if constexpr (IsSame<T, double>) {
+            return {
+                static_cast<U>(round(x())),
+                static_cast<U>(round(y())),
+                static_cast<U>(round(width())),
+                static_cast<U>(round(height())),
+            };
+        }
+
+        return {
+            static_cast<U>(roundl(x())),
+            static_cast<U>(roundl(y())),
+            static_cast<U>(roundl(width())),
+            static_cast<U>(roundl(height())),
+        };
+    }
+
+    template<Integral I>
+    ALWAYS_INLINE Rect<I> to_rounded() const
+    {
+        return {
+            round_to<I>(x()),
+            round_to<I>(y()),
+            round_to<I>(width()),
+            round_to<I>(height()),
+        };
+    }
+
+    [[nodiscard]] DeprecatedString to_deprecated_string() const;
 
 private:
     Point<T> m_location;
@@ -715,20 +1023,15 @@ using FloatRect = Rect<float>;
     return Gfx::IntRect::from_two_points({ x1, y1 }, { x2, y2 });
 }
 
-[[nodiscard]] ALWAYS_INLINE IntRect rounded_int_rect(FloatRect const& float_rect)
-{
-    return IntRect { floorf(float_rect.x()), floorf(float_rect.y()), roundf(float_rect.width()), roundf(float_rect.height()) };
-}
-
 }
 
 namespace AK {
 
 template<typename T>
-struct Formatter<Gfx::Rect<T>> : Formatter<StringView> {
+struct Formatter<Gfx::Rect<T>> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, Gfx::Rect<T> const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_string());
+        return Formatter<FormatString>::format(builder, "[{},{} {}x{}]"sv, value.x(), value.y(), value.width(), value.height());
     }
 };
 
@@ -736,7 +1039,10 @@ struct Formatter<Gfx::Rect<T>> : Formatter<StringView> {
 
 namespace IPC {
 
-bool encode(Encoder&, const Gfx::IntRect&);
-ErrorOr<void> decode(Decoder&, Gfx::IntRect&);
+template<>
+ErrorOr<void> encode(Encoder&, Gfx::IntRect const&);
+
+template<>
+ErrorOr<Gfx::IntRect> decode(Decoder&);
 
 }

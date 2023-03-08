@@ -15,16 +15,18 @@ class History {
 public:
     struct URLTitlePair {
         URL url;
-        String title;
+        DeprecatedString title;
     };
     void dump() const;
+    Vector<URLTitlePair> get_all_history_entries();
 
-    void push(const URL& url, const String& title);
-    void update_title(const String& title);
+    void push(const URL& url, DeprecatedString const& title);
+    void replace_current(const URL& url, DeprecatedString const& title);
+    void update_title(DeprecatedString const& title);
     URLTitlePair current() const;
 
-    const Vector<StringView> get_back_title_history();
-    const Vector<StringView> get_forward_title_history();
+    Vector<StringView> const get_back_title_history();
+    Vector<StringView> const get_forward_title_history();
 
     void go_back(int steps = 1);
     void go_forward(int steps = 1);

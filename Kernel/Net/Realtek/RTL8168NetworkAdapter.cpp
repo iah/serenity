@@ -182,18 +182,21 @@ namespace Kernel {
 #define TX_BUFFER_SIZE 0x1FF8
 #define RX_BUFFER_SIZE 0x1FF8 // FIXME: this should be increased (0x3FFF)
 
-UNMAP_AFTER_INIT RefPtr<RTL8168NetworkAdapter> RTL8168NetworkAdapter::try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier)
+UNMAP_AFTER_INIT ErrorOr<bool> RTL8168NetworkAdapter::probe(PCI::DeviceIdentifier const& pci_device_identifier)
 {
     if (pci_device_identifier.hardware_id().vendor_id != PCI::VendorID::Realtek)
-        return {};
+        return false;
     if (pci_device_identifier.hardware_id().device_id != 0x8168)
-        return {};
+        return false;
+    return true;
+}
+
+UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<NetworkAdapter>> RTL8168NetworkAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
+{
     u8 irq = pci_device_identifier.interrupt_line().value();
-    // FIXME: Better propagate errors here
-    auto interface_name_or_error = NetworkingManagement::generate_interface_name_from_pci_address(pci_device_identifier);
-    if (interface_name_or_error.is_error())
-        return {};
-    return adopt_ref_if_nonnull(new (nothrow) RTL8168NetworkAdapter(pci_device_identifier.address(), irq, interface_name_or_error.release_value()));
+    auto interface_name = TRY(NetworkingManagement::generate_interface_name_from_pci_address(pci_device_identifier));
+    auto registers_io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR0));
+    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) RTL8168NetworkAdapter(pci_device_identifier, irq, move(registers_io_window), move(interface_name))));
 }
 
 bool RTL8168NetworkAdapter::determine_supported_version() const
@@ -241,31 +244,27 @@ bool RTL8168NetworkAdapter::determine_supported_version() const
     }
 }
 
-UNMAP_AFTER_INIT RTL8168NetworkAdapter::RTL8168NetworkAdapter(PCI::Address address, u8 irq, NonnullOwnPtr<KString> interface_name)
+UNMAP_AFTER_INIT RTL8168NetworkAdapter::RTL8168NetworkAdapter(PCI::DeviceIdentifier const& device_identifier, u8 irq, NonnullOwnPtr<IOWindow> registers_io_window, NonnullOwnPtr<KString> interface_name)
     : NetworkAdapter(move(interface_name))
-    , PCI::Device(address)
+    , PCI::Device(device_identifier)
     , IRQHandler(irq)
-    , m_io_base(PCI::get_BAR0(pci_address()) & ~1)
-    , m_rx_descriptors_region(MM.allocate_contiguous_kernel_region(Memory::page_round_up(sizeof(TXDescriptor) * (number_of_rx_descriptors + 1)).release_value_but_fixme_should_propagate_errors(), "RTL8168 RX", Memory::Region::Access::ReadWrite).release_value())
-    , m_tx_descriptors_region(MM.allocate_contiguous_kernel_region(Memory::page_round_up(sizeof(RXDescriptor) * (number_of_tx_descriptors + 1)).release_value_but_fixme_should_propagate_errors(), "RTL8168 TX", Memory::Region::Access::ReadWrite).release_value())
+    , m_registers_io_window(move(registers_io_window))
+    , m_rx_descriptors_region(MM.allocate_contiguous_kernel_region(Memory::page_round_up(sizeof(TXDescriptor) * (number_of_rx_descriptors + 1)).release_value_but_fixme_should_propagate_errors(), "RTL8168 RX"sv, Memory::Region::Access::ReadWrite).release_value())
+    , m_tx_descriptors_region(MM.allocate_contiguous_kernel_region(Memory::page_round_up(sizeof(RXDescriptor) * (number_of_tx_descriptors + 1)).release_value_but_fixme_should_propagate_errors(), "RTL8168 TX"sv, Memory::Region::Access::ReadWrite).release_value())
 {
-    dmesgln("RTL8168: Found @ {}", pci_address());
-    dmesgln("RTL8168: I/O port base: {}", m_io_base);
-
-    identify_chip_version();
-    dmesgln("RTL8168: Version detected - {} ({}{})", possible_device_name(), (u8)m_version, m_version_uncertain ? "?" : "");
-
-    if (!determine_supported_version()) {
-        dmesgln("RTL8168: Aborting initialization! Support for your chip version ({}) is not implemented yet, please open a GH issue and include this message.", (u8)m_version);
-        return; // Each ChipVersion requires a specific implementation of configure_phy and hardware_quirks
-    }
-
-    initialize();
-    startup();
+    dmesgln_pci(*this, "Found @ {}", device_identifier.address());
+    dmesgln_pci(*this, "I/O port base: {}", m_registers_io_window);
 }
 
-void RTL8168NetworkAdapter::initialize()
+UNMAP_AFTER_INIT ErrorOr<void> RTL8168NetworkAdapter::initialize(Badge<NetworkingManagement>)
 {
+    identify_chip_version();
+    dmesgln_pci(*this, "Version detected - {} ({}{})", possible_device_name(), (u8)m_version, m_version_uncertain ? "?" : "");
+
+    if (!determine_supported_version()) {
+        dmesgln_pci(*this, "Aborting initialization! Support for your chip version ({}) is not implemented yet, please open a GH issue and include this message.", (u8)m_version);
+        return Error::from_errno(ENODEV); // Each ChipVersion requires a specific implementation of configure_phy and hardware_quirks
+    }
     // set initial REG_RXCFG
     auto rx_config = RXCFG_MAX_DMA_UNLIMITED;
     if (m_version <= ChipVersion::Version3) {
@@ -331,10 +330,10 @@ void RTL8168NetworkAdapter::initialize()
     // clear interrupts
     out16(REG_ISR, 0xffff);
 
-    enable_bus_mastering(pci_address());
+    enable_bus_mastering(device_identifier());
 
     read_mac_address();
-    dmesgln("RTL8168: MAC address: {}", mac_address().to_string());
+    dmesgln_pci(*this, "MAC address: {}", mac_address().to_string());
 
     // notify about driver start
     if (m_version >= ChipVersion::Version11 && m_version <= ChipVersion::Version13) {
@@ -346,6 +345,9 @@ void RTL8168NetworkAdapter::initialize()
         //  notify
         TODO();
     }
+
+    startup();
+    return {};
 }
 
 void RTL8168NetworkAdapter::startup()
@@ -1095,13 +1097,13 @@ UNMAP_AFTER_INIT void RTL8168NetworkAdapter::initialize_rx_descriptors()
     auto* rx_descriptors = (RXDescriptor*)m_rx_descriptors_region->vaddr().as_ptr();
     for (size_t i = 0; i < number_of_rx_descriptors; ++i) {
         auto& descriptor = rx_descriptors[i];
-        auto region = MM.allocate_contiguous_kernel_region(Memory::page_round_up(RX_BUFFER_SIZE).release_value_but_fixme_should_propagate_errors(), "RTL8168 RX buffer", Memory::Region::Access::ReadWrite).release_value();
+        auto region = MM.allocate_contiguous_kernel_region(Memory::page_round_up(RX_BUFFER_SIZE).release_value_but_fixme_should_propagate_errors(), "RTL8168 RX buffer"sv, Memory::Region::Access::ReadWrite).release_value();
         memset(region->vaddr().as_ptr(), 0, region->size()); // MM already zeros out newly allocated pages, but we do it again in case that ever changes
         m_rx_buffers_regions.append(move(region));
 
         descriptor.buffer_size = RX_BUFFER_SIZE;
         descriptor.flags = RXDescriptor::Ownership; // let the NIC know it can use this descriptor
-        auto physical_address = m_rx_buffers_regions[i].physical_page(0)->paddr().get();
+        auto physical_address = m_rx_buffers_regions[i]->physical_page(0)->paddr().get();
         descriptor.buffer_address_low = physical_address & 0xFFFFFFFF;
         descriptor.buffer_address_high = (u64)physical_address >> 32; // cast to prevent shift count >= with of type warnings in 32 bit systems
     }
@@ -1113,23 +1115,21 @@ UNMAP_AFTER_INIT void RTL8168NetworkAdapter::initialize_tx_descriptors()
     auto* tx_descriptors = (TXDescriptor*)m_tx_descriptors_region->vaddr().as_ptr();
     for (size_t i = 0; i < number_of_tx_descriptors; ++i) {
         auto& descriptor = tx_descriptors[i];
-        auto region = MM.allocate_contiguous_kernel_region(Memory::page_round_up(TX_BUFFER_SIZE).release_value_but_fixme_should_propagate_errors(), "RTL8168 TX buffer", Memory::Region::Access::ReadWrite).release_value();
+        auto region = MM.allocate_contiguous_kernel_region(Memory::page_round_up(TX_BUFFER_SIZE).release_value_but_fixme_should_propagate_errors(), "RTL8168 TX buffer"sv, Memory::Region::Access::ReadWrite).release_value();
         memset(region->vaddr().as_ptr(), 0, region->size()); // MM already zeros out newly allocated pages, but we do it again in case that ever changes
         m_tx_buffers_regions.append(move(region));
 
         descriptor.flags = TXDescriptor::FirstSegment | TXDescriptor::LastSegment;
-        auto physical_address = m_tx_buffers_regions[i].physical_page(0)->paddr().get();
+        auto physical_address = m_tx_buffers_regions[i]->physical_page(0)->paddr().get();
         descriptor.buffer_address_low = physical_address & 0xFFFFFFFF;
         descriptor.buffer_address_high = (u64)physical_address >> 32;
     }
     tx_descriptors[number_of_tx_descriptors - 1].flags = tx_descriptors[number_of_tx_descriptors - 1].flags | TXDescriptor::EndOfRing;
 }
 
-UNMAP_AFTER_INIT RTL8168NetworkAdapter::~RTL8168NetworkAdapter()
-{
-}
+UNMAP_AFTER_INIT RTL8168NetworkAdapter::~RTL8168NetworkAdapter() = default;
 
-bool RTL8168NetworkAdapter::handle_irq(const RegisterState&)
+bool RTL8168NetworkAdapter::handle_irq(RegisterState const&)
 {
     bool was_handled = false;
     for (;;) {
@@ -1159,19 +1159,19 @@ bool RTL8168NetworkAdapter::handle_irq(const RegisterState&)
             dbgln_if(RTL8168_DEBUG, "RTL8168: TX error - invalid packet");
         }
         if (status & INT_RX_OVERFLOW) {
-            dmesgln("RTL8168: RX descriptor unavailable (packet lost)");
+            dmesgln_pci(*this, "RX descriptor unavailable (packet lost)");
             receive();
         }
         if (status & INT_LINK_CHANGE) {
             m_link_up = (in8(REG_PHYSTATUS) & PHY_LINK_STATUS) != 0;
-            dmesgln("RTL8168: Link status changed up={}", m_link_up);
+            dmesgln_pci(*this, "Link status changed up={}", m_link_up);
         }
         if (status & INT_RX_FIFO_OVERFLOW) {
-            dmesgln("RTL8168: RX FIFO overflow");
+            dmesgln_pci(*this, "RX FIFO overflow");
             receive();
         }
         if (status & INT_SYS_ERR) {
-            dmesgln("RTL8168: Fatal system error");
+            dmesgln_pci(*this, "Fatal system error");
         }
     }
     return was_handled;
@@ -1197,7 +1197,7 @@ void RTL8168NetworkAdapter::send_raw(ReadonlyBytes payload)
     dbgln_if(RTL8168_DEBUG, "RTL8168: send_raw length={}", payload.size());
 
     if (payload.size() > TX_BUFFER_SIZE) {
-        dmesgln("RTL8168: Packet was too big; discarding");
+        dmesgln_pci(*this, "Packet was too big; discarding");
         return;
     }
 
@@ -1206,14 +1206,14 @@ void RTL8168NetworkAdapter::send_raw(ReadonlyBytes payload)
 
     if ((free_descriptor.flags & TXDescriptor::Ownership) != 0) {
         dbgln_if(RTL8168_DEBUG, "RTL8168: No free TX buffers, sleeping until one is available");
-        m_wait_queue.wait_forever("RTL8168NetworkAdapter");
+        m_wait_queue.wait_forever("RTL8168NetworkAdapter"sv);
         return send_raw(payload);
         // if we woke up a TX descriptor is guaranteed to be available, so this should never recurse more than once
         // but this can probably be done more cleanly
     }
 
     dbgln_if(RTL8168_DEBUG, "RTL8168: Chose descriptor {}", m_tx_free_index);
-    memcpy(m_tx_buffers_regions[m_tx_free_index].vaddr().as_ptr(), payload.data(), payload.size());
+    memcpy(m_tx_buffers_regions[m_tx_free_index]->vaddr().as_ptr(), payload.data(), payload.size());
 
     m_tx_free_index = (m_tx_free_index + 1) % number_of_tx_descriptors;
 
@@ -1241,13 +1241,13 @@ void RTL8168NetworkAdapter::receive()
         dbgln_if(RTL8168_DEBUG, "RTL8168: receive, flags={:#04x}, length={}, descriptor={}", flags, length, descriptor_index);
 
         if (length > RX_BUFFER_SIZE || (flags & RXDescriptor::ErrorSummary) != 0) {
-            dmesgln("RTL8168: receive got bad packet, flags={:#04x}, length={}", flags, length);
+            dmesgln_pci(*this, "receive got bad packet, flags={:#04x}, length={}", flags, length);
         } else if ((flags & RXDescriptor::FirstSegment) != 0 && (flags & RXDescriptor::LastSegment) == 0) {
             VERIFY_NOT_REACHED();
             // Our maximum received packet size is smaller than the descriptor buffer size, so packets should never be segmented
             // if this happens on a real NIC it might not respect that, and we will have to support packet segmentation
         } else {
-            did_receive({ m_rx_buffers_regions[descriptor_index].vaddr().as_ptr(), length });
+            did_receive({ m_rx_buffers_regions[descriptor_index]->vaddr().as_ptr(), length });
         }
 
         descriptor.buffer_size = RX_BUFFER_SIZE;
@@ -1260,39 +1260,39 @@ void RTL8168NetworkAdapter::receive()
 
 void RTL8168NetworkAdapter::out8(u16 address, u8 data)
 {
-    m_io_base.offset(address).out(data);
+    m_registers_io_window->write8(address, data);
 }
 
 void RTL8168NetworkAdapter::out16(u16 address, u16 data)
 {
-    m_io_base.offset(address).out(data);
+    m_registers_io_window->write16(address, data);
 }
 
 void RTL8168NetworkAdapter::out32(u16 address, u32 data)
 {
-    m_io_base.offset(address).out(data);
+    m_registers_io_window->write32(address, data);
 }
 
 void RTL8168NetworkAdapter::out64(u16 address, u64 data)
 {
     // ORDER MATTERS: Some NICs require the high part of the address to be written first
-    m_io_base.offset(address + 4).out((u32)(data >> 32));
-    m_io_base.offset(address).out((u32)(data & 0xFFFFFFFF));
+    m_registers_io_window->write32(address + 4, (u32)(data >> 32));
+    m_registers_io_window->write32(address, (u32)(data & 0xFFFFFFFF));
 }
 
 u8 RTL8168NetworkAdapter::in8(u16 address)
 {
-    return m_io_base.offset(address).in<u8>();
+    return m_registers_io_window->read8(address);
 }
 
 u16 RTL8168NetworkAdapter::in16(u16 address)
 {
-    return m_io_base.offset(address).in<u16>();
+    return m_registers_io_window->read16(address);
 }
 
 u32 RTL8168NetworkAdapter::in32(u16 address)
 {
-    return m_io_base.offset(address).in<u32>();
+    return m_registers_io_window->read32(address);
 }
 
 void RTL8168NetworkAdapter::phy_out(u8 address, u16 data)
@@ -1666,7 +1666,7 @@ StringView RTL8168NetworkAdapter::possible_device_name()
     case ChipVersion::Version19:
         return "RTL8168F/8111F"sv; // 35, 36
     case ChipVersion::Version20:
-        return "RTL8411"; // 38
+        return "RTL8411"sv; // 38
     case ChipVersion::Version21:
     case ChipVersion::Version22:
         return "RTL8168G/8111G"sv; // 40, 41, 42
@@ -1678,7 +1678,7 @@ StringView RTL8168NetworkAdapter::possible_device_name()
     case ChipVersion::Version25:
         return "RTL8168GU/8111GU"sv; // ???
     case ChipVersion::Version26:
-        return "RTL8411B"; // 44
+        return "RTL8411B"sv; // 44
     case ChipVersion::Version29:
     case ChipVersion::Version30:
         return "RTL8168H/8111H"sv; // 45, 46

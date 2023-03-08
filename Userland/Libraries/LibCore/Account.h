@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <LibCore/SecretString.h>
@@ -33,24 +33,26 @@ public:
     };
 
     static ErrorOr<Account> self(Read options = Read::All);
-    static ErrorOr<Account> from_name(char const* username, Read options = Read::All);
+    static ErrorOr<Account> from_name(StringView username, Read options = Read::All);
     static ErrorOr<Account> from_uid(uid_t uid, Read options = Read::All);
+    static ErrorOr<Vector<Account>> all(Read options = Read::All);
 
     bool authenticate(SecretString const& password) const;
-    bool login() const;
+    ErrorOr<void> login() const;
 
-    String username() const { return m_username; }
-    String password_hash() const { return m_password_hash; }
+    DeprecatedString username() const { return m_username; }
+    DeprecatedString password_hash() const { return m_password_hash; }
 
     // Setters only affect in-memory copy of password.
     // You must call sync to apply changes.
     void set_password(SecretString const& password);
     void set_password_enabled(bool enabled);
-    void set_home_directory(const char* home_directory) { m_home_directory = home_directory; }
+    void set_home_directory(StringView home_directory) { m_home_directory = home_directory; }
     void set_uid(uid_t uid) { m_uid = uid; }
     void set_gid(gid_t gid) { m_gid = gid; }
-    void set_shell(const char* shell) { m_shell = shell; }
-    void set_gecos(const char* gecos) { m_gecos = gecos; }
+    void set_shell(StringView shell) { m_shell = shell; }
+    void set_gecos(StringView gecos) { m_gecos = gecos; }
+    void set_deleted() { m_deleted = true; };
     void delete_password();
 
     // A null password means that this account was missing from /etc/shadow.
@@ -59,32 +61,33 @@ public:
 
     uid_t uid() const { return m_uid; }
     gid_t gid() const { return m_gid; }
-    const String& gecos() const { return m_gecos; }
-    const String& home_directory() const { return m_home_directory; }
-    const String& shell() const { return m_shell; }
-    const Vector<gid_t>& extra_gids() const { return m_extra_gids; }
+    DeprecatedString const& gecos() const { return m_gecos; }
+    DeprecatedString const& home_directory() const { return m_home_directory; }
+    DeprecatedString const& shell() const { return m_shell; }
+    Vector<gid_t> const& extra_gids() const { return m_extra_gids; }
 
     ErrorOr<void> sync();
 
 private:
     static ErrorOr<Account> from_passwd(passwd const&, spwd const&);
 
-    Account(const passwd& pwd, const spwd& spwd, Vector<gid_t> extra_gids);
+    Account(passwd const& pwd, spwd const& spwd, Vector<gid_t> extra_gids);
 
-    ErrorOr<String> generate_passwd_file() const;
+    ErrorOr<DeprecatedString> generate_passwd_file() const;
 #ifndef AK_OS_BSD_GENERIC
-    ErrorOr<String> generate_shadow_file() const;
+    ErrorOr<DeprecatedString> generate_shadow_file() const;
 #endif
 
-    String m_username;
+    DeprecatedString m_username;
 
-    String m_password_hash;
+    DeprecatedString m_password_hash;
     uid_t m_uid { 0 };
     gid_t m_gid { 0 };
-    String m_gecos;
-    String m_home_directory;
-    String m_shell;
+    DeprecatedString m_gecos;
+    DeprecatedString m_home_directory;
+    DeprecatedString m_shell;
     Vector<gid_t> m_extra_gids;
+    bool m_deleted { false };
 };
 
 }

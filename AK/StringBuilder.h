@@ -16,7 +16,9 @@ namespace AK {
 
 class StringBuilder {
 public:
-    using OutputType = String;
+    using OutputType = DeprecatedString;
+
+    static ErrorOr<StringBuilder> create(size_t initial_capacity = inline_capacity);
 
     explicit StringBuilder(size_t initial_capacity = inline_capacity);
     ~StringBuilder() = default;
@@ -31,10 +33,12 @@ public:
     template<typename... Parameters>
     ErrorOr<void> try_appendff(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
     {
-        VariadicFormatParams variadic_format_params { parameters... };
+        VariadicFormatParams<AllowDebugOnlyFormatters::No, Parameters...> variadic_format_params { parameters... };
         return vformat(*this, fmtstr.view(), variadic_format_params);
     }
     ErrorOr<void> try_append(char const*, size_t);
+    ErrorOr<void> try_append_repeated(char, size_t);
+    ErrorOr<void> try_append_escaped_for_json(StringView);
 
     void append(StringView);
 #ifndef KERNEL
@@ -45,6 +49,7 @@ public:
     void append_code_point(u32);
     void append(char const*, size_t);
     void appendvf(char const*, va_list);
+    void append_repeated(char, size_t);
 
     void append_as_lowercase(char);
     void append_escaped_for_json(StringView);
@@ -52,14 +57,17 @@ public:
     template<typename... Parameters>
     void appendff(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
     {
-        VariadicFormatParams variadic_format_params { parameters... };
+        VariadicFormatParams<AllowDebugOnlyFormatters::No, Parameters...> variadic_format_params { parameters... };
         MUST(vformat(*this, fmtstr.view(), variadic_format_params));
     }
 
 #ifndef KERNEL
-    [[nodiscard]] String build() const;
-    [[nodiscard]] String to_string() const;
+    [[nodiscard]] DeprecatedString to_deprecated_string() const;
 #endif
+
+    ErrorOr<String> to_string() const;
+    ErrorOr<FlyString> to_fly_string() const;
+
     [[nodiscard]] ByteBuffer to_byte_buffer() const;
 
     [[nodiscard]] StringView string_view() const;
@@ -70,16 +78,22 @@ public:
     void trim(size_t count) { m_buffer.resize(m_buffer.size() - count); }
 
     template<class SeparatorType, class CollectionType>
-    void join(SeparatorType const& separator, CollectionType const& collection)
+    void join(SeparatorType const& separator, CollectionType const& collection, StringView fmtstr = "{}"sv)
+    {
+        MUST(try_join(separator, collection, fmtstr));
+    }
+
+    template<class SeparatorType, class CollectionType>
+    ErrorOr<void> try_join(SeparatorType const& separator, CollectionType const& collection, StringView fmtstr = "{}"sv)
     {
         bool first = true;
         for (auto& item : collection) {
-            if (first)
-                first = false;
-            else
-                append(separator);
-            appendff("{}", item);
+            if (!first)
+                TRY(try_append(separator));
+            TRY(try_appendff(fmtstr, item));
+            first = false;
         }
+        return {};
     }
 
 private:
@@ -88,9 +102,11 @@ private:
     u8 const* data() const { return m_buffer.data(); }
 
     static constexpr size_t inline_capacity = 256;
-    AK::Detail::ByteBuffer<inline_capacity> m_buffer;
+    Detail::ByteBuffer<inline_capacity> m_buffer;
 };
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::StringBuilder;
+#endif

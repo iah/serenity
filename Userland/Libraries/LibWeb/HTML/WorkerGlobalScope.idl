@@ -1,29 +1,23 @@
 #import <DOM/EventTarget.idl>
+#import <DOM/EventHandler.idl>
+#import <HTML/WindowOrWorkerGlobalScope.idl>
 #import <HTML/WorkerLocation.idl>
 #import <HTML/WorkerNavigator.idl>
 
-[Exposed=Worker]
+// https://html.spec.whatwg.org/multipage/workers.html#workerglobalscope
+[Exposed=Worker, UseNewAKString]
 interface WorkerGlobalScope : EventTarget {
     readonly attribute WorkerGlobalScope self;
     readonly attribute WorkerLocation location;
     readonly attribute WorkerNavigator navigator;
     undefined importScripts(USVString... urls);
 
-    // FIXME: Should be an OnErrorEventHandler
-    attribute EventHandler onerror;
-
+    attribute OnErrorEventHandler onerror;
     attribute EventHandler onlanguagechange;
     attribute EventHandler onoffline;
     attribute EventHandler ononline;
     attribute EventHandler onrejectionhandled;
     attribute EventHandler onunhandledrejection;
-
-    // FIXME: These should all come from a WindowOrWorkerGlobalScope mixin
-    [Replaceable] readonly attribute USVString origin;
-    readonly attribute boolean isSecureContext;
-    readonly attribute boolean crossOriginIsolated;
-
-    // base64 utility methods
-    DOMString btoa(DOMString data);
-    ByteString atob(DOMString data);
 };
+
+WorkerGlobalScope includes WindowOrWorkerGlobalScope;

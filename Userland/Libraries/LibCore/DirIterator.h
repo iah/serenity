@@ -1,12 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
+#include <LibCore/DirectoryEntry.h>
 #include <dirent.h>
 #include <string.h>
 
@@ -20,30 +22,28 @@ public:
         SkipParentAndBaseDir = 0x2,
     };
 
-    explicit DirIterator(String path, Flags = Flags::NoFlags);
+    explicit DirIterator(DeprecatedString path, Flags = Flags::NoFlags);
     ~DirIterator();
 
     DirIterator(DirIterator&&);
     DirIterator(DirIterator const&) = delete;
 
-    bool has_error() const { return m_error != 0; }
-    int error() const { return m_error; }
-    const char* error_string() const { return strerror(m_error); }
+    bool has_error() const { return m_error.has_value(); }
+    Error error() const { return Error::copy(m_error.value()); }
     bool has_next();
-    String next_path();
-    String next_full_path();
+    Optional<DirectoryEntry> next();
+    DeprecatedString next_path();
+    DeprecatedString next_full_path();
     int fd() const;
 
 private:
     DIR* m_dir = nullptr;
-    int m_error = 0;
-    String m_next;
-    String m_path;
+    Optional<Error> m_error;
+    Optional<DirectoryEntry> m_next;
+    DeprecatedString m_path;
     int m_flags;
 
     bool advance_next();
 };
-
-String find_executable_in_path(String filename);
 
 }

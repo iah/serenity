@@ -20,13 +20,21 @@ u64 g_profiling_event_mask;
 //       does not fit into a register on 32bit architectures.
 ErrorOr<FlatPtr> Process::sys$profiling_enable(pid_t pid, Userspace<u64 const*> userspace_event_mask)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_no_promises());
 
-    const auto event_mask = TRY(copy_typed_from_user(userspace_event_mask));
+    auto const event_mask = TRY(copy_typed_from_user(userspace_event_mask));
+    return profiling_enable(pid, event_mask);
+}
+
+// NOTE: This second entrypoint exists to allow the kernel to invoke the syscall to enable boot profiling.
+ErrorOr<FlatPtr> Process::profiling_enable(pid_t pid, u64 event_mask)
+{
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
 
     if (pid == -1) {
-        if (!is_superuser())
+        auto credentials = this->credentials();
+        if (!credentials->is_superuser())
             return EPERM;
         ScopedCritical critical;
         g_profiling_event_mask = PERF_EVENT_PROCESS_CREATE | PERF_EVENT_THREAD_CREATE | PERF_EVENT_MMAP;
@@ -45,20 +53,22 @@ ErrorOr<FlatPtr> Process::sys$profiling_enable(pid_t pid, Userspace<u64 const*> 
             return ENOTSUP;
         g_profiling_all_threads = true;
         PerformanceManager::add_process_created_event(*Scheduler::colonel());
-        Process::for_each([](auto& process) {
+        TRY(Process::for_each_in_same_jail([](auto& process) -> ErrorOr<void> {
             PerformanceManager::add_process_created_event(process);
-            return IterationDecision::Continue;
-        });
+            return {};
+        }));
         g_profiling_event_mask = event_mask;
         return 0;
     }
 
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
     if (process->is_dead())
         return ESRCH;
-    if (!is_superuser() && process->uid() != euid())
+    auto credentials = this->credentials();
+    auto profile_process_credentials = process->credentials();
+    if (!credentials->is_superuser() && profile_process_credentials->uid() != credentials->euid())
         return EPERM;
     SpinlockLocker lock(g_profiling_lock);
     g_profiling_event_mask = PERF_EVENT_PROCESS_CREATE | PERF_EVENT_THREAD_CREATE | PERF_EVENT_MMAP;
@@ -77,11 +87,12 @@ ErrorOr<FlatPtr> Process::sys$profiling_enable(pid_t pid, Userspace<u64 const*> 
 
 ErrorOr<FlatPtr> Process::sys$profiling_disable(pid_t pid)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_no_promises());
 
     if (pid == -1) {
-        if (!is_superuser())
+        auto credentials = this->credentials();
+        if (!credentials->is_superuser())
             return EPERM;
         ScopedCritical critical;
         if (!TimeManagement::the().disable_profile_timer())
@@ -90,10 +101,12 @@ ErrorOr<FlatPtr> Process::sys$profiling_disable(pid_t pid)
         return 0;
     }
 
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
-    if (!is_superuser() && process->uid() != euid())
+    auto credentials = this->credentials();
+    auto profile_process_credentials = process->credentials();
+    if (!credentials->is_superuser() && profile_process_credentials->uid() != credentials->euid())
         return EPERM;
     SpinlockLocker lock(g_profiling_lock);
     if (!process->is_profiling())
@@ -107,11 +120,12 @@ ErrorOr<FlatPtr> Process::sys$profiling_disable(pid_t pid)
 
 ErrorOr<FlatPtr> Process::sys$profiling_free_buffer(pid_t pid)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_no_promises());
 
     if (pid == -1) {
-        if (!is_superuser())
+        auto credentials = this->credentials();
+        if (!credentials->is_superuser())
             return EPERM;
 
         OwnPtr<PerformanceEventBuffer> perf_events;
@@ -126,10 +140,12 @@ ErrorOr<FlatPtr> Process::sys$profiling_free_buffer(pid_t pid)
         return 0;
     }
 
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
-    if (!is_superuser() && process->uid() != euid())
+    auto credentials = this->credentials();
+    auto profile_process_credentials = process->credentials();
+    if (!credentials->is_superuser() && profile_process_credentials->uid() != credentials->euid())
         return EPERM;
     SpinlockLocker lock(g_profiling_lock);
     if (process->is_profiling())

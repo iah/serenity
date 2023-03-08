@@ -13,9 +13,9 @@
 
 namespace Kernel::PCI {
 
-TYPEDEF_DISTINCT_ORDERED_ID(u8, BusNumber);
-TYPEDEF_DISTINCT_ORDERED_ID(u8, DeviceNumber);
-TYPEDEF_DISTINCT_ORDERED_ID(u8, FunctionNumber);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, BusNumber);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, DeviceNumber);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, FunctionNumber);
 
 class HostController {
 public:
@@ -31,15 +31,26 @@ public:
 
     u32 domain_number() const { return m_domain.domain_number(); }
 
-    virtual void enumerate_attached_devices(Function<void(DeviceIdentifier)> callback) = 0;
+    void enumerate_attached_devices(Function<IterationDecision(EnumerableDeviceIdentifier)> callback);
+
+private:
+    void enumerate_bus(Function<IterationDecision(EnumerableDeviceIdentifier)> const& callback, BusNumber, bool recursive);
+    void enumerate_functions(Function<IterationDecision(EnumerableDeviceIdentifier)> const& callback, BusNumber, DeviceNumber, FunctionNumber, bool recursive);
+    void enumerate_device(Function<IterationDecision(EnumerableDeviceIdentifier)> const& callback, BusNumber bus, DeviceNumber device, bool recursive);
+
+    u8 read8_field(BusNumber, DeviceNumber, FunctionNumber, RegisterOffset field);
+    u16 read16_field(BusNumber, DeviceNumber, FunctionNumber, RegisterOffset field);
+
+    Optional<u8> get_capabilities_pointer_for_function(BusNumber, DeviceNumber, FunctionNumber);
+    Vector<Capability> get_capabilities_for_function(BusNumber, DeviceNumber, FunctionNumber);
 
 protected:
-    explicit HostController(PCI::Domain const& domain)
-        : m_domain(domain)
-    {
-    }
+    explicit HostController(PCI::Domain const& domain);
 
     const PCI::Domain m_domain;
+
+private:
+    Bitmap m_enumerated_buses;
 };
 
 }

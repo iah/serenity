@@ -17,7 +17,7 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<Socket>> Socket::create(int domain, int type, int protocol)
+ErrorOr<NonnullLockRefPtr<Socket>> Socket::create(int domain, int type, int protocol)
 {
     switch (domain) {
     case AF_LOCAL:
@@ -37,9 +37,7 @@ Socket::Socket(int domain, int type, int protocol)
     set_origin(Process::current());
 }
 
-Socket::~Socket()
-{
-}
+Socket::~Socket() = default;
 
 void Socket::set_setup_state(SetupState new_setup_state)
 {
@@ -48,7 +46,7 @@ void Socket::set_setup_state(SetupState new_setup_state)
     evaluate_block_conditions();
 }
 
-RefPtr<Socket> Socket::accept()
+LockRefPtr<Socket> Socket::accept()
 {
     MutexLocker locker(mutex());
     if (m_pending.is_empty())
@@ -65,18 +63,18 @@ RefPtr<Socket> Socket::accept()
     return client;
 }
 
-ErrorOr<void> Socket::queue_connection_from(NonnullRefPtr<Socket> peer)
+ErrorOr<void> Socket::queue_connection_from(NonnullLockRefPtr<Socket> peer)
 {
     dbgln_if(SOCKET_DEBUG, "Socket({}) queueing connection", this);
     MutexLocker locker(mutex());
     if (m_pending.size() >= m_backlog)
         return set_so_error(ECONNREFUSED);
-    SOCKET_TRY(m_pending.try_append(peer));
+    SOCKET_TRY(m_pending.try_append(move(peer)));
     evaluate_block_conditions();
     return {};
 }
 
-ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<const void*> user_value, socklen_t user_value_size)
+ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<void const*> user_value, socklen_t user_value_size)
 {
     MutexLocker locker(mutex());
 
@@ -97,7 +95,7 @@ ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<const void*> u
     case SO_BINDTODEVICE: {
         if (user_value_size != IFNAMSIZ)
             return EINVAL;
-        auto user_string = static_ptr_cast<const char*>(user_value);
+        auto user_string = static_ptr_cast<char const*>(user_value);
         auto ifname = TRY(try_copy_kstring_from_user(user_string, user_value_size));
         auto device = NetworkingManagement::the().lookup_by_name(ifname->view());
         if (!device)
@@ -127,6 +125,9 @@ ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<const void*> u
         m_routing_disabled = TRY(copy_typed_from_user(static_ptr_cast<int const*>(user_value))) != 0;
         return {};
     }
+    case SO_REUSEADDR:
+        dbgln("FIXME: SO_REUSEADDR requested, but not implemented.");
+        return {};
     default:
         dbgln("setsockopt({}) at SOL_SOCKET not implemented.", option);
         return ENOPROTOOPT;
@@ -168,11 +169,9 @@ ErrorOr<void> Socket::getsockopt(OpenFileDescription&, int level, int option, Us
     case SO_ERROR: {
         if (size < sizeof(int))
             return EINVAL;
-        int errno;
-        if (so_error().is_error())
-            errno = so_error().error().code();
-        else
-            errno = 0;
+        int errno = 0;
+        if (auto const& error = so_error(); error.has_value())
+            errno = error.value();
         TRY(copy_to_user(static_ptr_cast<int*>(value), &errno));
         size = sizeof(int);
         TRY(copy_to_user(value_size, &size));
@@ -241,10 +240,10 @@ ErrorOr<size_t> Socket::read(OpenFileDescription& description, u64, UserOrKernel
     if (is_shut_down_for_reading())
         return 0;
     Time t {};
-    return recvfrom(description, buffer, size, 0, {}, 0, t);
+    return recvfrom(description, buffer, size, 0, {}, 0, t, description.is_blocking());
 }
 
-ErrorOr<size_t> Socket::write(OpenFileDescription& description, u64, const UserOrKernelBuffer& data, size_t size)
+ErrorOr<size_t> Socket::write(OpenFileDescription& description, u64, UserOrKernelBuffer const& data, size_t size)
 {
     if (is_shut_down_for_writing())
         return set_so_error(EPIPE);
@@ -258,12 +257,14 @@ ErrorOr<void> Socket::shutdown(int how)
         return set_so_error(ENOTCONN);
     if (m_role == Role::Listener)
         return set_so_error(ENOTCONN);
-    if (!m_shut_down_for_writing && (how & SHUT_WR))
+    if (!m_shut_down_for_writing && (how == SHUT_WR || how == SHUT_RDWR)) {
         shut_down_for_writing();
-    if (!m_shut_down_for_reading && (how & SHUT_RD))
+        m_shut_down_for_writing = true;
+    }
+    if (!m_shut_down_for_reading && (how == SHUT_RD || how == SHUT_RDWR)) {
         shut_down_for_reading();
-    m_shut_down_for_reading |= (how & SHUT_RD) != 0;
-    m_shut_down_for_writing |= (how & SHUT_WR) != 0;
+        m_shut_down_for_reading = true;
+    }
     return {};
 }
 
@@ -285,12 +286,14 @@ void Socket::set_connected(bool connected)
 
 void Socket::set_origin(Process const& process)
 {
-    m_origin = { process.pid().value(), process.uid().value(), process.gid().value() };
+    auto credentials = process.credentials();
+    m_origin = { process.pid().value(), credentials->uid().value(), credentials->gid().value() };
 }
 
 void Socket::set_acceptor(Process const& process)
 {
-    m_acceptor = { process.pid().value(), process.uid().value(), process.gid().value() };
+    auto credentials = process.credentials();
+    m_acceptor = { process.pid().value(), credentials->uid().value(), credentials->gid().value() };
 }
 
 }

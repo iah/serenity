@@ -15,28 +15,35 @@ namespace Web::Layout {
 
 class InlineFormattingContext final : public FormattingContext {
 public:
-    InlineFormattingContext(BlockContainer& containing_block, BlockFormattingContext& parent);
+    InlineFormattingContext(LayoutState&, BlockContainer const& containing_block, BlockFormattingContext& parent);
     ~InlineFormattingContext();
 
     BlockFormattingContext& parent();
     BlockFormattingContext const& parent() const;
 
-    BlockContainer& containing_block() { return static_cast<BlockContainer&>(context_box()); }
     BlockContainer const& containing_block() const { return static_cast<BlockContainer const&>(context_box()); }
 
-    virtual void run(Box&, LayoutMode) override;
+    virtual void run(Box const&, LayoutMode, AvailableSpace const&) override;
+    virtual CSSPixels automatic_content_height() const override;
+    virtual CSSPixels automatic_content_width() const override;
 
-    void dimension_box_on_line(Box&, LayoutMode);
+    void dimension_box_on_line(Box const&, LayoutMode);
 
-    struct AvailableSpaceForLineInfo {
-        float left { 0 };
-        float right { 0 };
-    };
-
-    AvailableSpaceForLineInfo available_space_for_line(float y) const;
+    CSSPixels leftmost_x_offset_at(CSSPixels y) const;
+    CSSPixels available_space_for_line(CSSPixels y) const;
+    bool any_floats_intrude_at_y(CSSPixels y) const;
+    bool can_fit_new_line_at_y(CSSPixels y) const;
 
 private:
     void generate_line_boxes(LayoutMode);
+    void apply_justification_to_fragments(CSS::TextJustify, LineBox&, bool is_last_line);
+
+    LayoutState::UsedValues const& m_containing_block_state;
+
+    Optional<AvailableSpace> m_available_space;
+
+    CSSPixels m_automatic_content_width { 0 };
+    CSSPixels m_automatic_content_height { 0 };
 };
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,18 +12,33 @@
 #include <AK/Variant.h>
 #include <AK/Vector.h>
 #include <LibWeb/CSS/GeneralEnclosed.h>
-#include <LibWeb/CSS/Parser/StyleDeclarationRule.h>
+#include <LibWeb/CSS/Parser/Declaration.h>
 
 namespace Web::CSS {
 
-// https://www.w3.org/TR/css-conditional-3/#at-supports
+// https://www.w3.org/TR/css-conditional-4/#at-supports
 class Supports final : public RefCounted<Supports> {
-    friend class Parser;
+    friend class Parser::Parser;
 
 public:
-    struct Feature {
+    struct Declaration {
         String declaration;
+        JS::Handle<JS::Realm> realm;
         bool evaluate() const;
+        ErrorOr<String> to_string() const;
+    };
+
+    struct Selector {
+        String selector;
+        JS::Handle<JS::Realm> realm;
+        bool evaluate() const;
+        ErrorOr<String> to_string() const;
+    };
+
+    struct Feature {
+        Variant<Declaration, Selector> value;
+        bool evaluate() const;
+        ErrorOr<String> to_string() const;
     };
 
     struct Condition;
@@ -31,6 +46,7 @@ public:
         Variant<NonnullOwnPtr<Condition>, Feature, GeneralEnclosed> value;
 
         bool evaluate() const;
+        ErrorOr<String> to_string() const;
     };
 
     struct Condition {
@@ -43,6 +59,7 @@ public:
         Vector<InParens> children;
 
         bool evaluate() const;
+        ErrorOr<String> to_string() const;
     };
 
     static NonnullRefPtr<Supports> create(NonnullOwnPtr<Condition>&& condition)
@@ -51,6 +68,7 @@ public:
     }
 
     bool matches() const { return m_matches; }
+    ErrorOr<String> to_string() const;
 
 private:
     Supports(NonnullOwnPtr<Condition>&&);
@@ -60,3 +78,11 @@ private:
 };
 
 }
+
+template<>
+struct AK::Formatter<Web::CSS::Supports::InParens> : AK::Formatter<StringView> {
+    ErrorOr<void> format(FormatBuilder& builder, Web::CSS::Supports::InParens const& in_parens)
+    {
+        return Formatter<StringView>::format(builder, TRY(in_parens.to_string()));
+    }
+};

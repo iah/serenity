@@ -10,7 +10,7 @@ window_gid=13
 
 CP="cp"
 
-# cp on macOS and BSD systems do not support the -d option.
+# cp on macOS and BSD systems do not support the --preserve= option.
 # gcp comes with coreutils, which is already a dependency.
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ] || echo "$OS" | grep -qe 'BSD$'; then
@@ -33,27 +33,26 @@ if ! command -v rsync >/dev/null; then
 fi
 
 if rsync --chown 2>&1 | grep "missing argument" >/dev/null; then
-    rsync -aH --chown=0:0 --inplace "$SERENITY_SOURCE_DIR"/Base/ mnt/
-    rsync -aH --chown=0:0 --inplace Root/ mnt/
+    rsync -aH --chown=0:0 --inplace --update "$SERENITY_SOURCE_DIR"/Base/ mnt/
+    rsync -aH --chown=0:0 --inplace --update Root/ mnt/
 else
-    rsync -aH --inplace "$SERENITY_SOURCE_DIR"/Base/ mnt/
-    rsync -aH --inplace Root/ mnt/
+    rsync -aH --inplace --update "$SERENITY_SOURCE_DIR"/Base/ mnt/
+    rsync -aH --inplace --update Root/ mnt/
     chown -R 0:0 mnt/
 fi
 
-SERENITY_ARCH="${SERENITY_ARCH:-i686}"
-LLVM_VERSION="${LLVM_VERSION:-13.0.0}"
+SERENITY_ARCH="${SERENITY_ARCH:-x86_64}"
+LLVM_VERSION="${LLVM_VERSION:-14.0.1}"
 
 if [ "$SERENITY_TOOLCHAIN" = "Clang" ]; then
     TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR"/Toolchain/Local/clang/
-    $CP "$TOOLCHAIN_DIR"/lib/"$SERENITY_ARCH"-pc-serenity/* mnt/usr/lib
+    $CP --preserve=timestamps "$TOOLCHAIN_DIR"/lib/"$SERENITY_ARCH"-pc-serenity/* mnt/usr/lib
     mkdir -p mnt/usr/include/"$SERENITY_ARCH"-pc-serenity
-    $CP -r "$TOOLCHAIN_DIR"/include/c++ mnt/usr/include
-    $CP -r "$TOOLCHAIN_DIR"/include/"$SERENITY_ARCH"-pc-serenity/c++ mnt/usr/include/"$SERENITY_ARCH"-pc-serenity
-elif [ "$SERENITY_ARCH" != "aarch64" ]; then
-    $CP "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/lib/libgcc_s.so mnt/usr/lib
-    $CP "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/lib/libstdc++.a mnt/usr/lib
-    $CP -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/include/c++ mnt/usr/include
+    $CP --preserve=timestamps -r "$TOOLCHAIN_DIR"/include/c++ mnt/usr/include
+    $CP --preserve=timestamps -r "$TOOLCHAIN_DIR"/include/"$SERENITY_ARCH"-pc-serenity/c++ mnt/usr/include/"$SERENITY_ARCH"-pc-serenity
+else
+    $CP --preserve=timestamps -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/lib/* mnt/usr/lib
+    $CP --preserve=timestamps -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/include/c++ mnt/usr/include
 fi
 
 # If umask was 027 or similar when the repo was cloned,
@@ -97,6 +96,10 @@ if [ -f mnt/bin/pls ]; then
     chown 0:$wheel_gid mnt/bin/pls
     chmod 4750 mnt/bin/pls
 fi
+if [ -f mnt/bin/Escalator ]; then
+    chown 0:$wheel_gid mnt/bin/Escalator
+    chmod 4750 mnt/bin/Escalator
+fi
 if [ -f mnt/bin/utmpupdate ]; then
     chown 0:$utmp_gid mnt/bin/utmpupdate
     chmod 2755 mnt/bin/utmpupdate
@@ -114,15 +117,24 @@ if [ -f mnt/usr/Tests/Kernel/TestProcFSWrite ]; then
     chmod 4755 mnt/usr/Tests/Kernel/TestProcFSWrite
 fi
 
-chmod 0400 mnt/res/kernel.map
-chmod 0400 mnt/boot/Kernel
-chmod 0400 mnt/boot/Kernel.debug
+if [ -f mnt/res/kernel.map ]; then
+    chmod 0400 mnt/res/kernel.map
+fi
+
+if [ -f mnt/boot/Kernel ]; then
+    chmod 0400 mnt/boot/Kernel
+fi
+
+if [ -f mnt/boot/Kernel.debug ]; then
+    chmod 0400 mnt/boot/Kernel.debug
+fi
+
 chmod 600 mnt/etc/shadow
 chmod 755 mnt/res/devel/templates/*.postcreate
 echo "done"
 
 printf "creating initial filesystem structure... "
-for dir in bin etc proc mnt tmp boot mod var/run; do
+for dir in bin etc proc mnt tmp boot mod var/run usr/local usr/bin; do
     mkdir -p mnt/$dir
 done
 chmod 700 mnt/boot
@@ -131,7 +143,7 @@ chmod 1777 mnt/tmp
 echo "done"
 
 printf "creating utmp file... "
-touch mnt/var/run/utmp
+echo "{}" > mnt/var/run/utmp
 chown 0:$utmp_gid mnt/var/run/utmp
 chmod 664 mnt/var/run/utmp
 echo "done"
@@ -144,27 +156,23 @@ printf "setting up sysfs folder... "
 mkdir -p mnt/sys
 echo "done"
 
-printf "writing version file... "
-GIT_HASH=$( (git log --pretty=format:'%h' -n 1 | cut -c1-7) || true )
-printf "[Version]\nMajor=1\nMinor=0\nGit=%s\n" "$GIT_HASH" > mnt/res/version.ini
-echo "done"
-
 printf "installing users... "
 mkdir -p mnt/root
 mkdir -p mnt/home/anon
 mkdir -p mnt/home/anon/Desktop
 mkdir -p mnt/home/anon/Downloads
 mkdir -p mnt/home/nona
-rm -fr mnt/home/anon/js-tests mnt/home/anon/web-tests mnt/home/anon/cpp-tests mnt/home/anon/wasm-tests
-mkdir -p mnt/home/anon/cpp-tests/
+# FIXME: Handle these test copies using CMake install rules 
+rm -fr mnt/home/anon/Tests/js-tests mnt/home/anon/Tests/web-tests mnt/home/anon/Tests/cpp-tests
+mkdir -p mnt/home/anon/Tests/cpp-tests/
 cp "$SERENITY_SOURCE_DIR"/README.md mnt/home/anon/
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibJS/Tests mnt/home/anon/js-tests
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibWeb/Tests mnt/home/anon/web-tests
-cp -r "$SERENITY_SOURCE_DIR"/Userland/DevTools/HackStudio/LanguageServers/Cpp/Tests mnt/home/anon/cpp-tests/comprehension
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/parser mnt/home/anon/cpp-tests/parser
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/preprocessor mnt/home/anon/cpp-tests/preprocessor
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibWasm/Tests mnt/home/anon/wasm-tests
-cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibJS/Tests/test-common.js mnt/home/anon/wasm-tests
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibJS/Tests mnt/home/anon/Tests/js-tests
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibWeb/Tests mnt/home/anon/Tests/web-tests
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCodeComprehension/Cpp/Tests mnt/home/anon/Tests/cpp-tests/comprehension
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/parser mnt/home/anon/Tests/cpp-tests/parser
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/preprocessor mnt/home/anon/Tests/cpp-tests/preprocessor
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibJS/Tests/test-common.js mnt/home/anon/Tests/wasm-tests
+cp -r "$SERENITY_SOURCE_DIR"/Userland/Applications/Spreadsheet/Tests mnt/home/anon/Tests/spreadsheet-tests
 
 if [ -n "$SERENITY_COPY_SOURCE" ] ; then
   printf "\ncopying Serenity's source... "
@@ -192,6 +200,8 @@ echo "done"
 printf "installing shortcuts... "
 ln -sf Shell mnt/bin/sh
 ln -sf test mnt/bin/[
+ln -sf less mnt/bin/more
+ln -sf /bin/env mnt/usr/bin/env
 echo "done"
 
 printf "installing 'checksum' variants... "

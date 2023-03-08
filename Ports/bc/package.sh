@@ -1,15 +1,14 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=bc
-version=5.1.1
-files="https://github.com/gavinhoward/bc/releases/download/${version}/bc-${version}.tar.xz bc-${version}.tar.xz
-https://github.com/gavinhoward/bc/releases/download/${version}/bc-${version}.tar.xz.sig bc-${version}.tar.xz.sig"
-useconfigure=true
-configscript=configure.sh
-auth_type="sig"
-auth_import_key="E2A30324A4465A4D5882692EC08038BDF280D33E"
-auth_opts=("bc-${version}.tar.xz.sig")
+port='bc'
+version='6.1.1'
+files="https://github.com/gavinhoward/bc/releases/download/${version}/bc-${version}.tar.xz bc-${version}.tar.xz b6de9e2fa4fcb1902c1686760dd90217543128f0298d418951ab1e9a03964097"
+auth_type='sha256'
+useconfigure='true'
+configscript='configure.sh'
 configopts=("--prefix=/usr/local" "--disable-nls")
 
+export CFLAGS='-O3 -flto'
+
 configure() {
-    run env HOSTCC=gcc ./"$configscript" "${configopts[@]}"
+    run ./"${configscript}" "${configopts[@]}"
 }

@@ -10,7 +10,7 @@
 #include <AK/Vector.h>
 #include <LibGUI/Model.h>
 #include <LibX86/Instruction.h>
-#include <sys/arch/i386/regs.h>
+#include <sys/arch/regs.h>
 
 namespace Debug {
 
@@ -22,14 +22,14 @@ namespace HackStudio {
 
 struct InstructionData {
     X86::Instruction insn;
-    String disassembly;
+    DeprecatedString disassembly;
     StringView bytes;
     FlatPtr address { 0 };
 };
 
 class DisassemblyModel final : public GUI::Model {
 public:
-    static NonnullRefPtr<DisassemblyModel> create(const Debug::DebugSession& debug_session, const PtraceRegisters& regs)
+    static NonnullRefPtr<DisassemblyModel> create(Debug::DebugSession const& debug_session, PtraceRegisters const& regs)
     {
         return adopt_ref(*new DisassemblyModel(debug_session, regs));
     }
@@ -45,11 +45,11 @@ public:
 
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
-    virtual String column_name(int) const override;
+    virtual DeprecatedString column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
 
 private:
-    DisassemblyModel(const Debug::DebugSession&, const PtraceRegisters&);
+    DisassemblyModel(Debug::DebugSession const&, PtraceRegisters const&);
 
     Vector<InstructionData> m_instructions;
 };

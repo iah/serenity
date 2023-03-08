@@ -11,6 +11,17 @@ environment.
 
 A list of all available ports can be found [here](AvailablePorts.md).
 
+## External ports
+
+Third party ports might need additional dependencies from another location.
+In this case, you can point the `SERENITY_PORT_DIRS` variable to a local ports directory.
+
+For example:
+
+```bash
+export SERENITY_PORT_DIRS="/path/to/port/dir/:/other/path/"
+```
+
 ## Using ports scripts
 
 Each port has a script called `package.sh` which defines a name and version,
@@ -26,7 +37,7 @@ configuration/compilation options, and some other things (see
   script in this directory. This is sometimes required when LibC changes, for
   example. Pass `clean` as first argument to remove old build files beforehand.
 
-Installed ports are being tracked in `Build/i686/Root/usr/Ports/packages.db` (a simple text file).
+Installed ports are being tracked in `Build/x86_64/Root/usr/Ports/packages.db` (a simple text file).
 You can delete this file at any time, in fact it must be edited or removed
 when clearing the build directory as port dependencies may not be installed
 again otherwise.
@@ -153,20 +164,23 @@ auth_opts="foo-${version}.tar.xz.asc foo-${version}.tar.xz"
 
 The type of file validation to use, can be one of:
 
-- `md5`: Use MD5 hashes defined in [`files`](#files)
 - `sha256`: Use SHA256 hashes defined in [`files`](#files)
-- `sha1`: Use SHA1 hashes defined in [`files`](#files)
 - `sig`: Use PGP signatures (see [`auth_opts`](#auth_opts))
 
-Defaults to `md5`, most ports use `sig` though as `.asc` files are widely
-available.
+Most ports use `sig` as `.asc` files are widely available.
+
+This _has_ to be specified in order for `lint-ports` to pass.
+
+If no signature or hash is provided by the author of the files, just create the
+hash yourself by calling `sha256sum` on the downloaded file and specifying the
+hash along with the [`files`](#files).
 
 #### `configopts`
 
 Options passed to the port's [`configscript`](#configscript) in the default
 `configure` function.
 
-`--host=i686-pc-serenity` is always passed, override the `configure` function
+`--host=x86_64-pc-serenity` is always passed, override the `configure` function
 if that's undesirable.
 
 #### `use_fresh_config_sub`
@@ -174,10 +188,10 @@ if that's undesirable.
 Boolean option (`false` by default), will replace the `config.sub` pointed to by
 `config_sub_path` as part of the patching process if set to true.
 
-#### `config_sub_path`
+#### `config_sub_paths`
 
-Path to the `config.sub` file used by autoconf, starting at `$workdir`.
-This is set to `config.sub` by default.
+Paths to the `config.sub` files used by autoconf, starting at `$workdir`.
+This is set to `(config.sub)` by default.
 
 #### `configscript`
 
@@ -213,9 +227,14 @@ MD5, SHA1, or SHA256 hash that will be used for verification when
 
 For example:
 
+_With PGP signatures_
 ```bash
 files="https://example.com/foo-${version}.tar.xz foo-${version}.tar.xz
 https://example.com/foo-${version}.tar.xz.asc foo-${version}.tar.xz.asc"
+```
+_With a SHA256 hash_
+```bash
+files="https://example.com/foo-${version}.tar.xz foo-${version}.tar.xz 9acd50f9a2af37e471f761c3fe7b8dea5617e51dac802fe6c177b74abf0abb5a"
 ```
 
 If a file is a compressed tar archive, a gzip compressed file or a zip

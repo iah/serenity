@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, David Tuin <davidot@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,6 +9,8 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/Concepts.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Span.h>
 #include <AK/String.h>
 #include <AK/Types.h>
@@ -22,48 +26,63 @@ public:
     using Word = u32;
     static constexpr size_t BITS_IN_WORD = 32;
 
-    UnsignedBigInteger(Word x) { m_words.append(x); }
+    // This constructor accepts any unsigned with size up to Word.
+    template<Integral T>
+    requires(sizeof(T) <= sizeof(Word))
+    UnsignedBigInteger(T value)
+    {
+        m_words.append(static_cast<Word>(value));
+    }
 
     explicit UnsignedBigInteger(Vector<Word, STARTING_WORD_SIZE>&& words)
         : m_words(move(words))
     {
     }
 
-    explicit UnsignedBigInteger(const u8* ptr, size_t length);
+    explicit UnsignedBigInteger(u8 const* ptr, size_t length);
 
-    UnsignedBigInteger() { }
+    explicit UnsignedBigInteger(double value);
 
-    static UnsignedBigInteger create_invalid();
+    explicit UnsignedBigInteger(u64 value)
+    {
+        static_assert(sizeof(u64) == sizeof(Word) * 2);
+        m_words.resize_and_keep_capacity(2);
+        m_words[0] = static_cast<Word>(value & 0xFFFFFFFF);
+        m_words[1] = static_cast<Word>((value >> 32) & 0xFFFFFFFF);
+    }
 
-    static UnsignedBigInteger import_data(StringView data) { return import_data((const u8*)data.characters_without_null_termination(), data.length()); }
-    static UnsignedBigInteger import_data(const u8* ptr, size_t length)
+    UnsignedBigInteger() = default;
+
+    [[nodiscard]] static UnsignedBigInteger create_invalid();
+
+    [[nodiscard]] static UnsignedBigInteger import_data(StringView data) { return import_data((u8 const*)data.characters_without_null_termination(), data.length()); }
+    [[nodiscard]] static UnsignedBigInteger import_data(u8 const* ptr, size_t length)
     {
         return UnsignedBigInteger(ptr, length);
     }
 
-    static UnsignedBigInteger create_from(u64 value)
-    {
-        VERIFY(sizeof(Word) == 4);
-        UnsignedBigInteger integer;
-        integer.m_words.resize(2);
-        integer.m_words[0] = static_cast<Word>(value & 0xFFFFFFFF);
-        integer.m_words[1] = static_cast<Word>((value >> 32) & 0xFFFFFFFF);
-        return integer;
-    }
-
     size_t export_data(Bytes, bool remove_leading_zeros = false) const;
 
-    static UnsignedBigInteger from_base(u16 N, StringView str);
-    String to_base(u16 N) const;
+    [[nodiscard]] static UnsignedBigInteger from_base(u16 N, StringView str);
+    [[nodiscard]] ErrorOr<String> to_base(u16 N) const;
+    [[nodiscard]] DeprecatedString to_base_deprecated(u16 N) const;
 
-    u64 to_u64() const;
-    double to_double() const;
+    [[nodiscard]] u64 to_u64() const;
 
-    const Vector<Word, STARTING_WORD_SIZE>& words() const { return m_words; }
+    enum class RoundingMode {
+        IEEERoundAndTiesToEvenMantissa,
+        RoundTowardZero,
+        // “the Number value for x”, https://tc39.es/ecma262/#number-value-for
+        ECMAScriptNumberValueFor = IEEERoundAndTiesToEvenMantissa,
+    };
+
+    [[nodiscard]] double to_double(RoundingMode rounding_mode = RoundingMode::IEEERoundAndTiesToEvenMantissa) const;
+
+    [[nodiscard]] Vector<Word, STARTING_WORD_SIZE> const& words() const { return m_words; }
 
     void set_to_0();
     void set_to(Word other);
-    void set_to(const UnsignedBigInteger& other);
+    void set_to(UnsignedBigInteger const& other);
 
     void invalidate()
     {
@@ -72,38 +91,46 @@ public:
         m_cached_hash = 0;
     }
 
-    bool is_zero() const;
-    bool is_odd() const { return m_words.size() && (m_words[0] & 1); }
-    bool is_invalid() const { return m_is_invalid; }
+    [[nodiscard]] bool is_zero() const;
+    [[nodiscard]] bool is_odd() const { return m_words.size() && (m_words[0] & 1); }
+    [[nodiscard]] bool is_invalid() const { return m_is_invalid; }
 
-    size_t length() const { return m_words.size(); }
+    [[nodiscard]] size_t length() const { return m_words.size(); }
     // The "trimmed length" is the number of words after trimming leading zeroed words
-    size_t trimmed_length() const;
+    [[nodiscard]] size_t trimmed_length() const;
 
     void clamp_to_trimmed_length();
     void resize_with_leading_zeros(size_t num_words);
 
     size_t one_based_index_of_highest_set_bit() const;
 
-    UnsignedBigInteger plus(const UnsignedBigInteger& other) const;
-    UnsignedBigInteger minus(const UnsignedBigInteger& other) const;
-    UnsignedBigInteger bitwise_or(const UnsignedBigInteger& other) const;
-    UnsignedBigInteger bitwise_and(const UnsignedBigInteger& other) const;
-    UnsignedBigInteger bitwise_xor(const UnsignedBigInteger& other) const;
-    UnsignedBigInteger bitwise_not_fill_to_one_based_index(size_t) const;
-    UnsignedBigInteger shift_left(size_t num_bits) const;
-    UnsignedBigInteger multiplied_by(const UnsignedBigInteger& other) const;
-    UnsignedDivisionResult divided_by(const UnsignedBigInteger& divisor) const;
+    [[nodiscard]] UnsignedBigInteger plus(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedBigInteger minus(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedBigInteger bitwise_or(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedBigInteger bitwise_and(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedBigInteger bitwise_xor(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedBigInteger bitwise_not_fill_to_one_based_index(size_t) const;
+    [[nodiscard]] UnsignedBigInteger shift_left(size_t num_bits) const;
+    [[nodiscard]] UnsignedBigInteger multiplied_by(UnsignedBigInteger const& other) const;
+    [[nodiscard]] UnsignedDivisionResult divided_by(UnsignedBigInteger const& divisor) const;
 
-    u32 hash() const;
+    [[nodiscard]] u32 hash() const;
 
     void set_bit_inplace(size_t bit_index);
 
-    bool operator==(const UnsignedBigInteger& other) const;
-    bool operator!=(const UnsignedBigInteger& other) const;
-    bool operator<(const UnsignedBigInteger& other) const;
-    bool operator>(const UnsignedBigInteger& other) const;
-    bool operator>=(UnsignedBigInteger const& other) const;
+    [[nodiscard]] bool operator==(UnsignedBigInteger const& other) const;
+    [[nodiscard]] bool operator!=(UnsignedBigInteger const& other) const;
+    [[nodiscard]] bool operator<(UnsignedBigInteger const& other) const;
+    [[nodiscard]] bool operator>(UnsignedBigInteger const& other) const;
+    [[nodiscard]] bool operator>=(UnsignedBigInteger const& other) const;
+
+    enum class CompareResult {
+        DoubleEqualsBigInt,
+        DoubleLessThanBigInt,
+        DoubleGreaterThanBigInt
+    };
+
+    [[nodiscard]] CompareResult compare_to_double(double) const;
 
 private:
     friend class UnsignedBigIntegerAlgorithms;
@@ -132,7 +159,7 @@ struct AK::Formatter<Crypto::UnsignedBigInteger> : Formatter<StringView> {
 };
 
 inline Crypto::UnsignedBigInteger
-operator""_bigint(const char* string, size_t length)
+operator""_bigint(char const* string, size_t length)
 {
     return Crypto::UnsignedBigInteger::from_base(10, { string, length });
 }

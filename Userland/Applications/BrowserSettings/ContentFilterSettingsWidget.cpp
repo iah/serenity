@@ -10,7 +10,6 @@
 #include <Applications/BrowserSettings/ContentFilterSettingsWidgetGML.h>
 #include <LibConfig/Client.h>
 #include <LibCore/StandardPaths.h>
-#include <LibCore/Stream.h>
 #include <LibGUI/CheckBox.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/Forward.h>
@@ -18,21 +17,21 @@
 #include <LibGUI/ListView.h>
 #include <LibGUI/Menu.h>
 
-static String filter_list_file_path()
+static constexpr bool s_default_enable_content_filtering = true;
+
+static DeprecatedString filter_list_file_path()
 {
-    return String::formatted("{}/BrowserContentFilters.txt", Core::StandardPaths::config_directory());
+    return DeprecatedString::formatted("{}/BrowserContentFilters.txt", Core::StandardPaths::config_directory());
 }
 
 ErrorOr<void> DomainListModel::load()
 {
     // FIXME: This should be somewhat shared with Browser.
-    auto file = TRY(Core::Stream::File::open(filter_list_file_path(), Core::Stream::OpenMode::Read));
-    auto content_filter_list = TRY(Core::Stream::BufferedFile::create(move(file)));
+    auto file = TRY(Core::File::open(filter_list_file_path(), Core::File::OpenMode::Read));
+    auto content_filter_list = TRY(Core::BufferedFile::create(move(file)));
     auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
     while (TRY(content_filter_list->can_read_line())) {
-        auto length = TRY(content_filter_list->read_line(buffer));
-        StringView line { buffer.data(), length };
-        dbgln("Content filter for {}", line);
+        auto line = TRY(content_filter_list->read_line(buffer));
         if (!line.is_empty())
             m_domain_list.append(line);
     }
@@ -50,12 +49,12 @@ ErrorOr<void> DomainListModel::save()
     for (auto const& domain : m_domain_list)
         TRY(builder.try_appendff("{}\n", domain));
 
-    auto file = TRY(Core::Stream::File::open(filter_list_file_path(), Core::Stream::OpenMode::Write));
+    auto file = TRY(Core::File::open(filter_list_file_path(), Core::File::OpenMode::Write));
     TRY(file->write(builder.to_byte_buffer().bytes()));
     return {};
 }
 
-void DomainListModel::add_domain(String name)
+void DomainListModel::add_domain(DeprecatedString name)
 {
     begin_insert_rows({}, m_domain_list.size(), m_domain_list.size());
     m_domain_list.append(move(name));
@@ -108,17 +107,21 @@ void DomainListModel::reset_default_values()
 
 ContentFilterSettingsWidget::ContentFilterSettingsWidget()
 {
-    load_from_gml(content_filter_settings_widget_gml);
+    load_from_gml(content_filter_settings_widget_gml).release_value_but_fixme_should_propagate_errors();
     m_enable_content_filtering_checkbox = find_descendant_of_type_named<GUI::CheckBox>("enable_content_filtering_checkbox");
     m_domain_list_view = find_descendant_of_type_named<GUI::ListView>("domain_list_view");
     m_add_new_domain_button = find_descendant_of_type_named<GUI::Button>("add_new_domain_button");
 
-    m_enable_content_filtering_checkbox->set_checked(Config::read_bool("Browser", "Preferences", "EnableContentFilters"));
+    m_enable_content_filtering_checkbox->set_checked(Config::read_bool("Browser"sv, "Preferences"sv, "EnableContentFilters"sv, s_default_enable_content_filtering), GUI::AllowCallback::No);
+    m_enable_content_filtering_checkbox->on_checked = [&](auto) { set_modified(true); };
 
     m_add_new_domain_button->on_click = [&](unsigned) {
-        String text;
-        if (GUI::InputBox::show(window(), text, "Enter domain name", "Add domain to Content Filter") == GUI::Dialog::ExecOK)
-            m_domain_list_model->add_domain(std::move(text));
+        DeprecatedString text;
+
+        if (GUI::InputBox::show(window(), text, "Enter domain name"sv, "Add domain to Content Filter"sv, GUI::InputType::NonemptyText) == GUI::Dialog::ExecResult::OK) {
+            m_domain_list_model->add_domain(move(text));
+            set_modified(true);
+        }
     };
 
     m_domain_list_model = make_ref_counted<DomainListModel>();
@@ -127,8 +130,10 @@ ContentFilterSettingsWidget::ContentFilterSettingsWidget()
     m_domain_list_view->set_model(m_domain_list_model);
 
     auto delete_action = GUI::CommonActions::make_delete_action([&](GUI::Action const&) {
-        if (!m_domain_list_view->selection().is_empty())
+        if (!m_domain_list_view->selection().is_empty()) {
             m_domain_list_model->delete_domain(m_domain_list_view->selection().first().row());
+            set_modified(true);
+        }
     });
     m_entry_context_menu = GUI::Menu::construct();
     m_entry_context_menu->add_action(delete_action);
@@ -143,10 +148,11 @@ void ContentFilterSettingsWidget::apply_settings()
 {
     // FIXME: Propagate errors
     MUST(m_domain_list_model->save());
-    Config::write_bool("Browser", "Preferences", "EnableContentFilters", m_enable_content_filtering_checkbox->is_checked());
+    Config::write_bool("Browser"sv, "Preferences"sv, "EnableContentFilters"sv, m_enable_content_filtering_checkbox->is_checked());
 }
 
 void ContentFilterSettingsWidget::reset_default_values()
 {
     m_domain_list_model->reset_default_values();
+    m_enable_content_filtering_checkbox->set_checked(s_default_enable_content_filtering);
 }

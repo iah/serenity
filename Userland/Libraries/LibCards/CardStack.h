@@ -15,7 +15,7 @@ namespace Cards {
 
 class CardStack final : public RefCounted<CardStack> {
 public:
-    enum Type {
+    enum class Type {
         Invalid,
         Stock,
         Normal,
@@ -24,36 +24,40 @@ public:
         Foundation
     };
 
-    enum MovementRule {
+    enum class MovementRule {
         Alternating,
         Same,
         Any,
     };
 
     CardStack();
-    CardStack(const Gfx::IntPoint& position, Type type);
-    CardStack(const Gfx::IntPoint& position, Type type, NonnullRefPtr<CardStack> associated_stack);
+    CardStack(Gfx::IntPoint position, Type type, RefPtr<CardStack> covered_stack = nullptr);
 
     bool is_empty() const { return m_stack.is_empty(); }
-    bool is_focused() const { return m_focused; }
     Type type() const { return m_type; }
-    const NonnullRefPtrVector<Card>& stack() const { return m_stack; }
+    Vector<NonnullRefPtr<Card>> const& stack() const { return m_stack; }
     size_t count() const { return m_stack.size(); }
-    const Card& peek() const { return m_stack.last(); }
+    Card const& peek() const { return m_stack.last(); }
     Card& peek() { return m_stack.last(); }
-    const Gfx::IntRect& bounding_box() const { return m_bounding_box; }
+    Gfx::IntRect const& bounding_box() const { return m_bounding_box; }
 
-    void set_focused(bool focused) { m_focused = focused; }
+    bool make_top_card_visible(); // Returns true if the card was flipped.
 
-    void push(NonnullRefPtr<Card> card);
+    ErrorOr<void> push(NonnullRefPtr<Card>);
     NonnullRefPtr<Card> pop();
-    void move_to_stack(CardStack&);
+    ErrorOr<void> take_all(CardStack&);
     void rebound_cards();
 
-    bool is_allowed_to_push(const Card&, size_t stack_size = 1, MovementRule movement_rule = Alternating) const;
-    void add_all_grabbed_cards(const Gfx::IntPoint& click_location, NonnullRefPtrVector<Card>& grabbed, MovementRule movement_rule = Alternating);
-    void draw(GUI::Painter&, const Gfx::Color& background_color);
+    bool is_allowed_to_push(Card const&, size_t stack_size = 1, MovementRule movement_rule = MovementRule::Alternating) const;
+    ErrorOr<void> add_all_grabbed_cards(Gfx::IntPoint click_location, Vector<NonnullRefPtr<Card>>& grabbed, MovementRule movement_rule = MovementRule::Alternating);
+
+    bool preview_card(Gfx::IntPoint click_location);
+    void clear_card_preview();
+
+    void paint(GUI::Painter&, Gfx::Color background_color);
     void clear();
+
+    void set_highlighted(bool highlighted) { m_highlighted = highlighted; }
 
 private:
     struct StackRules {
@@ -63,18 +67,18 @@ private:
         uint8_t shift_y_upside_down { 0 };
     };
 
-    constexpr StackRules rules_for_type(Type stack_type)
+    static constexpr StackRules rules_for_type(Type stack_type)
     {
         switch (stack_type) {
-        case Foundation:
+        case Type::Foundation:
             return { 2, 1, 4, 1 };
-        case Normal:
+        case Type::Normal:
             return { 0, 20, 1, 3 };
-        case Stock:
+        case Type::Stock:
             return { 2, 1, 8, 1 };
-        case Waste:
+        case Type::Waste:
             return { 0, 0, 1, 0 };
-        case Play:
+        case Type::Play:
             return { 20, 0, 1, 0 };
         default:
             return {};
@@ -83,15 +87,18 @@ private:
 
     void calculate_bounding_box();
 
-    RefPtr<CardStack> m_associated_stack;
-    NonnullRefPtrVector<Card> m_stack;
+    // An optional stack that this stack is painted on top of.
+    // eg, in Solitaire the Play stack is positioned over the Waste stack.
+    RefPtr<CardStack> m_covered_stack;
+
+    Vector<NonnullRefPtr<Card>> m_stack;
     Vector<Gfx::IntPoint> m_stack_positions;
     Gfx::IntPoint m_position;
     Gfx::IntRect m_bounding_box;
-    Type m_type { Invalid };
+    Type m_type { Type::Invalid };
     StackRules m_rules;
-    bool m_focused { false };
     Gfx::IntRect m_base;
+    bool m_highlighted { false };
 };
 
 }
@@ -125,11 +132,11 @@ struct AK::Formatter<Cards::CardStack> : Formatter<FormatString> {
         StringBuilder cards;
         bool first_card = true;
 
-        for (const auto& card : stack.stack()) {
+        for (auto const& card : stack.stack()) {
             cards.appendff("{}{}", (first_card ? "" : " "), card);
             first_card = false;
         }
 
-        return Formatter<FormatString>::format(builder, "{:<10} {:>16}: {}", type, stack.bounding_box(), cards.build());
+        return Formatter<FormatString>::format(builder, "{:<10} {:>16}: {}"sv, type, stack.bounding_box(), cards.to_deprecated_string());
     }
 };

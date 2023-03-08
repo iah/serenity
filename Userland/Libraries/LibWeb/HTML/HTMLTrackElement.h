@@ -11,11 +11,15 @@
 namespace Web::HTML {
 
 class HTMLTrackElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLTrackElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLTrackElement, HTMLElement);
 
-    HTMLTrackElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLTrackElement() override;
+
+private:
+    HTMLTrackElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

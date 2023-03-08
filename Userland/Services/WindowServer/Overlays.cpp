@@ -107,7 +107,7 @@ void RectangularOverlay::render(Gfx::Painter& painter, Screen const& screen)
     auto scale_factor = screen.scale_factor();
     auto* bitmap = m_rendered_bitmaps->find_bitmap(scale_factor);
     if (!bitmap) {
-        auto bitmap_or_error = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, rect().size(), scale_factor);
+        auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, rect().size(), scale_factor);
         if (bitmap_or_error.is_error())
             return;
         auto new_bitmap = bitmap_or_error.release_value_but_fixme_should_propagate_errors();
@@ -171,12 +171,12 @@ void ScreenNumberOverlay::pick_font()
     auto screen_number_content_rect_size = calculate_content_rect_for_screen(Screen::main()).size();
     auto& font_database = Gfx::FontDatabase::the();
     auto& default_font = WindowManager::the().font();
-    String best_font_name;
+    DeprecatedString best_font_name;
     int best_font_size = -1;
     font_database.for_each_font([&](Gfx::Font const& font) {
         // TODO: instead of picking *any* font we should probably compare font.name()
         // with default_font.name(). But the default font currently does not provide larger sizes
-        auto size = font.glyph_height();
+        auto size = font.pixel_size_rounded_up();
         if (size * 2 <= screen_number_content_rect_size.height() && size > best_font_size) {
             for (unsigned ch = '0'; ch <= '9'; ch++) {
                 if (!font.contains_glyph(ch)) {
@@ -213,7 +213,7 @@ Gfx::Font const& ScreenNumberOverlay::font()
 
 void ScreenNumberOverlay::render_overlay_bitmap(Gfx::Painter& painter)
 {
-    painter.draw_text({ {}, rect().size() }, String::formatted("{}", m_screen.index() + 1), font(), Gfx::TextAlignment::Center, Color::White);
+    painter.draw_text(Gfx::IntRect { {}, rect().size() }, DeprecatedString::formatted("{}", m_screen.index() + 1), font(), Gfx::TextAlignment::Center, Color::White);
 }
 
 Gfx::IntRect ScreenNumberOverlay::calculate_content_rect_for_screen(Screen& screen)
@@ -236,14 +236,14 @@ void WindowGeometryOverlay::update_rect()
 {
     if (auto* window = m_window.ptr()) {
         auto& wm = WindowManager::the();
-        if (!window->size_increment().is_null()) {
+        if (!window->size_increment().is_empty()) {
             int width_steps = (window->width() - window->base_size().width()) / window->size_increment().width();
             int height_steps = (window->height() - window->base_size().height()) / window->size_increment().height();
-            m_label = String::formatted("{} ({}x{})", window->rect(), width_steps, height_steps);
+            m_label = DeprecatedString::formatted("{} ({}x{})", window->rect(), width_steps, height_steps);
         } else {
-            m_label = window->rect().to_string();
+            m_label = window->rect().to_deprecated_string();
         }
-        m_label_rect = Gfx::IntRect { 0, 0, wm.font().width(m_label) + 16, wm.font().glyph_height() + 10 };
+        m_label_rect = Gfx::IntRect { 0, 0, static_cast<int>(ceilf(wm.font().width(m_label))) + 16, wm.font().pixel_size_rounded_up() + 10 };
 
         auto rect = calculate_frame_rect(m_label_rect).centered_within(window->frame().rect());
         auto desktop_rect = wm.desktop_rect(ScreenInput::the().cursor_location_screen());
@@ -264,7 +264,7 @@ void WindowGeometryOverlay::update_rect()
 
 void WindowGeometryOverlay::render_overlay_bitmap(Gfx::Painter& painter)
 {
-    painter.draw_text({ {}, rect().size() }, m_label, WindowManager::the().font(), Gfx::TextAlignment::Center, Color::White);
+    painter.draw_text(Gfx::IntRect { {}, rect().size() }, m_label, WindowManager::the().font(), Gfx::TextAlignment::Center, Color::White);
 }
 
 void WindowGeometryOverlay::window_rect_changed()
@@ -273,7 +273,7 @@ void WindowGeometryOverlay::window_rect_changed()
     invalidate_content();
 }
 
-DndOverlay::DndOverlay(String const& text, Gfx::Bitmap const* bitmap)
+DndOverlay::DndOverlay(DeprecatedString const& text, Gfx::Bitmap const* bitmap)
     : m_bitmap(bitmap)
     , m_text(text)
 {
@@ -291,14 +291,14 @@ void DndOverlay::update_rect()
     int bitmap_height = m_bitmap ? m_bitmap->height() : 0;
     auto& font = this->font();
     int width = font.width(m_text) + bitmap_width;
-    int height = max((int)font.glyph_height(), bitmap_height);
-    auto location = Compositor::the().current_cursor_rect().center().translated(8, 8);
+    int height = max(font.pixel_size_rounded_up(), bitmap_height);
+    auto location = ScreenInput::the().cursor_location().translated(8, 8);
     set_rect(Gfx::IntRect(location, { width, height }).inflated(16, 8));
 }
 
 RefPtr<Gfx::Bitmap> DndOverlay::create_bitmap(int scale_factor)
 {
-    auto bitmap_or_error = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, rect().size(), scale_factor);
+    auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, rect().size(), scale_factor);
     if (bitmap_or_error.is_error())
         return {};
     auto new_bitmap = bitmap_or_error.release_value_but_fixme_should_propagate_errors();
@@ -323,8 +323,8 @@ void WindowStackSwitchOverlay::render_overlay_bitmap(Gfx::Painter& painter)
 {
     // We should come up with a more elegant way to get the content rectangle
     auto content_rect = Gfx::IntRect({}, m_content_size).centered_within({ {}, rect().size() });
-    auto active_color = WindowManager::the().palette().active_window_border1();
-    auto inactive_color = WindowManager::the().palette().inactive_window_border1();
+    auto active_color = WindowManager::the().palette().selection();
+    auto inactive_color = WindowManager::the().palette().window().darkened(0.9f);
     for (int y = 0; y < m_rows; y++) {
         for (int x = 0; x < m_columns; x++) {
             Gfx::IntRect rect {

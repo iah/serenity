@@ -5,70 +5,78 @@
  */
 
 #include <Kernel/Graphics/VirtIOGPU/Console.h>
-#include <Kernel/Graphics/VirtIOGPU/FramebufferDevice.h>
+#include <Kernel/TTY/ConsoleManagement.h>
 #include <Kernel/WorkQueue.h>
 
 namespace Kernel::Graphics::VirtIOGPU {
 
 constexpr static AK::Time refresh_interval = AK::Time::from_milliseconds(16);
 
-void DirtyRect::union_rect(size_t x, size_t y, size_t width, size_t height)
+NonnullLockRefPtr<Console> Console::initialize(VirtIODisplayConnector& parent_display_connector)
 {
-    if (width == 0 || height == 0)
-        return;
-    if (m_is_dirty) {
-        m_x0 = min(x, m_x0);
-        m_y0 = min(y, m_y0);
-        m_x1 = max(x + width, m_x1);
-        m_y1 = max(y + height, m_y1);
-    } else {
-        m_is_dirty = true;
-        m_x0 = x;
-        m_y0 = y;
-        m_x1 = x + width;
-        m_y1 = y + height;
-    }
+    auto current_resolution = parent_display_connector.current_mode_setting();
+    return adopt_lock_ref(*new Console(parent_display_connector, current_resolution));
 }
 
-NonnullRefPtr<Console> Console::initialize(RefPtr<FramebufferDevice> const& framebuffer_device)
+Console::Console(VirtIODisplayConnector const& parent_display_connector, DisplayConnector::ModeSetting current_resolution)
+    : GenericFramebufferConsole(current_resolution.horizontal_active, current_resolution.vertical_active, current_resolution.horizontal_stride)
+    , m_parent_display_connector(parent_display_connector)
 {
-    return adopt_ref(*new Console(framebuffer_device));
-}
-
-Console::Console(RefPtr<FramebufferDevice> const& framebuffer_device)
-    : GenericFramebufferConsole(framebuffer_device->width(), framebuffer_device->height(), framebuffer_device->pitch())
-    , m_framebuffer_device(framebuffer_device)
-{
+    // NOTE: Clear the framebuffer, in case it's left with some garbage.
+    memset(framebuffer_data(), 0, current_resolution.horizontal_stride * current_resolution.vertical_active);
     enqueue_refresh_timer();
 }
 
 void Console::set_resolution(size_t width, size_t height, size_t pitch)
 {
-    auto did_set_resolution = m_framebuffer_device->set_head_resolution(0, width, height, pitch);
-    VERIFY(!did_set_resolution.is_error());
+    m_width = width;
+    m_height = height;
+    m_pitch = pitch;
+
+    // Just to start cleanly, we clean the entire framebuffer
+    memset(framebuffer_data(), 0, pitch * height);
+
+    ConsoleManagement::the().resolution_was_changed();
 }
 
-void Console::flush(size_t x, size_t y, size_t width, size_t height)
+void Console::set_cursor(size_t x, size_t y)
 {
-    m_dirty_rect.union_rect(x, y, width, height);
+    GenericFramebufferConsole::hide_cursor();
+    m_x = x;
+    m_y = y;
+    GenericFramebufferConsole::show_cursor();
+    m_dirty = true;
+}
+
+void Console::hide_cursor()
+{
+    GenericFramebufferConsole::hide_cursor();
+    m_dirty = true;
+}
+
+void Console::show_cursor()
+{
+    GenericFramebufferConsole::show_cursor();
+    m_dirty = true;
+}
+
+void Console::flush(size_t, size_t, size_t, size_t)
+{
+    m_dirty = true;
 }
 
 void Console::enqueue_refresh_timer()
 {
-    NonnullRefPtr<Timer> refresh_timer = adopt_ref(*new Timer());
+    NonnullLockRefPtr<Timer> refresh_timer = adopt_lock_ref(*new Timer());
     refresh_timer->setup(CLOCK_MONOTONIC, refresh_interval, [this]() {
-        auto rect = m_dirty_rect;
-        if (rect.is_dirty()) {
-            Protocol::Rect dirty_rect {
-                .x = (u32)rect.x(),
-                .y = (u32)rect.y(),
-                .width = (u32)rect.width(),
-                .height = (u32)rect.height(),
-            };
-            g_io_work->queue([this, dirty_rect]() {
-                m_framebuffer_device->flush_dirty_window(dirty_rect, m_framebuffer_device->current_buffer());
-                m_dirty_rect.clear();
-            });
+        if (m_enabled.load() && m_dirty) {
+            MUST(g_io_work->try_queue([this]() {
+                {
+                    MutexLocker locker(m_parent_display_connector->m_flushing_lock);
+                    MUST(m_parent_display_connector->flush_first_surface());
+                }
+                m_dirty = false;
+            }));
         }
         enqueue_refresh_timer();
     });
@@ -77,16 +85,19 @@ void Console::enqueue_refresh_timer()
 
 void Console::enable()
 {
+    // FIXME: Do we need some locking here to ensure the resolution doesn't change
+    // while we enable the console?
+    auto current_resolution = m_parent_display_connector->current_mode_setting();
+    m_width = current_resolution.horizontal_active;
+    m_height = current_resolution.vertical_active;
+    m_pitch = current_resolution.horizontal_stride;
     GenericFramebufferConsole::enable();
-    m_width = m_framebuffer_device->width();
-    m_height = m_framebuffer_device->height();
-    m_pitch = m_framebuffer_device->pitch();
-    m_dirty_rect.union_rect(0, 0, m_width, m_height);
+    m_dirty = true;
 }
 
 u8* Console::framebuffer_data()
 {
-    return m_framebuffer_device->framebuffer_data();
+    return m_parent_display_connector->framebuffer_data();
 }
 
 }

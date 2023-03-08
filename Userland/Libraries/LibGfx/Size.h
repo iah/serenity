@@ -16,96 +16,114 @@ namespace Gfx {
 template<typename T>
 class Size {
 public:
-    Size() = default;
+    constexpr Size() = default;
 
-    Size(T w, T h)
+    constexpr Size(T w, T h)
         : m_width(w)
         , m_height(h)
     {
     }
 
     template<typename U>
-    Size(U width, U height)
+    constexpr Size(U width, U height)
         : m_width(width)
         , m_height(height)
     {
     }
 
     template<typename U>
-    explicit Size(Size<U> const& other)
+    explicit constexpr Size(Size<U> const& other)
         : m_width(other.width())
         , m_height(other.height())
     {
     }
 
-    [[nodiscard]] ALWAYS_INLINE T width() const { return m_width; }
-    [[nodiscard]] ALWAYS_INLINE T height() const { return m_height; }
-    [[nodiscard]] ALWAYS_INLINE T area() const { return width() * height(); }
+    [[nodiscard]] ALWAYS_INLINE constexpr T width() const { return m_width; }
+    [[nodiscard]] ALWAYS_INLINE constexpr T height() const { return m_height; }
+    [[nodiscard]] ALWAYS_INLINE constexpr T area() const { return width() * height(); }
 
-    ALWAYS_INLINE void set_width(T w) { m_width = w; }
-    ALWAYS_INLINE void set_height(T h) { m_height = h; }
+    ALWAYS_INLINE constexpr void set_width(T w) { m_width = w; }
+    ALWAYS_INLINE constexpr void set_height(T h) { m_height = h; }
 
-    [[nodiscard]] ALWAYS_INLINE bool is_null() const { return !m_width && !m_height; }
-    [[nodiscard]] ALWAYS_INLINE bool is_empty() const { return m_width <= 0 || m_height <= 0; }
+    [[nodiscard]] ALWAYS_INLINE constexpr bool is_empty() const { return m_width <= 0 || m_height <= 0; }
 
-    void scale_by(T dx, T dy)
+    constexpr void scale_by(T dx, T dy)
     {
         m_width *= dx;
         m_height *= dy;
     }
 
-    void transform_by(AffineTransform const& transform) { *this = transform.map(*this); }
+    constexpr void transform_by(AffineTransform const& transform) { *this = transform.map(*this); }
 
-    ALWAYS_INLINE void scale_by(T dboth) { scale_by(dboth, dboth); }
-    ALWAYS_INLINE void scale_by(Point<T> const& s) { scale_by(s.x(), s.y()); }
+    ALWAYS_INLINE constexpr void scale_by(T dboth) { scale_by(dboth, dboth); }
+    ALWAYS_INLINE constexpr void scale_by(Point<T> const& s) { scale_by(s.x(), s.y()); }
 
-    [[nodiscard]] Size scaled_by(T dx, T dy) const
+    [[nodiscard]] constexpr Size scaled_by(T dx, T dy) const
     {
         Size<T> size = *this;
         size.scale_by(dx, dy);
         return size;
     }
 
-    [[nodiscard]] Size scaled_by(T dboth) const
+    [[nodiscard]] constexpr Size scaled_by(T dboth) const
     {
         Size<T> size = *this;
         size.scale_by(dboth);
         return size;
     }
 
-    [[nodiscard]] Size scaled_by(Point<T> const& s) const
+    [[nodiscard]] constexpr Size scaled_by(Point<T> const& s) const
     {
         Size<T> size = *this;
         size.scale_by(s);
         return size;
     }
 
-    [[nodiscard]] Size transformed_by(AffineTransform const& transform) const
+    [[nodiscard]] constexpr Size transformed_by(AffineTransform const& transform) const
     {
         Size<T> size = *this;
         size.transform_by(transform);
         return size;
     }
 
+    [[nodiscard]] constexpr float aspect_ratio() const
+    {
+        VERIFY(height() != 0);
+        return static_cast<float>(width()) / static_cast<float>(height());
+    }
+
+    // Horizontal means preserve the width, Vertical means preserve the height.
+    [[nodiscard]] constexpr Size<T> match_aspect_ratio(float aspect_ratio, Orientation side_to_preserve) const
+    {
+        VERIFY(aspect_ratio != 0.0f);
+        auto matched = *this;
+        auto height_corresponding_to_width = static_cast<T>(static_cast<float>(width()) / aspect_ratio);
+        auto width_corresponding_to_height = static_cast<T>(static_cast<float>(height()) * aspect_ratio);
+
+        switch (side_to_preserve) {
+        case Orientation::Vertical:
+            matched.m_width = width_corresponding_to_height;
+            break;
+        case Orientation::Horizontal:
+            matched.m_height = height_corresponding_to_width;
+            break;
+        }
+        return matched;
+    }
+
     template<typename U>
-    [[nodiscard]] bool contains(Size<U> const& other) const
+    [[nodiscard]] constexpr bool contains(Size<U> const& other) const
     {
         return other.m_width <= m_width && other.m_height <= m_height;
     }
 
     template<class U>
-    [[nodiscard]] bool operator==(Size<U> const& other) const
+    [[nodiscard]] constexpr bool operator==(Size<U> const& other) const
     {
         return width() == other.width() && height() == other.height();
     }
 
-    template<class U>
-    [[nodiscard]] bool operator!=(Size<U> const& other) const
-    {
-        return !(*this == other);
-    }
-
-    Size<T>& operator-=(Size<T> const& other)
+    constexpr Size<T>& operator-=(Size<T> const& other)
     {
         m_width -= other.m_width;
         m_height -= other.m_height;
@@ -119,21 +137,21 @@ public:
         return *this;
     }
 
-    [[nodiscard]] Size<T> operator*(T factor) const { return { m_width * factor, m_height * factor }; }
+    [[nodiscard]] constexpr Size<T> operator*(T factor) const { return { m_width * factor, m_height * factor }; }
 
-    Size<T>& operator*=(T factor)
+    constexpr Size<T>& operator*=(T factor)
     {
         m_width *= factor;
         m_height *= factor;
         return *this;
     }
 
-    [[nodiscard]] T primary_size_for_orientation(Orientation orientation) const
+    [[nodiscard]] constexpr T primary_size_for_orientation(Orientation orientation) const
     {
         return orientation == Orientation::Vertical ? height() : width();
     }
 
-    void set_primary_size_for_orientation(Orientation orientation, T value)
+    constexpr void set_primary_size_for_orientation(Orientation orientation, T value)
     {
         if (orientation == Orientation::Vertical) {
             set_height(value);
@@ -142,12 +160,12 @@ public:
         }
     }
 
-    [[nodiscard]] T secondary_size_for_orientation(Orientation orientation) const
+    [[nodiscard]] constexpr T secondary_size_for_orientation(Orientation orientation) const
     {
         return orientation == Orientation::Vertical ? width() : height();
     }
 
-    void set_secondary_size_for_orientation(Orientation orientation, T value)
+    constexpr void set_secondary_size_for_orientation(Orientation orientation, T value)
     {
         if (orientation == Orientation::Vertical) {
             set_width(value);
@@ -157,12 +175,19 @@ public:
     }
 
     template<typename U>
-    [[nodiscard]] ALWAYS_INLINE Size<U> to_type() const
+    requires(!IsSame<T, U>)
+    [[nodiscard]] ALWAYS_INLINE constexpr Size<U> to_type() const
     {
         return Size<U>(*this);
     }
 
-    [[nodiscard]] String to_string() const;
+    [[nodiscard]] DeprecatedString to_deprecated_string() const;
+
+    template<Integral I>
+    [[nodiscard]] Size<I> to_rounded() const
+    {
+        return Size<I>(round_to<I>(width()), round_to<I>(height()));
+    }
 
 private:
     T m_width { 0 };
@@ -177,10 +202,10 @@ using FloatSize = Size<float>;
 namespace AK {
 
 template<typename T>
-struct Formatter<Gfx::Size<T>> : Formatter<StringView> {
+struct Formatter<Gfx::Size<T>> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, Gfx::Size<T> const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_string());
+        return Formatter<FormatString>::format(builder, "[{}x{}]"sv, value.width(), value.height());
     }
 };
 
@@ -188,7 +213,10 @@ struct Formatter<Gfx::Size<T>> : Formatter<StringView> {
 
 namespace IPC {
 
-bool encode(Encoder&, Gfx::IntSize const&);
-ErrorOr<void> decode(Decoder&, Gfx::IntSize&);
+template<>
+ErrorOr<void> encode(Encoder&, Gfx::IntSize const&);
+
+template<>
+ErrorOr<Gfx::IntSize> decode(Decoder&);
 
 }

@@ -9,24 +9,25 @@
 #include <AK/StringView.h>
 #include <AK/Utf8View.h>
 #include <LibTextCodec/Decoder.h>
-#include <LibWeb/DOM/Attribute.h>
+#include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
+#include <LibWeb/Infra/CharacterTypes.h>
 #include <ctype.h>
 
 namespace Web::HTML {
 
-bool prescan_should_abort(const ByteBuffer& input, const size_t& position)
+bool prescan_should_abort(ByteBuffer const& input, size_t const& position)
 {
     return position >= input.size() || position >= 1024;
 }
 
-bool prescan_is_whitespace_or_slash(const u8& byte)
+bool prescan_is_whitespace_or_slash(u8 const& byte)
 {
     return byte == '\t' || byte == '\n' || byte == '\f' || byte == '\r' || byte == ' ' || byte == '/';
 }
 
-bool prescan_skip_whitespace_and_slashes(const ByteBuffer& input, size_t& position)
+bool prescan_skip_whitespace_and_slashes(ByteBuffer const& input, size_t& position)
 {
     while (!prescan_should_abort(input, position) && (input[position] == '\t' || input[position] == '\n' || input[position] == '\f' || input[position] == '\r' || input[position] == ' ' || input[position] == '/'))
         ++position;
@@ -34,7 +35,7 @@ bool prescan_skip_whitespace_and_slashes(const ByteBuffer& input, size_t& positi
 }
 
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#algorithm-for-extracting-a-character-encoding-from-a-meta-element
-Optional<String> extract_character_encoding_from_meta_element(String const& string)
+Optional<StringView> extract_character_encoding_from_meta_element(DeprecatedString const& string)
 {
     // Checking for "charset" is case insensitive, as is getting an encoding.
     // Therefore, stick to lowercase from the start for simplicity.
@@ -42,7 +43,7 @@ Optional<String> extract_character_encoding_from_meta_element(String const& stri
     GenericLexer lexer(lowercase_string);
 
     for (;;) {
-        auto charset_index = lexer.remaining().find("charset");
+        auto charset_index = lexer.remaining().find("charset"sv);
         if (!charset_index.has_value())
             return {};
 
@@ -50,8 +51,7 @@ Optional<String> extract_character_encoding_from_meta_element(String const& stri
         lexer.ignore(charset_index.value() + 7);
 
         lexer.ignore_while([](char c) {
-            // FIXME: Not the exact same ASCII whitespace. The spec does not include vertical tab (\v).
-            return is_ascii_space(c);
+            return Infra::is_ascii_whitespace(c);
         });
 
         if (lexer.peek() != '=')
@@ -64,15 +64,14 @@ Optional<String> extract_character_encoding_from_meta_element(String const& stri
     lexer.ignore();
 
     lexer.ignore_while([](char c) {
-        // FIXME: Not the exact same ASCII whitespace. The spec does not include vertical tab (\v).
-        return is_ascii_space(c);
+        return Infra::is_ascii_whitespace(c);
     });
 
     if (lexer.is_eof())
         return {};
 
     if (lexer.consume_specific('"')) {
-        auto matching_double_quote = lexer.remaining().find("\"");
+        auto matching_double_quote = lexer.remaining().find('"');
         if (!matching_double_quote.has_value())
             return {};
 
@@ -81,7 +80,7 @@ Optional<String> extract_character_encoding_from_meta_element(String const& stri
     }
 
     if (lexer.consume_specific('\'')) {
-        auto matching_single_quote = lexer.remaining().find("'");
+        auto matching_single_quote = lexer.remaining().find('\'');
         if (!matching_single_quote.has_value())
             return {};
 
@@ -90,13 +89,12 @@ Optional<String> extract_character_encoding_from_meta_element(String const& stri
     }
 
     auto encoding = lexer.consume_until([](char c) {
-        // FIXME: Not the exact same ASCII whitespace. The spec does not include vertical tab (\v).
-        return is_ascii_space(c) || c == ';';
+        return Infra::is_ascii_whitespace(c) || c == ';';
     });
     return TextCodec::get_standardized_encoding(encoding);
 }
 
-RefPtr<DOM::Attribute> prescan_get_attribute(DOM::Document& document, const ByteBuffer& input, size_t& position)
+JS::GCPtr<DOM::Attr> prescan_get_attribute(DOM::Document& document, ByteBuffer const& input, size_t& position)
 {
     if (!prescan_skip_whitespace_and_slashes(input, position))
         return {};
@@ -111,7 +109,7 @@ RefPtr<DOM::Attribute> prescan_get_attribute(DOM::Document& document, const Byte
         } else if (input[position] == '\t' || input[position] == '\n' || input[position] == '\f' || input[position] == '\r' || input[position] == ' ')
             goto spaces;
         else if (input[position] == '/' || input[position] == '>')
-            return DOM::Attribute::create(document, attribute_name.to_string(), "");
+            return *DOM::Attr::create(document, attribute_name.to_deprecated_string(), "").release_value_but_fixme_should_propagate_errors();
         else
             attribute_name.append_as_lowercase(input[position]);
         ++position;
@@ -123,7 +121,7 @@ spaces:
     if (!prescan_skip_whitespace_and_slashes(input, position))
         return {};
     if (input[position] != '=')
-        return DOM::Attribute::create(document, attribute_name.to_string(), "");
+        return DOM::Attr::create(document, attribute_name.to_deprecated_string(), "").release_value_but_fixme_should_propagate_errors();
     ++position;
 
 value:
@@ -136,13 +134,13 @@ value:
         ++position;
         for (; !prescan_should_abort(input, position); ++position) {
             if (input[position] == quote_character)
-                return DOM::Attribute::create(document, attribute_name.to_string(), attribute_value.to_string());
+                return DOM::Attr::create(document, attribute_name.to_deprecated_string(), attribute_value.to_deprecated_string()).release_value_but_fixme_should_propagate_errors();
             else
                 attribute_value.append_as_lowercase(input[position]);
         }
         return {};
     } else if (input[position] == '>')
-        return DOM::Attribute::create(document, attribute_name.to_string(), "");
+        return DOM::Attr::create(document, attribute_name.to_deprecated_string(), "").release_value_but_fixme_should_propagate_errors();
     else
         attribute_value.append_as_lowercase(input[position]);
 
@@ -152,7 +150,7 @@ value:
 
     for (; !prescan_should_abort(input, position); ++position) {
         if (input[position] == '\t' || input[position] == '\n' || input[position] == '\f' || input[position] == '\r' || input[position] == ' ' || input[position] == '>')
-            return DOM::Attribute::create(document, attribute_name.to_string(), attribute_value.to_string());
+            return DOM::Attr::create(document, attribute_name.to_deprecated_string(), attribute_value.to_deprecated_string()).release_value_but_fixme_should_propagate_errors();
         else
             attribute_value.append_as_lowercase(input[position]);
     }
@@ -160,7 +158,7 @@ value:
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#prescan-a-byte-stream-to-determine-its-encoding
-Optional<String> run_prescan_byte_stream_algorithm(DOM::Document& document, const ByteBuffer& input)
+Optional<DeprecatedString> run_prescan_byte_stream_algorithm(DOM::Document& document, ByteBuffer const& input)
 {
     // https://html.spec.whatwg.org/multipage/parsing.html#prescan-a-byte-stream-to-determine-its-encoding
 
@@ -190,10 +188,10 @@ Optional<String> run_prescan_byte_stream_algorithm(DOM::Document& document, cons
             && (input[position + 4] == 'A' || input[position + 4] == 'a')
             && prescan_is_whitespace_or_slash(input[position + 5])) {
             position += 6;
-            Vector<String> attribute_list {};
+            Vector<DeprecatedString> attribute_list {};
             bool got_pragma = false;
             Optional<bool> need_pragma {};
-            Optional<String> charset {};
+            Optional<DeprecatedString> charset {};
 
             while (true) {
                 auto attribute = prescan_get_attribute(document, input, position);
@@ -215,7 +213,7 @@ Optional<String> run_prescan_byte_stream_algorithm(DOM::Document& document, cons
                 } else if (attribute_name == "charset") {
                     auto maybe_charset = TextCodec::get_standardized_encoding(attribute->value());
                     if (maybe_charset.has_value()) {
-                        charset = Optional<String> { maybe_charset };
+                        charset = Optional<DeprecatedString> { maybe_charset };
                         need_pragma = { false };
                     }
                 }
@@ -249,7 +247,7 @@ Optional<String> run_prescan_byte_stream_algorithm(DOM::Document& document, cons
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding
-String run_encoding_sniffing_algorithm(DOM::Document& document, const ByteBuffer& input)
+DeprecatedString run_encoding_sniffing_algorithm(DOM::Document& document, ByteBuffer const& input)
 {
     if (input.size() >= 2) {
         if (input[0] == 0xFE && input[1] == 0xFF) {

@@ -10,7 +10,7 @@
 
 namespace Kernel {
 
-ErrorOr<siginfo_t> Process::do_waitid(Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee, int options)
+ErrorOr<siginfo_t> Process::do_waitid(Variant<Empty, NonnullLockRefPtr<Process>, NonnullLockRefPtr<ProcessGroup>> waitee, int options)
 {
     ErrorOr<siginfo_t> result = siginfo_t {};
     if (Thread::current()->block<Thread::WaitBlocker>({}, options, move(waitee), result).was_interrupted())
@@ -19,18 +19,18 @@ ErrorOr<siginfo_t> Process::do_waitid(Variant<Empty, NonnullRefPtr<Process>, Non
     return result;
 }
 
-ErrorOr<FlatPtr> Process::sys$waitid(Userspace<const Syscall::SC_waitid_params*> user_params)
+ErrorOr<FlatPtr> Process::sys$waitid(Userspace<Syscall::SC_waitid_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::proc));
     auto params = TRY(copy_typed_from_user(user_params));
 
-    Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee;
+    Variant<Empty, NonnullLockRefPtr<Process>, NonnullLockRefPtr<ProcessGroup>> waitee;
     switch (params.idtype) {
     case P_ALL:
         break;
     case P_PID: {
-        auto waitee_process = Process::from_pid(params.id);
+        auto waitee_process = Process::from_pid_in_same_jail(params.id);
         if (!waitee_process)
             return ECHILD;
         bool waitee_is_child = waitee_process->ppid() == Process::current().pid();

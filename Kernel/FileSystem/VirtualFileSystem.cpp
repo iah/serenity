@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/AnyOf.h>
 #include <AK/GenericLexer.h>
+#include <AK/RefPtr.h>
 #include <AK/Singleton.h>
 #include <AK/StringBuilder.h>
 #include <Kernel/API/POSIX/errno.h>
@@ -24,7 +26,7 @@
 namespace Kernel {
 
 static Singleton<VirtualFileSystem> s_the;
-static constexpr int root_mount_flags = MS_NODEV | MS_NOSUID | MS_RDONLY;
+static constexpr int root_mount_flags = 0;
 
 UNMAP_AFTER_INIT void VirtualFileSystem::initialize()
 {
@@ -40,9 +42,7 @@ UNMAP_AFTER_INIT VirtualFileSystem::VirtualFileSystem()
 {
 }
 
-UNMAP_AFTER_INIT VirtualFileSystem::~VirtualFileSystem()
-{
-}
+UNMAP_AFTER_INIT VirtualFileSystem::~VirtualFileSystem() = default;
 
 InodeIdentifier VirtualFileSystem::root_inode_id() const
 {
@@ -50,28 +50,73 @@ InodeIdentifier VirtualFileSystem::root_inode_id() const
     return m_root_inode->identifier();
 }
 
+bool VirtualFileSystem::mount_point_exists_at_inode(InodeIdentifier inode_identifier)
+{
+    return m_mounts.with([&](auto& mounts) -> bool {
+        return any_of(mounts, [&inode_identifier](auto const& existing_mount) {
+            return existing_mount.host() && existing_mount.host()->identifier() == inode_identifier;
+        });
+    });
+}
+
 ErrorOr<void> VirtualFileSystem::mount(FileSystem& fs, Custody& mount_point, int flags)
 {
+    auto new_mount = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Mount(fs, &mount_point, flags)));
     return m_mounts.with([&](auto& mounts) -> ErrorOr<void> {
         auto& inode = mount_point.inode();
-        dbgln("VirtualFileSystem: Mounting {} at inode {} with flags {}",
+        dbgln("VirtualFileSystem: FileSystemID {}, Mounting {} at inode {} with flags {}",
+            fs.fsid(),
             fs.class_name(),
             inode.identifier(),
             flags);
-        // FIXME: check that this is not already a mount point
-        Mount mount { fs, &mount_point, flags };
-        mounts.append(move(mount));
+        if (mount_point_exists_at_inode(inode.identifier())) {
+            dbgln("VirtualFileSystem: Mounting unsuccessful - inode {} is already a mount-point.", inode.identifier());
+            return EBUSY;
+        }
+        // Note: Actually add a mount for the filesystem and increment the filesystem mounted count
+        new_mount->guest_fs().mounted_count({}).with([&](auto& mounted_count) {
+            mounted_count++;
+
+            // When this is the first time this FileSystem is mounted,
+            // begin managing the FileSystem by adding it to the list of
+            // managed file systems. This is symmetric with
+            // VirtualFileSystem::unmount()'s `remove()` calls (which remove
+            // the FileSystem once it is no longer mounted).
+            if (mounted_count == 1) {
+                m_file_systems_list.with([&](auto& fs_list) {
+                    fs_list.append(fs);
+                });
+                if (fs.is_file_backed()) {
+                    auto& file_backed_fs = static_cast<FileBackedFileSystem&>(fs);
+                    m_file_backed_file_systems_list.with([&](auto& fs_list) {
+                        fs_list.append(file_backed_fs);
+                    });
+                }
+            }
+        });
+
+        // NOTE: Leak the mount pointer so it can be added to the mount list, but it won't be
+        // deleted after being added.
+        mounts.append(*new_mount.leak_ptr());
         return {};
     });
 }
 
 ErrorOr<void> VirtualFileSystem::bind_mount(Custody& source, Custody& mount_point, int flags)
 {
+    auto new_mount = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Mount(source.inode(), mount_point, flags)));
     return m_mounts.with([&](auto& mounts) -> ErrorOr<void> {
-        dbgln("VirtualFileSystem: Bind-mounting inode {} at inode {}", source.inode().identifier(), mount_point.inode().identifier());
-        // FIXME: check that this is not already a mount point
-        Mount mount { source.inode(), mount_point, flags };
-        mounts.append(move(mount));
+        auto& inode = mount_point.inode();
+        dbgln("VirtualFileSystem: Bind-mounting inode {} at inode {}", source.inode().identifier(), inode.identifier());
+        if (mount_point_exists_at_inode(inode.identifier())) {
+            dbgln("VirtualFileSystem: Bind-mounting unsuccessful - inode {} is already a mount-point.",
+                mount_point.inode().identifier());
+            return EBUSY;
+        }
+
+        // NOTE: Leak the mount pointer so it can be added to the mount list, but it won't be
+        // deleted after being added.
+        mounts.append(*new_mount.leak_ptr());
         return {};
     });
 }
@@ -88,18 +133,67 @@ ErrorOr<void> VirtualFileSystem::remount(Custody& mount_point, int new_flags)
     return {};
 }
 
-ErrorOr<void> VirtualFileSystem::unmount(Inode& guest_inode)
+void VirtualFileSystem::sync_filesystems()
 {
-    dbgln("VirtualFileSystem: unmount called with inode {}", guest_inode.identifier());
+    Vector<NonnullLockRefPtr<FileSystem>, 32> file_systems;
+    m_file_systems_list.with([&](auto const& list) {
+        for (auto& fs : list)
+            file_systems.append(fs);
+    });
+
+    for (auto& fs : file_systems)
+        fs->flush_writes();
+}
+
+void VirtualFileSystem::lock_all_filesystems()
+{
+    Vector<NonnullLockRefPtr<FileSystem>, 32> file_systems;
+    m_file_systems_list.with([&](auto const& list) {
+        for (auto& fs : list)
+            file_systems.append(fs);
+    });
+
+    for (auto& fs : file_systems)
+        fs->m_lock.lock();
+}
+
+ErrorOr<void> VirtualFileSystem::unmount(Custody& mountpoint_custody)
+{
+    auto& guest_inode = mountpoint_custody.inode();
+    auto custody_path = TRY(mountpoint_custody.try_serialize_absolute_path());
+    dbgln("VirtualFileSystem: unmount called with inode {} on mountpoint {}", guest_inode.identifier(), custody_path->view());
 
     return m_mounts.with([&](auto& mounts) -> ErrorOr<void> {
-        for (size_t i = 0; i < mounts.size(); ++i) {
-            auto& mount = mounts[i];
+        for (auto& mount : mounts) {
             if (&mount.guest() != &guest_inode)
                 continue;
-            TRY(mount.guest_fs().prepare_to_unmount());
-            dbgln("VirtualFileSystem: Unmounting file system {}...", mount.guest_fs().fsid());
-            mounts.unstable_take(i);
+            auto mountpoint_path = TRY(mount.absolute_path());
+            if (custody_path->view() != mountpoint_path->view())
+                continue;
+            NonnullRefPtr<FileSystem> fs = mount.guest_fs();
+            TRY(fs->prepare_to_unmount());
+            fs->mounted_count({}).with([&](auto& mounted_count) {
+                VERIFY(mounted_count > 0);
+                if (mounted_count == 1) {
+                    dbgln("VirtualFileSystem: Unmounting file system {} for the last time...", fs->fsid());
+                    m_file_systems_list.with([&](auto& list) {
+                        list.remove(*fs);
+                    });
+                    if (fs->is_file_backed()) {
+                        dbgln("VirtualFileSystem: Unmounting file backed file system {} for the last time...", fs->fsid());
+                        auto& file_backed_fs = static_cast<FileBackedFileSystem&>(*fs);
+                        m_file_backed_file_systems_list.with([&](auto& list) {
+                            list.remove(file_backed_fs);
+                        });
+                    }
+                } else {
+                    mounted_count--;
+                }
+            });
+            dbgln("VirtualFileSystem: Unmounting file system {}...", fs->fsid());
+            mount.m_vfs_list_node.remove();
+            // Note: This is balanced by a `new` statement that is happening in various places before inserting the Mount object to the list.
+            delete &mount;
             return {};
         }
         dbgln("VirtualFileSystem: Nothing mounted on inode {}", guest_inode.identifier());
@@ -114,8 +208,7 @@ ErrorOr<void> VirtualFileSystem::mount_root(FileSystem& fs)
         return EEXIST;
     }
 
-    Mount mount { fs, nullptr, root_mount_flags };
-
+    auto new_mount = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Mount(fs, nullptr, root_mount_flags)));
     auto& root_inode = fs.root_inode();
     if (!root_inode.is_directory()) {
         dmesgln("VirtualFileSystem: root inode ({}) for / is not a directory :(", root_inode.identifier());
@@ -123,14 +216,35 @@ ErrorOr<void> VirtualFileSystem::mount_root(FileSystem& fs)
     }
 
     m_root_inode = root_inode;
-    auto pseudo_path = TRY(static_cast<FileBackedFileSystem&>(fs).file_description().pseudo_path());
-    dmesgln("VirtualFileSystem: mounted root from {} ({})", fs.class_name(), pseudo_path);
+    if (fs.is_file_backed()) {
+        auto pseudo_path = TRY(static_cast<FileBackedFileSystem&>(fs).file_description().pseudo_path());
+        dmesgln("VirtualFileSystem: mounted root({}) from {} ({})", fs.fsid(), fs.class_name(), pseudo_path);
+        m_file_backed_file_systems_list.with([&](auto& list) {
+            list.append(static_cast<FileBackedFileSystem&>(fs));
+        });
+    } else {
+        dmesgln("VirtualFileSystem: mounted root({}) from {}", fs.fsid(), fs.class_name());
+    }
 
-    m_mounts.with([&](auto& mounts) {
-        mounts.append(move(mount));
+    m_file_systems_list.with([&](auto& fs_list) {
+        fs_list.append(fs);
     });
 
-    m_root_custody = TRY(Custody::try_create(nullptr, "", *m_root_inode, root_mount_flags));
+    fs.mounted_count({}).with([&](auto& mounted_count) {
+        mounted_count++;
+    });
+
+    // Note: Actually add a mount for the filesystem and increment the filesystem mounted count
+    m_mounts.with([&](auto& mounts) {
+        // NOTE: Leak the mount pointer so it can be added to the mount list, but it won't be
+        // deleted after being added.
+        mounts.append(*new_mount.leak_ptr());
+    });
+
+    RefPtr<Custody> new_root_custody = TRY(Custody::try_create(nullptr, ""sv, *m_root_inode, root_mount_flags));
+    m_root_custody.with([&](auto& root_custody) {
+        swap(root_custody, new_root_custody);
+    });
     return {};
 }
 
@@ -183,39 +297,82 @@ ErrorOr<void> VirtualFileSystem::traverse_directory_inode(Inode& dir_inode, Func
     });
 }
 
-ErrorOr<void> VirtualFileSystem::utime(StringView path, Custody& base, time_t atime, time_t mtime)
+ErrorOr<void> VirtualFileSystem::utime(Credentials const& credentials, StringView path, Custody& base, time_t atime, time_t mtime)
 {
-    auto custody = TRY(resolve_path(path, base));
+    auto custody = TRY(resolve_path(credentials, path, base));
     auto& inode = custody->inode();
-    auto& current_process = Process::current();
-    if (!current_process.is_superuser() && inode.metadata().uid != current_process.euid())
+    if (!credentials.is_superuser() && inode.metadata().uid != credentials.euid())
         return EACCES;
     if (custody->is_readonly())
         return EROFS;
 
-    TRY(inode.set_atime(atime));
-    TRY(inode.set_mtime(mtime));
+    TRY(inode.update_timestamps(Time::from_timespec({ atime, 0 }), {}, Time::from_timespec({ mtime, 0 })));
     return {};
 }
 
-ErrorOr<InodeMetadata> VirtualFileSystem::lookup_metadata(StringView path, Custody& base, int options)
+ErrorOr<void> VirtualFileSystem::utimensat(Credentials const& credentials, StringView path, Custody& base, timespec const& atime, timespec const& mtime, int options)
 {
-    auto custody = TRY(resolve_path(path, base, nullptr, options));
+    auto custody = TRY(resolve_path(credentials, path, base, nullptr, options));
+    auto& inode = custody->inode();
+    if (!credentials.is_superuser() && inode.metadata().uid != credentials.euid())
+        return EACCES;
+    if (custody->is_readonly())
+        return EROFS;
+
+    // NOTE: A standard ext2 inode cannot store nanosecond timestamps.
+    TRY(inode.update_timestamps(
+        (atime.tv_nsec != UTIME_OMIT) ? Time::from_timespec(atime) : Optional<Time> {},
+        {},
+        (mtime.tv_nsec != UTIME_OMIT) ? Time::from_timespec(mtime) : Optional<Time> {}));
+
+    return {};
+}
+
+ErrorOr<InodeMetadata> VirtualFileSystem::lookup_metadata(Credentials const& credentials, StringView path, Custody& base, int options)
+{
+    auto custody = TRY(resolve_path(credentials, path, base, nullptr, options));
     return custody->inode().metadata();
 }
 
-ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(StringView path, int options, mode_t mode, Custody& base, Optional<UidAndGid> owner)
+ErrorOr<NonnullLockRefPtr<FileBackedFileSystem>> VirtualFileSystem::find_already_existing_or_create_file_backed_file_system(OpenFileDescription& description, Function<ErrorOr<NonnullLockRefPtr<FileSystem>>(OpenFileDescription&)> callback)
+{
+    return TRY(m_file_backed_file_systems_list.with([&](auto& list) -> ErrorOr<NonnullLockRefPtr<FileBackedFileSystem>> {
+        for (auto& node : list) {
+            if (&node.file_description() == &description) {
+                return node;
+            }
+            if (&node.file() == &description.file()) {
+                return node;
+            }
+        }
+        auto fs = TRY(callback(description));
+
+        // The created FileSystem is only added to the file_systems_lists
+        // when the FS has been successfully initialized and mounted
+        // (in VirtualFileSystem::mount()). This prevents file systems which
+        // fail to initialize or mount from existing in the list when the
+        // FileSystem is destroyed after failure.
+        return static_ptr_cast<FileBackedFileSystem>(fs);
+    }));
+}
+
+ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(Credentials const& credentials, StringView path, int options, mode_t mode, Custody& base, Optional<UidAndGid> owner)
+{
+    return open(Process::current(), credentials, path, options, mode, base, owner);
+}
+
+ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(Process const& process, Credentials const& credentials, StringView path, int options, mode_t mode, Custody& base, Optional<UidAndGid> owner)
 {
     if ((options & O_CREAT) && (options & O_DIRECTORY))
         return EINVAL;
 
     RefPtr<Custody> parent_custody;
-    auto custody_or_error = resolve_path(path, base, &parent_custody, options);
+    auto custody_or_error = resolve_path(process, credentials, path, base, &parent_custody, options);
     if (custody_or_error.is_error()) {
         // NOTE: ENOENT with a non-null parent custody signals us that the immediate parent
         //       of the file exists, but the file itself does not.
         if ((options & O_CREAT) && custody_or_error.error().code() == ENOENT && parent_custody)
-            return create(path, options, mode, *parent_custody, move(owner));
+            return create(process, credentials, path, options, mode, *parent_custody, move(owner));
         return custody_or_error.release_error();
     }
 
@@ -226,24 +383,26 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(StringView p
     auto& inode = custody.inode();
     auto metadata = inode.metadata();
 
+    if (metadata.is_regular_file() && (custody.mount_flags() & MS_NOREGULAR))
+        return EACCES;
+
     if ((options & O_DIRECTORY) && !metadata.is_directory())
         return ENOTDIR;
 
     bool should_truncate_file = false;
 
-    auto& current_process = Process::current();
-    if ((options & O_RDONLY) && !metadata.may_read(current_process))
+    if ((options & O_RDONLY) && !metadata.may_read(credentials))
         return EACCES;
 
     if (options & O_WRONLY) {
-        if (!metadata.may_write(current_process))
+        if (!metadata.may_write(credentials))
             return EACCES;
         if (metadata.is_directory())
             return EISDIR;
         should_truncate_file = options & O_TRUNC;
     }
     if (options & O_EXEC) {
-        if (!metadata.may_execute(current_process) || (custody.mount_flags() & MS_NOEXEC))
+        if (!metadata.may_execute(credentials) || (custody.mount_flags() & MS_NOEXEC))
             return EACCES;
     }
 
@@ -284,7 +443,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(StringView p
 
     if (should_truncate_file) {
         TRY(inode.truncate(0));
-        TRY(inode.set_mtime(kgettimeofday().to_truncated_seconds()));
+        TRY(inode.update_timestamps({}, {}, kgettimeofday()));
     }
     auto description = TRY(OpenFileDescription::try_create(custody));
     description->set_rw_mode(options);
@@ -292,13 +451,13 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(StringView p
     return description;
 }
 
-ErrorOr<void> VirtualFileSystem::mknod(StringView path, mode_t mode, dev_t dev, Custody& base)
+ErrorOr<void> VirtualFileSystem::mknod(Credentials const& credentials, StringView path, mode_t mode, dev_t dev, Custody& base)
 {
     if (!is_regular_file(mode) && !is_block_device(mode) && !is_character_device(mode) && !is_fifo(mode) && !is_socket(mode))
         return EINVAL;
 
     RefPtr<Custody> parent_custody;
-    auto existing_file_or_error = resolve_path(path, base, &parent_custody);
+    auto existing_file_or_error = resolve_path(credentials, path, base, &parent_custody);
     if (!existing_file_or_error.is_error())
         return EEXIST;
     if (!parent_custody)
@@ -306,24 +465,28 @@ ErrorOr<void> VirtualFileSystem::mknod(StringView path, mode_t mode, dev_t dev, 
     if (existing_file_or_error.error().code() != ENOENT)
         return existing_file_or_error.release_error();
     auto& parent_inode = parent_custody->inode();
-    auto& current_process = Process::current();
-    if (!parent_inode.metadata().may_write(current_process))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
     if (parent_custody->is_readonly())
         return EROFS;
 
     auto basename = KLexicalPath::basename(path);
     dbgln_if(VFS_DEBUG, "VirtualFileSystem::mknod: '{}' mode={} dev={} in {}", basename, mode, dev, parent_inode.identifier());
-    (void)TRY(parent_inode.create_child(basename, mode, dev, current_process.euid(), current_process.egid()));
+    (void)TRY(parent_inode.create_child(basename, mode, dev, credentials.euid(), credentials.egid()));
     return {};
 }
 
-ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::create(StringView path, int options, mode_t mode, Custody& parent_custody, Optional<UidAndGid> owner)
+ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::create(Credentials const& credentials, StringView path, int options, mode_t mode, Custody& parent_custody, Optional<UidAndGid> owner)
+{
+    return create(Process::current(), credentials, path, options, mode, parent_custody, owner);
+}
+
+ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::create(Process const& process, Credentials const& credentials, StringView path, int options, mode_t mode, Custody& parent_custody, Optional<UidAndGid> owner)
 {
     auto basename = KLexicalPath::basename(path);
     auto parent_path = TRY(parent_custody.try_serialize_absolute_path());
     auto full_path = TRY(KLexicalPath::try_join(parent_path->view(), basename));
-    TRY(validate_path_against_process_veil(full_path->view(), options));
+    TRY(validate_path_against_process_veil(process, full_path->view(), options));
 
     if (!is_socket(mode) && !is_fifo(mode) && !is_block_device(mode) && !is_character_device(mode)) {
         // Turn it into a regular file. (This feels rather hackish.)
@@ -331,15 +494,16 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::create(StringView
     }
 
     auto& parent_inode = parent_custody.inode();
-    auto& current_process = Process::current();
-    if (!parent_inode.metadata().may_write(current_process))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
     if (parent_custody.is_readonly())
         return EROFS;
+    if (is_regular_file(mode) && (parent_custody.mount_flags() & MS_NOREGULAR))
+        return EACCES;
 
     dbgln_if(VFS_DEBUG, "VirtualFileSystem::create: '{}' in {}", basename, parent_inode.identifier());
-    auto uid = owner.has_value() ? owner.value().uid : current_process.euid();
-    auto gid = owner.has_value() ? owner.value().gid : current_process.egid();
+    auto uid = owner.has_value() ? owner.value().uid : credentials.euid();
+    auto gid = owner.has_value() ? owner.value().gid : credentials.egid();
 
     auto inode = TRY(parent_inode.create_child(basename, mode, 0, uid, gid));
     auto custody = TRY(Custody::try_create(&parent_custody, basename, inode, parent_custody.mount_flags()));
@@ -350,7 +514,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::create(StringView
     return description;
 }
 
-ErrorOr<void> VirtualFileSystem::mkdir(StringView path, mode_t mode, Custody& base)
+ErrorOr<void> VirtualFileSystem::mkdir(Credentials const& credentials, StringView path, mode_t mode, Custody& base)
 {
     // Unlike in basically every other case, where it's only the last
     // path component (the one being created) that is allowed not to
@@ -359,13 +523,13 @@ ErrorOr<void> VirtualFileSystem::mkdir(StringView path, mode_t mode, Custody& ba
     path = path.trim("/"sv, TrimMode::Right);
     if (path.is_empty()) {
         // NOTE: This means the path was a series of slashes, which resolves to "/".
-        path = "/";
+        path = "/"sv;
     }
 
     RefPtr<Custody> parent_custody;
     // FIXME: The errors returned by resolve_path_without_veil can leak information about paths that are not unveiled,
     //        e.g. when the error is EACCESS or similar.
-    auto result = resolve_path_without_veil(path, base, &parent_custody);
+    auto result = resolve_path_without_veil(credentials, path, base, &parent_custody);
     if (!result.is_error())
         return EEXIST;
     else if (!parent_custody)
@@ -375,59 +539,58 @@ ErrorOr<void> VirtualFileSystem::mkdir(StringView path, mode_t mode, Custody& ba
 
     TRY(validate_path_against_process_veil(*parent_custody, O_CREAT));
     auto& parent_inode = parent_custody->inode();
-    auto& current_process = Process::current();
-    if (!parent_inode.metadata().may_write(current_process))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
     if (parent_custody->is_readonly())
         return EROFS;
 
     auto basename = KLexicalPath::basename(path);
     dbgln_if(VFS_DEBUG, "VirtualFileSystem::mkdir: '{}' in {}", basename, parent_inode.identifier());
-    (void)TRY(parent_inode.create_child(basename, S_IFDIR | mode, 0, current_process.euid(), current_process.egid()));
+    (void)TRY(parent_inode.create_child(basename, S_IFDIR | mode, 0, credentials.euid(), credentials.egid()));
     return {};
 }
 
-ErrorOr<void> VirtualFileSystem::access(StringView path, int mode, Custody& base)
+ErrorOr<void> VirtualFileSystem::access(Credentials const& credentials, StringView path, int mode, Custody& base, AccessFlags access_flags)
 {
-    auto custody = TRY(resolve_path(path, base));
+    auto should_follow_symlinks = !has_flag(access_flags, AccessFlags::DoNotFollowSymlinks);
+    auto custody = TRY(resolve_path(credentials, path, base, nullptr, should_follow_symlinks ? 0 : O_NOFOLLOW_NOERROR));
 
     auto& inode = custody->inode();
     auto metadata = inode.metadata();
-    auto& current_process = Process::current();
+    auto use_effective_ids = has_flag(access_flags, AccessFlags::EffectiveAccess) ? UseEffectiveIDs::Yes : UseEffectiveIDs::No;
     if (mode & R_OK) {
-        if (!metadata.may_read(current_process))
+        if (!metadata.may_read(credentials, use_effective_ids))
             return EACCES;
     }
     if (mode & W_OK) {
-        if (!metadata.may_write(current_process))
+        if (!metadata.may_write(credentials, use_effective_ids))
             return EACCES;
         if (custody->is_readonly())
             return EROFS;
     }
     if (mode & X_OK) {
-        if (!metadata.may_execute(current_process))
+        if (!metadata.may_execute(credentials, use_effective_ids))
             return EACCES;
     }
     return {};
 }
 
-ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::open_directory(StringView path, Custody& base)
+ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::open_directory(Credentials const& credentials, StringView path, Custody& base)
 {
-    auto custody = TRY(resolve_path(path, base));
+    auto custody = TRY(resolve_path(credentials, path, base));
     auto& inode = custody->inode();
     if (!inode.is_directory())
         return ENOTDIR;
-    if (!inode.metadata().may_execute(Process::current()))
+    if (!inode.metadata().may_execute(credentials))
         return EACCES;
     return custody;
 }
 
-ErrorOr<void> VirtualFileSystem::chmod(Custody& custody, mode_t mode)
+ErrorOr<void> VirtualFileSystem::chmod(Credentials const& credentials, Custody& custody, mode_t mode)
 {
     auto& inode = custody.inode();
 
-    auto& current_process = Process::current();
-    if (current_process.euid() != inode.metadata().uid && !current_process.is_superuser())
+    if (credentials.euid() != inode.metadata().uid && !credentials.is_superuser())
         return EPERM;
     if (custody.is_readonly())
         return EROFS;
@@ -437,20 +600,20 @@ ErrorOr<void> VirtualFileSystem::chmod(Custody& custody, mode_t mode)
     return inode.chmod(mode);
 }
 
-ErrorOr<void> VirtualFileSystem::chmod(StringView path, mode_t mode, Custody& base, int options)
+ErrorOr<void> VirtualFileSystem::chmod(Credentials const& credentials, StringView path, mode_t mode, Custody& base, int options)
 {
-    auto custody = TRY(resolve_path(path, base, nullptr, options));
-    return chmod(custody, mode);
+    auto custody = TRY(resolve_path(credentials, path, base, nullptr, options));
+    return chmod(credentials, custody, mode);
 }
 
-ErrorOr<void> VirtualFileSystem::rename(StringView old_path, StringView new_path, Custody& base)
+ErrorOr<void> VirtualFileSystem::rename(Credentials const& credentials, Custody& old_base, StringView old_path, Custody& new_base, StringView new_path)
 {
     RefPtr<Custody> old_parent_custody;
-    auto old_custody = TRY(resolve_path(old_path, base, &old_parent_custody, O_NOFOLLOW_NOERROR));
+    auto old_custody = TRY(resolve_path(credentials, old_path, old_base, &old_parent_custody, O_NOFOLLOW_NOERROR));
     auto& old_inode = old_custody->inode();
 
     RefPtr<Custody> new_parent_custody;
-    auto new_custody_or_error = resolve_path(new_path, base, &new_parent_custody);
+    auto new_custody_or_error = resolve_path(credentials, new_path, new_base, &new_parent_custody);
     if (new_custody_or_error.is_error()) {
         if (new_custody_or_error.error().code() != ENOENT || !new_parent_custody)
             return new_custody_or_error.release_error();
@@ -485,15 +648,14 @@ ErrorOr<void> VirtualFileSystem::rename(StringView old_path, StringView new_path
             return EDIRINTOSELF;
     }
 
-    auto& current_process = Process::current();
-    if (!new_parent_inode.metadata().may_write(current_process))
+    if (!new_parent_inode.metadata().may_write(credentials))
         return EACCES;
 
-    if (!old_parent_inode.metadata().may_write(current_process))
+    if (!old_parent_inode.metadata().may_write(credentials))
         return EACCES;
 
     if (old_parent_inode.metadata().is_sticky()) {
-        if (!current_process.is_superuser() && old_inode.metadata().uid != current_process.euid())
+        if (!credentials.is_superuser() && old_parent_inode.metadata().uid != credentials.euid() && old_inode.metadata().uid != credentials.euid())
             return EACCES;
     }
 
@@ -514,11 +676,15 @@ ErrorOr<void> VirtualFileSystem::rename(StringView old_path, StringView new_path
     if (!new_custody_or_error.is_error()) {
         auto& new_custody = *new_custody_or_error.value();
         auto& new_inode = new_custody.inode();
-        // FIXME: Is this really correct? Check what other systems do.
+        // When the source/dest inodes are the same (in other words,
+        // when `old_path` and `new_path` are the same), perform a no-op
+        // and return success.
+        // Linux (`vfs_rename()`) and OpenBSD (`dorenameat()`) appear to have
+        // this same no-op behavior.
         if (&new_inode == &old_inode)
             return {};
         if (new_parent_inode.metadata().is_sticky()) {
-            if (!current_process.is_superuser() && new_inode.metadata().uid != current_process.euid())
+            if (!credentials.is_superuser() && new_inode.metadata().uid != credentials.euid())
                 return EACCES;
         }
         if (new_inode.is_directory() && !old_inode.is_directory())
@@ -528,28 +694,35 @@ ErrorOr<void> VirtualFileSystem::rename(StringView old_path, StringView new_path
 
     TRY(new_parent_inode.add_child(old_inode, new_basename, old_inode.mode()));
     TRY(old_parent_inode.remove_child(old_basename));
+
+    // If the inode that we moved is a directory and we changed parent
+    // directories, then we also have to make .. point to the new parent inode,
+    // because .. is its own inode.
+    if (old_inode.is_directory() && old_parent_inode.index() != new_parent_inode.index()) {
+        TRY(old_inode.replace_child(".."sv, new_parent_inode));
+    }
+
     return {};
 }
 
-ErrorOr<void> VirtualFileSystem::chown(Custody& custody, UserID a_uid, GroupID a_gid)
+ErrorOr<void> VirtualFileSystem::chown(Credentials const& credentials, Custody& custody, UserID a_uid, GroupID a_gid)
 {
     auto& inode = custody.inode();
     auto metadata = inode.metadata();
 
-    auto& current_process = Process::current();
-    if (current_process.euid() != metadata.uid && !current_process.is_superuser())
+    if (credentials.euid() != metadata.uid && !credentials.is_superuser())
         return EPERM;
 
     UserID new_uid = metadata.uid;
     GroupID new_gid = metadata.gid;
 
     if (a_uid != (uid_t)-1) {
-        if (current_process.euid() != a_uid && !current_process.is_superuser())
+        if (credentials.euid() != a_uid && !credentials.is_superuser())
             return EPERM;
         new_uid = a_uid;
     }
     if (a_gid != (gid_t)-1) {
-        if (!current_process.in_group(a_gid) && !current_process.is_superuser())
+        if (!credentials.in_group(a_gid) && !credentials.is_superuser())
             return EPERM;
         new_gid = a_gid;
     }
@@ -567,36 +740,38 @@ ErrorOr<void> VirtualFileSystem::chown(Custody& custody, UserID a_uid, GroupID a
     return inode.chown(new_uid, new_gid);
 }
 
-ErrorOr<void> VirtualFileSystem::chown(StringView path, UserID a_uid, GroupID a_gid, Custody& base, int options)
+ErrorOr<void> VirtualFileSystem::chown(Credentials const& credentials, StringView path, UserID a_uid, GroupID a_gid, Custody& base, int options)
 {
-    auto custody = TRY(resolve_path(path, base, nullptr, options));
-    return chown(custody, a_uid, a_gid);
+    auto custody = TRY(resolve_path(credentials, path, base, nullptr, options));
+    return chown(credentials, custody, a_uid, a_gid);
 }
 
-static bool hard_link_allowed(const Inode& inode)
+static bool hard_link_allowed(Credentials const& credentials, Inode const& inode)
 {
     auto metadata = inode.metadata();
 
-    if (Process::current().euid() == metadata.uid)
+    if (credentials.euid() == metadata.uid)
         return true;
 
     if (metadata.is_regular_file()
         && !metadata.is_setuid()
         && !(metadata.is_setgid() && metadata.mode & S_IXGRP)
-        && metadata.may_write(Process::current())) {
+        && metadata.may_write(credentials)) {
         return true;
     }
 
     return false;
 }
 
-ErrorOr<void> VirtualFileSystem::link(StringView old_path, StringView new_path, Custody& base)
+ErrorOr<void> VirtualFileSystem::link(Credentials const& credentials, StringView old_path, StringView new_path, Custody& base)
 {
-    auto old_custody = TRY(resolve_path(old_path, base));
+    // NOTE: To prevent unveil bypass by creating an hardlink after unveiling a path as read-only,
+    // check that if write permission is allowed by the veil info on the old_path.
+    auto old_custody = TRY(resolve_path(credentials, old_path, base, nullptr, O_RDWR));
     auto& old_inode = old_custody->inode();
 
     RefPtr<Custody> parent_custody;
-    auto new_custody_or_error = resolve_path(new_path, base, &parent_custody);
+    auto new_custody_or_error = resolve_path(credentials, new_path, base, &parent_custody);
     if (!new_custody_or_error.is_error())
         return EEXIST;
 
@@ -608,7 +783,7 @@ ErrorOr<void> VirtualFileSystem::link(StringView old_path, StringView new_path, 
     if (parent_inode.fsid() != old_inode.fsid())
         return EXDEV;
 
-    if (!parent_inode.metadata().may_write(Process::current()))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
 
     if (old_inode.is_directory())
@@ -617,16 +792,16 @@ ErrorOr<void> VirtualFileSystem::link(StringView old_path, StringView new_path, 
     if (parent_custody->is_readonly())
         return EROFS;
 
-    if (!hard_link_allowed(old_inode))
+    if (!hard_link_allowed(credentials, old_inode))
         return EPERM;
 
     return parent_inode.add_child(old_inode, KLexicalPath::basename(new_path), old_inode.mode());
 }
 
-ErrorOr<void> VirtualFileSystem::unlink(StringView path, Custody& base)
+ErrorOr<void> VirtualFileSystem::unlink(Credentials const& credentials, StringView path, Custody& base)
 {
     RefPtr<Custody> parent_custody;
-    auto custody = TRY(resolve_path(path, base, &parent_custody, O_NOFOLLOW_NOERROR | O_UNLINK_INTERNAL));
+    auto custody = TRY(resolve_path(credentials, path, base, &parent_custody, O_NOFOLLOW_NOERROR | O_UNLINK_INTERNAL));
     auto& inode = custody->inode();
 
     if (inode.is_directory())
@@ -638,12 +813,11 @@ ErrorOr<void> VirtualFileSystem::unlink(StringView path, Custody& base)
     VERIFY(parent_custody);
 
     auto& parent_inode = parent_custody->inode();
-    auto& current_process = Process::current();
-    if (!parent_inode.metadata().may_write(current_process))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
 
     if (parent_inode.metadata().is_sticky()) {
-        if (!current_process.is_superuser() && inode.metadata().uid != current_process.euid())
+        if (!credentials.is_superuser() && parent_inode.metadata().uid != credentials.euid() && inode.metadata().uid != credentials.euid())
             return EACCES;
     }
 
@@ -653,19 +827,31 @@ ErrorOr<void> VirtualFileSystem::unlink(StringView path, Custody& base)
     return parent_inode.remove_child(KLexicalPath::basename(path));
 }
 
-ErrorOr<void> VirtualFileSystem::symlink(StringView target, StringView linkpath, Custody& base)
+ErrorOr<void> VirtualFileSystem::symlink(Credentials const& credentials, StringView target, StringView linkpath, Custody& base)
 {
+    // NOTE: Check that the actual target (if it exists right now) is unveiled and prevent creating symlinks on veiled paths!
+    if (auto target_custody_or_error = resolve_path_without_veil(credentials, target, base, nullptr, O_RDWR, 0); !target_custody_or_error.is_error()) {
+        auto target_custody = target_custody_or_error.release_value();
+        TRY(validate_path_against_process_veil(*target_custody, O_RDWR));
+    }
+
     RefPtr<Custody> parent_custody;
-    auto existing_custody_or_error = resolve_path(linkpath, base, &parent_custody);
+    auto existing_custody_or_error = resolve_path(credentials, linkpath, base, &parent_custody, O_RDWR);
     if (!existing_custody_or_error.is_error())
         return EEXIST;
     if (!parent_custody)
         return ENOENT;
+
+    // NOTE: VERY IMPORTANT! We prevent creating symlinks in case the program didn't unveil the parent_custody
+    // path! For example, say the program wanted to create a symlink in /tmp/symlink to /tmp/test/pointee_symlink
+    // and unveiled the /tmp/test/ directory path beforehand, but not the /tmp directory path - the symlink syscall will
+    // fail here because we can't create the symlink in a parent directory path we didn't unveil beforehand.
+    TRY(validate_path_against_process_veil(*parent_custody, O_RDWR));
+
     if (existing_custody_or_error.is_error() && existing_custody_or_error.error().code() != ENOENT)
         return existing_custody_or_error.release_error();
     auto& parent_inode = parent_custody->inode();
-    auto& current_process = Process::current();
-    if (!parent_inode.metadata().may_write(current_process))
+    if (!parent_inode.metadata().may_write(credentials))
         return EACCES;
     if (parent_custody->is_readonly())
         return EROFS;
@@ -673,38 +859,53 @@ ErrorOr<void> VirtualFileSystem::symlink(StringView target, StringView linkpath,
     auto basename = KLexicalPath::basename(linkpath);
     dbgln_if(VFS_DEBUG, "VirtualFileSystem::symlink: '{}' (-> '{}') in {}", basename, target, parent_inode.identifier());
 
-    auto inode = TRY(parent_inode.create_child(basename, S_IFLNK | 0644, 0, current_process.euid(), current_process.egid()));
+    auto inode = TRY(parent_inode.create_child(basename, S_IFLNK | 0644, 0, credentials.euid(), credentials.egid()));
 
-    auto target_buffer = UserOrKernelBuffer::for_kernel_buffer(const_cast<u8*>((const u8*)target.characters_without_null_termination()));
+    auto target_buffer = UserOrKernelBuffer::for_kernel_buffer(const_cast<u8*>((u8 const*)target.characters_without_null_termination()));
     TRY(inode->write_bytes(0, target.length(), target_buffer, nullptr));
     return {};
 }
 
-ErrorOr<void> VirtualFileSystem::rmdir(StringView path, Custody& base)
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/rmdir.html
+ErrorOr<void> VirtualFileSystem::rmdir(Credentials const& credentials, StringView path, Custody& base)
 {
     RefPtr<Custody> parent_custody;
-    auto custody = TRY(resolve_path(path, base, &parent_custody));
+    auto custody = TRY(resolve_path(credentials, path, base, &parent_custody));
     auto& inode = custody->inode();
 
-    // FIXME: We should return EINVAL if the last component of the path is "."
-    // FIXME: We should return ENOTEMPTY if the last component of the path is ".."
+    auto last_component = KLexicalPath::basename(path);
 
+    // [EINVAL] The path argument contains a last component that is dot.
+    if (last_component == "."sv)
+        return EINVAL;
+
+    // [ENOTDIR] A component of path names an existing file that is neither a directory
+    //           nor a symbolic link to a directory.
     if (!inode.is_directory())
         return ENOTDIR;
 
+    // [EBUSY] The directory to be removed is currently in use by the system or some process
+    //         and the implementation considers this to be an error.
+    // NOTE: If there is no parent, that means we're trying to rmdir the root directory!
     if (!parent_custody)
         return EBUSY;
 
     auto& parent_inode = parent_custody->inode();
     auto parent_metadata = parent_inode.metadata();
 
-    auto& current_process = Process::current();
-    if (!parent_metadata.may_write(current_process))
+    // [EACCES] Search permission is denied on a component of the path prefix,
+    //          or write permission is denied on the parent directory of the directory to be removed.
+    if (!parent_metadata.may_write(credentials))
         return EACCES;
 
     if (parent_metadata.is_sticky()) {
-        if (!current_process.is_superuser() && inode.metadata().uid != current_process.euid())
+        // [EACCES] The S_ISVTX flag is set on the directory containing the file referred to by the path argument
+        //          and the process does not satisfy the criteria specified in XBD Directory Protection.
+        if (!credentials.is_superuser()
+            && inode.metadata().uid != credentials.euid()
+            && parent_metadata.uid != credentials.euid()) {
             return EACCES;
+        }
     }
 
     size_t child_count = 0;
@@ -713,25 +914,27 @@ ErrorOr<void> VirtualFileSystem::rmdir(StringView path, Custody& base)
         return {};
     }));
 
+    // [ENOTEMPTY] The path argument names a directory that is not an empty directory,
+    //             or there are hard links to the directory other than dot or a single entry in dot-dot.
     if (child_count != 2)
         return ENOTEMPTY;
 
+    // [EROFS] The directory entry to be removed resides on a read-only file system.
     if (custody->is_readonly())
         return EROFS;
 
-    TRY(inode.remove_child("."));
-    TRY(inode.remove_child(".."));
+    TRY(inode.remove_child("."sv));
+    TRY(inode.remove_child(".."sv));
 
     return parent_inode.remove_child(KLexicalPath::basename(path));
 }
 
-void VirtualFileSystem::for_each_mount(Function<IterationDecision(Mount const&)> callback) const
+ErrorOr<void> VirtualFileSystem::for_each_mount(Function<ErrorOr<void>(Mount const&)> callback) const
 {
-    m_mounts.with([&](auto& mounts) {
-        for (auto& mount : mounts) {
-            if (callback(mount) == IterationDecision::Break)
-                break;
-        }
+    return m_mounts.with([&](auto& mounts) -> ErrorOr<void> {
+        for (auto& mount : mounts)
+            TRY(callback(mount));
+        return {};
     });
 }
 
@@ -740,41 +943,50 @@ void VirtualFileSystem::sync()
     FileSystem::sync();
 }
 
-Custody& VirtualFileSystem::root_custody()
+NonnullRefPtr<Custody> VirtualFileSystem::root_custody()
 {
-    return *m_root_custody;
+    return m_root_custody.with([](auto& root_custody) -> NonnullRefPtr<Custody> { return *root_custody; });
 }
 
-UnveilNode const& VirtualFileSystem::find_matching_unveiled_path(StringView path)
+UnveilNode const& VirtualFileSystem::find_matching_unveiled_path(Process const& process, StringView path)
 {
-    auto& current_process = Process::current();
-    VERIFY(current_process.veil_state() != VeilState::None);
-    auto& unveil_root = current_process.unveiled_paths();
-
-    auto path_parts = KLexicalPath::parts(path);
-    return unveil_root.traverse_until_last_accessible_node(path_parts.begin(), path_parts.end());
+    VERIFY(process.veil_state() != VeilState::None);
+    return process.unveil_data().with([&](auto const& unveil_data) -> UnveilNode const& {
+        auto path_parts = KLexicalPath::parts(path);
+        return unveil_data.paths.traverse_until_last_accessible_node(path_parts.begin(), path_parts.end());
+    });
 }
 
 ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(Custody const& custody, int options)
 {
-    if (Process::current().veil_state() == VeilState::None)
-        return {};
-    auto absolute_path = TRY(custody.try_serialize_absolute_path());
-    return validate_path_against_process_veil(absolute_path->view(), options);
+    return validate_path_against_process_veil(Process::current(), custody, options);
 }
 
-ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(StringView path, int options)
+ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(Process const& process, Custody const& custody, int options)
 {
-    if (Process::current().veil_state() == VeilState::None)
+    if (process.veil_state() == VeilState::None)
         return {};
-    if (options == O_EXEC && path == "/usr/lib/Loader.so")
+    auto absolute_path = TRY(custody.try_serialize_absolute_path());
+    return validate_path_against_process_veil(process, absolute_path->view(), options);
+}
+
+ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(Process const& process, StringView path, int options)
+{
+    if (process.veil_state() == VeilState::None)
         return {};
 
     VERIFY(path.starts_with('/'));
     VERIFY(!path.contains("/../"sv) && !path.ends_with("/.."sv));
     VERIFY(!path.contains("/./"sv) && !path.ends_with("/."sv));
 
-    auto& unveiled_path = find_matching_unveiled_path(path);
+#ifdef SKIP_PATH_VALIDATION_FOR_COVERAGE_INSTRUMENTATION
+    // Skip veil validation against profile data when coverage is enabled for userspace
+    // so that all processes can write out coverage data even with veils in place
+    if (KLexicalPath::basename(path).ends_with(".profraw"sv))
+        return {};
+#endif
+
+    auto& unveiled_path = find_matching_unveiled_path(process, path);
     if (unveiled_path.permissions() == UnveilAccess::None) {
         dbgln("Rejecting path '{}' since it hasn't been unveiled.", path);
         dump_backtrace();
@@ -828,12 +1040,22 @@ ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(StringView p
     return {};
 }
 
-ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path(StringView path, Custody& base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level)
+ErrorOr<void> VirtualFileSystem::validate_path_against_process_veil(StringView path, int options)
+{
+    return validate_path_against_process_veil(Process::current(), path, options);
+}
+
+ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path(Credentials const& credentials, StringView path, NonnullRefPtr<Custody> base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level)
+{
+    return resolve_path(Process::current(), credentials, path, base, out_parent, options, symlink_recursion_level);
+}
+
+ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path(Process const& process, Credentials const& credentials, StringView path, NonnullRefPtr<Custody> base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level)
 {
     // FIXME: The errors returned by resolve_path_without_veil can leak information about paths that are not unveiled,
     //        e.g. when the error is EACCESS or similar.
-    auto custody = TRY(resolve_path_without_veil(path, base, out_parent, options, symlink_recursion_level));
-    if (auto result = validate_path_against_process_veil(*custody, options); result.is_error()) {
+    auto custody = TRY(resolve_path_without_veil(credentials, path, base, out_parent, options, symlink_recursion_level));
+    if (auto result = validate_path_against_process_veil(process, *custody, options); result.is_error()) {
         if (out_parent)
             out_parent->clear();
         return result.release_error();
@@ -841,10 +1063,10 @@ ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path(StringView path,
     return custody;
 }
 
-static bool safe_to_follow_symlink(const Inode& inode, const InodeMetadata& parent_metadata)
+static bool safe_to_follow_symlink(Credentials const& credentials, Inode const& inode, InodeMetadata const& parent_metadata)
 {
     auto metadata = inode.metadata();
-    if (Process::current().euid() == metadata.uid)
+    if (credentials.euid() == metadata.uid)
         return true;
 
     if (!(parent_metadata.is_sticky() && parent_metadata.mode & S_IWOTH))
@@ -856,7 +1078,7 @@ static bool safe_to_follow_symlink(const Inode& inode, const InodeMetadata& pare
     return false;
 }
 
-ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(StringView path, Custody& base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level)
+ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(Credentials const& credentials, StringView path, NonnullRefPtr<Custody> base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level)
 {
     if (symlink_recursion_level >= symlink_recursion_limit)
         return ELOOP;
@@ -865,7 +1087,6 @@ ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(Str
         return EINVAL;
 
     GenericLexer path_lexer(path);
-    auto& current_process = Process::current();
 
     NonnullRefPtr<Custody> custody = path[0] == '/' ? root_custody() : base;
     bool extra_iteration = path[path.length() - 1] == '/';
@@ -881,7 +1102,7 @@ ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(Str
         if (!parent_metadata.is_directory())
             return ENOTDIR;
         // Ensure the current user is allowed to resolve paths inside this directory.
-        if (!parent_metadata.may_execute(current_process))
+        if (!parent_metadata.may_execute(credentials))
             return EACCES;
 
         bool have_more_parts = !path_lexer.is_eof() || extra_iteration;
@@ -927,12 +1148,12 @@ ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(Str
                     break;
             }
 
-            if (!safe_to_follow_symlink(*child_inode, parent_metadata))
+            if (!safe_to_follow_symlink(credentials, *child_inode, parent_metadata))
                 return EACCES;
 
             TRY(validate_path_against_process_veil(*custody, options));
 
-            auto symlink_target = TRY(child_inode->resolve_as_link(parent, out_parent, options, symlink_recursion_level + 1));
+            auto symlink_target = TRY(child_inode->resolve_as_link(credentials, parent, out_parent, options, symlink_recursion_level + 1));
             if (!have_more_parts)
                 return symlink_target;
 
@@ -943,7 +1164,7 @@ ErrorOr<NonnullRefPtr<Custody>> VirtualFileSystem::resolve_path_without_veil(Str
             TRY(remaining_path.try_append('.'));
             TRY(remaining_path.try_append(path.substring_view_starting_after_substring(part)));
 
-            return resolve_path_without_veil(remaining_path.string_view(), symlink_target, out_parent, options, symlink_recursion_level + 1);
+            return resolve_path_without_veil(credentials, remaining_path.string_view(), symlink_target, out_parent, options, symlink_recursion_level + 1);
         }
     }
 

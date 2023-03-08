@@ -14,6 +14,7 @@
 #endif
 
 #include <AK/SIMD.h>
+#include <AK/SIMDMath.h>
 
 #define GAMMA 2.2
 
@@ -41,13 +42,7 @@ using AK::SIMD::f32x4;
 
 // Transform f32x4 from gamma2.2 space to linear space
 // Assumes x is in range [0, 1]
-// FIXME: Remove this hack once clang-11 is available as the default in Github Actions.
-//        This is apparently sometime mid-December. https://github.com/actions/virtual-environments/issues/2130
-#    if !defined(__clang__) || __clang_major__ >= 11
 constexpr f32x4 gamma_to_linear4(f32x4 x)
-#    else
-inline f32x4 gamma_to_linear4(f32x4 x)
-#    endif
 {
     return (0.8f + 0.2f * x) * x * x;
 }
@@ -59,8 +54,8 @@ inline f32x4 linear_to_gamma4(f32x4 x)
     // Source for approximation: https://mimosa-pudica.net/fast-gamma/
     constexpr float a = 0.00279491f;
     constexpr float b = 1.15907984f;
-    float c = (b / AK::sqrt(1.0f + a)) - 1;
-    return ((b * __builtin_ia32_rsqrtps(x + a)) - c) * x;
+    float c = (b * AK::rsqrt(1.0f + a)) - 1;
+    return ((b * AK::SIMD::rsqrt(x + a)) - c) * x;
 }
 
 // Linearize v1 and v2, lerp them by mix factor, then convert back.
@@ -86,8 +81,8 @@ inline float linear_to_gamma(float x)
     // Source for approximation: https://mimosa-pudica.net/fast-gamma/
     constexpr float a = 0.00279491;
     constexpr float b = 1.15907984;
-    float c = (b / AK::sqrt(1 + a)) - 1;
-    return ((b / AK::sqrt(x + a)) - c) * x;
+    float c = (b * AK::rsqrt(1 + a)) - 1;
+    return ((b * AK::rsqrt(x + a)) - c) * x;
 }
 
 // Linearize v1 and v2, lerp them by mix factor, then convert back.

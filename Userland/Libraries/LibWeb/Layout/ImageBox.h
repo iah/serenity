@@ -12,28 +12,40 @@
 
 namespace Web::Layout {
 
-class ImageBox
+class ImageBox final
     : public ReplacedBox
     , public HTML::BrowsingContext::ViewportClient {
+    JS_CELL(ImageBox, ReplacedBox);
+
 public:
-    ImageBox(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>, const ImageLoader&);
+    ImageBox(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>, ImageLoader const&);
     virtual ~ImageBox() override;
 
     virtual void prepare_for_replaced_layout() override;
-    virtual void paint(PaintContext&, PaintPhase) override;
 
     const DOM::Element& dom_node() const { return static_cast<const DOM::Element&>(ReplacedBox::dom_node()); }
 
     bool renders_as_alt_text() const;
 
+    virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
+
+    auto const& image_loader() const { return m_image_loader; }
+
+    void dom_node_did_update_alt_text(Badge<HTML::HTMLImageElement>);
+
 private:
     // ^BrowsingContext::ViewportClient
-    virtual void browsing_context_did_set_viewport_rect(Gfx::IntRect const&) final;
+    virtual void browsing_context_did_set_viewport_rect(CSSPixelRect const&) final;
+
+    // ^JS::Cell
+    virtual void finalize() override;
 
     int preferred_width() const;
     int preferred_height() const;
 
-    const ImageLoader& m_image_loader;
+    ImageLoader const& m_image_loader;
+
+    Optional<CSSPixels> m_cached_alt_text_width;
 };
 
 }

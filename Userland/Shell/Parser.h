@@ -25,9 +25,9 @@ public:
 
     RefPtr<AST::Node> parse();
     /// Parse the given string *as* an expression
-    /// that is to forefully enclose it in double-quotes.
+    /// that is to forcefully enclose it in double-quotes.
     RefPtr<AST::Node> parse_as_single_expression();
-    NonnullRefPtrVector<AST::Node> parse_as_multiple_expressions();
+    Vector<NonnullRefPtr<AST::Node>> parse_as_multiple_expressions();
 
     struct SavedOffset {
         size_t offset;
@@ -47,7 +47,7 @@ private:
     };
 
     struct SequenceParseResult {
-        NonnullRefPtrVector<AST::Node> entries;
+        Vector<NonnullRefPtr<AST::Node>> entries;
         Vector<AST::Position, 1> separator_positions;
         ShouldReadMoreSequences decision;
     };
@@ -77,6 +77,7 @@ private:
     RefPtr<AST::Node> parse_match_expr();
     AST::MatchEntry parse_match_entry();
     RefPtr<AST::Node> parse_match_pattern();
+    Optional<Regex<ECMA262>> parse_regex_pattern();
     RefPtr<AST::Node> parse_redirection();
     RefPtr<AST::Node> parse_list_expression();
     RefPtr<AST::Node> parse_expression();
@@ -98,7 +99,7 @@ private:
     bool parse_heredoc_entries();
 
     template<typename A, typename... Args>
-    NonnullRefPtr<A> create(Args... args);
+    NonnullRefPtr<A> create(Args&&... args);
 
     void set_end_condition(OwnPtr<Function<bool()>> condition) { m_end_condition = move(condition); }
     bool at_end() const
@@ -152,7 +153,7 @@ private:
         AST::Position::Line line;
     };
 
-    void restore_to(const ScopedOffset& offset) { restore_to(offset.offset, offset.line); }
+    void restore_to(ScopedOffset const& offset) { restore_to(offset.offset, offset.line); }
 
     OwnPtr<ScopedOffset> push_start();
     Offset current_position();
@@ -199,9 +200,9 @@ heredoc_entries :: { .*? (heredoc_entry) '\n' } [each heredoc_entries]
 variable_decls :: identifier '=' expression (' '+ variable_decls)? ' '*
                 | identifier '=' '(' pipe_sequence ')' (' '+ variable_decls)? ' '*
 
-pipe_sequence :: command '|' pipe_sequence
+pipe_sequence :: command '|' '&'? pipe_sequence
                | command
-               | control_structure '|' pipe_sequence
+               | control_structure '|' '&'? pipe_sequence
                | control_structure
 
 control_structure[c] :: for_expr
@@ -228,10 +229,15 @@ subshell :: '{' toplevel '}'
 match_expr :: 'match' ws+ expression ws* ('as' ws+ identifier)? '{' match_entry* '}'
 
 match_entry :: match_pattern ws* (as identifier_list)? '{' toplevel '}'
+             | regex_pattern ws* '{' toplevel '}'
 
 identifier_list :: '(' (identifier ws*)* ')'
 
-match_pattern :: expression (ws* '|' ws* expression)*
+regex_pattern :: regex_pattern (ws* '|' ws* regex_pattern)*
+
+match_pattern          :: expression (ws* '|' ws* expression)*
+
+regex_pattern :: '(?:' .* ')' { enclosed string must contain balanced parentheses }
 
 command :: redirection command
          | list_expression command?

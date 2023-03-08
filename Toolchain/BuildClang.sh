@@ -9,7 +9,7 @@ echo "$DIR"
 
 PREFIX="$DIR/Local/clang/"
 BUILD="$DIR/../Build/"
-USERLAND_ARCHS="i686 x86_64"
+USERLAND_ARCHS="x86_64"
 ARCHS="$USERLAND_ARCHS aarch64"
 
 MD5SUM="md5sum"
@@ -70,8 +70,8 @@ echo PREFIX is "$PREFIX"
 
 mkdir -p "$DIR/Tarballs"
 
-LLVM_VERSION="13.0.0"
-LLVM_MD5SUM="bfc5191cbe87954952d25c6884596ccb"
+LLVM_VERSION="15.0.3"
+LLVM_MD5SUM="d435e1160fd16b8efe1e0f4d1058bd50"
 LLVM_NAME="llvm-project-$LLVM_VERSION.src"
 LLVM_PKG="$LLVM_NAME.tar.xz"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$LLVM_PKG"
@@ -142,6 +142,25 @@ else
     buildstep dependencies echo "LLD not found. Using the default linker."
 fi
 
+buildstep setup echo "Determining if LLVM should be built with -march=native..."
+if [ "$ci" = "1" ]; then
+    # The toolchain cache is shared among all runners, which might have different CPUs.
+    buildstep setup echo "On a CI runner. Using the default compiler settings."
+elif [ -z "${CFLAGS+x}" ] && [ -z "${CXXFLAGS+x}" ]; then
+    if ${CXX:-c++} -o /dev/null -march=native -xc - >/dev/null 2>/dev/null << 'PROGRAM'
+int main() {}
+PROGRAM
+    then
+        export CFLAGS="-march=native"
+        export CXXFLAGS="-march=native"
+        buildstep setup echo "Using -march=native for compiling LLVM."
+    else
+        buildstep setup echo "-march=native is not supported by the compiler. Using the default settings."
+    fi
+else
+    buildstep setup echo "Using user-provided CFLAGS/CXXFLAGS."
+fi
+
 # === CHECK CACHE AND REUSE ===
 
 pushd "$DIR"
@@ -195,41 +214,48 @@ pushd "$DIR/Tarballs"
         echo "Skipped downloading LLVM"
     fi
 
-    if [ -d "$LLVM_NAME" ]; then
-        # Drop the previously patched extracted dir
-        rm -rf "${LLVM_NAME}"
-        # Also drop the build dir
-        rm -rf "$DIR/Build/clang"
-    fi
-    echo "Extracting LLVM..."
-    tar -xJf "$LLVM_PKG"
+    patch_md5="$($MD5SUM "$DIR"/Patches/llvm/*.patch)"
 
-    pushd "$LLVM_NAME"
-        if [ "$dev" = "1" ]; then
-            git init > /dev/null
-            git add . > /dev/null
-            git commit -am "BASE" > /dev/null
-            git am "$DIR"/Patches/llvm-backport-objcopy-update-section.patch > /dev/null
-            git apply "$DIR"/Patches/llvm.patch > /dev/null
-        else
-            patch -p1 < "$DIR/Patches/llvm.patch" > /dev/null
-            patch -p1 < "$DIR/Patches/llvm-backport-objcopy-update-section.patch" > /dev/null
+    if [ ! -d "$LLVM_NAME" ] || [ "$(cat $LLVM_NAME/.patch.applied)" != "$patch_md5" ]; then
+        if [ -d "$LLVM_NAME" ]; then
+            # Drop the previously patched extracted dir
+            rm -rf "${LLVM_NAME}"
         fi
-        $MD5SUM "$DIR/Patches/llvm.patch" "$DIR/Patches/llvm-backport-objcopy-update-section.patch" > .patch.applied
-    popd
+
+        rm -rf "$DIR/Build/clang"
+
+        echo "Extracting LLVM..."
+        tar -xJf "$LLVM_PKG"
+
+        pushd "$LLVM_NAME"
+            if [ "$dev" = "1" ]; then
+                git init > /dev/null
+                git add . > /dev/null
+                git commit -am "BASE" > /dev/null
+                git am --keep-non-patch "$DIR"/Patches/llvm/*.patch > /dev/null
+            else
+                for patch in "$DIR"/Patches/llvm/*.patch; do
+                    patch -p1 < "$patch" > /dev/null
+                done
+            fi
+            echo "$patch_md5" > .patch.applied
+        popd
+    else
+        echo "Using existing LLVM source directory"
+    fi
 popd
 
 # === COPY HEADERS ===
 
 SRC_ROOT=$($REALPATH "$DIR"/..)
-FILES=$(find "$SRC_ROOT"/Kernel/API "$SRC_ROOT"/Userland/Libraries/LibC "$SRC_ROOT"/Userland/Libraries/LibM "$SRC_ROOT"/Userland/Libraries/LibPthread "$SRC_ROOT"/Userland/Libraries/LibDl -name '*.h' -print)
+FILES=$(find "$SRC_ROOT"/Kernel/API "$SRC_ROOT"/Userland/Libraries/LibC -name '*.h' -print)
 
 for arch in $ARCHS; do
     mkdir -p "$BUILD/${arch}clang"
     pushd "$BUILD/${arch}clang"
         mkdir -p Root/usr/include/
         for header in $FILES; do
-            target=$(echo "$header" | "$SED" -e "s@$SRC_ROOT/Userland/Libraries/LibC@@" -e "s@$SRC_ROOT/Userland/Libraries/LibM@@" -e "s@$SRC_ROOT/Userland/Libraries/LibPthread@@" -e "s@$SRC_ROOT/Userland/Libraries/LibDl@@" -e "s@$SRC_ROOT/Kernel/@Kernel/@")
+            target=$(echo "$header" | "$SED" -e "s@$SRC_ROOT/Userland/Libraries/LibC@@" -e "s@$SRC_ROOT/Kernel/@Kernel/@")
             buildstep "system_headers" "$INSTALL" -D "$header" "Root/usr/include/$target"
         done
     popd
@@ -260,7 +286,6 @@ pushd "$DIR/Build/clang"
     pushd llvm
         buildstep "llvm/configure" cmake "$DIR/Tarballs/$LLVM_NAME/llvm" \
             -G Ninja \
-            -DSERENITY_i686-pc-serenity_SYSROOT="$BUILD/i686clang/Root" \
             -DSERENITY_x86_64-pc-serenity_SYSROOT="$BUILD/x86_64clang/Root" \
             -DSERENITY_aarch64-pc-serenity_SYSROOT="$BUILD/aarch64clang/Root" \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
@@ -273,7 +298,7 @@ pushd "$DIR/Build/clang"
             ${ci:+"-DLLVM_CCACHE_MAXSIZE=$LLVM_CCACHE_MAXSIZE"}
 
         buildstep_ninja "llvm/build" ninja -j "$MAKEJOBS"
-        buildstep "llvm/install" ninja install/strip
+        buildstep_ninja "llvm/install" ninja install/strip
     popd
 
     for arch in $ARCHS; do
@@ -288,14 +313,20 @@ pushd "$DIR/Build/clang"
                 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
                 -C "$DIR/CMake/LLVMRuntimesConfig.cmake"
 
-            buildstep "runtimes/$arch/build" ninja -j "$MAKEJOBS"
-            buildstep "runtimes/$arch/install" ninja install
+            buildstep_ninja "runtimes/$arch/build" ninja -j "$MAKEJOBS"
+            buildstep_ninja "runtimes/$arch/install" ninja install
         popd
     done
 popd
 
 pushd "$DIR/Local/clang/bin/"
-    buildstep "mold_symlink" ln -s ../../mold/bin/mold ld.mold
+    ln -s ../../mold/bin/mold ld.mold
+
+    for arch in $ARCHS; do
+        ln -s clang "$arch"-pc-serenity-clang
+        ln -s clang++ "$arch"-pc-serenity-clang++
+        echo "--sysroot=$BUILD/${arch}clang/Root" > "$arch"-pc-serenity.cfg
+    done
 popd
 
 # === SAVE TO CACHE ===

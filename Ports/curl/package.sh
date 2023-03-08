@@ -1,10 +1,15 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=curl
-version=7.81.0
-useconfigure=true
-files="https://curl.se/download/curl-${version}.tar.bz2 curl-${version}.tar.bz2 1e7a38d7018ec060f1f16df839854f0889e94e122c4cfa5d3a37c2dc56f1e258"
-auth_type=sha256
-depends=("openssl" "zlib" "zstd")
+port='curl'
+version='7.88.1'
+useconfigure='true'
+files="https://curl.se/download/curl-${version}.tar.bz2 curl-${version}.tar.bz2 8224b45cce12abde039c12dc0711b7ea85b104b9ad534d6e4c5b4e188a61c907"
+auth_type='sha256'
+depends=(
+  'ca-certificates'
+  'openssl'
+  'zlib'
+  'zstd'
+)
 configopts=("-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt")
 
 configure() {
@@ -15,6 +20,8 @@ configure() {
     "${configopts[@]}" \
     -DCURL_USE_OPENSSL=ON \
     -DCURL_ZSTD=ON \
+    -DCURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    -DCURL_CA_PATH=none \
     -DCURL_DISABLE_NTLM=ON \
     -DCURL_DISABLE_SOCKETPAIR=ON \
     -DCURL_DISABLE_TESTS=ON \

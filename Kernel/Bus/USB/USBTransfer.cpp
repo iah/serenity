@@ -6,29 +6,26 @@
 
 #include <Kernel/Bus/USB/USBTransfer.h>
 #include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/StdLib.h>
 
 namespace Kernel::USB {
 
-ErrorOr<NonnullRefPtr<Transfer>> Transfer::try_create(Pipe& pipe, u16 length)
+ErrorOr<NonnullLockRefPtr<Transfer>> Transfer::create(Pipe& pipe, u16 length, Memory::Region& dma_buffer, USBAsyncCallback callback)
 {
-    // Initialize data buffer for transfer
-    // This will definitely need to be refactored in the future, I doubt this will scale well...
-    auto region = TRY(MM.allocate_kernel_region(PAGE_SIZE, "USB Transfer Buffer", Memory::Region::Access::ReadWrite));
-    return adopt_nonnull_ref_or_enomem(new (nothrow) Transfer(pipe, length, move(region)));
+    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) Transfer(pipe, length, dma_buffer, move(callback)));
 }
 
-Transfer::Transfer(Pipe& pipe, u16 len, NonnullOwnPtr<Memory::Region> data_buffer)
+Transfer::Transfer(Pipe& pipe, u16 len, Memory::Region& dma_buffer, USBAsyncCallback callback)
     : m_pipe(pipe)
-    , m_data_buffer(move(data_buffer))
+    , m_dma_buffer(dma_buffer)
     , m_transfer_data_size(len)
+    , m_callback(move(callback))
 {
 }
 
-Transfer::~Transfer()
-{
-}
+Transfer::~Transfer() = default;
 
-void Transfer::set_setup_packet(const USBRequestData& request)
+void Transfer::set_setup_packet(USBRequestData const& request)
 {
     // Kind of a nasty hack... Because the kernel isn't in the business
     // of handing out physical pointers that we can directly write to,
@@ -43,6 +40,21 @@ void Transfer::set_setup_packet(const USBRequestData& request)
     request_data->length = request.length;
 
     m_request = request;
+}
+
+ErrorOr<void> Transfer::write_buffer(u16 len, void* data)
+{
+    VERIFY(len <= m_dma_buffer.size());
+    m_transfer_data_size = len;
+    memcpy(buffer().as_ptr(), data, len);
+
+    return {};
+}
+
+void Transfer::invoke_async_callback()
+{
+    if (m_callback)
+        m_callback(this);
 }
 
 }

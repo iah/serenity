@@ -1,10 +1,12 @@
 parameters:
   os: 'Linux'
-  arch: 'i686'
+  arch: 'x86_64'
   toolchain: 'gcc'
-  build_directory: ''
+  coverage: 'OFF'
+  download_cache_path: ''
   ccache_version: 1 # Increment this number if CI has trouble with ccache.
   serenity_ccache_path: ''
+  serenity_ccache_size: '5G'
   toolchain_ccache_path: ''
   toolchain_ccache_size: $(CCACHE_MAXSIZE)
   with_remote_data_caches: true
@@ -18,13 +20,13 @@ steps:
     - ${{ if eq(parameters.toolchain, 'clang') }}:
       - task: Cache@2
         inputs:
-          key: '"toolchain" | "x86_64" | Toolchain/BuildClang.sh | Toolchain/Patches/llvm*.patch | Toolchain/CMake/*.cmake | Userland/Libraries/LibC/**/*.h | Userland/Libraries/LibPthread/**/*.h'
+          key: '"toolchain" | "x86_64" | Toolchain/BuildClang.sh | Toolchain/Patches/llvm/*.patch | Toolchain/CMake/*.cmake | Userland/Libraries/LibC/**/*.h'
           path: $(Build.SourcesDirectory)/Toolchain/Cache
         displayName: 'Toolchain Prebuilt Cache'
     - ${{ if eq(parameters.toolchain, 'gcc') }}:
       - task: Cache@2
         inputs:
-          key: '"toolchain" | "${{ parameters.arch }}" | Toolchain/BuildIt.sh | Toolchain/Patches/[!llvm]*.patch | Userland/Libraries/LibC/**/*.h | Userland/Libraries/LibPthread/**/*.h'
+          key: '"toolchain" | "${{ parameters.arch }}" | Toolchain/BuildIt.sh | Toolchain/Patches/binutils/*.patch | Toolchain/Patches/gcc/*.patch | Userland/Libraries/LibC/**/*.h'
           path: $(Build.SourcesDirectory)/Toolchain/Cache
         displayName: 'Toolchain Prebuilt Cache'
 
@@ -45,32 +47,38 @@ steps:
   - ${{ if ne(parameters.serenity_ccache_path, '') }}:
     - task: Cache@2
       inputs:
-        key: '"ccache" | "${{ parameters.os }}" | "${{ parameters.arch }}" | "${{ parameters.toolchain }}" | "${{ parameters.ccache_version }}" | "$(timestamp)"'
+        key: '"ccache" | "${{ parameters.os }}" | "${{ parameters.arch }}" | "${{ parameters.toolchain }}" | "${{ parameters.coverage }}" | "${{ parameters.ccache_version }}" | "$(timestamp)"'
         restoreKeys: |
-          "ccache" | "${{ parameters.os }}" | "${{ parameters.arch }}" | "${{ parameters.toolchain }}" | "${{ parameters.ccache_version }}"
+          "ccache" | "${{ parameters.os }}" | "${{ parameters.arch }}" | "${{ parameters.toolchain }}" | "${{ parameters.coverage }}" | "${{ parameters.ccache_version }}"
         path: ${{ parameters.serenity_ccache_path }}
       displayName: 'Serenity Compiler Cache'
 
     - script: |
-        CCACHE_DIR=${{ parameters.serenity_ccache_path }} ccache -M 5G
+        CCACHE_DIR=${{ parameters.serenity_ccache_path }} ccache -M ${{ parameters.serenity_ccache_size }}
         CCACHE_DIR=${{ parameters.serenity_ccache_path }} ccache -s
       displayName: 'Configure Serenity ccache'
 
   - ${{ if eq(parameters.with_remote_data_caches, true) }}:
     - task: Cache@2
       inputs:
-        key: '"time_zone_data" | Meta/CMake/time_zone_data.cmake'
-        path: $(Build.SourcesDirectory)/${{ parameters.build_directory }}/TZDB
+        key: '"time_zone_data" | Meta/CMake/time_zone_data.cmake | "$(timestamp)"'
+        restoreKeys: |
+            "time_zone_data" | Meta/CMake/time_zone_data.cmake
+        path: $(Build.SourcesDirectory)/${{ parameters.download_cache_path }}/TZDB
       displayName: 'TimeZoneData Cache'
 
     - task: Cache@2
       inputs:
-        key: '"unicode_data" | Meta/CMake/unicode_data.cmake'
-        path: $(Build.SourcesDirectory)/${{ parameters.build_directory }}/UCD
+        key: '"unicode_data" | Meta/CMake/unicode_data.cmake | "$(timestamp)"'
+        restoreKeys: |
+            "unicode_data" | Meta/CMake/unicode_data.cmake
+        path: $(Build.SourcesDirectory)/${{ parameters.download_cache_path }}/UCD
       displayName: 'UnicodeData Cache'
 
     - task: Cache@2
       inputs:
-        key: '"unicode_locale" | Meta/CMake/unicode_data.cmake'
-        path: $(Build.SourcesDirectory)/${{ parameters.build_directory }}/CLDR
+        key: '"unicode_locale" | Meta/CMake/locale_data.cmake | "$(timestamp)"'
+        restoreKeys: |
+            "unicode_locale" | Meta/CMake/locale_data.cmake
+        path: $(Build.SourcesDirectory)/${{ parameters.download_cache_path }}/CLDR
       displayName: 'UnicodeLocale Cache'

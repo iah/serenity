@@ -14,10 +14,9 @@ class ArrayIterator final : public Object {
     JS_OBJECT(ArrayIterator, Object);
 
 public:
-    static ArrayIterator* create(GlobalObject&, Value array, Object::PropertyKind iteration_kind);
+    static NonnullGCPtr<ArrayIterator> create(Realm&, Value array, Object::PropertyKind iteration_kind);
 
-    explicit ArrayIterator(Value array, Object::PropertyKind iteration_kind, Object& prototype);
-    virtual ~ArrayIterator() override;
+    virtual ~ArrayIterator() override = default;
 
     Value array() const { return m_array; }
     Object::PropertyKind iteration_kind() const { return m_iteration_kind; }
@@ -25,6 +24,8 @@ public:
 
 private:
     friend class ArrayIteratorPrototype;
+
+    ArrayIterator(Value array, Object::PropertyKind iteration_kind, Object& prototype);
 
     virtual void visit_edges(Cell::Visitor&) override;
 

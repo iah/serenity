@@ -14,21 +14,21 @@
 
 class ManualModel final : public GUI::Model {
 public:
-    static NonnullRefPtr<ManualModel> create()
+    static ErrorOr<NonnullRefPtr<ManualModel>> create()
     {
-        return adopt_ref(*new ManualModel);
+        return adopt_nonnull_ref_or_enomem(new (nothrow) ManualModel);
     }
 
     virtual ~ManualModel() override {};
 
     Optional<GUI::ModelIndex> index_from_path(StringView) const;
 
-    String page_name(const GUI::ModelIndex&) const;
-    String page_path(const GUI::ModelIndex&) const;
-    String page_and_section(const GUI::ModelIndex&) const;
+    Optional<String> page_name(const GUI::ModelIndex&) const;
+    Optional<String> page_path(const GUI::ModelIndex&) const;
+    Optional<String> page_and_section(const GUI::ModelIndex&) const;
     ErrorOr<StringView> page_view(String const& path) const;
 
-    void update_section_node_on_toggle(const GUI::ModelIndex&, const bool);
+    void update_section_node_on_toggle(const GUI::ModelIndex&, bool const);
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;

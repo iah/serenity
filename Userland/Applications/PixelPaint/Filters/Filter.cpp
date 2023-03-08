@@ -6,41 +6,50 @@
  */
 
 #include "Filter.h"
+#include "../ImageProcessor.h"
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Label.h>
 
 namespace PixelPaint {
 
-RefPtr<GUI::Widget> Filter::get_settings_widget()
+Filter::Filter(ImageEditor* editor)
+    : m_editor(editor)
+    , m_update_timer(Core::Timer::create_single_shot(100, [&] {
+        if (on_settings_change)
+            on_settings_change();
+    }).release_value_but_fixme_should_propagate_errors())
+{
+    m_update_timer->set_active(false);
+}
+
+ErrorOr<RefPtr<GUI::Widget>> Filter::get_settings_widget()
 {
     if (!m_settings_widget) {
-        m_settings_widget = GUI::Widget::construct();
-        m_settings_widget->set_layout<GUI::VerticalBoxLayout>();
+        auto settings_widget = TRY(GUI::Widget::try_create());
+        (void)TRY(settings_widget->try_set_layout<GUI::VerticalBoxLayout>());
 
-        auto& name_label = m_settings_widget->add<GUI::Label>(filter_name());
-        name_label.set_text_alignment(Gfx::TextAlignment::TopLeft);
+        auto name_label = TRY(settings_widget->try_add<GUI::Label>(filter_name()));
+        name_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
 
-        m_settings_widget->add<GUI::Widget>();
+        (void)TRY(settings_widget->try_add<GUI::Widget>());
+        m_settings_widget = settings_widget;
     }
 
     return m_settings_widget.ptr();
 }
 
-void Filter::apply() const
+void Filter::apply()
 {
     if (!m_editor)
         return;
-    if (auto* layer = m_editor->active_layer()) {
-        apply(layer->bitmap(), layer->bitmap());
-        layer->did_modify_bitmap(layer->rect());
-        m_editor->did_complete_action();
-    }
+    // FIXME: I am not thread-safe!
+    // If you try to edit the bitmap while the image processor is still running... :yaksplode:
+    if (auto* layer = m_editor->active_layer())
+        MUST(ImageProcessor::the()->enqueue_command(make_ref_counted<FilterApplicationCommand>(*this, *layer)));
 }
 
 void Filter::update_preview()
 {
-    if (on_settings_change)
-        on_settings_change();
+    m_update_timer->restart();
 }
-
 }

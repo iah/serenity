@@ -1,10 +1,10 @@
 set(SOURCES
     Clip.cpp
-    Track.cpp
     Effects.cpp
     Synthesizers.cpp
-    FFT.cpp
+    Keyboard.cpp
+    Track.cpp
 )
 
 serenity_lib(LibDSP dsp)
-target_link_libraries(LibDSP LibCore)
+target_link_libraries(LibDSP PRIVATE LibCore)

@@ -11,7 +11,7 @@
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullRefPtr<NullDevice> NullDevice::must_initialize()
+UNMAP_AFTER_INIT NonnullLockRefPtr<NullDevice> NullDevice::must_initialize()
 {
     auto null_device_or_error = DeviceManagement::try_create_device<NullDevice>();
     // FIXME: Find a way to propagate errors
@@ -24,11 +24,9 @@ UNMAP_AFTER_INIT NullDevice::NullDevice()
 {
 }
 
-UNMAP_AFTER_INIT NullDevice::~NullDevice()
-{
-}
+UNMAP_AFTER_INIT NullDevice::~NullDevice() = default;
 
-bool NullDevice::can_read(const OpenFileDescription&, u64) const
+bool NullDevice::can_read(OpenFileDescription const&, u64) const
 {
     return true;
 }
@@ -38,7 +36,7 @@ ErrorOr<size_t> NullDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer&,
     return 0;
 }
 
-ErrorOr<size_t> NullDevice::write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t buffer_size)
+ErrorOr<size_t> NullDevice::write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t buffer_size)
 {
     return buffer_size;
 }

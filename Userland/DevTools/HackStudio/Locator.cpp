@@ -21,14 +21,14 @@ namespace HackStudio {
 class LocatorSuggestionModel final : public GUI::Model {
 public:
     struct Suggestion {
-        static Suggestion create_filename(const String& filename);
-        static Suggestion create_symbol_declaration(const GUI::AutocompleteProvider::Declaration&);
+        static Suggestion create_filename(DeprecatedString const& filename);
+        static Suggestion create_symbol_declaration(CodeComprehension::Declaration const&);
 
         bool is_filename() const { return as_filename.has_value(); }
         bool is_symbol_declaration() const { return as_symbol_declaration.has_value(); }
 
-        Optional<String> as_filename;
-        Optional<GUI::AutocompleteProvider::Declaration> as_symbol_declaration;
+        Optional<DeprecatedString> as_filename;
+        Optional<CodeComprehension::Declaration> as_symbol_declaration;
     };
 
     explicit LocatorSuggestionModel(Vector<Suggestion>&& suggestions)
@@ -62,7 +62,7 @@ public:
             if (index.column() == Column::Name) {
                 if (suggestion.as_symbol_declaration.value().scope.is_null())
                     return suggestion.as_symbol_declaration.value().name;
-                return String::formatted("{}::{}", suggestion.as_symbol_declaration.value().scope, suggestion.as_symbol_declaration.value().name);
+                return DeprecatedString::formatted("{}::{}", suggestion.as_symbol_declaration.value().scope, suggestion.as_symbol_declaration.value().name);
             }
             if (index.column() == Column::Filename)
                 return suggestion.as_symbol_declaration.value().position.file;
@@ -76,19 +76,19 @@ public:
         return {};
     }
 
-    const Vector<Suggestion>& suggestions() const { return m_suggestions; }
+    Vector<Suggestion> const& suggestions() const { return m_suggestions; }
 
 private:
     Vector<Suggestion> m_suggestions;
 };
 
-LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_filename(const String& filename)
+LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_filename(DeprecatedString const& filename)
 {
     LocatorSuggestionModel::Suggestion s;
     s.as_filename = filename;
     return s;
 }
-LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_symbol_declaration(const GUI::AutocompleteProvider::Declaration& decl)
+LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_symbol_declaration(CodeComprehension::Declaration const& decl)
 {
     LocatorSuggestionModel::Suggestion s;
     s.as_symbol_declaration = decl;
@@ -98,7 +98,7 @@ LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_sy
 Locator::Locator(Core::Object* parent)
 {
     set_layout<GUI::VerticalBoxLayout>();
-    set_fixed_height(20);
+    set_fixed_height(22);
     m_textbox = add<GUI::TextBox>();
     m_textbox->on_change = [this] {
         update_suggestions();
@@ -146,11 +146,10 @@ Locator::Locator(Core::Object* parent)
     };
 
     m_popup_window = GUI::Window::construct(parent);
-    // FIXME: This is obviously not a tooltip window, but it's the closest thing to what we want atm.
-    m_popup_window->set_window_type(GUI::WindowType::Tooltip);
+    m_popup_window->set_window_type(GUI::WindowType::Popup);
     m_popup_window->set_rect(0, 0, 500, 200);
 
-    m_suggestion_view = m_popup_window->set_main_widget<GUI::TableView>();
+    m_suggestion_view = m_popup_window->set_main_widget<GUI::TableView>().release_value_but_fixme_should_propagate_errors();
     m_suggestion_view->set_column_headers_visible(false);
 
     m_suggestion_view->on_activation = [this](auto& index) {

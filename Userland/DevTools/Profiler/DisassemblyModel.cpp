@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Jelle Raaijmakers <jelle@gmta.nl>
  * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -7,6 +8,7 @@
 
 #include "DisassemblyModel.h"
 #include "Gradient.h"
+#include "PercentageFormatting.h"
 #include "Profile.h"
 #include <LibCore/MappedFile.h>
 #include <LibDebug/DebugInfo.h>
@@ -24,7 +26,7 @@ static ELF::Image* try_load_kernel_binary()
 {
     if (s_kernel_binary.has_value())
         return &s_kernel_binary->elf;
-    auto kernel_binary_or_error = Core::MappedFile::map("/boot/Kernel");
+    auto kernel_binary_or_error = Core::MappedFile::map("/boot/Kernel"sv);
     if (!kernel_binary_or_error.is_error()) {
         auto kernel_binary = kernel_binary_or_error.release_value();
         s_kernel_binary = { { kernel_binary, ELF::Image(kernel_binary->bytes()) } };
@@ -48,7 +50,7 @@ DisassemblyModel::DisassemblyModel(Profile& profile, ProfileNode& node)
         if (elf == nullptr)
             return;
         if (g_kernel_debug_info == nullptr)
-            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, String::empty(), base_address);
+            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, DeprecatedString::empty(), base_address);
         debug_info = g_kernel_debug_info.ptr();
     } else {
         auto const& process = node.process();
@@ -107,17 +109,18 @@ DisassemblyModel::DisassemblyModel(Profile& profile, ProfileNode& node)
             break;
 
         auto insn = disassembler.next();
-        if (!insn.has_value() || !insn.value().is_valid())
+        if (!insn.has_value())
             break;
         FlatPtr address_in_profiled_program = node.address() + offset_into_symbol;
 
-        auto disassembly = insn.value().to_string(address_in_profiled_program, &symbol_provider);
+        auto disassembly = insn.value().to_deprecated_string(address_in_profiled_program, &symbol_provider);
 
         StringView instruction_bytes = view.substring_view(offset_into_symbol, insn.value().length());
         u32 samples_at_this_instruction = m_node.events_per_address().get(address_in_profiled_program).value_or(0);
         float percent = ((float)samples_at_this_instruction / (float)m_node.event_count()) * 100.0f;
+        auto source_position = debug_info->get_source_position_with_inlines(address_in_profiled_program - base_address).release_value_but_fixme_should_propagate_errors();
 
-        m_instructions.append({ insn.value(), disassembly, instruction_bytes, address_in_profiled_program, samples_at_this_instruction, percent, debug_info->get_source_position_with_inlines(address_in_profiled_program - base_address) });
+        m_instructions.append({ insn.value(), disassembly, instruction_bytes, address_in_profiled_program, samples_at_this_instruction, percent, source_position });
 
         offset_into_symbol += insn.value().length();
     }
@@ -128,7 +131,7 @@ int DisassemblyModel::row_count(GUI::ModelIndex const&) const
     return m_instructions.size();
 }
 
-String DisassemblyModel::column_name(int column) const
+DeprecatedString DisassemblyModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleCount:
@@ -184,22 +187,27 @@ GUI::Variant DisassemblyModel::data(GUI::ModelIndex const& index, GUI::ModelRole
         return colors.value().foreground;
     }
 
+    if (role == GUI::ModelRole::TextAlignment) {
+        if (index.column() == Column::SampleCount)
+            return Gfx::TextAlignment::CenterRight;
+    }
+
     if (role == GUI::ModelRole::Display) {
         if (index.column() == Column::SampleCount) {
             if (m_profile.show_percentages())
-                return ((float)insn.event_count / (float)m_node.event_count()) * 100.0f;
+                return format_percentage(insn.event_count, m_node.event_count());
             return insn.event_count;
         }
 
         if (index.column() == Column::Address)
-            return String::formatted("{:p}", insn.address);
+            return DeprecatedString::formatted("{:p}", insn.address);
 
         if (index.column() == Column::InstructionBytes) {
             StringBuilder builder;
             for (auto ch : insn.bytes) {
                 builder.appendff("{:02x} ", (u8)ch);
             }
-            return builder.to_string();
+            return builder.to_deprecated_string();
         }
 
         if (index.column() == Column::Disassembly)
@@ -212,16 +220,16 @@ GUI::Variant DisassemblyModel::data(GUI::ModelIndex const& index, GUI::ModelRole
                 if (first)
                     first = false;
                 else
-                    builder.append(" => ");
+                    builder.append(" => "sv);
                 builder.appendff("{}:{}", entry.file_path, entry.line_number);
             }
             if (insn.source_position_with_inlines.source_position.has_value()) {
                 if (!first)
-                    builder.append(" => ");
+                    builder.append(" => "sv);
                 auto const& entry = insn.source_position_with_inlines.source_position.value();
                 builder.appendff("{}:{}", entry.file_path, entry.line_number);
             }
-            return builder.build();
+            return builder.to_deprecated_string();
         }
 
         return {};

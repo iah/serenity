@@ -6,16 +6,16 @@
 
 #pragma once
 
-#include <LibWeb/Layout/BlockContainer.h>
+#include <LibWeb/Layout/Box.h>
 
 namespace Web::Layout {
 
-class TableRowGroupBox final : public BlockContainer {
-public:
-    TableRowGroupBox(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>);
-    virtual ~TableRowGroupBox() override;
+class TableRowGroupBox final : public Box {
+    JS_CELL(TableRowGroupBox, Box);
 
-    size_t column_count() const;
+public:
+    TableRowGroupBox(DOM::Document&, DOM::Element*, NonnullRefPtr<CSS::StyleProperties>);
+    virtual ~TableRowGroupBox() override;
 };
 
 }

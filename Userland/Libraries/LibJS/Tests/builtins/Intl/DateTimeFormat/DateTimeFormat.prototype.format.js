@@ -62,10 +62,10 @@ describe("dateStyle", () => {
 describe("timeStyle", () => {
     // prettier-ignore
     const data = [
-        { time: "full", en0: "5:40:50 PM Coordinated Universal Time", en1: "7:08:09 AM Coordinated Universal Time", ar0: "٥:٤٠:٥٠ م التوقيت العالمي المنسق", ar1: "٧:٠٨:٠٩ ص التوقيت العالمي المنسق" },
-        { time: "long", en0: "5:40:50 PM UTC", en1: "7:08:09 AM UTC", ar0: "٥:٤٠:٥٠ م UTC", ar1: "٧:٠٨:٠٩ ص UTC" },
-        { time: "medium", en0: "5:40:50 PM", en1: "7:08:09 AM", ar0: "٥:٤٠:٥٠ م", ar1: "٧:٠٨:٠٩ ص" },
-        { time: "short", en0: "5:40 PM", en1: "7:08 AM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
+        { time: "full", en0: "5:40:50\u202fPM Coordinated Universal Time", en1: "7:08:09\u202fAM Coordinated Universal Time", ar0: "٥:٤٠:٥٠ م التوقيت العالمي المنسق", ar1: "٧:٠٨:٠٩ ص التوقيت العالمي المنسق" },
+        { time: "long", en0: "5:40:50\u202fPM UTC", en1: "7:08:09\u202fAM UTC", ar0: "٥:٤٠:٥٠ م UTC", ar1: "٧:٠٨:٠٩ ص UTC" },
+        { time: "medium", en0: "5:40:50\u202fPM", en1: "7:08:09\u202fAM", ar0: "٥:٤٠:٥٠ م", ar1: "٧:٠٨:٠٩ ص" },
+        { time: "short", en0: "5:40\u202fPM", en1: "7:08\u202fAM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
     ];
 
     test("all", () => {
@@ -84,22 +84,22 @@ describe("timeStyle", () => {
 describe("dateStyle + timeStyle", () => {
     // prettier-ignore
     const data = [
-        { date: "full", time: "full", en: "Tuesday, December 7, 2021 at 5:40:50 PM Coordinated Universal Time", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
-        { date: "full", time: "long", en: "Tuesday, December 7, 2021 at 5:40:50 PM UTC", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م UTC" },
-        { date: "full", time: "medium", en: "Tuesday, December 7, 2021 at 5:40:50 PM", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م" },
-        { date: "full", time: "short", en: "Tuesday, December 7, 2021 at 5:40 PM", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠ م" },
-        { date: "long", time: "full", en: "December 7, 2021 at 5:40:50 PM Coordinated Universal Time", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
-        { date: "long", time: "long", en: "December 7, 2021 at 5:40:50 PM UTC", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م UTC" },
-        { date: "long", time: "medium", en: "December 7, 2021 at 5:40:50 PM", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م" },
-        { date: "long", time: "short", en: "December 7, 2021 at 5:40 PM", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠ م" },
-        { date: "medium", time: "full", en: "Dec 7, 2021, 5:40:50 PM Coordinated Universal Time", ar: "٠٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
-        { date: "medium", time: "long", en: "Dec 7, 2021, 5:40:50 PM UTC", ar: "٠٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م UTC" },
-        { date: "medium", time: "medium", en: "Dec 7, 2021, 5:40:50 PM", ar: "٠٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م" },
-        { date: "medium", time: "short", en: "Dec 7, 2021, 5:40 PM", ar: "٠٧‏/١٢‏/٢٠٢١, ٥:٤٠ م" },
-        { date: "short", time: "full", en: "12/7/21, 5:40:50 PM Coordinated Universal Time", ar: "٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
-        { date: "short", time: "long", en: "12/7/21, 5:40:50 PM UTC", ar: "٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م UTC" },
-        { date: "short", time: "medium", en: "12/7/21, 5:40:50 PM", ar: "٧‏/١٢‏/٢٠٢١, ٥:٤٠:٥٠ م" },
-        { date: "short", time: "short", en: "12/7/21, 5:40 PM", ar: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م" },
+        { date: "full", time: "full", en: "Tuesday, December 7, 2021 at 5:40:50\u202fPM Coordinated Universal Time", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
+        { date: "full", time: "long", en: "Tuesday, December 7, 2021 at 5:40:50\u202fPM UTC", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م UTC" },
+        { date: "full", time: "medium", en: "Tuesday, December 7, 2021 at 5:40:50\u202fPM", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م" },
+        { date: "full", time: "short", en: "Tuesday, December 7, 2021 at 5:40\u202fPM", ar: "الثلاثاء، ٧ ديسمبر ٢٠٢١ في ٥:٤٠ م" },
+        { date: "long", time: "full", en: "December 7, 2021 at 5:40:50\u202fPM Coordinated Universal Time", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
+        { date: "long", time: "long", en: "December 7, 2021 at 5:40:50\u202fPM UTC", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م UTC" },
+        { date: "long", time: "medium", en: "December 7, 2021 at 5:40:50\u202fPM", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠:٥٠ م" },
+        { date: "long", time: "short", en: "December 7, 2021 at 5:40\u202fPM", ar: "٧ ديسمبر ٢٠٢١ في ٥:٤٠ م" },
+        { date: "medium", time: "full", en: "Dec 7, 2021, 5:40:50\u202fPM Coordinated Universal Time", ar: "٠٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
+        { date: "medium", time: "long", en: "Dec 7, 2021, 5:40:50\u202fPM UTC", ar: "٠٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م UTC" },
+        { date: "medium", time: "medium", en: "Dec 7, 2021, 5:40:50\u202fPM", ar: "٠٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م" },
+        { date: "medium", time: "short", en: "Dec 7, 2021, 5:40\u202fPM", ar: "٠٧‏/١٢‏/٢٠٢١، ٥:٤٠ م" },
+        { date: "short", time: "full", en: "12/7/21, 5:40:50\u202fPM Coordinated Universal Time", ar: "٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م التوقيت العالمي المنسق" },
+        { date: "short", time: "long", en: "12/7/21, 5:40:50\u202fPM UTC", ar: "٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م UTC" },
+        { date: "short", time: "medium", en: "12/7/21, 5:40:50\u202fPM", ar: "٧‏/١٢‏/٢٠٢١، ٥:٤٠:٥٠ م" },
+        { date: "short", time: "short", en: "12/7/21, 5:40\u202fPM", ar: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م" },
     ];
 
     test("all", () => {
@@ -160,6 +160,17 @@ describe("era", () => {
             expect(ar.format(d0)).toBe(d.ar0);
             expect(ar.format(d1)).toBe(d.ar1);
         });
+    });
+
+    test("Year 1 BC (ISO year 0)", () => {
+        let year1BC = new Date(Date.UTC(0));
+        year1BC.setUTCFullYear(0);
+
+        const en = new Intl.DateTimeFormat("en", { era: "short", timeZone: "UTC" });
+        expect(en.format(year1BC)).toBe("1/1/1 BC");
+
+        const ar = new Intl.DateTimeFormat("ar", { era: "short", timeZone: "UTC" });
+        expect(ar.format(year1BC)).toBe("١ ١ ١ ق.م");
     });
 });
 
@@ -263,11 +274,95 @@ describe("dayPeriod", () => {
     });
 
     test("flexible day period rolls over midnight", () => {
-        // For the en locale, this time (05:00) falls in the flexible day period range of [21:00, 06:00).
-        const date = Date.UTC(2017, 11, 12, 5, 0, 0, 0);
+        const en = new Intl.DateTimeFormat("en", {
+            hour: "numeric",
+            dayPeriod: "short",
+            timeZone: "UTC",
+        });
 
-        const en = new Intl.DateTimeFormat("en", { dayPeriod: "short", timeZone: "UTC" });
-        expect(en.format(date)).toBe("5 at night");
+        // For the en locale, these times (05:00 and 23:00) fall in the flexible day period range of
+        // [21:00, 06:00), on either side of midnight.
+        const date1 = Date.UTC(2017, 11, 12, 5, 0, 0, 0);
+        const date2 = Date.UTC(2017, 11, 12, 23, 0, 0, 0);
+
+        expect(en.format(date1)).toBe("5 at night");
+        expect(en.format(date2)).toBe("11 at night");
+    });
+
+    test("noon", () => {
+        const date0 = Date.UTC(2017, 11, 12, 12, 0, 0, 0);
+        const date1 = Date.UTC(2017, 11, 12, 12, 1, 0, 0);
+        const date2 = Date.UTC(2017, 11, 12, 12, 0, 1, 0);
+        const date3 = Date.UTC(2017, 11, 12, 12, 0, 0, 500);
+
+        // prettier-ignore
+        const data = [
+            { minute: undefined, second: undefined, fractionalSecondDigits: undefined, en0: "12 noon", en1: "12 noon", en2: "12 noon", en3: "12 noon", ar0: "١٢ ظهرًا", ar1: "١٢ ظهرًا", ar2: "١٢ ظهرًا", ar3: "١٢ ظهرًا" },
+            { minute: "numeric", second: undefined, fractionalSecondDigits: undefined, en0: "12:00 noon", en1: "12:01 in the afternoon", en2: "12:00 noon", en3: "12:00 noon", ar0: "١٢:٠٠ ظهرًا", ar1: "١٢:٠١ ظهرًا", ar2: "١٢:٠٠ ظهرًا", ar3: "١٢:٠٠ ظهرًا" },
+            { minute: "numeric", second: "numeric", fractionalSecondDigits: undefined, en0: "12:00:00 noon", en1: "12:01:00 in the afternoon", en2: "12:00:01 in the afternoon", en3: "12:00:00 noon", ar0: "١٢:٠٠:٠٠ ظهرًا", ar1: "١٢:٠١:٠٠ ظهرًا", ar2: "١٢:٠٠:٠١ ظهرًا", ar3: "١٢:٠٠:٠٠ ظهرًا" },
+            { minute: "numeric", second: "numeric", fractionalSecondDigits: 1, en0: "12:00:00.0 noon", en1: "12:01:00.0 in the afternoon", en2: "12:00:01.0 in the afternoon", en3: "12:00:00.5 in the afternoon", ar0: "١٢:٠٠:٠٠٫٠ ظهرًا", ar1: "١٢:٠١:٠٠٫٠ ظهرًا", ar2: "١٢:٠٠:٠١٫٠ ظهرًا", ar3: "١٢:٠٠:٠٠٫٥ ظهرًا" },
+        ];
+
+        // The en locale includes the "noon" fixed day period, whereas the ar locale does not.
+        data.forEach(d => {
+            const en = new Intl.DateTimeFormat("en", {
+                hour: "numeric",
+                dayPeriod: "short",
+                timeZone: "UTC",
+                minute: d.minute,
+                second: d.second,
+                fractionalSecondDigits: d.fractionalSecondDigits,
+            });
+            expect(en.format(date0)).toBe(d.en0);
+            expect(en.format(date1)).toBe(d.en1);
+            expect(en.format(date2)).toBe(d.en2);
+            expect(en.format(date3)).toBe(d.en3);
+
+            const ar = new Intl.DateTimeFormat("ar", {
+                hour: "numeric",
+                dayPeriod: "short",
+                timeZone: "UTC",
+                minute: d.minute,
+                second: d.second,
+                fractionalSecondDigits: d.fractionalSecondDigits,
+            });
+            expect(ar.format(date0)).toBe(d.ar0);
+            expect(ar.format(date1)).toBe(d.ar1);
+            expect(ar.format(date2)).toBe(d.ar2);
+            expect(ar.format(date3)).toBe(d.ar3);
+        });
+    });
+
+    test("dayPeriod without time", () => {
+        // prettier-ignore
+        const data = [
+            { dayPeriod: "narrow", en0: "in the afternoon", en1: "in the morning", ar0: "بعد الظهر", ar1: "صباحًا", as0: "অপৰাহ্ন", as1: "পূৰ্বাহ্ন"},
+            { dayPeriod: "short", en0: "in the afternoon", en1: "in the morning", ar0: "بعد الظهر", ar1: "ص", as0: "অপৰাহ্ন", as1: "পূৰ্বাহ্ন"},
+            { dayPeriod: "long", en0: "in the afternoon", en1: "in the morning", ar0: "بعد الظهر", ar1: "صباحًا", as0: "অপৰাহ্ন", as1: "পূৰ্বাহ্ন"},
+        ];
+
+        data.forEach(d => {
+            const en = new Intl.DateTimeFormat("en", {
+                dayPeriod: d.dayPeriod,
+                timeZone: "UTC",
+            });
+            expect(en.format(d0)).toBe(d.en0);
+            expect(en.format(d1)).toBe(d.en1);
+
+            const ar = new Intl.DateTimeFormat("ar", {
+                dayPeriod: d.dayPeriod,
+                timeZone: "UTC",
+            });
+            expect(ar.format(d0)).toBe(d.ar0);
+            expect(ar.format(d1)).toBe(d.ar1);
+
+            const as = new Intl.DateTimeFormat("as", {
+                dayPeriod: d.dayPeriod,
+                timeZone: "UTC",
+            });
+            expect(as.format(d0)).toBe(d.as0);
+            expect(as.format(d1)).toBe(d.as1);
+        });
     });
 });
 
@@ -277,7 +372,7 @@ describe("hour", () => {
     //        pattern, which should only be applied to 24-hour cycles.
     const data = [
         { hour: "2-digit", en0: "05", en1: "07", ar0: "٠٥", ar1: "٠٧" },
-        { hour: "numeric", en0: "5 PM", en1: "7 AM", ar0: "٥ م", ar1: "٧ ص" },
+        { hour: "numeric", en0: "5\u202fPM", en1: "7\u202fAM", ar0: "٥ م", ar1: "٧ ص" },
     ];
 
     test("all", () => {
@@ -296,8 +391,8 @@ describe("hour", () => {
 describe("minute", () => {
     // prettier-ignore
     const data = [
-        { minute: "2-digit", en0: "5:40 PM", en1: "7:08 AM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
-        { minute: "numeric", en0: "5:40 PM", en1: "7:08 AM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
+        { minute: "2-digit", en0: "5:40\u202fPM", en1: "7:08\u202fAM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
+        { minute: "numeric", en0: "5:40\u202fPM", en1: "7:08\u202fAM", ar0: "٥:٤٠ م", ar1: "٧:٠٨ ص" },
     ];
 
     test("all", () => {
@@ -383,40 +478,40 @@ describe("fractionalSecondDigits", () => {
 describe("timeZoneName", () => {
     // prettier-ignore
     const data = [
-        { timeZone: "UTC", timeZoneName: "short", en0: "12/7/2021, 5:40 PM UTC", en1: "1/23/1989, 7:08 AM UTC", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م UTC", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص UTC" },
-        { timeZone: "UTC", timeZoneName: "long", en0: "12/7/2021, 5:40 PM Coordinated Universal Time", en1: "1/23/1989, 7:08 AM Coordinated Universal Time", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م التوقيت العالمي المنسق", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص التوقيت العالمي المنسق" },
-        { timeZone: "UTC", timeZoneName: "shortOffset", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "UTC", timeZoneName: "longOffset", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "UTC", timeZoneName: "shortGeneric", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "UTC", timeZoneName: "longGeneric", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
+        { timeZone: "UTC", timeZoneName: "short", en0: "12/7/2021, 5:40\u202fPM UTC", en1: "1/23/1989, 7:08\u202fAM UTC", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م UTC", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص UTC" },
+        { timeZone: "UTC", timeZoneName: "long", en0: "12/7/2021, 5:40\u202fPM Coordinated Universal Time", en1: "1/23/1989, 7:08\u202fAM Coordinated Universal Time", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م التوقيت العالمي المنسق", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص التوقيت العالمي المنسق" },
+        { timeZone: "UTC", timeZoneName: "shortOffset", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "UTC", timeZoneName: "longOffset", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "UTC", timeZoneName: "shortGeneric", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "UTC", timeZoneName: "longGeneric", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
 
-        { timeZone: "America/New_York", timeZoneName: "short", en0: "12/7/2021, 12:40 PM EST", en1: "1/23/1989, 2:08 AM EST", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص غرينتش-٥" },
-        { timeZone: "America/New_York", timeZoneName: "long", en0: "12/7/2021, 12:40 PM Eastern Standard Time", en1: "1/23/1989, 2:08 AM Eastern Standard Time", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م التوقيت الرسمي الشرقي لأمريكا الشمالية", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص التوقيت الرسمي الشرقي لأمريكا الشمالية" },
-        { timeZone: "America/New_York", timeZoneName: "shortOffset", en0: "12/7/2021, 12:40 PM GMT-5", en1: "1/23/1989, 2:08 AM GMT-5", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص غرينتش-٥" },
-        { timeZone: "America/New_York", timeZoneName: "longOffset", en0: "12/7/2021, 12:40 PM GMT-05:00", en1: "1/23/1989, 2:08 AM GMT-05:00", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م غرينتش-٠٥:٠٠", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص غرينتش-٠٥:٠٠" },
-        { timeZone: "America/New_York", timeZoneName: "shortGeneric", en0: "12/7/2021, 12:40 PM ET", en1: "1/23/1989, 2:08 AM ET", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص غرينتش-٥" },
-        { timeZone: "America/New_York", timeZoneName: "longGeneric", en0: "12/7/2021, 12:40 PM Eastern Time", en1: "1/23/1989, 2:08 AM Eastern Time", ar0: "٧‏/١٢‏/٢٠٢١, ١٢:٤٠ م التوقيت الشرقي لأمريكا الشمالية", ar1: "٢٣‏/١‏/١٩٨٩, ٢:٠٨ ص التوقيت الشرقي لأمريكا الشمالية" },
+        { timeZone: "America/New_York", timeZoneName: "short", en0: "12/7/2021, 12:40\u202fPM EST", en1: "1/23/1989, 2:08\u202fAM EST", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص غرينتش-٥" },
+        { timeZone: "America/New_York", timeZoneName: "long", en0: "12/7/2021, 12:40\u202fPM Eastern Standard Time", en1: "1/23/1989, 2:08\u202fAM Eastern Standard Time", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م التوقيت الرسمي الشرقي لأمريكا الشمالية", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص التوقيت الرسمي الشرقي لأمريكا الشمالية" },
+        { timeZone: "America/New_York", timeZoneName: "shortOffset", en0: "12/7/2021, 12:40\u202fPM GMT-5", en1: "1/23/1989, 2:08\u202fAM GMT-5", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص غرينتش-٥" },
+        { timeZone: "America/New_York", timeZoneName: "longOffset", en0: "12/7/2021, 12:40\u202fPM GMT-05:00", en1: "1/23/1989, 2:08\u202fAM GMT-05:00", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م غرينتش-٠٥:٠٠", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص غرينتش-٠٥:٠٠" },
+        { timeZone: "America/New_York", timeZoneName: "shortGeneric", en0: "12/7/2021, 12:40\u202fPM ET", en1: "1/23/1989, 2:08\u202fAM ET", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م غرينتش-٥", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص غرينتش-٥" },
+        { timeZone: "America/New_York", timeZoneName: "longGeneric", en0: "12/7/2021, 12:40\u202fPM Eastern Time", en1: "1/23/1989, 2:08\u202fAM Eastern Time", ar0: "٧‏/١٢‏/٢٠٢١، ١٢:٤٠ م التوقيت الشرقي لأمريكا الشمالية", ar1: "٢٣‏/١‏/١٩٨٩، ٢:٠٨ ص التوقيت الشرقي لأمريكا الشمالية" },
 
-        { timeZone: "Europe/London", timeZoneName: "short", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "Europe/London", timeZoneName: "long", en0: "12/7/2021, 5:40 PM Greenwich Mean Time", en1: "1/23/1989, 7:08 AM Greenwich Mean Time", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م توقيت غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص توقيت غرينتش" },
-        { timeZone: "Europe/London", timeZoneName: "shortOffset", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "Europe/London", timeZoneName: "longOffset", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "Europe/London", timeZoneName: "shortGeneric", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
-        { timeZone: "Europe/London", timeZoneName: "longGeneric", en0: "12/7/2021, 5:40 PM GMT", en1: "1/23/1989, 7:08 AM GMT", ar0: "٧‏/١٢‏/٢٠٢١, ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩, ٧:٠٨ ص غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "short", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "long", en0: "12/7/2021, 5:40\u202fPM Greenwich Mean Time", en1: "1/23/1989, 7:08\u202fAM Greenwich Mean Time", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م توقيت غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص توقيت غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "shortOffset", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "longOffset", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "shortGeneric", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
+        { timeZone: "Europe/London", timeZoneName: "longGeneric", en0: "12/7/2021, 5:40\u202fPM GMT", en1: "1/23/1989, 7:08\u202fAM GMT", ar0: "٧‏/١٢‏/٢٠٢١، ٥:٤٠ م غرينتش", ar1: "٢٣‏/١‏/١٩٨٩، ٧:٠٨ ص غرينتش" },
 
-        { timeZone: "America/Los_Angeles", timeZoneName: "short", en0: "12/7/2021, 9:40 AM PST", en1: "1/22/1989, 11:08 PM PST", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م غرينتش-٨" },
-        { timeZone: "America/Los_Angeles", timeZoneName: "long", en0: "12/7/2021, 9:40 AM Pacific Standard Time", en1: "1/22/1989, 11:08 PM Pacific Standard Time", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص توقيت المحيط الهادي الرسمي", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م توقيت المحيط الهادي الرسمي" },
-        { timeZone: "America/Los_Angeles", timeZoneName: "shortOffset", en0: "12/7/2021, 9:40 AM GMT-8", en1: "1/22/1989, 11:08 PM GMT-8", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م غرينتش-٨" },
-        { timeZone: "America/Los_Angeles", timeZoneName: "longOffset", en0: "12/7/2021, 9:40 AM GMT-08:00", en1: "1/22/1989, 11:08 PM GMT-08:00", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص غرينتش-٠٨:٠٠", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م غرينتش-٠٨:٠٠" },
-        { timeZone: "America/Los_Angeles", timeZoneName: "shortGeneric", en0: "12/7/2021, 9:40 AM PT", en1: "1/22/1989, 11:08 PM PT", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م غرينتش-٨" },
-        { timeZone: "America/Los_Angeles", timeZoneName: "longGeneric", en0: "12/7/2021, 9:40 AM Pacific Time", en1: "1/22/1989, 11:08 PM Pacific Time", ar0: "٧‏/١٢‏/٢٠٢١, ٩:٤٠ ص توقيت المحيط الهادي", ar1: "٢٢‏/١‏/١٩٨٩, ١١:٠٨ م توقيت المحيط الهادي" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "short", en0: "12/7/2021, 9:40\u202fAM PST", en1: "1/22/1989, 11:08\u202fPM PST", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م غرينتش-٨" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "long", en0: "12/7/2021, 9:40\u202fAM Pacific Standard Time", en1: "1/22/1989, 11:08\u202fPM Pacific Standard Time", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص توقيت المحيط الهادي الرسمي", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م توقيت المحيط الهادي الرسمي" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "shortOffset", en0: "12/7/2021, 9:40\u202fAM GMT-8", en1: "1/22/1989, 11:08\u202fPM GMT-8", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م غرينتش-٨" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "longOffset", en0: "12/7/2021, 9:40\u202fAM GMT-08:00", en1: "1/22/1989, 11:08\u202fPM GMT-08:00", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص غرينتش-٠٨:٠٠", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م غرينتش-٠٨:٠٠" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "shortGeneric", en0: "12/7/2021, 9:40\u202fAM PT", en1: "1/22/1989, 11:08\u202fPM PT", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص غرينتش-٨", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م غرينتش-٨" },
+        { timeZone: "America/Los_Angeles", timeZoneName: "longGeneric", en0: "12/7/2021, 9:40\u202fAM Pacific Time", en1: "1/22/1989, 11:08\u202fPM Pacific Time", ar0: "٧‏/١٢‏/٢٠٢١، ٩:٤٠ ص توقيت المحيط الهادي", ar1: "٢٢‏/١‏/١٩٨٩، ١١:٠٨ م توقيت المحيط الهادي" },
 
-        { timeZone: "Asia/Kathmandu", timeZoneName: "short", en0: "12/7/2021, 11:25 PM GMT+5:45", en1: "1/23/1989, 12:53 PM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م غرينتش+٥:٤٥" },
-        { timeZone: "Asia/Kathmandu", timeZoneName: "long", en0: "12/7/2021, 11:25 PM Nepal Time", en1: "1/23/1989, 12:53 PM Nepal Time", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م توقيت نيبال", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م توقيت نيبال" },
-        { timeZone: "Asia/Kathmandu", timeZoneName: "shortOffset", en0: "12/7/2021, 11:25 PM GMT+5:45", en1: "1/23/1989, 12:53 PM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م غرينتش+٥:٤٥" },
-        { timeZone: "Asia/Kathmandu", timeZoneName: "longOffset", en0: "12/7/2021, 11:25 PM GMT+05:45", en1: "1/23/1989, 12:53 PM GMT+05:45", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م غرينتش+٠٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م غرينتش+٠٥:٤٥" },
-        { timeZone: "Asia/Kathmandu", timeZoneName: "shortGeneric", en0: "12/7/2021, 11:25 PM GMT+5:45", en1: "1/23/1989, 12:53 PM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م غرينتش+٥:٤٥" },
-        { timeZone: "Asia/Kathmandu", timeZoneName: "longGeneric", en0: "12/7/2021, 11:25 PM GMT+05:45", en1: "1/23/1989, 12:53 PM GMT+05:45", ar0: "٧‏/١٢‏/٢٠٢١, ١١:٢٥ م غرينتش+٠٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩, ١٢:٥٣ م غرينتش+٠٥:٤٥" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "short", en0: "12/7/2021, 11:25\u202fPM GMT+5:45", en1: "1/23/1989, 12:53\u202fPM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م غرينتش+٥:٤٥" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "long", en0: "12/7/2021, 11:25\u202fPM Nepal Time", en1: "1/23/1989, 12:53\u202fPM Nepal Time", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م توقيت نيبال", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م توقيت نيبال" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "shortOffset", en0: "12/7/2021, 11:25\u202fPM GMT+5:45", en1: "1/23/1989, 12:53\u202fPM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م غرينتش+٥:٤٥" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "longOffset", en0: "12/7/2021, 11:25\u202fPM GMT+05:45", en1: "1/23/1989, 12:53\u202fPM GMT+05:45", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م غرينتش+٠٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م غرينتش+٠٥:٤٥" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "shortGeneric", en0: "12/7/2021, 11:25\u202fPM GMT+5:45", en1: "1/23/1989, 12:53\u202fPM GMT+5:45", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م غرينتش+٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م غرينتش+٥:٤٥" },
+        { timeZone: "Asia/Kathmandu", timeZoneName: "longGeneric", en0: "12/7/2021, 11:25\u202fPM GMT+05:45", en1: "1/23/1989, 12:53\u202fPM GMT+05:45", ar0: "٧‏/١٢‏/٢٠٢١، ١١:٢٥ م غرينتش+٠٥:٤٥", ar1: "٢٣‏/١‏/١٩٨٩، ١٢:٥٣ م غرينتش+٠٥:٤٥" },
     ];
 
     test("all", () => {

@@ -10,7 +10,6 @@
 #include <AK/Random.h>
 #include <LibCrypto/ASN1/DER.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
-#include <LibCrypto/Curves/X25519.h>
 #include <LibCrypto/NumberTheory/ModularFunctions.h>
 #include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
@@ -37,7 +36,7 @@ bool TLSv12::expand_key()
     pseudorandom_function(
         key_buffer,
         m_context.master_key,
-        (const u8*)"key expansion", 13,
+        (u8 const*)"key expansion", 13,
         ReadonlyBytes { m_context.remote_random, sizeof(m_context.remote_random) },
         ReadonlyBytes { m_context.local_random, sizeof(m_context.local_random) });
 
@@ -130,7 +129,7 @@ bool TLSv12::compute_master_secret_from_pre_master_secret(size_t length)
     pseudorandom_function(
         m_context.master_key,
         m_context.premaster_key,
-        (const u8*)"master secret", 13,
+        (u8 const*)"master secret", 13,
         ReadonlyBytes { m_context.local_random, sizeof(m_context.local_random) },
         ReadonlyBytes { m_context.remote_random, sizeof(m_context.remote_random) });
 
@@ -141,48 +140,16 @@ bool TLSv12::compute_master_secret_from_pre_master_secret(size_t length)
     }
 
     if constexpr (TLS_SSL_KEYLOG_DEBUG) {
-        auto file = MUST(Core::Stream::File::open("/home/anon/ssl_keylog", Core::Stream::OpenMode::Append | Core::Stream::OpenMode::Write));
-        VERIFY(file->write_or_error("CLIENT_RANDOM "sv.bytes()));
-        VERIFY(file->write_or_error(encode_hex({ m_context.local_random, 32 }).bytes()));
-        VERIFY(file->write_or_error(" "sv.bytes()));
-        VERIFY(file->write_or_error(encode_hex(m_context.master_key).bytes()));
-        VERIFY(file->write_or_error("\n"sv.bytes()));
+        auto file = MUST(Core::File::open("/home/anon/ssl_keylog"sv, Core::File::OpenMode::Append | Core::File::OpenMode::Write));
+        MUST(file->write_entire_buffer("CLIENT_RANDOM "sv.bytes()));
+        MUST(file->write_entire_buffer(encode_hex({ m_context.local_random, 32 }).bytes()));
+        MUST(file->write_entire_buffer(" "sv.bytes()));
+        MUST(file->write_entire_buffer(encode_hex(m_context.master_key).bytes()));
+        MUST(file->write_entire_buffer("\n"sv.bytes()));
     }
 
     expand_key();
     return true;
-}
-
-static bool wildcard_matches(StringView host, StringView subject)
-{
-    if (host.matches(subject))
-        return true;
-
-    if (subject.starts_with("*."))
-        return wildcard_matches(host, subject.substring_view(2));
-
-    return false;
-}
-
-Optional<size_t> TLSv12::verify_chain_and_get_matching_certificate(StringView host) const
-{
-    if (m_context.certificates.is_empty() || !m_context.verify_chain())
-        return {};
-
-    if (host.is_empty())
-        return 0;
-
-    for (size_t i = 0; i < m_context.certificates.size(); ++i) {
-        auto& cert = m_context.certificates[i];
-        if (wildcard_matches(host, cert.subject.subject))
-            return i;
-        for (auto& san : cert.SAN) {
-            if (wildcard_matches(host, san))
-                return i;
-        }
-    }
-
-    return {};
 }
 
 void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
@@ -212,14 +179,8 @@ void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
     }
     m_context.premaster_key = premaster_key_result.release_value();
 
-    const auto& certificate_option = verify_chain_and_get_matching_certificate(m_context.extensions.SNI); // if the SNI is empty, we'll make a special case and match *a* leaf certificate.
-    if (!certificate_option.has_value()) {
-        dbgln("certificate verification failed :(");
-        alert(AlertLevel::Critical, AlertDescription::BadCertificate);
-        return;
-    }
-
-    auto& certificate = m_context.certificates[certificate_option.value()];
+    // RFC5246 section 7.4.2: The sender's certificate MUST come first in the list.
+    auto& certificate = m_context.certificates.first();
     if constexpr (TLS_DEBUG) {
         dbgln("PreMaster secret");
         print_buffer(m_context.premaster_key);
@@ -279,7 +240,7 @@ void TLSv12::build_dhe_rsa_pre_master_secret(PacketBuilder& builder)
     dh.Ys.clear();
 
     if constexpr (TLS_DEBUG) {
-        dbgln("dh_random: {}", dh_random.to_base(16));
+        dbgln("dh_random: {}", dh_random.to_base_deprecated(16));
         dbgln("dh_Yc: {:hex-dump}", (ReadonlyBytes)dh_Yc_bytes);
         dbgln("premaster key: {:hex-dump}", (ReadonlyBytes)m_context.premaster_key);
     }
@@ -296,35 +257,42 @@ void TLSv12::build_dhe_rsa_pre_master_secret(PacketBuilder& builder)
 
 void TLSv12::build_ecdhe_rsa_pre_master_secret(PacketBuilder& builder)
 {
-    size_t const key_size = named_curve_key_size(NamedCurve::x25519) / 8;
-    u8 generator_point[key_size] { 9 };
-    ReadonlyBytes generator_point_bytes { generator_point, key_size };
-
     // Create a random private key
-    u8 private_key[key_size];
-    fill_with_random(private_key, key_size);
-    ReadonlyBytes private_key_bytes { private_key, key_size };
+    auto private_key_result = m_context.server_key_exchange_curve->generate_private_key();
+    if (private_key_result.is_error()) {
+        dbgln("Failed to build ECDHE_RSA premaster secret: not enough memory");
+        return;
+    }
+    auto private_key = private_key_result.release_value();
 
-    // Calculate the public key by multiplying the private key with 9
-    auto public_key_result = Crypto::Curves::X25519::compute_coordinate(private_key_bytes, generator_point_bytes);
+    // Calculate the public key from the private key
+    auto public_key_result = m_context.server_key_exchange_curve->generate_public_key(private_key);
     if (public_key_result.is_error()) {
         dbgln("Failed to build ECDHE_RSA premaster secret: not enough memory");
         return;
     }
     auto public_key = public_key_result.release_value();
 
-    // Calculate the pre master secret by multiplying the client private key and the server public key
+    // Calculate the shared point by multiplying the client private key and the server public key
     ReadonlyBytes server_public_key_bytes = m_context.server_diffie_hellman_params.p;
-    auto pre_master_secret_result = Crypto::Curves::X25519::compute_coordinate(private_key_bytes, server_public_key_bytes);
-    if (pre_master_secret_result.is_error()) {
+    auto shared_point_result = m_context.server_key_exchange_curve->compute_coordinate(private_key, server_public_key_bytes);
+    if (shared_point_result.is_error()) {
         dbgln("Failed to build ECDHE_RSA premaster secret: not enough memory");
         return;
     }
-    m_context.premaster_key = pre_master_secret_result.release_value();
+    auto shared_point = shared_point_result.release_value();
+
+    // Derive the premaster key from the shared point
+    auto premaster_key_result = m_context.server_key_exchange_curve->derive_premaster_key(shared_point);
+    if (premaster_key_result.is_error()) {
+        dbgln("Failed to build ECDHE_RSA premaster secret: not enough memory");
+        return;
+    }
+    m_context.premaster_key = premaster_key_result.release_value();
 
     if constexpr (TLS_DEBUG) {
         dbgln("Build ECDHE_RSA pre master secret");
-        dbgln("client private key: {:hex-dump}", private_key_bytes);
+        dbgln("client private key: {:hex-dump}", (ReadonlyBytes)private_key);
         dbgln("client public key:  {:hex-dump}", (ReadonlyBytes)public_key);
         dbgln("premaster key:      {:hex-dump}", (ReadonlyBytes)m_context.premaster_key);
     }
@@ -334,8 +302,8 @@ void TLSv12::build_ecdhe_rsa_pre_master_secret(PacketBuilder& builder)
         return;
     }
 
-    builder.append_u24(key_size + 1);
-    builder.append((u8)key_size);
+    builder.append_u24(public_key.size() + 1);
+    builder.append((u8)public_key.size());
     builder.append(public_key);
 }
 
@@ -394,6 +362,13 @@ ByteBuffer TLSv12::build_certificate()
 
 ByteBuffer TLSv12::build_client_key_exchange()
 {
+    bool chain_verified = m_context.verify_chain(m_context.extensions.SNI);
+    if (!chain_verified) {
+        dbgln("certificate verification failed :(");
+        alert(AlertLevel::Critical, AlertDescription::BadCertificate);
+        return {};
+    }
+
     PacketBuilder builder { MessageType::Handshake, m_context.options.version };
     builder.append((u8)HandshakeType::ClientKeyExchange);
 

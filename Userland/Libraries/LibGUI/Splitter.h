@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,12 +15,12 @@ class Splitter : public Widget {
     C_OBJECT(Splitter);
 
 public:
-    virtual ~Splitter() override;
+    enum class OpportunisticResizee {
+        First,
+        Second
+    };
 
-    int first_resizee_minimum_size() { return m_first_resizee_minimum_size; }
-    void set_first_resizee_minimum_size(int minimum_size) { m_first_resizee_minimum_size = minimum_size; }
-    int second_resizee_minimum_size() { return m_second_resizee_minimum_size; }
-    void set_second_resizee_minimum_size(int minimum_size) { m_second_resizee_minimum_size = minimum_size; }
+    virtual ~Splitter() override = default;
 
 protected:
     explicit Splitter(Gfx::Orientation);
@@ -32,6 +33,10 @@ protected:
     virtual void leave_event(Core::Event&) override;
 
     virtual void did_layout() override;
+    virtual void custom_layout() override;
+
+    OpportunisticResizee opportunisitic_resizee() const { return m_opportunistic_resizee; }
+    void set_opportunisitic_resizee(OpportunisticResizee resizee) { m_opportunistic_resizee = resizee; }
 
 private:
     void override_cursor(bool do_override);
@@ -45,8 +50,10 @@ private:
     WeakPtr<Widget> m_second_resizee;
     Gfx::IntSize m_first_resizee_start_size;
     Gfx::IntSize m_second_resizee_start_size;
-    int m_first_resizee_minimum_size { 0 };
-    int m_second_resizee_minimum_size { 0 };
+    OpportunisticResizee m_opportunistic_resizee { OpportunisticResizee::Second };
+    size_t m_last_child_count { 0 };
+    int m_first_resizee_max_size { 0 };
+    int m_second_resizee_max_size { 0 };
 
     void recompute_grabbables();
 
@@ -63,7 +70,7 @@ private:
         WeakPtr<Widget> second_widget;
     };
 
-    Grabbable* grabbable_at(Gfx::IntPoint const&);
+    Grabbable* grabbable_at(Gfx::IntPoint);
     void set_hovered_grabbable(Grabbable*);
 
     Vector<Grabbable> m_grabbables;
@@ -73,7 +80,7 @@ private:
 class VerticalSplitter final : public Splitter {
     C_OBJECT(VerticalSplitter)
 public:
-    virtual ~VerticalSplitter() override { }
+    virtual ~VerticalSplitter() override = default;
 
 private:
     VerticalSplitter()
@@ -85,7 +92,7 @@ private:
 class HorizontalSplitter final : public Splitter {
     C_OBJECT(HorizontalSplitter)
 public:
-    virtual ~HorizontalSplitter() override { }
+    virtual ~HorizontalSplitter() override = default;
 
 private:
     HorizontalSplitter()

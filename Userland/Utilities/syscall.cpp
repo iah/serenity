@@ -9,6 +9,7 @@
 #include <AK/Debug.h>
 #include <AK/Iterator.h>
 #include <AK/Vector.h>
+#include <Kernel/API/SyscallString.h>
 #include <LibCore/ArgsParser.h>
 #include <LibMain/Main.h>
 #include <errno_codes.h>
@@ -23,7 +24,7 @@
 FlatPtr arg[SC_NARG];
 char outbuf[BUFSIZ];
 
-using Arguments = Vector<const char*>;
+using Arguments = Vector<DeprecatedString>;
 using ArgIter = Arguments::Iterator;
 
 static FlatPtr parse_from(ArgIter&);
@@ -40,7 +41,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     bool output_buffer = false;
     bool list_syscalls = false;
-    Vector<const char*> syscall_arguments;
+    Arguments syscall_arguments;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help(
@@ -68,7 +69,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     if (syscall_arguments.is_empty()) {
-        args_parser.print_usage(stderr, arguments.argv[0]);
+        args_parser.print_usage(stderr, arguments.strings[0]);
         exit(1);
     }
 
@@ -122,12 +123,12 @@ static FlatPtr as_buf(Vector<FlatPtr> params_vec)
 
     if constexpr (SYSCALL_1_DEBUG) {
         StringBuilder builder;
-        builder.append("Prepared [");
+        builder.append("Prepared ["sv);
         for (size_t i = 0; i < params_vec.size(); ++i) {
             builder.appendff(" {:p}", params_vec[i]);
         }
         builder.appendff(" ] at {:p}", (FlatPtr)buf);
-        dbgln("{}", builder.to_string());
+        dbgln("{}", builder.to_deprecated_string());
     }
 
     // Leak the buffer here. We need to keep it until the special syscall happens,
@@ -139,7 +140,7 @@ static FlatPtr parse_parameter_buffer(ArgIter& iter)
 {
     Vector<FlatPtr> params_vec;
     while (!iter.is_end()) {
-        if (strcmp(*iter, "]") == 0) {
+        if (*iter == "]"sv) {
             ++iter;
             return as_buf(params_vec);
         }
@@ -154,36 +155,34 @@ static FlatPtr parse_parameter_buffer(ArgIter& iter)
 
 static FlatPtr parse_from(ArgIter& iter)
 {
-    const char* this_arg = *iter;
+    auto const& this_arg_string = *iter;
+    auto* this_arg = this_arg_string.characters();
     ++iter;
 
     // Is it a forced literal?
     if (this_arg[0] == ',') {
         this_arg += 1;
-        dbgln_if(SYSCALL_1_DEBUG, "Using (forced) string >>{}<< at {:p}", this_arg, (FlatPtr)this_arg);
+        dbgln_if(SYSCALL_1_DEBUG, "Using (forced) string >>{}<< at {:p}", this_arg_string, (FlatPtr)this_arg);
         return (FlatPtr)this_arg;
     }
 
     // Is it the output buffer?
-    if (strcmp(this_arg, "buf") == 0)
+    if (this_arg_string == "buf"sv)
         return (FlatPtr)outbuf;
 
     // Is it a parameter buffer?
-    if (strcmp(this_arg, "[") == 0)
+    if (this_arg_string == "["sv)
         return parse_parameter_buffer(iter);
 
     // Is it a number?
-    char* endptr = nullptr;
-    FlatPtr l = strtoul(this_arg, &endptr, 0);
-    if (*endptr == 0) {
-        return l;
-    }
+    if (auto l = this_arg_string.to_uint(); l.has_value())
+        return *l;
 
     // Then it must be a string:
-    if (strcmp(this_arg, "]") == 0)
+    if (this_arg_string == "]"sv)
         fprintf(stderr, "Warning: Treating unmatched ']' as literal string\n");
 
-    dbgln_if(SYSCALL_1_DEBUG, "Using (detected) string >>{}<< at {:p}", this_arg, (FlatPtr)this_arg);
+    dbgln_if(SYSCALL_1_DEBUG, "Using (detected) string >>{}<< at {:p}", this_arg_string, (FlatPtr)this_arg);
 
     return (FlatPtr)this_arg;
 }

@@ -77,7 +77,7 @@ public:
     }
 
     MatchResult evaluate() const { return MatchResult::Unknown; }
-    StringView to_string() const { return m_serialized_contents.view(); }
+    String const& to_string() const { return m_serialized_contents; }
 
 private:
     String m_serialized_contents;

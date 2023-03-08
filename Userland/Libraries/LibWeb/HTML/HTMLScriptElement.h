@@ -13,21 +13,30 @@
 
 namespace Web::HTML {
 
-class HTMLScriptElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLScriptElementWrapper;
+class HTMLScriptElement final
+    : public HTMLElement
+    , public ResourceClient {
+    WEB_PLATFORM_OBJECT(HTMLScriptElement, HTMLElement);
 
-    HTMLScriptElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLScriptElement() override;
 
-    bool is_non_blocking() const { return m_non_blocking; }
+    bool is_force_async() const { return m_force_async; }
     bool is_ready_to_be_parser_executed() const { return m_ready_to_be_parser_executed; }
     bool failed_to_load() const { return m_failed_to_load; }
 
-    void set_parser_document(Badge<HTMLParser>, DOM::Document&);
-    void set_non_blocking(Badge<HTMLParser>, bool);
-    void set_already_started(Badge<HTMLParser>, bool b) { m_already_started = b; }
-    void prepare_script(Badge<HTMLParser>) { prepare_script(); }
+    template<OneOf<XMLDocumentBuilder, HTMLParser> T>
+    void set_parser_document(Badge<T>, DOM::Document& document) { m_parser_document = &document; }
+
+    template<OneOf<XMLDocumentBuilder, HTMLParser> T>
+    void set_force_async(Badge<T>, bool b) { m_force_async = b; }
+
+    template<OneOf<XMLDocumentBuilder, HTMLParser> T>
+    void set_already_started(Badge<T>, bool b) { m_already_started = b; }
+
+    template<OneOf<XMLDocumentBuilder, HTMLParser> T>
+    void prepare_script(Badge<T>) { prepare_script(); }
+
     void execute_script();
 
     bool is_parser_inserted() const { return !!m_parser_document; }
@@ -35,37 +44,79 @@ public:
     virtual void inserted() override;
 
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-supports
-    static bool supports(String const& type)
+    static bool supports(JS::VM&, DeprecatedString const& type)
     {
         return type.is_one_of("classic", "module");
     }
 
-private:
-    void prepare_script();
-    void script_became_ready();
-    void when_the_script_is_ready(Function<void()>);
+    void set_source_line_number(Badge<HTMLParser>, size_t source_line_number) { m_source_line_number = source_line_number; }
 
-    WeakPtr<DOM::Document> m_parser_document;
-    WeakPtr<DOM::Document> m_preparation_time_document;
-    bool m_non_blocking { false };
+public:
+    HTMLScriptElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual void resource_did_load() override;
+    virtual void resource_did_fail() override;
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+    void prepare_script();
+
+    void begin_delaying_document_load_event(DOM::Document&);
+
+    struct ResultState {
+        struct Uninitialized { };
+        struct Null { };
+    };
+
+    using Result = Variant<ResultState::Uninitialized, ResultState::Null, JS::NonnullGCPtr<HTML::Script>>;
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#mark-as-ready
+    void mark_as_ready(Result);
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#parser-document
+    JS::GCPtr<DOM::Document> m_parser_document;
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#preparation-time-document
+    JS::GCPtr<DOM::Document> m_preparation_time_document;
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-force-async
+    bool m_force_async { false };
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#already-started
     bool m_already_started { false };
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#concept-script-external
     bool m_from_an_external_file { false };
+
     bool m_script_ready { false };
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#ready-to-be-parser-executed
     bool m_ready_to_be_parser_executed { false };
+
     bool m_failed_to_load { false };
 
     enum class ScriptType {
+        Null,
         Classic,
-        Module
+        Module,
+        ImportMap,
     };
 
-    ScriptType m_script_type { ScriptType::Classic };
+    // https://html.spec.whatwg.org/multipage/scripting.html#concept-script-type
+    ScriptType m_script_type { ScriptType::Null };
 
-    Function<void()> m_script_ready_callback;
+    // https://html.spec.whatwg.org/multipage/scripting.html#steps-to-run-when-the-result-is-ready
+    Function<void()> m_steps_to_run_when_the_result_is_ready;
 
-    RefPtr<Script> m_script;
+    // https://html.spec.whatwg.org/multipage/scripting.html#concept-script-result
+    Result m_result { ResultState::Uninitialized {} };
 
+    // https://html.spec.whatwg.org/multipage/scripting.html#concept-script-delay-load
     Optional<DOM::DocumentLoadEventDelayer> m_document_load_event_delayer;
+
+    size_t m_source_line_number { 1 };
 };
 
 }

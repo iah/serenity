@@ -1,5 +1,8 @@
+#import <DOM/EventHandler.idl>
 #import <HTML/HTMLElement.idl>
 
+// https://html.spec.whatwg.org/multipage/sections.html#htmlbodyelement
+[Exposed=Window]
 interface HTMLBodyElement : HTMLElement {
 
     [LegacyNullToEmptyString, Reflect] attribute DOMString text;
@@ -10,3 +13,5 @@ interface HTMLBodyElement : HTMLElement {
     [Reflect] attribute DOMString background;
 
 };
+
+HTMLBodyElement includes WindowEventHandlers;

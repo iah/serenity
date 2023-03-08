@@ -7,7 +7,10 @@
 
 #pragma once
 
+#include <AK/Error.h>
 #include <AK/RefPtr.h>
+#include <AK/String.h>
+#include <LibJS/Heap/Handle.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/Forward.h>
 
@@ -15,13 +18,13 @@ namespace Web::DOM {
 
 class Position {
 public:
-    Position() { }
+    Position() = default;
     Position(Node&, unsigned offset);
 
-    bool is_valid() const { return m_node; }
+    bool is_valid() const { return m_node.ptr(); }
 
-    Node* node() { return m_node; }
-    const Node* node() const { return m_node; }
+    Node* node() { return m_node.cell(); }
+    Node const* node() const { return m_node.cell(); }
 
     unsigned offset() const { return m_offset; }
     bool offset_is_at_end_of_node() const;
@@ -29,32 +32,24 @@ public:
     bool increment_offset();
     bool decrement_offset();
 
-    bool operator==(const Position& other) const
+    bool operator==(Position const& other) const
     {
-        return m_node == other.m_node && m_offset == other.m_offset;
+        return m_node.ptr() == other.m_node.ptr() && m_offset == other.m_offset;
     }
 
-    bool operator!=(const Position& other) const
-    {
-        return !(*this == other);
-    }
-
-    String to_string() const;
+    ErrorOr<String> to_string() const;
 
 private:
-    RefPtr<Node> m_node;
+    JS::Handle<Node> m_node;
     unsigned m_offset { 0 };
 };
 
 }
 
-namespace AK {
 template<>
-struct Formatter<Web::DOM::Position> : Formatter<StringView> {
+struct AK::Formatter<Web::DOM::Position> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::DOM::Position const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_string());
+        return Formatter<StringView>::format(builder, TRY(value.to_string()));
     }
 };
-
-}

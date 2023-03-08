@@ -28,9 +28,9 @@ bool read_items(FILE* fp, char entry_separator, Function<Decision(StringView)>);
 
 class ParsedInitialArguments {
 public:
-    ParsedInitialArguments(Vector<const char*>&, StringView placeholder);
+    ParsedInitialArguments(Vector<DeprecatedString>&, StringView placeholder);
 
-    void for_each_joined_argument(StringView, Function<void(const String&)>) const;
+    void for_each_joined_argument(StringView, Function<void(DeprecatedString const&)>) const;
 
     size_t size() const { return m_all_parts.size(); }
 
@@ -40,14 +40,14 @@ private:
 
 ErrorOr<int> serenity_main(Main::Arguments main_arguments)
 {
-    TRY(Core::System::pledge("stdio rpath proc exec", nullptr));
+    TRY(Core::System::pledge("stdio rpath proc exec"));
 
-    const char* placeholder = nullptr;
+    StringView placeholder;
     bool split_with_nulls = false;
-    const char* specified_delimiter = "\n";
-    Vector<const char*> arguments;
+    DeprecatedString specified_delimiter = "\n"sv;
+    Vector<DeprecatedString> arguments;
     bool verbose = false;
-    const char* file_to_read = "-";
+    DeprecatedString file_to_read = "-"sv;
     int max_lines_for_one_command = 0;
     int max_bytes_for_one_command = ARG_MAX;
 
@@ -67,29 +67,27 @@ ErrorOr<int> serenity_main(Main::Arguments main_arguments)
     size_t max_bytes = min(ARG_MAX, max_bytes_for_one_command);
     size_t max_lines = max(max_lines_for_one_command, 0);
 
-    if (!split_with_nulls && strlen(specified_delimiter) > 1) {
+    if (!split_with_nulls && specified_delimiter.length() > 1) {
         warnln("xargs: the delimiter must be a single byte");
         return 1;
     }
 
-    char entry_separator = split_with_nulls ? '\0' : *specified_delimiter;
+    char entry_separator = split_with_nulls ? '\0' : specified_delimiter[0];
 
-    StringView placeholder_view { placeholder };
-
-    if (!placeholder_view.is_empty())
+    if (!placeholder.is_empty())
         max_lines = 1;
 
     if (arguments.is_empty())
         arguments.append("echo");
 
-    ParsedInitialArguments initial_arguments(arguments, placeholder_view);
+    ParsedInitialArguments initial_arguments(arguments, placeholder);
 
     FILE* fp = stdin;
     bool is_stdin = true;
 
     if ("-"sv != file_to_read) {
         // A file was specified, try to open it.
-        fp = fopen(file_to_read, "re");
+        fp = fopen(file_to_read.characters(), "re");
         if (!fp) {
             perror("fopen");
             return 1;
@@ -103,7 +101,7 @@ ErrorOr<int> serenity_main(Main::Arguments main_arguments)
     int devnull_fd = 0;
 
     if (is_stdin) {
-        devnull_fd = TRY(Core::System::open("/dev/null", O_RDONLY | O_CLOEXEC));
+        devnull_fd = TRY(Core::System::open("/dev/null"sv, O_RDONLY | O_CLOEXEC));
     }
 
     size_t total_command_length = 0;
@@ -123,7 +121,7 @@ ErrorOr<int> serenity_main(Main::Arguments main_arguments)
         if (items_used_for_this_command == 0) {
             child_argv.ensure_capacity(initial_arguments.size());
 
-            initial_arguments.for_each_joined_argument(item, [&](const String& string) {
+            initial_arguments.for_each_joined_argument(item, [&](const DeprecatedString& string) {
                 total_command_length += string.length();
                 child_argv.append(strdup(string.characters()));
             });
@@ -180,7 +178,7 @@ bool read_items(FILE* fp, char entry_separator, Function<Decision(StringView)> c
 
         Decision decision;
         do {
-            decision = callback(item);
+            decision = callback({ item, strlen(item) });
             if (decision == Stop) {
                 free(item);
                 return true;
@@ -199,8 +197,8 @@ bool run_command(Vector<char*>&& child_argv, bool verbose, bool is_stdin, int de
 
     if (verbose) {
         StringBuilder builder;
-        builder.join(" ", child_argv);
-        warnln("xargs: {}", builder.to_string());
+        builder.join(' ', child_argv);
+        warnln("xargs: {}", builder.to_deprecated_string());
     }
 
     auto pid = fork();
@@ -238,18 +236,16 @@ bool run_command(Vector<char*>&& child_argv, bool verbose, bool is_stdin, int de
     return true;
 }
 
-ParsedInitialArguments::ParsedInitialArguments(Vector<const char*>& arguments, StringView placeholder)
+ParsedInitialArguments::ParsedInitialArguments(Vector<DeprecatedString>& arguments, StringView placeholder)
 {
     m_all_parts.ensure_capacity(arguments.size());
     bool some_argument_has_placeholder = false;
 
-    for (auto argument : arguments) {
-        StringView arg { argument };
-
+    for (auto arg : arguments) {
         if (placeholder.is_empty()) {
             m_all_parts.append({ arg });
         } else {
-            auto parts = arg.split_view(placeholder, true);
+            auto parts = arg.view().split_view(placeholder, SplitBehavior::KeepEmpty);
             some_argument_has_placeholder = some_argument_has_placeholder || parts.size() > 1;
             m_all_parts.append(move(parts));
         }
@@ -258,18 +254,18 @@ ParsedInitialArguments::ParsedInitialArguments(Vector<const char*>& arguments, S
     // Append an implicit placeholder at the end if no argument has any placeholders.
     if (!some_argument_has_placeholder) {
         Vector<StringView> parts;
-        parts.append("");
-        parts.append("");
+        parts.append(""sv);
+        parts.append(""sv);
         m_all_parts.append(move(parts));
     }
 }
 
-void ParsedInitialArguments::for_each_joined_argument(StringView separator, Function<void(const String&)> callback) const
+void ParsedInitialArguments::for_each_joined_argument(StringView separator, Function<void(DeprecatedString const&)> callback) const
 {
     StringBuilder builder;
     for (auto& parts : m_all_parts) {
         builder.clear();
         builder.join(separator, parts);
-        callback(builder.to_string());
+        callback(builder.to_deprecated_string());
     }
 }

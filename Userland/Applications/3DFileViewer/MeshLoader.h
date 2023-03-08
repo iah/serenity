@@ -7,8 +7,8 @@
 
 #pragma once
 
-#include <AK/String.h>
-#include <LibCore/File.h>
+#include <AK/DeprecatedString.h>
+#include <LibCore/Forward.h>
 
 #include "Common.h"
 #include "Mesh.h"
@@ -18,5 +18,5 @@ public:
     MeshLoader() = default;
     virtual ~MeshLoader() = default;
 
-    virtual RefPtr<Mesh> load(Core::File& file) = 0;
+    virtual ErrorOr<NonnullRefPtr<Mesh>> load(String const& filename, NonnullOwnPtr<Core::File> file) = 0;
 };

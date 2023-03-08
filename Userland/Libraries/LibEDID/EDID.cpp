@@ -4,13 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Concepts.h>
 #include <AK/Function.h>
 #include <AK/QuickSort.h>
+#include <AK/Try.h>
 #include <LibEDID/EDID.h>
 
-#ifndef KERNEL
+#ifdef KERNEL
+#    include <Kernel/StdLib.h>
+#else
 #    include <AK/ScopeGuard.h>
-#    include <Kernel/API/FB.h>
+#    include <Kernel/API/Graphics.h>
 #    include <fcntl.h>
 #    include <unistd.h>
 
@@ -23,160 +27,11 @@ namespace EDID {
 
 // clang doesn't like passing around pointers to members in packed structures,
 // even though we're only using them for arithmetic purposes
-#ifdef __clang__
+#if defined(AK_COMPILER_CLANG)
 #    pragma clang diagnostic ignored "-Waddress-of-packed-member"
 #endif
 
-namespace Definitions {
-
-struct [[gnu::packed]] StandardTimings {
-    u8 horizontal_8_pixels;
-    u8 ratio_and_refresh_rate;
-};
-
-struct [[gnu::packed]] DetailedTiming {
-    u16 pixel_clock;
-    u8 horizontal_addressable_pixels_low;
-    u8 horizontal_blanking_pixels_low;
-    u8 horizontal_addressable_and_blanking_pixels_high;
-    u8 vertical_addressable_lines_low;
-    u8 vertical_blanking_lines_low;
-    u8 vertical_addressable_and_blanking_lines_high;
-    u8 horizontal_front_porch_pixels_low;
-    u8 horizontal_sync_pulse_width_pixels_low;
-    u8 vertical_front_porch_and_sync_pulse_width_lines_low;
-    u8 horizontal_and_vertical_front_porch_sync_pulse_width_high;
-    u8 horizontal_addressable_image_size_mm_low;
-    u8 vertical_addressable_image_size_mm_low;
-    u8 horizontal_vertical_addressable_image_size_mm_high;
-    u8 right_or_left_horizontal_border_pixels;
-    u8 top_or_bottom_vertical_border_lines;
-    u8 features;
-};
-
-enum class DisplayDescriptorTag : u8 {
-    ManufacturerSpecified_First = 0x0,
-    ManufacturerSpecified_Last = 0xf,
-    Dummy = 0x10,
-    EstablishedTimings3 = 0xf7,
-    CVTTimingCodes = 0xf8,
-    DisplayColorManagementData = 0xf9,
-    StandardTimingIdentifications = 0xfa,
-    ColorPointData = 0xfb,
-    DisplayProductName = 0xfc,
-    DisplayRangeLimits = 0xfd,
-    AlphanumericDataString = 0xfe,
-    DisplayProductSerialNumber = 0xff
-};
-
-struct [[gnu::packed]] DisplayDescriptor {
-    u16 zero;
-    u8 reserved1;
-    u8 tag;
-    u8 reserved2;
-    union {
-        struct [[gnu::packed]] {
-            u8 ascii_name[13];
-        } display_product_name;
-        struct [[gnu::packed]] {
-            u8 ascii_str[13];
-        } display_product_serial_number;
-        struct [[gnu::packed]] {
-            u8 revision;
-            u8 dmt_bits[6];
-            u8 reserved[6];
-        } established_timings3;
-        struct [[gnu::packed]] {
-            u8 version;
-            u8 cvt[4][3];
-        } coordinated_video_timings;
-    };
-};
-
-static_assert(sizeof(DetailedTiming) == sizeof(DisplayDescriptor));
-
-struct [[gnu::packed]] EDID {
-    u64 header;
-    struct [[gnu::packed]] {
-        u16 manufacturer_id;
-        u16 product_code;
-        u32 serial_number;
-        u8 week_of_manufacture;
-        u8 year_of_manufacture;
-    } vendor;
-    struct [[gnu::packed]] {
-        u8 version;
-        u8 revision;
-    } version;
-    struct [[gnu::packed]] {
-        u8 video_input_definition;
-        u8 horizontal_size_or_aspect_ratio;
-        u8 vertical_size_or_aspect_ratio;
-        u8 display_transfer_characteristics;
-        u8 feature_support;
-    } basic_display_parameters;
-    struct [[gnu::packed]] {
-        u8 red_green_low_order_bits;
-        u8 blue_white_low_order_bits;
-        u8 red_x_high_order_bits;
-        u8 red_y_high_order_bits;
-        u8 green_x_high_order_bits;
-        u8 green_y_high_order_bits;
-        u8 blue_x_high_order_bits;
-        u8 blue_y_high_order_bits;
-        u8 white_x_high_order_bits;
-        u8 white_y_high_order_bits;
-    } color_characteristics;
-    struct [[gnu::packed]] {
-        u8 timings_1;
-        u8 timings_2;
-        u8 manufacturer_reserved;
-    } established_timings;
-    StandardTimings standard_timings[8];
-    union {
-        DetailedTiming detailed_timing;
-        DisplayDescriptor display_descriptor;
-    } detailed_timing_or_display_descriptors[4];
-    u8 extension_block_count;
-    u8 checksum;
-};
-
-enum class ExtensionBlockTag : u8 {
-    CEA_861 = 0x2,
-    VideoTimingBlock = 0x10,
-    DisplayInformation = 0x40,
-    LocalizedString = 0x50,
-    DigitalPacketVideoLink = 0x60,
-    ExtensionBlockMap = 0xf0,
-    ManufacturerDefined = 0xff
-};
-
-struct [[gnu::packed]] ExtensionBlock {
-    u8 tag;
-    union {
-        struct [[gnu::packed]] {
-            u8 block_tags[126];
-        } map;
-        struct [[gnu::packed]] {
-            u8 revision;
-            u8 bytes[125];
-        } block;
-        struct [[gnu::packed]] {
-            u8 revision;
-            u8 dtd_start_offset;
-            u8 flags;
-            union {
-                u8 bytes[123];
-            };
-        } cea861extension;
-    };
-    u8 checksum;
-};
-
-}
-
 static_assert(sizeof(Definitions::EDID) == Parser::BufferSize);
-static_assert(sizeof(Definitions::ExtensionBlock) == 128);
 
 class CEA861ExtensionBlock final {
     friend class Parser;
@@ -207,7 +62,7 @@ public:
 
                 auto* vic_details = VIC::find_details_by_vic_id(vic_id);
                 if (!vic_details)
-                    return Error::from_string_literal("CEA 861 extension block has invalid short video descriptor"sv);
+                    return Error::from_string_view_or_print_error_and_return_errno("CEA 861 extension block has invalid short video descriptor"sv, EINVAL);
 
                 IterationDecision decision = callback(is_native, *vic_details);
                 if (decision != IterationDecision::Continue)
@@ -226,9 +81,8 @@ public:
         }
 
         if (dtd_start > offsetof(Definitions::ExtensionBlock, checksum) - sizeof(Definitions::DetailedTiming))
-            return Error::from_string_literal("CEA 861 extension block has invalid DTD list"sv);
+            return Error::from_string_view_or_print_error_and_return_errno("CEA 861 extension block has invalid DTD list"sv, EINVAL);
 
-        size_t dtd_index = 0;
         for (size_t offset = dtd_start; offset <= offsetof(Definitions::ExtensionBlock, checksum) - sizeof(Definitions::DetailedTiming); offset += sizeof(Definitions::DetailedTiming)) {
             auto& dtd = *(Definitions::DetailedTiming const*)((u8 const*)m_block + offset);
             if (m_edid.read_host(&dtd.pixel_clock) == 0)
@@ -237,8 +91,6 @@ public:
             IterationDecision decision = callback(Parser::DetailedTiming(m_edid, &dtd));
             if (decision != IterationDecision::Continue)
                 return decision;
-
-            dtd_index++;
         }
         return IterationDecision::Continue;
     }
@@ -257,7 +109,7 @@ private:
             return IterationDecision::Continue;
 
         if (dtd_start > offsetof(Definitions::ExtensionBlock, checksum))
-            return Error::from_string_literal("CEA 861 extension block has invalid DTD start offset"sv);
+            return Error::from_string_view_or_print_error_and_return_errno("CEA 861 extension block has invalid DTD start offset"sv, EINVAL);
 
         auto* data_block_header = &m_block->cea861extension.bytes[0];
         auto* data_block_end = (u8 const*)m_block + dtd_start;
@@ -266,7 +118,7 @@ private:
             size_t payload_size = header_byte & 0x1f;
             auto tag = (DataBlockTag)((header_byte >> 5) & 0x7);
             if (tag == DataBlockTag::Extended && payload_size == 0)
-                return Error::from_string_literal("CEA 861 extension block has invalid extended data block size"sv);
+                return Error::from_string_view_or_print_error_and_return_errno("CEA 861 extension block has invalid extended data block size"sv, EINVAL);
 
             auto decision = TRY(callback(tag, m_edid.m_bytes.slice(data_block_header - m_edid.m_bytes.data() + 1, payload_size)));
             if (decision != IterationDecision::Continue)
@@ -284,7 +136,7 @@ private:
             return IterationDecision::Continue;
 
         if (dtd_start > offsetof(Definitions::ExtensionBlock, checksum) - sizeof(Definitions::DetailedTiming))
-            return Error::from_string_literal("CEA 861 extension block has invalid DTD list"sv);
+            return Error::from_string_view_or_print_error_and_return_errno("CEA 861 extension block has invalid DTD list"sv, EINVAL);
 
         for (size_t offset = dtd_start; offset <= offsetof(Definitions::ExtensionBlock, checksum) - sizeof(Definitions::DisplayDescriptor); offset += sizeof(Definitions::DisplayDescriptor)) {
             auto& dd = *(Definitions::DisplayDescriptor const*)((u8 const*)m_block + offset);
@@ -317,17 +169,17 @@ T Parser::read_host(T const* field) const
     return value;
 }
 
-template<typename T>
-requires(IsIntegral<T> && sizeof(T) > 1) T Parser::read_le(T const* field)
-    const
+template<Integral T>
+requires(sizeof(T) > 1)
+T Parser::read_le(T const* field) const
 {
     static_assert(sizeof(T) > 1);
     return AK::convert_between_host_and_little_endian(read_host(field));
 }
 
-template<typename T>
-requires(IsIntegral<T> && sizeof(T) > 1) T Parser::read_be(T const* field)
-    const
+template<Integral T>
+requires(sizeof(T) > 1)
+T Parser::read_be(T const* field) const
 {
     static_assert(sizeof(T) > 1);
     return AK::convert_between_host_and_big_endian(read_host(field));
@@ -336,34 +188,31 @@ requires(IsIntegral<T> && sizeof(T) > 1) T Parser::read_be(T const* field)
 ErrorOr<Parser> Parser::from_bytes(ReadonlyBytes bytes)
 {
     Parser edid(bytes);
-    if (auto parse_result = edid.parse(); parse_result.is_error())
-        return parse_result.error();
+    TRY(edid.parse());
     return edid;
 }
 
 ErrorOr<Parser> Parser::from_bytes(ByteBuffer&& bytes)
 {
     Parser edid(move(bytes));
-    if (auto parse_result = edid.parse(); parse_result.is_error())
-        return parse_result.error();
+    TRY(edid.parse());
     return edid;
 }
 
 #ifndef KERNEL
-ErrorOr<Parser> Parser::from_framebuffer_device(int framebuffer_fd, size_t head)
+ErrorOr<Parser> Parser::from_display_connector_device(int display_connector_fd)
 {
     RawBytes edid_bytes;
-    FBHeadEDID edid_info {};
-    edid_info.head_index = head;
+    GraphicsHeadEDID edid_info {};
     edid_info.bytes = &edid_bytes[0];
     edid_info.bytes_size = sizeof(edid_bytes);
-    if (fb_get_head_edid(framebuffer_fd, &edid_info) < 0) {
+    if (graphics_connector_get_head_edid(display_connector_fd, &edid_info) < 0) {
         int err = errno;
         if (err == EOVERFLOW) {
             // We need a bigger buffer with at least bytes_size bytes
             auto edid_byte_buffer = TRY(ByteBuffer::create_zeroed(edid_info.bytes_size));
             edid_info.bytes = edid_byte_buffer.data();
-            if (fb_get_head_edid(framebuffer_fd, &edid_info) < 0) {
+            if (graphics_connector_get_head_edid(display_connector_fd, &edid_info) < 0) {
                 err = errno;
                 return Error::from_errno(err);
             }
@@ -378,17 +227,17 @@ ErrorOr<Parser> Parser::from_framebuffer_device(int framebuffer_fd, size_t head)
     return from_bytes(move(edid_byte_buffer));
 }
 
-ErrorOr<Parser> Parser::from_framebuffer_device(String const& framebuffer_device, size_t head)
+ErrorOr<Parser> Parser::from_display_connector_device(DeprecatedString const& display_connector_device)
 {
-    int framebuffer_fd = open(framebuffer_device.characters(), O_RDWR | O_CLOEXEC);
-    if (framebuffer_fd < 0) {
+    int display_connector_fd = open(display_connector_device.characters(), O_RDWR | O_CLOEXEC);
+    if (display_connector_fd < 0) {
         int err = errno;
         return Error::from_errno(err);
     }
     ScopeGuard fd_guard([&] {
-        close(framebuffer_fd);
+        close(display_connector_fd);
     });
-    return from_framebuffer_device(framebuffer_fd, head);
+    return from_display_connector_device(display_connector_fd);
 }
 #endif
 
@@ -450,22 +299,22 @@ Definitions::EDID const& Parser::raw_edid() const
 ErrorOr<void> Parser::parse()
 {
     if (m_bytes.size() < sizeof(Definitions::EDID))
-        return Error::from_string_literal("Incomplete Parser structure"sv);
+        return Error::from_string_view_or_print_error_and_return_errno("Incomplete Parser structure"sv, EINVAL);
 
     auto const& edid = raw_edid();
     u64 header = read_le(&edid.header);
     if (header != 0x00ffffffffffff00ull)
-        return Error::from_string_literal("No Parser header"sv);
+        return Error::from_string_view_or_print_error_and_return_errno("No Parser header"sv, EINVAL);
 
     u8 major_version = read_host(&edid.version.version);
     m_revision = read_host(&edid.version.revision);
     if (major_version != 1 || m_revision > 4)
-        return Error::from_string_literal("Unsupported Parser version"sv);
+        return Error::from_string_view_or_print_error_and_return_errno("Unsupported Parser version"sv, EINVAL);
 
 #ifdef KERNEL
     m_version = TRY(Kernel::KString::formatted("1.{}", (int)m_revision));
 #else
-    m_version = String::formatted("1.{}", (int)m_revision);
+    m_version = DeprecatedString::formatted("1.{}", (int)m_revision);
 #endif
 
     u8 checksum = 0x0;
@@ -473,18 +322,20 @@ ErrorOr<void> Parser::parse()
         checksum += m_bytes[i];
 
     if (checksum != 0) {
-        if (m_revision >= 4) {
-            return Error::from_string_literal("Parser checksum mismatch"sv);
-        } else {
+        if (m_revision >= 4)
+            return Error::from_string_view_or_print_error_and_return_errno("Parser checksum mismatch"sv, EINVAL);
+        else
             dbgln("EDID checksum mismatch, data may be corrupted!");
-        }
     }
 
     u16 packed_id = read_be(&raw_edid().vendor.manufacturer_id);
+    if (packed_id == 0x0)
+        return {};
     m_legacy_manufacturer_id[0] = (char)((u16)'A' + ((packed_id >> 10) & 0x1f) - 1);
     m_legacy_manufacturer_id[1] = (char)((u16)'A' + ((packed_id >> 5) & 0x1f) - 1);
     m_legacy_manufacturer_id[2] = (char)((u16)'A' + (packed_id & 0x1f) - 1);
     m_legacy_manufacturer_id[3] = '\0';
+    m_legacy_manufacturer_id_valid = true;
 
     return {};
 }
@@ -496,7 +347,7 @@ ErrorOr<IterationDecision> Parser::for_each_extension_block(Function<IterationDe
     if (raw_extension_block_count == 0)
         return IterationDecision::Continue;
     if (sizeof(Definitions::EDID) + (size_t)raw_extension_block_count * sizeof(Definitions::ExtensionBlock) > m_bytes.size())
-        return Error::from_string_literal("Truncated EDID");
+        return Error::from_string_view_or_print_error_and_return_errno("Truncated EDID"sv, EINVAL);
 
     auto validate_block_checksum = [&](Definitions::ExtensionBlock const& block) {
         u8 checksum = 0x0;
@@ -516,9 +367,10 @@ ErrorOr<IterationDecision> Parser::for_each_extension_block(Function<IterationDe
             current_extension_map = &raw_extension_blocks[0];
             raw_index++;
             if (read_host(&current_extension_map->tag) != (u8)Definitions::ExtensionBlockTag::ExtensionBlockMap)
-                return Error::from_string_literal("Did not find extension map at block 1"sv);
+                return Error::from_string_view_or_print_error_and_return_errno("Did not find extension map at block 1"sv, EINVAL);
+
             if (!validate_block_checksum(*current_extension_map))
-                return Error::from_string_literal("Extension block map checksum mismatch"sv);
+                return Error::from_string_view_or_print_error_and_return_errno("Extension block map checksum mismatch"sv, EINVAL);
         }
     } else if (read_host(&raw_extension_blocks[0].tag) == (u8)Definitions::ExtensionBlockTag::ExtensionBlockMap) {
         current_extension_map = &raw_extension_blocks[0];
@@ -531,18 +383,19 @@ ErrorOr<IterationDecision> Parser::for_each_extension_block(Function<IterationDe
 
         if (current_extension_map && raw_index == 127) {
             if (tag != (u8)Definitions::ExtensionBlockTag::ExtensionBlockMap)
-                return Error::from_string_literal("Did not find extension map at block 128"sv);
+                return Error::from_string_view_or_print_error_and_return_errno("Did not find extension map at block 128"sv, EINVAL);
+
             current_extension_map = &raw_extension_blocks[127];
             if (!validate_block_checksum(*current_extension_map))
-                return Error::from_string_literal("Extension block map checksum mismatch"sv);
+                return Error::from_string_view_or_print_error_and_return_errno("Extension block map checksum mismatch"sv, EINVAL);
             continue;
         }
 
         if (tag == (u8)Definitions::ExtensionBlockTag::ExtensionBlockMap)
-            return Error::from_string_literal("Unexpected extension map encountered"sv);
+            return Error::from_string_view_or_print_error_and_return_errno("Unexpected extension map encountered"sv, EINVAL);
 
         if (!validate_block_checksum(raw_block))
-            return Error::from_string_literal("Extension block checksum mismatch"sv);
+            return Error::from_string_view_or_print_error_and_return_errno("Extension block checksum mismatch"sv, EINVAL);
 
         size_t offset = (u8 const*)&raw_block - m_bytes.data();
         IterationDecision decision = callback(raw_index + 1, tag, raw_block.block.revision, m_bytes.slice(offset, sizeof(Definitions::ExtensionBlock)));
@@ -563,12 +416,14 @@ StringView Parser::version() const
 
 StringView Parser::legacy_manufacturer_id() const
 {
-    return m_legacy_manufacturer_id;
+    return { m_legacy_manufacturer_id, strlen(m_legacy_manufacturer_id) };
 }
 
 #ifndef KERNEL
-String Parser::manufacturer_name() const
+DeprecatedString Parser::manufacturer_name() const
 {
+    if (!m_legacy_manufacturer_id_valid)
+        return "Unknown";
     auto manufacturer_id = legacy_manufacturer_id();
 #    ifdef ENABLE_PNP_IDS_DATA
     if (auto pnp_id_data = PnpIDs::find_by_manufacturer_id(manufacturer_id); pnp_id_data.has_value())
@@ -665,7 +520,9 @@ Optional<FixedPoint<16>> Parser::gamma() const
 
 u32 Parser::DetailedTiming::pixel_clock_khz() const
 {
-    return (u32)m_edid.read_le(&m_detailed_timings.pixel_clock) * 10000;
+    // Note: The stored value is in units of 10 kHz, which means that to get the
+    // value in kHz, we need to multiply it by 10.
+    return (u32)m_edid.read_le(&m_detailed_timings.pixel_clock) * 10;
 }
 
 u16 Parser::DetailedTiming::horizontal_addressable_pixels() const
@@ -768,7 +625,8 @@ FixedPoint<16, u32> Parser::DetailedTiming::refresh_rate() const
     if (total_pixels == 0)
         return {};
     // Use a bigger fixed point representation due to the large numbers involved and then downcast
-    return FixedPoint<32, u64>(pixel_clock_khz()) / total_pixels;
+    // Note: We need to convert the pixel clock from kHz to Hertz to actually calculate this correctly.
+    return FixedPoint<32, u64>(pixel_clock_khz() * 1000) / total_pixels;
 }
 
 ErrorOr<IterationDecision> Parser::for_each_established_timing(Function<IterationDecision(EstablishedTiming const&)> callback) const
@@ -827,7 +685,7 @@ ErrorOr<IterationDecision> Parser::for_each_established_timing(Function<Iteratio
     }
 
     auto callback_decision = IterationDecision::Continue;
-    auto result = for_each_display_descriptor([&](u8 descriptor_tag, auto& display_descriptor) {
+    TRY(for_each_display_descriptor([&](u8 descriptor_tag, auto& display_descriptor) {
         if (descriptor_tag != (u8)Definitions::DisplayDescriptorTag::EstablishedTimings3)
             return IterationDecision::Continue;
 
@@ -902,9 +760,7 @@ ErrorOr<IterationDecision> Parser::for_each_established_timing(Function<Iteratio
             byte_index++;
         }
         return IterationDecision::Break; // Only process one descriptor
-    });
-    if (result.is_error())
-        return result.error();
+    }));
     return callback_decision;
 }
 
@@ -1042,7 +898,7 @@ ErrorOr<IterationDecision> Parser::for_each_detailed_timing(Function<IterationDe
     }
 
     Optional<Error> extension_error;
-    auto result = for_each_extension_block([&](u8 block_id, u8 tag, u8, ReadonlyBytes bytes) {
+    auto result = TRY(for_each_extension_block([&](u8 block_id, u8 tag, u8, ReadonlyBytes bytes) {
         if (tag != (u8)Definitions::ExtensionBlockTag::CEA_861)
             return IterationDecision::Continue;
 
@@ -1052,16 +908,14 @@ ErrorOr<IterationDecision> Parser::for_each_detailed_timing(Function<IterationDe
         });
         if (result.is_error()) {
             dbgln("Failed to iterate DTDs in CEA861 extension block: {}", result.error());
-            extension_error = result.error();
+            extension_error = result.release_error();
             return IterationDecision::Break;
         }
 
         return result.value();
-    });
-    if (!result.is_error()) {
-        if (extension_error.has_value())
-            return extension_error.value();
-    }
+    }));
+    if (extension_error.has_value())
+        return extension_error.release_value();
     return result;
 }
 
@@ -1095,7 +949,7 @@ ErrorOr<IterationDecision> Parser::for_each_short_video_descriptor(Function<Iter
             return callback(block_id, is_native, vic);
         });
         if (result.is_error()) {
-            extension_error = result.error();
+            extension_error = result.release_error();
             return IterationDecision::Break;
         }
         return result.value();
@@ -1122,7 +976,7 @@ ErrorOr<IterationDecision> Parser::for_each_display_descriptor(Function<Iteratio
     }
 
     Optional<Error> extension_error;
-    auto result = for_each_extension_block([&](u8, u8 tag, u8, ReadonlyBytes bytes) {
+    auto result = TRY(for_each_extension_block([&](u8, u8 tag, u8, ReadonlyBytes bytes) {
         if (tag != (u8)Definitions::ExtensionBlockTag::CEA_861)
             return IterationDecision::Continue;
 
@@ -1132,23 +986,21 @@ ErrorOr<IterationDecision> Parser::for_each_display_descriptor(Function<Iteratio
         });
         if (result.is_error()) {
             dbgln("Failed to iterate display descriptors in CEA861 extension block: {}", result.error());
-            extension_error = result.error();
+            extension_error = result.release_error();
             return IterationDecision::Break;
         }
 
         return result.value();
-    });
-    if (!result.is_error()) {
-        if (extension_error.has_value())
-            return extension_error.value();
-    }
+    }));
+    if (extension_error.has_value())
+        return extension_error.release_value();
     return result;
 }
 
 #ifndef KERNEL
-String Parser::display_product_name() const
+DeprecatedString Parser::display_product_name() const
 {
-    String product_name;
+    DeprecatedString product_name;
     auto result = for_each_display_descriptor([&](u8 descriptor_tag, Definitions::DisplayDescriptor const& display_descriptor) {
         if (descriptor_tag != (u8)Definitions::DisplayDescriptorTag::DisplayProductName)
             return IterationDecision::Continue;
@@ -1159,7 +1011,7 @@ String Parser::display_product_name() const
                 break;
             str.append((char)byte);
         }
-        product_name = str.build();
+        product_name = str.to_deprecated_string();
         return IterationDecision::Break;
     });
     if (result.is_error()) {
@@ -1169,9 +1021,9 @@ String Parser::display_product_name() const
     return product_name;
 }
 
-String Parser::display_product_serial_number() const
+DeprecatedString Parser::display_product_serial_number() const
 {
-    String product_name;
+    DeprecatedString product_name;
     auto result = for_each_display_descriptor([&](u8 descriptor_tag, Definitions::DisplayDescriptor const& display_descriptor) {
         if (descriptor_tag != (u8)Definitions::DisplayDescriptorTag::DisplayProductSerialNumber)
             return IterationDecision::Continue;
@@ -1182,7 +1034,7 @@ String Parser::display_product_serial_number() const
                 break;
             str.append((char)byte);
         }
-        product_name = str.build();
+        product_name = str.to_deprecated_string();
         return IterationDecision::Break;
     });
     if (result.is_error()) {
@@ -1219,38 +1071,30 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
         }
     };
 
-    auto result = for_each_established_timing([&](auto& established_timing) {
+    TRY(for_each_established_timing([&](auto& established_timing) {
         if (established_timing.source() != EstablishedTiming::Source::Manufacturer)
             add_resolution(established_timing.width(), established_timing.height(), established_timing.refresh_rate());
         return IterationDecision::Continue;
-    });
-    if (result.is_error())
-        return result.error();
+    }));
 
-    result = for_each_standard_timing([&](auto& standard_timing) {
+    TRY(for_each_standard_timing([&](auto& standard_timing) {
         add_resolution(standard_timing.width(), standard_timing.height(), standard_timing.refresh_rate());
         return IterationDecision::Continue;
-    });
-    if (result.is_error())
-        return result.error();
+    }));
 
     size_t detailed_timing_index = 0;
-    result = for_each_detailed_timing([&](auto& detailed_timing, auto) {
+    TRY(for_each_detailed_timing([&](auto& detailed_timing, auto) {
         bool is_preferred = detailed_timing_index++ == 0;
         add_resolution(detailed_timing.horizontal_addressable_pixels(), detailed_timing.vertical_addressable_lines(), detailed_timing.refresh_rate(), is_preferred);
         return IterationDecision::Continue;
-    });
-    if (result.is_error())
-        return result.error();
+    }));
 
-    result = for_each_short_video_descriptor([&](unsigned, bool, VIC::Details const& vic_details) {
+    TRY(for_each_short_video_descriptor([&](unsigned, bool, VIC::Details const& vic_details) {
         add_resolution(vic_details.horizontal_pixels, vic_details.vertical_lines, vic_details.refresh_rate_hz());
         return IterationDecision::Continue;
-    });
-    if (result.is_error())
-        return result.error();
+    }));
 
-    result = for_each_coordinated_video_timing([&](auto& coordinated_video_timing) {
+    TRY(for_each_coordinated_video_timing([&](auto& coordinated_video_timing) {
         if (auto* dmt = DMT::find_timing_by_cvt(coordinated_video_timing.cvt_code())) {
             add_resolution(dmt->horizontal_pixels, dmt->vertical_lines, dmt->vertical_frequency_hz());
         } else {
@@ -1259,7 +1103,7 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
             dbgln("TODO: Decode CVT code: {:02x},{:02x},{:02x}", cvt.bytes[0], cvt.bytes[1], cvt.bytes[2]);
         }
         return IterationDecision::Continue;
-    });
+    }));
 
     quick_sort(resolutions, [&](auto& info1, auto& info2) {
         if (info1.width < info2.width)

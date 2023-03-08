@@ -13,8 +13,7 @@ GalleryWidget::GalleryWidget()
     set_layout<GUI::VerticalBoxLayout>();
 
     auto& inner_widget = add<GUI::Widget>();
-    auto inner_layout = inner_widget.try_set_layout<GUI::VerticalBoxLayout>().release_value_but_fixme_should_propagate_errors();
-    inner_layout->set_margins({ 4 });
+    inner_widget.try_set_layout<GUI::VerticalBoxLayout>(4).release_value_but_fixme_should_propagate_errors();
 
     m_tab_widget = inner_widget.try_add<GUI::TabWidget>().release_value_but_fixme_should_propagate_errors();
     m_statusbar = add<GUI::Statusbar>();
@@ -26,7 +25,7 @@ GalleryWidget::GalleryWidget()
 ErrorOr<void> GalleryWidget::load_basic_model_tab()
 {
     auto tab = TRY(m_tab_widget->try_add_tab<GUI::Widget>("Basic Model"));
-    tab->load_from_gml(basic_model_tab_gml);
+    TRY(tab->load_from_gml(basic_model_tab_gml));
 
     m_basic_model = BasicModel::create();
     m_basic_model_table = *tab->find_descendant_of_type_named<GUI::TableView>("model_table");
@@ -34,10 +33,10 @@ ErrorOr<void> GalleryWidget::load_basic_model_tab()
 
     m_basic_model->on_invalidate = [&] {
         m_invalidation_count++;
-        m_statusbar->set_text(String::formatted("Times invalidated: {}", m_invalidation_count));
+        m_statusbar->set_text(DeprecatedString::formatted("Times invalidated: {}", m_invalidation_count));
     };
 
-    m_statusbar->set_text(String::formatted("Times invalidated: {}", m_invalidation_count));
+    m_statusbar->set_text(DeprecatedString::formatted("Times invalidated: {}", m_invalidation_count));
 
     m_basic_model->add_item("Well...");
     m_basic_model->add_item("...hello...");
@@ -47,8 +46,8 @@ ErrorOr<void> GalleryWidget::load_basic_model_tab()
     m_add_new_item = *tab->find_descendant_of_type_named<GUI::Button>("add_new_item");
     m_remove_selected_item = *tab->find_descendant_of_type_named<GUI::Button>("remove_selected_item");
 
-    m_add_new_item->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/plus.png").release_value_but_fixme_should_propagate_errors());
-    m_remove_selected_item->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/minus.png").release_value_but_fixme_should_propagate_errors());
+    m_add_new_item->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/plus.png"sv).release_value_but_fixme_should_propagate_errors());
+    m_remove_selected_item->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/minus.png"sv).release_value_but_fixme_should_propagate_errors());
 
     m_new_item_name->on_return_pressed = [&] { add_textbox_contents_to_basic_model(); };
     m_add_new_item->on_click = [&](auto) { add_textbox_contents_to_basic_model(); };
@@ -72,6 +71,6 @@ void GalleryWidget::add_textbox_contents_to_basic_model()
 {
     if (!m_new_item_name->current_line().is_empty()) {
         m_basic_model->add_item(m_new_item_name->current_line().to_utf8());
-        m_new_item_name->set_text("");
+        m_new_item_name->set_text(""sv);
     }
 }

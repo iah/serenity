@@ -1,129 +1,144 @@
 /*
- * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/TemporaryChange.h>
 #include <LibWeb/CSS/Length.h>
 #include <LibWeb/DOM/Node.h>
+#include <LibWeb/Dump.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
-#include <LibWeb/Layout/InitialContainingBlock.h>
 #include <LibWeb/Layout/InlineFormattingContext.h>
+#include <LibWeb/Layout/LineBuilder.h>
 #include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
+#include <LibWeb/Layout/TableBox.h>
+#include <LibWeb/Layout/TableWrapper.h>
+#include <LibWeb/Layout/Viewport.h>
 
 namespace Web::Layout {
 
-BlockFormattingContext::BlockFormattingContext(BlockContainer& root, FormattingContext* parent)
-    : FormattingContext(Type::Block, root, parent)
+BlockFormattingContext::BlockFormattingContext(LayoutState& state, BlockContainer const& root, FormattingContext* parent)
+    : FormattingContext(Type::Block, state, root, parent)
 {
 }
 
 BlockFormattingContext::~BlockFormattingContext()
 {
+    if (!m_was_notified_after_parent_dimensioned_my_root_box) {
+        // HACK: The parent formatting context never notified us after assigning dimensions to our root box.
+        //       Pretend that it did anyway, to make sure absolutely positioned children get laid out.
+        // FIXME: Get rid of this hack once parent contexts behave properly.
+        parent_context_did_dimension_child_root_box();
+    }
 }
 
-bool BlockFormattingContext::is_initial() const
+CSSPixels BlockFormattingContext::automatic_content_height() const
 {
-    return is<InitialContainingBlock>(root());
+    return compute_auto_height_for_block_formatting_context_root(root());
 }
 
-void BlockFormattingContext::run(Box&, LayoutMode layout_mode)
+void BlockFormattingContext::run(Box const&, LayoutMode layout_mode, AvailableSpace const& available_space)
 {
-    if (is_initial()) {
-        layout_initial_containing_block(layout_mode);
+    if (is<Viewport>(root())) {
+        layout_viewport(layout_mode, available_space);
         return;
     }
 
     if (root().children_are_inline())
-        layout_inline_children(root(), layout_mode);
+        layout_inline_children(root(), layout_mode, available_space);
     else
-        layout_block_level_children(root(), layout_mode);
+        layout_block_level_children(root(), layout_mode, available_space);
+
+    // Assign collapsed margin left after children layout of formatting context to the last child box
+    if (m_margin_state.current_collapsed_margin() != 0) {
+        for (auto* child_box = root().last_child_of_type<Box>(); child_box; child_box = child_box->previous_sibling_of_type<Box>()) {
+            if (child_box->is_absolutely_positioned() || child_box->is_floating())
+                continue;
+            m_state.get_mutable(*child_box).margin_bottom = m_margin_state.current_collapsed_margin().value();
+            break;
+        }
+    }
 }
 
 void BlockFormattingContext::parent_context_did_dimension_child_root_box()
 {
-    for (auto& box : m_absolutely_positioned_boxes)
-        layout_absolutely_positioned_element(box);
+    m_was_notified_after_parent_dimensioned_my_root_box = true;
 
-    apply_transformations_to_children(root());
+    // Left-side floats: offset_from_edge is from left edge (0) to left content edge of floating_box.
+    for (auto& floating_box : m_left_floats.all_boxes) {
+        auto& box_state = m_state.get_mutable(floating_box->box);
+        box_state.set_content_x(floating_box->offset_from_edge.value());
+    }
+
+    // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of floating_box.
+    for (auto& floating_box : m_right_floats.all_boxes) {
+        auto float_containing_block_width = containing_block_width_for(floating_box->box);
+        auto& box_state = m_state.get_mutable(floating_box->box);
+        box_state.set_content_x((float_containing_block_width - floating_box->offset_from_edge).value());
+    }
+
+    // We can also layout absolutely positioned boxes within this BFC.
+    for (auto& box : m_absolutely_positioned_boxes) {
+        auto& cb_state = m_state.get(*box.containing_block());
+        auto available_width = AvailableSize::make_definite(cb_state.content_width() + cb_state.padding_left + cb_state.padding_right);
+        auto available_height = AvailableSize::make_definite(cb_state.content_height() + cb_state.padding_top + cb_state.padding_bottom);
+        layout_absolutely_positioned_element(box, AvailableSpace(available_width, available_height));
+    }
 }
 
-void BlockFormattingContext::apply_transformations_to_children(Box& box)
-{
-    box.for_each_child_of_type<Box>([&](auto& child_box) {
-        float transform_y_offset = 0.0f;
-        if (!child_box.computed_values().transformations().is_empty()) {
-            // FIXME: All transformations can be interpreted as successive 3D-matrix operations on the box, we don't do that yet.
-            //        https://drafts.csswg.org/css-transforms/#serialization-of-the-computed-value
-            for (auto transformation : child_box.computed_values().transformations()) {
-                switch (transformation.function) {
-                case CSS::TransformFunction::TranslateY:
-                    if (transformation.values.size() != 1)
-                        continue;
-                    transformation.values.first().visit(
-                        [&](CSS::Length& value) {
-                            transform_y_offset += value.to_px(child_box);
-                        },
-                        [&](float value) {
-                            transform_y_offset += value;
-                        },
-                        [&](auto&) {
-                            dbgln("FIXME: Implement unsupported transformation function value type!");
-                        });
-                    break;
-                default:
-                    dbgln("FIXME: Implement missing transform function!");
-                }
-            }
-        }
-
-        auto untransformed_offset = child_box.effective_offset();
-        child_box.set_offset(untransformed_offset.x(), untransformed_offset.y() + transform_y_offset);
-    });
-}
-
-void BlockFormattingContext::compute_width(Box& box)
+void BlockFormattingContext::compute_width(Box const& box, AvailableSpace const& available_space, LayoutMode)
 {
     if (box.is_absolutely_positioned()) {
-        compute_width_for_absolutely_positioned_element(box);
+        compute_width_for_absolutely_positioned_element(box, available_space);
         return;
     }
 
     if (is<ReplacedBox>(box)) {
         // FIXME: This should not be done *by* ReplacedBox
         auto& replaced = verify_cast<ReplacedBox>(box);
-        replaced.prepare_for_replaced_layout();
-        compute_width_for_block_level_replaced_element_in_normal_flow(replaced);
-        return;
+        // FIXME: This const_cast is gross.
+        const_cast<ReplacedBox&>(replaced).prepare_for_replaced_layout();
+        compute_width_for_block_level_replaced_element_in_normal_flow(replaced, available_space);
+        // NOTE: We don't return here.
     }
 
     if (box.is_floating()) {
-        compute_width_for_floating_box(box);
+        compute_width_for_floating_box(box, available_space);
         return;
     }
 
-    auto& computed_values = box.computed_values();
-    float width_of_containing_block = box.containing_block()->content_width();
-    auto width_of_containing_block_as_length = CSS::Length::make_px(width_of_containing_block);
+    auto const& computed_values = box.computed_values();
+
+    auto width_of_containing_block = available_space.width.to_px();
+    auto width_of_containing_block_as_length_for_resolve = available_space.width.is_definite() ? CSS::Length::make_px(width_of_containing_block) : CSS::Length::make_px(0);
 
     auto zero_value = CSS::Length::make_px(0);
 
     auto margin_left = CSS::Length::make_auto();
     auto margin_right = CSS::Length::make_auto();
-    const auto padding_left = computed_values.padding().left.resolved(box, width_of_containing_block_as_length).resolved(box);
-    const auto padding_right = computed_values.padding().right.resolved(box, width_of_containing_block_as_length).resolved(box);
+    auto const padding_left = computed_values.padding().left().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+    auto const padding_right = computed_values.padding().right().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
 
-    auto try_compute_width = [&](const auto& a_width) {
+    auto& box_state = m_state.get_mutable(box);
+    box_state.border_left = computed_values.border_left().width;
+    box_state.border_right = computed_values.border_right().width;
+    box_state.padding_left = padding_left.to_px(box);
+    box_state.padding_right = padding_right.to_px(box);
+
+    if (should_treat_width_as_auto(box, available_space) && available_space.width.is_intrinsic_sizing_constraint())
+        return;
+
+    auto try_compute_width = [&](auto const& a_width) {
         CSS::Length width = a_width;
-        margin_left = computed_values.margin().left.resolved(box, width_of_containing_block_as_length).resolved(box);
-        margin_right = computed_values.margin().right.resolved(box, width_of_containing_block_as_length).resolved(box);
-
-        float total_px = computed_values.border_left().width + computed_values.border_right().width;
+        margin_left = computed_values.margin().left().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+        margin_right = computed_values.margin().right().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+        CSSPixels total_px = computed_values.border_left().width + computed_values.border_right().width;
         for (auto& value : { margin_left, padding_left, width, padding_right, margin_right }) {
             total_px += value.to_px(box);
         }
@@ -140,105 +155,94 @@ void BlockFormattingContext::compute_width(Box& box)
 
             // 10.3.3 cont'd.
             auto underflow_px = width_of_containing_block - total_px;
+            if (!isfinite(underflow_px.value()))
+                underflow_px = 0;
 
             if (width.is_auto()) {
                 if (margin_left.is_auto())
                     margin_left = zero_value;
                 if (margin_right.is_auto())
                     margin_right = zero_value;
-                if (underflow_px >= 0) {
-                    width = CSS::Length(underflow_px, CSS::Length::Type::Px);
-                } else {
-                    width = zero_value;
-                    margin_right = CSS::Length(margin_right.to_px(box) + underflow_px, CSS::Length::Type::Px);
+
+                if (available_space.width.is_definite()) {
+                    if (underflow_px >= 0) {
+                        width = CSS::Length::make_px(underflow_px);
+                    } else {
+                        width = zero_value;
+                        margin_right = CSS::Length::make_px(margin_right.to_px(box) + underflow_px.value());
+                    }
                 }
             } else {
                 if (!margin_left.is_auto() && !margin_right.is_auto()) {
-                    margin_right = CSS::Length(margin_right.to_px(box) + underflow_px, CSS::Length::Type::Px);
+                    margin_right = CSS::Length::make_px(margin_right.to_px(box) + underflow_px.value());
                 } else if (!margin_left.is_auto() && margin_right.is_auto()) {
-                    margin_right = CSS::Length(underflow_px, CSS::Length::Type::Px);
+                    margin_right = CSS::Length::make_px(underflow_px);
                 } else if (margin_left.is_auto() && !margin_right.is_auto()) {
-                    margin_left = CSS::Length(underflow_px, CSS::Length::Type::Px);
+                    margin_left = CSS::Length::make_px(underflow_px);
                 } else { // margin_left.is_auto() && margin_right.is_auto()
-                    auto half_of_the_underflow = CSS::Length(underflow_px / 2, CSS::Length::Type::Px);
+                    auto half_of_the_underflow = CSS::Length::make_px(underflow_px / 2);
                     margin_left = half_of_the_underflow;
                     margin_right = half_of_the_underflow;
                 }
-            }
-        } else if (box.is_inline_block()) {
-
-            // 10.3.9 'Inline-block', non-replaced elements in normal flow
-
-            // A computed value of 'auto' for 'margin-left' or 'margin-right' becomes a used value of '0'.
-            if (margin_left.is_auto())
-                margin_left = zero_value;
-            if (margin_right.is_auto())
-                margin_right = zero_value;
-
-            // If 'width' is 'auto', the used value is the shrink-to-fit width as for floating elements.
-            if (width.is_auto()) {
-
-                // Find the available width: in this case, this is the width of the containing
-                // block minus the used values of 'margin-left', 'border-left-width', 'padding-left',
-                // 'padding-right', 'border-right-width', 'margin-right', and the widths of any relevant scroll bars.
-                float available_width = width_of_containing_block
-                    - margin_left.to_px(box) - computed_values.border_left().width - padding_left.to_px(box)
-                    - padding_right.to_px(box) - computed_values.border_right().width - margin_right.to_px(box);
-
-                auto result = calculate_shrink_to_fit_widths(box);
-
-                // Then the shrink-to-fit width is: min(max(preferred minimum width, available width), preferred width).
-                width = CSS::Length(min(max(result.preferred_minimum_width, available_width), result.preferred_width), CSS::Length::Type::Px);
             }
         }
 
         return width;
     };
 
-    auto specified_width = computed_values.width().has_value() ? computed_values.width()->resolved(box, width_of_containing_block_as_length).resolved(box) : CSS::Length::make_auto();
+    auto input_width = [&] {
+        if (is<TableWrapper>(box))
+            return CSS::Length::make_px(compute_width_for_table_wrapper(box, available_space));
+        if (should_treat_width_as_auto(box, available_space))
+            return CSS::Length::make_auto();
+        return calculate_inner_width(box, available_space.width, computed_values.width());
+    }();
 
     // 1. The tentative used width is calculated (without 'min-width' and 'max-width')
-    auto used_width = try_compute_width(specified_width);
+    auto used_width = try_compute_width(input_width);
 
     // 2. The tentative used width is greater than 'max-width', the rules above are applied again,
     //    but this time using the computed value of 'max-width' as the computed value for 'width'.
-    auto specified_max_width = computed_values.max_width().has_value() ? computed_values.max_width()->resolved(box, width_of_containing_block_as_length).resolved(box) : CSS::Length::make_auto();
-    if (!specified_max_width.is_auto()) {
-        if (used_width.to_px(box) > specified_max_width.to_px(box)) {
-            used_width = try_compute_width(specified_max_width);
+    if (!computed_values.max_width().is_none()) {
+        auto max_width = calculate_inner_width(box, available_space.width, computed_values.max_width());
+        if (used_width.to_px(box) > max_width.to_px(box)) {
+            used_width = try_compute_width(max_width);
         }
     }
 
     // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
     //    but this time using the value of 'min-width' as the computed value for 'width'.
-    auto specified_min_width = computed_values.min_width().has_value() ? computed_values.min_width()->resolved(box, width_of_containing_block_as_length).resolved(box) : CSS::Length::make_auto();
-    if (!specified_min_width.is_auto()) {
-        if (used_width.to_px(box) < specified_min_width.to_px(box)) {
-            used_width = try_compute_width(specified_min_width);
+    if (!computed_values.min_width().is_auto()) {
+        auto min_width = calculate_inner_width(box, available_space.width, computed_values.min_width());
+        if (used_width.to_px(box) < min_width.to_px(box)) {
+            used_width = try_compute_width(min_width);
         }
     }
 
-    box.set_content_width(used_width.to_px(box));
-    box.box_model().margin.left = margin_left.to_px(box);
-    box.box_model().margin.right = margin_right.to_px(box);
-    box.box_model().border.left = computed_values.border_left().width;
-    box.box_model().border.right = computed_values.border_right().width;
-    box.box_model().padding.left = padding_left.to_px(box);
-    box.box_model().padding.right = padding_right.to_px(box);
+    if (!is<ReplacedBox>(box) && !used_width.is_auto())
+        box_state.set_content_width(used_width.to_px(box));
+
+    box_state.margin_left = margin_left.to_px(box);
+    box_state.margin_right = margin_right.to_px(box);
+
+    resolve_vertical_box_model_metrics(box, m_state);
 }
 
-void BlockFormattingContext::compute_width_for_floating_box(Box& box)
+void BlockFormattingContext::compute_width_for_floating_box(Box const& box, AvailableSpace const& available_space)
 {
     // 10.3.5 Floating, non-replaced elements
     auto& computed_values = box.computed_values();
-    float width_of_containing_block = box.containing_block()->content_width();
-    auto width_of_containing_block_as_length = CSS::Length::make_px(width_of_containing_block);
-    auto zero_value = CSS::Length::make_px(0);
 
-    auto margin_left = computed_values.margin().left.resolved(box, width_of_containing_block_as_length).resolved(box);
-    auto margin_right = computed_values.margin().right.resolved(box, width_of_containing_block_as_length).resolved(box);
-    const auto padding_left = computed_values.padding().left.resolved(box, width_of_containing_block_as_length).resolved(box);
-    const auto padding_right = computed_values.padding().right.resolved(box, width_of_containing_block_as_length).resolved(box);
+    auto zero_value = CSS::Length::make_px(0);
+    auto width_of_containing_block = available_space.width.to_px();
+    auto width_of_containing_block_as_length_for_resolve = CSS::Length::make_px(width_of_containing_block);
+    if (!available_space.width.is_definite())
+        width_of_containing_block_as_length_for_resolve = CSS::Length::make_px(0);
+
+    auto margin_left = computed_values.margin().left().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+    auto margin_right = computed_values.margin().right().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+    auto const padding_left = computed_values.padding().left().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
+    auto const padding_right = computed_values.padding().right().resolved(box, width_of_containing_block_as_length_for_resolve).resolved(box);
 
     // If 'margin-left', or 'margin-right' are computed as 'auto', their used value is '0'.
     if (margin_left.is_auto())
@@ -246,272 +250,391 @@ void BlockFormattingContext::compute_width_for_floating_box(Box& box)
     if (margin_right.is_auto())
         margin_right = zero_value;
 
-    auto width = computed_values.width().has_value() ? computed_values.width()->resolved(box, width_of_containing_block_as_length).resolved(box) : CSS::Length::make_auto();
+    auto compute_width = [&](auto width) {
+        // If 'width' is computed as 'auto', the used value is the "shrink-to-fit" width.
+        if (width.is_auto()) {
 
-    // If 'width' is computed as 'auto', the used value is the "shrink-to-fit" width.
-    if (width.is_auto()) {
+            // Find the available width: in this case, this is the width of the containing
+            // block minus the used values of 'margin-left', 'border-left-width', 'padding-left',
+            // 'padding-right', 'border-right-width', 'margin-right', and the widths of any relevant scroll bars.
+            auto available_width = width_of_containing_block
+                - margin_left.to_px(box) - computed_values.border_left().width - padding_left.to_px(box)
+                - padding_right.to_px(box) - computed_values.border_right().width - margin_right.to_px(box);
 
-        // Find the available width: in this case, this is the width of the containing
-        // block minus the used values of 'margin-left', 'border-left-width', 'padding-left',
-        // 'padding-right', 'border-right-width', 'margin-right', and the widths of any relevant scroll bars.
-        float available_width = width_of_containing_block
-            - margin_left.to_px(box) - computed_values.border_left().width - padding_left.to_px(box)
-            - padding_right.to_px(box) - computed_values.border_right().width - margin_right.to_px(box);
+            auto result = calculate_shrink_to_fit_widths(box);
 
-        auto result = calculate_shrink_to_fit_widths(box);
+            // Then the shrink-to-fit width is: min(max(preferred minimum width, available width), preferred width).
+            width = CSS::Length::make_px(min(max(result.preferred_minimum_width, available_width), result.preferred_width));
+        }
 
-        // Then the shrink-to-fit width is: min(max(preferred minimum width, available width), preferred width).
-        width = CSS::Length(min(max(result.preferred_minimum_width, available_width), result.preferred_width), CSS::Length::Type::Px);
-    }
-
-    float final_width = width.to_px(box);
-    box.set_content_width(final_width);
-    box.box_model().margin.left = margin_left.to_px(box);
-    box.box_model().margin.right = margin_right.to_px(box);
-    box.box_model().border.left = computed_values.border_left().width;
-    box.box_model().border.right = computed_values.border_right().width;
-    box.box_model().padding.left = padding_left.to_px(box);
-    box.box_model().padding.right = padding_right.to_px(box);
-}
-
-void BlockFormattingContext::compute_width_for_block_level_replaced_element_in_normal_flow(ReplacedBox& box)
-{
-    box.set_content_width(compute_width_for_replaced_element(box));
-}
-
-float BlockFormattingContext::compute_theoretical_height(Box const& box)
-{
-    auto& computed_values = box.computed_values();
-    auto& containing_block = *box.containing_block();
-    auto containing_block_height = CSS::Length::make_px(containing_block.content_height());
-
-    auto is_absolute = [](Optional<CSS::LengthPercentage> const& length_percentage) {
-        return length_percentage.has_value() && length_percentage->is_length() && length_percentage->length().is_absolute();
+        return width;
     };
 
+    auto input_width = [&] {
+        if (should_treat_width_as_auto(box, available_space))
+            return CSS::Length::make_auto();
+        return calculate_inner_width(box, available_space.width, computed_values.width());
+    }();
+
+    // 1. The tentative used width is calculated (without 'min-width' and 'max-width')
+    auto width = compute_width(input_width);
+
+    // 2. The tentative used width is greater than 'max-width', the rules above are applied again,
+    //    but this time using the computed value of 'max-width' as the computed value for 'width'.
+    if (!computed_values.max_width().is_none()) {
+        auto max_width = calculate_inner_width(box, available_space.width, computed_values.max_width());
+        if (width.to_px(box) > max_width.to_px(box))
+            width = compute_width(max_width);
+    }
+
+    // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
+    //    but this time using the value of 'min-width' as the computed value for 'width'.
+    if (!computed_values.min_width().is_auto()) {
+        auto min_width = calculate_inner_width(box, available_space.width, computed_values.min_width());
+        if (width.to_px(box) < min_width.to_px(box))
+            width = compute_width(min_width);
+    }
+
+    auto& box_state = m_state.get_mutable(box);
+    box_state.set_content_width(width.to_px(box));
+    box_state.margin_left = margin_left.to_px(box);
+    box_state.margin_right = margin_right.to_px(box);
+    box_state.border_left = computed_values.border_left().width;
+    box_state.border_right = computed_values.border_right().width;
+    box_state.padding_left = padding_left.to_px(box);
+    box_state.padding_right = padding_right.to_px(box);
+
+    resolve_vertical_box_model_metrics(box, m_state);
+}
+
+void BlockFormattingContext::compute_width_for_block_level_replaced_element_in_normal_flow(ReplacedBox const& box, AvailableSpace const& available_space)
+{
+    m_state.get_mutable(box).set_content_width(compute_width_for_replaced_element(m_state, box, available_space));
+}
+
+CSSPixels BlockFormattingContext::compute_width_for_table_wrapper(Box const& box, AvailableSpace const& available_space)
+{
+    // 17.5.2
+    // Table wrapper width should be equal to width of table box it contains
+    LayoutState throwaway_state(&m_state);
+    auto context = create_independent_formatting_context_if_needed(throwaway_state, box);
+    VERIFY(context);
+    context->run(box, LayoutMode::IntrinsicSizing, m_state.get(box).available_inner_space_or_constraints_from(available_space));
+    auto const* table_box = box.first_child_of_type<TableBox>();
+    return throwaway_state.get(*table_box).content_width();
+}
+
+void BlockFormattingContext::compute_height(Box const& box, AvailableSpace const& available_space)
+{
+    auto const& computed_values = box.computed_values();
+    auto containing_block_height = CSS::Length::make_px(available_space.height.to_px());
+
     // Then work out what the height is, based on box type and CSS properties.
-    float height = 0;
+    CSSPixels height = 0;
     if (is<ReplacedBox>(box)) {
-        height = compute_height_for_replaced_element(verify_cast<ReplacedBox>(box));
+        height = compute_height_for_replaced_element(m_state, verify_cast<ReplacedBox>(box), available_space);
     } else {
-        if (!box.computed_values().height().has_value()
-            || (box.computed_values().height()->is_length() && box.computed_values().height()->length().is_auto())
-            || (computed_values.height().has_value() && computed_values.height()->is_percentage() && !is_absolute(containing_block.computed_values().height()))) {
-            height = compute_auto_height_for_block_level_element(box, ConsiderFloats::No);
+        if (should_treat_height_as_auto(box, available_space)) {
+            height = compute_auto_height_for_block_level_element(box, available_space);
         } else {
-            height = computed_values.height().has_value() ? computed_values.height()->resolved(box, containing_block_height).to_px(box) : 0;
+            height = calculate_inner_height(box, available_space.height, computed_values.height()).to_px(box);
         }
     }
 
-    auto specified_max_height = computed_values.max_height().has_value() ? computed_values.max_height()->resolved(box, containing_block_height).resolved(box) : CSS::Length::make_auto();
-    if (!specified_max_height.is_auto()
-        && !(computed_values.max_height().has_value() && computed_values.max_height()->is_percentage() && !is_absolute(containing_block.computed_values().height())))
-        height = min(height, specified_max_height.to_px(box));
-    auto specified_min_height = computed_values.min_height().has_value() ? computed_values.min_height()->resolved(box, containing_block_height).resolved(box) : CSS::Length::make_auto();
-    if (!specified_min_height.is_auto()
-        && !(computed_values.min_height().has_value() && computed_values.min_height()->is_percentage() && !is_absolute(containing_block.computed_values().height())))
-        height = max(height, specified_min_height.to_px(box));
-    return height;
-}
-
-void BlockFormattingContext::compute_height(Box& box)
-{
-    auto& computed_values = box.computed_values();
-    auto& containing_block = *box.containing_block();
-    auto width_of_containing_block_as_length = CSS::Length::make_px(containing_block.content_width());
-
-    // First, resolve the top/bottom parts of the surrounding box model.
-
-    // FIXME: While negative values are generally allowed for margins, for now just ignore those for height calculation
-    box.box_model().margin.top = max(computed_values.margin().top.resolved(box, width_of_containing_block_as_length).to_px(box), 0);
-    box.box_model().margin.bottom = max(computed_values.margin().bottom.resolved(box, width_of_containing_block_as_length).to_px(box), 0);
-
-    box.box_model().border.top = computed_values.border_top().width;
-    box.box_model().border.bottom = computed_values.border_bottom().width;
-    box.box_model().padding.top = computed_values.padding().top.resolved(box, width_of_containing_block_as_length).to_px(box);
-    box.box_model().padding.bottom = computed_values.padding().bottom.resolved(box, width_of_containing_block_as_length).to_px(box);
-
-    auto height = compute_theoretical_height(box);
-    box.set_content_height(height);
-}
-
-void BlockFormattingContext::compute_position(Box& box)
-{
-    // 9.4.3 Relative positioning
-    // Once a box has been laid out according to the normal flow or floated, it may be shifted relative to this position.
-
-    auto& box_model = box.box_model();
-    auto& computed_values = box.computed_values();
-    float width_of_containing_block = box.containing_block()->content_width();
-    auto width_of_containing_block_as_length = CSS::Length::make_px(width_of_containing_block);
-
-    auto specified_left = computed_values.offset().left.resolved(box, width_of_containing_block_as_length).resolved(box);
-    auto specified_right = computed_values.offset().right.resolved(box, width_of_containing_block_as_length).resolved(box);
-
-    if (specified_left.is_auto() && specified_right.is_auto()) {
-        // If both 'left' and 'right' are 'auto' (their initial values), the used values are '0' (i.e., the boxes stay in their original position).
-        box_model.offset.left = 0;
-        box_model.offset.right = 0;
-    } else if (specified_left.is_auto()) {
-        // If 'left' is 'auto', its used value is minus the value of 'right' (i.e., the boxes move to the left by the value of 'right').
-        box_model.offset.right = specified_right.to_px(box);
-        box_model.offset.left = 0 - box_model.offset.right;
-    } else if (specified_right.is_auto()) {
-        // If 'right' is specified as 'auto', its used value is minus the value of 'left'.
-        box_model.offset.left = specified_left.to_px(box);
-        box_model.offset.right = 0 - box_model.offset.left;
-    } else {
-        // If neither 'left' nor 'right' is 'auto', the position is over-constrained, and one of them has to be ignored.
-        // If the 'direction' property of the containing block is 'ltr', the value of 'left' wins and 'right' becomes -'left'.
-        // If 'direction' of the containing block is 'rtl', 'right' wins and 'left' is ignored.
-        // FIXME: Check direction (assuming 'ltr' for now).
-        box_model.offset.left = specified_left.to_px(box);
-        box_model.offset.right = 0 - box_model.offset.left;
+    if (!computed_values.max_height().is_none()) {
+        auto max_height = calculate_inner_height(box, available_space.height, computed_values.max_height());
+        if (!max_height.is_auto())
+            height = min(height, max_height.to_px(box));
     }
+    if (!computed_values.min_height().is_auto()) {
+        height = max(height, calculate_inner_height(box, available_space.height, computed_values.min_height()).to_px(box));
+    }
+
+    m_state.get_mutable(box).set_content_height(height);
 }
 
-void BlockFormattingContext::layout_inline_children(BlockContainer& block_container, LayoutMode layout_mode)
+void BlockFormattingContext::layout_inline_children(BlockContainer const& block_container, LayoutMode layout_mode, AvailableSpace const& available_space)
 {
     VERIFY(block_container.children_are_inline());
 
-    InlineFormattingContext context(block_container, *this);
-    context.run(block_container, layout_mode);
+    auto& block_container_state = m_state.get_mutable(block_container);
+
+    InlineFormattingContext context(m_state, block_container, *this);
+    context.run(
+        block_container,
+        layout_mode,
+        available_space);
+
+    if (!block_container_state.has_definite_width())
+        block_container_state.set_content_width(context.automatic_content_width());
+    if (!block_container_state.has_definite_height())
+        block_container_state.set_content_height(context.automatic_content_height());
 }
 
-void BlockFormattingContext::layout_block_level_children(BlockContainer& block_container, LayoutMode layout_mode)
+static bool margins_collapse_through(Box const& box, LayoutState& state)
+{
+    // FIXME: A box's own margins collapse if the 'min-height' property is zero, and it has neither top or bottom borders
+    // nor top or bottom padding, and it has a 'height' of either 0 or 'auto', and it does not contain a line box, and
+    // all of its in-flow children's margins (if any) collapse.
+    // https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+    return state.get(box).border_box_height() == 0;
+}
+
+CSSPixels BlockFormattingContext::compute_auto_height_for_block_level_element(Box const& box, AvailableSpace const& available_space)
+{
+    if (creates_block_formatting_context(box)) {
+        return compute_auto_height_for_block_formatting_context_root(box);
+    }
+
+    auto const& box_state = m_state.get(box);
+
+    auto display = box.display();
+    if (display.is_flex_inside()) {
+        // https://drafts.csswg.org/css-flexbox-1/#algo-main-container
+        // NOTE: The automatic block size of a block-level flex container is its max-content size.
+        return calculate_max_content_height(box, available_space.width);
+    }
+    if (display.is_grid_inside()) {
+        // https://www.w3.org/TR/css-grid-2/#intrinsic-sizes
+        // In both inline and block formatting contexts, the grid container’s auto block size is its
+        // max-content size.
+        return calculate_max_content_height(box, available_space.width);
+    }
+    if (display.is_table_inside()) {
+        return calculate_max_content_height(box, available_space.height);
+    }
+
+    // https://www.w3.org/TR/CSS22/visudet.html#normal-block
+    // 10.6.3 Block-level non-replaced elements in normal flow when 'overflow' computes to 'visible'
+
+    // The element's height is the distance from its top content edge to the first applicable of the following:
+
+    // 1. the bottom edge of the last line box, if the box establishes a inline formatting context with one or more lines
+    if (box.children_are_inline() && !box_state.line_boxes.is_empty())
+        return box_state.line_boxes.last().bottom().value();
+
+    // 2. the bottom edge of the bottom (possibly collapsed) margin of its last in-flow child, if the child's bottom margin does not collapse with the element's bottom margin
+    // 3. the bottom border edge of the last in-flow child whose top margin doesn't collapse with the element's bottom margin
+    if (!box.children_are_inline()) {
+        for (auto* child_box = box.last_child_of_type<Box>(); child_box; child_box = child_box->previous_sibling_of_type<Box>()) {
+            if (child_box->is_absolutely_positioned() || child_box->is_floating())
+                continue;
+
+            // FIXME: This is hack. If the last child is a list-item marker box, we ignore it for purposes of height calculation.
+            //        Perhaps markers should not be considered in-flow(?) Perhaps they should always be the first child of the list-item
+            //        box instead of the last child.
+            if (child_box->is_list_item_marker_box())
+                continue;
+
+            auto const& child_box_state = m_state.get(*child_box);
+
+            // Ignore anonymous block containers with no lines. These don't count as in-flow block boxes.
+            if (!child_box->is_table_wrapper() && child_box->is_anonymous() && child_box->is_block_container() && child_box_state.line_boxes.is_empty())
+                continue;
+
+            auto margin_bottom = m_margin_state.current_collapsed_margin();
+            if (box_state.padding_bottom == 0 && box_state.border_bottom == 0) {
+                m_margin_state.box_last_in_flow_child_margin_bottom_collapsed = true;
+                margin_bottom = 0;
+            }
+
+            return max(0.0f, (child_box_state.offset.y() + child_box_state.content_height() + child_box_state.border_box_bottom() + margin_bottom).value());
+        }
+    }
+
+    // 4. zero, otherwise
+    return 0;
+}
+
+void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContainer const& block_container, LayoutMode layout_mode, CSSPixels& bottom_of_lowest_margin_box, AvailableSpace const& available_space)
+{
+    auto& box_state = m_state.get_mutable(box);
+
+    if (box.is_absolutely_positioned()) {
+        m_absolutely_positioned_boxes.append(box);
+        return;
+    }
+
+    // NOTE: ListItemMarkerBoxes are placed by their corresponding ListItemBox.
+    if (is<ListItemMarkerBox>(box))
+        return;
+
+    auto const y = m_y_offset_of_current_block_container.value();
+
+    if (box.is_floating()) {
+        auto margin_top = !m_margin_state.has_block_container_waiting_for_final_y_position() ? m_margin_state.current_collapsed_margin() : 0;
+        layout_floating_box(box, block_container, layout_mode, available_space, margin_top + y);
+        bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.offset.y() + box_state.content_height() + box_state.margin_box_bottom());
+        return;
+    }
+
+    compute_width(box, available_space, layout_mode);
+
+    if (box_state.has_definite_height()) {
+        compute_height(box, available_space);
+    }
+
+    if (box.computed_values().clear() != CSS::Clear::None) {
+        m_margin_state.reset();
+    }
+
+    m_margin_state.add_margin(box_state.margin_top);
+    m_margin_state.update_block_waiting_for_final_y_position();
+
+    auto margin_top = m_margin_state.current_collapsed_margin();
+    if (m_margin_state.has_block_container_waiting_for_final_y_position()) {
+        // If first child margin top will collapse with margin-top of containing block then margin-top of child is 0
+        margin_top = 0;
+    }
+
+    place_block_level_element_in_normal_flow_vertically(box, y + margin_top);
+    place_block_level_element_in_normal_flow_horizontally(box, available_space);
+
+    OwnPtr<FormattingContext> independent_formatting_context;
+    if (!box.is_replaced_box() && box.has_children()) {
+        independent_formatting_context = create_independent_formatting_context_if_needed(m_state, box);
+        if (independent_formatting_context) {
+            // Margins of elements that establish new formatting contexts do not collapse with their in-flow children
+            m_margin_state.reset();
+
+            independent_formatting_context->run(box, layout_mode, box_state.available_inner_space_or_constraints_from(available_space));
+        } else {
+            if (box.children_are_inline()) {
+                layout_inline_children(verify_cast<BlockContainer>(box), layout_mode, box_state.available_inner_space_or_constraints_from(available_space));
+            } else {
+                if (box_state.border_top > 0 || box_state.padding_top > 0) {
+                    // margin-top of block container can't collapse with it's children if it has non zero border or padding
+                    m_margin_state.reset();
+                } else if (!m_margin_state.has_block_container_waiting_for_final_y_position()) {
+                    // margin-top of block container can be updated during children layout hence it's final y position yet to be determined
+                    m_margin_state.register_block_container_y_position_update_callback([&](CSSPixels margin_top) {
+                        place_block_level_element_in_normal_flow_vertically(box, margin_top + y + box_state.border_box_top());
+                    });
+                }
+
+                layout_block_level_children(verify_cast<BlockContainer>(box), layout_mode, box_state.available_inner_space_or_constraints_from(available_space));
+            }
+        }
+    }
+
+    compute_height(box, available_space);
+
+    if (!margins_collapse_through(box, m_state)) {
+        if (!m_margin_state.box_last_in_flow_child_margin_bottom_collapsed) {
+            m_margin_state.reset();
+        }
+        m_y_offset_of_current_block_container = box_state.offset.y() + box_state.content_height() + box_state.border_box_bottom();
+    }
+    m_margin_state.box_last_in_flow_child_margin_bottom_collapsed = false;
+
+    m_margin_state.add_margin(box_state.margin_bottom);
+    m_margin_state.update_block_waiting_for_final_y_position();
+
+    compute_inset(box);
+
+    if (is<ListItemBox>(box)) {
+        layout_list_item_marker(static_cast<ListItemBox const&>(box));
+    }
+
+    bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.offset.y() + box_state.content_height() + box_state.margin_box_bottom());
+
+    if (independent_formatting_context)
+        independent_formatting_context->parent_context_did_dimension_child_root_box();
+}
+
+void BlockFormattingContext::layout_block_level_children(BlockContainer const& block_container, LayoutMode layout_mode, AvailableSpace const& available_space)
 {
     VERIFY(!block_container.children_are_inline());
 
-    float content_height = 0;
-    float content_width = 0;
+    CSSPixels bottom_of_lowest_margin_box = 0;
 
-    block_container.for_each_child_of_type<Box>([&](Box& child_box) {
-        if (child_box.is_absolutely_positioned()) {
-            m_absolutely_positioned_boxes.append(child_box);
-            return IterationDecision::Continue;
-        }
-
-        // NOTE: ListItemMarkerBoxes are placed by their corresponding ListItemBox.
-        if (is<ListItemMarkerBox>(child_box))
-            return IterationDecision::Continue;
-
-        if (child_box.is_floating()) {
-            layout_floating_child(child_box, block_container);
-            return IterationDecision::Continue;
-        }
-
-        compute_width(child_box);
-        if (is<ReplacedBox>(child_box) || is<BlockContainer>(child_box))
-            place_block_level_element_in_normal_flow_vertically(child_box, block_container);
-
-        if (child_box.has_definite_height()) {
-            compute_height(child_box);
-        }
-
-        OwnPtr<FormattingContext> independent_formatting_context;
-        if (child_box.can_have_children()) {
-            independent_formatting_context = create_independent_formatting_context_if_needed(child_box);
-            if (independent_formatting_context)
-                independent_formatting_context->run(child_box, layout_mode);
-            else
-                layout_block_level_children(verify_cast<BlockContainer>(child_box), layout_mode);
-        }
-
-        compute_height(child_box);
-
-        if (child_box.computed_values().position() == CSS::Position::Relative)
-            compute_position(child_box);
-
-        if (is<ReplacedBox>(child_box) || is<BlockContainer>(child_box))
-            place_block_level_element_in_normal_flow_horizontally(child_box, block_container);
-
-        // FIXME: This should be factored differently. It's uncool that we mutate the tree *during* layout!
-        //        Instead, we should generate the marker box during the tree build.
-        if (is<ListItemBox>(child_box))
-            verify_cast<ListItemBox>(child_box).layout_marker();
-
-        content_height = max(content_height, child_box.effective_offset().y() + child_box.content_height() + child_box.box_model().margin_box().bottom);
-        content_width = max(content_width, child_box.content_width());
-
-        if (independent_formatting_context)
-            independent_formatting_context->parent_context_did_dimension_child_root_box();
-
+    TemporaryChange<Optional<CSSPixels>> change { m_y_offset_of_current_block_container, CSSPixels(0) };
+    block_container.for_each_child_of_type<Box>([&](Box& box) {
+        layout_block_level_box(box, block_container, layout_mode, bottom_of_lowest_margin_box, available_space);
         return IterationDecision::Continue;
     });
 
-    if (layout_mode != LayoutMode::Default) {
-        auto& width = block_container.computed_values().width();
-        if (!width.has_value() || (width->is_length() && width->length().is_auto()))
-            block_container.set_content_width(content_width);
+    m_margin_state.block_container_y_position_update_callback = {};
+
+    if (layout_mode == LayoutMode::IntrinsicSizing) {
+        auto& block_container_state = m_state.get_mutable(block_container);
+        if (!block_container_state.has_definite_width())
+            block_container_state.set_content_width(greatest_child_width(block_container));
+        if (!block_container_state.has_definite_height())
+            block_container_state.set_content_height(bottom_of_lowest_margin_box);
     }
 }
 
-void BlockFormattingContext::compute_vertical_box_model_metrics(Box& child_box, BlockContainer const& containing_block)
+void BlockFormattingContext::resolve_vertical_box_model_metrics(Box const& box, LayoutState& state)
 {
-    auto& box_model = child_box.box_model();
-    auto const& computed_values = child_box.computed_values();
-    auto width_of_containing_block = CSS::Length::make_px(containing_block.content_width());
+    auto& box_state = state.get_mutable(box);
+    auto const& computed_values = box.computed_values();
+    auto width_of_containing_block = CSS::Length::make_px(containing_block_width_for(box, state));
 
-    box_model.margin.top = computed_values.margin().top.resolved(child_box, width_of_containing_block).resolved(containing_block).to_px(child_box);
-    box_model.margin.bottom = computed_values.margin().bottom.resolved(child_box, width_of_containing_block).resolved(containing_block).to_px(child_box);
-    box_model.border.top = computed_values.border_top().width;
-    box_model.border.bottom = computed_values.border_bottom().width;
-    box_model.padding.top = computed_values.padding().top.resolved(child_box, width_of_containing_block).resolved(containing_block).to_px(child_box);
-    box_model.padding.bottom = computed_values.padding().bottom.resolved(child_box, width_of_containing_block).resolved(containing_block).to_px(child_box);
+    box_state.margin_top = computed_values.margin().top().resolved(box, width_of_containing_block).to_px(box);
+    box_state.margin_bottom = computed_values.margin().bottom().resolved(box, width_of_containing_block).to_px(box);
+    box_state.border_top = computed_values.border_top().width;
+    box_state.border_bottom = computed_values.border_bottom().width;
+    box_state.padding_top = computed_values.padding().top().resolved(box, width_of_containing_block).to_px(box);
+    box_state.padding_bottom = computed_values.padding().bottom().resolved(box, width_of_containing_block).to_px(box);
 }
 
-void BlockFormattingContext::place_block_level_element_in_normal_flow_vertically(Box& child_box, BlockContainer const& containing_block)
+CSSPixels BlockFormattingContext::BlockMarginState::current_collapsed_margin() const
 {
-    auto& box_model = child_box.box_model();
+    CSSPixels smallest_margin = 0;
+    CSSPixels largest_margin = 0;
+    size_t negative_margin_count = 0;
+    for (auto margin : current_collapsible_margins) {
+        if (margin < 0)
+            ++negative_margin_count;
+        largest_margin = max(largest_margin, margin);
+        smallest_margin = min(smallest_margin, margin);
+    }
+
+    CSSPixels collapsed_margin = 0;
+    if (negative_margin_count == current_collapsible_margins.size()) {
+        // When all margins are negative, the size of the collapsed margin is the smallest (most negative) margin.
+        collapsed_margin = smallest_margin;
+    } else if (negative_margin_count > 0) {
+        // When negative margins are involved, the size of the collapsed margin is the sum of the largest positive margin and the smallest (most negative) negative margin.
+        collapsed_margin = largest_margin + smallest_margin;
+    } else {
+        // Otherwise, collapse all the adjacent margins by using only the largest one.
+        collapsed_margin = largest_margin;
+    }
+
+    return collapsed_margin;
+}
+
+void BlockFormattingContext::place_block_level_element_in_normal_flow_vertically(Box const& child_box, CSSPixels y)
+{
+    auto& box_state = m_state.get_mutable(child_box);
     auto const& computed_values = child_box.computed_values();
-
-    compute_vertical_box_model_metrics(child_box, containing_block);
-
-    float y = box_model.margin_box().top
-        + box_model.offset.top;
-
-    // NOTE: Empty (0-height) preceding siblings have their margins collapsed with *their* preceding sibling, etc.
-    float collapsed_bottom_margin_of_preceding_siblings = 0;
-
-    auto* relevant_sibling = child_box.previous_sibling_of_type<Layout::BlockContainer>();
-    while (relevant_sibling != nullptr) {
-        if (!relevant_sibling->is_absolutely_positioned() && !relevant_sibling->is_floating()) {
-            collapsed_bottom_margin_of_preceding_siblings = max(collapsed_bottom_margin_of_preceding_siblings, relevant_sibling->box_model().margin.bottom);
-            if (relevant_sibling->border_box_height() > 0)
-                break;
-        }
-        relevant_sibling = relevant_sibling->previous_sibling();
-    }
-
-    if (relevant_sibling) {
-        y += relevant_sibling->effective_offset().y()
-            + relevant_sibling->content_height()
-            + relevant_sibling->box_model().border_box().bottom;
-
-        // Collapse top margin with bottom margin of preceding siblings if needed
-        float my_margin_top = box_model.margin.top;
-
-        if (my_margin_top < 0 || collapsed_bottom_margin_of_preceding_siblings < 0) {
-            // Negative margins present.
-            float largest_negative_margin = -min(my_margin_top, collapsed_bottom_margin_of_preceding_siblings);
-            float largest_positive_margin = (my_margin_top < 0 && collapsed_bottom_margin_of_preceding_siblings < 0) ? 0 : max(my_margin_top, collapsed_bottom_margin_of_preceding_siblings);
-            float final_margin = largest_positive_margin - largest_negative_margin;
-            y += final_margin - my_margin_top;
-        } else if (collapsed_bottom_margin_of_preceding_siblings > my_margin_top) {
-            // Sibling's margin is larger than mine, adjust so we use sibling's.
-            y += collapsed_bottom_margin_of_preceding_siblings - my_margin_top;
-        }
-    }
 
     auto clear_floating_boxes = [&](FloatSideData& float_side) {
-        if (!float_side.boxes.is_empty()) {
-            float clearance_y = 0;
-            for (auto& floating_box : float_side.boxes) {
-                clearance_y = max(clearance_y, floating_box.effective_offset().y() + floating_box.border_box_height());
+        if (!float_side.current_boxes.is_empty()) {
+            // NOTE: Floating boxes are globally relevant within this BFC, *but* their offset coordinates
+            //       are relative to their containing block.
+            //       This means that we have to first convert to a root-space Y coordinate before clearing,
+            //       and then convert back to a local Y coordinate when assigning the cleared offset to
+            //       the `child_box` layout state.
+
+            // First, find the lowest margin box edge on this float side and calculate the Y offset just below it.
+            CSSPixels clearance_y_in_root = 0;
+            for (auto const& floating_box : float_side.current_boxes) {
+                auto floating_box_rect_in_root = margin_box_rect_in_ancestor_coordinate_space(floating_box.box, root(), m_state);
+                clearance_y_in_root = max(clearance_y_in_root, floating_box_rect_in_root.bottom() + 1);
             }
-            y = max(y, clearance_y);
-            float_side.boxes.clear();
-            float_side.y_offset = 0;
+
+            // Then, convert the clearance Y to a coordinate relative to the containing block of `child_box`.
+            CSSPixels clearance_y_in_containing_block = clearance_y_in_root;
+            for (auto* containing_block = child_box.containing_block(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block())
+                clearance_y_in_containing_block -= m_state.get(*containing_block).offset.y();
+
+            if (clearance_y_in_containing_block > y)
+                m_y_offset_of_current_block_container = clearance_y_in_containing_block;
+            y = max(y, clearance_y_in_containing_block);
+            float_side.clear();
         }
     };
 
@@ -521,149 +644,320 @@ void BlockFormattingContext::place_block_level_element_in_normal_flow_vertically
     if ((computed_values.clear() == CSS::Clear::Right || computed_values.clear() == CSS::Clear::Both) && !child_box.is_flex_item())
         clear_floating_boxes(m_right_floats);
 
-    child_box.set_offset(child_box.effective_offset().x(), y);
+    y += box_state.border_box_top();
+
+    box_state.set_content_offset(CSSPixelPoint { box_state.offset.x(), y.value() });
 }
 
-void BlockFormattingContext::place_block_level_element_in_normal_flow_horizontally(Box& child_box, BlockContainer const& containing_block)
+void BlockFormattingContext::place_block_level_element_in_normal_flow_horizontally(Box const& child_box, AvailableSpace const& available_space)
 {
-    auto& box_model = child_box.box_model();
+    auto& box_state = m_state.get_mutable(child_box);
 
-    float x = 0;
-    if (containing_block.computed_values().text_align() == CSS::TextAlign::LibwebCenter) {
-        x = (containing_block.content_width() / 2) - child_box.content_width() / 2;
-    } else {
-        x = box_model.margin_box().left + box_model.offset.left;
+    CSSPixels x = 0;
+    CSSPixels available_width_within_containing_block = available_space.width.to_px();
+
+    if ((!m_left_floats.current_boxes.is_empty() || !m_right_floats.current_boxes.is_empty())
+        && creates_block_formatting_context(child_box)) {
+        auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(child_box, root(), m_state);
+        auto space = space_used_by_floats(box_in_root_rect.y());
+        available_width_within_containing_block -= space.left + space.right;
+        x += space.left;
     }
 
-    child_box.set_offset(x, child_box.effective_offset().y());
+    if (child_box.containing_block()->computed_values().text_align() == CSS::TextAlign::LibwebCenter) {
+        x += (available_width_within_containing_block / 2) - box_state.content_width() / 2;
+    } else {
+        x += box_state.margin_box_left();
+    }
+
+    box_state.set_content_offset({ x.value(), box_state.offset.y() });
 }
 
-void BlockFormattingContext::layout_initial_containing_block(LayoutMode layout_mode)
+static void measure_scrollable_overflow(LayoutState const& state, Box const& box, CSSPixels& bottom_edge, CSSPixels& right_edge)
+{
+    auto const& child_state = state.get(box);
+    auto child_rect = absolute_content_rect(box, state);
+    child_rect.inflate(child_state.border_box_top(), child_state.border_box_right(), child_state.border_box_bottom(), child_state.border_box_left());
+
+    bottom_edge = max(bottom_edge, child_rect.bottom());
+    right_edge = max(right_edge, child_rect.right());
+
+    if (box.computed_values().overflow_x() == CSS::Overflow::Hidden && box.computed_values().overflow_y() == CSS::Overflow::Hidden)
+        return;
+
+    box.for_each_child_of_type<Box>([&](Box const& child) {
+        measure_scrollable_overflow(state, child, bottom_edge, right_edge);
+        return IterationDecision::Continue;
+    });
+}
+
+void BlockFormattingContext::layout_viewport(LayoutMode layout_mode, AvailableSpace const& available_space)
 {
     auto viewport_rect = root().browsing_context().viewport_rect();
 
-    auto& icb = verify_cast<Layout::InitialContainingBlock>(root());
+    auto& viewport = verify_cast<Layout::Viewport>(root());
+    auto& viewport_state = m_state.get_mutable(viewport);
 
-    VERIFY(!icb.children_are_inline());
-    layout_block_level_children(root(), layout_mode);
+    if (root().children_are_inline())
+        layout_inline_children(root(), layout_mode, available_space);
+    else
+        layout_block_level_children(root(), layout_mode, available_space);
 
-    // Compute scrollable overflow.
-    float bottom_edge = 0;
-    float right_edge = 0;
-    icb.for_each_in_subtree_of_type<Box>([&](Box& child) {
-        auto child_rect = child.absolute_border_box_rect();
-        bottom_edge = max(bottom_edge, child_rect.bottom());
-        right_edge = max(right_edge, child_rect.right());
-        return IterationDecision::Continue;
-    });
+    CSSPixels bottom_edge = 0;
+    CSSPixels right_edge = 0;
+    measure_scrollable_overflow(m_state, viewport, bottom_edge, right_edge);
 
     if (bottom_edge >= viewport_rect.height() || right_edge >= viewport_rect.width()) {
-        auto& overflow_data = icb.ensure_overflow_data();
-        overflow_data.scrollable_overflow_rect = viewport_rect.to_type<float>();
+        // FIXME: Move overflow data to LayoutState!
+        auto& overflow_data = viewport_state.ensure_overflow_data();
+        overflow_data.scrollable_overflow_rect = viewport_rect;
         // NOTE: The edges are *within* the rectangle, so we add 1 to get the width and height.
         overflow_data.scrollable_overflow_rect.set_size(right_edge + 1, bottom_edge + 1);
-    } else {
-        icb.clear_overflow_data();
     }
 }
 
-void BlockFormattingContext::layout_floating_child(Box& box, BlockContainer const& containing_block)
+void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer const&, LayoutMode layout_mode, AvailableSpace const& available_space, CSSPixels y, LineBuilder* line_builder)
 {
     VERIFY(box.is_floating());
 
-    compute_width(box);
-    (void)layout_inside(box, LayoutMode::Default);
-    compute_height(box);
+    auto& box_state = m_state.get_mutable(box);
+    CSSPixels width_of_containing_block = available_space.width.to_px();
+
+    compute_width(box, available_space, layout_mode);
+    auto independent_formatting_context = layout_inside(box, layout_mode, box_state.available_inner_space_or_constraints_from(available_space));
+    compute_height(box, available_space);
 
     // First we place the box normally (to get the right y coordinate.)
-    place_block_level_element_in_normal_flow_vertically(box, containing_block);
-    place_block_level_element_in_normal_flow_horizontally(box, containing_block);
+    // If we have a LineBuilder, we're in the middle of inline layout, otherwise this is block layout.
+    if (line_builder) {
+        auto y = line_builder->y_for_float_to_be_inserted_here(box);
+        box_state.set_content_y(y + box_state.margin_box_top());
+    } else {
+        place_block_level_element_in_normal_flow_vertically(box, y + box_state.margin_top);
+        place_block_level_element_in_normal_flow_horizontally(box, available_space);
+    }
 
-    auto float_box = [&](FloatSide side, FloatSideData& side_data) {
-        auto first_edge = [&](PixelBox const& thing) { return side == FloatSide::Left ? thing.left : thing.right; };
-        auto second_edge = [&](PixelBox const& thing) { return side == FloatSide::Right ? thing.left : thing.right; };
-
-        // Then we float it to the left or right.
-        float x = box.effective_offset().x();
-
-        auto box_in_root_rect = box.margin_box_rect_in_ancestor_coordinate_space(root());
-        float y_in_root = box_in_root_rect.y();
-
-        float y = box.effective_offset().y();
-
-        if (side_data.boxes.is_empty()) {
-            // This is the first floating box on this side. Go all the way to the edge.
+    // Then we float it to the left or right.
+    auto float_box = [&](FloatSide side, FloatSideData& side_data, FloatSideData& other_side_data) {
+        CSSPixels offset_from_edge = 0;
+        auto float_to_edge = [&] {
             if (side == FloatSide::Left)
-                x = box.box_model().margin_box().left;
+                offset_from_edge = box_state.margin_box_left();
             else
-                x = containing_block.content_width() - box.box_model().margin_box().right - box.content_width();
+                offset_from_edge = box_state.content_width() + box_state.margin_box_right();
+        };
+
+        auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(box, root(), m_state);
+        CSSPixels y_in_root = box_in_root_rect.y();
+        CSSPixels y = box_state.offset.y();
+
+        if (side_data.current_boxes.is_empty()) {
+            // This is the first floating box on this side. Go all the way to the edge.
+            float_to_edge();
             side_data.y_offset = 0;
         } else {
-            auto& previous_box = side_data.boxes.last();
-            auto previous_rect = previous_box.margin_box_rect_in_ancestor_coordinate_space(root());
+            auto& previous_box = side_data.current_boxes.last();
 
-            auto margin_collapsed_with_previous = max(
-                second_edge(previous_box.box_model().margin),
-                first_edge(box.box_model().margin));
-
-            float wanted_x = 0;
+            CSSPixels wanted_offset_from_edge = 0;
             bool fits_on_line = false;
 
             if (side == FloatSide::Left) {
-                auto previous_right_border_edge = previous_box.effective_offset().x()
-                    + previous_box.content_width()
-                    + previous_box.box_model().padding.right
-                    + previous_box.box_model().border.right
-                    + margin_collapsed_with_previous;
-
-                wanted_x = previous_right_border_edge + box.box_model().border.left + box.box_model().padding.left;
-                fits_on_line = (wanted_x + box.content_width() + box.box_model().padding.right + box.box_model().border.right + box.box_model().margin.right) <= containing_block.content_width();
+                wanted_offset_from_edge = side_data.current_width + box_state.margin_box_left();
+                fits_on_line = (wanted_offset_from_edge + box_state.content_width() + box_state.margin_box_right()) <= width_of_containing_block;
             } else {
-                auto previous_left_border_edge = previous_box.effective_offset().x()
-                    - previous_box.content_width()
-                    - previous_box.box_model().padding.left
-                    - previous_box.box_model().border.left
-                    - margin_collapsed_with_previous;
-
-                wanted_x = previous_left_border_edge - box.box_model().border.right - box.box_model().padding.right - box.content_width();
-                fits_on_line = (wanted_x - box.box_model().padding.left - box.box_model().border.left - box.box_model().margin.left) >= 0;
+                wanted_offset_from_edge = side_data.current_width + box_state.margin_box_right() + box_state.content_width();
+                fits_on_line = (wanted_offset_from_edge - box_state.margin_box_left()) >= 0;
             }
 
             if (fits_on_line) {
-                if (previous_rect.contains_vertically(y_in_root + side_data.y_offset)) {
+                auto const previous_rect = margin_box_rect_in_ancestor_coordinate_space(previous_box.box, root(), m_state);
+                // NOTE: If we're in inline layout, the LineBuilder has already provided the right Y offset.
+                //       In block layout, we adjust by the side's current Y offset here.
+                if (!line_builder)
+                    y_in_root += side_data.y_offset;
+                if (previous_rect.contains_vertically(y_in_root)) {
                     // This box touches another already floating box. Stack after others.
-                    x = wanted_x;
+                    offset_from_edge = wanted_offset_from_edge;
                 } else {
-                    // This box does not touch another floating box, go all the way to the first edge.
-                    x = first_edge(box.box_model().margin_box());
+                    // This box does not touch another floating box, go all the way to the edge.
+                    float_to_edge();
 
                     // Also, forget all previous boxes floated to this side while since they're no longer relevant.
-                    side_data.boxes.clear();
+                    side_data.clear();
                 }
             } else {
                 // We ran out of horizontal space on this "float line", and need to break.
-                x = first_edge(box.box_model().margin_box());
-                float lowest_border_edge = 0;
-                for (auto const& box : side_data.boxes)
-                    lowest_border_edge = max(lowest_border_edge, box.border_box_height());
+                float_to_edge();
+                CSSPixels lowest_margin_edge = 0;
+                for (auto const& box : side_data.current_boxes) {
+                    auto const& box_state = m_state.get(box.box);
+                    lowest_margin_edge = max(lowest_margin_edge, box_state.margin_box_height());
+                }
 
-                side_data.y_offset += lowest_border_edge;
+                side_data.y_offset += lowest_margin_edge;
 
                 // Also, forget all previous boxes floated to this side while since they're no longer relevant.
-                side_data.boxes.clear();
+                side_data.clear();
             }
         }
-        y += side_data.y_offset;
-        side_data.boxes.append(box);
 
-        box.set_offset(x, y);
+        // NOTE: If we're in inline layout, the LineBuilder has already provided the right Y offset.
+        //       In block layout, we adjust by the side's current Y offset here.
+        // FIXME: It's annoying that we have different behavior for inline vs block here.
+        //        Find a way to unify the behavior so we don't need to branch here.
+
+        if (!line_builder)
+            y += side_data.y_offset;
+
+        side_data.all_boxes.append(adopt_own(*new FloatingBox {
+            .box = box,
+            .offset_from_edge = offset_from_edge,
+            .top_margin_edge = y - box_state.margin_box_top(),
+            .bottom_margin_edge = y + box_state.content_height() + box_state.margin_box_bottom(),
+        }));
+        side_data.current_boxes.append(*side_data.all_boxes.last());
+
+        if (side == FloatSide::Left) {
+            side_data.current_width = offset_from_edge + box_state.content_width() + box_state.margin_box_right();
+        } else {
+            side_data.current_width = offset_from_edge + box_state.margin_box_left();
+        }
+        side_data.max_width = max(side_data.current_width, side_data.max_width);
+
+        // NOTE: We don't set the X position here, that happens later, once we know the root block width.
+        //       See parent_context_did_dimension_child_root_box() for that logic.
+        box_state.set_content_y(y.value());
+
+        // If the new box was inserted below the bottom of the opposite side,
+        // we reset the other side back to its edge.
+        if (y > other_side_data.y_offset)
+            other_side_data.clear();
     };
 
     // Next, float to the left and/or right
     if (box.computed_values().float_() == CSS::Float::Left) {
-        float_box(FloatSide::Left, m_left_floats);
+        float_box(FloatSide::Left, m_left_floats, m_right_floats);
     } else if (box.computed_values().float_() == CSS::Float::Right) {
-        float_box(FloatSide::Right, m_right_floats);
+        float_box(FloatSide::Right, m_right_floats, m_left_floats);
     }
+
+    m_state.get_mutable(root()).add_floating_descendant(box);
+
+    if (line_builder)
+        line_builder->recalculate_available_space();
+
+    if (independent_formatting_context)
+        independent_formatting_context->parent_context_did_dimension_child_root_box();
 }
+
+void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_item_box)
+{
+    if (!list_item_box.marker())
+        return;
+
+    auto& marker = *list_item_box.marker();
+    auto& marker_state = m_state.get_mutable(marker);
+    auto& list_item_state = m_state.get_mutable(list_item_box);
+
+    CSSPixels image_width = 0;
+    CSSPixels image_height = 0;
+    if (auto const* list_style_image = marker.list_style_image()) {
+        image_width = list_style_image->natural_width().value_or(0);
+        image_height = list_style_image->natural_height().value_or(0);
+    }
+
+    CSSPixels default_marker_width = max(4, marker.font().pixel_size_rounded_up() - 4);
+
+    if (marker.text().is_empty()) {
+        marker_state.set_content_width((image_width + default_marker_width).value());
+    } else {
+        auto text_width = marker.font().width(marker.text());
+        marker_state.set_content_width((image_width + text_width).value());
+    }
+
+    marker_state.set_content_height(max(image_height, marker.font().pixel_size_rounded_up() + 1).value());
+
+    marker_state.set_content_offset({ -(marker_state.content_width() + default_marker_width),
+        max(CSSPixels(0.f), (CSSPixels(marker.line_height()) - marker_state.content_height()) / 2.f) });
+
+    if (marker_state.content_height() > list_item_state.content_height())
+        list_item_state.set_content_height(marker_state.content_height());
+}
+
+BlockFormattingContext::SpaceUsedByFloats BlockFormattingContext::space_used_by_floats(CSSPixels y) const
+{
+    SpaceUsedByFloats space_used_by_floats;
+
+    for (auto const& floating_box_ptr : m_left_floats.all_boxes.in_reverse()) {
+        auto const& floating_box = *floating_box_ptr;
+        auto const& floating_box_state = m_state.get(floating_box.box);
+        // NOTE: The floating box is *not* in the final horizontal position yet, but the size and vertical position is valid.
+        auto rect = margin_box_rect_in_ancestor_coordinate_space(floating_box.box, root(), m_state);
+        if (rect.contains_vertically(y.value())) {
+            space_used_by_floats.left = floating_box.offset_from_edge
+                + floating_box_state.content_width()
+                + floating_box_state.margin_box_right();
+            break;
+        }
+    }
+
+    for (auto const& floating_box_ptr : m_right_floats.all_boxes.in_reverse()) {
+        auto const& floating_box = *floating_box_ptr;
+        auto const& floating_box_state = m_state.get(floating_box.box);
+        // NOTE: The floating box is *not* in the final horizontal position yet, but the size and vertical position is valid.
+        auto rect = margin_box_rect_in_ancestor_coordinate_space(floating_box.box, root(), m_state);
+        if (rect.contains_vertically(y.value())) {
+            space_used_by_floats.right = floating_box.offset_from_edge
+                + floating_box_state.margin_box_left();
+            break;
+        }
+    }
+
+    return space_used_by_floats;
+}
+
+CSSPixels BlockFormattingContext::greatest_child_width(Box const& box)
+{
+    // Similar to FormattingContext::greatest_child_width()
+    // but this one takes floats into account!
+    CSSPixels max_width = m_left_floats.max_width + m_right_floats.max_width;
+    if (box.children_are_inline()) {
+        for (auto const& line_box : m_state.get(verify_cast<BlockContainer>(box)).line_boxes) {
+            CSSPixels width_here = line_box.width();
+            CSSPixels extra_width_from_left_floats = 0;
+            for (auto& left_float : m_left_floats.all_boxes) {
+                if (line_box.baseline() >= left_float->top_margin_edge.value() || line_box.baseline() <= left_float->bottom_margin_edge.value()) {
+                    auto const& left_float_state = m_state.get(left_float->box);
+                    extra_width_from_left_floats = max(extra_width_from_left_floats, left_float->offset_from_edge + left_float_state.content_width() + left_float_state.margin_box_right());
+                }
+            }
+            CSSPixels extra_width_from_right_floats = 0;
+            for (auto& right_float : m_right_floats.all_boxes) {
+                if (line_box.baseline() >= right_float->top_margin_edge.value() || line_box.baseline() <= right_float->bottom_margin_edge.value()) {
+                    auto const& right_float_state = m_state.get(right_float->box);
+                    extra_width_from_right_floats = max(extra_width_from_right_floats, right_float->offset_from_edge + right_float_state.margin_box_left());
+                }
+            }
+            width_here += extra_width_from_left_floats + extra_width_from_right_floats;
+            max_width = max(max_width, width_here);
+        }
+    } else {
+        box.for_each_child_of_type<Box>([&](Box const& child) {
+            if (!child.is_absolutely_positioned())
+                max_width = max(max_width, m_state.get(child).margin_box_width());
+        });
+    }
+    return max_width;
+}
+
+void BlockFormattingContext::determine_width_of_child(Box const& box, AvailableSpace const& available_space)
+{
+    compute_width(box, available_space);
+}
+
+void BlockFormattingContext::determine_height_of_child(Box const& box, AvailableSpace const& available_space)
+{
+    compute_height(box, available_space);
+}
+
 }

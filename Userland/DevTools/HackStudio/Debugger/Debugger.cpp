@@ -18,12 +18,13 @@ Debugger& Debugger::the()
 }
 
 void Debugger::initialize(
-    String source_root,
-    Function<HasControlPassedToUser(const PtraceRegisters&)> on_stop_callback,
+    DeprecatedString source_root,
+    Function<HasControlPassedToUser(PtraceRegisters const&)> on_stop_callback,
     Function<void()> on_continue_callback,
-    Function<void()> on_exit_callback)
+    Function<void()> on_exit_callback,
+    Function<void(float)> on_initialization_progress)
 {
-    s_the = new Debugger(source_root, move(on_stop_callback), move(on_continue_callback), move(on_exit_callback));
+    s_the = new Debugger(source_root, move(on_stop_callback), move(on_continue_callback), move(on_exit_callback), move(on_initialization_progress));
 }
 
 bool Debugger::is_initialized()
@@ -32,27 +33,29 @@ bool Debugger::is_initialized()
 }
 
 Debugger::Debugger(
-    String source_root,
-    Function<HasControlPassedToUser(const PtraceRegisters&)> on_stop_callback,
+    DeprecatedString source_root,
+    Function<HasControlPassedToUser(PtraceRegisters const&)> on_stop_callback,
     Function<void()> on_continue_callback,
-    Function<void()> on_exit_callback)
+    Function<void()> on_exit_callback,
+    Function<void(float)> on_initialization_progress)
     : m_source_root(source_root)
     , m_on_stopped_callback(move(on_stop_callback))
     , m_on_continue_callback(move(on_continue_callback))
     , m_on_exit_callback(move(on_exit_callback))
+    , m_on_initialization_progress(move(on_initialization_progress))
 {
     pthread_mutex_init(&m_ui_action_mutex, nullptr);
     pthread_cond_init(&m_ui_action_cond, nullptr);
 }
 
-void Debugger::on_breakpoint_change(const String& file, size_t line, BreakpointChange change_type)
+void Debugger::on_breakpoint_change(DeprecatedString const& file, size_t line, BreakpointChange change_type)
 {
     auto position = create_source_position(file, line);
 
     if (change_type == BreakpointChange::Added) {
         m_breakpoints.append(position);
     } else {
-        m_breakpoints.remove_all_matching([&](const Debug::DebugInfo::SourcePosition& val) { return val == position; });
+        m_breakpoints.remove_all_matching([&](Debug::DebugInfo::SourcePosition const& val) { return val == position; });
     }
 
     auto session = Debugger::the().session();
@@ -77,7 +80,7 @@ void Debugger::on_breakpoint_change(const String& file, size_t line, BreakpointC
     }
 }
 
-bool Debugger::set_execution_position(const String& file, size_t line)
+bool Debugger::set_execution_position(DeprecatedString const& file, size_t line)
 {
     auto position = create_source_position(file, line);
     auto session = Debugger::the().session();
@@ -92,11 +95,11 @@ bool Debugger::set_execution_position(const String& file, size_t line)
     return true;
 }
 
-Debug::DebugInfo::SourcePosition Debugger::create_source_position(const String& file, size_t line)
+Debug::DebugInfo::SourcePosition Debugger::create_source_position(DeprecatedString const& file, size_t line)
 {
-    if (file.starts_with("/"))
+    if (file.starts_with('/'))
         return { file, line + 1 };
-    return { LexicalPath::canonicalized_path(String::formatted("{}/{}", m_source_root, file)), line + 1 };
+    return { LexicalPath::canonicalized_path(DeprecatedString::formatted("{}/{}", m_source_root, file)), line + 1 };
 }
 
 intptr_t Debugger::start_static()
@@ -112,16 +115,10 @@ void Debugger::stop()
 
 void Debugger::start()
 {
+    auto [debug_session, initial_state] = create_debug_session();
+    m_debug_session = move(debug_session);
 
-    auto child_setup_callback = [this]() {
-        if (m_child_setup_callback)
-            return m_child_setup_callback();
-        return ErrorOr<void> {};
-    };
-    m_debug_session = Debug::DebugSession::exec_and_attach(m_executable_path, m_source_root, move(child_setup_callback));
-    VERIFY(!!m_debug_session);
-
-    for (const auto& breakpoint : m_breakpoints) {
+    for (auto const& breakpoint : m_breakpoints) {
         dbgln("inserting breakpoint at: {}:{}", breakpoint.file_path, breakpoint.line_number);
         auto address = m_debug_session->get_address_from_source_position(breakpoint.file_path, breakpoint.line_number);
         if (address.has_value()) {
@@ -132,14 +129,36 @@ void Debugger::start()
         }
     }
 
-    debugger_loop();
+    debugger_loop(initial_state);
 }
 
-int Debugger::debugger_loop()
+Debugger::CreateDebugSessionResult Debugger::create_debug_session()
+{
+    if (!m_executable_path.is_null()) {
+        auto child_setup_callback = [this]() {
+            if (m_child_setup_callback)
+                return m_child_setup_callback();
+            return ErrorOr<void> {};
+        };
+        auto debug_session = Debug::DebugSession::exec_and_attach(m_executable_path, m_source_root, move(child_setup_callback), move(m_on_initialization_progress));
+        VERIFY(!!debug_session);
+        return { debug_session.release_nonnull(), Debug::DebugSession::Running };
+    }
+
+    if (m_pid_to_attach.has_value()) {
+        auto debug_session = Debug::DebugSession::attach(m_pid_to_attach.value(), m_source_root, move(m_on_initialization_progress));
+        VERIFY(!!debug_session);
+        return { debug_session.release_nonnull(), Debug::DebugSession::Stopped };
+    }
+
+    VERIFY_NOT_REACHED();
+}
+
+int Debugger::debugger_loop(Debug::DebugSession::DesiredInitialDebugeeState initial_state)
 {
     VERIFY(m_debug_session);
 
-    m_debug_session->run(Debug::DebugSession::DesiredInitialDebugeeState::Running, [this](Debug::DebugSession::DebugBreakReason reason, Optional<PtraceRegisters> optional_regs) {
+    m_debug_session->run(initial_state, [this](Debug::DebugSession::DebugBreakReason reason, Optional<PtraceRegisters> optional_regs) {
         if (reason == Debug::DebugSession::DebugBreakReason::Exited) {
             dbgln("Program exited");
             m_on_exit_callback();
@@ -154,7 +173,7 @@ int Debugger::debugger_loop()
             return Debug::DebugSession::DebugDecision::SingleStep;
 
         // We currently do no support stepping through assembly source
-        if (source_position.value().file_path.ends_with(".S"))
+        if (source_position.value().file_path.ends_with(".S"sv))
             return Debug::DebugSession::DebugDecision::SingleStep;
 
         VERIFY(source_position.has_value());
@@ -218,7 +237,7 @@ void Debugger::DebuggingState::set_single_stepping(Debug::DebugInfo::SourcePosit
     m_original_source_position = original_source_position;
 }
 
-bool Debugger::DebuggingState::should_stop_single_stepping(const Debug::DebugInfo::SourcePosition& current_source_position) const
+bool Debugger::DebuggingState::should_stop_single_stepping(Debug::DebugInfo::SourcePosition const& current_source_position) const
 {
     VERIFY(m_state == State::SingleStepping);
     return m_original_source_position.value() != current_source_position;
@@ -243,7 +262,7 @@ void Debugger::DebuggingState::add_temporary_breakpoint(FlatPtr address)
     m_addresses_of_temporary_breakpoints.append(address);
 }
 
-void Debugger::do_step_out(const PtraceRegisters& regs)
+void Debugger::do_step_out(PtraceRegisters const& regs)
 {
     // To step out, we simply insert a temporary breakpoint at the
     // instruction the current function returns to, and continue
@@ -251,7 +270,7 @@ void Debugger::do_step_out(const PtraceRegisters& regs)
     insert_temporary_breakpoint_at_return_address(regs);
 }
 
-void Debugger::do_step_over(const PtraceRegisters& regs)
+void Debugger::do_step_over(PtraceRegisters const& regs)
 {
     // To step over, we insert a temporary breakpoint at each line in the current function,
     // as well as at the current function's return point, and continue execution.
@@ -265,13 +284,13 @@ void Debugger::do_step_over(const PtraceRegisters& regs)
     }
     VERIFY(current_function.has_value());
     auto lines_in_current_function = lib->debug_info->source_lines_in_scope(current_function.value());
-    for (const auto& line : lines_in_current_function) {
+    for (auto const& line : lines_in_current_function) {
         insert_temporary_breakpoint(line.address_of_first_statement.value() + lib->base_address);
     }
     insert_temporary_breakpoint_at_return_address(regs);
 }
 
-void Debugger::insert_temporary_breakpoint_at_return_address(const PtraceRegisters& regs)
+void Debugger::insert_temporary_breakpoint_at_return_address(PtraceRegisters const& regs)
 {
     auto frame_info = Debug::StackFrameUtils::get_info(*m_debug_session, regs.bp());
     VERIFY(frame_info.has_value());
@@ -294,6 +313,10 @@ void Debugger::set_requested_debugger_action(DebuggerAction action)
     m_requested_debugger_action = action;
     pthread_cond_signal(continue_cond());
     pthread_mutex_unlock(continue_mutex());
+}
+void Debugger::stop_debuggee()
+{
+    return m_debug_session->stop_debuggee();
 }
 
 }

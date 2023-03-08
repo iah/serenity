@@ -1,20 +1,21 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/Notification.h>
-#include <LibIPC/ServerConnection.h>
+#include <LibIPC/ConnectionToServer.h>
 #include <NotificationServer/NotificationClientEndpoint.h>
 #include <NotificationServer/NotificationServerEndpoint.h>
 
 namespace GUI {
 
-class NotificationServerConnection final
-    : public IPC::ServerConnection<NotificationClientEndpoint, NotificationServerEndpoint>
+class ConnectionToNotificationServer final
+    : public IPC::ConnectionToServer<NotificationClientEndpoint, NotificationServerEndpoint>
     , public NotificationClientEndpoint {
-    IPC_CLIENT_CONNECTION(NotificationServerConnection, "/tmp/portal/notify")
+    IPC_CLIENT_CONNECTION(ConnectionToNotificationServer, "/tmp/session/%sid/portal/notify"sv)
 
     friend class Notification;
 
@@ -25,27 +26,22 @@ public:
     }
 
 private:
-    explicit NotificationServerConnection(NonnullOwnPtr<Core::Stream::LocalSocket> socket, Notification* notification)
-        : IPC::ServerConnection<NotificationClientEndpoint, NotificationServerEndpoint>(*this, move(socket))
+    explicit ConnectionToNotificationServer(NonnullOwnPtr<Core::LocalSocket> socket, Notification* notification)
+        : IPC::ConnectionToServer<NotificationClientEndpoint, NotificationServerEndpoint>(*this, move(socket))
         , m_notification(notification)
     {
     }
     Notification* m_notification;
 };
 
-Notification::Notification()
-{
-}
-
-Notification::~Notification()
-{
-}
+Notification::Notification() = default;
+Notification::~Notification() = default;
 
 void Notification::show()
 {
     VERIFY(!m_shown && !m_destroyed);
     auto icon = m_icon ? m_icon->to_shareable_bitmap() : Gfx::ShareableBitmap();
-    m_connection = NotificationServerConnection::try_create(this).release_value_but_fixme_should_propagate_errors();
+    m_connection = ConnectionToNotificationServer::try_create(this).release_value_but_fixme_should_propagate_errors();
     m_connection->show_notification(m_text, m_title, icon);
     m_shown = true;
 }

@@ -1,12 +1,13 @@
 /*
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2023, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Array.h>
-#include <LibJS/Runtime/GlobalObject.h>
+#include <AK/Variant.h>
 #include <LibJS/Runtime/Intl/PluralRules.h>
+#include <math.h>
+#include <stdlib.h>
 
 namespace JS::Intl {
 
@@ -16,70 +17,161 @@ PluralRules::PluralRules(Object& prototype)
 {
 }
 
-void PluralRules::set_type(StringView type)
+// 16.5.1 GetOperands ( s ), https://tc39.es/ecma402/#sec-getoperands
+::Locale::PluralOperands get_operands(StringView string)
 {
-    if (type == "cardinal"sv) {
-        m_type = Type::Cardinal;
-    } else if (type == "ordinal"sv) {
-        m_type = Type::Ordinal;
-    } else {
-        VERIFY_NOT_REACHED();
+    // 1.Let n be ! ToNumber(s).
+    auto number = string.to_double(AK::TrimWhitespace::Yes).release_value();
+
+    // 2. Assert: n is finite.
+    VERIFY(isfinite(number));
+
+    // 3. Let dp be StringIndexOf(s, ".", 0).
+    auto decimal_point = string.find('.');
+
+    Variant<Empty, double, StringView> integer_part;
+    StringView fraction_slice;
+
+    // 4. If dp = -1, then
+    if (!decimal_point.has_value()) {
+        // a. Let intPart be n.
+        integer_part = number;
+
+        // b. Let fracSlice be "".
     }
+    // 5. Else,
+    else {
+        // a. Let intPart be the substring of s from 0 to dp.
+        integer_part = string.substring_view(0, *decimal_point);
+
+        // b. Let fracSlice be the substring of s from dp + 1.
+        fraction_slice = string.substring_view(*decimal_point + 1);
+    }
+
+    // 6. Let i be abs(! ToNumber(intPart)).
+    auto integer = integer_part.visit(
+        [](Empty) -> u64 { VERIFY_NOT_REACHED(); },
+        [](double value) {
+            return static_cast<u64>(fabs(value));
+        },
+        [](StringView value) {
+            auto value_as_int = value.template to_int<i64>().value();
+            return static_cast<u64>(value_as_int);
+        });
+
+    // 7. Let fracDigitCount be the length of fracSlice.
+    auto fraction_digit_count = fraction_slice.length();
+
+    // 8. Let f be ! ToNumber(fracSlice).
+    auto fraction = fraction_slice.is_empty() ? 0u : fraction_slice.template to_uint<u64>().value();
+
+    // 9. Let significantFracSlice be the value of fracSlice stripped of trailing "0".
+    auto significant_fraction_slice = fraction_slice.trim("0"sv, TrimMode::Right);
+
+    // 10. Let significantFracDigitCount be the length of significantFracSlice.
+    auto significant_fraction_digit_count = significant_fraction_slice.length();
+
+    // 11. Let significantFrac be ! ToNumber(significantFracSlice).
+    auto significant_fraction = significant_fraction_slice.is_empty() ? 0u : significant_fraction_slice.template to_uint<u64>().value();
+
+    // 12. Return a new Record { [[Number]]: abs(n), [[IntegerDigits]]: i, [[FractionDigits]]: f, [[NumberOfFractionDigits]]: fracDigitCount, [[FractionDigitsWithoutTrailing]]: significantFrac, [[NumberOfFractionDigitsWithoutTrailing]]: significantFracDigitCount }.
+    return ::Locale::PluralOperands {
+        .number = fabs(number),
+        .integer_digits = integer,
+        .fraction_digits = fraction,
+        .number_of_fraction_digits = fraction_digit_count,
+        .fraction_digits_without_trailing = significant_fraction,
+        .number_of_fraction_digits_without_trailing = significant_fraction_digit_count,
+    };
 }
 
-StringView PluralRules::type_string() const
+// 16.5.2 PluralRuleSelect ( locale, type, n, operands ), https://tc39.es/ecma402/#sec-pluralruleselect
+::Locale::PluralCategory plural_rule_select(StringView locale, ::Locale::PluralForm type, Value, ::Locale::PluralOperands operands)
 {
-    switch (m_type) {
-    case Type::Cardinal:
-        return "cardinal"sv;
-    case Type::Ordinal:
-        return "ordinal"sv;
-    default:
-        VERIFY_NOT_REACHED();
-    }
+    return ::Locale::determine_plural_category(locale, type, move(operands));
 }
 
-// 16.1.1 InitializePluralRules ( pluralRules, locales, options ), https://tc39.es/ecma402/#sec-initializepluralrules
-ThrowCompletionOr<PluralRules*> initialize_plural_rules(GlobalObject& global_object, PluralRules& plural_rules, Value locales_value, Value options_value)
+// 16.5.3 ResolvePlural ( pluralRules, n ), https://tc39.es/ecma402/#sec-resolveplural
+// 1.5.3 ResolvePlural ( pluralRules, n ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-resolveplural
+ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, PluralRules const& plural_rules, Value number)
 {
-    auto& vm = global_object.vm();
+    return resolve_plural(vm, plural_rules, plural_rules.type(), number);
+}
 
-    // 1. Let requestedLocales be ? CanonicalizeLocaleList(locales).
-    auto requested_locales = TRY(canonicalize_locale_list(global_object, locales_value));
+// Non-standard overload of ResolvePlural to allow using the AO without an Intl.PluralRules object.
+ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, NumberFormatBase const& number_format, ::Locale::PluralForm type, Value number)
+{
+    // 1. Assert: Type(pluralRules) is Object.
+    // 2. Assert: pluralRules has an [[InitializedPluralRules]] internal slot.
+    // 3. Assert: Type(n) is Number.
 
-    // 2. Set options to ? CoerceOptionsToObject(options).
-    auto* options = TRY(coerce_options_to_object(global_object, options_value));
+    // 4. If n is not a finite Number, then
+    if (!number.is_finite_number()) {
+        // a. Return "other".
+        return ResolvedPlurality { ::Locale::PluralCategory::Other, String {} };
+    }
 
-    // 3. Let opt be a new Record.
-    LocaleOptions opt {};
+    // 5. Let locale be pluralRules.[[Locale]].
+    auto const& locale = number_format.locale();
 
-    // 4. Let matcher be ? GetOption(options, "localeMatcher", "string", « "lookup", "best fit" », "best fit").
-    auto matcher = TRY(get_option(global_object, *options, vm.names.localeMatcher, Value::Type::String, AK::Array { "lookup"sv, "best fit"sv }, "best fit"sv));
+    // 6. Let type be pluralRules.[[Type]].
 
-    // 5. Set opt.[[localeMatcher]] to matcher.
-    opt.locale_matcher = matcher;
+    // 7. Let res be ! FormatNumericToString(pluralRules, n).
+    auto result = MUST_OR_THROW_OOM(format_numeric_to_string(vm, number_format, number));
 
-    // 6. Let t be ? GetOption(options, "type", "string", « "cardinal", "ordinal" », "cardinal").
-    auto type = TRY(get_option(global_object, *options, vm.names.type, Value::Type::String, AK::Array { "cardinal"sv, "ordinal"sv }, "cardinal"sv));
+    // 8. Let s be res.[[FormattedString]].
+    auto string = move(result.formatted_string);
 
-    // 7. Set pluralRules.[[Type]] to t.
-    plural_rules.set_type(type.as_string().string());
+    // 9. Let operands be ! GetOperands(s).
+    auto operands = get_operands(string);
 
-    // 8. Perform ? SetNumberFormatDigitOptions(pluralRules, options, +0𝔽, 3𝔽, "standard").
-    TRY(set_number_format_digit_options(global_object, plural_rules, *options, 0, 3, NumberFormat::Notation::Standard));
+    // 10. Let p be ! PluralRuleSelect(locale, type, n, operands).
+    auto plural_category = plural_rule_select(locale, type, number, move(operands));
 
-    // 9. Let localeData be %PluralRules%.[[LocaleData]].
-    // 10. Let r be ResolveLocale(%PluralRules%.[[AvailableLocales]], requestedLocales, opt, %PluralRules%.[[RelevantExtensionKeys]], localeData).
-    auto result = resolve_locale(requested_locales, opt, {});
+    // 11. Return the Record { [[PluralCategory]]: p, [[FormattedString]]: s }.
+    return ResolvedPlurality { plural_category, move(string) };
+}
 
-    // 11. Set pluralRules.[[Locale]] to r.[[locale]].
-    plural_rules.set_locale(move(result.locale));
+// 1.5.4 PluralRuleSelectRange ( locale, type, xp, yp ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-pluralruleselectrange
+::Locale::PluralCategory plural_rule_select_range(StringView locale, ::Locale::PluralForm, ::Locale::PluralCategory start, ::Locale::PluralCategory end)
+{
+    return ::Locale::determine_plural_range(locale, start, end);
+}
 
-    // Non-standard, the data locale is used by our NumberFormat implementation.
-    plural_rules.set_data_locale(move(result.data_locale));
+// 1.5.5 ResolvePluralRange ( pluralRules, x, y ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-resolvepluralrange
+ThrowCompletionOr<::Locale::PluralCategory> resolve_plural_range(VM& vm, PluralRules const& plural_rules, Value start, Value end)
+{
+    // 1. Assert: Type(pluralRules) is Object.
+    // 2. Assert: pluralRules has an [[InitializedPluralRules]] internal slot.
+    // 3. Assert: Type(x) is Number.
+    // 4. Assert: Type(y) is Number.
 
-    // 12. Return pluralRules.
-    return &plural_rules;
+    // 5. If x is NaN or y is NaN, throw a RangeError exception.
+    if (start.is_nan())
+        return vm.throw_completion<RangeError>(ErrorType::IntlNumberIsNaN, "start"sv);
+    if (end.is_nan())
+        return vm.throw_completion<RangeError>(ErrorType::IntlNumberIsNaN, "end"sv);
+
+    // 6. Let xp be ! ResolvePlural(pluralRules, x).
+    auto start_plurality = MUST_OR_THROW_OOM(resolve_plural(vm, plural_rules, start));
+
+    // 7. Let yp be ! ResolvePlural(pluralRules, y).
+    auto end_plurality = MUST_OR_THROW_OOM(resolve_plural(vm, plural_rules, end));
+
+    // 8. If xp.[[FormattedString]] is yp.[[FormattedString]], then
+    if (start_plurality.formatted_string == end_plurality.formatted_string) {
+        // a. Return xp.[[PluralCategory]].
+        return start_plurality.plural_category;
+    }
+
+    // 9. Let locale be pluralRules.[[Locale]].
+    auto const& locale = plural_rules.locale();
+
+    // 10. Let type be pluralRules.[[Type]].
+    auto type = plural_rules.type();
+
+    // 11. Return ! PluralRuleSelectRange(locale, type, xp.[[PluralCategory]], yp.[[PluralCategory]]).
+    return plural_rule_select_range(locale, type, start_plurality.plural_category, end_plurality.plural_category);
 }
 
 }

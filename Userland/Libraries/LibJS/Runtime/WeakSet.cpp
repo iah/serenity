@@ -8,18 +8,14 @@
 
 namespace JS {
 
-WeakSet* WeakSet::create(GlobalObject& global_object)
+NonnullGCPtr<WeakSet> WeakSet::create(Realm& realm)
 {
-    return global_object.heap().allocate<WeakSet>(global_object, *global_object.weak_set_prototype());
+    return realm.heap().allocate<WeakSet>(realm, *realm.intrinsics().weak_set_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 WeakSet::WeakSet(Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , WeakContainer(heap())
-{
-}
-
-WeakSet::~WeakSet()
 {
 }
 

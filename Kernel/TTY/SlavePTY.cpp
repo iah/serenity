@@ -6,16 +6,15 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/DevPtsFS.h>
 #include <Kernel/Process.h>
 #include <Kernel/TTY/MasterPTY.h>
 #include <Kernel/TTY/SlavePTY.h>
 
 namespace Kernel {
 
-static Singleton<SpinlockProtected<SlavePTY::List>> s_all_instances;
+static Singleton<SpinlockProtected<SlavePTY::List, LockRank::None>> s_all_instances;
 
-SpinlockProtected<SlavePTY::List>& SlavePTY::all_instances()
+SpinlockProtected<SlavePTY::List, LockRank::None>& SlavePTY::all_instances()
 {
     return s_all_instances;
 }
@@ -36,15 +35,15 @@ bool SlavePTY::unref() const
     return did_hit_zero;
 }
 
-SlavePTY::SlavePTY(MasterPTY& master, unsigned index, NonnullOwnPtr<KString> tty_name)
+SlavePTY::SlavePTY(MasterPTY& master, unsigned index)
     : TTY(201, index)
     , m_master(master)
     , m_index(index)
-    , m_tty_name(move(tty_name))
 {
     auto& process = Process::current();
-    set_uid(process.uid());
-    set_gid(process.gid());
+    auto credentials = process.credentials();
+    set_uid(credentials->uid());
+    set_gid(credentials->gid());
     set_size(80, 25);
 
     SlavePTY::all_instances().with([&](auto& list) { list.append(*this); });
@@ -55,9 +54,9 @@ SlavePTY::~SlavePTY()
     dbgln_if(SLAVEPTY_DEBUG, "~SlavePTY({})", m_index);
 }
 
-KString const& SlavePTY::tty_name() const
+ErrorOr<NonnullOwnPtr<KString>> SlavePTY::pseudo_name() const
 {
-    return *m_tty_name;
+    return KString::formatted("pts:{}", m_index);
 }
 
 void SlavePTY::echo(u8 ch)
@@ -68,7 +67,7 @@ void SlavePTY::echo(u8 ch)
     }
 }
 
-void SlavePTY::on_master_write(const UserOrKernelBuffer& buffer, size_t size)
+void SlavePTY::on_master_write(UserOrKernelBuffer const& buffer, size_t size)
 {
     auto result = buffer.read_buffered<128>(size, [&](ReadonlyBytes data) {
         for (const auto& byte : data)
@@ -79,18 +78,18 @@ void SlavePTY::on_master_write(const UserOrKernelBuffer& buffer, size_t size)
         evaluate_block_conditions();
 }
 
-ErrorOr<size_t> SlavePTY::on_tty_write(const UserOrKernelBuffer& data, size_t size)
+ErrorOr<size_t> SlavePTY::on_tty_write(UserOrKernelBuffer const& data, size_t size)
 {
     m_time_of_last_write = kgettimeofday().to_truncated_seconds();
     return m_master->on_slave_write(data, size);
 }
 
-bool SlavePTY::can_write(const OpenFileDescription&, u64) const
+bool SlavePTY::can_write(OpenFileDescription const&, u64) const
 {
     return m_master->can_write_from_slave();
 }
 
-bool SlavePTY::can_read(const OpenFileDescription& description, u64 offset) const
+bool SlavePTY::can_read(OpenFileDescription const& description, u64 offset) const
 {
     if (m_master->is_closed())
         return true;

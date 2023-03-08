@@ -2,6 +2,7 @@ set(SOURCES
     AST.cpp
     Bytecode/ASTCodegen.cpp
     Bytecode/BasicBlock.cpp
+    Bytecode/CodeGenerationError.cpp
     Bytecode/Executable.cpp
     Bytecode/Generator.cpp
     Bytecode/IdentifierTable.cpp
@@ -10,11 +11,16 @@ set(SOURCES
     Bytecode/Op.cpp
     Bytecode/Pass/DumpCFG.cpp
     Bytecode/Pass/GenerateCFG.cpp
+    Bytecode/Pass/LoadElimination.cpp
     Bytecode/Pass/MergeBlocks.cpp
     Bytecode/Pass/PlaceBlocks.cpp
     Bytecode/Pass/UnifySameBlocks.cpp
     Bytecode/StringTable.cpp
     Console.cpp
+    Contrib/Test262/$262Object.cpp
+    Contrib/Test262/AgentObject.cpp
+    Contrib/Test262/GlobalObject.cpp
+    Contrib/Test262/IsHTMLDDA.cpp
     CyclicModule.cpp
     Heap/BlockAllocator.cpp
     Heap/CellAllocator.cpp
@@ -27,6 +33,8 @@ set(SOURCES
     MarkupGenerator.cpp
     Module.cpp
     Parser.cpp
+    ParserError.cpp
+    Print.cpp
     Runtime/AbstractOperations.cpp
     Runtime/AggregateError.cpp
     Runtime/AggregateErrorConstructor.cpp
@@ -45,8 +53,10 @@ set(SOURCES
     Runtime/AsyncFunctionConstructor.cpp
     Runtime/AsyncFunctionDriverWrapper.cpp
     Runtime/AsyncFunctionPrototype.cpp
+    Runtime/AsyncGenerator.cpp
     Runtime/AsyncGeneratorFunctionConstructor.cpp
     Runtime/AsyncGeneratorFunctionPrototype.cpp
+    Runtime/AsyncGeneratorPrototype.cpp
     Runtime/AsyncIteratorPrototype.cpp
     Runtime/AtomicsObject.cpp
     Runtime/BigInt.cpp
@@ -66,12 +76,16 @@ set(SOURCES
     Runtime/DateConstructor.cpp
     Runtime/DatePrototype.cpp
     Runtime/DeclarativeEnvironment.cpp
+    Runtime/DisposableStack.cpp
+    Runtime/DisposableStackConstructor.cpp
+    Runtime/DisposableStackPrototype.cpp
     Runtime/ECMAScriptFunctionObject.cpp
     Runtime/Environment.cpp
     Runtime/Error.cpp
     Runtime/ErrorConstructor.cpp
     Runtime/ErrorPrototype.cpp
     Runtime/ErrorTypes.cpp
+    Runtime/ExecutionContext.cpp
     Runtime/FinalizationRegistry.cpp
     Runtime/FinalizationRegistryConstructor.cpp
     Runtime/FinalizationRegistryPrototype.cpp
@@ -88,6 +102,7 @@ set(SOURCES
     Runtime/IndexedProperties.cpp
     Runtime/Intl/AbstractOperations.cpp
     Runtime/Intl/Collator.cpp
+    Runtime/Intl/CollatorCompareFunction.cpp
     Runtime/Intl/CollatorConstructor.cpp
     Runtime/Intl/CollatorPrototype.cpp
     Runtime/Intl/DateTimeFormat.cpp
@@ -97,6 +112,9 @@ set(SOURCES
     Runtime/Intl/DisplayNames.cpp
     Runtime/Intl/DisplayNamesConstructor.cpp
     Runtime/Intl/DisplayNamesPrototype.cpp
+    Runtime/Intl/DurationFormat.cpp
+    Runtime/Intl/DurationFormatConstructor.cpp
+    Runtime/Intl/DurationFormatPrototype.cpp
     Runtime/Intl/Intl.cpp
     Runtime/Intl/ListFormat.cpp
     Runtime/Intl/ListFormatConstructor.cpp
@@ -104,6 +122,7 @@ set(SOURCES
     Runtime/Intl/Locale.cpp
     Runtime/Intl/LocaleConstructor.cpp
     Runtime/Intl/LocalePrototype.cpp
+    Runtime/Intl/MathematicalValue.cpp
     Runtime/Intl/NumberFormat.cpp
     Runtime/Intl/NumberFormatConstructor.cpp
     Runtime/Intl/NumberFormatFunction.cpp
@@ -121,9 +140,11 @@ set(SOURCES
     Runtime/Intl/SegmentIterator.cpp
     Runtime/Intl/SegmentIteratorPrototype.cpp
     Runtime/Intl/SegmentsPrototype.cpp
+    Runtime/Intrinsics.cpp
     Runtime/IteratorOperations.cpp
     Runtime/IteratorPrototype.cpp
     Runtime/JSONObject.cpp
+    Runtime/JobCallback.cpp
     Runtime/Map.cpp
     Runtime/MapConstructor.cpp
     Runtime/MapIterator.cpp
@@ -143,6 +164,7 @@ set(SOURCES
     Runtime/PrimitiveString.cpp
     Runtime/PrivateEnvironment.cpp
     Runtime/Promise.cpp
+    Runtime/PromiseCapability.cpp
     Runtime/PromiseConstructor.cpp
     Runtime/PromiseJobs.cpp
     Runtime/PromisePrototype.cpp
@@ -156,6 +178,7 @@ set(SOURCES
     Runtime/Reference.cpp
     Runtime/ReflectObject.cpp
     Runtime/RegExpConstructor.cpp
+    Runtime/RegExpLegacyStaticProperties.cpp
     Runtime/RegExpObject.cpp
     Runtime/RegExpPrototype.cpp
     Runtime/RegExpStringIterator.cpp
@@ -174,6 +197,9 @@ set(SOURCES
     Runtime/StringIteratorPrototype.cpp
     Runtime/StringObject.cpp
     Runtime/StringPrototype.cpp
+    Runtime/SuppressedError.cpp
+    Runtime/SuppressedErrorConstructor.cpp
+    Runtime/SuppressedErrorPrototype.cpp
     Runtime/Symbol.cpp
     Runtime/SymbolConstructor.cpp
     Runtime/SymbolObject.cpp
@@ -212,6 +238,7 @@ set(SOURCES
     Runtime/Temporal/ZonedDateTime.cpp
     Runtime/Temporal/ZonedDateTimeConstructor.cpp
     Runtime/Temporal/ZonedDateTimePrototype.cpp
+    Runtime/ThrowableStringBuilder.cpp
     Runtime/TypedArray.cpp
     Runtime/TypedArrayConstructor.cpp
     Runtime/TypedArrayPrototype.cpp
@@ -230,6 +257,7 @@ set(SOURCES
     Runtime/WeakSetPrototype.cpp
     Runtime/WrappedFunction.cpp
     Script.cpp
+    SourceCode.cpp
     SourceTextModule.cpp
     SyntaxHighlighter.cpp
     SyntheticModule.cpp
@@ -237,4 +265,4 @@ set(SOURCES
 )
 
 serenity_lib(LibJS js)
-target_link_libraries(LibJS LibM LibCore LibCrypto LibRegex LibSyntax LibUnicode)
+target_link_libraries(LibJS PRIVATE LibCore LibCrypto LibRegex LibSyntax LibLocale LibUnicode)

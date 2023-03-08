@@ -7,7 +7,8 @@
 
 #pragma once
 
-#include "KeypadValue.h"
+#include <AK/Optional.h>
+#include <LibCrypto/BigFraction/BigFraction.h>
 
 // This type implements the regular calculator
 // behavior, such as performing arithmetic
@@ -36,11 +37,13 @@ public:
         MemClear,
         MemRecall,
         MemSave,
-        MemAdd
+        MemAdd,
+
+        Equals
     };
 
-    KeypadValue begin_operation(Operation, KeypadValue);
-    KeypadValue finish_operation(KeypadValue);
+    Optional<Crypto::BigFraction> operation_with_literal_argument(Operation, Crypto::BigFraction);
+    Optional<Crypto::BigFraction> operation_without_argument(Operation);
 
     bool has_error() const { return m_has_error; }
 
@@ -48,24 +51,16 @@ public:
     void clear_error() { m_has_error = false; }
 
 private:
-    static bool should_be_rounded(KeypadValue);
-    static void round(KeypadValue&);
+    Crypto::BigFraction m_mem {};
 
-    static constexpr auto rounding_threshold = []() consteval
-    {
-        using used_type = u64;
+    Crypto::BigFraction m_current_value {};
 
-        auto count = 1;
-        used_type res = 10;
-        while (!__builtin_mul_overflow(res, (used_type)10, &res)) {
-            count++;
-        }
-        return count;
-    }
-    ();
+    Operation m_binary_operation_in_progress { Operation::None };
+    Crypto::BigFraction m_binary_operation_saved_left_side {};
 
-    Operation m_operation_in_progress { Operation::None };
-    KeypadValue m_saved_argument { (i64)0 };
-    KeypadValue m_mem { (i64)0 };
+    Operation m_previous_operation { Operation::None };
+    Crypto::BigFraction m_previous_binary_operation_right_side {};
     bool m_has_error { false };
+
+    Crypto::BigFraction finish_binary_operation(Crypto::BigFraction const& left_side, Operation operation, Crypto::BigFraction const& right_side);
 };

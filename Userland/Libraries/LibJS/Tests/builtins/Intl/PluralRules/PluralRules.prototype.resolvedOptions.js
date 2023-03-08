@@ -79,9 +79,81 @@ describe("correct behavior", () => {
     });
 
     test("plural categories", () => {
-        // FIXME: Write better tests when this is implemented.
-        const en = new Intl.PluralRules("en");
-        expect(en.resolvedOptions().pluralCategories).toBeDefined();
-        expect(en.resolvedOptions().pluralCategories).toEqual([]);
+        // The spec doesn't dictate an order of elements, and the generated CLDR data is ordered by
+        // hash map iteration. Instead of using toEqual(), just make sure all elements are the same.
+        const contains = (actual, expected) => {
+            if (actual.length !== expected.length) return false;
+            return expected.every(e => actual.includes(e));
+        };
+
+        const enCardinal = new Intl.PluralRules("en", { type: "cardinal" }).resolvedOptions();
+        expect(enCardinal.pluralCategories).toBeDefined();
+        expect(contains(enCardinal.pluralCategories, ["other", "one"])).toBeTrue();
+
+        const enOrdinal = new Intl.PluralRules("en", { type: "ordinal" }).resolvedOptions();
+        expect(enOrdinal.pluralCategories).toBeDefined();
+        expect(contains(enOrdinal.pluralCategories, ["other", "one", "two", "few"])).toBeTrue();
+
+        const gaCardinal = new Intl.PluralRules("ga", { type: "cardinal" }).resolvedOptions();
+        expect(gaCardinal.pluralCategories).toBeDefined();
+        expect(
+            contains(gaCardinal.pluralCategories, ["other", "one", "two", "few", "many"])
+        ).toBeTrue();
+
+        const gaOrdinal = new Intl.PluralRules("ga", { type: "ordinal" }).resolvedOptions();
+        expect(gaOrdinal.pluralCategories).toBeDefined();
+        expect(contains(gaOrdinal.pluralCategories, ["other", "one"])).toBeTrue();
+    });
+
+    test("rounding priority", () => {
+        const en1 = new Intl.PluralRules("en");
+        expect(en1.resolvedOptions().roundingPriority).toBe("auto");
+
+        ["auto", "morePrecision", "lessPrecision"].forEach(roundingPriority => {
+            const en2 = new Intl.PluralRules("en", { roundingPriority: roundingPriority });
+            expect(en2.resolvedOptions().roundingPriority).toBe(roundingPriority);
+        });
+    });
+
+    test("rounding mode", () => {
+        const en1 = new Intl.PluralRules("en");
+        expect(en1.resolvedOptions().roundingMode).toBe("halfExpand");
+
+        [
+            "ceil",
+            "floor",
+            "expand",
+            "trunc",
+            "halfCeil",
+            "halfFloor",
+            "halfExpand",
+            "halfTrunc",
+            "halfEven",
+        ].forEach(roundingMode => {
+            const en2 = new Intl.PluralRules("en", { roundingMode: roundingMode });
+            expect(en2.resolvedOptions().roundingMode).toBe(roundingMode);
+        });
+    });
+
+    test("rounding increment", () => {
+        const en1 = new Intl.PluralRules("en");
+        expect(en1.resolvedOptions().roundingIncrement).toBe(1);
+
+        [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000].forEach(
+            roundingIncrement => {
+                const en2 = new Intl.PluralRules("en", { roundingIncrement: roundingIncrement });
+                expect(en2.resolvedOptions().roundingIncrement).toBe(roundingIncrement);
+            }
+        );
+    });
+
+    test("trailing zero display", () => {
+        const en1 = new Intl.PluralRules("en");
+        expect(en1.resolvedOptions().trailingZeroDisplay).toBe("auto");
+
+        ["auto", "stripIfInteger"].forEach(trailingZeroDisplay => {
+            const en2 = new Intl.PluralRules("en", { trailingZeroDisplay: trailingZeroDisplay });
+            expect(en2.resolvedOptions().trailingZeroDisplay).toBe(trailingZeroDisplay);
+        });
     });
 });

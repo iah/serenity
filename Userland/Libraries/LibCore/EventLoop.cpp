@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, kleines Filmröllchen <malu.bertsch@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -21,6 +22,8 @@
 #include <LibCore/LocalServer.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/Object.h>
+#include <LibCore/SessionManagement.h>
+#include <LibCore/Socket.h>
 #include <LibThreading/Mutex.h>
 #include <LibThreading/MutexProtected.h>
 #include <errno.h>
@@ -34,7 +37,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
+#    include <LibCore/Account.h>
+
 extern bool s_global_initializers_ran;
 #endif
 
@@ -52,16 +57,14 @@ struct EventLoopTimer {
     TimerShouldFireWhenNotVisible fire_when_not_visible { TimerShouldFireWhenNotVisible::No };
     WeakPtr<Object> owner;
 
-    void reload(const Time& now);
-    bool has_expired(const Time& now) const;
+    void reload(Time const& now);
+    bool has_expired(Time const& now) const;
 };
 
 struct EventLoop::Private {
     Threading::Mutex lock;
 };
 
-// The main event loop is global to the program, so it may be accessed from multiple threads.
-Threading::MutexProtected<EventLoop*> s_main_event_loop;
 static Threading::MutexProtected<NeverDestroyed<IDAllocator>> s_id_allocator;
 static Threading::MutexProtected<RefPtr<InspectorServerConnection>> s_inspector_server_connection;
 
@@ -69,6 +72,8 @@ static Threading::MutexProtected<RefPtr<InspectorServerConnection>> s_inspector_
 static thread_local Vector<EventLoop&>* s_event_loop_stack;
 static thread_local HashMap<int, NonnullOwnPtr<EventLoopTimer>>* s_timers;
 static thread_local HashTable<Notifier*>* s_notifiers;
+// The wake pipe is both responsible for notifying us when someone calls wake(), as well as POSIX signals.
+// While wake() pushes zero into the pipe, signal numbers (by defintion nonzero, see signal_numbers.h) are pushed into the pipe verbatim.
 thread_local int EventLoop::s_wake_pipe_fds[2];
 thread_local bool EventLoop::s_wake_pipe_initialized { false };
 
@@ -152,40 +157,40 @@ pid_t EventLoop::s_pid;
 class InspectorServerConnection : public Object {
     C_OBJECT(InspectorServerConnection)
 private:
-    explicit InspectorServerConnection(NonnullOwnPtr<Stream::LocalSocket> socket)
+    explicit InspectorServerConnection(NonnullOwnPtr<LocalSocket> socket)
         : m_socket(move(socket))
         , m_client_id(s_id_allocator.with_locked([](auto& allocator) {
             return allocator->allocate();
         }))
     {
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
         m_socket->on_ready_to_read = [this] {
             u32 length;
-            auto maybe_nread = m_socket->read({ (u8*)&length, sizeof(length) });
-            if (maybe_nread.is_error()) {
-                dbgln("InspectorServerConnection: Failed to read message length from inspector server connection: {}", maybe_nread.error());
+            auto maybe_bytes_read = m_socket->read({ (u8*)&length, sizeof(length) });
+            if (maybe_bytes_read.is_error()) {
+                dbgln("InspectorServerConnection: Failed to read message length from inspector server connection: {}", maybe_bytes_read.error());
                 shutdown();
                 return;
             }
 
-            auto nread = maybe_nread.release_value();
-            if (nread == 0) {
+            auto bytes_read = maybe_bytes_read.release_value();
+            if (bytes_read.is_empty()) {
                 dbgln_if(EVENTLOOP_DEBUG, "RPC client disconnected");
                 shutdown();
                 return;
             }
 
-            VERIFY(nread == sizeof(length));
+            VERIFY(bytes_read.size() == sizeof(length));
 
             auto request_buffer = ByteBuffer::create_uninitialized(length).release_value();
-            maybe_nread = m_socket->read(request_buffer.bytes());
-            if (maybe_nread.is_error()) {
-                dbgln("InspectorServerConnection: Failed to read message content from inspector server connection: {}", maybe_nread.error());
+            maybe_bytes_read = m_socket->read(request_buffer.bytes());
+            if (maybe_bytes_read.is_error()) {
+                dbgln("InspectorServerConnection: Failed to read message content from inspector server connection: {}", maybe_bytes_read.error());
                 shutdown();
                 return;
             }
 
-            nread = maybe_nread.release_value();
+            bytes_read = maybe_bytes_read.release_value();
 
             auto request_json = JsonValue::from_string(request_buffer);
             if (request_json.is_error() || !request_json.value().is_object()) {
@@ -207,29 +212,34 @@ private:
     }
 
 public:
-    void send_response(const JsonObject& response)
+    void send_response(JsonObject const& response)
     {
-        auto serialized = response.to_string();
-        u32 length = serialized.length();
+        auto serialized = response.to_deprecated_string();
+        auto bytes_to_send = serialized.bytes();
+        u32 length = bytes_to_send.size();
         // FIXME: Propagate errors
-        MUST(m_socket->write({ (const u8*)&length, sizeof(length) }));
-        MUST(m_socket->write(serialized.bytes()));
+        auto sent = MUST(m_socket->write({ (u8 const*)&length, sizeof(length) }));
+        VERIFY(sent == sizeof(length));
+        while (!bytes_to_send.is_empty()) {
+            size_t bytes_sent = MUST(m_socket->write(bytes_to_send));
+            bytes_to_send = bytes_to_send.slice(bytes_sent);
+        }
     }
 
-    void handle_request(const JsonObject& request)
+    void handle_request(JsonObject const& request)
     {
-        auto type = request.get("type").as_string_or({});
+        auto type = request.get_deprecated_string("type"sv);
 
-        if (type.is_null()) {
+        if (!type.has_value()) {
             dbgln("RPC client sent request without type field");
             return;
         }
 
         if (type == "Identify") {
             JsonObject response;
-            response.set("type", type);
+            response.set("type", type.value());
             response.set("pid", getpid());
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
             char buffer[1024];
             if (get_process_name(buffer, sizeof(buffer)) >= 0) {
                 response.set("process_name", buffer);
@@ -243,7 +253,7 @@ public:
 
         if (type == "GetAllObjects") {
             JsonObject response;
-            response.set("type", type);
+            response.set("type", type.value());
             JsonArray objects;
             for (auto& object : Object::all_objects()) {
                 JsonObject json_object;
@@ -256,7 +266,7 @@ public:
         }
 
         if (type == "SetInspectedObject") {
-            auto address = request.get("address").to_number<FlatPtr>();
+            auto address = request.get_addr("address"sv);
             for (auto& object : Object::all_objects()) {
                 if ((FlatPtr)&object == address) {
                     if (auto inspected_object = m_inspected_object.strong_ref())
@@ -270,10 +280,10 @@ public:
         }
 
         if (type == "SetProperty") {
-            auto address = request.get("address").to_number<FlatPtr>();
+            auto address = request.get_addr("address"sv);
             for (auto& object : Object::all_objects()) {
                 if ((FlatPtr)&object == address) {
-                    bool success = object.set_property(request.get("name").to_string(), request.get("value"));
+                    bool success = object.set_property(request.get_deprecated_string("name"sv).value(), request.get("value"sv).value());
                     JsonObject response;
                     response.set("type", "SetProperty");
                     response.set("success", success);
@@ -296,7 +306,7 @@ public:
     }
 
 private:
-    NonnullOwnPtr<Stream::LocalSocket> m_socket;
+    NonnullOwnPtr<LocalSocket> m_socket;
     WeakPtr<Object> m_inspected_object;
     int m_client_id { -1 };
 };
@@ -305,7 +315,7 @@ EventLoop::EventLoop([[maybe_unused]] MakeInspectable make_inspectable)
     : m_wake_pipe_fds(&s_wake_pipe_fds)
     , m_private(make<Private>())
 {
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
     if (!s_global_initializers_ran) {
         // NOTE: Trying to have an event loop as a global variable will lead to initialization-order fiascos,
         //       as the event loop constructor accesses and/or sets other global variables.
@@ -322,23 +332,24 @@ EventLoop::EventLoop([[maybe_unused]] MakeInspectable make_inspectable)
         s_timers = new HashMap<int, NonnullOwnPtr<EventLoopTimer>>;
         s_notifiers = new HashTable<Notifier*>;
     }
-    s_main_event_loop.with_locked([&, this](auto*& main_event_loop) {
-        if (main_event_loop == nullptr) {
-            main_event_loop = this;
-            s_pid = getpid();
-            s_event_loop_stack->append(*this);
 
-#ifdef __serenity__
-            if (getuid() != 0
-                && make_inspectable == MakeInspectable::Yes
-                // FIXME: Deadlock potential; though the main loop and inspector server connection are rarely used in conjunction
-                && s_inspector_server_connection.with_locked([](auto inspector_server_connection) { return inspector_server_connection; })) {
+    if (s_event_loop_stack->is_empty()) {
+        s_pid = getpid();
+        s_event_loop_stack->append(*this);
+
+#ifdef AK_OS_SERENITY
+        if (getuid() != 0) {
+            if (getenv("MAKE_INSPECTABLE") == "1"sv)
+                make_inspectable = Core::EventLoop::MakeInspectable::Yes;
+
+            if (make_inspectable == MakeInspectable::Yes
+                && !s_inspector_server_connection.with_locked([](auto inspector_server_connection) { return inspector_server_connection; })) {
                 if (!connect_to_inspector_server())
                     dbgln("Core::EventLoop: Failed to connect to InspectorServer");
             }
-#endif
         }
-    });
+#endif
+    }
 
     initialize_wake_pipes();
 
@@ -347,19 +358,20 @@ EventLoop::EventLoop([[maybe_unused]] MakeInspectable make_inspectable)
 
 EventLoop::~EventLoop()
 {
-    // NOTE: Pop the main event loop off of the stack when destroyed.
-    s_main_event_loop.with_locked([this](auto*& main_event_loop) {
-        if (this == main_event_loop) {
-            s_event_loop_stack->take_last();
-            main_event_loop = nullptr;
-        }
-    });
+    if (!s_event_loop_stack->is_empty() && &s_event_loop_stack->last() == this)
+        s_event_loop_stack->take_last();
 }
 
 bool connect_to_inspector_server()
 {
-#ifdef __serenity__
-    auto maybe_socket = Core::Stream::LocalSocket::connect("/tmp/portal/inspectables");
+#ifdef AK_OS_SERENITY
+    auto maybe_path = SessionManagement::parse_path_with_sid("/tmp/session/%sid/portal/inspectables"sv);
+    if (maybe_path.is_error()) {
+        dbgln("connect_to_inspector_server: {}", maybe_path.error());
+        return false;
+    }
+    auto inspector_server_path = maybe_path.value();
+    auto maybe_socket = LocalSocket::connect(inspector_server_path, Socket::PreventSIGPIPE::Yes);
     if (maybe_socket.is_error()) {
         dbgln("connect_to_inspector_server: Failed to connect: {}", maybe_socket.error());
         return false;
@@ -373,8 +385,17 @@ bool connect_to_inspector_server()
 #endif
 }
 
+#define VERIFY_EVENT_LOOP_INITIALIZED()                                              \
+    do {                                                                             \
+        if (!s_event_loop_stack) {                                                   \
+            warnln("EventLoop static API was called without prior EventLoop init!"); \
+            VERIFY_NOT_REACHED();                                                    \
+        }                                                                            \
+    } while (0)
+
 EventLoop& EventLoop::current()
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     return s_event_loop_stack->last();
 }
 
@@ -411,11 +432,6 @@ public:
     }
 
 private:
-    bool is_main_event_loop()
-    {
-        return s_main_event_loop.with_locked([this](auto* main_event_loop) { return &m_event_loop == main_event_loop; });
-    }
-
     EventLoop& m_event_loop;
 };
 
@@ -495,6 +511,23 @@ void EventLoop::post_event(Object& receiver, NonnullOwnPtr<Event>&& event, Shoul
     m_queued_events.empend(receiver, move(event));
     if (should_wake == ShouldWake::Yes)
         wake();
+}
+
+void EventLoop::wake_once(Object& receiver, int custom_event_type)
+{
+    Threading::MutexLocker lock(m_private->lock);
+    dbgln_if(EVENTLOOP_DEBUG, "Core::EventLoop::wake_once: event type {}", custom_event_type);
+    auto identical_events = m_queued_events.find_if([&](auto& queued_event) {
+        if (queued_event.receiver.is_null())
+            return false;
+        auto const& event = queued_event.event;
+        auto is_receiver_identical = queued_event.receiver.ptr() == &receiver;
+        auto event_id_matches = event->type() == Event::Type::Custom && static_cast<CustomEvent const*>(event.ptr())->custom_type() == custom_event_type;
+        return is_receiver_identical && event_id_matches;
+    });
+    // Event is not in the queue yet, so we want to wake.
+    if (identical_events.is_end())
+        post_event(receiver, make<CustomEvent>(custom_event_type), ShouldWake::Yes);
 }
 
 SignalHandlers::SignalHandlers(int signo, void (*handle_signal)(int))
@@ -627,9 +660,9 @@ void EventLoop::unregister_signal(int handler_id)
 
 void EventLoop::notify_forked(ForkEvent event)
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     switch (event) {
     case ForkEvent::Child:
-        s_main_event_loop.with_locked([]([[maybe_unused]] auto*& main_event_loop) { main_event_loop = nullptr; });
         s_event_loop_stack->clear();
         s_timers->clear();
         s_notifiers->clear();
@@ -640,9 +673,6 @@ void EventLoop::notify_forked(ForkEvent event)
             info->next_signal_id = 0;
         }
         s_pid = 0;
-#ifdef __serenity__
-        s_main_event_loop.with_locked([]([[maybe_unused]] auto*& main_event_loop) { main_event_loop = nullptr; });
-#endif
         return;
     }
 
@@ -654,6 +684,9 @@ void EventLoop::wait_for_event(WaitMode mode)
     fd_set rfds;
     fd_set wfds;
 retry:
+
+    // Set up the file descriptors for select().
+    // Basically, we translate high-level event information into low-level selectable file descriptors.
     FD_ZERO(&rfds);
     FD_ZERO(&wfds);
 
@@ -665,6 +698,7 @@ retry:
     };
 
     int max_fd_added = -1;
+    // The wake pipe informs us of POSIX signals as well as manual calls to wake()
     add_fd_to_set(s_wake_pipe_fds[0], rfds);
     max_fd = max(max_fd, max_fd_added);
 
@@ -683,6 +717,8 @@ retry:
         queued_events_is_empty = m_queued_events.is_empty();
     }
 
+    // Figure out how long to wait at maximum.
+    // This mainly depends on the WaitMode and whether we have pending events, but also the next expiring timer.
     Time now;
     struct timeval timeout = { 0, 0 };
     bool should_wait_forever = false;
@@ -700,7 +736,9 @@ retry:
     }
 
 try_select_again:
+    // select() and wait for file system events, calls to wake(), POSIX signals, or timer expirations.
     int marked_fd_count = select(max_fd + 1, &rfds, &wfds, nullptr, should_wait_forever ? nullptr : &timeout);
+    // Because POSIX, we might spuriously return from select() with EINTR; just select again.
     if (marked_fd_count < 0) {
         int saved_errno = errno;
         if (saved_errno == EINTR) {
@@ -711,6 +749,9 @@ try_select_again:
         dbgln("Core::EventLoop::wait_for_event: {} ({}: {})", marked_fd_count, saved_errno, strerror(saved_errno));
         VERIFY_NOT_REACHED();
     }
+
+    // We woke up due to a call to wake() or a POSIX signal.
+    // Handle signals and see whether we need to handle events as well.
     if (FD_ISSET(s_wake_pipe_fds[0], &rfds)) {
         int wake_events[8];
         ssize_t nread;
@@ -744,6 +785,7 @@ try_select_again:
         now = Time::now_monotonic_coarse();
     }
 
+    // Handle expired timers.
     for (auto& it : *s_timers) {
         auto& timer = *it.value;
         if (!timer.has_expired(now))
@@ -769,6 +811,7 @@ try_select_again:
     if (!marked_fd_count)
         return;
 
+    // Handle file system notifiers by making them normal events.
     for (auto& notifier : *s_notifiers) {
         if (FD_ISSET(notifier->fd(), &rfds)) {
             if (notifier->event_mask() & Notifier::Event::Read)
@@ -781,12 +824,12 @@ try_select_again:
     }
 }
 
-bool EventLoopTimer::has_expired(const Time& now) const
+bool EventLoopTimer::has_expired(Time const& now) const
 {
     return now > fire_time;
 }
 
-void EventLoopTimer::reload(const Time& now)
+void EventLoopTimer::reload(Time const& now)
 {
     fire_time = now + interval;
 }
@@ -814,6 +857,7 @@ Optional<Time> EventLoop::get_next_timer_expiration()
 
 int EventLoop::register_timer(Object& object, int milliseconds, bool should_reload, TimerShouldFireWhenNotVisible fire_when_not_visible)
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     VERIFY(milliseconds >= 0);
     auto timer = make<EventLoopTimer>();
     timer->owner = object;
@@ -829,6 +873,7 @@ int EventLoop::register_timer(Object& object, int milliseconds, bool should_relo
 
 bool EventLoop::unregister_timer(int timer_id)
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     s_id_allocator.with_locked([&](auto& allocator) { allocator->deallocate(timer_id); });
     auto it = s_timers->find(timer_id);
     if (it == s_timers->end())
@@ -839,11 +884,13 @@ bool EventLoop::unregister_timer(int timer_id)
 
 void EventLoop::register_notifier(Badge<Notifier>, Notifier& notifier)
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     s_notifiers->set(&notifier);
 }
 
 void EventLoop::unregister_notifier(Badge<Notifier>, Notifier& notifier)
 {
+    VERIFY_EVENT_LOOP_INITIALIZED();
     s_notifiers->remove(&notifier);
 }
 
@@ -872,10 +919,6 @@ EventLoop::QueuedEvent::QueuedEvent(Object& receiver, NonnullOwnPtr<Event> event
 EventLoop::QueuedEvent::QueuedEvent(QueuedEvent&& other)
     : receiver(other.receiver)
     , event(move(other.event))
-{
-}
-
-EventLoop::QueuedEvent::~QueuedEvent()
 {
 }
 

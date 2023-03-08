@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
+ * Copyright (c) 2021-2022, Idan Horowitz <idan.horowitz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/SinglyLinkedList.h>
+#include <LibJS/Heap/GCPtr.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/JobCallback.h>
@@ -22,31 +23,32 @@ class FinalizationRegistry final
     JS_OBJECT(FinalizationRegistry, Object);
 
 public:
-    explicit FinalizationRegistry(Realm&, JS::JobCallback, Object& prototype);
-    virtual ~FinalizationRegistry() override;
+    virtual ~FinalizationRegistry() override = default;
 
-    void add_finalization_record(Cell& target, Value held_value, Object* unregister_token);
-    bool remove_by_token(Object& unregister_token);
+    void add_finalization_record(Cell& target, Value held_value, Cell* unregister_token);
+    bool remove_by_token(Cell& unregister_token);
     ThrowCompletionOr<void> cleanup(Optional<JobCallback> = {});
 
     virtual void remove_dead_cells(Badge<Heap>) override;
 
-    Realm& realm() { return *m_realm.cell(); }
-    Realm const& realm() const { return *m_realm.cell(); }
+    Realm& realm() { return *m_realm; }
+    Realm const& realm() const { return *m_realm; }
 
     JobCallback& cleanup_callback() { return m_cleanup_callback; }
     JobCallback const& cleanup_callback() const { return m_cleanup_callback; }
 
 private:
+    FinalizationRegistry(Realm&, JobCallback, Object& prototype);
+
     virtual void visit_edges(Visitor& visitor) override;
 
-    Handle<Realm> m_realm;
-    JS::JobCallback m_cleanup_callback;
+    NonnullGCPtr<Realm> m_realm;
+    JobCallback m_cleanup_callback;
 
     struct FinalizationRecord {
         Cell* target { nullptr };
         Value held_value;
-        Object* unregister_token { nullptr };
+        Cell* unregister_token { nullptr };
     };
     SinglyLinkedList<FinalizationRecord> m_records;
 };

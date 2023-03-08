@@ -20,7 +20,6 @@
 #include <LibJS/Heap/CellAllocator.h>
 #include <LibJS/Heap/Handle.h>
 #include <LibJS/Heap/MarkedVector.h>
-#include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/WeakContainer.h>
 
 namespace JS {
@@ -34,21 +33,21 @@ public:
     ~Heap();
 
     template<typename T, typename... Args>
-    T* allocate_without_global_object(Args&&... args)
+    NonnullGCPtr<T> allocate_without_realm(Args&&... args)
     {
         auto* memory = allocate_cell(sizeof(T));
         new (memory) T(forward<Args>(args)...);
-        return static_cast<T*>(memory);
+        return *static_cast<T*>(memory);
     }
 
     template<typename T, typename... Args>
-    T* allocate(GlobalObject& global_object, Args&&... args)
+    ThrowCompletionOr<NonnullGCPtr<T>> allocate(Realm& realm, Args&&... args)
     {
         auto* memory = allocate_cell(sizeof(T));
         new (memory) T(forward<Args>(args)...);
         auto* cell = static_cast<T*>(memory);
-        cell->initialize(global_object);
-        return cell;
+        MUST_OR_THROW_OOM(memory->initialize(realm));
+        return *cell;
     }
 
     enum class CollectionType {
@@ -80,12 +79,15 @@ public:
     void uproot_cell(Cell* cell);
 
 private:
+    static bool cell_must_survive_garbage_collection(Cell const&);
+
     Cell* allocate_cell(size_t);
 
     void gather_roots(HashTable<Cell*>&);
     void gather_conservative_roots(HashTable<Cell*>&);
-    void mark_live_cells(const HashTable<Cell*>& live_cells);
-    void sweep_dead_cells(bool print_report, const Core::ElapsedTimer&);
+    void mark_live_cells(HashTable<Cell*> const& live_cells);
+    void finalize_unmarked_cells();
+    void sweep_dead_cells(bool print_report, Core::ElapsedTimer const&);
 
     CellAllocator& allocator_for_size(size_t);
 

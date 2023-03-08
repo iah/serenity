@@ -33,12 +33,12 @@ public:
     virtual void start_request(AsyncBlockDeviceRequest&) override;
 
     u16 ata_capabilites() const { return m_capabilities; }
-    const Address& ata_address() const { return m_ata_address; }
+    Address const& ata_address() const { return m_ata_address; }
 
 protected:
-    ATADevice(const ATAController&, Address, MinorNumber, u16, u16, u64, NonnullOwnPtr<KString>);
+    ATADevice(ATAController const&, Address, u16, u16, u64);
 
-    WeakPtr<ATAController> m_controller;
+    LockWeakPtr<ATAController> m_controller;
     const Address m_ata_address;
     const u16 m_capabilities;
 };

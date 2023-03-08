@@ -14,9 +14,9 @@ namespace Kernel::VirtIO {
 
 unsigned Console::next_device_id = 0;
 
-UNMAP_AFTER_INIT NonnullRefPtr<Console> Console::must_create(PCI::DeviceIdentifier const& pci_device_identifier)
+UNMAP_AFTER_INIT NonnullLockRefPtr<Console> Console::must_create(PCI::DeviceIdentifier const& pci_device_identifier)
 {
-    return adopt_ref_if_nonnull(new Console(pci_device_identifier)).release_nonnull();
+    return adopt_lock_ref_if_nonnull(new Console(pci_device_identifier)).release_nonnull();
 }
 
 UNMAP_AFTER_INIT void Console::initialize()
@@ -151,7 +151,8 @@ void Console::process_control_message(ControlMessage message)
 {
     switch (message.event) {
     case (u16)ControlEvent::DeviceAdd: {
-        g_io_work->queue([message, this]() -> void {
+        // FIXME: Do something sanely here if we can't allocate a work queue?
+        MUST(g_io_work->try_queue([message, this]() -> void {
             u32 id = message.id;
             if (id >= m_ports.size()) {
                 dbgln("Device provided an invalid port number {}. max_nr_ports: {}", id, m_ports.size());
@@ -162,7 +163,9 @@ void Console::process_control_message(ControlMessage message)
                 return;
             }
 
-            m_ports.at(id) = MUST(DeviceManagement::the().try_create_device<VirtIO::ConsolePort>(id, *this));
+            auto port = MUST(DeviceManagement::the().try_create_device<VirtIO::ConsolePort>(id, *this));
+            port->init_receive_buffer({});
+            m_ports.at(id) = port;
 
             ControlMessage ready_event {
                 .id = static_cast<u32>(id),
@@ -170,7 +173,7 @@ void Console::process_control_message(ControlMessage message)
                 .value = (u16)ControlMessage::Status::Success
             };
             write_control_message(ready_event);
-        });
+        }));
 
         break;
     }

@@ -12,8 +12,8 @@
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Intl/AbstractOperations.h>
 #include <LibJS/Runtime/Object.h>
-#include <LibUnicode/Locale.h>
-#include <LibUnicode/RelativeTimeFormat.h>
+#include <LibLocale/Locale.h>
+#include <LibLocale/RelativeTimeFormat.h>
 
 namespace JS::Intl {
 
@@ -28,12 +28,11 @@ public:
 
     static constexpr auto relevant_extension_keys()
     {
-        // 17.3.3 Internal slots, https://tc39.es/ecma402/#sec-Intl.RelativeTimeFormat-internal-slots
+        // 17.2.3 Internal slots, https://tc39.es/ecma402/#sec-Intl.RelativeTimeFormat-internal-slots
         // The value of the [[RelevantExtensionKeys]] internal slot is « "nu" ».
         return AK::Array { "nu"sv };
     }
 
-    RelativeTimeFormat(Object& prototype);
     virtual ~RelativeTimeFormat() override = default;
 
     String const& locale() const { return m_locale; }
@@ -45,9 +44,9 @@ public:
     String const& numbering_system() const { return m_numbering_system; }
     void set_numbering_system(String numbering_system) { m_numbering_system = move(numbering_system); }
 
-    Unicode::Style style() const { return m_style; }
-    void set_style(StringView style) { m_style = Unicode::style_from_string(style); }
-    StringView style_string() const { return Unicode::style_to_string(m_style); }
+    ::Locale::Style style() const { return m_style; }
+    void set_style(StringView style) { m_style = ::Locale::style_from_string(style); }
+    StringView style_string() const { return ::Locale::style_to_string(m_style); }
 
     Numeric numeric() const { return m_numeric; }
     void set_numeric(StringView numeric);
@@ -56,15 +55,21 @@ public:
     NumberFormat& number_format() const { return *m_number_format; }
     void set_number_format(NumberFormat* number_format) { m_number_format = number_format; }
 
+    PluralRules& plural_rules() const { return *m_plural_rules; }
+    void set_plural_rules(PluralRules* plural_rules) { m_plural_rules = plural_rules; }
+
 private:
+    explicit RelativeTimeFormat(Object& prototype);
+
     virtual void visit_edges(Cell::Visitor&) override;
 
-    String m_locale;                                 // [[Locale]]
-    String m_data_locale;                            // [[DataLocale]]
-    String m_numbering_system;                       // [[NumberingSystem]]
-    Unicode::Style m_style { Unicode::Style::Long }; // [[Style]]
-    Numeric m_numeric { Numeric::Always };           // [[Numeric]]
-    NumberFormat* m_number_format { nullptr };       // [[NumberFormat]]
+    String m_locale;                                   // [[Locale]]
+    String m_data_locale;                              // [[DataLocale]]
+    String m_numbering_system;                         // [[NumberingSystem]]
+    ::Locale::Style m_style { ::Locale::Style::Long }; // [[Style]]
+    Numeric m_numeric { Numeric::Always };             // [[Numeric]]
+    NumberFormat* m_number_format { nullptr };         // [[NumberFormat]]
+    PluralRules* m_plural_rules { nullptr };           // [[PluralRules]]
 };
 
 struct PatternPartitionWithUnit : public PatternPartition {
@@ -77,11 +82,10 @@ struct PatternPartitionWithUnit : public PatternPartition {
     StringView unit;
 };
 
-ThrowCompletionOr<RelativeTimeFormat*> initialize_relative_time_format(GlobalObject& global_object, RelativeTimeFormat& relative_time_format, Value locales_value, Value options_value);
-ThrowCompletionOr<Unicode::TimeUnit> singular_relative_time_unit(GlobalObject& global_object, StringView unit);
-ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_pattern(GlobalObject& global_object, RelativeTimeFormat& relative_time_format, double value, StringView unit);
-Vector<PatternPartitionWithUnit> make_parts_list(StringView pattern, StringView unit, Vector<PatternPartition> parts);
-ThrowCompletionOr<String> format_relative_time(GlobalObject& global_object, RelativeTimeFormat& relative_time_format, double value, StringView unit);
-ThrowCompletionOr<Array*> format_relative_time_to_parts(GlobalObject& global_object, RelativeTimeFormat& relative_time_format, double value, StringView unit);
+ThrowCompletionOr<::Locale::TimeUnit> singular_relative_time_unit(VM&, StringView unit);
+ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_pattern(VM&, RelativeTimeFormat&, double value, StringView unit);
+ThrowCompletionOr<Vector<PatternPartitionWithUnit>> make_parts_list(VM&, StringView pattern, StringView unit, Vector<PatternPartition> parts);
+ThrowCompletionOr<String> format_relative_time(VM&, RelativeTimeFormat&, double value, StringView unit);
+ThrowCompletionOr<Array*> format_relative_time_to_parts(VM&, RelativeTimeFormat&, double value, StringView unit);
 
 }

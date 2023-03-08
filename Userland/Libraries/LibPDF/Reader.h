@@ -7,11 +7,12 @@
 #pragma once
 
 #include <AK/Debug.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
 #include <AK/ScopeGuard.h>
 #include <AK/Span.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibPDF/Error.h>
 
 namespace PDF {
 
@@ -38,7 +39,7 @@ public:
             return 0;
 
         if (m_forwards)
-            return bytes().size() - offset() - 1;
+            return bytes().size() - offset();
         return offset() + 1;
     }
 
@@ -54,9 +55,19 @@ public:
     template<typename T = char>
     T read()
     {
-        T value = reinterpret_cast<const T*>(m_bytes.offset(m_offset))[0];
+        T value = reinterpret_cast<T const*>(m_bytes.offset(m_offset))[0];
         move_by(sizeof(T));
         return value;
+    }
+
+    template<typename T = char>
+    PDFErrorOr<T> try_read()
+    {
+        if (sizeof(T) + m_offset >= m_bytes.size()) {
+            auto message = DeprecatedString::formatted("Cannot read {} bytes at offset {} of ReadonlyBytes of size {}", sizeof(T), m_offset, m_bytes.size());
+            return Error { Error::Type::Parse, message };
+        }
+        return read<T>();
     }
 
     char peek(size_t shift = 0) const
@@ -79,9 +90,9 @@ public:
         return !done() && peek() == ch;
     }
 
-    bool matches(const char* chars) const
+    bool matches(char const* chars) const
     {
-        String string(chars);
+        DeprecatedString string(chars);
         if (remaining() < string.length())
             return false;
 
@@ -120,6 +131,18 @@ public:
         move_until([&predicate](char t) { return !predicate(t); });
     }
 
+    bool matches_eol() const;
+    bool matches_whitespace() const;
+    bool matches_number() const;
+    bool matches_delimiter() const;
+    bool matches_regular_character() const;
+
+    bool consume_eol();
+    bool consume_whitespace();
+    char consume();
+    void consume(int amount);
+    bool consume(char);
+
     ALWAYS_INLINE void set_reading_forwards() { m_forwards = true; }
     ALWAYS_INLINE void set_reading_backwards() { m_forwards = false; }
 
@@ -137,7 +160,7 @@ public:
 
         for (auto i = from; i <= to; i++) {
             char value = static_cast<char>(bytes().at(i));
-            auto line = String::formatted("  {}: '{}' (value={:3d}) ", i, value, static_cast<u8>(value));
+            auto line = DeprecatedString::formatted("  {}: '{}' (value={:3d}) ", i, value, static_cast<u8>(value));
             if (i == offset()) {
                 dbgln("{} <<< current location, forwards={}", line, m_forwards);
             } else {

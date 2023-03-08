@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,77 +13,95 @@
 
 namespace GUI {
 
-NonnullRefPtr<Action> Action::create(String text, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create(String text, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), move(icon), move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create(String text, const Shortcut& shortcut, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, Shortcut const& shortcut, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, Shortcut const& shortcut, Shortcut const& alternate_shortcut, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, alternate_shortcut, move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create(String text, const Shortcut& shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, Shortcut const& shortcut, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, Shortcut {}, move(icon), move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create(DeprecatedString text, Shortcut const& shortcut, Shortcut const& alternate_shortcut, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, alternate_shortcut, move(icon), move(callback), parent));
 }
 
-NonnullRefPtr<Action> Action::create_checkable(String text, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create_checkable(DeprecatedString text, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), move(callback), parent, true));
 }
 
-NonnullRefPtr<Action> Action::create_checkable(String text, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create_checkable(DeprecatedString text, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), move(icon), move(callback), parent, true));
 }
 
-NonnullRefPtr<Action> Action::create_checkable(String text, const Shortcut& shortcut, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create_checkable(DeprecatedString text, Shortcut const& shortcut, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, move(callback), parent, true));
 }
 
-NonnullRefPtr<Action> Action::create_checkable(String text, const Shortcut& shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent)
+NonnullRefPtr<Action> Action::create_checkable(DeprecatedString text, Shortcut const& shortcut, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> callback, Core::Object* parent)
 {
     return adopt_ref(*new Action(move(text), shortcut, Shortcut {}, move(icon), move(callback), parent, true));
 }
 
-Action::Action(String text, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
+ErrorOr<NonnullRefPtr<Action>> Action::try_create_checkable(DeprecatedString text, Shortcut const& shortcut, Function<void(Action&)> callback, Core::Object* parent)
+{
+    return adopt_nonnull_ref_or_enomem(new (nothrow) Action(move(text), shortcut, Shortcut {}, move(callback), parent, true));
+}
+
+RefPtr<Action> Action::find_action_for_shortcut(Core::Object& object, Shortcut const& shortcut)
+{
+    RefPtr<Action> found_action = nullptr;
+    object.for_each_child_of_type<Action>([&](auto& action) {
+        if (action.shortcut() == shortcut || action.alternate_shortcut() == shortcut) {
+            found_action = &action;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return found_action;
+}
+
+Action::Action(DeprecatedString text, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
     : Action(move(text), Shortcut {}, Shortcut {}, nullptr, move(on_activation_callback), parent, checkable)
 {
 }
 
-Action::Action(String text, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
+Action::Action(DeprecatedString text, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
     : Action(move(text), Shortcut {}, Shortcut {}, move(icon), move(on_activation_callback), parent, checkable)
 {
 }
 
-Action::Action(String text, const Shortcut& shortcut, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
+Action::Action(DeprecatedString text, Shortcut const& shortcut, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
     : Action(move(text), shortcut, Shortcut {}, nullptr, move(on_activation_callback), parent, checkable)
 {
 }
 
-Action::Action(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
+Action::Action(DeprecatedString text, Shortcut const& shortcut, Shortcut const& alternate_shortcut, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
     : Action(move(text), shortcut, alternate_shortcut, nullptr, move(on_activation_callback), parent, checkable)
 {
 }
 
-Action::Action(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
+Action::Action(DeprecatedString text, Shortcut const& shortcut, Shortcut const& alternate_shortcut, RefPtr<Gfx::Bitmap const> icon, Function<void(Action&)> on_activation_callback, Core::Object* parent, bool checkable)
     : Core::Object(parent)
     , on_activation(move(on_activation_callback))
     , m_text(move(text))
@@ -106,10 +124,26 @@ Action::Action(String text, const Shortcut& shortcut, const Shortcut& alternate_
 
 Action::~Action()
 {
-    if (m_shortcut.is_valid() && m_scope == ShortcutScope::ApplicationGlobal) {
+    if (m_scope == ShortcutScope::ApplicationGlobal) {
         if (auto* app = Application::the())
             app->unregister_global_shortcut_action({}, *this);
     }
+}
+
+void Action::process_event(Window& window, Event& event)
+{
+    if (is_enabled()) {
+        flash_menubar_menu(window);
+        activate();
+        event.accept();
+        return;
+    }
+    if (swallow_key_event_when_disabled()) {
+        event.accept();
+        return;
+    }
+
+    event.ignore();
 }
 
 void Action::activate(Core::Object* activator)
@@ -129,6 +163,12 @@ void Action::activate(Core::Object* activator)
         } else {
             set_checked(!is_checked());
         }
+    }
+
+    if (activator == nullptr) {
+        for_each_toolbar_button([](auto& button) {
+            button.mimic_pressed();
+        });
     }
 
     on_activation(*this);
@@ -188,6 +228,19 @@ void Action::set_enabled(bool enabled)
     });
 }
 
+void Action::set_visible(bool visible)
+{
+    if (m_visible == visible)
+        return;
+    m_visible = visible;
+    for_each_toolbar_button([visible](auto& button) {
+        button.set_visible(visible);
+    });
+    for_each_menu_item([visible](auto& item) {
+        item.set_visible(visible);
+    });
+}
+
 void Action::set_checked(bool checked)
 {
     if (m_checked == checked)
@@ -217,16 +270,40 @@ void Action::set_group(Badge<ActionGroup>, ActionGroup* group)
     m_action_group = AK::make_weak_ptr_if_nonnull(group);
 }
 
-void Action::set_icon(const Gfx::Bitmap* icon)
+void Action::set_icon(Gfx::Bitmap const* icon)
 {
+    if (m_icon == icon)
+        return;
     m_icon = icon;
+    for_each_toolbar_button([icon](auto& button) {
+        button.set_icon(icon);
+    });
+    for_each_menu_item([](auto& menu_item) {
+        menu_item.update_from_action({});
+    });
 }
 
-void Action::set_text(String text)
+void Action::set_text(DeprecatedString text)
 {
     if (m_text == text)
         return;
     m_text = move(text);
+    for_each_toolbar_button([&](auto& button) {
+        button.set_text(String::from_deprecated_string(m_text).release_value_but_fixme_should_propagate_errors());
+    });
+    for_each_menu_item([&](auto& menu_item) {
+        menu_item.update_from_action({});
+    });
+}
+
+void Action::set_tooltip(DeprecatedString tooltip)
+{
+    if (m_tooltip == tooltip)
+        return;
+    m_tooltip = move(tooltip);
+    for_each_toolbar_button([&](auto& button) {
+        button.set_tooltip(*m_tooltip);
+    });
     for_each_menu_item([&](auto& menu_item) {
         menu_item.update_from_action({});
     });

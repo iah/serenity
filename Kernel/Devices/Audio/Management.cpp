@@ -9,7 +9,6 @@
 #include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Devices/Audio/AC97.h>
 #include <Kernel/Devices/Audio/Management.h>
-#include <Kernel/Devices/Audio/SB16.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel {
@@ -39,19 +38,23 @@ UNMAP_AFTER_INIT AudioManagement::AudioManagement()
 
 UNMAP_AFTER_INIT void AudioManagement::enumerate_hardware_controllers()
 {
-    if (auto controller = SB16::try_detect_and_create(); !controller.is_error())
-        m_controllers_list.append(controller.release_value());
+    if (!PCI::Access::is_disabled()) {
+        MUST(PCI::enumerate([&](PCI::DeviceIdentifier const& device_identifier) {
+            // Note: Only consider PCI audio controllers
+            if (device_identifier.class_code().value() != to_underlying(PCI::ClassID::Multimedia)
+                || device_identifier.subclass_code().value() != to_underlying(PCI::Multimedia::SubclassID::AudioController))
+                return;
 
-    PCI::enumerate([&](PCI::DeviceIdentifier const& device_identifier) {
-        // Note: Only consider PCI audio controllers
-        if (device_identifier.class_code().value() != to_underlying(PCI::ClassID::Multimedia)
-            || device_identifier.subclass_code().value() != to_underlying(PCI::Multimedia::SubclassID::AudioController))
-            return;
-
-        dbgln("AC97: found audio controller at {}", device_identifier.address());
-        // FIXME: Propagate errors properly
-        m_controllers_list.append(AC97::try_create(device_identifier).release_value());
-    });
+            dbgln("AC97: found audio controller at {}", device_identifier.address());
+            auto ac97_device = AC97::try_create(device_identifier);
+            if (ac97_device.is_error()) {
+                // FIXME: Propagate errors properly
+                dbgln("AudioManagement: failed to initialize AC97 device: {}", ac97_device.error());
+                return;
+            }
+            m_controllers_list.append(ac97_device.release_value());
+        }));
+    }
 }
 
 UNMAP_AFTER_INIT void AudioManagement::enumerate_hardware_audio_channels()

@@ -6,6 +6,8 @@
 
 #include "InspectableProcess.h"
 #include <AK/JsonObject.h>
+#include <LibCore/EventLoop.h>
+#include <LibCore/Socket.h>
 
 namespace InspectorServer {
 
@@ -16,7 +18,7 @@ InspectableProcess* InspectableProcess::from_pid(pid_t pid)
     return g_processes.get(pid).value_or(nullptr);
 }
 
-InspectableProcess::InspectableProcess(pid_t pid, NonnullOwnPtr<Core::Stream::LocalSocket> socket)
+InspectableProcess::InspectableProcess(pid_t pid, NonnullOwnPtr<Core::LocalSocket> socket)
     : m_pid(pid)
     , m_socket(move(socket))
 {
@@ -27,17 +29,13 @@ InspectableProcess::InspectableProcess(pid_t pid, NonnullOwnPtr<Core::Stream::Lo
         char c;
         [[maybe_unused]] auto buffer = m_socket->read({ &c, 1 });
         if (m_socket->is_eof()) {
-            g_processes.remove(m_pid);
+            Core::deferred_invoke([pid = this->m_pid] { g_processes.remove(pid); });
             return;
         }
     };
 }
 
-InspectableProcess::~InspectableProcess()
-{
-}
-
-String InspectableProcess::wait_for_response()
+DeprecatedString InspectableProcess::wait_for_response()
 {
     if (m_socket->is_eof()) {
         dbgln("InspectableProcess disconnected: PID {}", m_pid);
@@ -46,8 +44,8 @@ String InspectableProcess::wait_for_response()
     }
 
     u32 length {};
-    auto nread = m_socket->read({ (u8*)&length, sizeof(length) }).release_value_but_fixme_should_propagate_errors();
-    if (nread != sizeof(length)) {
+    auto length_bytes_read = m_socket->read({ (u8*)&length, sizeof(length) }).release_value_but_fixme_should_propagate_errors();
+    if (length_bytes_read.size() != sizeof(length)) {
         dbgln("InspectableProcess got malformed data: PID {}", m_pid);
         m_socket->close();
         return {};
@@ -57,28 +55,28 @@ String InspectableProcess::wait_for_response()
     auto remaining_data_buffer = data_buffer.bytes();
 
     while (!remaining_data_buffer.is_empty()) {
-        auto maybe_nread = m_socket->read(remaining_data_buffer);
-        if (maybe_nread.is_error()) {
-            dbgln("InspectableProcess::wait_for_response: Failed to read data: {}", maybe_nread.error());
+        auto maybe_bytes_read = m_socket->read(remaining_data_buffer);
+        if (maybe_bytes_read.is_error()) {
+            dbgln("InspectableProcess::wait_for_response: Failed to read data: {}", maybe_bytes_read.error());
             break;
         }
 
-        auto nread = maybe_nread.release_value();
-        if (nread == 0)
+        auto bytes_read = maybe_bytes_read.release_value();
+        if (bytes_read.is_empty())
             break;
 
-        remaining_data_buffer = remaining_data_buffer.slice(nread);
+        remaining_data_buffer = remaining_data_buffer.slice(bytes_read.size());
     }
 
     VERIFY(data_buffer.size() == length);
     dbgln("Got data size {} and read that many bytes", length);
 
-    return String::copy(data_buffer);
+    return DeprecatedString::copy(data_buffer);
 }
 
 void InspectableProcess::send_request(JsonObject const& request)
 {
-    auto serialized = request.to_string();
+    auto serialized = request.to_deprecated_string();
     u32 length = serialized.length();
 
     // FIXME: Propagate errors

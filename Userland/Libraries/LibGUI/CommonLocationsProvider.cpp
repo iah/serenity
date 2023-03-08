@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
 #include <LibGUI/CommonLocationsProvider.h>
@@ -23,10 +24,13 @@ static void initialize_if_needed()
     if (s_initialized)
         return;
 
-    auto user_config = String::formatted("{}/CommonLocations.json", Core::StandardPaths::config_directory());
-    if (Core::File::exists(user_config)) {
-        CommonLocationsProvider::load_from_json(user_config);
-        return;
+    auto user_config = DeprecatedString::formatted("{}/CommonLocations.json", Core::StandardPaths::config_directory());
+    if (Core::DeprecatedFile::exists(user_config)) {
+        auto maybe_error = CommonLocationsProvider::load_from_json(user_config);
+        if (!maybe_error.is_error())
+            return;
+        dbgln("Unable to read Common Locations file: {}", maybe_error.error());
+        dbgln("Using the default set instead.");
     }
 
     // Fallback : If the user doesn't have custom locations, use some default ones.
@@ -36,23 +40,14 @@ static void initialize_if_needed()
     s_initialized = true;
 }
 
-void CommonLocationsProvider::load_from_json(const String& json_path)
+ErrorOr<void> CommonLocationsProvider::load_from_json(StringView json_path)
 {
-    auto file = Core::File::construct(json_path);
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        dbgln("Unable to open {}", file->filename());
-        return;
-    }
-
-    auto json = JsonValue::from_string(file->read_all());
-    if (json.is_error()) {
-        dbgln("Common locations file {} is not a valid JSON file.", file->filename());
-        return;
-    }
-    if (!json.value().is_array()) {
-        dbgln("Common locations file {} should contain a JSON array.", file->filename());
-        return;
-    }
+    auto file = TRY(Core::File::open(json_path, Core::File::OpenMode::Read));
+    auto json = JsonValue::from_string(TRY(file->read_until_eof()));
+    if (json.is_error())
+        return Error::from_string_literal("File is not a valid JSON");
+    if (!json.value().is_array())
+        return Error::from_string_literal("File must contain a JSON array");
 
     s_common_locations.clear();
     auto const& contents = json.value().as_array();
@@ -61,15 +56,16 @@ void CommonLocationsProvider::load_from_json(const String& json_path)
         if (!entry_value.is_object())
             continue;
         auto entry = entry_value.as_object();
-        auto name = entry.get("name").to_string();
-        auto path = entry.get("path").to_string();
-        s_common_locations.append({ name, path });
+        auto name = entry.get_deprecated_string("name"sv).value_or({});
+        auto path = entry.get_deprecated_string("path"sv).value_or({});
+        TRY(s_common_locations.try_append({ name, path }));
     }
 
     s_initialized = true;
+    return {};
 }
 
-const Vector<CommonLocationsProvider::CommonLocation>& CommonLocationsProvider::common_locations()
+Vector<CommonLocationsProvider::CommonLocation> const& CommonLocationsProvider::common_locations()
 {
     initialize_if_needed();
     return s_common_locations;

@@ -5,33 +5,30 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "NVMeController.h"
-#include "AK/Format.h"
-#include <AK/RefPtr.h>
+#include <AK/Format.h>
 #include <AK/Types.h>
-#include <Kernel/Arch/x86/IO.h>
-#include <Kernel/Arch/x86/Processor.h>
-#include <Kernel/Arch/x86/SafeMem.h>
+#include <Kernel/Arch/Delay.h>
+#include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/Devices/Device.h>
-#include <Kernel/FileSystem/ProcFS.h>
+#include <Kernel/Library/LockRefPtr.h>
 #include <Kernel/Sections.h>
+#include <Kernel/Storage/NVMe/NVMeController.h>
+#include <Kernel/Storage/StorageManagement.h>
 
 namespace Kernel {
-Atomic<u8> NVMeController::controller_id {};
 
-UNMAP_AFTER_INIT ErrorOr<NonnullRefPtr<NVMeController>> NVMeController::try_initialize(const Kernel::PCI::DeviceIdentifier& device_identifier, bool is_queue_polled)
+UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<NVMeController>> NVMeController::try_initialize(Kernel::PCI::DeviceIdentifier const& device_identifier, bool is_queue_polled)
 {
-    auto controller = TRY(adopt_nonnull_ref_or_enomem(new NVMeController(device_identifier)));
+    auto controller = TRY(adopt_nonnull_lock_ref_or_enomem(new NVMeController(device_identifier, StorageManagement::generate_relative_nvme_controller_id({}))));
     TRY(controller->initialize(is_queue_polled));
-    NVMeController::controller_id++;
     return controller;
 }
 
-UNMAP_AFTER_INIT NVMeController::NVMeController(const PCI::DeviceIdentifier& device_identifier)
-    : PCI::Device(device_identifier.address())
-    , m_pci_device_id(device_identifier)
+UNMAP_AFTER_INIT NVMeController::NVMeController(const PCI::DeviceIdentifier& device_identifier, u32 hardware_relative_controller_id)
+    : PCI::Device(const_cast<PCI::DeviceIdentifier&>(device_identifier))
+    , StorageController(hardware_relative_controller_id)
 {
 }
 
@@ -39,17 +36,17 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::initialize(bool is_queue_polled)
 {
     // Nr of queues = one queue per core
     auto nr_of_queues = Processor::count();
-    auto irq = is_queue_polled ? Optional<u8> {} : m_pci_device_id.interrupt_line().value();
+    auto irq = is_queue_polled ? Optional<u8> {} : device_identifier().interrupt_line().value();
 
-    PCI::enable_memory_space(m_pci_device_id.address());
-    PCI::enable_bus_mastering(m_pci_device_id.address());
-    m_bar = PCI::get_BAR0(m_pci_device_id.address()) & BAR_ADDR_MASK;
+    PCI::enable_memory_space(device_identifier());
+    PCI::enable_bus_mastering(device_identifier());
+    m_bar = PCI::get_BAR0(device_identifier()) & BAR_ADDR_MASK;
     static_assert(sizeof(ControllerRegister) == REG_SQ0TDBL_START);
     static_assert(sizeof(NVMeSubmission) == (1 << SQ_WIDTH));
 
     // Map only until doorbell register for the controller
     // Queues will individually map the doorbell register respectively
-    m_controller_regs = TRY(Memory::map_typed_writable<volatile ControllerRegister>(PhysicalAddress(m_bar)));
+    m_controller_regs = TRY(Memory::map_typed_writable<ControllerRegister volatile>(PhysicalAddress(m_bar)));
 
     auto caps = m_controller_regs->cap;
     m_ready_timeout = Time::from_milliseconds((CAP_TO(caps) + 1) * 500); // CAP.TO is in 500ms units
@@ -77,7 +74,7 @@ bool NVMeController::wait_for_ready(bool expected_ready_bit_value)
 
     u32 expected_rdy = expected_ready_bit_value ? 1 : 0;
     while (((m_controller_regs->csts >> CSTS_RDY_BIT) & 0x1) != expected_rdy) {
-        IO::delay(one_ms_io_delay);
+        microseconds_delay(one_ms_io_delay);
 
         if (--wait_iterations == 0) {
             if (((m_controller_regs->csts >> CSTS_RDY_BIT) & 0x1) != expected_rdy) {
@@ -158,7 +155,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::identify_and_init_namespaces()
     u32 active_namespace_list[NVMe_IDENTIFY_SIZE / sizeof(u32)];
 
     {
-        auto buffer = TRY(MM.allocate_dma_buffer_page("Identify PRP", Memory::Region::Access::ReadWrite, prp_dma_buffer));
+        auto buffer = TRY(MM.allocate_dma_buffer_page("Identify PRP"sv, Memory::Region::Access::ReadWrite, prp_dma_buffer));
         prp_dma_region = move(buffer);
     }
 
@@ -171,7 +168,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::identify_and_init_namespaces()
         sub.identify.cns = NVMe_CNS_ID_ACTIVE_NS & 0xff;
         status = submit_admin_command(sub, true);
         if (status) {
-            dmesgln("Failed to identify active namespace command");
+            dmesgln_pci(*this, "Failed to identify active namespace command");
             return EFAULT;
         }
         if (void* fault_at; !safe_memcpy(active_namespace_list, prp_dma_region->vaddr().as_ptr(), NVMe_IDENTIFY_SIZE, fault_at)) {
@@ -194,7 +191,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::identify_and_init_namespaces()
             sub.identify.nsid = nsid;
             status = submit_admin_command(sub, true);
             if (status) {
-                dmesgln("Failed identify namespace with nsid {}", nsid);
+                dmesgln_pci(*this, "Failed identify namespace with nsid {}", nsid);
                 return EFAULT;
             }
             static_assert(sizeof(IdentifyNamespace) == NVMe_IDENTIFY_SIZE);
@@ -207,7 +204,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::identify_and_init_namespaces()
 
             dbgln_if(NVME_DEBUG, "NVMe: Block count is {} and Block size is {}", block_counts, block_size);
 
-            m_namespaces.append(TRY(NVMeNameSpace::try_create(m_queues, controller_id.load(), nsid, block_counts, block_size)));
+            m_namespaces.append(TRY(NVMeNameSpace::try_create(*this, m_queues, nsid, block_counts, block_size)));
             m_device_count++;
             dbgln_if(NVME_DEBUG, "NVMe: Initialized namespace with NSID: {}", nsid);
         }
@@ -225,7 +222,7 @@ UNMAP_AFTER_INIT Tuple<u64, u8> NVMeController::get_ns_features(IdentifyNamespac
     return Tuple<u64, u8>(namespace_size, lba_size);
 }
 
-RefPtr<StorageDevice> NVMeController::device(u32 index) const
+LockRefPtr<StorageDevice> NVMeController::device(u32 index) const
 {
     return m_namespaces.at(index);
 }
@@ -259,17 +256,17 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_admin_queue(Optional<u8> i
 {
     auto qdepth = get_admin_q_dept();
     OwnPtr<Memory::Region> cq_dma_region;
-    NonnullRefPtrVector<Memory::PhysicalPage> cq_dma_pages;
+    Vector<NonnullRefPtr<Memory::PhysicalPage>> cq_dma_pages;
     OwnPtr<Memory::Region> sq_dma_region;
-    NonnullRefPtrVector<Memory::PhysicalPage> sq_dma_pages;
+    Vector<NonnullRefPtr<Memory::PhysicalPage>> sq_dma_pages;
     auto cq_size = round_up_to_power_of_two(CQ_SIZE(qdepth), 4096);
     auto sq_size = round_up_to_power_of_two(SQ_SIZE(qdepth), 4096);
     if (!reset_controller()) {
-        dmesgln("Failed to reset the NVMe controller");
+        dmesgln_pci(*this, "Failed to reset the NVMe controller");
         return EFAULT;
     }
     {
-        auto buffer = TRY(MM.allocate_dma_buffer_pages(cq_size, "Admin CQ queue", Memory::Region::Access::ReadWrite, cq_dma_pages));
+        auto buffer = TRY(MM.allocate_dma_buffer_pages(cq_size, "Admin CQ queue"sv, Memory::Region::Access::ReadWrite, cq_dma_pages));
         cq_dma_region = move(buffer);
     }
 
@@ -278,16 +275,16 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_admin_queue(Optional<u8> i
     memset(cq_dma_region->vaddr().as_ptr(), 0, cq_size);
 
     {
-        auto buffer = TRY(MM.allocate_dma_buffer_pages(sq_size, "Admin SQ queue", Memory::Region::Access::ReadWrite, sq_dma_pages));
+        auto buffer = TRY(MM.allocate_dma_buffer_pages(sq_size, "Admin SQ queue"sv, Memory::Region::Access::ReadWrite, sq_dma_pages));
         sq_dma_region = move(buffer);
     }
-    auto doorbell_regs = TRY(Memory::map_typed_writable<volatile DoorbellRegister>(PhysicalAddress(m_bar + REG_SQ0TDBL_START)));
+    auto doorbell_regs = TRY(Memory::map_typed_writable<DoorbellRegister volatile>(PhysicalAddress(m_bar + REG_SQ0TDBL_START)));
 
-    m_controller_regs->acq = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(cq_dma_pages.first().paddr().as_ptr()));
-    m_controller_regs->asq = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(sq_dma_pages.first().paddr().as_ptr()));
+    m_controller_regs->acq = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(cq_dma_pages.first()->paddr().as_ptr()));
+    m_controller_regs->asq = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(sq_dma_pages.first()->paddr().as_ptr()));
 
     if (!start_controller()) {
-        dmesgln("Failed to restart the NVMe controller");
+        dmesgln_pci(*this, "Failed to restart the NVMe controller");
         return EFAULT;
     }
     set_admin_queue_ready_flag();
@@ -300,14 +297,14 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_admin_queue(Optional<u8> i
 UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_io_queue(u8 qid, Optional<u8> irq)
 {
     OwnPtr<Memory::Region> cq_dma_region;
-    NonnullRefPtrVector<Memory::PhysicalPage> cq_dma_pages;
+    Vector<NonnullRefPtr<Memory::PhysicalPage>> cq_dma_pages;
     OwnPtr<Memory::Region> sq_dma_region;
-    NonnullRefPtrVector<Memory::PhysicalPage> sq_dma_pages;
+    Vector<NonnullRefPtr<Memory::PhysicalPage>> sq_dma_pages;
     auto cq_size = round_up_to_power_of_two(CQ_SIZE(IO_QUEUE_SIZE), 4096);
     auto sq_size = round_up_to_power_of_two(SQ_SIZE(IO_QUEUE_SIZE), 4096);
 
     {
-        auto buffer = TRY(MM.allocate_dma_buffer_pages(cq_size, "IO CQ queue", Memory::Region::Access::ReadWrite, cq_dma_pages));
+        auto buffer = TRY(MM.allocate_dma_buffer_pages(cq_size, "IO CQ queue"sv, Memory::Region::Access::ReadWrite, cq_dma_pages));
         cq_dma_region = move(buffer);
     }
 
@@ -316,14 +313,14 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_io_queue(u8 qid, Optional<
     memset(cq_dma_region->vaddr().as_ptr(), 0, cq_size);
 
     {
-        auto buffer = TRY(MM.allocate_dma_buffer_pages(sq_size, "IO SQ queue", Memory::Region::Access::ReadWrite, sq_dma_pages));
+        auto buffer = TRY(MM.allocate_dma_buffer_pages(sq_size, "IO SQ queue"sv, Memory::Region::Access::ReadWrite, sq_dma_pages));
         sq_dma_region = move(buffer);
     }
 
     {
         NVMeSubmission sub {};
         sub.op = OP_ADMIN_CREATE_COMPLETION_QUEUE;
-        sub.create_cq.prp1 = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(cq_dma_pages.first().paddr().as_ptr()));
+        sub.create_cq.prp1 = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(cq_dma_pages.first()->paddr().as_ptr()));
         sub.create_cq.cqid = qid;
         // The queue size is 0 based
         sub.create_cq.qsize = AK::convert_between_host_and_little_endian(IO_QUEUE_SIZE - 1);
@@ -338,7 +335,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_io_queue(u8 qid, Optional<
     {
         NVMeSubmission sub {};
         sub.op = OP_ADMIN_CREATE_SUBMISSION_QUEUE;
-        sub.create_sq.prp1 = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(sq_dma_pages.first().paddr().as_ptr()));
+        sub.create_sq.prp1 = reinterpret_cast<u64>(AK::convert_between_host_and_little_endian(sq_dma_pages.first()->paddr().as_ptr()));
         sub.create_sq.sqid = qid;
         // The queue size is 0 based
         sub.create_sq.qsize = AK::convert_between_host_and_little_endian(IO_QUEUE_SIZE - 1);
@@ -349,7 +346,7 @@ UNMAP_AFTER_INIT ErrorOr<void> NVMeController::create_io_queue(u8 qid, Optional<
     }
 
     auto queue_doorbell_offset = REG_SQ0TDBL_START + ((2 * qid) * (4 << m_dbl_stride));
-    auto doorbell_regs = TRY(Memory::map_typed_writable<volatile DoorbellRegister>(PhysicalAddress(m_bar + queue_doorbell_offset)));
+    auto doorbell_regs = TRY(Memory::map_typed_writable<DoorbellRegister volatile>(PhysicalAddress(m_bar + queue_doorbell_offset)));
 
     m_queues.append(TRY(NVMeQueue::try_create(qid, irq, IO_QUEUE_SIZE, move(cq_dma_region), cq_dma_pages, move(sq_dma_region), sq_dma_pages, move(doorbell_regs))));
     dbgln_if(NVME_DEBUG, "NVMe: Created IO Queue with QID{}", m_queues.size());

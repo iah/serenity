@@ -13,7 +13,7 @@ UnhandledInterruptHandler::UnhandledInterruptHandler(u8 interrupt_vector)
 {
 }
 
-bool UnhandledInterruptHandler::handle_interrupt(const RegisterState&)
+bool UnhandledInterruptHandler::handle_interrupt(RegisterState const&)
 {
     PANIC("Interrupt: Unhandled vector {} was invoked for handle_interrupt(RegisterState&).", interrupt_number());
 }
@@ -23,7 +23,5 @@ bool UnhandledInterruptHandler::handle_interrupt(const RegisterState&)
     PANIC("Interrupt: Unhandled vector {} was invoked for eoi().", interrupt_number());
 }
 
-UnhandledInterruptHandler::~UnhandledInterruptHandler()
-{
-}
+UnhandledInterruptHandler::~UnhandledInterruptHandler() = default;
 }

@@ -12,11 +12,11 @@ This guide assumes several things:
 - Bootloaders are located inside `/srv/tftp/boot/`
 - SerenityOS artifacts are located inside `/srv/tftp/serenity/`:
     - The prekernel is located at `/srv/tftp/serenity/prekernel`
-        - You can find it at `Build/i686/Kernel/Prekernel/Prekernel`
+        - You can find it at `Build/x86_64/Kernel/Prekernel/Prekernel`
     - The kernel is located at `/srv/tftp/serenity/kernel`
-        - You can find it at `Build/i686/Kernel/Kernel`
+        - You can find it at `Build/x86_64/Kernel/Kernel`
     - The ramdisk is located at `/srv/tftp/serenity/ramdisk`
-        - You can use the QEMU image at `Build/i686/_disk_image` as a ramdisk
+        - You can use the QEMU image at `Build/x86_64/_disk_image` as a ramdisk
         
 `grub-pc-bin`, which contains the BIOS modules for PXE booting GRUB2, isn't available from the ARM repos of Debian and Ubuntu so if you are using an ARM machine for your TFTP server you will need to extract and copy across the contents of the `/usr/lib/grub/i386-pc/` directory from the x86 package or build the files manually.
 
@@ -87,7 +87,7 @@ menuentry 'SerenityOS - netboot diskless text mode' {
         set gfxkeep=text
         terminal_output console
         echo 'Loading prekernel...'
-        multiboot (tftp)/serenity/prekernel root=/dev/ramdisk0 fbdev=off
+        multiboot (tftp)/serenity/prekernel root=/dev/ramdisk0 graphics_subsystem_mode=off
         echo 'Loading kernel...'
         module (tftp)/serenity/kernel
         echo 'Loading ramdisk...'
@@ -175,11 +175,10 @@ Don't forget to replace `X.Y.Z.W` with your HTTP server IP address.
 
 For troubleshooting purposes, you can add the following command line arguments if you suspect our implementation fails to work with your hardware:
 - `disable_physical_storage`
-- `disable_ps2_controller`
 - `disable_uhci_controller`
 
 Because iPXE (unlike GRUB) doesn't support VESA VBE modesetting when booting a multiboot kernel,
-you might not see any output, so add the `fbdev=off` argument as well to boot into VGA text mode.
+you might not see any output, so add the `graphics_subsystem_mode=off` argument as well to boot into VGA text mode.
 
 Afterwards you will need to enable the `console` iPXE command by uncommenting the following line in `src/config/general.h`:
 ```c

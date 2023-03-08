@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,19 +11,20 @@
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
 REGISTER_WIDGET(GUI, Button)
+REGISTER_WIDGET(GUI, DialogButton)
 
 namespace GUI {
 
 Button::Button(String text)
     : AbstractButton(move(text))
 {
-    set_min_width(32);
-    set_fixed_height(22);
+    set_min_size({ 40, SpecialDimension::Shrink });
+    set_preferred_size({ SpecialDimension::OpportunisticGrow, SpecialDimension::Shrink });
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
 
     on_focus_change = [this](bool has_focus, auto) {
@@ -41,7 +42,8 @@ Button::Button(String text)
         { Gfx::ButtonStyle::Normal, "Normal" },
         { Gfx::ButtonStyle::Coolbar, "Coolbar" });
 
-    REGISTER_STRING_PROPERTY("icon", icon, set_icon_from_path);
+    REGISTER_WRITE_ONLY_STRING_PROPERTY("icon", set_icon_from_path);
+    REGISTER_BOOL_PROPERTY("default", is_default, set_default);
 }
 
 Button::~Button()
@@ -55,9 +57,9 @@ void Button::paint_event(PaintEvent& event)
     Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
-    bool paint_pressed = is_being_pressed() || (m_menu && m_menu->is_visible());
+    bool paint_pressed = is_being_pressed() || m_mimic_pressed || (m_menu && m_menu->is_visible());
 
-    Gfx::StylePainter::paint_button(painter, rect(), palette(), m_button_style, paint_pressed, is_hovered(), is_checked(), is_enabled(), is_focused(), is_default() & !another_button_has_focus());
+    Gfx::StylePainter::paint_button(painter, rect(), palette(), m_button_style, paint_pressed, is_hovered(), is_checked(), is_enabled(), is_focused(), is_default() && !another_button_has_focus());
 
     if (text().is_empty() && !m_icon)
         return;
@@ -78,13 +80,23 @@ void Button::paint_event(PaintEvent& event)
     }
 
     if (m_icon) {
+        auto solid_color = m_icon->solid_color(60);
+        bool should_invert_icon = false;
+        if (solid_color.has_value()) {
+            auto contrast_ratio = palette().button().contrast_ratio(*solid_color);
+            // Note: 4.5 is the minimum recommended contrast ratio for text on the web:
+            // (https://developer.mozilla.org/en-US/docs/Web/Accessibility/Understanding_WCAG/Perceivable/Color_contrast)
+            // Reusing that threshold here as it seems to work reasonably well.
+            should_invert_icon = contrast_ratio < 4.5f && contrast_ratio < palette().button().contrast_ratio(solid_color->inverted());
+        }
+        auto icon = should_invert_icon ? m_icon->inverted().release_value_but_fixme_should_propagate_errors() : NonnullRefPtr { *m_icon };
         if (is_enabled()) {
             if (is_hovered())
-                painter.blit_brightened(icon_location, *m_icon, m_icon->rect());
+                painter.blit_brightened(icon_location, *icon, icon->rect());
             else
-                painter.blit(icon_location, *m_icon, m_icon->rect());
+                painter.blit(icon_location, *icon, icon->rect());
         } else {
-            painter.blit_disabled(icon_location, *m_icon, m_icon->rect(), palette());
+            painter.blit_disabled(icon_location, *icon, icon->rect(), palette());
         }
     }
     auto& font = is_checked() ? this->font().bold_variant() : this->font();
@@ -93,7 +105,7 @@ void Button::paint_event(PaintEvent& event)
         content_rect.set_width(content_rect.width() - m_icon->width() - icon_spacing());
     }
 
-    Gfx::IntRect text_rect { 0, 0, font.width(text()), font.glyph_height() };
+    Gfx::IntRect text_rect { 0, 0, static_cast<int>(ceilf(font.width(text()))), font.pixel_size_rounded_up() };
     if (text_rect.width() > content_rect.width())
         text_rect.set_width(content_rect.width());
     text_rect.align_within(content_rect, text_alignment());
@@ -121,10 +133,30 @@ void Button::click(unsigned modifiers)
             return;
         set_checked(!is_checked());
     }
+
+    mimic_pressed();
+
     if (on_click)
         on_click(modifiers);
     if (m_action)
         m_action->activate(this);
+}
+
+void Button::double_click(unsigned int modifiers)
+{
+    if (on_double_click)
+        on_double_click(modifiers);
+}
+
+void Button::middle_mouse_click(unsigned int modifiers)
+{
+    if (!is_enabled())
+        return;
+
+    NonnullRefPtr protector = *this;
+
+    if (on_middle_mouse_click)
+        on_middle_mouse_click(modifiers);
 }
 
 void Button::context_menu_event(ContextMenuEvent& context_menu_event)
@@ -139,13 +171,14 @@ void Button::set_action(Action& action)
 {
     m_action = action;
     action.register_button({}, *this);
+    set_visible(action.is_visible());
     set_enabled(action.is_enabled());
     set_checkable(action.is_checkable());
     if (action.is_checkable())
         set_checked(action.is_checked());
 }
 
-void Button::set_icon(RefPtr<Gfx::Bitmap> icon)
+void Button::set_icon(RefPtr<Gfx::Bitmap const> icon)
 {
     if (m_icon == icon)
         return;
@@ -153,9 +186,9 @@ void Button::set_icon(RefPtr<Gfx::Bitmap> icon)
     update();
 }
 
-void Button::set_icon_from_path(String const& path)
+void Button::set_icon_from_path(DeprecatedString const& path)
 {
-    auto maybe_bitmap = Gfx::Bitmap::try_load_from_file(path);
+    auto maybe_bitmap = Gfx::Bitmap::load_from_file(path);
     if (maybe_bitmap.is_error()) {
         dbgln("Unable to load bitmap `{}` for button icon", path);
         return;
@@ -189,7 +222,7 @@ void Button::set_menu(RefPtr<GUI::Menu> menu)
 void Button::mousedown_event(MouseEvent& event)
 {
     if (m_menu) {
-        m_menu->popup(screen_relative_rect().top_left());
+        m_menu->popup(screen_relative_rect().bottom_left(), {}, rect());
         update();
         return;
     }
@@ -217,6 +250,51 @@ void Button::set_default(bool default_button)
         VERIFY(window());
         window()->set_default_return_key_widget(default_button ? this : nullptr);
     });
+}
+
+void Button::mimic_pressed()
+{
+    if (!is_being_pressed() && !was_being_pressed()) {
+        m_mimic_pressed = true;
+
+        stop_timer();
+        start_timer(80, Core::TimerShouldFireWhenNotVisible::Yes);
+
+        update();
+    }
+}
+
+void Button::timer_event(Core::TimerEvent&)
+{
+    if (m_mimic_pressed) {
+        m_mimic_pressed = false;
+
+        update();
+    }
+}
+
+Optional<UISize> Button::calculated_min_size() const
+{
+    int width = 0;
+    int height = 0;
+
+    if (!text().is_empty()) {
+        auto& font = this->font();
+        width = static_cast<int>(ceilf(font.width(text()))) + 2;
+        height = font.pixel_size_rounded_up() + 4; // FIXME: Use actual maximum total height
+    }
+
+    if (m_icon) {
+        height += max(height, m_icon->height());
+        width += m_icon->width() + icon_spacing();
+    }
+
+    width += 8;
+    height += 4;
+
+    height = max(22, height);
+
+    return UISize(width, height);
 }
 
 }

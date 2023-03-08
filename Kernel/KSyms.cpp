@@ -5,8 +5,8 @@
  */
 
 #include <AK/TemporaryChange.h>
+#include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Arch/SmapDisabler.h>
-#include <Kernel/Arch/x86/SafeMem.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Process.h>
@@ -37,14 +37,14 @@ UNMAP_AFTER_INIT static u8 parse_hex_digit(char nibble)
 FlatPtr address_for_kernel_symbol(StringView name)
 {
     for (size_t i = 0; i < s_symbol_count; ++i) {
-        const auto& symbol = s_symbols[i];
+        auto const& symbol = s_symbols[i];
         if (name == symbol.name)
             return symbol.address;
     }
     return 0;
 }
 
-const KernelSymbol* symbolicate_kernel_address(FlatPtr address)
+KernelSymbol const* symbolicate_kernel_address(FlatPtr address)
 {
     if (address < g_lowest_kernel_symbol_address || address > g_highest_kernel_symbol_address)
         return nullptr;
@@ -84,7 +84,17 @@ UNMAP_AFTER_INIT static void load_kernel_symbols_from_data(Bytes buffer)
             }
         }
         auto& ksym = s_symbols[current_symbol_index];
+
+        // FIXME: Remove this ifdef once the aarch64 kernel is loaded by the Prekernel.
+        //        Currently, the aarch64 kernel is linked at a high virtual memory address, instead
+        //        of zero, so the address of a symbol does not need to be offset by the kernel_load_base.
+#if ARCH(X86_64)
         ksym.address = kernel_load_base + address;
+#elif ARCH(AARCH64)
+        ksym.address = address;
+#else
+#    error "Unknown architecture"
+#endif
         ksym.name = start_of_name;
 
         *bufptr = '\0';
@@ -116,7 +126,7 @@ NEVER_INLINE static void dump_backtrace_impl(FlatPtr base_pointer, bool use_ksym
 
     struct RecognizedSymbol {
         FlatPtr address;
-        const KernelSymbol* symbol { nullptr };
+        KernelSymbol const* symbol { nullptr };
     };
     constexpr size_t max_recognized_symbol_count = 256;
     RecognizedSymbol recognized_symbols[max_recognized_symbol_count];
@@ -124,7 +134,7 @@ NEVER_INLINE static void dump_backtrace_impl(FlatPtr base_pointer, bool use_ksym
     if (use_ksyms) {
         FlatPtr copied_stack_ptr[2];
         for (FlatPtr* stack_ptr = (FlatPtr*)base_pointer; stack_ptr && recognized_symbol_count < max_recognized_symbol_count; stack_ptr = (FlatPtr*)copied_stack_ptr[0]) {
-            if ((FlatPtr)stack_ptr < kernel_load_base)
+            if ((FlatPtr)stack_ptr < kernel_mapping_base)
                 break;
 
             void* fault_at;
@@ -161,6 +171,12 @@ NEVER_INLINE static void dump_backtrace_impl(FlatPtr base_pointer, bool use_ksym
     }
 }
 
+void dump_backtrace_from_base_pointer(FlatPtr base_pointer)
+{
+    // FIXME: Change signature of dump_backtrace_impl to use an enum instead of a bool.
+    dump_backtrace_impl(base_pointer, /*use_ksym=*/false, PrintToScreen::No);
+}
+
 void dump_backtrace(PrintToScreen print_to_screen)
 {
     static bool in_dump_backtrace = false;
@@ -168,14 +184,8 @@ void dump_backtrace(PrintToScreen print_to_screen)
         return;
     TemporaryChange change(in_dump_backtrace, true);
     TemporaryChange disable_kmalloc_stacks(g_dump_kmalloc_stacks, false);
-    FlatPtr base_pointer;
-#if ARCH(I386)
-    asm volatile("movl %%ebp, %%eax"
-                 : "=a"(base_pointer));
-#else
-    asm volatile("movq %%rbp, %%rax"
-                 : "=a"(base_pointer));
-#endif
+
+    FlatPtr base_pointer = (FlatPtr)__builtin_frame_address(0);
     dump_backtrace_impl(base_pointer, g_kernel_symbols_available, print_to_screen);
 }
 

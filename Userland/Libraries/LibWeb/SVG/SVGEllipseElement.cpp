@@ -4,18 +4,27 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "SVGEllipseElement.h"
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/AttributeParser.h>
+#include <LibWeb/SVG/SVGEllipseElement.h>
 
 namespace Web::SVG {
 
-SVGEllipseElement::SVGEllipseElement(DOM::Document& document, QualifiedName qualified_name)
+SVGEllipseElement::SVGEllipseElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGGeometryElement(document, qualified_name)
 {
 }
 
-void SVGEllipseElement::parse_attribute(FlyString const& name, String const& value)
+JS::ThrowCompletionOr<void> SVGEllipseElement::initialize(JS::Realm& realm)
+{
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGEllipseElementPrototype>(realm, "SVGEllipseElement"));
+
+    return {};
+}
+
+void SVGEllipseElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
 {
     SVGGeometryElement::parse_attribute(name, value);
 
@@ -51,7 +60,7 @@ Gfx::Path& SVGEllipseElement::get_path()
         return m_path.value();
     }
 
-    Gfx::FloatPoint radii = { rx, ry };
+    Gfx::FloatSize radii = { rx, ry };
     double x_axis_rotation = 0;
     bool large_arc = false;
     bool sweep = true; // Note: Spec says it should be false, but it's wrong. https://github.com/w3c/svgwg/issues/765
@@ -73,6 +82,46 @@ Gfx::Path& SVGEllipseElement::get_path()
 
     m_path = move(path);
     return m_path.value();
+}
+
+// https://www.w3.org/TR/SVG11/shapes.html#EllipseElementCXAttribute
+JS::NonnullGCPtr<SVGAnimatedLength> SVGEllipseElement::cx() const
+{
+    // FIXME: Populate the unit type when it is parsed (0 here is "unknown").
+    // FIXME: Create a proper animated value when animations are supported.
+    auto base_length = SVGLength::create(realm(), 0, m_center_x.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    auto anim_length = SVGLength::create(realm(), 0, m_center_x.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    return SVGAnimatedLength::create(realm(), move(base_length), move(anim_length)).release_value_but_fixme_should_propagate_errors();
+}
+
+// https://www.w3.org/TR/SVG11/shapes.html#EllipseElementCYAttribute
+JS::NonnullGCPtr<SVGAnimatedLength> SVGEllipseElement::cy() const
+{
+    // FIXME: Populate the unit type when it is parsed (0 here is "unknown").
+    // FIXME: Create a proper animated value when animations are supported.
+    auto base_length = SVGLength::create(realm(), 0, m_center_y.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    auto anim_length = SVGLength::create(realm(), 0, m_center_y.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    return SVGAnimatedLength::create(realm(), move(base_length), move(anim_length)).release_value_but_fixme_should_propagate_errors();
+}
+
+// https://www.w3.org/TR/SVG11/shapes.html#EllipseElementRXAttribute
+JS::NonnullGCPtr<SVGAnimatedLength> SVGEllipseElement::rx() const
+{
+    // FIXME: Populate the unit type when it is parsed (0 here is "unknown").
+    // FIXME: Create a proper animated value when animations are supported.
+    auto base_length = SVGLength::create(realm(), 0, m_radius_x.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    auto anim_length = SVGLength::create(realm(), 0, m_radius_x.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    return SVGAnimatedLength::create(realm(), move(base_length), move(anim_length)).release_value_but_fixme_should_propagate_errors();
+}
+
+// https://www.w3.org/TR/SVG11/shapes.html#EllipseElementRYAttribute
+JS::NonnullGCPtr<SVGAnimatedLength> SVGEllipseElement::ry() const
+{
+    // FIXME: Populate the unit type when it is parsed (0 here is "unknown").
+    // FIXME: Create a proper animated value when animations are supported.
+    auto base_length = SVGLength::create(realm(), 0, m_radius_y.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    auto anim_length = SVGLength::create(realm(), 0, m_radius_y.value_or(0)).release_value_but_fixme_should_propagate_errors();
+    return SVGAnimatedLength::create(realm(), move(base_length), move(anim_length)).release_value_but_fixme_should_propagate_errors();
 }
 
 }

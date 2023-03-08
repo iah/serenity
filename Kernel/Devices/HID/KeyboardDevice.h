@@ -8,7 +8,6 @@
 #pragma once
 
 #include <AK/CircularQueue.h>
-#include <AK/DoublyLinkedList.h>
 #include <AK/Types.h>
 #include <Kernel/API/KeyCode.h>
 #include <Kernel/Devices/CharacterDevice.h>
@@ -26,9 +25,9 @@ public:
 
     // ^CharacterDevice
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual bool can_read(const OpenFileDescription&, u64) const override;
-    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override { return EINVAL; }
-    virtual bool can_write(const OpenFileDescription&, u64) const override { return true; }
+    virtual bool can_read(OpenFileDescription const&, u64) const override;
+    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override { return EINVAL; }
+    virtual bool can_write(OpenFileDescription const&, u64) const override { return true; }
 
     // ^HIDDevice
     virtual Type instrument_type() const override { return Type::Keyboard; }
@@ -46,7 +45,7 @@ public:
 
 protected:
     KeyboardDevice();
-    mutable Spinlock m_queue_lock;
+    mutable Spinlock<LockRank::None> m_queue_lock {};
     CircularQueue<Event, 16> m_queue;
     // ^CharacterDevice
     virtual StringView class_name() const override { return "KeyboardDevice"sv; }

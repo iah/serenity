@@ -6,11 +6,11 @@
 
 #include <AK/Assertions.h>
 #include <AK/NonnullOwnPtr.h>
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/KCOVDevice.h>
 #include <Kernel/Devices/KCOVInstance.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
-#include <LibC/sys/ioctl_numbers.h>
 
 #include <Kernel/Panic.h>
 
@@ -19,7 +19,7 @@ namespace Kernel {
 HashMap<ProcessID, KCOVInstance*>* KCOVDevice::proc_instance;
 HashMap<ThreadID, KCOVInstance*>* KCOVDevice::thread_instance;
 
-UNMAP_AFTER_INIT NonnullRefPtr<KCOVDevice> KCOVDevice::must_create()
+UNMAP_AFTER_INIT NonnullLockRefPtr<KCOVDevice> KCOVDevice::must_create()
 {
     auto kcov_device_or_error = DeviceManagement::try_create_device<KCOVDevice>();
     // FIXME: Find a way to propagate errors
@@ -28,7 +28,7 @@ UNMAP_AFTER_INIT NonnullRefPtr<KCOVDevice> KCOVDevice::must_create()
 }
 
 UNMAP_AFTER_INIT KCOVDevice::KCOVDevice()
-    : BlockDevice(30, 0)
+    : CharacterDevice(30, 0)
 {
     proc_instance = new HashMap<ProcessID, KCOVInstance*>();
     thread_instance = new HashMap<ThreadID, KCOVInstance*>();
@@ -74,7 +74,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> KCOVDevice::open(int options)
     kcov_instance->set_state(KCOVInstance::OPENED);
     proc_instance->set(pid, kcov_instance);
 
-    return File::open(options);
+    return Device::open(options);
 }
 
 ErrorOr<void> KCOVDevice::ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg)
@@ -116,7 +116,7 @@ ErrorOr<void> KCOVDevice::ioctl(OpenFileDescription&, unsigned request, Userspac
     }
 }
 
-ErrorOr<Memory::Region*> KCOVDevice::mmap(Process& process, OpenFileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
+ErrorOr<NonnullLockRefPtr<Memory::VMObject>> KCOVDevice::vmobject_for_mmap(Process& process, Memory::VirtualRange const&, u64&, bool)
 {
     auto pid = process.pid();
     auto maybe_kcov_instance = proc_instance->get(pid);
@@ -126,8 +126,7 @@ ErrorOr<Memory::Region*> KCOVDevice::mmap(Process& process, OpenFileDescription&
     if (!kcov_instance->vmobject())
         return ENOBUFS; // mmaped, before KCOV_SETBUFSIZE
 
-    return process.address_space().allocate_region_with_vmobject(
-        range, *kcov_instance->vmobject(), offset, {}, prot, shared);
+    return *kcov_instance->vmobject();
 }
 
 }

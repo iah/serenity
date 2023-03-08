@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringUtils.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
@@ -14,13 +14,12 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-static bool try_set_offset_and_length_parameters(String const& arg_offset, String const& arg_length, u64& offset, u64& length)
+static bool try_set_offset_and_length_parameters(DeprecatedString const& arg_offset, DeprecatedString const& arg_length, u64& offset, u64& length)
 {
     // TODO: Add support for hex values
     auto possible_offset = arg_offset.to_uint<u64>();

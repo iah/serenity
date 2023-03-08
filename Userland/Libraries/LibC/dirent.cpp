@@ -5,7 +5,6 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/Format.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Vector.h>
@@ -22,7 +21,7 @@
 extern "C" {
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/opendir.html
-DIR* opendir(const char* name)
+DIR* opendir(char const* name)
 {
     int fd = open(name, O_RDONLY | O_DIRECTORY);
     if (fd == -1)
@@ -229,7 +228,7 @@ int alphasort(const struct dirent** d1, const struct dirent** d2)
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/scandir.html
-int scandir(const char* dir_name,
+int scandir(char const* dir_name,
     struct dirent*** namelist,
     int (*select)(const struct dirent*),
     int (*compare)(const struct dirent**, const struct dirent**))
@@ -273,10 +272,10 @@ int scandir(const char* dir_name,
 
     // Sort the entries if the user provided a comparator.
     if (compare) {
-        qsort(tmp_names.data(), tmp_names.size(), sizeof(struct dirent*), (int (*)(const void*, const void*))compare);
+        qsort(tmp_names.data(), tmp_names.size(), sizeof(struct dirent*), (int (*)(void const*, void const*))compare);
     }
 
-    const int size = tmp_names.size();
+    int const size = tmp_names.size();
     auto** names = static_cast<struct dirent**>(kmalloc_array(size, sizeof(struct dirent*)));
     if (names == nullptr) {
         return -1;

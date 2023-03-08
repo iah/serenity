@@ -14,14 +14,16 @@
 __BEGIN_DECLS
 
 mode_t umask(mode_t);
-int chmod(const char* pathname, mode_t);
+int chmod(char const* pathname, mode_t);
 int fchmodat(int fd, char const* path, mode_t mode, int flag);
 int fchmod(int fd, mode_t);
-int mkdir(const char* pathname, mode_t);
-int mkfifo(const char* pathname, mode_t);
+int mkdir(char const* pathname, mode_t);
+int mkdirat(int dirfd, char const* pathname, mode_t);
+int mkfifo(char const* pathname, mode_t);
 int fstat(int fd, struct stat* statbuf);
-int lstat(const char* path, struct stat* statbuf);
-int stat(const char* path, struct stat* statbuf);
-int fstatat(int fd, const char* path, struct stat* statbuf, int flags);
+int lstat(char const* path, struct stat* statbuf);
+int stat(char const* path, struct stat* statbuf);
+int fstatat(int fd, char const* path, struct stat* statbuf, int flags);
+int futimens(int fd, struct timespec const times[2]);
 
 __END_DECLS

@@ -10,7 +10,7 @@ namespace JS::Intl {
 
 // 10 Collator Objects, https://tc39.es/ecma402/#collator-objects
 Collator::Collator(Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
 {
 }
 
@@ -90,6 +90,11 @@ StringView Collator::case_first_string() const
     default:
         VERIFY_NOT_REACHED();
     }
+}
+void Collator::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_bound_compare);
 }
 
 }

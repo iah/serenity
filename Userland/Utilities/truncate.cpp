@@ -22,9 +22,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath wpath cpath"));
 
-    const char* resize = nullptr;
-    const char* reference = nullptr;
-    const char* file = nullptr;
+    StringView resize;
+    StringView reference;
+    StringView file;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(resize, "Resize the target file to (or by) this size. Prefix with + or - to expand or shrink the file, or a bare number to set the size exactly", "size", 's', "size");
@@ -32,21 +32,21 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_positional_argument(file, "File path", "file");
     args_parser.parse(arguments);
 
-    if (!resize && !reference) {
-        args_parser.print_usage(stderr, arguments.argv[0]);
+    if (resize.is_empty() && reference.is_empty()) {
+        args_parser.print_usage(stderr, arguments.strings[0]);
         return 1;
     }
 
-    if (resize && reference) {
-        args_parser.print_usage(stderr, arguments.argv[0]);
+    if (!resize.is_empty() && !reference.is_empty()) {
+        args_parser.print_usage(stderr, arguments.strings[0]);
         return 1;
     }
 
     auto op = OP_Set;
     off_t size = 0;
 
-    if (resize) {
-        String str = resize;
+    if (!resize.is_empty()) {
+        DeprecatedString str = resize;
 
         switch (str[0]) {
         case '+':
@@ -61,13 +61,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto size_opt = str.to_int<off_t>();
         if (!size_opt.has_value()) {
-            args_parser.print_usage(stderr, arguments.argv[0]);
+            args_parser.print_usage(stderr, arguments.strings[0]);
             return 1;
         }
         size = size_opt.value();
     }
 
-    if (reference) {
+    if (!reference.is_empty()) {
         auto stat = TRY(Core::System::stat(reference));
         size = stat.st_size;
     }

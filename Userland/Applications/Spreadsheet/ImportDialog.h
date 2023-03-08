@@ -7,7 +7,6 @@
 #pragma once
 
 #include "Readers/XSV.h"
-#include <AK/Result.h>
 #include <AK/StringView.h>
 #include <LibGUI/Forward.h>
 #include <LibGUI/Wizards/WizardPage.h>
@@ -48,7 +47,7 @@ private:
     RefPtr<GUI::TableView> m_data_preview_table_view;
     RefPtr<GUI::Label> m_data_preview_error_label;
     RefPtr<GUI::StackWidget> m_data_preview_widget;
-    Vector<String> m_quote_escape_items {
+    Vector<DeprecatedString> m_quote_escape_items {
         // Note: Keep in sync with Reader::ParserTraits::QuoteEscape.
         "Repeat",
         "Backslash",
@@ -56,7 +55,7 @@ private:
 };
 
 struct ImportDialog {
-    static Result<NonnullRefPtrVector<Sheet>, String> make_and_run_for(GUI::Window& parent, StringView mime, Core::File& file, Workbook&);
+    static ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> make_and_run_for(GUI::Window& parent, StringView mime, String const& filename, Core::File& file, Workbook&);
 };
 
 }

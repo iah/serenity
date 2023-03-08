@@ -18,7 +18,12 @@ void History::dump() const
     }
 }
 
-void History::push(const URL& url, const String& title)
+Vector<History::URLTitlePair> History::get_all_history_entries()
+{
+    return m_items;
+}
+
+void History::push(const URL& url, DeprecatedString const& title)
 {
     if (!m_items.is_empty() && m_items[m_current].url == url)
         return;
@@ -28,6 +33,16 @@ void History::push(const URL& url, const String& title)
         .title = title,
     });
     m_current++;
+}
+
+void History::replace_current(const URL& url, DeprecatedString const& title)
+{
+    if (m_current == -1)
+        return;
+
+    m_items.remove(m_current);
+    m_current--;
+    push(url, title);
 }
 
 History::URLTitlePair History::current() const
@@ -55,12 +70,14 @@ void History::clear()
     m_current = -1;
 }
 
-void History::update_title(const String& title)
+void History::update_title(DeprecatedString const& title)
 {
+    if (m_current == -1)
+        return;
     m_items[m_current].title = title;
 }
 
-const Vector<StringView> History::get_back_title_history()
+Vector<StringView> const History::get_back_title_history()
 {
     Vector<StringView> back_title_history;
     for (int i = m_current - 1; i >= 0; i--) {
@@ -69,7 +86,7 @@ const Vector<StringView> History::get_back_title_history()
     return back_title_history;
 }
 
-const Vector<StringView> History::get_forward_title_history()
+Vector<StringView> const History::get_forward_title_history()
 {
     Vector<StringView> forward_title_history;
     for (int i = m_current + 1; i < static_cast<int>(m_items.size()); i++) {

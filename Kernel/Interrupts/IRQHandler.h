@@ -6,10 +6,10 @@
 
 #pragma once
 
-#include <AK/RefPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Arch/IRQController.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
-#include <Kernel/Interrupts/IRQController.h>
+#include <Kernel/Library/LockRefPtr.h>
 
 namespace Kernel {
 
@@ -17,8 +17,8 @@ class IRQHandler : public GenericInterruptHandler {
 public:
     virtual ~IRQHandler();
 
-    virtual bool handle_interrupt(const RegisterState& regs) override { return handle_irq(regs); }
-    virtual bool handle_irq(const RegisterState&) = 0;
+    virtual bool handle_interrupt(RegisterState const& regs) override { return handle_irq(regs); }
+    virtual bool handle_irq(RegisterState const&) = 0;
 
     void enable_irq();
     void disable_irq();
@@ -40,7 +40,7 @@ protected:
 private:
     bool m_shared_with_others { false };
     bool m_enabled { false };
-    RefPtr<IRQController> m_responsible_irq_controller;
+    NonnullLockRefPtr<IRQController> m_responsible_irq_controller;
 };
 
 }

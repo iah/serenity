@@ -4,16 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "ClipboardServerConnection.h"
+#pragma once
+
+#include "ConnectionToClipboardServer.h"
 #include <AK/ByteBuffer.h>
 #include <AK/Vector.h>
 #include <LibCore/Notifier.h>
 
-#pragma once
-
 class SpiceAgent {
 public:
-    SpiceAgent(int fd, ClipboardServerConnection&);
+    SpiceAgent(int fd, ConnectionToClipboardServer&);
 
     static constexpr u32 AGENT_PROTOCOL = 1;
     enum class Port {
@@ -81,7 +81,7 @@ public:
         PNG,
         BMP,
         TIFF,
-        JPG,
+        JPEG,
         FileList,
         __Count
     };
@@ -92,7 +92,7 @@ public:
         u32 request;
         u32 caps[CAPABILITIES_SIZE];
 
-        static ByteBuffer make_buffer(bool request, const Vector<Capability>& capabilities);
+        static ByteBuffer make_buffer(bool request, Vector<Capability> const& capabilities);
     };
 
     struct [[gnu::packed]] ClipboardGrab {
@@ -117,12 +117,12 @@ public:
 private:
     int m_fd { -1 };
     RefPtr<Core::Notifier> m_notifier;
-    ClipboardServerConnection& m_clipboard_connection;
+    ConnectionToClipboardServer& m_clipboard_connection;
 
     void on_message_received();
-    void send_message(const ByteBuffer& buffer);
+    void send_message(ByteBuffer const& buffer);
     bool m_just_set_clip { false };
     void read_n(void* dest, size_t n);
     static Message* initialize_headers(u8* data, size_t additional_data_size, MessageType type);
-    static Optional<ClipboardType> mime_type_to_clipboard_type(const String& mime);
+    static Optional<ClipboardType> mime_type_to_clipboard_type(DeprecatedString const& mime);
 };

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/Concepts.h>
 #include <AK/HashMap.h>
 #include <AK/RedBlackTree.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -20,10 +19,9 @@ class Map : public Object {
     JS_OBJECT(Map, Object);
 
 public:
-    static Map* create(GlobalObject&);
+    static NonnullGCPtr<Map> create(Realm&);
 
-    explicit Map(Object& prototype);
-    virtual ~Map() override;
+    virtual ~Map() override = default;
 
     void map_clear();
     bool map_remove(Value const&);
@@ -66,13 +64,15 @@ public:
 
     private:
         friend class Map;
-        IteratorImpl(Map const& map) requires(IsConst)
+        IteratorImpl(Map const& map)
+        requires(IsConst)
             : m_map(map)
         {
             ensure_index();
         }
 
-        IteratorImpl(Map& map) requires(!IsConst)
+        IteratorImpl(Map& map)
+        requires(!IsConst)
             : m_map(map)
         {
             ensure_index();
@@ -106,6 +106,7 @@ public:
     EndIterator end() const { return {}; }
 
 private:
+    explicit Map(Object& prototype);
     virtual void visit_edges(Visitor& visitor) override;
 
     size_t m_next_insertion_id { 0 };

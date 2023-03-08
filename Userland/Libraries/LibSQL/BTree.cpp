@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Format.h>
 #include <LibSQL/BTree.h>
 #include <LibSQL/Meta.h>
 
@@ -56,7 +55,7 @@ TreeNode* BTree::new_root()
 {
     set_pointer(new_record_pointer());
     m_root = make<TreeNode>(*this, nullptr, m_root.leak_ptr(), pointer());
-    serializer().serialize_and_write(*m_root.ptr(), m_root->pointer());
+    serializer().serialize_and_write(*m_root.ptr());
     if (on_new_root)
         on_new_root();
     return m_root;

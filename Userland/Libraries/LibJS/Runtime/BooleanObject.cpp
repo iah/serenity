@@ -9,18 +9,14 @@
 
 namespace JS {
 
-BooleanObject* BooleanObject::create(GlobalObject& global_object, bool value)
+NonnullGCPtr<BooleanObject> BooleanObject::create(Realm& realm, bool value)
 {
-    return global_object.heap().allocate<BooleanObject>(global_object, value, *global_object.boolean_prototype());
+    return realm.heap().allocate<BooleanObject>(realm, value, *realm.intrinsics().boolean_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 BooleanObject::BooleanObject(bool value, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_value(value)
-{
-}
-
-BooleanObject::~BooleanObject()
 {
 }
 

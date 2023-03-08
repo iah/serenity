@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, the SerenityOS developers.
+ * Copyright (c) 2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -145,13 +146,13 @@ private:
     void update_rect();
 
     WeakPtr<Window> m_window;
-    String m_label;
+    DeprecatedString m_label;
     Gfx::IntRect m_label_rect;
 };
 
 class DndOverlay : public BitmapOverlay {
 public:
-    DndOverlay(String const&, Gfx::Bitmap const*);
+    DndOverlay(DeprecatedString const&, Gfx::Bitmap const*);
 
     void cursor_moved()
     {
@@ -165,8 +166,8 @@ private:
     Gfx::Font const& font();
     void update_rect();
 
-    RefPtr<Gfx::Bitmap> m_bitmap;
-    String m_text;
+    RefPtr<Gfx::Bitmap const> m_bitmap;
+    DeprecatedString m_text;
     Gfx::IntRect m_label_rect;
 };
 
@@ -184,10 +185,10 @@ public:
 
 private:
     Gfx::IntSize m_content_size;
-    const int m_rows;
-    const int m_columns;
-    const int m_target_row;
-    const int m_target_column;
+    int const m_rows;
+    int const m_columns;
+    int const m_target_row;
+    int const m_target_column;
 };
 
 }

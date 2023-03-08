@@ -1,23 +1,29 @@
 /*
  * Copyright (c) 2021, Spencer Dixon <spencercdixon@gmail.com>
- * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022-2023, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Providers.h"
+#include <AK/Array.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Error.h>
+#include <AK/LexicalPath.h>
 #include <AK/QuickSort.h>
-#include <AK/String.h>
 #include <AK/Try.h>
+#include <LibCore/Debounce.h>
 #include <LibCore/LockFile.h>
 #include <LibCore/System.h>
+#include <LibDesktop/Launcher.h>
+#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Label.h>
+#include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/TextBox.h>
 #include <LibGfx/Palette.h>
@@ -30,161 +36,110 @@ namespace Assistant {
 
 struct AppState {
     Optional<size_t> selected_index;
-    NonnullRefPtrVector<Result> results;
+    Vector<NonnullRefPtr<Result const>> results;
     size_t visible_result_count { 0 };
 
     Threading::Mutex lock;
-    String last_query;
+    DeprecatedString last_query;
 };
 
-class ResultRow final : public GUI::Widget {
+class ResultRow final : public GUI::Button {
     C_OBJECT(ResultRow)
-public:
-    void set_image(RefPtr<Gfx::Bitmap> bitmap)
-    {
-        m_image->set_bitmap(bitmap);
-    }
-    void set_title(String text)
-    {
-        m_title->set_text(move(text));
-    }
-    void set_subtitle(String text)
-    {
-        if (text.is_empty()) {
-            if (m_subtitle)
-                m_subtitle->remove_from_parent();
-            m_subtitle = nullptr;
-            return;
-        }
-        if (!m_subtitle) {
-            m_subtitle = m_label_container->add<GUI::Label>();
-            m_subtitle->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        }
-        m_subtitle->set_text(move(text));
-    }
-    void set_is_highlighted(bool value)
-    {
-        if (m_is_highlighted == value)
-            return;
-
-        m_is_highlighted = value;
-        m_title->set_font_weight(value ? 700 : 400);
-    }
-
-    Function<void()> on_selected;
-
-private:
     ResultRow()
     {
-        auto& layout = set_layout<GUI::HorizontalBoxLayout>();
-        layout.set_spacing(12);
-        layout.set_margins(4);
-
-        m_image = add<GUI::ImageWidget>();
-
-        m_label_container = add<GUI::Widget>();
-        m_label_container->set_layout<GUI::VerticalBoxLayout>();
-        m_label_container->set_fixed_height(30);
-
-        m_title = m_label_container->add<GUI::Label>();
-        m_title->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-
-        set_shrink_to_fit(true);
-        set_fill_with_background_color(true);
         set_greedy_for_hits(true);
+        set_fixed_height(36);
+        set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        set_button_style(Gfx::ButtonStyle::Coolbar);
+        set_focus_policy(GUI::FocusPolicy::NoFocus);
+
+        on_context_menu_request = [this](auto& event) {
+            if (!m_context_menu) {
+                m_context_menu = GUI::Menu::construct();
+
+                if (LexicalPath path { text().to_deprecated_string() }; path.is_absolute()) {
+                    m_context_menu->add_action(GUI::Action::create("&Show in File Manager", MUST(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv)), [=](auto&) {
+                        Desktop::Launcher::open(URL::create_with_file_scheme(path.dirname(), path.basename()));
+                    }));
+                    m_context_menu->add_separator();
+                }
+
+                m_context_menu->add_action(GUI::Action::create("&Copy as Text", MUST(Gfx::Bitmap::load_from_file("/res/icons/16x16/edit-copy.png"sv)), [&](auto&) {
+                    GUI::Clipboard::the().set_plain_text(text());
+                }));
+            }
+            m_context_menu->popup(event.screen_position());
+        };
     }
 
-    void mousedown_event(GUI::MouseEvent&) override
-    {
-        set_background_role(ColorRole::MenuBase);
-    }
-
-    void mouseup_event(GUI::MouseEvent&) override
-    {
-        set_background_role(ColorRole::NoRole);
-        on_selected();
-    }
-
-    void enter_event(Core::Event&) override
-    {
-        set_background_role(ColorRole::HoverHighlight);
-    }
-
-    void leave_event(Core::Event&) override
-    {
-        set_background_role(ColorRole::NoRole);
-    }
-
-    RefPtr<GUI::ImageWidget> m_image;
-    RefPtr<GUI::Widget> m_label_container;
-    RefPtr<GUI::Label> m_title;
-    RefPtr<GUI::Label> m_subtitle;
-    bool m_is_highlighted { false };
+    RefPtr<GUI::Menu> m_context_menu;
 };
 
+template<size_t ProviderCount>
 class Database {
 public:
-    explicit Database(AppState& state)
+    explicit Database(AppState& state, Array<NonnullRefPtr<Provider>, ProviderCount>& providers)
         : m_state(state)
+        , m_providers(providers)
     {
-        m_providers.append(make_ref_counted<AppProvider>());
-        m_providers.append(make_ref_counted<CalculatorProvider>());
-        m_providers.append(make_ref_counted<FileProvider>());
-        m_providers.append(make_ref_counted<TerminalProvider>());
-        m_providers.append(make_ref_counted<URLProvider>());
     }
 
-    Function<void(NonnullRefPtrVector<Result>)> on_new_results;
+    Function<void(Vector<NonnullRefPtr<Result const>>)> on_new_results;
 
-    void search(String const& query)
+    void search(DeprecatedString const& query)
     {
-        for (auto& provider : m_providers) {
-            provider.query(query, [=, this](auto results) {
-                did_receive_results(query, results);
-            });
+        auto should_display_precached_results = false;
+        for (size_t i = 0; i < ProviderCount; ++i) {
+            auto& result_array = m_result_cache.ensure(query);
+            if (result_array.at(i) == nullptr) {
+                m_providers[i]->query(query, [this, query, i](auto results) {
+                    {
+                        Threading::MutexLocker db_locker(m_mutex);
+                        auto& result_array = m_result_cache.ensure(query);
+                        if (result_array.at(i) != nullptr)
+                            return;
+                        result_array[i] = make<Vector<NonnullRefPtr<Result>>>(results);
+                    }
+                    on_result_cache_updated();
+                });
+            } else {
+                should_display_precached_results = true;
+            }
         }
+        if (should_display_precached_results)
+            on_result_cache_updated();
     }
 
 private:
-    void did_receive_results(String const& query, NonnullRefPtrVector<Result> const& results)
+    void on_result_cache_updated()
     {
-        {
-            Threading::MutexLocker db_locker(m_mutex);
-            auto& cache_entry = m_result_cache.ensure(query);
-
-            for (auto& result : results) {
-                auto found = cache_entry.find_if([&result](auto& other) {
-                    return result.equals(other);
-                });
-
-                if (found.is_end())
-                    cache_entry.append(result);
-            }
-        }
-
         Threading::MutexLocker state_locker(m_state.lock);
         auto new_results = m_result_cache.find(m_state.last_query);
         if (new_results == m_result_cache.end())
             return;
 
-        // NonnullRefPtrVector will provide dual_pivot_quick_sort references rather than pointers,
-        // and dual_pivot_quick_sort requires being able to construct the underlying type on the
-        // stack. Assistant::Result is pure virtual, thus cannot be constructed on the stack.
-        auto& sortable_results = static_cast<Vector<NonnullRefPtr<Result>>&>(new_results->value);
+        Vector<NonnullRefPtr<Result const>> all_results;
+        for (auto const& results_for_provider : new_results->value) {
+            if (results_for_provider == nullptr)
+                continue;
+            for (auto const& result : *results_for_provider) {
+                all_results.append(result);
+            }
+        }
 
-        dual_pivot_quick_sort(sortable_results, 0, static_cast<int>(sortable_results.size() - 1), [](auto& a, auto& b) {
+        dual_pivot_quick_sort(all_results, 0, static_cast<int>(all_results.size() - 1), [](auto& a, auto& b) {
             return a->score() > b->score();
         });
 
-        on_new_results(new_results->value);
+        on_new_results(all_results);
     }
 
     AppState& m_state;
 
-    NonnullRefPtrVector<Provider> m_providers;
+    Array<NonnullRefPtr<Provider>, ProviderCount> m_providers;
 
     Threading::Mutex m_mutex;
-    HashMap<String, NonnullRefPtrVector<Result>> m_result_cache;
+    HashMap<DeprecatedString, Array<OwnPtr<Vector<NonnullRefPtr<Result>>>, ProviderCount>> m_result_cache;
 };
 
 }
@@ -193,7 +148,7 @@ static constexpr size_t MAX_SEARCH_RESULTS = 6;
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath cpath unix proc exec thread", nullptr));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath cpath unix proc exec thread"));
 
     Core::LockFile lockfile("/tmp/lock/assistant.lock");
 
@@ -207,32 +162,37 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 0;
     }
 
-    auto app = GUI::Application::construct(arguments);
+    auto app = TRY(GUI::Application::try_create(arguments));
     auto window = GUI::Window::construct();
     window->set_minimizable(false);
 
     Assistant::AppState app_state;
-    Assistant::Database db { app_state };
+    Array<NonnullRefPtr<Assistant::Provider>, 5> providers = {
+        make_ref_counted<Assistant::AppProvider>(),
+        make_ref_counted<Assistant::CalculatorProvider>(),
+        make_ref_counted<Assistant::TerminalProvider>(),
+        make_ref_counted<Assistant::URLProvider>(),
+        make_ref_counted<Assistant::FileProvider>()
+    };
+    Assistant::Database db { app_state, providers };
 
-    auto& container = window->set_main_widget<GUI::Frame>();
-    container.set_fill_with_background_color(true);
-    container.set_frame_shadow(Gfx::FrameShadow::Raised);
-    auto& layout = container.set_layout<GUI::VerticalBoxLayout>();
-    layout.set_margins({ 8, 8, 0 });
+    auto container = TRY(window->set_main_widget<GUI::Frame>());
+    container->set_fill_with_background_color(true);
+    container->set_frame_shape(Gfx::FrameShape::Window);
+    container->set_layout<GUI::VerticalBoxLayout>(8);
 
-    auto& text_box = container.add<GUI::TextBox>();
-    auto& results_container = container.add<GUI::Widget>();
-    auto& results_layout = results_container.set_layout<GUI::VerticalBoxLayout>();
-    results_layout.set_margins({ 10, 0 });
+    auto& text_box = container->add<GUI::TextBox>();
+    auto& results_container = container->add<GUI::Widget>();
+    results_container.set_layout<GUI::VerticalBoxLayout>();
 
     auto mark_selected_item = [&]() {
         for (size_t i = 0; i < app_state.visible_result_count; ++i) {
             auto& row = static_cast<Assistant::ResultRow&>(results_container.child_widgets()[i]);
-            row.set_is_highlighted(i == app_state.selected_index);
+            row.set_font_weight(i == app_state.selected_index ? 700 : 400);
         }
     };
 
-    text_box.on_change = [&]() {
+    text_box.on_change = Core::debounce([&]() {
         {
             Threading::MutexLocker locker(app_state.lock);
             if (app_state.last_query == text_box.text())
@@ -242,12 +202,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
         db.search(text_box.text());
-    };
+    },
+        5);
     text_box.on_return_pressed = [&]() {
         if (!app_state.selected_index.has_value())
             return;
         lockfile.release();
-        app_state.results[app_state.selected_index.value()].activate();
+        app_state.results[app_state.selected_index.value()]->activate();
         GUI::Application::the()->quit();
     };
     text_box.on_up_pressed = [&]() {
@@ -283,26 +244,25 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             GUI::Application::the()->quit();
     };
 
-    auto update_ui_timer = Core::Timer::create_single_shot(10, [&] {
+    auto update_ui_timer = TRY(Core::Timer::create_single_shot(10, [&] {
         results_container.remove_all_children();
+        results_container.layout()->set_margins(app_state.visible_result_count ? GUI::Margins { 4, 0, 0, 0 } : GUI::Margins { 0 });
 
         for (size_t i = 0; i < app_state.visible_result_count; ++i) {
             auto& result = app_state.results[i];
             auto& match = results_container.add<Assistant::ResultRow>();
-            match.set_image(result.bitmap());
-            match.set_title(result.title());
-            match.set_subtitle(result.subtitle());
-            match.on_selected = [&result]() {
-                result.activate();
+            match.set_icon(result->bitmap());
+            match.set_text(String::from_deprecated_string(result->title()).release_value_but_fixme_should_propagate_errors());
+            match.set_tooltip(move(result->tooltip()));
+            match.on_click = [&result](auto) {
+                result->activate();
                 GUI::Application::the()->quit();
             };
         }
 
         mark_selected_item();
-
-        auto window_height = app_state.visible_result_count * 40 + text_box.height() + 28;
-        window->resize(GUI::Desktop::the().rect().width() / 3, window_height);
-    });
+        Core::deferred_invoke([&] { window->resize(GUI::Desktop::the().rect().width() / 3, {}); });
+    }));
 
     db.on_new_results = [&](auto results) {
         if (results.is_empty())
@@ -315,9 +275,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         update_ui_timer->restart();
     };
 
-    window->set_frameless(true);
+    window->set_window_type(GUI::WindowType::Popup);
     window->set_forced_shadow(true);
-    window->resize(GUI::Desktop::the().rect().width() / 3, 46);
+    window->resize(GUI::Desktop::the().rect().width() / 3, {});
     window->center_on_screen();
     window->move_to(window->x(), window->y() - (GUI::Desktop::the().rect().height() * 0.33));
     window->show();

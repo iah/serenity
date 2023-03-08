@@ -5,6 +5,7 @@
  */
 
 #include <LibAudio/WavWriter.h>
+#include <LibCore/DeprecatedFile.h>
 
 namespace Audio {
 
@@ -31,19 +32,27 @@ WavWriter::~WavWriter()
 
 void WavWriter::set_file(StringView path)
 {
-    m_file = Core::File::construct(path);
+    m_file = Core::DeprecatedFile::construct(path);
     if (!m_file->open(Core::OpenMode::ReadWrite)) {
-        m_error_string = String::formatted("Can't open file: {}", m_file->error_string());
+        m_error_string = DeprecatedString::formatted("Can't open file: {}", m_file->error_string());
         return;
     }
     m_file->seek(44);
     m_finalized = false;
 }
 
-void WavWriter::write_samples(const u8* samples, size_t size)
+void WavWriter::write_samples(Span<Sample> samples)
 {
-    m_data_sz += size;
-    m_file->write(samples, size);
+    m_data_sz += samples.size() * sizeof(Sample);
+
+    for (auto const& sample : samples) {
+        // FIXME: This only really works for 16-bit samples.
+        u16 left = static_cast<i16>(sample.left * static_cast<float>(1 << m_bits_per_sample));
+        u16 right = static_cast<i16>(sample.right * static_cast<float>(1 << m_bits_per_sample));
+        // FIXME: This ignores endianness.
+        m_file->write(bit_cast<u8 const*>(&left), sizeof(u16));
+        m_file->write(bit_cast<u8 const*>(&right), sizeof(u16));
+    }
 }
 
 void WavWriter::finalize()

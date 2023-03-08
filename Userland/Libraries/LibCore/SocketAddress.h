@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -23,21 +24,21 @@ public:
         Local
     };
 
-    SocketAddress() { }
-    SocketAddress(const IPv4Address& address)
+    SocketAddress() = default;
+    SocketAddress(IPv4Address const& address)
         : m_type(Type::IPv4)
         , m_ipv4_address(address)
     {
     }
 
-    SocketAddress(const IPv4Address& address, u16 port)
+    SocketAddress(IPv4Address const& address, u16 port)
         : m_type(Type::IPv4)
         , m_ipv4_address(address)
         , m_port(port)
     {
     }
 
-    static SocketAddress local(const String& address)
+    static SocketAddress local(DeprecatedString const& address)
     {
         SocketAddress addr;
         addr.m_type = Type::Local;
@@ -50,11 +51,11 @@ public:
     IPv4Address ipv4_address() const { return m_ipv4_address; }
     u16 port() const { return m_port; }
 
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
         switch (m_type) {
         case Type::IPv4:
-            return String::formatted("{}:{}", m_ipv4_address, m_port);
+            return DeprecatedString::formatted("{}:{}", m_ipv4_address, m_port);
         case Type::Local:
             return m_local_address;
         default:
@@ -87,15 +88,15 @@ private:
     Type m_type { Type::Invalid };
     IPv4Address m_ipv4_address;
     u16 m_port { 0 };
-    String m_local_address;
+    DeprecatedString m_local_address;
 };
 
 }
 
 template<>
-struct AK::Formatter<Core::SocketAddress> : Formatter<String> {
+struct AK::Formatter<Core::SocketAddress> : Formatter<DeprecatedString> {
     ErrorOr<void> format(FormatBuilder& builder, Core::SocketAddress const& value)
     {
-        return Formatter<String>::format(builder, value.to_string());
+        return Formatter<DeprecatedString>::format(builder, value.to_deprecated_string());
     }
 };

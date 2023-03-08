@@ -6,15 +6,15 @@
  */
 
 #include "GlyphEditorWidget.h"
-#include <AK/StringBuilder.h>
-#include <AK/UnicodeUtils.h>
-#include <LibGUI/Clipboard.h>
 #include <LibGUI/Painter.h>
-#include <LibGfx/BitmapFont.h>
+#include <LibGfx/Font/BitmapFont.h>
 #include <LibGfx/Palette.h>
-#include <string.h>
 
-void GlyphEditorWidget::initialize(Gfx::BitmapFont& mutable_font)
+REGISTER_WIDGET(FontEditor, GlyphEditorWidget);
+
+namespace FontEditor {
+
+void GlyphEditorWidget::set_font(Gfx::BitmapFont& mutable_font)
 {
     if (m_font == mutable_font)
         return;
@@ -185,21 +185,22 @@ static Vector<Vector<u8>> glyph_as_matrix(Gfx::GlyphBitmap const& bitmap)
     return result;
 }
 
-void GlyphEditorWidget::rotate_90(Direction direction)
+void GlyphEditorWidget::rotate_90(Gfx::RotationDirection direction)
 {
     if (on_undo_event)
         on_undo_event();
 
     auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
     auto matrix = glyph_as_matrix(bitmap);
+    auto clockwise = direction == Gfx::RotationDirection::Clockwise;
 
     for (int y = 0; y < bitmap.height(); y++) {
         for (int x = 0; x < bitmap.width(); x++) {
-            int source_x = (direction == Counterclockwise) ? max(bitmap.width() - 1 - y, 0) : y;
-            int source_y = (direction == Counterclockwise) ? x : bitmap.width() - 1 - x;
+            int source_x = clockwise ? y : max(bitmap.width() - 1 - y, 0);
+            int source_y = clockwise ? bitmap.width() - 1 - x : x;
             bool value = false;
             if (source_x < bitmap.width() && source_y < bitmap.height()) {
-                value = (direction == Counterclockwise && y >= bitmap.width()) ? false : matrix[source_y][source_x];
+                value = (!clockwise && y >= bitmap.width()) ? false : matrix[source_y][source_x];
             }
             bitmap.set_bit_at(x, y, value);
         }
@@ -210,40 +211,19 @@ void GlyphEditorWidget::rotate_90(Direction direction)
     update();
 }
 
-void GlyphEditorWidget::flip_vertically()
+void GlyphEditorWidget::flip(Gfx::Orientation orientation)
 {
     if (on_undo_event)
         on_undo_event();
 
     auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
     auto matrix = glyph_as_matrix(bitmap);
+    auto vertical = orientation == Gfx::Orientation::Vertical;
 
     for (int y = 0; y < bitmap.height(); y++) {
         for (int x = 0; x < bitmap.width(); x++) {
-            int source_x = x;
-            int source_y = bitmap.height() - 1 - y;
-            bool value = matrix[source_y][source_x];
-            bitmap.set_bit_at(x, y, value);
-        }
-    }
-
-    if (on_glyph_altered)
-        on_glyph_altered(m_glyph);
-    update();
-}
-
-void GlyphEditorWidget::flip_horizontally()
-{
-    if (on_undo_event)
-        on_undo_event();
-
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
-    auto matrix = glyph_as_matrix(bitmap);
-
-    for (int y = 0; y < bitmap.height(); y++) {
-        for (int x = 0; x < bitmap.width(); x++) {
-            int source_x = bitmap.width() - 1 - x;
-            int source_y = y;
+            int source_x = vertical ? x : bitmap.width() - 1 - x;
+            int source_y = vertical ? bitmap.height() - 1 - y : y;
             bool value = matrix[source_y][source_x];
             bitmap.set_bit_at(x, y, value);
         }
@@ -270,4 +250,6 @@ void GlyphEditorWidget::set_scale(int scale)
         return;
     m_scale = clamp(scale, 1, 15);
     update();
+}
+
 }

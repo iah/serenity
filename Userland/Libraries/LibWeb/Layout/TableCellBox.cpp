@@ -20,15 +20,20 @@ TableCellBox::TableCellBox(DOM::Document& document, DOM::Element* element, CSS::
 {
 }
 
-TableCellBox::~TableCellBox()
-{
-}
+TableCellBox::~TableCellBox() = default;
 
 size_t TableCellBox::colspan() const
 {
     if (!dom_node())
         return 1;
     return verify_cast<DOM::Element>(*dom_node()).attribute(HTML::AttributeNames::colspan).to_uint().value_or(1);
+}
+
+size_t TableCellBox::rowspan() const
+{
+    if (!dom_node())
+        return 1;
+    return verify_cast<DOM::Element>(*dom_node()).attribute(HTML::AttributeNames::rowspan).to_uint().value_or(1);
 }
 
 }

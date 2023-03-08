@@ -27,7 +27,7 @@ public:
         , m_entries(move(entries_buffer))
     {
         for (size_t i = 0; i < EntryCount; ++i) {
-            entries()[i].data = m_cached_block_data->data() + i * m_fs.block_size();
+            entries()[i].data = m_cached_block_data->data() + i * m_fs->block_size();
             m_clean_list.append(entries()[i]);
         }
     }
@@ -72,7 +72,7 @@ public:
             // Not a single clean entry! Flush writes and try again.
             // NOTE: We want to make sure we only call FileBackedFileSystem flush here,
             //       not some FileBackedFileSystem subclass flush!
-            m_fs.flush_writes_impl();
+            m_fs->flush_writes_impl();
             return ensure(block_index);
         }
 
@@ -89,7 +89,7 @@ public:
         return &new_entry;
     }
 
-    const CacheEntry* entries() const { return (const CacheEntry*)m_entries->data(); }
+    CacheEntry const* entries() const { return (CacheEntry const*)m_entries->data(); }
     CacheEntry* entries() { return (CacheEntry*)m_entries->data(); }
 
     template<typename Callback>
@@ -100,10 +100,10 @@ public:
     }
 
 private:
-    BlockBasedFileSystem& m_fs;
-    mutable HashMap<BlockBasedFileSystem::BlockIndex, CacheEntry*> m_hash;
-    mutable IntrusiveList<&CacheEntry::list_node> m_clean_list;
+    mutable NonnullRefPtr<BlockBasedFileSystem> m_fs;
     mutable IntrusiveList<&CacheEntry::list_node> m_dirty_list;
+    mutable IntrusiveList<&CacheEntry::list_node> m_clean_list;
+    mutable HashMap<BlockBasedFileSystem::BlockIndex, CacheEntry*> m_hash;
     NonnullOwnPtr<KBuffer> m_cached_block_data;
     NonnullOwnPtr<KBuffer> m_entries;
 };
@@ -114,15 +114,23 @@ BlockBasedFileSystem::BlockBasedFileSystem(OpenFileDescription& file_description
     VERIFY(file_description.file().is_seekable());
 }
 
-BlockBasedFileSystem::~BlockBasedFileSystem()
+BlockBasedFileSystem::~BlockBasedFileSystem() = default;
+
+void BlockBasedFileSystem::remove_disk_cache_before_last_unmount()
 {
+    VERIFY(m_lock.is_locked());
+    m_cache.with_exclusive([&](auto& cache) {
+        cache.clear();
+    });
 }
 
-ErrorOr<void> BlockBasedFileSystem::initialize()
+ErrorOr<void> BlockBasedFileSystem::initialize_while_locked()
 {
+    VERIFY(m_lock.is_locked());
+    VERIFY(!is_initialized_while_locked());
     VERIFY(block_size() != 0);
-    auto cached_block_data = TRY(KBuffer::try_create_with_size(DiskCache::EntryCount * block_size()));
-    auto entries_data = TRY(KBuffer::try_create_with_size(DiskCache::EntryCount * sizeof(CacheEntry)));
+    auto cached_block_data = TRY(KBuffer::try_create_with_size("BlockBasedFS: Cache blocks"sv, DiskCache::EntryCount * block_size()));
+    auto entries_data = TRY(KBuffer::try_create_with_size("BlockBasedFS: Cache entries"sv, DiskCache::EntryCount * sizeof(CacheEntry)));
     auto disk_cache = TRY(adopt_nonnull_own_or_enomem(new (nothrow) DiskCache(*this, move(cached_block_data), move(entries_data))));
 
     m_cache.with_exclusive([&](auto& cache) {
@@ -131,7 +139,7 @@ ErrorOr<void> BlockBasedFileSystem::initialize()
     return {};
 }
 
-ErrorOr<void> BlockBasedFileSystem::write_block(BlockIndex index, const UserOrKernelBuffer& data, size_t count, u64 offset, bool allow_cache)
+ErrorOr<void> BlockBasedFileSystem::write_block(BlockIndex index, UserOrKernelBuffer const& data, size_t count, u64 offset, bool allow_cache)
 {
     VERIFY(m_logical_block_size);
     VERIFY(offset + count <= block_size());
@@ -174,7 +182,7 @@ ErrorOr<void> BlockBasedFileSystem::raw_read(BlockIndex index, UserOrKernelBuffe
     return {};
 }
 
-ErrorOr<void> BlockBasedFileSystem::raw_write(BlockIndex index, const UserOrKernelBuffer& buffer)
+ErrorOr<void> BlockBasedFileSystem::raw_write(BlockIndex index, UserOrKernelBuffer const& buffer)
 {
     auto base_offset = index.value() * m_logical_block_size;
     auto nwritten = TRY(file_description().write(base_offset, buffer, m_logical_block_size));
@@ -192,7 +200,7 @@ ErrorOr<void> BlockBasedFileSystem::raw_read_blocks(BlockIndex index, size_t cou
     return {};
 }
 
-ErrorOr<void> BlockBasedFileSystem::raw_write_blocks(BlockIndex index, size_t count, const UserOrKernelBuffer& buffer)
+ErrorOr<void> BlockBasedFileSystem::raw_write_blocks(BlockIndex index, size_t count, UserOrKernelBuffer const& buffer)
 {
     auto current = buffer;
     for (auto block = index.value(); block < (index.value() + count); block++) {
@@ -202,7 +210,7 @@ ErrorOr<void> BlockBasedFileSystem::raw_write_blocks(BlockIndex index, size_t co
     return {};
 }
 
-ErrorOr<void> BlockBasedFileSystem::write_blocks(BlockIndex index, unsigned count, const UserOrKernelBuffer& data, bool allow_cache)
+ErrorOr<void> BlockBasedFileSystem::write_blocks(BlockIndex index, unsigned count, UserOrKernelBuffer const& data, bool allow_cache)
 {
     VERIFY(m_logical_block_size);
     dbgln_if(BBFS_DEBUG, "BlockBasedFileSystem::write_blocks {}, count={}", index, count);

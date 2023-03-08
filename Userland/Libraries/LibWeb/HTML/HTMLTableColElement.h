@@ -11,11 +11,15 @@
 namespace Web::HTML {
 
 class HTMLTableColElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLTableColElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLTableColElement, HTMLElement);
 
-    HTMLTableColElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLTableColElement() override;
+
+private:
+    HTMLTableColElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

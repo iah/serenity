@@ -9,7 +9,9 @@
 
 #include <AK/Function.h>
 #include <LibGUI/Frame.h>
-#include <LibGfx/BitmapFont.h>
+#include <LibGfx/Font/BitmapFont.h>
+
+namespace FontEditor {
 
 class GlyphEditorWidget final : public GUI::Frame {
     C_OBJECT(GlyphEditorWidget)
@@ -19,28 +21,21 @@ public:
         Move
     };
 
-    enum Direction {
-        Clockwise,
-        Counterclockwise
-    };
-
     virtual ~GlyphEditorWidget() override = default;
-
-    void initialize(Gfx::BitmapFont&);
 
     int glyph() const { return m_glyph; }
     void set_glyph(int);
     bool is_glyph_empty();
 
-    void rotate_90(Direction);
-    void flip_vertically();
-    void flip_horizontally();
+    void rotate_90(Gfx::RotationDirection);
+    void flip(Gfx::Orientation);
 
     int preferred_width() const;
     int preferred_height() const;
 
     Gfx::BitmapFont& font() { return *m_font; }
     Gfx::BitmapFont const& font() const { return *m_font; }
+    void set_font(Gfx::BitmapFont&);
 
     int scale() const { return m_scale; }
     void set_scale(int scale);
@@ -71,3 +66,5 @@ private:
     Mode m_mode { Paint };
     bool m_is_clicking_valid_cell { false };
 };
+
+}

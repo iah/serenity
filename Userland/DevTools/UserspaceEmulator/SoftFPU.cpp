@@ -16,39 +16,39 @@
 
 #include <unistd.h>
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(AK_COMPILER_GCC)
 #    pragma GCC optimize("O3")
 #endif
 
-#define TODO_INSN()                                                                   \
-    do {                                                                              \
-        reportln("\n=={}== Unimplemented instruction: {}\n", getpid(), __FUNCTION__); \
-        m_emulator.dump_backtrace();                                                  \
-        _exit(0);                                                                     \
+#define TODO_INSN()                                                                     \
+    do {                                                                                \
+        reportln("\n=={}== Unimplemented instruction: {}\n"sv, getpid(), __FUNCTION__); \
+        m_emulator.dump_backtrace();                                                    \
+        _exit(0);                                                                       \
     } while (0)
 
 template<typename T>
-ALWAYS_INLINE void warn_if_uninitialized(T value_with_shadow, const char* message)
+ALWAYS_INLINE void warn_if_uninitialized(T value_with_shadow, char const* message)
 {
     if (value_with_shadow.is_uninitialized()) [[unlikely]] {
-        reportln("\033[31;1mWarning! Use of uninitialized value: {}\033[0m\n", message);
+        reportln("\033[31;1mWarning! Use of uninitialized value: {}\033[0m\n"sv, message);
         UserspaceEmulator::Emulator::the().dump_backtrace();
     }
 }
 
-namespace UserspaceEmulator {
+namespace UserspaceEmulator { // NOLINT(readability-implicit-bool-conversion) 0/1 to follow spec closer
 
 ALWAYS_INLINE void SoftFPU::warn_if_mmx_absolute(u8 index) const
 {
     if (m_reg_is_mmx[index]) [[unlikely]] {
-        reportln("\033[31;1mWarning! Use of an MMX register as an FPU value ({} abs)\033[0m\n", index);
+        reportln("\033[31;1mWarning! Use of an MMX register as an FPU value ({} abs)\033[0m\n"sv, index);
         m_emulator.dump_backtrace();
     }
 }
 ALWAYS_INLINE void SoftFPU::warn_if_fpu_absolute(u8 index) const
 {
     if (!m_reg_is_mmx[index]) [[unlikely]] {
-        reportln("\033[31;1mWarning! Use of an FPU value ({} abs)  as an MMX register\033[0m\n", index);
+        reportln("\033[31;1mWarning! Use of an FPU value ({} abs)  as an MMX register\033[0m\n"sv, index);
         m_emulator.dump_backtrace();
     }
 }
@@ -76,13 +76,13 @@ ALWAYS_INLINE void SoftFPU::fpu_set(u8 index, long double value)
     VERIFY(index < 8);
     fpu_set_absolute((m_fpu_stack_top + index) % 8, value);
 }
-ALWAYS_INLINE MMX SoftFPU::mmx_get(u8 index) const
+MMX SoftFPU::mmx_get(u8 index) const
 {
     VERIFY(index < 8);
     warn_if_fpu_absolute(index);
     return m_storage[index].mmx;
 }
-ALWAYS_INLINE void SoftFPU::mmx_set(u8 index, MMX value)
+void SoftFPU::mmx_set(u8 index, MMX value)
 {
     m_storage[index].mmx = value;
     // The high bytes are set to 0b11... to make the floating-point value NaN.
@@ -123,32 +123,32 @@ ALWAYS_INLINE void SoftFPU::fpu_set_exception(FPU_Exception ex)
         break;
     case FPU_Exception::InvalidOperation:
         m_fpu_error_invalid = 1;
-        if (!m_fpu_mask_invalid)
+        if (!m_fpu_cw.mask_invalid)
             break;
         return;
     case FPU_Exception::DenormalizedOperand:
         m_fpu_error_denorm = 1;
-        if (!m_fpu_mask_denorm)
+        if (!m_fpu_cw.mask_denorm)
             break;
         return;
     case FPU_Exception::ZeroDivide:
         m_fpu_error_zero_div = 1;
-        if (!m_fpu_mask_zero_div)
+        if (!m_fpu_cw.mask_zero_div)
             break;
         return;
     case FPU_Exception::Overflow:
         m_fpu_error_overflow = 1;
-        if (!m_fpu_mask_overflow)
+        if (!m_fpu_cw.mask_overflow)
             break;
         return;
     case FPU_Exception::Underflow:
         m_fpu_error_underflow = 1;
-        if (!m_fpu_mask_underflow)
+        if (!m_fpu_cw.mask_underflow)
             break;
         return;
     case FPU_Exception::Precision:
         m_fpu_error_precision = 1;
-        if (!m_fpu_mask_precision)
+        if (!m_fpu_cw.mask_precision)
             break;
         return;
     }
@@ -161,34 +161,16 @@ ALWAYS_INLINE void SoftFPU::fpu_set_exception(FPU_Exception ex)
     // the previous eip
 
     // FIXME: Call FPU Exception handler
-    reportln("Trying to call Exception handler from {}", fpu_exception_string(ex));
+    reportln("Trying to call Exception handler from {}"sv, fpu_exception_string(ex));
     fpu_dump_env();
     m_emulator.dump_backtrace();
     TODO();
 }
 
 template<Arithmetic T>
-ALWAYS_INLINE T SoftFPU::fpu_round(long double value) const
+ALWAYS_INLINE T SoftFPU::round_checked(long double value)
 {
-    // FIXME: may need to set indefinite values manually
-    switch (fpu_get_round_mode()) {
-    case RoundingMode::NEAREST:
-        return static_cast<T>(roundl(value));
-    case RoundingMode::DOWN:
-        return static_cast<T>(floorl(value));
-    case RoundingMode::UP:
-        return static_cast<T>(ceill(value));
-    case RoundingMode::TRUNC:
-        return static_cast<T>(truncl(value));
-    default:
-        VERIFY_NOT_REACHED();
-    }
-}
-
-template<Arithmetic T>
-ALWAYS_INLINE T SoftFPU::fpu_round_checked(long double value)
-{
-    T result = fpu_round<T>(value);
+    T result = static_cast<T>(rintl(value));
     if (result != value)
         fpu_set_exception(FPU_Exception::Precision);
     if (result > value)
@@ -199,15 +181,9 @@ ALWAYS_INLINE T SoftFPU::fpu_round_checked(long double value)
 }
 
 template<FloatingPoint T>
-ALWAYS_INLINE T SoftFPU::fpu_convert(long double value) const
+ALWAYS_INLINE T SoftFPU::convert_checked(long double value)
 {
-    // FIXME: actually round the right way
-    return static_cast<T>(value);
-}
-template<FloatingPoint T>
-ALWAYS_INLINE T SoftFPU::fpu_convert_checked(long double value)
-{
-    T result = fpu_convert<T>(value);
+    T result = static_cast<T>(value);
     if (auto rnd = value - result) {
         if (rnd > 0)
             set_c1(1);
@@ -254,7 +230,7 @@ void SoftFPU::FLD_RM80(const X86::Instruction& insn)
 void SoftFPU::FST_RM32(const X86::Instruction& insn)
 {
     VERIFY(!insn.modrm().is_register());
-    float f32 = fpu_convert_checked<float>(fpu_get(0));
+    float f32 = convert_checked<float>(fpu_get(0));
 
     if (fpu_is_set(0))
         insn.modrm().write32(m_cpu, insn, shadow_wrap_as_initialized(bit_cast<u32>(f32)));
@@ -266,7 +242,7 @@ void SoftFPU::FST_RM64(const X86::Instruction& insn)
     if (insn.modrm().is_register()) {
         fpu_set(insn.modrm().register_index(), fpu_get(0));
     } else {
-        double f64 = fpu_convert_checked<double>(fpu_get(0));
+        double f64 = convert_checked<double>(fpu_get(0));
         if (fpu_is_set(0))
             insn.modrm().write64(m_cpu, insn, shadow_wrap_as_initialized(bit_cast<u64>(f64)));
         else
@@ -300,7 +276,7 @@ void SoftFPU::FSTP_RM80(const X86::Instruction& insn)
         f80 = insn.modrm().read128(m_cpu, insn);
         *(long double*)value.bytes().data() = fpu_pop();
         memcpy(f80.value().bytes().data(), &value, 10); // copy
-        memset(f80.shadow().bytes().data(), 0x01, 10);  // mark as initialized
+        f80.set_initialized();
         insn.modrm().write128(m_cpu, insn, f80);
     }
 }
@@ -335,7 +311,7 @@ void SoftFPU::FIST_RM16(const X86::Instruction& insn)
     VERIFY(!insn.modrm().is_register());
     auto f = fpu_get(0);
     set_c1(0);
-    auto int16 = fpu_round_checked<i16>(f);
+    auto int16 = round_checked<i16>(f);
 
     // FIXME: Respect shadow values
     insn.modrm().write16(m_cpu, insn, shadow_wrap_as_initialized(bit_cast<u16>(int16)));
@@ -345,7 +321,7 @@ void SoftFPU::FIST_RM32(const X86::Instruction& insn)
     VERIFY(!insn.modrm().is_register());
     auto f = fpu_get(0);
     set_c1(0);
-    auto int32 = fpu_round_checked<i32>(f);
+    auto int32 = round_checked<i32>(f);
     // FIXME: Respect shadow values
     insn.modrm().write32(m_cpu, insn, shadow_wrap_as_initialized(bit_cast<u32>(int32)));
 }
@@ -365,7 +341,7 @@ void SoftFPU::FISTP_RM64(const X86::Instruction& insn)
     VERIFY(!insn.modrm().is_register());
     auto f = fpu_pop();
     set_c1(0);
-    auto i64 = fpu_round_checked<int64_t>(f);
+    auto i64 = round_checked<int64_t>(f);
     // FIXME: Respect shadow values
     insn.modrm().write64(m_cpu, insn, shadow_wrap_as_initialized(bit_cast<u64>(i64)));
 }
@@ -400,7 +376,6 @@ void SoftFPU::FBSTP_M80(const X86::Instruction&) { TODO_INSN(); }
 
 void SoftFPU::FXCH(const X86::Instruction& insn)
 {
-    // FIXME: implicit argument `D9 C9` -> st[0] <-> st[1]?
     VERIFY(insn.modrm().is_register());
     set_c1(0);
     auto tmp = fpu_get(0);
@@ -462,7 +437,7 @@ void SoftFPU::FCMOVNU(const X86::Instruction& insn)
 // BASIC ARITHMETIC
 void SoftFPU::FADD_RM32(const X86::Instruction& insn)
 {
-    // XXX look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem32 ops
+    // FIXME look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem32 ops
     if (insn.modrm().is_register()) {
         fpu_set(0, fpu_get(insn.modrm().register_index()) + fpu_get(0));
     } else {
@@ -474,7 +449,7 @@ void SoftFPU::FADD_RM32(const X86::Instruction& insn)
 }
 void SoftFPU::FADD_RM64(const X86::Instruction& insn)
 {
-    // XXX look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem64 ops
+    // FIXME look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem64 ops
     if (insn.modrm().is_register()) {
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) + fpu_get(0));
     } else {
@@ -520,6 +495,7 @@ void SoftFPU::FSUB_RM32(const X86::Instruction& insn)
 void SoftFPU::FSUB_RM64(const X86::Instruction& insn)
 {
     if (insn.modrm().is_register()) {
+        // Note: This is FSUBR (DC E8+i FSUBR st(i) st(0)) in the spec
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) - fpu_get(0));
     } else {
         auto new_f64 = insn.modrm().read64(m_cpu, insn);
@@ -549,6 +525,7 @@ void SoftFPU::FSUBR_RM32(const X86::Instruction& insn)
 void SoftFPU::FSUBR_RM64(const X86::Instruction& insn)
 {
     if (insn.modrm().is_register()) {
+        // Note: This is FSUB (DC E0+i FSUB st(i) st(0)) in the spec
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) - fpu_get(0));
     } else {
         auto new_f64 = insn.modrm().read64(m_cpu, insn);
@@ -596,7 +573,7 @@ void SoftFPU::FISUBR_RM32(const X86::Instruction& insn)
 
 void SoftFPU::FMUL_RM32(const X86::Instruction& insn)
 {
-    // XXX look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem32 ops
+    // FIXME look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem32 ops
     if (insn.modrm().is_register()) {
         fpu_set(0, fpu_get(0) * fpu_get(insn.modrm().register_index()));
     } else {
@@ -608,7 +585,7 @@ void SoftFPU::FMUL_RM32(const X86::Instruction& insn)
 }
 void SoftFPU::FMUL_RM64(const X86::Instruction& insn)
 {
-    // XXX look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem64 ops
+    // FIXME look at ::INC_foo for how mem/reg stuff is handled, and use that here too to make sure this is only called for mem64 ops
     if (insn.modrm().is_register()) {
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) * fpu_get(0));
     } else {
@@ -655,6 +632,7 @@ void SoftFPU::FDIV_RM32(const X86::Instruction& insn)
 void SoftFPU::FDIV_RM64(const X86::Instruction& insn)
 {
     if (insn.modrm().is_register()) {
+        // Note: This is FDIVR (DC F0+i FDIVR st(i) st(0)) in the spec
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) / fpu_get(0));
     } else {
         auto new_f64 = insn.modrm().read64(m_cpu, insn);
@@ -687,8 +665,7 @@ void SoftFPU::FDIVR_RM32(const X86::Instruction& insn)
 void SoftFPU::FDIVR_RM64(const X86::Instruction& insn)
 {
     if (insn.modrm().is_register()) {
-        // XXX this is FDIVR, Instruction decodes this weirdly
-        //fpu_set(insn.modrm().register_index(), fpu_get(0) / fpu_get(insn.modrm().register_index()));
+        // Note: This is FDIV (DC F8+i FDIV st(i) st(0)) in the spec
         fpu_set(insn.modrm().register_index(), fpu_get(insn.modrm().register_index()) / fpu_get(0));
     } else {
         auto new_f64 = insn.modrm().read64(m_cpu, insn);
@@ -742,7 +719,8 @@ void SoftFPU::FIDIVR_RM32(const X86::Instruction& insn)
 
 void SoftFPU::FPREM(const X86::Instruction&)
 {
-    // FIXME: There are some exponent shenanigans supposed to be here
+    // FIXME: FPREM should only be able to reduce top's exponent by a maximum
+    //        amount of 32-63 (impl-specific)
     long double top = fpu_get(0);
     long double one = fpu_get(1);
 
@@ -757,7 +735,8 @@ void SoftFPU::FPREM(const X86::Instruction&)
 }
 void SoftFPU::FPREM1(const X86::Instruction&)
 {
-    // FIXME: There are some exponent shenanigans supposed to be here
+    // FIXME: FPREM1 should only be able to reduce top's exponent by a maximum
+    //        amount of 32-63 (impl-specific)
     long double top = fpu_get(0);
     long double one = fpu_get(1);
 
@@ -783,19 +762,22 @@ void SoftFPU::FCHS(const X86::Instruction&)
 
 void SoftFPU::FRNDINT(const X86::Instruction&)
 {
-    auto res = fpu_round_checked<long double>(fpu_get(0));
+    // FIXME: Raise #IA #D
+    auto res = round_checked<long double>(fpu_get(0));
     fpu_set(0, res);
 }
 
 void SoftFPU::FSCALE(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
-    fpu_set(0, fpu_get(0) * powl(2, truncl(fpu_get(1))));
+    // FIXME: Raise #IA #D #U #O #P
+    fpu_set(0, fpu_get(0) * exp2l(truncl(fpu_get(1))));
 }
 
 void SoftFPU::FSQRT(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
+    // FIXME: Raise #IA #D #P
+    if (fpu_get(0) < 0)
+        fpu_set_exception(FPU_Exception::InvalidOperation);
     fpu_set(0, sqrtl(fpu_get(0)));
 }
 
@@ -812,7 +794,7 @@ void SoftFPU::FCOMPP(const X86::Instruction&)
 {
     if (fpu_isnan(0) || fpu_isnan(1)) {
         fpu_set_exception(FPU_Exception::InvalidOperation);
-        if (m_fpu_mask_invalid)
+        if (m_fpu_cw.mask_invalid)
             fpu_set_unordered();
     } else {
         set_c2(0);
@@ -993,20 +975,26 @@ void SoftFPU::FXAM(const X86::Instruction&)
 // TRANSCENDENTAL
 void SoftFPU::FSIN(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
+    // FIXME: Raise #IA #D #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
     // FIXME: Set C2 to 1 if ST(0) is outside range of -2^63 to +2^63; else set to 0
+    //        ST(0) shall remain unchanged in this case
     fpu_set(0, sinl(fpu_get(0)));
 }
 void SoftFPU::FCOS(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
+    // FIXME: Raise #IA #D #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
     // FIXME: Set C2 to 1 if ST(0) is outside range of -2^63 to +2^63; else set to 0
+    //        ST(0) shall remain unchanged in this case
     fpu_set(0, cosl(fpu_get(0)));
 }
 void SoftFPU::FSINCOS(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
-    // FIXME: Set C2 to 1 if ST(0) is outside range of -2^63 to +2^63; else set to 0s
+    // FIXME: Raise #IA #D #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
+    // FIXME: Set C2 to 1 if ST(0) is outside range of -2^63 to +2^63; else set to 0
+    //        ST(0) shall remain unchanged in this case
     long double sin = sinl(fpu_get(0));
     long double cos = cosl(fpu_get(0));
     fpu_set(0, sin);
@@ -1015,84 +1003,98 @@ void SoftFPU::FSINCOS(const X86::Instruction&)
 
 void SoftFPU::FPTAN(const X86::Instruction&)
 {
-    // FIXME: set C1 upon stack overflow or if result was rounded
+    // FIXME: Raise #IA #D #U #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
     // FIXME: Set C2 to 1 if ST(0) is outside range of -2^63 to +2^63; else set to 0
+    //        ST(0) shall remain unchanged in this case
     fpu_set(0, tanl(fpu_get(0)));
     fpu_push(1.0f);
 }
 void SoftFPU::FPATAN(const X86::Instruction&)
 {
-    // FIXME: set C1  on stack underflow, or on rounding
-    // FIXME: Exceptions
+    // FIXME: Raise #IA #D #U #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
+    // Note: Not implemented 80287 quirk:
+    //       Restriction to 0 ≤ |ST(1)| < |ST(0)| < +∞
     fpu_set(1, atan2l(fpu_get(1), fpu_get(0)));
     fpu_pop();
 }
 
 void SoftFPU::F2XM1(const X86::Instruction&)
 {
-    // FIXME: validate ST(0) is in range –1.0 to +1.0
+    // FIXME: Raise #IA #D #U #P
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
+    // FIXME: Validate ST(0) is in range –1.0 to +1.0
     auto val = fpu_get(0);
-    // FIXME: Set C0, C2, C3 in FPU status word.
-    fpu_set(0, powl(2, val) - 1.0l);
+    fpu_set(0, exp2(val) - 1.0l);
 }
 void SoftFPU::FYL2X(const X86::Instruction&)
 {
-    // FIXME: raise precision and under/overflow
-    // FIXME: detect denormal operands
-    // FIXME: QNaN
-    auto f0 = fpu_get(0);
-    auto f1 = fpu_get(1);
-
-    if (f0 < 0. || isnan(f0) || isnan(f1)
-        || (isinf(f0) && f1 == 0.) || (f0 == 1. && isinf(f1)))
+    // FIXME: Set C1 on when result was rounded up, cleared otherwise
+    // FIXME: Raise #IA #D #U #O #P
+    auto x = fpu_get(0);
+    auto y = fpu_get(1);
+    if (x < 0. && !isinf(x)) {
         fpu_set_exception(FPU_Exception::InvalidOperation);
-    if (f0 == 0.)
+        // FIXME: Spec does not say what to do here....
+        //        So lets just ask libm....
+        fpu_set(1, y * log2l(x));
+    } else if (x == 0.) {
+        if (y == 0)
+            fpu_set_exception(FPU_Exception::InvalidOperation);
         fpu_set_exception(FPU_Exception::ZeroDivide);
-
-    fpu_set(1, f1 * log2l(f0));
+        fpu_set(1, INFINITY * (signbit(y) ? 1 : -1));
+    } else {
+        fpu_set(1, y * log2l(x));
+    }
     fpu_pop();
 }
 void SoftFPU::FYL2XP1(const X86::Instruction&)
 {
-    // FIXME: raise #O #U #P #D
-    // FIXME: QNaN
-    auto f0 = fpu_get(0);
-    auto f1 = fpu_get(1);
-    if (isnan(f0) || isnan(f1)
-        || (isinf(f1) && f0 == 0))
+    // FIXME: Raise #IA #O #U #P #D
+    auto x = fpu_get(0);
+    auto y = fpu_get(1);
+    if (x == 0 && isinf(y))
         fpu_set_exception(FPU_Exception::InvalidOperation);
 
-    fpu_set(1, (f1 * log2l(f0 + 1.0l)));
+    fpu_set(1, (y * log2l(x + 1.0l)));
     fpu_pop();
 }
 
 // LOAD CONSTANT
 void SoftFPU::FLD1(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(1.0l);
 }
 void SoftFPU::FLDZ(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(0.0l);
 }
 void SoftFPU::FLDPI(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(M_PIl);
 }
 void SoftFPU::FLDL2E(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(M_LOG2El);
 }
 void SoftFPU::FLDLN2(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(M_LN2l);
 }
 void SoftFPU::FLDL2T(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(log2l(10.0l));
 }
 void SoftFPU::FLDLG2(const X86::Instruction&)
 {
+    set_c1(0);
     fpu_push(log10l(2.0l));
 }
 
@@ -1120,7 +1122,7 @@ void SoftFPU::FFREEP(const X86::Instruction& insn)
 
 void SoftFPU::FNINIT(const X86::Instruction&)
 {
-    m_fpu_cw = 0x037F;
+    m_fpu_cw.cw = 0x037F;
     m_fpu_sw = 0;
     m_fpu_tw = 0xFFFF;
 
@@ -1146,11 +1148,23 @@ void SoftFPU::FNCLEX(const X86::Instruction&)
 
 void SoftFPU::FNSTCW(const X86::Instruction& insn)
 {
-    insn.modrm().write16(m_cpu, insn, shadow_wrap_as_initialized(m_fpu_cw));
+    insn.modrm().write16(m_cpu, insn, shadow_wrap_as_initialized(m_fpu_cw.cw));
 }
 void SoftFPU::FLDCW(const X86::Instruction& insn)
 {
-    m_fpu_cw = insn.modrm().read16(m_cpu, insn).value();
+    m_fpu_cw.cw = insn.modrm().read16(m_cpu, insn).value();
+
+    // Just let the host's x87 handle the rounding for us
+    // We do not want to accedentally raise an FP-Exception on the host, so we
+    // mask all exceptions
+    AK::X87ControlWord temp = m_fpu_cw;
+    temp.mask_invalid = 1;
+    temp.mask_denorm = 1;
+    temp.mask_zero_div = 1;
+    temp.mask_overflow = 1;
+    temp.mask_underflow = 1;
+    temp.mask_precision = 1;
+    AK::set_cw_x87(temp);
 }
 
 void SoftFPU::FNSTENV(const X86::Instruction& insn)
@@ -1167,18 +1181,18 @@ void SoftFPU::FNSTENV(const X86::Instruction& insn)
      * |                |       TW      | 8
      * +----------------+---------------+
      * |               FIP              | 12
-     * +----+-----------+---------------+ 
+     * +----+-----------+---------------+
      * |0000|fpuOp[10:0]|    FIP_sel    | 16
-     * +----+-----------+---------------+ 
+     * +----+-----------+---------------+
      * |               FDP              | 20
-     * +----------------+---------------+ 
+     * +----------------+---------------+
      * |                |    FDP_ds     | 24
-     * +----------------|---------------+ 
+     * +----------------|---------------+
      * */
 
     auto address = insn.modrm().resolve(m_cpu, insn);
 
-    m_cpu.write_memory16(address, shadow_wrap_as_initialized(m_fpu_cw));
+    m_cpu.write_memory16(address, shadow_wrap_as_initialized(m_fpu_cw.cw));
     address.set_offset(address.offset() + 4);
     m_cpu.write_memory16(address, shadow_wrap_as_initialized(m_fpu_sw));
     address.set_offset(address.offset() + 4);
@@ -1201,7 +1215,17 @@ void SoftFPU::FLDENV(const X86::Instruction& insn)
     auto address = insn.modrm().resolve(m_cpu, insn);
 
     // FIXME: Shadow Values
-    m_fpu_cw = m_cpu.read_memory16(address).value();
+    m_fpu_cw.cw = m_cpu.read_memory16(address).value();
+    // See note in FLDCW
+    AK::X87ControlWord temp = m_fpu_cw;
+    temp.mask_invalid = 1;
+    temp.mask_denorm = 1;
+    temp.mask_zero_div = 1;
+    temp.mask_overflow = 1;
+    temp.mask_underflow = 1;
+    temp.mask_precision = 1;
+    AK::set_cw_x87(temp);
+
     address.set_offset(address.offset() + 4);
     m_fpu_sw = m_cpu.read_memory16(address).value();
     address.set_offset(address.offset() + 4);
@@ -1278,6 +1302,7 @@ void SoftFPU::FNSETPM(const X86::Instruction&) { TODO_INSN(); }
 // MMX
 // helpers
 #define LOAD_MM_MM64M()                                                                \
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */                       \
     MMX mm;                                                                            \
     MMX mm64m;                                                                         \
     if (insn.modrm().mod() == 0b11) { /* 0b11 signals a register */                    \
@@ -1534,6 +1559,7 @@ void SoftFPU::PSLLW_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSLLW_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); // SSE2
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1553,6 +1579,7 @@ void SoftFPU::PSLLD_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSLLD_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1572,6 +1599,7 @@ void SoftFPU::PSLLQ_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSLLQ_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1591,6 +1619,7 @@ void SoftFPU::PSRAW_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSRAW_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1610,6 +1639,7 @@ void SoftFPU::PSRAD_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSRAD_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1629,6 +1659,7 @@ void SoftFPU::PSRLW_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSRLW_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1648,6 +1679,7 @@ void SoftFPU::PSRLD_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSRLD_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1667,6 +1699,7 @@ void SoftFPU::PSRLQ_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::PSRLQ_mm1_imm8(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 imm = insn.imm8();
     MMX mm = mmx_get(insn.modrm().reg());
 
@@ -1679,6 +1712,7 @@ void SoftFPU::PSRLQ_mm1_imm8(const X86::Instruction& insn)
 // DATA TRANSFER
 void SoftFPU::MOVD_mm1_rm32(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 mmx_index = insn.modrm().reg();
     // FIXME:: Shadow Value
     // upper half is zeroed out
@@ -1687,6 +1721,7 @@ void SoftFPU::MOVD_mm1_rm32(const X86::Instruction& insn)
 };
 void SoftFPU::MOVD_rm32_mm2(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     u8 mmx_index = insn.modrm().reg();
     // FIXME:: Shadow Value
     insn.modrm().write32(m_cpu, insn,
@@ -1696,6 +1731,7 @@ void SoftFPU::MOVD_rm32_mm2(const X86::Instruction& insn)
 
 void SoftFPU::MOVQ_mm1_mm2m64(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     // FIXME: Shadow Value
     if (insn.modrm().mod() == 0b11) {
         // instruction
@@ -1709,6 +1745,7 @@ void SoftFPU::MOVQ_mm1_mm2m64(const X86::Instruction& insn)
 }
 void SoftFPU::MOVQ_mm1m64_mm2(const X86::Instruction& insn)
 {
+    VERIFY(!insn.has_operand_size_override_prefix()); /* SSE2 */
     if (insn.modrm().mod() == 0b11) {
         // instruction
         mmx_set(insn.modrm().rm(),

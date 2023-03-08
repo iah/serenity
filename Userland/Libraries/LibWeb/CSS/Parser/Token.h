@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,10 +8,10 @@
 #pragma once
 
 #include <AK/FlyString.h>
-#include <AK/String.h>
-#include <math.h>
+#include <AK/Utf8View.h>
+#include <LibWeb/CSS/Number.h>
 
-namespace Web::CSS {
+namespace Web::CSS::Parser {
 
 class Token {
     friend class Tokenizer;
@@ -51,11 +51,6 @@ public:
         Unrestricted,
     };
 
-    enum class NumberType {
-        Integer,
-        Number,
-    };
-
     struct Position {
         size_t line { 0 };
         size_t column { 0 };
@@ -67,37 +62,37 @@ public:
     StringView ident() const
     {
         VERIFY(m_type == Type::Ident);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
     StringView function() const
     {
         VERIFY(m_type == Type::Function);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
-    StringView delim() const
+    u32 delim() const
     {
         VERIFY(m_type == Type::Delim);
-        return m_value.view();
+        return *Utf8View(m_value.bytes_as_string_view()).begin();
     }
 
     StringView string() const
     {
         VERIFY(m_type == Type::String);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
     StringView url() const
     {
         VERIFY(m_type == Type::Url);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
     StringView at_keyword() const
     {
         VERIFY(m_type == Type::AtKeyword);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
     HashType hash_type() const
@@ -108,78 +103,83 @@ public:
     StringView hash_value() const
     {
         VERIFY(m_type == Type::Hash);
-        return m_value.view();
+        return m_value.bytes_as_string_view();
     }
 
-    bool is(NumberType number_type) const { return is(Token::Type::Number) && m_number_type == number_type; }
-    StringView number_string_value() const
+    Number const& number() const
     {
-        VERIFY(m_type == Type::Number);
-        return m_value.view();
-    }
-    double number_value() const
-    {
-        VERIFY(m_type == Type::Number);
+        VERIFY(m_type == Type::Number || m_type == Type::Dimension || m_type == Type::Percentage);
         return m_number_value;
+    }
+    float number_value() const
+    {
+        VERIFY(m_type == Type::Number);
+        return m_number_value.value();
     }
     i64 to_integer() const
     {
-        VERIFY(m_type == Type::Number && m_number_type == NumberType::Integer);
-        return to_closest_integer(m_number_value);
+        VERIFY(m_type == Type::Number && m_number_value.is_integer());
+        return m_number_value.integer_value();
     }
-    bool is_integer_value_signed() const { return number_string_value().starts_with('-') || number_string_value().starts_with('+'); }
 
     StringView dimension_unit() const
     {
         VERIFY(m_type == Type::Dimension);
-        return m_unit.view();
+        return m_value.bytes_as_string_view();
     }
-    double dimension_value() const
+    float dimension_value() const
     {
         VERIFY(m_type == Type::Dimension);
-        return m_number_value;
+        return m_number_value.value();
     }
-    i64 dimension_value_int() const { return to_closest_integer(dimension_value()); }
+    i64 dimension_value_int() const { return m_number_value.integer_value(); }
 
-    double percentage() const
+    float percentage() const
     {
         VERIFY(m_type == Type::Percentage);
-        return m_number_value;
-    }
-
-    NumberType number_type() const
-    {
-        VERIFY((m_type == Type::Number) || (m_type == Type::Dimension) || (m_type == Type::Percentage));
-        return m_number_type;
+        return m_number_value.value();
     }
 
     Type mirror_variant() const;
-    String bracket_string() const;
-    String bracket_mirror_string() const;
+    StringView bracket_string() const;
+    StringView bracket_mirror_string() const;
 
-    String to_string() const;
-    String to_debug_string() const;
+    ErrorOr<String> to_string() const;
+    ErrorOr<String> to_debug_string() const;
 
     Position const& start_position() const { return m_start_position; }
     Position const& end_position() const { return m_end_position; }
 
-private:
-    static i64 to_closest_integer(double value)
+    static Token of_string(FlyString str)
     {
-        // https://www.w3.org/TR/css-values-4/#numeric-types
-        // When a value cannot be explicitly supported due to range/precision limitations, it must be converted
-        // to the closest value supported by the implementation, but how the implementation defines "closest"
-        // is explicitly undefined as well.
-        return static_cast<i64>(clamp(round(value), NumericLimits<i64>::min(), NumericLimits<i64>::max()));
+        Token token;
+        token.m_type = Type::String;
+        token.m_value = move(str);
+        return token;
     }
 
+    static Token create_number(float value)
+    {
+        Token token;
+        token.m_type = Type::Number;
+        token.m_number_value = Number(Number::Type::Number, value);
+        return token;
+    }
+
+    static Token create_percentage(float value)
+    {
+        Token token;
+        token.m_type = Type::Percentage;
+        token.m_number_value = Number(Number::Type::Number, value);
+        return token;
+    }
+
+private:
     Type m_type { Type::Invalid };
 
     FlyString m_value;
-    FlyString m_unit;
+    Number m_number_value;
     HashType m_hash_type { HashType::Unrestricted };
-    NumberType m_number_type { NumberType::Integer };
-    double m_number_value { 0 };
 
     Position m_start_position;
     Position m_end_position;

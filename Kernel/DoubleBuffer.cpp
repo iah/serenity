@@ -5,8 +5,8 @@
  */
 
 #include <AK/StringView.h>
-#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/DoubleBuffer.h>
+#include <Kernel/InterruptDisabler.h>
 
 namespace Kernel {
 
@@ -17,9 +17,9 @@ inline void DoubleBuffer::compute_lockfree_metadata()
     m_space_for_writing = m_capacity - m_write_buffer->size;
 }
 
-ErrorOr<NonnullOwnPtr<DoubleBuffer>> DoubleBuffer::try_create(size_t capacity)
+ErrorOr<NonnullOwnPtr<DoubleBuffer>> DoubleBuffer::try_create(StringView name, size_t capacity)
 {
-    auto storage = TRY(KBuffer::try_create_with_size(capacity * 2, Memory::Region::Access::ReadWrite, "DoubleBuffer"));
+    auto storage = TRY(KBuffer::try_create_with_size(name, capacity * 2, Memory::Region::Access::ReadWrite));
     return adopt_nonnull_own_or_enomem(new (nothrow) DoubleBuffer(capacity, move(storage)));
 }
 
@@ -45,7 +45,7 @@ void DoubleBuffer::flip()
     compute_lockfree_metadata();
 }
 
-ErrorOr<size_t> DoubleBuffer::write(const UserOrKernelBuffer& data, size_t size)
+ErrorOr<size_t> DoubleBuffer::write(UserOrKernelBuffer const& data, size_t size)
 {
     if (!size)
         return 0;

@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021, Jamie Mansfield <jmansfield@cadixdev.org>
  * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,8 +9,8 @@
 #pragma once
 
 #include <AK/Array.h>
+#include <LibCards/CardGame.h>
 #include <LibCards/CardStack.h>
-#include <LibGUI/Frame.h>
 
 using Cards::Card;
 using Cards::CardStack;
@@ -28,23 +29,40 @@ enum class GameOverReason {
     Quit,
 };
 
-class Game final : public GUI::Frame {
-    C_OBJECT(Game)
+class Game final : public Cards::CardGame {
+    C_OBJECT_ABSTRACT(Game)
 public:
     static constexpr int width = 10 + 10 * Card::width + 90 + 10;
     static constexpr int height = 480;
 
+    static ErrorOr<NonnullRefPtr<Game>> try_create();
     ~Game() override = default;
 
     Mode mode() const { return m_mode; }
     void setup(Mode);
 
+    void perform_undo();
+
     Function<void(uint32_t)> on_score_update;
     Function<void()> on_game_start;
     Function<void(GameOverReason, uint32_t)> on_game_end;
+    Function<void(bool)> on_undo_availability_change;
 
 private:
     Game();
+
+    struct LastMove {
+        enum class Type {
+            Invalid,
+            MoveCards
+        };
+
+        Type type { Type::Invalid };
+        CardStack* from { nullptr };
+        size_t card_count;
+        bool was_visible;
+        CardStack* to { nullptr };
+    };
 
     enum StackLocation {
         Completed,
@@ -67,46 +85,48 @@ private:
     };
 
     void start_timer_if_necessary();
+    void remember_move_for_undo(CardStack&, CardStack&, size_t, bool);
     void update_score(int delta);
     void draw_cards();
-    void mark_intersecting_stacks_dirty(Card& intersecting_card);
-    void ensure_top_card_is_visible(NonnullRefPtr<CardStack> stack);
     void detect_full_stacks();
     void detect_victory();
     void move_focused_cards(CardStack& stack);
+    void clear_hovered_stack();
+    void deal_next_card();
 
-    ALWAYS_INLINE CardStack& stack(StackLocation location)
-    {
-        return m_stacks[location];
-    }
-
-    void paint_event(GUI::PaintEvent&) override;
-    void mousedown_event(GUI::MouseEvent&) override;
-    void mouseup_event(GUI::MouseEvent&) override;
-    void mousemove_event(GUI::MouseEvent&) override;
-    void timer_event(Core::TimerEvent&) override;
+    virtual void paint_event(GUI::PaintEvent&) override;
+    virtual void mousedown_event(GUI::MouseEvent&) override;
+    virtual void mouseup_event(GUI::MouseEvent&) override;
+    virtual void mousemove_event(GUI::MouseEvent&) override;
+    virtual void doubleclick_event(GUI::MouseEvent&) override;
+    virtual void timer_event(Core::TimerEvent&) override;
 
     Mode m_mode { Mode::SingleSuit };
 
-    NonnullRefPtrVector<Card> m_focused_cards;
-    NonnullRefPtrVector<Card> m_new_deck;
-    NonnullRefPtrVector<CardStack> m_stacks;
-    CardStack* m_focused_stack { nullptr };
+    LastMove m_last_move;
+    Vector<NonnullRefPtr<Card>> m_new_deck;
     Gfx::IntPoint m_mouse_down_location;
 
     bool m_mouse_down { false };
 
-    bool m_waiting_for_new_game { true };
-    bool m_new_game_animation { false };
+    enum class State {
+        WaitingForNewGame,
+        NewGameAnimation,
+        GameInProgress,
+        DrawAnimation,
+        Victory,
+    };
+    State m_state { State::WaitingForNewGame };
     uint8_t m_new_game_animation_delay { 0 };
     uint8_t m_new_game_animation_pile { 0 };
 
-    bool m_draw_animation { false };
     uint8_t m_draw_animation_delay { 0 };
     uint8_t m_draw_animation_pile { 0 };
     Gfx::IntRect m_original_stock_rect;
 
     uint32_t m_score { 500 };
+
+    RefPtr<CardStack> m_hovered_stack;
 };
 
 }

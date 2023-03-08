@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <awesomekling@gmail.com>
+ * Copyright (c) 2018-2022, Andreas Kling <awesomekling@gmail.com>
  * Copyright (c) 2020, Fei Wu <f.eiwu@yahoo.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -7,15 +7,19 @@
 
 #include <AK/CharacterTypes.h>
 #include <AK/MemMem.h>
-#include <AK/Memory.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringUtils.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
 
-#ifndef KERNEL
-#    include <AK/String.h>
+#ifdef KERNEL
+#    include <Kernel/StdLib.h>
+#else
+#    include <AK/DeprecatedString.h>
+#    include <AK/FloatingPointStringConversions.h>
+#    include <string.h>
 #endif
 
 namespace AK {
@@ -37,11 +41,11 @@ bool matches(StringView str, StringView mask, CaseSensitivity case_sensitivity, 
         return true;
     }
 
-    const char* string_ptr = str.characters_without_null_termination();
-    const char* string_start = str.characters_without_null_termination();
-    const char* string_end = string_ptr + str.length();
-    const char* mask_ptr = mask.characters_without_null_termination();
-    const char* mask_end = mask_ptr + mask.length();
+    char const* string_ptr = str.characters_without_null_termination();
+    char const* string_start = str.characters_without_null_termination();
+    char const* string_end = string_ptr + str.length();
+    char const* mask_ptr = mask.characters_without_null_termination();
+    char const* mask_end = mask_ptr + mask.length();
 
     while (string_ptr < string_end && mask_ptr < mask_end) {
         auto string_start_ptr = string_ptr;
@@ -59,6 +63,12 @@ bool matches(StringView str, StringView mask, CaseSensitivity case_sensitivity, 
         case '?':
             record_span(string_ptr - string_start, 1);
             break;
+        case '\\':
+            // if backslash is last character in mask, just treat it as an exact match
+            // otherwise use it as escape for next character
+            if (mask_ptr + 1 < mask_end)
+                ++mask_ptr;
+            [[fallthrough]];
         default:
             auto p = *mask_ptr;
             auto ch = *string_ptr;
@@ -92,7 +102,7 @@ Optional<T> convert_to_int(StringView str, TrimWhitespace trim_whitespace)
 
     T sign = 1;
     size_t i = 0;
-    const auto characters = string.characters_without_null_termination();
+    auto const characters = string.characters_without_null_termination();
 
     if (characters[0] == '-' || characters[0] == '+') {
         if (string.length() == 1)
@@ -132,7 +142,7 @@ Optional<T> convert_to_uint(StringView str, TrimWhitespace trim_whitespace)
         return {};
 
     T value = 0;
-    const auto characters = string.characters_without_null_termination();
+    auto const characters = string.characters_without_null_termination();
 
     for (size_t i = 0; i < string.length(); i++) {
         if (characters[i] < '0' || characters[i] > '9')
@@ -152,8 +162,6 @@ template Optional<u16> convert_to_uint(StringView str, TrimWhitespace);
 template Optional<u32> convert_to_uint(StringView str, TrimWhitespace);
 template Optional<unsigned long> convert_to_uint(StringView str, TrimWhitespace);
 template Optional<unsigned long long> convert_to_uint(StringView str, TrimWhitespace);
-template Optional<long> convert_to_uint(StringView str, TrimWhitespace);
-template Optional<long long> convert_to_uint(StringView str, TrimWhitespace);
 
 template<typename T>
 Optional<T> convert_to_uint_from_hex(StringView str, TrimWhitespace trim_whitespace)
@@ -165,7 +173,7 @@ Optional<T> convert_to_uint_from_hex(StringView str, TrimWhitespace trim_whitesp
         return {};
 
     T value = 0;
-    const auto count = string.length();
+    auto const count = string.length();
     const T upper_bound = NumericLimits<T>::max();
 
     for (size_t i = 0; i < count; i++) {
@@ -204,7 +212,7 @@ Optional<T> convert_to_uint_from_octal(StringView str, TrimWhitespace trim_white
         return {};
 
     T value = 0;
-    const auto count = string.length();
+    auto const count = string.length();
     const T upper_bound = NumericLimits<T>::max();
 
     for (size_t i = 0; i < count; i++) {
@@ -228,6 +236,23 @@ template Optional<u8> convert_to_uint_from_octal(StringView str, TrimWhitespace)
 template Optional<u16> convert_to_uint_from_octal(StringView str, TrimWhitespace);
 template Optional<u32> convert_to_uint_from_octal(StringView str, TrimWhitespace);
 template Optional<u64> convert_to_uint_from_octal(StringView str, TrimWhitespace);
+
+#ifndef KERNEL
+template<typename T>
+Optional<T> convert_to_floating_point(StringView str, TrimWhitespace trim_whitespace)
+{
+    static_assert(IsSame<T, double> || IsSame<T, float>);
+    auto string = trim_whitespace == TrimWhitespace::Yes
+        ? str.trim_whitespace()
+        : str;
+
+    char const* start = string.characters_without_null_termination();
+    return parse_floating_point_completely<T>(start, start + str.length());
+}
+
+template Optional<double> convert_to_floating_point(StringView str, TrimWhitespace);
+template Optional<float> convert_to_floating_point(StringView str, TrimWhitespace);
+#endif
 
 bool equals_ignoring_case(StringView a, StringView b)
 {
@@ -305,7 +330,8 @@ bool contains(StringView str, StringView needle, CaseSensitivity case_sensitivit
             continue;
         for (size_t ni = 0; si + ni < str.length(); ni++) {
             if (to_ascii_lowercase(str_chars[si + ni]) != to_ascii_lowercase(needle_chars[ni])) {
-                si += ni;
+                if (ni > 0)
+                    si += ni - 1;
                 break;
             }
             if (ni + 1 == needle.length())
@@ -328,7 +354,7 @@ StringView trim(StringView str, StringView characters, TrimMode mode)
     if (mode == TrimMode::Left || mode == TrimMode::Both) {
         for (size_t i = 0; i < str.length(); ++i) {
             if (substring_length == 0)
-                return "";
+                return ""sv;
             if (!characters.contains(str[i]))
                 break;
             ++substring_start;
@@ -337,10 +363,10 @@ StringView trim(StringView str, StringView characters, TrimMode mode)
     }
 
     if (mode == TrimMode::Right || mode == TrimMode::Both) {
-        for (size_t i = str.length() - 1; i > 0; --i) {
+        for (size_t i = str.length(); i > 0; --i) {
             if (substring_length == 0)
-                return "";
-            if (!characters.contains(str[i]))
+                return ""sv;
+            if (!characters.contains(str[i - 1]))
                 break;
             --substring_length;
         }
@@ -351,7 +377,7 @@ StringView trim(StringView str, StringView characters, TrimMode mode)
 
 StringView trim_whitespace(StringView str, TrimMode mode)
 {
-    return trim(str, " \n\t\v\f\r", mode);
+    return trim(str, " \n\t\v\f\r"sv, mode);
 }
 
 Optional<size_t> find(StringView haystack, char needle, size_t start)
@@ -379,6 +405,26 @@ Optional<size_t> find_last(StringView haystack, char needle)
 {
     for (size_t i = haystack.length(); i > 0; --i) {
         if (haystack[i - 1] == needle)
+            return i - 1;
+    }
+    return {};
+}
+
+Optional<size_t> find_last(StringView haystack, StringView needle)
+{
+    for (size_t i = haystack.length(); i > 0; --i) {
+        auto value = StringUtils::find(haystack, needle, i - 1);
+        if (value.has_value())
+            return value;
+    }
+
+    return {};
+}
+
+Optional<size_t> find_last_not(StringView haystack, char needle)
+{
+    for (size_t i = haystack.length(); i > 0; --i) {
+        if (haystack[i - 1] != needle)
             return i - 1;
     }
     return {};
@@ -419,7 +465,7 @@ Optional<size_t> find_any_of(StringView haystack, StringView needles, SearchDire
 }
 
 #ifndef KERNEL
-String to_snakecase(StringView str)
+DeprecatedString to_snakecase(StringView str)
 {
     auto should_insert_underscore = [&](auto i, auto current_char) {
         if (i == 0)
@@ -442,32 +488,46 @@ String to_snakecase(StringView str)
             builder.append('_');
         builder.append_as_lowercase(ch);
     }
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
-String to_titlecase(StringView str)
+DeprecatedString to_titlecase(StringView str)
 {
     StringBuilder builder;
     bool next_is_upper = true;
 
     for (auto ch : str) {
         if (next_is_upper)
-            builder.append_code_point(to_ascii_uppercase(ch));
+            builder.append(to_ascii_uppercase(ch));
         else
-            builder.append_code_point(to_ascii_lowercase(ch));
+            builder.append(to_ascii_lowercase(ch));
         next_is_upper = ch == ' ';
     }
 
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
-String replace(StringView str, StringView needle, StringView replacement, bool all_occurrences)
+DeprecatedString invert_case(StringView str)
+{
+    StringBuilder builder(str.length());
+
+    for (auto ch : str) {
+        if (is_ascii_lower_alpha(ch))
+            builder.append(to_ascii_uppercase(ch));
+        else
+            builder.append(to_ascii_lowercase(ch));
+    }
+
+    return builder.to_deprecated_string();
+}
+
+DeprecatedString replace(StringView str, StringView needle, StringView replacement, ReplaceMode replace_mode)
 {
     if (str.is_empty())
         return str;
 
     Vector<size_t> positions;
-    if (all_occurrences) {
+    if (replace_mode == ReplaceMode::All) {
         positions = str.find_all(needle);
         if (!positions.size())
             return str;
@@ -486,7 +546,36 @@ String replace(StringView str, StringView needle, StringView replacement, bool a
         last_position = position + needle.length();
     }
     replaced_string.append(str.substring_view(last_position, str.length() - last_position));
-    return replaced_string.build();
+    return replaced_string.to_deprecated_string();
+}
+
+ErrorOr<String> replace(String const& haystack, StringView needle, StringView replacement, ReplaceMode replace_mode)
+{
+    if (haystack.is_empty())
+        return haystack;
+
+    // FIXME: Propagate Vector allocation failures (or do this without putting positions in a vector)
+    Vector<size_t> positions;
+    if (replace_mode == ReplaceMode::All) {
+        positions = haystack.bytes_as_string_view().find_all(needle);
+        if (!positions.size())
+            return haystack;
+    } else {
+        auto pos = haystack.bytes_as_string_view().find(needle);
+        if (!pos.has_value())
+            return haystack;
+        positions.append(pos.value());
+    }
+
+    StringBuilder replaced_string;
+    size_t last_position = 0;
+    for (auto& position : positions) {
+        replaced_string.append(haystack.bytes_as_string_view().substring_view(last_position, position - last_position));
+        replaced_string.append(replacement);
+        last_position = position + needle.length();
+    }
+    replaced_string.append(haystack.bytes_as_string_view().substring_view(last_position, haystack.bytes_as_string_view().length() - last_position));
+    return replaced_string.to_string();
 }
 #endif
 

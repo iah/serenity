@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019-2020, Jesse Buhgaiar <jooster669@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,26 +16,27 @@ namespace GUI {
 template<typename T, typename Container = Vector<T>, typename ColumnNameListType = void>
 class ItemListModel : public Model {
 public:
-    static constexpr auto IsTwoDimensional = requires(Container data)
-    {
-        requires !IsVoid<ColumnNameListType>;
-        data.at(0).at(0);
-        data.at(0).size();
-    };
+    static constexpr auto IsTwoDimensional = requires(Container data) {
+                                                 requires !IsVoid<ColumnNameListType>;
+                                                 data.at(0).at(0);
+                                                 data.at(0).size();
+                                             };
 
     // Substitute 'void' for a dummy u8.
     using ColumnNamesT = Conditional<IsVoid<ColumnNameListType>, u8, ColumnNameListType>;
 
-    static NonnullRefPtr<ItemListModel> create(Container const& data, ColumnNamesT const& column_names, Optional<size_t> const& row_count = {}) requires(IsTwoDimensional)
+    static NonnullRefPtr<ItemListModel> create(Container const& data, ColumnNamesT const& column_names, Optional<size_t> const& row_count = {})
+    requires(IsTwoDimensional)
     {
         return adopt_ref(*new ItemListModel<T, Container, ColumnNameListType>(data, column_names, row_count));
     }
-    static NonnullRefPtr<ItemListModel> create(Container const& data, Optional<size_t> const& row_count = {}) requires(!IsTwoDimensional)
+    static NonnullRefPtr<ItemListModel> create(Container const& data, Optional<size_t> const& row_count = {})
+    requires(!IsTwoDimensional)
     {
         return adopt_ref(*new ItemListModel<T, Container>(data, row_count));
     }
 
-    virtual ~ItemListModel() override { }
+    virtual ~ItemListModel() override = default;
 
     virtual int row_count(ModelIndex const& index) const override
     {
@@ -58,7 +60,7 @@ public:
         return 1;
     }
 
-    virtual String column_name(int index) const override
+    virtual DeprecatedString column_name(int index) const override
     {
         if constexpr (IsTwoDimensional)
             return m_column_names[index];
@@ -94,7 +96,7 @@ public:
             for (auto it = m_data.begin(); it != m_data.end(); ++it) {
                 for (auto it2d = (*it).begin(); it2d != (*it).end(); ++it2d) {
                     GUI::ModelIndex index = this->index(it.index(), it2d.index());
-                    if (!string_matches(data(index, ModelRole::Display).to_string(), searching, flags))
+                    if (!string_matches(data(index, ModelRole::Display).to_deprecated_string(), searching, flags))
                         continue;
 
                     found_indices.append(index);
@@ -105,7 +107,7 @@ public:
         } else {
             for (auto it = m_data.begin(); it != m_data.end(); ++it) {
                 GUI::ModelIndex index = this->index(it.index());
-                if (!string_matches(data(index, ModelRole::Display).to_string(), searching, flags))
+                if (!string_matches(data(index, ModelRole::Display).to_deprecated_string(), searching, flags))
                     continue;
 
                 found_indices.append(index);
@@ -118,13 +120,15 @@ public:
     }
 
 protected:
-    explicit ItemListModel(Container const& data, Optional<size_t> row_count = {}) requires(!IsTwoDimensional)
+    explicit ItemListModel(Container const& data, Optional<size_t> row_count = {})
+    requires(!IsTwoDimensional)
         : m_data(data)
         , m_provided_row_count(move(row_count))
     {
     }
 
-    explicit ItemListModel(Container const& data, ColumnNamesT const& column_names, Optional<size_t> row_count = {}) requires(IsTwoDimensional)
+    explicit ItemListModel(Container const& data, ColumnNamesT const& column_names, Optional<size_t> row_count = {})
+    requires(IsTwoDimensional)
         : m_data(data)
         , m_column_names(column_names)
         , m_provided_row_count(move(row_count))

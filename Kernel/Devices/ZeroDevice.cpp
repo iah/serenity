@@ -4,14 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Memory.h>
 #include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/ZeroDevice.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullRefPtr<ZeroDevice> ZeroDevice::must_create()
+UNMAP_AFTER_INIT NonnullLockRefPtr<ZeroDevice> ZeroDevice::must_create()
 {
     auto zero_device_or_error = DeviceManagement::try_create_device<ZeroDevice>();
     // FIXME: Find a way to propagate errors
@@ -24,11 +23,9 @@ UNMAP_AFTER_INIT ZeroDevice::ZeroDevice()
 {
 }
 
-UNMAP_AFTER_INIT ZeroDevice::~ZeroDevice()
-{
-}
+UNMAP_AFTER_INIT ZeroDevice::~ZeroDevice() = default;
 
-bool ZeroDevice::can_read(const OpenFileDescription&, u64) const
+bool ZeroDevice::can_read(OpenFileDescription const&, u64) const
 {
     return true;
 }
@@ -39,7 +36,7 @@ ErrorOr<size_t> ZeroDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& 
     return size;
 }
 
-ErrorOr<size_t> ZeroDevice::write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t size)
+ErrorOr<size_t> ZeroDevice::write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t size)
 {
     return size;
 }

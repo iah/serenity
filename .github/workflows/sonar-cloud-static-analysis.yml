@@ -7,21 +7,21 @@ on:
 jobs:
   build:
     name: Static Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: always() && github.repository == 'SerenityOS/serenity' && github.ref == 'refs/heads/master'
     env:
-      # Latest scanner version is tracked on: https://sonarcloud.io/documentation/analysis/scan/sonarscanner/
-      SONAR_SCANNER_VERSION: 4.6.2.2472
+      # Latest scanner version is tracked on: https://docs.sonarcloud.io/advanced-setup/ci-based-analysis/sonarscanner-cli/
+      SONAR_SCANNER_VERSION: 4.7.0.2747
       SONAR_SERVER_URL: "https://sonarcloud.io"
-      SONAR_ANALYSIS_ARCH: i686
+      SONAR_ANALYSIS_ARCH: x86_64
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
 
         # Install JDK for sonar-scanner
       - name: Set up JDK 11
-        uses: actions/setup-java@v1
+        uses: actions/setup-java@v3
         with:
           java-version: 11
 
@@ -54,16 +54,17 @@ jobs:
       # TODO: Is there someway to share these steps with the cmake.yml?
 
       - name: "Install Ubuntu dependencies"
-        # These packages are already part of the ubuntu-20.04 image:
-        # cmake clang-format-11 libgmp-dev npm shellcheck
+        # These packages are already part of the ubuntu-22.04 image:
+        # cmake libgmp-dev npm shellcheck
         # Packages below aren't.
         run: |
-          sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository 'deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-15 main'
           sudo apt-get update
-          sudo apt-get install -y gcc-11 g++-11 libstdc++-11-dev libmpfr-dev libmpc-dev ninja-build unzip
+          sudo apt-get install -y clang-format-15 gcc-12 g++-12 libstdc++-12-dev libmpfr-dev libmpc-dev ninja-build unzip
 
       - name: Check versions
-        run: set +e; g++ --version; g++-11 --version; ninja --version;
+        run: set +e; g++ --version; g++-12 --version; ninja --version;
 
       - name: Prepare useful stamps
         id: stamps
@@ -74,8 +75,8 @@ jobs:
           # *and* as actual output variable, in this order.
           message("  set-output name=time::${current_date}")
           message("::set-output name=time::${current_date}")
-          message("  set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*[!llvm].patch', 'Toolchain/BuildIt.sh') }}")
-          message("::set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*[!llvm].patch', 'Toolchain/BuildIt.sh') }}")
+          message("  set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*.patch', 'Toolchain/Patches/gcc/*.patch', 'Toolchain/BuildIt.sh') }}")
+          message("::set-output name=libc_headers::${{ hashFiles('Userland/Libraries/LibC/**/*.h', 'Userland/Libraries/LibPthread/**/*.h', 'Toolchain/Patches/*.patch', 'Toolchain/Patches/gcc/*.patch', 'Toolchain/BuildIt.sh') }}")
 
       - name: Toolchain cache
         # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
@@ -96,8 +97,29 @@ jobs:
 
       - name: Create build directory
         run: |
-          mkdir -p ${{ github.workspace }}/Build/${{ env.SONAR_ANALYSIS_ARCH }}/UCD
-          mkdir -p ${{ github.workspace }}/Build/${{ env.SONAR_ANALYSIS_ARCH }}/CLDR
+          mkdir -p ${{ github.workspace }}/Build/${{ env.SONAR_ANALYSIS_ARCH }}
+          mkdir -p ${{ github.workspace }}/Build/caches/TZDB
+          mkdir -p ${{ github.workspace }}/Build/caches/UCD
+          mkdir -p ${{ github.workspace }}/Build/caches/CLDR
+
+      - name: TimeZoneData cache
+        # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
+        uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
+        with:
+          path: ${{ github.workspace }}/Build/caches/TZDB
+          key: TimeZoneData-${{ hashFiles('Meta/CMake/time_zone_data.cmake') }}
+      - name: UnicodeData cache
+        # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
+        uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
+        with:
+          path: ${{ github.workspace }}/Build/caches/UCD
+          key: UnicodeData-${{ hashFiles('Meta/CMake/unicode_data.cmake') }}
+      - name: UnicodeLocale Cache
+        # TODO: Change the version to the released version when https://github.com/actions/cache/pull/489 (or 571) is merged.
+        uses: actions/cache@03e00da99d75a2204924908e1cca7902cafce66b
+        with:
+          path: ${{ github.workspace }}/Build/caches/CLDR
+          key: UnicodeLocale-${{ hashFiles('Meta/CMake/locale_data.cmake') }}
 
       - name: Create build environment
         working-directory: ${{ github.workspace }}
@@ -105,8 +127,8 @@ jobs:
           cmake -S Meta/CMake/Superbuild -B Build/superbuild -GNinja \
             -DSERENITY_ARCH=${{ env.SONAR_ANALYSIS_ARCH }} \
             -DSERENITY_TOOLCHAIN=GNU \
-            -DCMAKE_C_COMPILER=gcc-11 \
-            -DCMAKE_CXX_COMPILER=g++-11 \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
             -DENABLE_PCI_IDS_DOWNLOAD=OFF \
             -DENABLE_USB_IDS_DOWNLOAD=OFF
 

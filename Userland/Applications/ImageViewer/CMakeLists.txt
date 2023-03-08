@@ -7,8 +7,9 @@ serenity_component(
 
 set(SOURCES
     main.cpp
+        MainWidget.cpp
         ViewWidget.cpp
 )
 
 serenity_app(ImageViewer ICON filetype-image)
-target_link_libraries(ImageViewer LibDesktop LibGUI LibGfx LibImageDecoderClient LibMain)
+target_link_libraries(ImageViewer PRIVATE LibCore LibDesktop LibGUI LibGfx LibConfig LibImageDecoderClient LibMain)

@@ -8,7 +8,6 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
-#include <AK/NonnullRefPtrVector.h>
 #include <LibWeb/CSS/CSSRule.h>
 #include <LibWeb/CSS/CSSStyleDeclaration.h>
 #include <LibWeb/CSS/Selector.h>
@@ -16,37 +15,32 @@
 namespace Web::CSS {
 
 class CSSStyleRule final : public CSSRule {
-    AK_MAKE_NONCOPYABLE(CSSStyleRule);
-    AK_MAKE_NONMOVABLE(CSSStyleRule);
+    WEB_PLATFORM_OBJECT(CSSStyleRule, CSSRule);
 
 public:
-    using WrapperType = Bindings::CSSStyleRuleWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSStyleRule>> create(JS::Realm&, Vector<NonnullRefPtr<Selector>>&&, CSSStyleDeclaration&);
 
-    static NonnullRefPtr<CSSStyleRule> create(NonnullRefPtrVector<Selector>&& selectors, NonnullRefPtr<CSSStyleDeclaration>&& declaration)
-    {
-        return adopt_ref(*new CSSStyleRule(move(selectors), move(declaration)));
-    }
+    virtual ~CSSStyleRule() override = default;
 
-    virtual ~CSSStyleRule() override;
+    Vector<NonnullRefPtr<Selector>> const& selectors() const { return m_selectors; }
+    CSSStyleDeclaration const& declaration() const { return m_declaration; }
 
-    const NonnullRefPtrVector<Selector>& selectors() const { return m_selectors; }
-    const CSSStyleDeclaration& declaration() const { return m_declaration; }
-
-    virtual StringView class_name() const override { return "CSSStyleRule"; };
     virtual Type type() const override { return Type::Style; };
 
-    String selector_text() const;
+    DeprecatedString selector_text() const;
     void set_selector_text(StringView);
 
     CSSStyleDeclaration* style();
 
 private:
-    CSSStyleRule(NonnullRefPtrVector<Selector>&&, NonnullRefPtr<CSSStyleDeclaration>&&);
+    CSSStyleRule(JS::Realm&, Vector<NonnullRefPtr<Selector>>&&, CSSStyleDeclaration&);
 
-    virtual String serialized() const override;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+    virtual DeprecatedString serialized() const override;
 
-    NonnullRefPtrVector<Selector> m_selectors;
-    NonnullRefPtr<CSSStyleDeclaration> m_declaration;
+    Vector<NonnullRefPtr<Selector>> m_selectors;
+    CSSStyleDeclaration& m_declaration;
 };
 
 template<>

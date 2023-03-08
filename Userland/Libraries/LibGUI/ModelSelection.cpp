@@ -10,13 +10,13 @@
 
 namespace GUI {
 
-void ModelSelection::remove_all_matching(Function<bool(ModelIndex const&)> filter)
+void ModelSelection::remove_all_matching(Function<bool(ModelIndex const&)> const& filter)
 {
-    if (m_indices.remove_all_matching([&](ModelIndex const& index) { return filter(index); }))
+    if (m_indices.remove_all_matching(filter))
         notify_selection_changed();
 }
 
-void ModelSelection::set(const ModelIndex& index)
+void ModelSelection::set(ModelIndex const& index)
 {
     VERIFY(index.is_valid());
     if (m_indices.size() == 1 && m_indices.contains(index))
@@ -26,14 +26,14 @@ void ModelSelection::set(const ModelIndex& index)
     notify_selection_changed();
 }
 
-void ModelSelection::add(const ModelIndex& index)
+void ModelSelection::add(ModelIndex const& index)
 {
     VERIFY(index.is_valid());
     if (m_indices.set(index) == AK::HashSetResult::InsertedNewEntry)
         notify_selection_changed();
 }
 
-void ModelSelection::add_all(const Vector<ModelIndex>& indices)
+void ModelSelection::add_all(Vector<ModelIndex> const& indices)
 {
     {
         TemporaryChange notify_change { m_disable_notify, true };
@@ -45,7 +45,7 @@ void ModelSelection::add_all(const Vector<ModelIndex>& indices)
         notify_selection_changed();
 }
 
-void ModelSelection::toggle(const ModelIndex& index)
+void ModelSelection::toggle(ModelIndex const& index)
 {
     VERIFY(index.is_valid());
     if (m_indices.contains(index))
@@ -55,7 +55,7 @@ void ModelSelection::toggle(const ModelIndex& index)
     notify_selection_changed();
 }
 
-bool ModelSelection::remove(const ModelIndex& index)
+bool ModelSelection::remove(ModelIndex const& index)
 {
     VERIFY(index.is_valid());
     if (!m_indices.contains(index))

@@ -7,16 +7,30 @@
 #pragma once
 
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/WindowEventHandlers.h>
 
 namespace Web::HTML {
 
 // NOTE: This element is marked as obsolete, but is still listed as required by the specification.
-class HTMLFrameSetElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLFrameSetElementWrapper;
+class HTMLFrameSetElement final
+    : public HTMLElement
+    , public WindowEventHandlers {
+    WEB_PLATFORM_OBJECT(HTMLFrameSetElement, HTMLElement);
 
-    HTMLFrameSetElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLFrameSetElement() override;
+
+private:
+    HTMLFrameSetElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void parse_attribute(DeprecatedFlyString const&, DeprecatedString const&) override;
+
+    // ^HTML::GlobalEventHandlers
+    virtual EventTarget& global_event_handlers_to_event_target(DeprecatedFlyString const& event_name) override;
+
+    // ^HTML::WindowEventHandlers
+    virtual EventTarget& window_event_handlers_to_event_target() override;
 };
 
 }

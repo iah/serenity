@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -26,14 +28,17 @@ AbstractButton::AbstractButton(String text)
         click();
     };
 
-    REGISTER_STRING_PROPERTY("text", text, set_text);
+    // FIXME: Port JsonValue to the new String class.
+    register_property(
+        "text",
+        [this]() { return this->text().to_deprecated_string(); },
+        [this](auto& value) {
+            this->set_text(String::from_deprecated_string(value.to_deprecated_string()).release_value_but_fixme_should_propagate_errors());
+            return true;
+        });
     REGISTER_BOOL_PROPERTY("checked", is_checked, set_checked);
     REGISTER_BOOL_PROPERTY("checkable", is_checkable, set_checkable);
     REGISTER_BOOL_PROPERTY("exclusive", is_exclusive, set_exclusive);
-}
-
-AbstractButton::~AbstractButton()
-{
 }
 
 void AbstractButton::set_text(String text)
@@ -96,7 +101,7 @@ void AbstractButton::mousemove_event(MouseEvent& event)
 {
     bool is_over = rect().contains(event.position());
     m_hovered = is_over;
-    if (event.buttons() & MouseButton::Primary) {
+    if (event.buttons() & m_pressed_mouse_button) {
         bool being_pressed = is_over;
         if (being_pressed != m_being_pressed) {
             m_being_pressed = being_pressed;
@@ -114,8 +119,9 @@ void AbstractButton::mousemove_event(MouseEvent& event)
 
 void AbstractButton::mousedown_event(MouseEvent& event)
 {
-    if (event.button() == MouseButton::Primary) {
+    if (event.button() & m_allowed_mouse_buttons_for_pressing) {
         m_being_pressed = true;
+        m_pressed_mouse_button = event.button();
         repaint();
 
         if (m_auto_repeat_interval) {
@@ -129,16 +135,35 @@ void AbstractButton::mousedown_event(MouseEvent& event)
 
 void AbstractButton::mouseup_event(MouseEvent& event)
 {
-    if (event.button() == MouseButton::Primary && m_being_pressed) {
+    if (event.button() == m_pressed_mouse_button && m_being_pressed) {
         bool was_auto_repeating = m_auto_repeat_timer->is_active();
         m_auto_repeat_timer->stop();
-        bool was_being_pressed = m_being_pressed;
+        m_was_being_pressed = m_being_pressed;
+        ScopeGuard update_was_being_pressed { [this] { m_was_being_pressed = m_being_pressed; } };
         m_being_pressed = false;
-        repaint();
-        if (was_being_pressed && !was_auto_repeating)
-            click(event.modifiers());
+        m_pressed_mouse_button = MouseButton::None;
+        if (!is_checkable() || is_checked())
+            repaint();
+        if (m_was_being_pressed && !was_auto_repeating) {
+            switch (event.button()) {
+            case MouseButton::Primary:
+                click(event.modifiers());
+                break;
+            case MouseButton::Middle:
+                middle_mouse_click(event.modifiers());
+                break;
+            default:
+                VERIFY_NOT_REACHED();
+            }
+        }
     }
     Widget::mouseup_event(event);
+}
+
+void AbstractButton::doubleclick_event(GUI::MouseEvent& event)
+{
+    double_click(event.modifiers());
+    Widget::doubleclick_event(event);
 }
 
 void AbstractButton::enter_event(Core::Event&)
@@ -202,7 +227,7 @@ void AbstractButton::keydown_event(KeyEvent& event)
             new_checked_index = this_index == 0 ? exclusive_siblings.size() - 1 : this_index - 1;
         else
             new_checked_index = this_index == exclusive_siblings.size() - 1 ? 0 : this_index + 1;
-        exclusive_siblings[new_checked_index].set_checked(true);
+        exclusive_siblings[new_checked_index].click();
         return;
     }
     Widget::keydown_event(event);
@@ -221,13 +246,13 @@ void AbstractButton::keyup_event(KeyEvent& event)
     Widget::keyup_event(event);
 }
 
-void AbstractButton::paint_text(Painter& painter, const Gfx::IntRect& rect, const Gfx::Font& font, Gfx::TextAlignment text_alignment, Gfx::TextWrapping text_wrapping)
+void AbstractButton::paint_text(Painter& painter, Gfx::IntRect const& rect, Gfx::Font const& font, Gfx::TextAlignment text_alignment, Gfx::TextWrapping text_wrapping)
 {
     auto clipped_rect = rect.intersected(this->rect());
 
     if (!is_enabled()) {
-        painter.draw_text(clipped_rect.translated(1, 1), text(), font, text_alignment, Color::White, Gfx::TextElision::Right, text_wrapping);
-        painter.draw_text(clipped_rect, text(), font, text_alignment, Color::from_rgb(0x808080), Gfx::TextElision::Right, text_wrapping);
+        painter.draw_text(clipped_rect.translated(1, 1), text(), font, text_alignment, palette().disabled_text_back(), Gfx::TextElision::Right, text_wrapping);
+        painter.draw_text(clipped_rect, text(), font, text_alignment, palette().disabled_text_front(), Gfx::TextElision::Right, text_wrapping);
         return;
     }
 
@@ -239,6 +264,8 @@ void AbstractButton::paint_text(Painter& painter, const Gfx::IntRect& rect, cons
 void AbstractButton::change_event(Event& event)
 {
     if (event.type() == Event::Type::EnabledChange) {
+        if (m_auto_repeat_timer->is_active())
+            m_auto_repeat_timer->stop();
         if (!is_enabled()) {
             bool was_being_pressed = m_being_pressed;
             m_being_pressed = false;

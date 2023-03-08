@@ -5,6 +5,7 @@
  */
 
 #include <AK/Format.h>
+#include <Kernel/API/prctl_numbers.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +18,7 @@ extern "C" {
 
 extern bool __stdio_is_initialized;
 
-void __assertion_failed(const char* msg)
+void __assertion_failed(char const* msg)
 {
     if (__heap_is_stable) {
         dbgln("ASSERTION FAILED: {}", msg);
@@ -29,7 +30,7 @@ void __assertion_failed(const char* msg)
         { "assertion", strlen("assertion") },
         { msg, strlen(msg) },
     };
-    syscall(SC_set_coredump_metadata, &params);
+    syscall(SC_prctl, PR_SET_COREDUMP_METADATA_VALUE, &params, nullptr);
     abort();
 }
 }

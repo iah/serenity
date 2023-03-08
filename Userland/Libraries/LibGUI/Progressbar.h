@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,7 @@ namespace GUI {
 class Progressbar : public Frame {
     C_OBJECT(Progressbar)
 public:
-    virtual ~Progressbar() override;
+    virtual ~Progressbar() override = default;
 
     void set_range(int min, int max);
     void set_min(int min) { set_range(min, max()); }
@@ -27,8 +28,8 @@ public:
     void set_orientation(Orientation value);
     Orientation orientation() const { return m_orientation; }
 
-    String text() const { return m_text; }
-    void set_text(String text) { m_text = move(text); }
+    DeprecatedString text() const { return m_text; }
+    void set_text(DeprecatedString text) { m_text = move(text); }
 
     enum Format {
         NoText,
@@ -44,11 +45,13 @@ protected:
     virtual void paint_event(PaintEvent&) override;
 
 private:
+    virtual Optional<UISize> calculated_preferred_size() const override;
+
     Format m_format { Percentage };
     int m_min { 0 };
     int m_max { 100 };
     int m_value { 0 };
-    String m_text;
+    DeprecatedString m_text;
     Orientation m_orientation { Orientation::Horizontal };
 };
 
@@ -56,7 +59,7 @@ class VerticalProgressbar final : public Progressbar {
     C_OBJECT(VerticalProgressbar);
 
 public:
-    virtual ~VerticalProgressbar() override { }
+    virtual ~VerticalProgressbar() override = default;
 
 private:
     VerticalProgressbar()
@@ -69,7 +72,7 @@ class HorizontalProgressbar final : public Progressbar {
     C_OBJECT(HorizontalProgressbar);
 
 public:
-    virtual ~HorizontalProgressbar() override { }
+    virtual ~HorizontalProgressbar() override = default;
 
 private:
     HorizontalProgressbar()

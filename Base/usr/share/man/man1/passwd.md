@@ -14,8 +14,6 @@ Modify an account password.
 
 ## Options:
 
-* `--help`: Display help message and exit
-* `--version`: Print version
 * `-d`, `--delete`: Delete password
 * `-l`, `--lock`: Lock password
 * `-u`, `--unlock`: Unlock password

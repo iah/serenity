@@ -7,12 +7,13 @@
 #pragma once
 
 #include <AK/Array.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Error.h>
 #include <AK/Optional.h>
-#include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
+#include <AK/Vector.h>
 #include <LibTimeZone/Forward.h>
 
 namespace TimeZone {
@@ -28,7 +29,7 @@ struct Offset {
 };
 
 struct NamedOffset : public Offset {
-    String name;
+    DeprecatedString name;
 };
 
 struct Coordinate {
@@ -50,7 +51,7 @@ struct Location {
 StringView system_time_zone();
 StringView current_time_zone();
 ErrorOr<void> change_time_zone(StringView time_zone);
-Span<StringView const> all_time_zones();
+ReadonlySpan<StringView> all_time_zones();
 
 Optional<TimeZone> time_zone_from_string(StringView time_zone);
 StringView time_zone_to_string(TimeZone time_zone);
@@ -67,5 +68,9 @@ Optional<Array<NamedOffset, 2>> get_named_time_zone_offsets(StringView time_zone
 
 Optional<Location> get_time_zone_location(TimeZone time_zone);
 Optional<Location> get_time_zone_location(StringView time_zone);
+
+Optional<Region> region_from_string(StringView region);
+StringView region_to_string(Region region);
+Vector<StringView> time_zones_in_region(StringView region);
 
 }

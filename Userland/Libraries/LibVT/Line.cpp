@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,10 +14,6 @@ Line::Line(size_t length)
     set_length(length);
 }
 
-Line::~Line()
-{
-}
-
 void Line::rewrap(size_t new_length, Line* next_line, CursorPosition* cursor, bool cursor_is_on_next_line)
 {
     size_t old_length = length();
@@ -28,7 +25,7 @@ void Line::rewrap(size_t new_length, Line* next_line, CursorPosition* cursor, bo
         m_cells.remove(m_terminated_at.value(), m_cells.size() - m_terminated_at.value());
 
     if (!next_line)
-        return m_cells.resize(new_length);
+        return set_length(new_length);
 
     if (old_length < new_length)
         take_cells_from_next_line(new_length, next_line, cursor_is_on_next_line, cursor);
@@ -39,6 +36,8 @@ void Line::rewrap(size_t new_length, Line* next_line, CursorPosition* cursor, bo
 void Line::set_length(size_t new_length)
 {
     m_cells.resize(new_length);
+    if (m_terminated_at.has_value())
+        m_terminated_at = min(*m_terminated_at, new_length);
 }
 
 void Line::push_cells_into_next_line(size_t new_length, Line* next_line, bool cursor_is_on_next_line, CursorPosition* cursor)
@@ -92,7 +91,7 @@ void Line::take_cells_from_next_line(size_t new_length, Line* next_line, bool cu
     auto cells_to_grab_from_next_line = min(new_length - length(), next_line->length());
     auto clear_next_line = false;
     if (next_line->m_terminated_at.has_value()) {
-        if (cells_to_grab_from_next_line == *next_line->m_terminated_at) {
+        if (cells_to_grab_from_next_line >= *next_line->m_terminated_at) {
             m_terminated_at = length() + *next_line->m_terminated_at;
             next_line->m_terminated_at.clear();
             clear_next_line = true;
@@ -118,7 +117,7 @@ void Line::take_cells_from_next_line(size_t new_length, Line* next_line, bool cu
         next_line->m_cells.clear();
 }
 
-void Line::clear_range(size_t first_column, size_t last_column, const Attribute& attribute)
+void Line::clear_range(size_t first_column, size_t last_column, Attribute const& attribute)
 {
     VERIFY(first_column <= last_column);
     VERIFY(last_column < m_cells.size());

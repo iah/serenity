@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, Timothy Slater <tslater2006@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,16 +16,24 @@ namespace GUI {
 
 SpinBox::SpinBox()
 {
-    set_min_width(32);
-    set_fixed_height(22);
+    set_min_size({ 40, 22 });
+    set_preferred_size({ SpecialDimension::OpportunisticGrow, 22 });
     m_editor = add<TextBox>();
-    m_editor->set_text("0");
-    m_editor->on_change = [this] {
+    m_editor->set_text("0"sv);
+    m_editor->on_change = [this, weak_this = make_weak_ptr()] {
+        if (!weak_this)
+            return;
+
         auto value = m_editor->text().to_uint();
+        if (!value.has_value() && m_editor->text().length() > 0)
+            m_editor->do_delete();
+    };
+    m_editor->on_focusout = [this] {
+        auto value = m_editor->text().to_int();
         if (value.has_value())
             set_value(value.value());
         else
-            m_editor->set_text(String::number(m_value));
+            set_value(min());
     };
     m_editor->on_up_pressed = [this] {
         set_value(m_value + 1);
@@ -31,16 +41,20 @@ SpinBox::SpinBox()
     m_editor->on_down_pressed = [this] {
         set_value(m_value - 1);
     };
+    m_editor->on_return_pressed = [this] {
+        if (on_return_pressed)
+            on_return_pressed();
+    };
 
     m_increment_button = add<Button>();
     m_increment_button->set_button_style(Gfx::ButtonStyle::ThickCap);
-    m_increment_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/upward-triangle.png").release_value_but_fixme_should_propagate_errors());
+    m_increment_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/upward-triangle.png"sv).release_value_but_fixme_should_propagate_errors());
     m_increment_button->set_focus_policy(GUI::FocusPolicy::NoFocus);
     m_increment_button->on_click = [this](auto) { set_value(m_value + 1); };
     m_increment_button->set_auto_repeat_interval(150);
     m_decrement_button = add<Button>();
     m_decrement_button->set_button_style(Gfx::ButtonStyle::ThickCap);
-    m_decrement_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/downward-triangle.png").release_value_but_fixme_should_propagate_errors());
+    m_decrement_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/downward-triangle.png"sv).release_value_but_fixme_should_propagate_errors());
     m_decrement_button->set_focus_policy(GUI::FocusPolicy::NoFocus);
     m_decrement_button->on_click = [this](auto) { set_value(m_value - 1); };
     m_decrement_button->set_auto_repeat_interval(150);
@@ -49,17 +63,17 @@ SpinBox::SpinBox()
     REGISTER_INT_PROPERTY("max", max, set_max);
 }
 
-SpinBox::~SpinBox()
-{
-}
-
 void SpinBox::set_value(int value, AllowCallback allow_callback)
 {
     value = clamp(value, m_min, m_max);
     if (m_value == value)
         return;
     m_value = value;
-    m_editor->set_text(String::number(value));
+
+    m_increment_button->set_enabled(m_value < m_max);
+    m_decrement_button->set_enabled(m_value > m_min);
+
+    m_editor->set_text(DeprecatedString::number(value));
     update();
     if (on_change && allow_callback == AllowCallback::Yes)
         on_change(value);
@@ -77,10 +91,13 @@ void SpinBox::set_range(int min, int max, AllowCallback allow_callback)
     int old_value = m_value;
     m_value = clamp(m_value, m_min, m_max);
     if (m_value != old_value) {
-        m_editor->set_text(String::number(m_value));
+        m_editor->set_text(DeprecatedString::number(m_value));
         if (on_change && allow_callback == AllowCallback::Yes)
             on_change(m_value);
     }
+
+    m_increment_button->set_enabled(m_value < m_max);
+    m_decrement_button->set_enabled(m_value > m_min);
 
     update();
 }
@@ -91,6 +108,7 @@ void SpinBox::mousewheel_event(MouseEvent& event)
     if (event.modifiers() == KeyModifier::Mod_Ctrl)
         wheel_delta *= 6;
     set_value(m_value - wheel_delta);
+    event.accept();
 }
 
 void SpinBox::resize_event(ResizeEvent& event)

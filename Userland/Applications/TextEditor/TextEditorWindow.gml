@@ -14,6 +14,8 @@
     }
 
     @GUI::HorizontalSplitter {
+        opportunistic_resizee: "First"
+
         @GUI::TextEditor {
             name: "editor"
         }
@@ -104,6 +106,6 @@
 
     @GUI::Statusbar {
         name: "statusbar"
-        label_count: 2
+        segment_count: 3
     }
 }

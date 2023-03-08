@@ -38,6 +38,15 @@ unsigned day_of_week(int year, unsigned month, int day)
     return (year + year / 4 - year / 100 + year / 400 + seek_table[month - 1] + day) % 7;
 }
 
+Time Time::from_ticks(clock_t ticks, time_t ticks_per_second)
+{
+    auto secs = ticks % ticks_per_second;
+
+    i32 nsecs = 1'000'000'000 * (ticks - (ticks_per_second * secs)) / ticks_per_second;
+    i32 extra_secs = sane_mod(nsecs, 1'000'000'000);
+    return Time::from_half_sanitized(secs, extra_secs, nsecs);
+}
+
 Time Time::from_timespec(const struct timespec& ts)
 {
     i32 nsecs = ts.tv_nsec;
@@ -170,10 +179,13 @@ timespec Time::to_timespec() const
 timeval Time::to_timeval() const
 {
     VERIFY(m_nanoseconds < 1'000'000'000);
-    return { static_cast<time_t>(m_seconds), static_cast<suseconds_t>(m_nanoseconds) / 1000 };
+    // This is done because winsock defines tv_sec and tv_usec as long, and Linux64 as long int.
+    using sec_type = decltype(declval<timeval>().tv_sec);
+    using usec_type = decltype(declval<timeval>().tv_usec);
+    return { static_cast<sec_type>(m_seconds), static_cast<usec_type>(m_nanoseconds) / 1000 };
 }
 
-Time Time::operator+(const Time& other) const
+Time Time::operator+(Time const& other) const
 {
     VERIFY(m_nanoseconds < 1'000'000'000);
     VERIFY(other.m_nanoseconds < 1'000'000'000);
@@ -213,13 +225,13 @@ Time Time::operator+(const Time& other) const
     return Time { new_secs.value(), new_nsecs };
 }
 
-Time& Time::operator+=(const Time& other)
+Time& Time::operator+=(Time const& other)
 {
     *this = *this + other;
     return *this;
 }
 
-Time Time::operator-(const Time& other) const
+Time Time::operator-(Time const& other) const
 {
     VERIFY(m_nanoseconds < 1'000'000'000);
     VERIFY(other.m_nanoseconds < 1'000'000'000);
@@ -238,30 +250,10 @@ Time Time::operator-(const Time& other) const
     return Time { (m_seconds + 0x4000'0000'0000'0000) + 0x4000'0000'0000'0000, m_nanoseconds };
 }
 
-Time& Time::operator-=(const Time& other)
+Time& Time::operator-=(Time const& other)
 {
     *this = *this - other;
     return *this;
-}
-
-bool Time::operator<(const Time& other) const
-{
-    return m_seconds < other.m_seconds || (m_seconds == other.m_seconds && m_nanoseconds < other.m_nanoseconds);
-}
-
-bool Time::operator<=(const Time& other) const
-{
-    return m_seconds < other.m_seconds || (m_seconds == other.m_seconds && m_nanoseconds <= other.m_nanoseconds);
-}
-
-bool Time::operator>(const Time& other) const
-{
-    return m_seconds > other.m_seconds || (m_seconds == other.m_seconds && m_nanoseconds > other.m_nanoseconds);
-}
-
-bool Time::operator>=(const Time& other) const
-{
-    return m_seconds > other.m_seconds || (m_seconds == other.m_seconds && m_nanoseconds >= other.m_nanoseconds);
 }
 
 Time Time::from_half_sanitized(i64 seconds, i32 extra_seconds, u32 nanoseconds)

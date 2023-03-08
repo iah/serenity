@@ -11,17 +11,19 @@
 #include "../Layer.h"
 #include <LibGUI/Action.h>
 #include <LibGUI/BoxLayout.h>
+#include <LibGUI/CheckBox.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/RadioButton.h>
 #include <LibGUI/TextBox.h>
 #include <LibGUI/ValueSlider.h>
+#include <LibGfx/AntiAliasingPainter.h>
 #include <LibGfx/Rect.h>
 
 namespace PixelPaint {
 
-void EllipseTool::draw_using(GUI::Painter& painter, Gfx::IntPoint const& start_position, Gfx::IntPoint const& end_position, int thickness)
+void EllipseTool::draw_using(GUI::Painter& painter, Gfx::IntPoint start_position, Gfx::IntPoint end_position, int thickness)
 {
     Gfx::IntRect ellipse_intersecting_rect;
     if (m_draw_mode == DrawMode::FromCenter) {
@@ -31,12 +33,20 @@ void EllipseTool::draw_using(GUI::Painter& painter, Gfx::IntPoint const& start_p
         ellipse_intersecting_rect = Gfx::IntRect::from_two_points(start_position, end_position);
     }
 
+    Gfx::AntiAliasingPainter aa_painter { painter };
+
     switch (m_fill_mode) {
     case FillMode::Outline:
-        painter.draw_ellipse_intersecting(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button), thickness);
+        if (m_antialias_enabled)
+            aa_painter.draw_ellipse(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button), thickness);
+        else
+            painter.draw_ellipse_intersecting(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button), thickness);
         break;
     case FillMode::Fill:
-        painter.fill_ellipse(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button));
+        if (m_antialias_enabled)
+            aa_painter.fill_ellipse(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button));
+        else
+            painter.fill_ellipse(ellipse_intersecting_rect, m_editor->color_for(m_drawing_button));
         break;
     default:
         VERIFY_NOT_REACHED();
@@ -67,12 +77,12 @@ void EllipseTool::on_mouseup(Layer* layer, MouseEvent& event)
         return;
 
     if (event.layer_event().button() == m_drawing_button) {
-        GUI::Painter painter(layer->bitmap());
+        GUI::Painter painter(layer->get_scratch_edited_bitmap());
         draw_using(painter, m_ellipse_start_position, m_ellipse_end_position, m_thickness);
         m_drawing_button = GUI::MouseButton::None;
-        layer->did_modify_bitmap();
+        layer->did_modify_bitmap(layer->get_scratch_edited_bitmap().rect());
         m_editor->update();
-        m_editor->did_complete_action();
+        m_editor->did_complete_action(tool_name());
     }
 }
 
@@ -100,77 +110,84 @@ void EllipseTool::on_second_paint(Layer const* layer, GUI::PaintEvent& event)
 
     GUI::Painter painter(*m_editor);
     painter.add_clip_rect(event.rect());
+    painter.translate(editor_layer_location(*layer));
     auto preview_start = m_editor->content_to_frame_position(m_ellipse_start_position).to_type<int>();
     auto preview_end = m_editor->content_to_frame_position(m_ellipse_end_position).to_type<int>();
     draw_using(painter, preview_start, preview_end, AK::max(m_thickness * m_editor->scale(), 1));
 }
 
-void EllipseTool::on_keydown(GUI::KeyEvent& event)
+bool EllipseTool::on_keydown(GUI::KeyEvent& event)
 {
-    Tool::on_keydown(event);
     if (event.key() == Key_Escape && m_drawing_button != GUI::MouseButton::None) {
         m_drawing_button = GUI::MouseButton::None;
         m_editor->update();
-        event.accept();
+        return true;
     }
+    return Tool::on_keydown(event);
 }
 
-GUI::Widget* EllipseTool::get_properties_widget()
+ErrorOr<GUI::Widget*> EllipseTool::get_properties_widget()
 {
     if (!m_properties_widget) {
-        m_properties_widget = GUI::Widget::construct();
-        m_properties_widget->set_layout<GUI::VerticalBoxLayout>();
+        auto properties_widget = TRY(GUI::Widget::try_create());
+        (void)TRY(properties_widget->try_set_layout<GUI::VerticalBoxLayout>());
 
-        auto& thickness_container = m_properties_widget->add<GUI::Widget>();
-        thickness_container.set_fixed_height(20);
-        thickness_container.set_layout<GUI::HorizontalBoxLayout>();
+        auto thickness_container = TRY(properties_widget->try_add<GUI::Widget>());
+        thickness_container->set_fixed_height(20);
+        (void)TRY(thickness_container->try_set_layout<GUI::HorizontalBoxLayout>());
 
-        auto& thickness_label = thickness_container.add<GUI::Label>("Thickness:");
-        thickness_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        thickness_label.set_fixed_size(80, 20);
+        auto thickness_label = TRY(thickness_container->try_add<GUI::Label>("Thickness:"));
+        thickness_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        thickness_label->set_fixed_size(80, 20);
 
-        auto& thickness_slider = thickness_container.add<GUI::ValueSlider>(Orientation::Horizontal, "px");
-        thickness_slider.set_range(1, 10);
-        thickness_slider.set_value(m_thickness);
+        auto thickness_slider = TRY(thickness_container->try_add<GUI::ValueSlider>(Orientation::Horizontal, "px"_short_string));
+        thickness_slider->set_range(1, 10);
+        thickness_slider->set_value(m_thickness);
 
-        thickness_slider.on_change = [&](int value) {
+        thickness_slider->on_change = [this](int value) {
             m_thickness = value;
         };
-        set_primary_slider(&thickness_slider);
+        set_primary_slider(thickness_slider);
 
-        auto& mode_container = m_properties_widget->add<GUI::Widget>();
-        mode_container.set_fixed_height(46);
-        mode_container.set_layout<GUI::HorizontalBoxLayout>();
-        auto& mode_label = mode_container.add<GUI::Label>("Mode:");
-        mode_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        mode_label.set_fixed_size(80, 20);
+        auto mode_container = TRY(properties_widget->try_add<GUI::Widget>());
+        mode_container->set_fixed_height(70);
+        (void)TRY(mode_container->try_set_layout<GUI::HorizontalBoxLayout>());
+        auto mode_label = TRY(mode_container->try_add<GUI::Label>("Mode:"));
+        mode_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
 
-        auto& mode_radio_container = mode_container.add<GUI::Widget>();
-        mode_radio_container.set_layout<GUI::VerticalBoxLayout>();
-        auto& outline_mode_radio = mode_radio_container.add<GUI::RadioButton>("Outline");
-        auto& fill_mode_radio = mode_radio_container.add<GUI::RadioButton>("Fill");
+        auto mode_radio_container = TRY(mode_container->try_add<GUI::Widget>());
+        (void)TRY(mode_radio_container->try_set_layout<GUI::VerticalBoxLayout>());
+        auto outline_mode_radio = TRY(mode_radio_container->try_add<GUI::RadioButton>("Outline"_short_string));
+        auto fill_mode_radio = TRY(mode_radio_container->try_add<GUI::RadioButton>("Fill"_short_string));
+        auto aa_enable_checkbox = TRY(mode_radio_container->try_add<GUI::CheckBox>(TRY("Anti-alias"_string)));
 
-        outline_mode_radio.on_checked = [&](bool) {
-            m_fill_mode = FillMode::Outline;
+        aa_enable_checkbox->on_checked = [this](bool checked) {
+            m_antialias_enabled = checked;
         };
-        fill_mode_radio.on_checked = [&](bool) {
-            m_fill_mode = FillMode::Fill;
+        outline_mode_radio->on_checked = [this](bool checked) {
+            if (checked)
+                m_fill_mode = FillMode::Outline;
+        };
+        fill_mode_radio->on_checked = [this](bool checked) {
+            if (checked)
+                m_fill_mode = FillMode::Fill;
         };
 
-        outline_mode_radio.set_checked(true);
+        aa_enable_checkbox->set_checked(true);
+        outline_mode_radio->set_checked(true);
 
-        auto& aspect_container = m_properties_widget->add<GUI::Widget>();
-        aspect_container.set_fixed_height(20);
-        aspect_container.set_layout<GUI::HorizontalBoxLayout>();
+        auto aspect_container = TRY(properties_widget->try_add<GUI::Widget>());
+        aspect_container->set_fixed_height(20);
+        (void)TRY(aspect_container->try_set_layout<GUI::HorizontalBoxLayout>());
 
-        auto& aspect_label = aspect_container.add<GUI::Label>("Aspect Ratio:");
-        aspect_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        aspect_label.set_fixed_size(80, 20);
+        auto aspect_label = TRY(aspect_container->try_add<GUI::Label>("Aspect Ratio:"));
+        aspect_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        aspect_label->set_fixed_size(80, 20);
 
-        m_aspect_w_textbox = aspect_container.add<GUI::TextBox>();
+        m_aspect_w_textbox = TRY(aspect_container->try_add<GUI::TextBox>());
         m_aspect_w_textbox->set_fixed_height(20);
         m_aspect_w_textbox->set_fixed_width(25);
-        m_aspect_w_textbox->on_change = [&] {
+        m_aspect_w_textbox->on_change = [this] {
             auto x = m_aspect_w_textbox->text().to_int().value_or(0);
             auto y = m_aspect_h_textbox->text().to_int().value_or(0);
             if (x > 0 && y > 0) {
@@ -180,14 +197,15 @@ GUI::Widget* EllipseTool::get_properties_widget()
             }
         };
 
-        auto& multiply_label = aspect_container.add<GUI::Label>("x");
-        multiply_label.set_text_alignment(Gfx::TextAlignment::Center);
-        multiply_label.set_fixed_size(10, 20);
+        auto multiply_label = TRY(aspect_container->try_add<GUI::Label>("x"));
+        multiply_label->set_text_alignment(Gfx::TextAlignment::Center);
+        multiply_label->set_fixed_size(10, 20);
 
-        m_aspect_h_textbox = aspect_container.add<GUI::TextBox>();
+        m_aspect_h_textbox = TRY(aspect_container->try_add<GUI::TextBox>());
         m_aspect_h_textbox->set_fixed_height(20);
         m_aspect_h_textbox->set_fixed_width(25);
-        m_aspect_h_textbox->on_change = [&] { m_aspect_w_textbox->on_change(); };
+        m_aspect_h_textbox->on_change = [this] { m_aspect_w_textbox->on_change(); };
+        m_properties_widget = properties_widget;
     }
 
     return m_properties_widget.ptr();

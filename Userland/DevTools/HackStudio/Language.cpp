@@ -5,20 +5,21 @@
  */
 
 #include "Language.h"
-#include <AK/LexicalPath.h>
 
 namespace HackStudio {
 
-Language language_from_file(const LexicalPath& file)
+Language language_from_file(LexicalPath const& file)
 {
     if (file.title() == "COMMIT_EDITMSG")
         return Language::GitCommit;
 
     auto extension = file.extension();
-    VERIFY(!extension.starts_with("."));
+    VERIFY(!extension.starts_with('.'));
     if (extension == "c" || extension == "cc" || extension == "cxx" || extension == "cpp" || extension == "c++"
         || extension == "h" || extension == "hh" || extension == "hxx" || extension == "hpp" || extension == "h++")
         return Language::Cpp;
+    if (extension == "cmake" || (extension == "txt" && file.title() == "CMakeLists"))
+        return Language::CMake;
     if (extension == "js" || extension == "mjs" || extension == "json")
         return Language::JavaScript;
     if (extension == "html" || extension == "htm")
@@ -37,7 +38,7 @@ Language language_from_file(const LexicalPath& file)
     return Language::Unknown;
 }
 
-Language language_from_name(const String& name)
+Language language_from_name(DeprecatedString const& name)
 {
     if (name == "Cpp")
         return Language::Cpp;
@@ -51,16 +52,18 @@ Language language_from_name(const String& name)
     return Language::Unknown;
 }
 
-String language_name_from_file(const LexicalPath& file)
+DeprecatedString language_name_from_file(LexicalPath const& file)
 {
     if (file.title() == "COMMIT_EDITMSG")
         return "GitCommit";
 
     auto extension = file.extension();
-    VERIFY(!extension.starts_with("."));
+    VERIFY(!extension.starts_with('.'));
     if (extension == "c" || extension == "cc" || extension == "cxx" || extension == "cpp" || extension == "c++"
         || extension == "h" || extension == "hh" || extension == "hxx" || extension == "hpp" || extension == "h++")
         return "C++";
+    if (extension == "cmake" || (extension == "txt" && file.title() == "CMakeLists"))
+        return "CMake";
     if (extension == "js" || extension == "mjs" || extension == "json")
         return "JavaScript";
     if (extension == "gml")

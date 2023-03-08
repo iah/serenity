@@ -22,7 +22,7 @@ struct RegisterState;
 extern Thread* g_finalizer;
 extern WaitQueue* g_finalizer_wait_queue;
 extern Atomic<bool> g_finalizer_has_work;
-extern RecursiveSpinlock g_scheduler_lock;
+extern RecursiveSpinlock<LockRank::None> g_scheduler_lock;
 
 struct TotalTimeScheduled {
     u64 total { 0 };
@@ -34,13 +34,13 @@ public:
     static void initialize();
     static Thread* create_ap_idle_thread(u32 cpu);
     static void set_idle_thread(Thread* idle_thread);
-    static void timer_tick(const RegisterState&);
+    static void timer_tick(RegisterState const&);
     [[noreturn]] static void start();
     static void pick_next();
     static void yield();
     static void context_switch(Thread*);
     static void enter_current(Thread& prev_thread);
-    static void leave_on_first_switch(u32 flags);
+    static void leave_on_first_switch(InterruptsState);
     static void prepare_after_exec();
     static void prepare_for_idle_loop();
     static Process* colonel();
@@ -55,7 +55,6 @@ public:
     static bool is_initialized();
     static TotalTimeScheduled get_total_time_scheduled();
     static void add_time_scheduled(u64, bool);
-    static u64 (*current_time)();
 };
 
 }

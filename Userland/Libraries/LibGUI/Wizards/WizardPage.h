@@ -18,11 +18,11 @@ class WizardPage : public AbstractWizardPage {
 
     Widget& body_widget() { return *m_body_widget; };
 
-    void set_page_title(const String& text);
-    void set_page_subtitle(const String& text);
+    void set_page_title(DeprecatedString const& text);
+    void set_page_subtitle(DeprecatedString const& text);
 
 private:
-    explicit WizardPage(const String& title_text, const String& subtitle_text);
+    explicit WizardPage(DeprecatedString const& title_text, DeprecatedString const& subtitle_text);
 
     RefPtr<Widget> m_body_widget;
 

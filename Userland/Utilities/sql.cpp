@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/StandardPaths.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
@@ -20,8 +21,9 @@
 
 class SQLRepl {
 public:
-    explicit SQLRepl(String const& database_name)
-        : m_loop()
+    explicit SQLRepl(Core::EventLoop& loop, DeprecatedString const& database_name, NonnullRefPtr<SQL::SQLClient> sql_client)
+        : m_sql_client(move(sql_client))
+        , m_loop(loop)
     {
         m_editor = Line::Editor::construct();
         m_editor->load_history(m_history_path);
@@ -73,55 +75,27 @@ public:
             m_editor->set_prompt(prompt_for_level(open_indents));
         };
 
-        m_sql_client = SQL::SQLClient::try_create().release_value_but_fixme_should_propagate_errors();
-
-        m_sql_client->on_connected = [this](int connection_id, String const& connected_to_database) {
-            outln("Connected to \033[33;1m{}\033[0m", connected_to_database);
-            m_current_database = connected_to_database;
-            m_pending_database = "";
-            m_connection_id = connection_id;
-            read_sql();
-        };
-
-        m_sql_client->on_execution_success = [this](int, bool has_results, int updated, int created, int deleted) {
-            if (updated != 0 || created != 0 || deleted != 0) {
-                outln("{} row(s) updated, {} created, {} deleted", updated, created, deleted);
-            }
-            if (!has_results) {
+        m_sql_client->on_execution_success = [this](auto result) {
+            if (result.rows_updated != 0 || result.rows_created != 0 || result.rows_deleted != 0)
+                outln("{} row(s) created, {} updated, {} deleted", result.rows_created, result.rows_updated, result.rows_deleted);
+            if (!result.has_results)
                 read_sql();
-            }
         };
 
-        m_sql_client->on_next_result = [](int, Vector<String> const& row) {
+        m_sql_client->on_next_result = [](auto result) {
             StringBuilder builder;
-            builder.join(", ", row);
-            outln("{}", builder.build());
+            builder.join(", "sv, result.values);
+            outln("{}", builder.to_deprecated_string());
         };
 
-        m_sql_client->on_results_exhausted = [this](int, int total_rows) {
-            outln("{} row(s)", total_rows);
+        m_sql_client->on_results_exhausted = [this](auto result) {
+            outln("{} row(s)", result.total_rows);
             read_sql();
         };
 
-        m_sql_client->on_connection_error = [this](int, int code, String const& message) {
-            outln("\033[33;1mConnection error:\033[0m {}", message);
-            m_loop.quit(code);
-        };
-
-        m_sql_client->on_execution_error = [this](int, int, String const& message) {
-            outln("\033[33;1mExecution error:\033[0m {}", message);
+        m_sql_client->on_execution_error = [this](auto result) {
+            outln("\033[33;1mExecution error:\033[0m {}", result.error_message);
             read_sql();
-        };
-
-        m_sql_client->on_disconnected = [this](int) {
-            if (m_pending_database.is_empty()) {
-                outln("Disconnected from \033[33;1m{}\033[0m and terminating", m_current_database);
-                m_loop.quit(0);
-            } else {
-                outln("Disconnected from \033[33;1m{}\033[0m", m_current_database);
-                m_current_database = "";
-                m_sql_client->connect(m_pending_database);
-            }
         };
 
         if (!database_name.is_empty())
@@ -133,23 +107,30 @@ public:
         m_editor->save_history(m_history_path);
     }
 
-    void connect(String const& database_name)
+    void connect(DeprecatedString const& database_name)
     {
-        if (m_current_database.is_empty()) {
-            m_sql_client->connect(database_name);
+        if (!m_database_name.is_empty()) {
+            m_sql_client->disconnect(m_connection_id);
+            m_database_name = {};
+        }
+
+        if (auto connection_id = m_sql_client->connect(database_name); connection_id.has_value()) {
+            outln("Connected to \033[33;1m{}\033[0m", database_name);
+            m_database_name = database_name;
+            m_connection_id = *connection_id;
         } else {
-            m_pending_database = database_name;
-            m_sql_client->async_disconnect(m_connection_id);
+            warnln("\033[33;1mCould not connect to:\033[0m {}", database_name);
+            m_loop.quit(1);
         }
     }
 
-    void source_file(String file_name)
+    void source_file(DeprecatedString file_name)
     {
         m_input_file_chain.append(move(file_name));
         m_quit_when_files_read = false;
     }
 
-    void read_file(String file_name)
+    void read_file(DeprecatedString file_name)
     {
         m_input_file_chain.append(move(file_name));
         m_quit_when_files_read = true;
@@ -157,43 +138,55 @@ public:
 
     auto run()
     {
+        read_sql();
         return m_loop.exec();
     }
 
 private:
-    String m_history_path { String::formatted("{}/.sql-history", Core::StandardPaths::home_directory()) };
+    DeprecatedString m_history_path { DeprecatedString::formatted("{}/.sql-history", Core::StandardPaths::home_directory()) };
     RefPtr<Line::Editor> m_editor { nullptr };
     int m_repl_line_level { 0 };
     bool m_keep_running { true };
-    String m_pending_database {};
-    String m_current_database {};
-    AK::RefPtr<SQL::SQLClient> m_sql_client { nullptr };
-    int m_connection_id { 0 };
-    Core::EventLoop m_loop;
-    RefPtr<Core::File> m_input_file { nullptr };
+    DeprecatedString m_database_name {};
+    NonnullRefPtr<SQL::SQLClient> m_sql_client;
+    SQL::ConnectionID m_connection_id { 0 };
+    Core::EventLoop& m_loop;
+    OwnPtr<Core::BufferedFile> m_input_file { nullptr };
     bool m_quit_when_files_read { false };
-    Vector<String> m_input_file_chain {};
+    Vector<DeprecatedString> m_input_file_chain {};
+    Array<u8, 4096> m_buffer {};
 
-    Optional<String> get_line()
+    Optional<DeprecatedString> get_line()
     {
         if (!m_input_file && !m_input_file_chain.is_empty()) {
             auto file_name = m_input_file_chain.take_first();
-            auto file_or_error = Core::File::open(file_name, Core::OpenMode::ReadOnly);
+            auto file_or_error = Core::File::open(file_name, Core::File::OpenMode::Read);
             if (file_or_error.is_error()) {
                 warnln("Input file {} could not be opened: {}", file_name, file_or_error.error());
                 return {};
             }
-            m_input_file = file_or_error.value();
+
+            auto buffered_file_or_error = Core::BufferedFile::create(file_or_error.release_value());
+            if (buffered_file_or_error.is_error()) {
+                warnln("Input file {} could not be buffered: {}", file_name, buffered_file_or_error.error());
+                return {};
+            }
+
+            m_input_file = buffered_file_or_error.release_value();
         }
         if (m_input_file) {
-            auto line = m_input_file->read_line();
-            if (m_input_file->eof()) {
+            auto line = m_input_file->read_line(m_buffer);
+            if (line.is_error()) {
+                warnln("Failed to read line: {}", line.error());
+                return {};
+            }
+            if (m_input_file->is_eof()) {
                 m_input_file->close();
                 m_input_file = nullptr;
                 if (m_quit_when_files_read && m_input_file_chain.is_empty())
                     return {};
             }
-            return line;
+            return line.release_value();
             // If the last file is exhausted but m_quit_when_files_read is false
             // we fall through to the standard reading from the editor behaviour
         }
@@ -203,7 +196,7 @@ private:
         return line_result.value();
     }
 
-    String read_next_piece()
+    DeprecatedString read_next_piece()
     {
         StringBuilder piece;
 
@@ -227,8 +220,10 @@ private:
             bool is_first_token = true;
             bool is_command = false;
             bool last_token_ended_statement = false;
+            bool tokens_found = false;
 
             for (SQL::AST::Token token = lexer.next(); token.type() != SQL::AST::TokenType::Eof; token = lexer.next()) {
+                tokens_found = true;
                 switch (token.type()) {
                 case SQL::AST::TokenType::ParenOpen:
                     ++m_repl_line_level;
@@ -251,60 +246,75 @@ private:
                 is_first_token = false;
             }
 
-            m_repl_line_level = last_token_ended_statement ? 0 : (m_repl_line_level > 0 ? m_repl_line_level : 1);
+            if (tokens_found)
+                m_repl_line_level = last_token_ended_statement ? 0 : (m_repl_line_level > 0 ? m_repl_line_level : 1);
         } while ((m_repl_line_level > 0) || piece.is_empty());
 
-        return piece.to_string();
+        return piece.to_deprecated_string();
     }
 
     void read_sql()
     {
-        String piece = read_next_piece();
+        DeprecatedString piece = read_next_piece();
 
         // m_keep_running can be set to false when the file we are reading
         // from is exhausted...
         if (!m_keep_running) {
-            m_sql_client->async_disconnect(m_connection_id);
+            m_sql_client->disconnect(m_connection_id);
+            m_loop.quit(0);
             return;
         }
 
         if (piece.starts_with('.')) {
-            handle_command(piece);
+            bool ready_for_input = handle_command(piece);
+            if (ready_for_input)
+                m_loop.deferred_invoke([this]() {
+                    read_sql();
+                });
+        } else if (auto statement_id = m_sql_client->prepare_statement(m_connection_id, piece); statement_id.has_value()) {
+            m_sql_client->async_execute_statement(*statement_id, {});
         } else {
-            auto statement_id = m_sql_client->sql_statement(m_connection_id, piece);
-            m_sql_client->async_statement_execute(statement_id);
+            warnln("\033[33;1mError parsing SQL statement\033[0m: {}", piece);
+            m_loop.deferred_invoke([this]() {
+                read_sql();
+            });
         }
 
         // ...But m_keep_running can also be set to false by a command handler.
         if (!m_keep_running) {
-            m_sql_client->async_disconnect(m_connection_id);
+            m_sql_client->disconnect(m_connection_id);
+            m_loop.quit(0);
             return;
         }
     };
 
-    static String prompt_for_level(int level)
+    static DeprecatedString prompt_for_level(int level)
     {
         static StringBuilder prompt_builder;
         prompt_builder.clear();
-        prompt_builder.append("> ");
+        prompt_builder.append("> "sv);
 
         for (auto i = 0; i < level; ++i)
-            prompt_builder.append("    ");
+            prompt_builder.append("    "sv);
 
-        return prompt_builder.build();
+        return prompt_builder.to_deprecated_string();
     }
 
-    void handle_command(StringView command)
+    bool handle_command(StringView command)
     {
+        bool ready_for_input = true;
         if (command == ".exit" || command == ".quit") {
             m_keep_running = false;
-        } else if (command.starts_with(".connect ")) {
+            ready_for_input = false;
+        } else if (command.starts_with(".connect "sv)) {
             auto parts = command.split_view(' ');
-            if (parts.size() == 2)
+            if (parts.size() == 2) {
                 connect(parts[1]);
-            else
+                ready_for_input = false;
+            } else {
                 outln("\033[33;1mUsage: .connect <database name>\033[0m");
-        } else if (command.starts_with(".read ")) {
+            }
+        } else if (command.starts_with(".read "sv)) {
             if (!m_input_file) {
                 auto parts = command.split_view(' ');
                 if (parts.size() == 2) {
@@ -315,22 +325,23 @@ private:
             } else {
                 outln("\033[33;1mCannot recursively read sql files\033[0m");
             }
-            m_loop.deferred_invoke([this]() {
-                read_sql();
-            });
         } else {
             outln("\033[33;1mUnrecognized command:\033[0m {}", command);
         }
+        return ready_for_input;
     }
 };
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    String database_name(getlogin());
-    String file_to_source;
-    String file_to_read;
+    DeprecatedString database_name(getlogin());
+    DeprecatedString file_to_source;
+    DeprecatedString file_to_read;
     bool suppress_sqlrc = false;
-    auto sqlrc_path = String::formatted("{}/.sqlrc", Core::StandardPaths::home_directory());
+    auto sqlrc_path = DeprecatedString::formatted("{}/.sqlrc", Core::StandardPaths::home_directory());
+#if !defined(AK_OS_SERENITY)
+    StringView sql_server_path;
+#endif
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("This is a client for the SerenitySQL database server.");
@@ -338,11 +349,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(file_to_read, "File to read", "read", 'r', "file");
     args_parser.add_option(file_to_source, "File to source", "source", 's', "file");
     args_parser.add_option(suppress_sqlrc, "Don't read ~/.sqlrc", "no-sqlrc", 'n');
+#if !defined(AK_OS_SERENITY)
+    args_parser.add_option(sql_server_path, "Path to SQLServer to launch if needed", "sql-server-path", 's', "path");
+#endif
     args_parser.parse(arguments);
 
-    SQLRepl repl(database_name);
+    Core::EventLoop loop;
 
-    if (!suppress_sqlrc && Core::File::exists(sqlrc_path))
+#if defined(AK_OS_SERENITY)
+    auto sql_client = TRY(SQL::SQLClient::try_create());
+#else
+    VERIFY(!sql_server_path.is_empty());
+    auto sql_client = TRY(SQL::SQLClient::launch_server_and_create_client({ TRY(String::from_utf8(sql_server_path)) }));
+#endif
+
+    SQLRepl repl(loop, database_name, move(sql_client));
+
+    if (!suppress_sqlrc && Core::DeprecatedFile::exists(sqlrc_path))
         repl.source_file(sqlrc_path);
     if (!file_to_source.is_empty())
         repl.source_file(file_to_source);

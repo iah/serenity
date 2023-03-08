@@ -1,14 +1,17 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/RefPtr.h>
 #include <AK/String.h>
 #include <LibGfx/Forward.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/PixelUnits.h>
 
 namespace Web::CSS {
 
@@ -34,13 +37,16 @@ public:
         Vmin,
     };
 
+    static Optional<Type> unit_from_name(StringView);
+
     // We have a RefPtr<CalculatedStyleValue> member, but can't include the header StyleValue.h as it includes
     // this file already. To break the cyclic dependency, we must move all method definitions out.
     Length(int value, Type type);
     Length(float value, Type type);
+    ~Length();
 
     static Length make_auto();
-    static Length make_px(float value);
+    static Length make_px(CSSPixels value);
     static Length make_calculated(NonnullRefPtr<CalculatedStyleValue>);
     Length percentage_of(Percentage const&) const;
 
@@ -48,6 +54,7 @@ public:
 
     bool is_auto() const { return m_type == Type::Auto; }
     bool is_calculated() const { return m_type == Type::Calculated; }
+    bool is_px() const { return m_type == Type::Px; }
 
     bool is_absolute() const
     {
@@ -73,21 +80,22 @@ public:
     }
 
     float raw_value() const { return m_value; }
+    NonnullRefPtr<CalculatedStyleValue> calculated_style_value() const;
 
-    float to_px(Layout::Node const&) const;
+    CSSPixels to_px(Layout::Node const&) const;
 
-    ALWAYS_INLINE float to_px(Gfx::IntRect const& viewport_rect, Gfx::FontMetrics const& font_metrics, float root_font_size) const
+    ALWAYS_INLINE CSSPixels to_px(CSSPixelRect const& viewport_rect, Gfx::FontPixelMetrics const& font_metrics, CSSPixels font_size, CSSPixels root_font_size) const
     {
         if (is_auto())
             return 0;
         if (is_relative())
-            return relative_length_to_px(viewport_rect, font_metrics, root_font_size);
+            return relative_length_to_px(viewport_rect, font_metrics, font_size, root_font_size);
         if (is_calculated())
             VERIFY_NOT_REACHED(); // We can't resolve a calculated length from here. :^(
         return absolute_length_to_px();
     }
 
-    ALWAYS_INLINE float absolute_length_to_px() const
+    ALWAYS_INLINE CSSPixels absolute_length_to_px() const
     {
         constexpr float inch_pixels = 96.0f;
         constexpr float centimeter_pixels = (inch_pixels / 2.54f);
@@ -111,27 +119,16 @@ public:
         }
     }
 
-    String to_string() const
-    {
-        if (is_auto())
-            return "auto";
-        return String::formatted("{}{}", m_value, unit_name());
-    }
+    ErrorOr<String> to_string() const;
 
-    bool operator==(const Length& other) const
-    {
-        return m_type == other.m_type && m_value == other.m_value;
-    }
+    // We have a RefPtr<CalculatedStyleValue> member, but can't include the header StyleValue.h as it includes
+    // this file already. To break the cyclic dependency, we must move all method definitions out.
+    bool operator==(Length const& other) const;
 
-    bool operator!=(const Length& other) const
-    {
-        return !(*this == other);
-    }
-
-    float relative_length_to_px(Gfx::IntRect const& viewport_rect, Gfx::FontMetrics const& font_metrics, float root_font_size) const;
+    CSSPixels relative_length_to_px(CSSPixelRect const& viewport_rect, Gfx::FontPixelMetrics const& font_metrics, CSSPixels font_size, CSSPixels root_font_size) const;
 
 private:
-    const char* unit_name() const;
+    char const* unit_name() const;
 
     Type m_type;
     float m_value { 0 };
@@ -145,6 +142,6 @@ template<>
 struct AK::Formatter<Web::CSS::Length> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::Length const& length)
     {
-        return Formatter<StringView>::format(builder, length.to_string());
+        return Formatter<StringView>::format(builder, TRY(length.to_string()));
     }
 };

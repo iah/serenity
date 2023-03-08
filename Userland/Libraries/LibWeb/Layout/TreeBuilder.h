@@ -6,9 +6,10 @@
 
 #pragma once
 
-#include <AK/NonnullRefPtrVector.h>
 #include <AK/RefPtr.h>
+#include <LibJS/Heap/GCPtr.h>
 #include <LibWeb/CSS/Display.h>
+#include <LibWeb/CSS/Selector.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::Layout {
@@ -17,17 +18,17 @@ class TreeBuilder {
 public:
     TreeBuilder();
 
-    RefPtr<Layout::Node> build(DOM::Node&);
+    JS::GCPtr<Layout::Node> build(DOM::Node&);
 
 private:
     struct Context {
         bool has_svg_root = false;
     };
 
-    void create_layout_tree(DOM::Node&, Context&);
+    ErrorOr<void> create_layout_tree(DOM::Node&, Context&);
 
-    void push_parent(Layout::NodeWithStyle& node) { m_parent_stack.append(&node); }
-    void pop_parent() { m_parent_stack.take_last(); }
+    void push_parent(Layout::NodeWithStyle& node) { m_ancestor_stack.append(node); }
+    void pop_parent() { m_ancestor_stack.take_last(); }
 
     template<CSS::Display::Internal, typename Callback>
     void for_each_in_tree_with_internal_display(NodeWithStyle& root, Callback);
@@ -40,8 +41,15 @@ private:
     void generate_missing_child_wrappers(NodeWithStyle& root);
     void generate_missing_parents(NodeWithStyle& root);
 
-    RefPtr<Layout::Node> m_layout_root;
-    Vector<Layout::NodeWithStyle*> m_parent_stack;
+    enum class AppendOrPrepend {
+        Append,
+        Prepend,
+    };
+    void insert_node_into_inline_or_block_ancestor(Layout::Node&, CSS::Display, AppendOrPrepend);
+    ErrorOr<void> create_pseudo_element_if_needed(DOM::Element&, CSS::Selector::PseudoElement, AppendOrPrepend);
+
+    JS::GCPtr<Layout::Node> m_layout_root;
+    Vector<Layout::NodeWithStyle&> m_ancestor_stack;
 };
 
 }

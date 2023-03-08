@@ -5,6 +5,7 @@
  */
 
 #include <AK/CharacterTypes.h>
+#include <AK/FloatingPointStringConversions.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
@@ -17,10 +18,10 @@ constexpr bool is_space(int ch)
     return ch == '\t' || ch == '\n' || ch == '\r' || ch == ' ';
 }
 
-ErrorOr<String> JsonParser::consume_and_unescape_string()
+ErrorOr<DeprecatedString> JsonParser::consume_and_unescape_string()
 {
     if (!consume_specific('"'))
-        return Error::from_string_literal("JsonParser: Expected '\"'"sv);
+        return Error::from_string_literal("JsonParser: Expected '\"'");
     StringBuilder final_sb;
 
     for (;;) {
@@ -33,7 +34,7 @@ ErrorOr<String> JsonParser::consume_and_unescape_string()
             if (ch == '"' || ch == '\\')
                 break;
             if (is_ascii_c0_control(ch))
-                return Error::from_string_literal("JsonParser: Error while parsing string"sv);
+                return Error::from_string_literal("JsonParser: Error while parsing string");
             ++peek_index;
         }
 
@@ -102,29 +103,29 @@ ErrorOr<String> JsonParser::consume_and_unescape_string()
         if (next_is('u')) {
             ignore();
             if (tell_remaining() < 4)
-                return Error::from_string_literal("JsonParser: EOF while parsing Unicode escape"sv);
+                return Error::from_string_literal("JsonParser: EOF while parsing Unicode escape");
 
             auto code_point = AK::StringUtils::convert_to_uint_from_hex(consume(4));
             if (code_point.has_value()) {
                 final_sb.append_code_point(code_point.value());
                 continue;
             }
-            return Error::from_string_literal("JsonParser: Error while parsing Unicode escape"sv);
+            return Error::from_string_literal("JsonParser: Error while parsing Unicode escape");
         }
 
-        return Error::from_string_literal("JsonParser: Error while parsing string"sv);
+        return Error::from_string_literal("JsonParser: Error while parsing string");
     }
     if (!consume_specific('"'))
-        return Error::from_string_literal("JsonParser: Expected '\"'"sv);
+        return Error::from_string_literal("JsonParser: Expected '\"'");
 
-    return final_sb.to_string();
+    return final_sb.to_deprecated_string();
 }
 
 ErrorOr<JsonValue> JsonParser::parse_object()
 {
     JsonObject object;
     if (!consume_specific('{'))
-        return Error::from_string_literal("JsonParser: Expected '{'"sv);
+        return Error::from_string_literal("JsonParser: Expected '{'");
     for (;;) {
         ignore_while(is_space);
         if (peek() == '}')
@@ -132,10 +133,10 @@ ErrorOr<JsonValue> JsonParser::parse_object()
         ignore_while(is_space);
         auto name = TRY(consume_and_unescape_string());
         if (name.is_null())
-            return Error::from_string_literal("JsonParser: Expected object property name"sv);
+            return Error::from_string_literal("JsonParser: Expected object property name");
         ignore_while(is_space);
         if (!consume_specific(':'))
-            return Error::from_string_literal("JsonParser: Expected ':'"sv);
+            return Error::from_string_literal("JsonParser: Expected ':'");
         ignore_while(is_space);
         auto value = TRY(parse_helper());
         object.set(name, move(value));
@@ -143,13 +144,13 @@ ErrorOr<JsonValue> JsonParser::parse_object()
         if (peek() == '}')
             break;
         if (!consume_specific(','))
-            return Error::from_string_literal("JsonParser: Expected ','"sv);
+            return Error::from_string_literal("JsonParser: Expected ','");
         ignore_while(is_space);
         if (peek() == '}')
-            return Error::from_string_literal("JsonParser: Unexpected '}'"sv);
+            return Error::from_string_literal("JsonParser: Unexpected '}'");
     }
     if (!consume_specific('}'))
-        return Error::from_string_literal("JsonParser: Expected '}'"sv);
+        return Error::from_string_literal("JsonParser: Expected '}'");
     return JsonValue { move(object) };
 }
 
@@ -157,7 +158,7 @@ ErrorOr<JsonValue> JsonParser::parse_array()
 {
     JsonArray array;
     if (!consume_specific('['))
-        return Error::from_string_literal("JsonParser: Expected '['"sv);
+        return Error::from_string_literal("JsonParser: Expected '['");
     for (;;) {
         ignore_while(is_space);
         if (peek() == ']')
@@ -168,14 +169,14 @@ ErrorOr<JsonValue> JsonParser::parse_array()
         if (peek() == ']')
             break;
         if (!consume_specific(','))
-            return Error::from_string_literal("JsonParser: Expected ','"sv);
+            return Error::from_string_literal("JsonParser: Expected ','");
         ignore_while(is_space);
         if (peek() == ']')
-            return Error::from_string_literal("JsonParser: Unexpected ']'"sv);
+            return Error::from_string_literal("JsonParser: Unexpected ']'");
     }
     ignore_while(is_space);
     if (!consume_specific(']'))
-        return Error::from_string_literal("JsonParser: Expected ']'"sv);
+        return Error::from_string_literal("JsonParser: Expected ']'");
     return JsonValue { move(array) };
 }
 
@@ -187,123 +188,124 @@ ErrorOr<JsonValue> JsonParser::parse_string()
 
 ErrorOr<JsonValue> JsonParser::parse_number()
 {
-    JsonValue value;
-    Vector<char, 128> number_buffer;
-    Vector<char, 128> fraction_buffer;
+    Vector<char, 32> number_buffer;
 
-    bool is_double = false;
+    auto start_index = tell();
+
+    bool negative = false;
+    if (peek() == '-') {
+        number_buffer.append('-');
+        ++m_index;
+        negative = true;
+
+        if (!is_ascii_digit(peek()))
+            return Error::from_string_literal("JsonParser: Unexpected '-' without further digits");
+    }
+
+    auto fallback_to_double_parse = [&]() -> ErrorOr<JsonValue> {
+#ifdef KERNEL
+#    error JSONParser is currently not available for the Kernel because it disallows floating point. \
+       If you want to make this KERNEL compatible you can just make this fallback_to_double \
+       function fail with an error in KERNEL mode.
+#endif
+        // FIXME: Since we know all the characters so far are ascii digits (and one . or e) we could
+        //        use that in the floating point parser.
+
+        // The first part should be just ascii digits
+        StringView view = m_input.substring_view(start_index);
+
+        char const* start = view.characters_without_null_termination();
+        auto parse_result = parse_first_floating_point(start, start + view.length());
+
+        if (parse_result.parsed_value()) {
+            auto characters_parsed = parse_result.end_ptr - start;
+            m_index = start_index + characters_parsed;
+
+            return JsonValue(parse_result.value);
+        }
+        return Error::from_string_literal("JsonParser: Invalid floating point");
+    };
+
+    if (peek() == '0') {
+        if (is_ascii_digit(peek(1)))
+            return Error::from_string_literal("JsonParser: Cannot have leading zeros");
+
+        // Leading zeros are not allowed, however we can have a '.' or 'e' with
+        // valid digits after just a zero. These cases will be detected by having the next element
+        // start with a '.' or 'e'.
+    }
+
     bool all_zero = true;
     for (;;) {
         char ch = peek();
         if (ch == '.') {
-            if (is_double)
-                return Error::from_string_literal("JsonParser: Multiple '.' in number"sv);
+            if (!is_ascii_digit(peek(1)))
+                return Error::from_string_literal("JsonParser: Must have digits after decimal point");
 
-            is_double = true;
-            ++m_index;
-            continue;
+            return fallback_to_double_parse();
         }
-        if (ch == '-' || (ch >= '0' && ch <= '9')) {
-            if (ch != '-' && ch != '0')
+        if (ch == 'e' || ch == 'E') {
+            char next = peek(1);
+            if (!is_ascii_digit(next) && ((next != '+' && next != '-') || !is_ascii_digit(peek(2))))
+                return Error::from_string_literal("JsonParser: Must have digits after exponent with an optional sign inbetween");
+
+            return fallback_to_double_parse();
+        }
+
+        if (is_ascii_digit(ch)) {
+            if (ch != '0')
                 all_zero = false;
 
-            if (is_double) {
-                if (ch == '-')
-                    return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-
-                fraction_buffer.append(ch);
-            } else {
-                if (number_buffer.size() > 0) {
-                    if (number_buffer.at(0) == '0')
-                        return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-                }
-
-                if (number_buffer.size() > 1) {
-                    if (number_buffer.at(0) == '-' && number_buffer.at(1) == '0')
-                        return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-                }
-
-                number_buffer.append(ch);
-            }
+            number_buffer.append(ch);
             ++m_index;
             continue;
         }
+
         break;
     }
 
-    StringView number_string(number_buffer.data(), number_buffer.size());
-
-#ifndef KERNEL
-    // Check for negative zero which needs to be forced to be represented with a double
-    if (number_string.starts_with('-') && all_zero)
+    // Negative zero is always a double
+    if (negative && all_zero)
         return JsonValue(-0.0);
 
-    if (is_double) {
-        // FIXME: This logic looks shaky.
-        int whole = 0;
-        auto to_signed_result = number_string.to_uint();
-        if (to_signed_result.has_value()) {
-            whole = to_signed_result.value();
-        } else {
-            auto number = number_string.to_int();
-            if (!number.has_value())
-                return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-            whole = number.value();
-        }
+    StringView number_string(number_buffer.data(), number_buffer.size());
 
-        StringView fraction_string(fraction_buffer.data(), fraction_buffer.size());
-        auto fraction_string_uint = fraction_string.to_uint<u64>();
-        if (!fraction_string_uint.has_value())
-            return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-        auto fraction = static_cast<double>(fraction_string_uint.value());
-        double sign = (whole < 0) ? -1 : 1;
+    auto to_unsigned_result = number_string.to_uint<u64>();
+    if (to_unsigned_result.has_value()) {
+        if (*to_unsigned_result <= NumericLimits<u32>::max())
+            return JsonValue((u32)*to_unsigned_result);
 
-        auto divider = pow(10.0, static_cast<double>(fraction_buffer.size()));
-        value = JsonValue((double)whole + sign * (fraction / divider));
-    } else {
-#endif
-        auto to_unsigned_result = number_string.to_uint<u64>();
-        if (to_unsigned_result.has_value()) {
-            auto number = *to_unsigned_result;
-            if (number <= NumericLimits<u32>::max())
-                value = JsonValue((u32)number);
-            else
-                value = JsonValue(number);
-        } else {
-            auto number = number_string.to_int<i64>();
-            if (!number.has_value())
-                return Error::from_string_literal("JsonParser: Error while parsing number"sv);
-            if (number.value() <= NumericLimits<i32>::max()) {
-                value = JsonValue((i32)number.value());
-            } else {
-                value = JsonValue(number.value());
-            }
-        }
-#ifndef KERNEL
+        return JsonValue(*to_unsigned_result);
+    } else if (auto signed_number = number_string.to_int<i64>(); signed_number.has_value()) {
+
+        if (*signed_number <= NumericLimits<i32>::max())
+            return JsonValue((i32)*signed_number);
+
+        return JsonValue(*signed_number);
     }
-#endif
 
-    return value;
+    // It's possible the unsigned value is bigger than u64 max
+    return fallback_to_double_parse();
 }
 
 ErrorOr<JsonValue> JsonParser::parse_true()
 {
     if (!consume_specific("true"))
-        return Error::from_string_literal("JsonParser: Expected 'true'"sv);
+        return Error::from_string_literal("JsonParser: Expected 'true'");
     return JsonValue(true);
 }
 
 ErrorOr<JsonValue> JsonParser::parse_false()
 {
     if (!consume_specific("false"))
-        return Error::from_string_literal("JsonParser: Expected 'false'"sv);
+        return Error::from_string_literal("JsonParser: Expected 'false'");
     return JsonValue(false);
 }
 
 ErrorOr<JsonValue> JsonParser::parse_null()
 {
     if (!consume_specific("null"))
-        return Error::from_string_literal("JsonParser: Expected 'null'"sv);
+        return Error::from_string_literal("JsonParser: Expected 'null'");
     return JsonValue(JsonValue::Type::Null);
 }
 
@@ -338,7 +340,7 @@ ErrorOr<JsonValue> JsonParser::parse_helper()
         return parse_null();
     }
 
-    return Error::from_string_literal("JsonParser: Unexpected character"sv);
+    return Error::from_string_literal("JsonParser: Unexpected character");
 }
 
 ErrorOr<JsonValue> JsonParser::parse()
@@ -346,7 +348,7 @@ ErrorOr<JsonValue> JsonParser::parse()
     auto result = TRY(parse_helper());
     ignore_while(is_space);
     if (!is_eof())
-        return Error::from_string_literal("JsonParser: Didn't consume all input"sv);
+        return Error::from_string_literal("JsonParser: Didn't consume all input");
     return result;
 }
 

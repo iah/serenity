@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -42,7 +43,7 @@ public:
     virtual ReadonlyBytes bytes() const = 0;
 
     virtual void overwrite(ReadonlyBytes) = 0;
-    virtual void overwrite(const u8* data, size_t size) { overwrite({ data, size }); }
+    virtual void overwrite(u8 const* data, size_t size) { overwrite({ data, size }); }
 
     virtual void apply_initialization_vector(ReadonlyBytes ivec) = 0;
 
@@ -82,7 +83,7 @@ struct CipherKey {
     virtual ReadonlyBytes bytes() const = 0;
     static bool is_valid_key_size(size_t) { return false; };
 
-    virtual ~CipherKey() { }
+    virtual ~CipherKey() = default;
 
 protected:
     virtual void expand_encrypt_key(ReadonlyBytes user_key, size_t bits) = 0;
@@ -101,18 +102,18 @@ public:
     {
     }
 
-    virtual const KeyType& key() const = 0;
+    virtual KeyType const& key() const = 0;
     virtual KeyType& key() = 0;
 
     constexpr static size_t block_size() { return BlockType::block_size(); }
 
     PaddingMode padding_mode() const { return m_padding_mode; }
 
-    virtual void encrypt_block(const BlockType& in, BlockType& out) = 0;
-    virtual void decrypt_block(const BlockType& in, BlockType& out) = 0;
+    virtual void encrypt_block(BlockType const& in, BlockType& out) = 0;
+    virtual void decrypt_block(BlockType const& in, BlockType& out) = 0;
 
 #ifndef KERNEL
-    virtual String class_name() const = 0;
+    virtual DeprecatedString class_name() const = 0;
 #endif
 
 protected:

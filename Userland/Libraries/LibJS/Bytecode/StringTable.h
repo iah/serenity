@@ -6,13 +6,13 @@
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/DistinctNumeric.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 
 namespace JS::Bytecode {
 
-TYPEDEF_DISTINCT_NUMERIC_GENERAL(size_t, false, true, false, false, false, false, StringTableIndex);
+AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(size_t, StringTableIndex, Comparison);
 
 class StringTable {
     AK_MAKE_NONMOVABLE(StringTable);
@@ -21,13 +21,13 @@ class StringTable {
 public:
     StringTable() = default;
 
-    StringTableIndex insert(String);
-    String const& get(StringTableIndex) const;
+    StringTableIndex insert(DeprecatedString);
+    DeprecatedString const& get(StringTableIndex) const;
     void dump() const;
     bool is_empty() const { return m_strings.is_empty(); }
 
 private:
-    Vector<String> m_strings;
+    Vector<DeprecatedString> m_strings;
 };
 
 }

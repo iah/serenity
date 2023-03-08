@@ -17,10 +17,10 @@ namespace Inspector {
 RemoteObjectGraphModel::RemoteObjectGraphModel(RemoteProcess& process)
     : m_process(process)
 {
-    m_object_icon.set_bitmap_for_size(16, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/inspector-object.png").release_value_but_fixme_should_propagate_errors());
-    m_window_icon.set_bitmap_for_size(16, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/window.png").release_value_but_fixme_should_propagate_errors());
-    m_layout_icon.set_bitmap_for_size(16, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/layout.png").release_value_but_fixme_should_propagate_errors());
-    m_timer_icon.set_bitmap_for_size(16, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/timer.png").release_value_but_fixme_should_propagate_errors());
+    m_object_icon.set_bitmap_for_size(16, Gfx::Bitmap::load_from_file("/res/icons/16x16/inspector-object.png"sv).release_value_but_fixme_should_propagate_errors());
+    m_window_icon.set_bitmap_for_size(16, Gfx::Bitmap::load_from_file("/res/icons/16x16/window.png"sv).release_value_but_fixme_should_propagate_errors());
+    m_layout_icon.set_bitmap_for_size(16, Gfx::Bitmap::load_from_file("/res/icons/16x16/layout.png"sv).release_value_but_fixme_should_propagate_errors());
+    m_timer_icon.set_bitmap_for_size(16, Gfx::Bitmap::load_from_file("/res/icons/16x16/timer.png"sv).release_value_but_fixme_should_propagate_errors());
 }
 
 GUI::ModelIndex RemoteObjectGraphModel::index(int row, int column, const GUI::ModelIndex& parent) const
@@ -45,7 +45,7 @@ GUI::ModelIndex RemoteObjectGraphModel::parent_index(const GUI::ModelIndex& inde
     // NOTE: If the parent has no parent, it's a root, so we have to look among the remote roots.
     if (!remote_object.parent->parent) {
         for (size_t row = 0; row < m_process.roots().size(); ++row) {
-            if (&m_process.roots()[row] == remote_object.parent)
+            if (m_process.roots()[row] == remote_object.parent)
                 return create_index(row, 0, remote_object.parent);
         }
         VERIFY_NOT_REACHED();
@@ -53,7 +53,7 @@ GUI::ModelIndex RemoteObjectGraphModel::parent_index(const GUI::ModelIndex& inde
     }
 
     for (size_t row = 0; row < remote_object.parent->parent->children.size(); ++row) {
-        if (&remote_object.parent->parent->children[row] == remote_object.parent)
+        if (remote_object.parent->parent->children[row] == remote_object.parent)
             return create_index(row, 0, remote_object.parent);
     }
 
@@ -82,12 +82,12 @@ GUI::Variant RemoteObjectGraphModel::data(const GUI::ModelIndex& index, GUI::Mod
             return m_window_icon;
         if (remote_object->class_name == "Timer")
             return m_timer_icon;
-        if (remote_object->class_name.ends_with("Layout"))
+        if (remote_object->class_name.ends_with("Layout"sv))
             return m_layout_icon;
         return m_object_icon;
     }
     if (role == GUI::ModelRole::Display)
-        return String::formatted("{}({:p})", remote_object->class_name, remote_object->address);
+        return DeprecatedString::formatted("{}({:p})", remote_object->class_name, remote_object->address);
 
     return {};
 }

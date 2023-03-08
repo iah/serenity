@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Array.h>
 #include <AK/Assertions.h>
 #include <AK/Iterator.h>
 #include <AK/TypedTransfer.h>
@@ -29,6 +30,21 @@ public:
     template<size_t size>
     ALWAYS_INLINE constexpr Span(T (&values)[size])
         : m_values(values)
+        , m_size(size)
+    {
+    }
+
+    template<size_t size>
+    ALWAYS_INLINE constexpr Span(Array<T, size>& array)
+        : m_values(array.data())
+        , m_size(size)
+    {
+    }
+
+    template<size_t size>
+    requires(IsConst<T>)
+    ALWAYS_INLINE constexpr Span(Array<T, size> const& array)
+        : m_values(array.data())
         , m_size(size)
     {
     }
@@ -176,7 +192,7 @@ public:
         return false;
     }
 
-    [[nodiscard]] bool constexpr starts_with(Span<T const> other) const
+    [[nodiscard]] bool constexpr starts_with(ReadonlySpan<T> other) const
     {
         if (size() < other.size())
             return false;
@@ -194,6 +210,26 @@ public:
     {
         VERIFY(index < this->m_size);
         return this->m_values[index];
+    }
+
+    [[nodiscard]] ALWAYS_INLINE constexpr T const& first() const
+    {
+        return this->at(0);
+    }
+
+    [[nodiscard]] ALWAYS_INLINE constexpr T& first()
+    {
+        return this->at(0);
+    }
+
+    [[nodiscard]] ALWAYS_INLINE constexpr T const& last() const
+    {
+        return this->at(this->size() - 1);
+    }
+
+    [[nodiscard]] ALWAYS_INLINE constexpr T& last()
+    {
+        return this->at(this->size() - 1);
     }
 
     [[nodiscard]] ALWAYS_INLINE constexpr T const& operator[](size_t index) const
@@ -214,17 +250,38 @@ public:
         return TypedTransfer<T>::compare(data(), other.data(), size());
     }
 
-    ALWAYS_INLINE constexpr operator Span<T const>() const
+    ALWAYS_INLINE constexpr operator ReadonlySpan<T>() const
     {
         return { data(), size() };
     }
 };
 
-using ReadonlyBytes = Span<u8 const>;
+template<typename T>
+struct Traits<Span<T>> : public GenericTraits<Span<T>> {
+    static unsigned hash(Span<T> const& span)
+    {
+        unsigned hash = 0;
+        for (auto const& value : span) {
+            auto value_hash = Traits<T>::hash(value);
+            hash = pair_int_hash(hash, value_hash);
+        }
+        return hash;
+    }
+
+    constexpr static bool is_trivial() { return true; }
+};
+
+template<typename T>
+using ReadonlySpan = Span<T const>;
+
+using ReadonlyBytes = ReadonlySpan<u8>;
 using Bytes = Span<u8>;
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::Bytes;
 using AK::ReadonlyBytes;
+using AK::ReadonlySpan;
 using AK::Span;
+#endif

@@ -15,18 +15,16 @@ class SymbolObject : public Object {
     JS_OBJECT(SymbolObject, Object);
 
 public:
-    static SymbolObject* create(GlobalObject&, Symbol&);
+    static NonnullGCPtr<SymbolObject> create(Realm&, Symbol&);
 
-    SymbolObject(Symbol&, Object& prototype);
-    virtual ~SymbolObject() override;
+    virtual ~SymbolObject() override = default;
 
     Symbol& primitive_symbol() { return m_symbol; }
-    const Symbol& primitive_symbol() const { return m_symbol; }
-
-    String description() const { return m_symbol.description(); }
-    bool is_global() const { return m_symbol.is_global(); }
+    Symbol const& primitive_symbol() const { return m_symbol; }
 
 private:
+    SymbolObject(Symbol&, Object& prototype);
+
     virtual void visit_edges(Visitor&) override;
 
     Symbol& m_symbol;

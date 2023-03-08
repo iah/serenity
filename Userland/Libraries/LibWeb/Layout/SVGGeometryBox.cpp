@@ -1,13 +1,14 @@
 /*
  * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
+ * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/AntiAliasingPainter.h>
-#include <LibGfx/Painter.h>
 #include <LibWeb/Layout/SVGGeometryBox.h>
+#include <LibWeb/Painting/SVGGeometryPaintable.h>
 #include <LibWeb/SVG/SVGPathElement.h>
+#include <LibWeb/SVG/SVGSVGElement.h>
 
 namespace Web::Layout {
 
@@ -16,47 +17,38 @@ SVGGeometryBox::SVGGeometryBox(DOM::Document& document, SVG::SVGGeometryElement&
 {
 }
 
-void SVGGeometryBox::paint(PaintContext& context, PaintPhase phase)
+float SVGGeometryBox::viewbox_scaling() const
 {
-    if (!is_visible())
-        return;
+    auto* svg_box = dom_node().first_ancestor_of_type<SVG::SVGSVGElement>();
 
-    SVGGraphicsBox::paint(context, phase);
+    if (!svg_box || !svg_box->view_box().has_value())
+        return 1;
 
-    if (phase != PaintPhase::Foreground)
-        return;
+    auto view_box = svg_box->view_box().value();
 
-    auto& geometry_element = dom_node();
-    auto& path = geometry_element.get_path();
+    bool has_specified_width = svg_box->has_attribute(HTML::AttributeNames::width);
+    auto specified_width = paint_box()->content_width().value();
 
-    Gfx::AntiAliasingPainter painter { context.painter() };
-    auto& svg_context = context.svg_context();
+    bool has_specified_height = svg_box->has_attribute(HTML::AttributeNames::height);
+    auto specified_height = paint_box()->content_height().value();
 
-    auto offset = svg_context.svg_element_position();
-    painter.translate(offset);
+    auto scale_width = has_specified_width ? specified_width / view_box.width : 1;
+    auto scale_height = has_specified_height ? specified_height / view_box.height : 1;
 
-    if (auto fill_color = geometry_element.fill_color().value_or(svg_context.fill_color()); fill_color.alpha() > 0) {
-        // We need to fill the path before applying the stroke, however the filled
-        // path must be closed, whereas the stroke path may not necessary be closed.
-        // Copy the path and close it for filling, but use the previous path for stroke
-        auto closed_path = path;
-        closed_path.close();
+    return min(scale_width, scale_height);
+}
 
-        // Fills are computed as though all paths are closed (https://svgwg.org/svg2-draft/painting.html#FillProperties)
-        painter.fill_path(
-            closed_path,
-            fill_color,
-            Gfx::Painter::WindingRule::EvenOdd);
-    }
+CSSPixelPoint SVGGeometryBox::viewbox_origin() const
+{
+    auto* svg_box = dom_node().first_ancestor_of_type<SVG::SVGSVGElement>();
+    if (!svg_box || !svg_box->view_box().has_value())
+        return { 0, 0 };
+    return { svg_box->view_box().value().min_x, svg_box->view_box().value().min_y };
+}
 
-    if (auto stroke_color = geometry_element.stroke_color().value_or(svg_context.stroke_color()); stroke_color.alpha() > 0) {
-        painter.stroke_path(
-            path,
-            stroke_color,
-            geometry_element.stroke_width().value_or(svg_context.stroke_width()));
-    }
-
-    painter.translate(-offset);
+JS::GCPtr<Painting::Paintable> SVGGeometryBox::create_paintable() const
+{
+    return Painting::SVGGeometryPaintable::create(*this);
 }
 
 }

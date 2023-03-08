@@ -15,10 +15,6 @@ WindowStack::WindowStack(unsigned row, unsigned column)
 {
 }
 
-WindowStack::~WindowStack()
-{
-}
-
 void WindowStack::add(Window& window)
 {
     VERIFY(!window.is_on_any_window_stack({}));
@@ -42,10 +38,6 @@ void WindowStack::remove(Window& window)
     window.set_window_stack({}, nullptr);
     if (m_active_window == &window)
         m_active_window = nullptr;
-    if (m_active_input_window == &window)
-        m_active_input_window = nullptr;
-    if (m_active_input_tracking_window == &window)
-        m_active_input_tracking_window = nullptr;
 }
 
 void WindowStack::move_to_front(Window& window)
@@ -105,11 +97,9 @@ void WindowStack::move_all_windows(WindowStack& new_window_stack, Vector<Window*
         }
     }
     m_active_window = nullptr;
-    m_active_input_window = nullptr;
-    m_active_input_tracking_window = nullptr;
 }
 
-Window* WindowStack::window_at(Gfx::IntPoint const& position, IncludeWindowFrame include_window_frame) const
+Window* WindowStack::window_at(Gfx::IntPoint position, IncludeWindowFrame include_window_frame) const
 {
     auto result = hit_test(position);
     if (!result.has_value())
@@ -142,7 +132,7 @@ void WindowStack::set_all_occluded(bool occluded)
     }
 }
 
-Optional<HitTestResult> WindowStack::hit_test(Gfx::IntPoint const& position) const
+Optional<HitTestResult> WindowStack::hit_test(Gfx::IntPoint position) const
 {
     Optional<HitTestResult> result;
     WindowManager::the().for_each_visible_window_from_front_to_back([&](Window& window) {

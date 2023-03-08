@@ -7,12 +7,10 @@
 #pragma once
 
 #include <AK/Badge.h>
-#include <AK/Debug.h>
+#include <AK/DeprecatedString.h>
 #include <AK/DistinctNumeric.h>
-#include <AK/MemoryStream.h>
-#include <AK/NonnullOwnPtrVector.h>
+#include <AK/LEB128.h>
 #include <AK/Result.h>
-#include <AK/String.h>
 #include <AK/Variant.h>
 #include <LibWasm/Constants.h>
 #include <LibWasm/Forward.h>
@@ -43,38 +41,39 @@ enum class ParseError {
     NotImplemented,
 };
 
-String parse_error_to_string(ParseError);
+DeprecatedString parse_error_to_deprecated_string(ParseError);
 
 template<typename T>
 using ParseResult = Result<T, ParseError>;
 
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, TypeIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, FunctionIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, TableIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, ElementIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, MemoryIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, LocalIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, GlobalIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, LabelIndex);
-TYPEDEF_DISTINCT_ORDERED_ID(size_t, DataIndex);
-TYPEDEF_DISTINCT_NUMERIC_GENERAL(u64, true, true, false, true, false, true, InstructionPointer);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, TypeIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, FunctionIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, TableIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, ElementIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, MemoryIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, LocalIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, GlobalIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, LabelIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, DataIndex);
+AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(u64, InstructionPointer, Arithmetic, Comparison, Flags, Increment);
 
-ParseError with_eof_check(InputStream const& stream, ParseError error_if_not_eof);
+ParseError with_eof_check(Stream const& stream, ParseError error_if_not_eof);
 
 template<typename T>
 struct GenericIndexParser {
-    static ParseResult<T> parse(InputStream& stream)
+    static ParseResult<T> parse(Stream& stream)
     {
-        size_t value;
-        if (!LEB128::read_unsigned(stream, value))
+        auto value_or_error = stream.read_value<LEB128<size_t>>();
+        if (value_or_error.is_error())
             return with_eof_check(stream, ParseError::ExpectedIndex);
+        size_t value = value_or_error.release_value();
         return T { value };
     }
 };
 
-class ReconsumableStream : public InputStream {
+class ReconsumableStream : public Stream {
 public:
-    explicit ReconsumableStream(InputStream& stream)
+    explicit ReconsumableStream(Stream& stream)
         : m_stream(stream)
     {
     }
@@ -82,8 +81,10 @@ public:
     void unread(ReadonlyBytes data) { m_buffer.append(data.data(), data.size()); }
 
 private:
-    size_t read(Bytes bytes) override
+    virtual ErrorOr<Bytes> read(Bytes bytes) override
     {
+        auto original_bytes = bytes;
+
         size_t bytes_read_from_buffer = 0;
         if (!m_buffer.is_empty()) {
             auto read_size = min(bytes.size(), m_buffer.size());
@@ -94,20 +95,15 @@ private:
             bytes_read_from_buffer = read_size;
         }
 
-        return m_stream.read(bytes) + bytes_read_from_buffer;
+        return original_bytes.trim(TRY(m_stream.read(bytes)).size() + bytes_read_from_buffer);
     }
-    bool unreliable_eof() const override
+
+    virtual bool is_eof() const override
     {
-        return m_buffer.is_empty() && m_stream.unreliable_eof();
+        return m_buffer.is_empty() && m_stream.is_eof();
     }
-    bool read_or_error(Bytes bytes) override
-    {
-        if (read(bytes))
-            return true;
-        set_recoverable_error();
-        return false;
-    }
-    bool discard_or_error(size_t count) override
+
+    virtual ErrorOr<void> discard(size_t count) override
     {
         size_t bytes_discarded_from_buffer = 0;
         if (!m_buffer.is_empty()) {
@@ -117,49 +113,74 @@ private:
             bytes_discarded_from_buffer = read_size;
         }
 
-        return m_stream.discard_or_error(count - bytes_discarded_from_buffer);
+        return m_stream.discard(count - bytes_discarded_from_buffer);
     }
 
-    InputStream& m_stream;
+    virtual ErrorOr<size_t> write(ReadonlyBytes) override
+    {
+        return Error::from_errno(EBADF);
+    }
+
+    virtual bool is_open() const override
+    {
+        return m_stream.is_open();
+    }
+
+    virtual void close() override
+    {
+        m_stream.close();
+    }
+
+    Stream& m_stream;
     Vector<u8, 8> m_buffer;
 };
 
-class ConstrainedStream : public InputStream {
+class ConstrainedStream : public Stream {
 public:
-    explicit ConstrainedStream(InputStream& stream, size_t size)
+    explicit ConstrainedStream(Stream& stream, size_t size)
         : m_stream(stream)
         , m_bytes_left(size)
     {
     }
 
 private:
-    size_t read(Bytes bytes) override
+    ErrorOr<Bytes> read(Bytes bytes) override
     {
         auto to_read = min(m_bytes_left, bytes.size());
-        auto nread = m_stream.read(bytes.slice(0, to_read));
-        m_bytes_left -= nread;
-        return nread;
-    }
-    bool unreliable_eof() const override
-    {
-        return m_bytes_left == 0 || m_stream.unreliable_eof();
-    }
-    bool read_or_error(Bytes bytes) override
-    {
-        if (read(bytes))
-            return true;
-        set_recoverable_error();
-        return false;
-    }
-    bool discard_or_error(size_t count) override
-    {
-        auto to_discard = min(m_bytes_left, count);
-        if (m_stream.discard_or_error(to_discard))
-            m_bytes_left -= to_discard;
-        return to_discard;
+        auto read_bytes = TRY(m_stream.read(bytes.slice(0, to_read)));
+        m_bytes_left -= read_bytes.size();
+        return read_bytes;
     }
 
-    InputStream& m_stream;
+    bool is_eof() const override
+    {
+        return m_bytes_left == 0 || m_stream.is_eof();
+    }
+
+    ErrorOr<void> discard(size_t count) override
+    {
+        if (count > m_bytes_left)
+            return Error::from_string_literal("Trying to discard more bytes than allowed");
+
+        return m_stream.discard(count);
+    }
+
+    virtual ErrorOr<size_t> write(ReadonlyBytes) override
+    {
+        return Error::from_errno(EBADF);
+    }
+
+    virtual bool is_open() const override
+    {
+        return m_stream.is_open();
+    }
+
+    virtual void close() override
+    {
+        m_stream.close();
+    }
+
+    Stream& m_stream;
     size_t m_bytes_left { 0 };
 };
 
@@ -188,9 +209,9 @@ public:
     auto is_numeric() const { return !is_reference(); }
     auto kind() const { return m_kind; }
 
-    static ParseResult<ValueType> parse(InputStream& stream);
+    static ParseResult<ValueType> parse(Stream& stream);
 
-    static String kind_name(Kind kind)
+    static DeprecatedString kind_name(Kind kind)
     {
         switch (kind) {
         case I32:
@@ -227,7 +248,7 @@ public:
 
     auto const& types() const { return m_types; }
 
-    static ParseResult<ResultType> parse(InputStream& stream);
+    static ParseResult<ResultType> parse(Stream& stream);
 
 private:
     Vector<ValueType> m_types;
@@ -245,7 +266,7 @@ public:
     auto& parameters() const { return m_parameters; }
     auto& results() const { return m_results; }
 
-    static ParseResult<FunctionType> parse(InputStream& stream);
+    static ParseResult<FunctionType> parse(Stream& stream);
 
 private:
     Vector<ValueType> m_parameters;
@@ -264,7 +285,7 @@ public:
     auto min() const { return m_min; }
     auto& max() const { return m_max; }
 
-    static ParseResult<Limits> parse(InputStream& stream);
+    static ParseResult<Limits> parse(Stream& stream);
 
 private:
     u32 m_min { 0 };
@@ -281,7 +302,7 @@ public:
 
     auto& limits() const { return m_limits; }
 
-    static ParseResult<MemoryType> parse(InputStream& stream);
+    static ParseResult<MemoryType> parse(Stream& stream);
 
 private:
     Limits m_limits;
@@ -300,7 +321,7 @@ public:
     auto& limits() const { return m_limits; }
     auto& element_type() const { return m_element_type; }
 
-    static ParseResult<TableType> parse(InputStream& stream);
+    static ParseResult<TableType> parse(Stream& stream);
 
 private:
     ValueType m_element_type;
@@ -319,7 +340,7 @@ public:
     auto& type() const { return m_type; }
     auto is_mutable() const { return m_is_mutable; }
 
-    static ParseResult<GlobalType> parse(InputStream& stream);
+    static ParseResult<GlobalType> parse(Stream& stream);
 
 private:
     ValueType m_type;
@@ -365,7 +386,7 @@ public:
         return m_type_index;
     }
 
-    static ParseResult<BlockType> parse(InputStream& stream);
+    static ParseResult<BlockType> parse(Stream& stream);
 
 private:
     Kind m_kind { Empty };
@@ -429,7 +450,7 @@ public:
     {
     }
 
-    static ParseResult<Vector<Instruction>> parse(InputStream& stream, InstructionPointer& ip);
+    static ParseResult<Vector<Instruction>> parse(Stream& stream, InstructionPointer& ip);
 
     auto& opcode() const { return m_opcode; }
     auto& arguments() const { return m_arguments; }
@@ -467,7 +488,7 @@ class CustomSection {
 public:
     static constexpr u8 section_id = 0;
 
-    CustomSection(String name, ByteBuffer contents)
+    CustomSection(DeprecatedString name, ByteBuffer contents)
         : m_name(move(name))
         , m_contents(move(contents))
     {
@@ -476,10 +497,10 @@ public:
     auto& name() const { return m_name; }
     auto& contents() const { return m_contents; }
 
-    static ParseResult<CustomSection> parse(InputStream& stream);
+    static ParseResult<CustomSection> parse(Stream& stream);
 
 private:
-    String m_name;
+    DeprecatedString m_name;
     ByteBuffer m_contents;
 };
 
@@ -494,7 +515,7 @@ public:
 
     auto& types() const { return m_types; }
 
-    static ParseResult<TypeSection> parse(InputStream& stream);
+    static ParseResult<TypeSection> parse(Stream& stream);
 
 private:
     Vector<FunctionType> m_types;
@@ -505,7 +526,7 @@ public:
     class Import {
     public:
         using ImportDesc = Variant<TypeIndex, TableType, MemoryType, GlobalType, FunctionType>;
-        Import(String module, String name, ImportDesc description)
+        Import(DeprecatedString module, DeprecatedString name, ImportDesc description)
             : m_module(move(module))
             , m_name(move(name))
             , m_description(move(description))
@@ -516,7 +537,7 @@ public:
         auto& name() const { return m_name; }
         auto& description() const { return m_description; }
 
-        static ParseResult<Import> parse(InputStream& stream);
+        static ParseResult<Import> parse(Stream& stream);
 
     private:
         template<typename T>
@@ -528,8 +549,8 @@ public:
             return Import { module.release_value(), name.release_value(), result.release_value() };
         };
 
-        String m_module;
-        String m_name;
+        DeprecatedString m_module;
+        DeprecatedString m_name;
         ImportDesc m_description;
     };
 
@@ -543,7 +564,7 @@ public:
 
     auto& imports() const { return m_imports; }
 
-    static ParseResult<ImportSection> parse(InputStream& stream);
+    static ParseResult<ImportSection> parse(Stream& stream);
 
 private:
     Vector<Import> m_imports;
@@ -560,7 +581,7 @@ public:
 
     auto& types() const { return m_types; }
 
-    static ParseResult<FunctionSection> parse(InputStream& stream);
+    static ParseResult<FunctionSection> parse(Stream& stream);
 
 private:
     Vector<TypeIndex> m_types;
@@ -577,7 +598,7 @@ public:
 
         auto& type() const { return m_type; }
 
-        static ParseResult<Table> parse(InputStream& stream);
+        static ParseResult<Table> parse(Stream& stream);
 
     private:
         TableType m_type;
@@ -593,7 +614,7 @@ public:
 
     auto& tables() const { return m_tables; };
 
-    static ParseResult<TableSection> parse(InputStream& stream);
+    static ParseResult<TableSection> parse(Stream& stream);
 
 private:
     Vector<Table> m_tables;
@@ -610,7 +631,7 @@ public:
 
         auto& type() const { return m_type; }
 
-        static ParseResult<Memory> parse(InputStream& stream);
+        static ParseResult<Memory> parse(Stream& stream);
 
     private:
         MemoryType m_type;
@@ -626,7 +647,7 @@ public:
 
     auto& memories() const { return m_memories; }
 
-    static ParseResult<MemorySection> parse(InputStream& stream);
+    static ParseResult<MemorySection> parse(Stream& stream);
 
 private:
     Vector<Memory> m_memories;
@@ -641,7 +662,7 @@ public:
 
     auto& instructions() const { return m_instructions; }
 
-    static ParseResult<Expression> parse(InputStream& stream);
+    static ParseResult<Expression> parse(Stream& stream);
 
 private:
     Vector<Instruction> m_instructions;
@@ -660,7 +681,7 @@ public:
         auto& type() const { return m_type; }
         auto& expression() const { return m_expression; }
 
-        static ParseResult<Global> parse(InputStream& stream);
+        static ParseResult<Global> parse(Stream& stream);
 
     private:
         GlobalType m_type;
@@ -677,7 +698,7 @@ public:
 
     auto& entries() const { return m_entries; }
 
-    static ParseResult<GlobalSection> parse(InputStream& stream);
+    static ParseResult<GlobalSection> parse(Stream& stream);
 
 private:
     Vector<Global> m_entries;
@@ -690,7 +711,7 @@ private:
 public:
     class Export {
     public:
-        explicit Export(String name, ExportDesc description)
+        explicit Export(DeprecatedString name, ExportDesc description)
             : m_name(move(name))
             , m_description(move(description))
         {
@@ -699,10 +720,10 @@ public:
         auto& name() const { return m_name; }
         auto& description() const { return m_description; }
 
-        static ParseResult<Export> parse(InputStream& stream);
+        static ParseResult<Export> parse(Stream& stream);
 
     private:
-        String m_name;
+        DeprecatedString m_name;
         ExportDesc m_description;
     };
 
@@ -715,7 +736,7 @@ public:
 
     auto& entries() const { return m_entries; }
 
-    static ParseResult<ExportSection> parse(InputStream& stream);
+    static ParseResult<ExportSection> parse(Stream& stream);
 
 private:
     Vector<Export> m_entries;
@@ -732,7 +753,7 @@ public:
 
         auto& index() const { return m_index; }
 
-        static ParseResult<StartFunction> parse(InputStream& stream);
+        static ParseResult<StartFunction> parse(Stream& stream);
 
     private:
         FunctionIndex m_index;
@@ -747,7 +768,7 @@ public:
 
     auto& function() const { return m_function; }
 
-    static ParseResult<StartSection> parse(InputStream& stream);
+    static ParseResult<StartSection> parse(Stream& stream);
 
 private:
     StartFunction m_function;
@@ -766,43 +787,43 @@ public:
 
     struct SegmentType0 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType0> parse(InputStream& stream);
+        static ParseResult<SegmentType0> parse(Stream& stream);
 
         Vector<FunctionIndex> function_indices;
         Active mode;
     };
     struct SegmentType1 {
-        static ParseResult<SegmentType1> parse(InputStream& stream);
+        static ParseResult<SegmentType1> parse(Stream& stream);
 
         Vector<FunctionIndex> function_indices;
     };
     struct SegmentType2 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType2> parse(InputStream& stream);
+        static ParseResult<SegmentType2> parse(Stream& stream);
     };
     struct SegmentType3 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType3> parse(InputStream& stream);
+        static ParseResult<SegmentType3> parse(Stream& stream);
     };
     struct SegmentType4 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType4> parse(InputStream& stream);
+        static ParseResult<SegmentType4> parse(Stream& stream);
     };
     struct SegmentType5 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType5> parse(InputStream& stream);
+        static ParseResult<SegmentType5> parse(Stream& stream);
     };
     struct SegmentType6 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType6> parse(InputStream& stream);
+        static ParseResult<SegmentType6> parse(Stream& stream);
     };
     struct SegmentType7 {
         // FIXME: Implement me!
-        static ParseResult<SegmentType7> parse(InputStream& stream);
+        static ParseResult<SegmentType7> parse(Stream& stream);
     };
 
     struct Element {
-        static ParseResult<Element> parse(InputStream&);
+        static ParseResult<Element> parse(Stream&);
 
         ValueType type;
         Vector<Expression> init;
@@ -818,7 +839,7 @@ public:
 
     auto& segments() const { return m_segments; }
 
-    static ParseResult<ElementSection> parse(InputStream& stream);
+    static ParseResult<ElementSection> parse(Stream& stream);
 
 private:
     Vector<Element> m_segments;
@@ -836,7 +857,7 @@ public:
     auto n() const { return m_n; }
     auto& type() const { return m_type; }
 
-    static ParseResult<Locals> parse(InputStream& stream);
+    static ParseResult<Locals> parse(Stream& stream);
 
 private:
     u32 m_n { 0 };
@@ -857,7 +878,7 @@ public:
         auto& locals() const { return m_locals; }
         auto& body() const { return m_body; }
 
-        static ParseResult<Func> parse(InputStream& stream);
+        static ParseResult<Func> parse(Stream& stream);
 
     private:
         Vector<Locals> m_locals;
@@ -874,7 +895,7 @@ public:
         auto size() const { return m_size; }
         auto& func() const { return m_func; }
 
-        static ParseResult<Code> parse(InputStream& stream);
+        static ParseResult<Code> parse(Stream& stream);
 
     private:
         u32 m_size { 0 };
@@ -890,7 +911,7 @@ public:
 
     auto& functions() const { return m_functions; }
 
-    static ParseResult<CodeSection> parse(InputStream& stream);
+    static ParseResult<CodeSection> parse(Stream& stream);
 
 private:
     Vector<Code> m_functions;
@@ -917,7 +938,7 @@ public:
 
         auto& value() const { return m_value; }
 
-        static ParseResult<Data> parse(InputStream& stream);
+        static ParseResult<Data> parse(Stream& stream);
 
     private:
         Value m_value;
@@ -932,7 +953,7 @@ public:
 
     auto& data() const { return m_data; }
 
-    static ParseResult<DataSection> parse(InputStream& stream);
+    static ParseResult<DataSection> parse(Stream& stream);
 
 private:
     Vector<Data> m_data;
@@ -949,7 +970,7 @@ public:
 
     auto& count() const { return m_count; }
 
-    static ParseResult<DataCountSection> parse(InputStream& stream);
+    static ParseResult<DataCountSection> parse(Stream& stream);
 
 private:
     Optional<u32> m_count;
@@ -1042,9 +1063,9 @@ public:
     void set_validation_status(ValidationStatus status, Badge<Validator>) { set_validation_status(status); }
     ValidationStatus validation_status() const { return m_validation_status; }
     StringView validation_error() const { return *m_validation_error; }
-    void set_validation_error(String error) { m_validation_error = move(error); }
+    void set_validation_error(DeprecatedString error) { m_validation_error = move(error); }
 
-    static ParseResult<Module> parse(InputStream& stream);
+    static ParseResult<Module> parse(Stream& stream);
 
 private:
     bool populate_sections();
@@ -1053,6 +1074,6 @@ private:
     Vector<AnySection> m_sections;
     Vector<Function> m_functions;
     ValidationStatus m_validation_status { ValidationStatus::Unchecked };
-    Optional<String> m_validation_error;
+    Optional<DeprecatedString> m_validation_error;
 };
 }

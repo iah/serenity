@@ -1,14 +1,15 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Optional.h>
 #include <AK/StdLibExtras.h>
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <stdio.h>
 
@@ -16,11 +17,11 @@ namespace X86 {
 
 class Instruction;
 class Interpreter;
-typedef void (Interpreter::*InstructionHandler)(const Instruction&);
+typedef void (Interpreter::*InstructionHandler)(Instruction const&);
 
 class SymbolProvider {
 public:
-    virtual String symbolicate(FlatPtr, u32* offset = nullptr) const = 0;
+    virtual DeprecatedString symbolicate(FlatPtr, u32* offset = nullptr) const = 0;
 
 protected:
     virtual ~SymbolProvider() = default;
@@ -28,9 +29,9 @@ protected:
 
 template<typename T>
 struct TypeTrivia {
-    static const size_t bits = sizeof(T) * 8;
-    static const T sign_bit = 1 << (bits - 1);
-    static const T mask = MakeUnsigned<T>(-1);
+    static constexpr size_t bits = sizeof(T) * 8;
+    static constexpr T sign_bit = 1 << (bits - 1);
+    static constexpr T mask = MakeUnsigned<T>(-1);
 };
 
 template<typename T, typename U>
@@ -40,6 +41,23 @@ constexpr T sign_extended_to(U value)
         return value;
     return (TypeTrivia<T>::mask & ~TypeTrivia<U>::mask) | value;
 }
+
+enum class OperandSize : u8 {
+    Size16,
+    Size32,
+    Size64,
+};
+
+enum class AddressSize : u8 {
+    Size16,
+    Size32,
+    Size64,
+};
+
+enum class ProcessorMode : u8 {
+    Protected,
+    Long,
+};
 
 enum IsLockPrefixAllowed {
     LockPrefixNotAllowed = 0,
@@ -103,6 +121,11 @@ enum InstructionFormat {
     OP_RM32_reg32_imm8,
     OP_RM16_reg16_CL,
     OP_RM32_reg32_CL,
+    OP_reg,
+    OP_m64,
+    // SSE instructions mutate on some prefixes, so we have to mark them
+    // for further parsing
+    __SSE,
     OP_mm1_rm32,
     OP_rm32_mm2,
     OP_mm1_mm2m64,
@@ -114,9 +137,7 @@ enum InstructionFormat {
     OP_reg_mm1_imm8,
     OP_mm1_r32m16_imm8,
 
-    // SSE instructions mutate on some prefixes, so we have to mark them
-    // for further parsing
-    __SSE,
+    OP_xmm1_imm8,
     OP_xmm1_xmm2m32,
     OP_xmm1_xmm2m64,
     OP_xmm1_xmm2m128,
@@ -127,18 +148,24 @@ enum InstructionFormat {
     OP_xmm1m128_xmm2,
     OP_reg_xmm1,
     OP_reg_xmm1_imm8,
+    OP_r32_xmm2m32,
+    OP_r32_xmm2m64,
+    OP_rm32_xmm2,
     OP_xmm1_rm32,
     OP_xmm1_m64,
     OP_m64_xmm2,
     OP_rm8_xmm2m32,
+    OP_xmm_mm,
     OP_xmm1_mm2m64,
     OP_mm1m64_xmm2,
+    OP_mm_xmm,
     OP_mm1_xmm2m64,
-    OP_r32_xmm2m32,
+    OP_mm1_xmm2m128,
     OP_xmm1_r32m16_imm8,
     __EndFormatsWithRMByte,
 
     OP_reg32_imm32,
+    OP_regW_immW,
     OP_AL_imm8,
     OP_AX_imm16,
     OP_EAX_imm32,
@@ -188,16 +215,19 @@ enum InstructionFormat {
     OP_NEAR_imm,
 };
 
-static const unsigned CurrentAddressSize = 0xB33FBABE;
+static constexpr unsigned CurrentAddressSize = 0xB33FBABE;
+static constexpr unsigned CurrentOperandSize = 0xB33FB00F;
 
 struct InstructionDescriptor {
     InstructionHandler handler { nullptr };
     bool opcode_has_register_index { false };
-    const char* mnemonic { nullptr };
+    char const* mnemonic { nullptr };
     InstructionFormat format { InvalidFormat };
     bool has_rm { false };
     unsigned imm1_bytes { 0 };
     unsigned imm2_bytes { 0 };
+    bool long_mode_default_64 { false };
+    bool long_mode_force_64 { false };
 
     // Addressed by the 3 REG bits in the MOD-REG-R/M byte.
     // Some slash instructions have further subgroups when MOD is 11,
@@ -205,33 +235,73 @@ struct InstructionDescriptor {
     // a non-null slashes member that's indexed by the three R/M bits.
     InstructionDescriptor* slashes { nullptr };
 
-    unsigned imm1_bytes_for_address_size(bool a32) const
+    unsigned imm1_bytes_for(AddressSize address_size, OperandSize operand_size) const
     {
-        if (imm1_bytes == CurrentAddressSize)
-            return a32 ? 4 : 2;
+        if (imm1_bytes == CurrentAddressSize) {
+            switch (address_size) {
+            case AddressSize::Size64:
+                return 8;
+            case AddressSize::Size32:
+                return 4;
+            case AddressSize::Size16:
+                return 2;
+            }
+            VERIFY_NOT_REACHED();
+        }
+        if (imm1_bytes == CurrentOperandSize) {
+            switch (operand_size) {
+            case OperandSize::Size64:
+                return 8;
+            case OperandSize::Size32:
+                return 4;
+            case OperandSize::Size16:
+                return 2;
+            }
+            VERIFY_NOT_REACHED();
+        }
         return imm1_bytes;
     }
 
-    unsigned imm2_bytes_for_address_size(bool a32) const
+    unsigned imm2_bytes_for(AddressSize address_size, OperandSize operand_size) const
     {
-        if (imm2_bytes == CurrentAddressSize)
-            return a32 ? 4 : 2;
+        if (imm2_bytes == CurrentAddressSize) {
+            switch (address_size) {
+            case AddressSize::Size64:
+                return 8;
+            case AddressSize::Size32:
+                return 4;
+            case AddressSize::Size16:
+                return 2;
+            }
+            VERIFY_NOT_REACHED();
+        }
+        if (imm2_bytes == CurrentOperandSize) {
+            switch (operand_size) {
+            case OperandSize::Size64:
+                return 8;
+            case OperandSize::Size32:
+                return 4;
+            case OperandSize::Size16:
+                return 2;
+            }
+            VERIFY_NOT_REACHED();
+        }
         return imm2_bytes;
     }
 
     IsLockPrefixAllowed lock_prefix_allowed { LockPrefixNotAllowed };
 };
 
-extern InstructionDescriptor s_table16[256];
-extern InstructionDescriptor s_table32[256];
-extern InstructionDescriptor s_0f_table16[256];
-extern InstructionDescriptor s_0f_table32[256];
+extern InstructionDescriptor s_table[3][256];
+extern InstructionDescriptor s_0f_table[3][256];
 extern InstructionDescriptor s_sse_table_np[256];
 extern InstructionDescriptor s_sse_table_66[256];
 extern InstructionDescriptor s_sse_table_f3[256];
 
 struct Prefix {
     enum Op {
+        REX_Mask = 0xf0,
+        REX_Base = 0x40,
         OperandSizeOverride = 0x66,
         AddressSizeOverride = 0x67,
         REP = 0xf3,
@@ -260,7 +330,15 @@ enum RegisterIndex8 {
     RegisterAH,
     RegisterCH,
     RegisterDH,
-    RegisterBH
+    RegisterBH,
+    RegisterR8B,
+    RegisterR9B,
+    RegisterR10B,
+    RegisterR11B,
+    RegisterR12B,
+    RegisterR13B,
+    RegisterR14B,
+    RegisterR15B,
 };
 
 enum RegisterIndex16 {
@@ -271,7 +349,15 @@ enum RegisterIndex16 {
     RegisterSP,
     RegisterBP,
     RegisterSI,
-    RegisterDI
+    RegisterDI,
+    RegisterR8W,
+    RegisterR9W,
+    RegisterR10W,
+    RegisterR11W,
+    RegisterR12W,
+    RegisterR13W,
+    RegisterR14W,
+    RegisterR15W,
 };
 
 enum RegisterIndex32 {
@@ -282,7 +368,34 @@ enum RegisterIndex32 {
     RegisterESP,
     RegisterEBP,
     RegisterESI,
-    RegisterEDI
+    RegisterEDI,
+    RegisterR8D,
+    RegisterR9D,
+    RegisterR10D,
+    RegisterR11D,
+    RegisterR12D,
+    RegisterR13D,
+    RegisterR14D,
+    RegisterR15D,
+};
+
+enum RegisterIndex64 {
+    RegisterRAX = 0,
+    RegisterRCX,
+    RegisterRDX,
+    RegisterRBX,
+    RegisterRSP,
+    RegisterRBP,
+    RegisterRSI,
+    RegisterRDI,
+    RegisterR8,
+    RegisterR9,
+    RegisterR10,
+    RegisterR11,
+    RegisterR12,
+    RegisterR13,
+    RegisterR14,
+    RegisterR15,
 };
 
 enum FpuRegisterIndex {
@@ -315,7 +428,15 @@ enum XMMRegisterIndex {
     RegisterXMM4,
     RegisterXMM5,
     RegisterXMM6,
-    RegisterXMM7
+    RegisterXMM7,
+    RegisterXMM8,
+    RegisterXMM9,
+    RegisterXMM10,
+    RegisterXMM11,
+    RegisterXMM12,
+    RegisterXMM13,
+    RegisterXMM14,
+    RegisterXMM15,
 };
 
 class LogicalAddress {
@@ -351,7 +472,7 @@ protected:
 
 class SimpleInstructionStream final : public InstructionStream {
 public:
-    SimpleInstructionStream(const u8* data, size_t size)
+    SimpleInstructionStream(u8 const* data, size_t size)
         : m_data(data)
         , m_size(size)
     {
@@ -388,7 +509,7 @@ public:
     size_t offset() const { return m_offset; }
 
 private:
-    const u8* m_data { nullptr };
+    u8 const* m_data { nullptr };
     size_t m_offset { 0 };
     size_t m_size { 0 };
 };
@@ -397,74 +518,79 @@ class MemoryOrRegisterReference {
     friend class Instruction;
 
 public:
-    String to_string_o8(const Instruction&) const;
-    String to_string_o16(const Instruction&) const;
-    String to_string_o32(const Instruction&) const;
-    String to_string_fpu_reg() const;
-    String to_string_fpu_mem(const Instruction&) const;
-    String to_string_fpu_ax16() const;
-    String to_string_fpu16(const Instruction&) const;
-    String to_string_fpu32(const Instruction&) const;
-    String to_string_fpu64(const Instruction&) const;
-    String to_string_fpu80(const Instruction&) const;
-    String to_string_mm(const Instruction&) const;
-    String to_string_xmm(const Instruction&) const;
+    DeprecatedString to_deprecated_string_o8(Instruction const&) const;
+    DeprecatedString to_deprecated_string_o16(Instruction const&) const;
+    DeprecatedString to_deprecated_string_o32(Instruction const&) const;
+    DeprecatedString to_deprecated_string_o64(Instruction const&) const;
+    DeprecatedString to_deprecated_string_fpu_reg() const;
+    DeprecatedString to_deprecated_string_fpu_mem(Instruction const&) const;
+    DeprecatedString to_deprecated_string_fpu_ax16() const;
+    DeprecatedString to_deprecated_string_fpu16(Instruction const&) const;
+    DeprecatedString to_deprecated_string_fpu32(Instruction const&) const;
+    DeprecatedString to_deprecated_string_fpu64(Instruction const&) const;
+    DeprecatedString to_deprecated_string_fpu80(Instruction const&) const;
+    DeprecatedString to_deprecated_string_mm(Instruction const&) const;
+    DeprecatedString to_deprecated_string_xmm(Instruction const&) const;
+    DeprecatedString sib_to_deprecated_string(ProcessorMode) const;
 
     bool is_register() const { return m_register_index != 0x7f; }
 
     unsigned register_index() const { return m_register_index; }
+    RegisterIndex64 reg64() const { return static_cast<RegisterIndex64>(register_index()); }
     RegisterIndex32 reg32() const { return static_cast<RegisterIndex32>(register_index()); }
     RegisterIndex16 reg16() const { return static_cast<RegisterIndex16>(register_index()); }
     RegisterIndex8 reg8() const { return static_cast<RegisterIndex8>(register_index()); }
     FpuRegisterIndex reg_fpu() const { return static_cast<FpuRegisterIndex>(register_index()); }
 
     // helpers to get the parts by name as in the spec
-    u8 mod() const { return m_rm_byte >> 6; }
-    u8 reg() const { return m_rm_byte >> 3 & 0b111; }
-    u8 rm() const { return m_rm_byte & 0b111; }
+    u8 mod() const { return m_mod; }
+    u8 reg() const { return m_reg; }
+    u8 rm() const { return m_rm; }
+    u8 modrm_byte() const { return (m_mod << 6) | ((m_reg & 7) << 3) | (m_rm & 7); }
 
     template<typename CPU, typename T>
-    void write8(CPU&, const Instruction&, T);
+    void write8(CPU&, Instruction const&, T);
     template<typename CPU, typename T>
-    void write16(CPU&, const Instruction&, T);
+    void write16(CPU&, Instruction const&, T);
     template<typename CPU, typename T>
-    void write32(CPU&, const Instruction&, T);
+    void write32(CPU&, Instruction const&, T);
     template<typename CPU, typename T>
-    void write64(CPU&, const Instruction&, T);
+    void write64(CPU&, Instruction const&, T);
     template<typename CPU, typename T>
-    void write128(CPU&, const Instruction&, T);
+    void write128(CPU&, Instruction const&, T);
     template<typename CPU, typename T>
-    void write256(CPU&, const Instruction&, T);
+    void write256(CPU&, Instruction const&, T);
 
     template<typename CPU>
-    typename CPU::ValueWithShadowType8 read8(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType8 read8(CPU&, Instruction const&);
     template<typename CPU>
-    typename CPU::ValueWithShadowType16 read16(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType16 read16(CPU&, Instruction const&);
     template<typename CPU>
-    typename CPU::ValueWithShadowType32 read32(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType32 read32(CPU&, Instruction const&);
     template<typename CPU>
-    typename CPU::ValueWithShadowType64 read64(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType64 read64(CPU&, Instruction const&);
     template<typename CPU>
-    typename CPU::ValueWithShadowType128 read128(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType128 read128(CPU&, Instruction const&);
     template<typename CPU>
-    typename CPU::ValueWithShadowType256 read256(CPU&, const Instruction&);
+    typename CPU::ValueWithShadowType256 read256(CPU&, Instruction const&);
 
     template<typename CPU>
-    LogicalAddress resolve(const CPU&, const Instruction&);
+    LogicalAddress resolve(const CPU&, Instruction const&);
 
 private:
     MemoryOrRegisterReference() = default;
 
-    String to_string(const Instruction&) const;
-    String to_string_a16() const;
-    String to_string_a32() const;
+    DeprecatedString to_deprecated_string(Instruction const&) const;
+    DeprecatedString to_deprecated_string_a16() const;
+    DeprecatedString to_deprecated_string_a32() const;
+    DeprecatedString to_deprecated_string_a64() const;
 
     template<typename InstructionStreamType>
-    void decode(InstructionStreamType&, bool a32);
+    void decode(InstructionStreamType&, AddressSize, bool has_rex_r, bool has_rex_x, bool has_rex_b);
     template<typename InstructionStreamType>
     void decode16(InstructionStreamType&);
     template<typename InstructionStreamType>
-    void decode32(InstructionStreamType&);
+    void decode32(InstructionStreamType&, bool has_rex_r, bool has_rex_x, bool has_rex_b);
     template<typename CPU>
     LogicalAddress resolve16(const CPU&, Optional<SegmentRegister>);
     template<typename CPU>
@@ -478,8 +604,12 @@ private:
         u16 m_displacement16;
     };
 
-    u8 m_rm_byte { 0 };
-    u8 m_sib { 0 };
+    u8 m_mod : 2 { 0 };
+    u8 m_reg : 4 { 0 };
+    u8 m_rm : 4 { 0 };
+    u8 m_sib_scale : 2 { 0 };
+    u8 m_sib_index : 4 { 0 };
+    u8 m_sib_base : 4 { 0 };
     u8 m_displacement_bytes { 0 };
     u8 m_register_index : 7 { 0x7f };
     bool m_has_sib : 1 { false };
@@ -488,8 +618,8 @@ private:
 class Instruction {
 public:
     template<typename InstructionStreamType>
-    static Instruction from_stream(InstructionStreamType&, bool o32, bool a32);
-    ~Instruction() { }
+    static Instruction from_stream(InstructionStreamType&, ProcessorMode);
+    ~Instruction() = default;
 
     ALWAYS_INLINE MemoryOrRegisterReference& modrm() const { return m_modrm; }
 
@@ -513,22 +643,36 @@ public:
 
     unsigned length() const;
 
-    String mnemonic() const;
+    DeprecatedString mnemonic() const;
 
     u8 op() const { return m_op; }
-    u8 modrm_byte() const { return m_modrm.m_rm_byte; }
-    u8 slash() const { return (modrm_byte() >> 3) & 7; }
+    u8 modrm_byte() const { return m_modrm.modrm_byte(); }
+    u8 slash() const { return m_modrm.reg() & 7; }
 
     u8 imm8() const { return m_imm1; }
     u16 imm16() const { return m_imm1; }
     u32 imm32() const { return m_imm1; }
+    u64 imm64() const { return m_imm1; }
     u8 imm8_1() const { return imm8(); }
     u8 imm8_2() const { return m_imm2; }
     u16 imm16_1() const { return imm16(); }
     u16 imm16_2() const { return m_imm2; }
     u32 imm32_1() const { return imm32(); }
     u32 imm32_2() const { return m_imm2; }
-    u32 imm_address() const { return m_a32 ? imm32() : imm16(); }
+    u64 imm64_1() const { return imm64(); }
+    u64 imm64_2() const { return m_imm2; }
+    u32 imm_address() const
+    {
+        switch (m_address_size) {
+        case AddressSize::Size64:
+            return imm64();
+        case AddressSize::Size32:
+            return imm32();
+        case AddressSize::Size16:
+            return imm16();
+        }
+        VERIFY_NOT_REACHED();
+    }
 
     LogicalAddress imm_address16_16() const { return LogicalAddress(imm16_1(), imm16_2()); }
     LogicalAddress imm_address16_32() const { return LogicalAddress(imm16_1(), imm32_2()); }
@@ -547,35 +691,43 @@ public:
 
     u8 cc() const { return has_sub_op() ? m_sub_op & 0xf : m_op & 0xf; }
 
-    bool a32() const { return m_a32; }
+    AddressSize address_size() const { return m_address_size; }
+    OperandSize operand_size() const { return m_operand_size; }
+    ProcessorMode mode() const { return m_mode; }
 
-    String to_string(u32 origin, const SymbolProvider* = nullptr, bool x32 = true) const;
+    DeprecatedString to_deprecated_string(u32 origin, SymbolProvider const* = nullptr, bool x32 = true) const;
 
 private:
     template<typename InstructionStreamType>
-    Instruction(InstructionStreamType&, bool o32, bool a32);
+    Instruction(InstructionStreamType&, ProcessorMode);
 
-    void to_string_internal(StringBuilder&, u32 origin, const SymbolProvider*, bool x32) const;
+    void to_deprecated_string_internal(StringBuilder&, u32 origin, SymbolProvider const*, bool x32) const;
 
-    const char* reg8_name() const;
-    const char* reg16_name() const;
-    const char* reg32_name() const;
+    StringView reg8_name() const;
+    StringView reg16_name() const;
+    StringView reg32_name() const;
+    StringView reg64_name() const;
 
     InstructionDescriptor* m_descriptor { nullptr };
     mutable MemoryOrRegisterReference m_modrm;
-    u32 m_imm1 { 0 };
-    u32 m_imm2 { 0 };
+    u64 m_imm1 { 0 };
+    u64 m_imm2 { 0 };
     u8 m_segment_prefix { 0xff };
     u8 m_register_index { 0xff };
     u8 m_op { 0 };
     u8 m_sub_op { 0 };
     u8 m_extra_bytes { 0 };
     u8 m_rep_prefix { 0 };
-    bool m_a32 : 1 { false };
-    bool m_o32 : 1 { false };
+    OperandSize m_operand_size { OperandSize::Size16 };
+    AddressSize m_address_size { AddressSize::Size16 };
+    ProcessorMode m_mode { ProcessorMode::Protected };
     bool m_has_lock_prefix : 1 { false };
     bool m_has_operand_size_override_prefix : 1 { false };
     bool m_has_address_size_override_prefix : 1 { false };
+    bool m_has_rex_w : 1 { false };
+    bool m_has_rex_r : 1 { false };
+    bool m_has_rex_x : 1 { false };
+    bool m_has_rex_b : 1 { false };
 };
 
 template<typename CPU>
@@ -654,12 +806,12 @@ ALWAYS_INLINE LogicalAddress MemoryOrRegisterReference::resolve32(const CPU& cpu
 template<typename CPU>
 ALWAYS_INLINE u32 MemoryOrRegisterReference::evaluate_sib(const CPU& cpu, SegmentRegister& default_segment) const
 {
-    u32 scale_shift = m_sib >> 6;
+    u32 scale_shift = m_sib_scale;
     u32 index = 0;
-    switch ((m_sib >> 3) & 0x07) {
+    switch (m_sib_index) {
     case 0 ... 3:
-    case 5 ... 7:
-        index = cpu.const_gpr32((RegisterIndex32)((m_sib >> 3) & 0x07)).value();
+    case 5 ... 15:
+        index = cpu.const_gpr32((RegisterIndex32)m_sib_index).value();
         break;
     case 4:
         index = 0;
@@ -667,10 +819,10 @@ ALWAYS_INLINE u32 MemoryOrRegisterReference::evaluate_sib(const CPU& cpu, Segmen
     }
 
     u32 base = m_displacement32;
-    switch (m_sib & 0x07) {
+    switch (m_sib_base) {
     case 0 ... 3:
-    case 6 ... 7:
-        base += cpu.const_gpr32((RegisterIndex32)(m_sib & 0x07)).value();
+    case 6 ... 15:
+        base += cpu.const_gpr32((RegisterIndex32)m_sib_base).value();
         break;
     case 4:
         default_segment = SegmentRegister::SS;
@@ -687,7 +839,6 @@ ALWAYS_INLINE u32 MemoryOrRegisterReference::evaluate_sib(const CPU& cpu, Segmen
             break;
         default:
             VERIFY_NOT_REACHED();
-            break;
         }
         break;
     }
@@ -696,7 +847,7 @@ ALWAYS_INLINE u32 MemoryOrRegisterReference::evaluate_sib(const CPU& cpu, Segmen
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write8(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write8(CPU& cpu, Instruction const& insn, T value)
 {
     if (is_register()) {
         cpu.gpr8(reg8()) = value;
@@ -708,7 +859,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write8(CPU& cpu, const Instruction
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write16(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write16(CPU& cpu, Instruction const& insn, T value)
 {
     if (is_register()) {
         cpu.gpr16(reg16()) = value;
@@ -720,7 +871,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write16(CPU& cpu, const Instructio
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write32(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write32(CPU& cpu, Instruction const& insn, T value)
 {
     if (is_register()) {
         cpu.gpr32(reg32()) = value;
@@ -732,7 +883,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write32(CPU& cpu, const Instructio
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write64(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write64(CPU& cpu, Instruction const& insn, T value)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -740,7 +891,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write64(CPU& cpu, const Instructio
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write128(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write128(CPU& cpu, Instruction const& insn, T value)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -748,7 +899,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write128(CPU& cpu, const Instructi
 }
 
 template<typename CPU, typename T>
-ALWAYS_INLINE void MemoryOrRegisterReference::write256(CPU& cpu, const Instruction& insn, T value)
+ALWAYS_INLINE void MemoryOrRegisterReference::write256(CPU& cpu, Instruction const& insn, T value)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -756,7 +907,7 @@ ALWAYS_INLINE void MemoryOrRegisterReference::write256(CPU& cpu, const Instructi
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType8 MemoryOrRegisterReference::read8(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType8 MemoryOrRegisterReference::read8(CPU& cpu, Instruction const& insn)
 {
     if (is_register())
         return cpu.const_gpr8(reg8());
@@ -766,7 +917,7 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType8 MemoryOrRegisterReference::read
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType16 MemoryOrRegisterReference::read16(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType16 MemoryOrRegisterReference::read16(CPU& cpu, Instruction const& insn)
 {
     if (is_register())
         return cpu.const_gpr16(reg16());
@@ -776,7 +927,7 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType16 MemoryOrRegisterReference::rea
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType32 MemoryOrRegisterReference::read32(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType32 MemoryOrRegisterReference::read32(CPU& cpu, Instruction const& insn)
 {
     if (is_register())
         return cpu.const_gpr32(reg32());
@@ -786,7 +937,7 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType32 MemoryOrRegisterReference::rea
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType64 MemoryOrRegisterReference::read64(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType64 MemoryOrRegisterReference::read64(CPU& cpu, Instruction const& insn)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -794,7 +945,7 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType64 MemoryOrRegisterReference::rea
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType128 MemoryOrRegisterReference::read128(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType128 MemoryOrRegisterReference::read128(CPU& cpu, Instruction const& insn)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -802,7 +953,7 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType128 MemoryOrRegisterReference::re
 }
 
 template<typename CPU>
-ALWAYS_INLINE typename CPU::ValueWithShadowType256 MemoryOrRegisterReference::read256(CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE typename CPU::ValueWithShadowType256 MemoryOrRegisterReference::read256(CPU& cpu, Instruction const& insn)
 {
     VERIFY(!is_register());
     auto address = resolve(cpu, insn);
@@ -810,9 +961,9 @@ ALWAYS_INLINE typename CPU::ValueWithShadowType256 MemoryOrRegisterReference::re
 }
 
 template<typename InstructionStreamType>
-ALWAYS_INLINE Instruction Instruction::from_stream(InstructionStreamType& stream, bool o32, bool a32)
+ALWAYS_INLINE Instruction Instruction::from_stream(InstructionStreamType& stream, ProcessorMode mode)
 {
-    return Instruction(stream, o32, a32);
+    return Instruction(stream, mode);
 }
 
 ALWAYS_INLINE unsigned Instruction::length() const
@@ -820,7 +971,7 @@ ALWAYS_INLINE unsigned Instruction::length() const
     unsigned len = 1;
     if (has_sub_op())
         ++len;
-    if (m_descriptor->has_rm) {
+    if (m_descriptor && m_descriptor->has_rm) {
         ++len;
         if (m_modrm.m_has_sib)
             ++len;
@@ -851,20 +1002,30 @@ ALWAYS_INLINE Optional<SegmentRegister> to_segment_prefix(u8 op)
 }
 
 template<typename InstructionStreamType>
-ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, bool a32)
-    : m_a32(a32)
-    , m_o32(o32)
+ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, ProcessorMode mode)
+    : m_mode(mode)
 {
+    m_operand_size = OperandSize::Size32;
+    // m_address_size refers to the default size of displacements/immediates, which is 32 even in long mode (2.2.1.3 Displacement, 2.2.1.5 Immediates),
+    // with the exception of moffset (see below).
+    m_address_size = AddressSize::Size32;
+
     u8 prefix_bytes = 0;
     for (;; ++prefix_bytes) {
         u8 opbyte = stream.read8();
         if (opbyte == Prefix::OperandSizeOverride) {
-            m_o32 = !o32;
+            if (m_operand_size == OperandSize::Size32)
+                m_operand_size = OperandSize::Size16;
+            else if (m_operand_size == OperandSize::Size16)
+                m_operand_size = OperandSize::Size32;
             m_has_operand_size_override_prefix = true;
             continue;
         }
         if (opbyte == Prefix::AddressSizeOverride) {
-            m_a32 = !a32;
+            if (m_address_size == AddressSize::Size32)
+                m_address_size = AddressSize::Size16;
+            else if (m_address_size == AddressSize::Size16)
+                m_address_size = AddressSize::Size32;
             m_has_address_size_override_prefix = true;
             continue;
         }
@@ -876,6 +1037,15 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
             m_has_lock_prefix = true;
             continue;
         }
+        if (m_mode == ProcessorMode::Long && (opbyte & Prefix::REX_Mask) == Prefix::REX_Base) {
+            m_has_rex_w = opbyte & 8;
+            if (m_has_rex_w)
+                m_operand_size = OperandSize::Size64;
+            m_has_rex_r = opbyte & 4;
+            m_has_rex_x = opbyte & 2;
+            m_has_rex_b = opbyte & 1;
+            continue;
+        }
         auto segment_prefix = to_segment_prefix(opbyte);
         if (segment_prefix.has_value()) {
             m_segment_prefix = (u8)segment_prefix.value();
@@ -885,11 +1055,14 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
         break;
     }
 
+    u8 table_index = to_underlying(m_operand_size);
+    if (m_mode == ProcessorMode::Long && m_operand_size == OperandSize::Size32)
+        table_index = to_underlying(OperandSize::Size64);
     if (m_op == 0x0f) {
         m_sub_op = stream.read8();
-        m_descriptor = m_o32 ? &s_0f_table32[m_sub_op] : &s_0f_table16[m_sub_op];
+        m_descriptor = &s_0f_table[table_index][m_sub_op];
     } else {
-        m_descriptor = m_o32 ? &s_table32[m_op] : &s_table16[m_op];
+        m_descriptor = &s_table[table_index][m_op];
     }
 
     if (m_descriptor->format == __SSE) {
@@ -897,7 +1070,7 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
             m_descriptor = &s_sse_table_f3[m_sub_op];
         } else if (m_has_operand_size_override_prefix) {
             // This was unset while parsing the prefix initially
-            m_o32 = true;
+            m_operand_size = OperandSize::Size32;
             m_descriptor = &s_sse_table_66[m_sub_op];
         } else {
             m_descriptor = &s_sse_table_np[m_sub_op];
@@ -906,13 +1079,21 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
 
     if (m_descriptor->has_rm) {
         // Consume ModR/M (may include SIB and displacement.)
-        m_modrm.decode(stream, m_a32);
+        m_modrm.decode(stream, m_address_size, m_has_rex_r, m_has_rex_x, m_has_rex_b);
         m_register_index = m_modrm.reg();
     } else {
         if (has_sub_op())
             m_register_index = m_sub_op & 7;
         else
             m_register_index = m_op & 7;
+        if (m_has_rex_b)
+            m_register_index |= 8;
+    }
+
+    if (m_mode == ProcessorMode::Long && (m_descriptor->long_mode_force_64 || m_descriptor->long_mode_default_64)) {
+        m_operand_size = OperandSize::Size64;
+        if (!m_descriptor->long_mode_force_64 && m_has_operand_size_override_prefix)
+            m_operand_size = OperandSize::Size32;
     }
 
     bool has_slash = m_descriptor->format == MultibyteWithSlash;
@@ -935,11 +1116,26 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
                 warnln("Instruction {:02X} not understood", m_op);
         }
         m_descriptor = nullptr;
+        m_extra_bytes = prefix_bytes;
         return;
     }
 
-    auto imm1_bytes = m_descriptor->imm1_bytes_for_address_size(m_a32);
-    auto imm2_bytes = m_descriptor->imm2_bytes_for_address_size(m_a32);
+    // 2.2.1.4 Direct Memory-Offset MOVs
+    auto effective_address_size = m_address_size;
+    if (m_mode == ProcessorMode::Long) {
+        switch (m_descriptor->format) {
+        case OP_AL_moff8:   // A0 MOV AL, moffset
+        case OP_EAX_moff32: // A1 MOV EAX, moffset
+        case OP_moff8_AL:   // A2 MOV moffset, AL
+        case OP_moff32_EAX: // A3 MOV moffset, EAX
+            effective_address_size = AddressSize::Size64;
+            break;
+        default:
+            break;
+        }
+    }
+    auto imm1_bytes = m_descriptor->imm1_bytes_for(effective_address_size, m_operand_size);
+    auto imm2_bytes = m_descriptor->imm2_bytes_for(effective_address_size, m_operand_size);
 
     // Consume immediates if present.
     switch (imm2_bytes) {
@@ -951,6 +1147,9 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
         break;
     case 4:
         m_imm2 = stream.read32();
+        break;
+    case 8:
+        m_imm2 = stream.read64();
         break;
     default:
         VERIFY(imm2_bytes == 0);
@@ -966,6 +1165,9 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
         break;
     case 4:
         m_imm1 = stream.read32();
+        break;
+    case 8:
+        m_imm1 = stream.read64();
         break;
     default:
         VERIFY(imm1_bytes == 0);
@@ -983,12 +1185,15 @@ ALWAYS_INLINE Instruction::Instruction(InstructionStreamType& stream, bool o32, 
 }
 
 template<typename InstructionStreamType>
-ALWAYS_INLINE void MemoryOrRegisterReference::decode(InstructionStreamType& stream, bool a32)
+ALWAYS_INLINE void MemoryOrRegisterReference::decode(InstructionStreamType& stream, AddressSize address_size, bool has_rex_r, bool has_rex_x, bool has_rex_b)
 {
-    m_rm_byte = stream.read8();
+    u8 mod_rm_byte = stream.read8();
+    m_mod = mod_rm_byte >> 6;
+    m_reg = (mod_rm_byte >> 3) & 7;
+    m_rm = mod_rm_byte & 7;
 
-    if (a32) {
-        decode32(stream);
+    if (address_size == AddressSize::Size32) {
+        decode32(stream, has_rex_r, has_rex_x, has_rex_b);
         switch (m_displacement_bytes) {
         case 0:
             break;
@@ -1000,9 +1205,8 @@ ALWAYS_INLINE void MemoryOrRegisterReference::decode(InstructionStreamType& stre
             break;
         default:
             VERIFY_NOT_REACHED();
-            break;
         }
-    } else {
+    } else if (address_size == AddressSize::Size16) {
         decode16(stream);
         switch (m_displacement_bytes) {
         case 0:
@@ -1015,8 +1219,9 @@ ALWAYS_INLINE void MemoryOrRegisterReference::decode(InstructionStreamType& stre
             break;
         default:
             VERIFY_NOT_REACHED();
-            break;
         }
+    } else {
+        VERIFY_NOT_REACHED();
     }
 }
 
@@ -1043,12 +1248,16 @@ ALWAYS_INLINE void MemoryOrRegisterReference::decode16(InstructionStreamType&)
 }
 
 template<typename InstructionStreamType>
-ALWAYS_INLINE void MemoryOrRegisterReference::decode32(InstructionStreamType& stream)
+ALWAYS_INLINE void MemoryOrRegisterReference::decode32(InstructionStreamType& stream, bool has_rex_r, bool has_rex_x, bool has_rex_b)
 {
-    switch (mod()) {
+    m_reg |= has_rex_r << 3;
+
+    switch (m_mod) {
     case 0b00:
-        if (rm() == 5)
+        if (m_rm == 5) {
             m_displacement_bytes = 4;
+            return;
+        }
         break;
     case 0b01:
         m_displacement_bytes = 1;
@@ -1057,14 +1266,18 @@ ALWAYS_INLINE void MemoryOrRegisterReference::decode32(InstructionStreamType& st
         m_displacement_bytes = 4;
         break;
     case 0b11:
+        m_rm |= has_rex_b << 3;
         m_register_index = rm();
         return;
     }
 
-    m_has_sib = rm() == 4;
+    m_has_sib = m_rm == 4;
     if (m_has_sib) {
-        m_sib = stream.read8();
-        if ((m_sib & 0x07) == 5) {
+        u8 sib_byte = stream.read8();
+        m_sib_scale = sib_byte >> 6;
+        m_sib_index = (has_rex_x << 3) | ((sib_byte >> 3) & 7);
+        m_sib_base = (has_rex_b << 3) | (sib_byte & 7);
+        if (m_sib_base == 5) {
             switch (mod()) {
             case 0b00:
                 m_displacement_bytes = 4;
@@ -1077,18 +1290,24 @@ ALWAYS_INLINE void MemoryOrRegisterReference::decode32(InstructionStreamType& st
                 break;
             default:
                 VERIFY_NOT_REACHED();
-                break;
             }
         }
+    } else {
+        m_rm |= has_rex_b << 3;
     }
 }
 
 template<typename CPU>
-ALWAYS_INLINE LogicalAddress MemoryOrRegisterReference::resolve(const CPU& cpu, const Instruction& insn)
+ALWAYS_INLINE LogicalAddress MemoryOrRegisterReference::resolve(const CPU& cpu, Instruction const& insn)
 {
-    if (insn.a32())
+    switch (insn.address_size()) {
+    case AddressSize::Size16:
+        return resolve16(cpu, insn.segment_prefix());
+    case AddressSize::Size32:
         return resolve32(cpu, insn.segment_prefix());
-    return resolve16(cpu, insn.segment_prefix());
+    default:
+        VERIFY_NOT_REACHED();
+    }
 }
 
 }

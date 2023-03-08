@@ -9,7 +9,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 echo "$DIR"
 
-ARCH=${ARCH:-"i686"}
+ARCH=${ARCH:-"x86_64"}
 TARGET="$ARCH-pc-serenity"
 PREFIX="$DIR/Local/$ARCH"
 BUILD="$DIR/../Build/$ARCH"
@@ -49,6 +49,9 @@ elif [ "$SYSTEM_NAME" = "FreeBSD" ]; then
     NPROC="sysctl -n hw.ncpu"
     export with_gmp=/usr/local
     export with_mpfr=/usr/local
+elif [ "$SYSTEM_NAME" = "Darwin" ]; then
+    MD5SUM="md5 -q"
+    NPROC="sysctl -n hw.ncpu"
 fi
 
 # On at least OpenBSD, the path must exist to call realpath(3) on it
@@ -71,22 +74,22 @@ echo SYSROOT is "$SYSROOT"
 
 mkdir -p "$DIR/Tarballs"
 
-BINUTILS_VERSION="2.38"
-BINUTILS_MD5SUM="f430dff91bdc8772fcef06ffdc0656ab"
+BINUTILS_VERSION="2.39"
+BINUTILS_MD5SUM="ab6825df57514ec172331e988f55fc10"
 BINUTILS_NAME="binutils-$BINUTILS_VERSION"
 BINUTILS_PKG="${BINUTILS_NAME}.tar.gz"
 BINUTILS_BASE_URL="https://ftp.gnu.org/gnu/binutils"
 
-GDB_VERSION="10.2"
-GDB_MD5SUM="7aeb896762924ae9a2ec59525088bada"
+GDB_VERSION="12.1"
+GDB_MD5SUM="0c7339e33fa347ce4d7df222d8ce86af"
 GDB_NAME="gdb-$GDB_VERSION"
 GDB_PKG="${GDB_NAME}.tar.gz"
 GDB_BASE_URL="https://ftp.gnu.org/gnu/gdb"
 
 # Note: If you bump the gcc version, you also have to update the matching
 #       GCC_VERSION variable in the project's root CMakeLists.txt
-GCC_VERSION="11.2.0"
-GCC_MD5SUM="dc6886bd44bb49e2d3d662aed9729278"
+GCC_VERSION="12.2.0"
+GCC_MD5SUM="d7644b494246450468464ffc2c2b19c3"
 GCC_NAME="gcc-$GCC_VERSION"
 GCC_PKG="${GCC_NAME}.tar.gz"
 GCC_BASE_URL="https://ftp.gnu.org/gnu/gcc"
@@ -184,7 +187,7 @@ pushd "$DIR/Tarballs"
         md5=""
         if [ -e "$GDB_PKG" ]; then
             md5="$($MD5SUM $GDB_PKG | cut -f1 -d' ')"
-            echo "bu md5='$md5'"
+            echo "gdb md5='$md5'"
         fi
         if [ "$md5" != ${GDB_MD5SUM} ] ; then
             rm -f $GDB_PKG
@@ -197,7 +200,7 @@ pushd "$DIR/Tarballs"
     md5=""
     if [ -e "$BINUTILS_PKG" ]; then
         md5="$($MD5SUM $BINUTILS_PKG | cut -f1 -d' ')"
-        echo "bu md5='$md5'"
+        echo "binutils md5='$md5'"
     fi
     if [ "$md5" != ${BINUTILS_MD5SUM} ] ; then
         rm -f $BINUTILS_PKG
@@ -209,7 +212,7 @@ pushd "$DIR/Tarballs"
     md5=""
     if [ -e "$GCC_PKG" ]; then
         md5="$($MD5SUM ${GCC_PKG} | cut -f1 -d' ')"
-        echo "gc md5='$md5'"
+        echo "gcc md5='$md5'"
     fi
     if [ "$md5" != ${GCC_MD5SUM} ] ; then
         rm -f $GCC_PKG
@@ -239,51 +242,63 @@ pushd "$DIR/Tarballs"
         popd
     fi
 
-    if [ -d ${BINUTILS_NAME} ]; then
-        rm -rf "${BINUTILS_NAME}"
-        rm -rf "$DIR/Build/$ARCH/$BINUTILS_NAME"
-    fi
-    echo "Extracting binutils..."
-    tar -xzf ${BINUTILS_PKG}
+    patch_md5="$(${MD5SUM} "${DIR}"/Patches/binutils/*.patch)"
 
-    pushd ${BINUTILS_NAME}
-        if [ "$git_patch" = "1" ]; then
-            git init > /dev/null
-            git add . > /dev/null
-            git commit -am "BASE" > /dev/null
-            git am "$DIR"/Patches/binutils.patch > /dev/null
-        else
-            patch -p1 < "$DIR"/Patches/binutils.patch > /dev/null
+    if [ ! -d "${BINUTILS_NAME}" ] || [ "$(cat ${BINUTILS_NAME}/.patch.applied)" != "${patch_md5}" ]; then
+        if [ -d ${BINUTILS_NAME} ]; then
+            rm -rf "${BINUTILS_NAME}"
+            rm -rf "${DIR}/Build/${ARCH}/${BINUTILS_NAME}"
         fi
-        $MD5SUM "$DIR"/Patches/binutils.patch > .patch.applied
-    popd
+        echo "Extracting binutils..."
+        tar -xzf ${BINUTILS_PKG}
 
-    if [ -d ${GCC_NAME} ]; then
-        # Drop the previously patched extracted dir
-        rm -rf "${GCC_NAME}"
-        # Also drop the build dir
-        rm -rf "$DIR/Build/$ARCH/$GCC_NAME"
-    fi
-    echo "Extracting gcc..."
-    tar -xzf $GCC_PKG
-    pushd $GCC_NAME
-        if [ "$git_patch" = "1" ]; then
-            git init > /dev/null
-            git add . > /dev/null
-            git commit -am "BASE" > /dev/null
-            git am "$DIR"/Patches/gcc-support-mold-linker.patch > /dev/null
-            git apply "$DIR"/Patches/gcc.patch > /dev/null
-        else
-            patch -p1 < "$DIR/Patches/gcc-support-mold-linker.patch" > /dev/null
-            patch -p1 < "$DIR/Patches/gcc.patch" > /dev/null
-        fi
-        $MD5SUM "$DIR/Patches/gcc.patch" "$DIR/Patches/gcc-support-mold-linker.patch" > .patch.applied
-    popd
-
-    if [ "$SYSTEM_NAME" = "Darwin" ]; then
-        pushd "gcc-${GCC_VERSION}"
-        ./contrib/download_prerequisites
+        pushd ${BINUTILS_NAME}
+            if [ "${git_patch}" = "1" ]; then
+                git init > /dev/null
+                git add . > /dev/null
+                git commit -am "BASE" > /dev/null
+                git am "${DIR}"/Patches/binutils/*.patch > /dev/null
+            else
+                for patch in "${DIR}"/Patches/binutils/*.patch; do
+                    patch -p1 < "${patch}" > /dev/null
+                done
+            fi
+            ${MD5SUM} "${DIR}"/Patches/binutils/*.patch > .patch.applied
         popd
+    else
+        echo "Using existing binutils source directory"
+    fi
+
+
+    patch_md5="$(${MD5SUM} "${DIR}"/Patches/gcc/*.patch)"
+
+    if [ ! -d "${GCC_NAME}" ] || [ "$(cat ${GCC_NAME}/.patch.applied)" != "${patch_md5}" ]; then
+        if [ -d ${GCC_NAME} ]; then
+            rm -rf "${GCC_NAME}"
+            rm -rf "${DIR}/Build/${ARCH}/${GCC_NAME}"
+        fi
+        echo "Extracting gcc..."
+        tar -xzf ${GCC_PKG}
+
+        pushd ${GCC_NAME}
+            if [ "${git_patch}" = "1" ]; then
+                git init > /dev/null
+                git add . > /dev/null
+                git commit -am "BASE" > /dev/null
+                git am --keep-non-patch "${DIR}"/Patches/gcc/*.patch > /dev/null
+            else
+                for patch in "${DIR}"/Patches/gcc/*.patch; do
+                    patch -p1 < "${patch}" > /dev/null
+                done
+            fi
+            ${MD5SUM} "${DIR}"/Patches/gcc/*.patch > .patch.applied
+
+            if [ "${SYSTEM_NAME}" = "Darwin" ]; then
+                ./contrib/download_prerequisites
+            fi
+        popd
+    else
+        echo "Using existing GCC source directory"
     fi
 popd
 
@@ -308,15 +323,34 @@ pushd "$DIR/Build/$ARCH"
 
         pushd gdb
             echo "XXX configure gdb"
-            buildstep "gdb/configure" "$DIR"/Tarballs/$GDB_NAME/configure --prefix="$PREFIX" \
-                                                     --target="$TARGET" \
-                                                     --with-sysroot="$SYSROOT" \
-                                                     --enable-shared \
-                                                     --disable-nls \
-                                                     ${TRY_USE_LOCAL_TOOLCHAIN:+"--quiet"} || exit 1
+
+
+            if [ "$SYSTEM_NAME" = "Darwin" ]; then
+                buildstep "gdb/configure" "$DIR"/Tarballs/$GDB_NAME/configure --prefix="$PREFIX" \
+                                                        --target="$TARGET" \
+                                                        --with-sysroot="$SYSROOT" \
+                                                        --enable-shared \
+                                                        --disable-werror \
+                                                        --with-libgmp-prefix="$(brew --prefix gmp)" \
+                                                        --with-gmp="$(brew --prefix gmp)" \
+                                                        --with-isl="$(brew --prefix isl)" \
+                                                        --with-mpc="$(brew --prefix libmpc)" \
+                                                        --with-mpfr="$(brew --prefix mpfr)" \
+                                                        --disable-nls \
+                                                        ${TRY_USE_LOCAL_TOOLCHAIN:+"--quiet"} || exit 1
+            else
+                buildstep "gdb/configure" "$DIR"/Tarballs/$GDB_NAME/configure --prefix="$PREFIX" \
+                                                        --target="$TARGET" \
+                                                        --with-sysroot="$SYSROOT" \
+                                                        --enable-shared \
+                                                        --disable-werror \
+                                                        --disable-nls \
+                                                        ${TRY_USE_LOCAL_TOOLCHAIN:+"--quiet"} || exit 1
+            fi
+
             echo "XXX build gdb"
-            buildstep "gdb/build" "$MAKE" -j "$MAKEJOBS" || exit 1
-            buildstep "gdb/install" "$MAKE" install || exit 1
+            buildstep "gdb/build" "$MAKE" MAKEINFO=true -j "$MAKEJOBS" || exit 1
+            buildstep "gdb/install" "$MAKE" MAKEINFO=true install || exit 1
         popd
     fi
 
@@ -325,6 +359,11 @@ pushd "$DIR/Build/$ARCH"
 
     pushd binutils
         echo "XXX configure binutils"
+
+        # We don't need the documentation that is being built, so
+        # don't force people to install makeinfo just for that.
+        export ac_cv_prog_MAKEINFO=true
+
         buildstep "binutils/configure" "$DIR"/Tarballs/$BINUTILS_NAME/configure --prefix="$PREFIX" \
                                                  --target="$TARGET" \
                                                  --with-sysroot="$SYSROOT" \
@@ -341,29 +380,34 @@ pushd "$DIR/Build/$ARCH"
             popd
         fi
         echo "XXX build binutils"
-        buildstep "binutils/build" "$MAKE" -j "$MAKEJOBS" || exit 1
-        buildstep "binutils/install" "$MAKE" install || exit 1
+        buildstep "binutils/build" "$MAKE" MAKEINFO=true -j "$MAKEJOBS" || exit 1
+        buildstep "binutils/install" "$MAKE" MAKEINFO=true install || exit 1
     popd
 
-    echo "XXX serenity libc, libm and libpthread headers"
+    echo "XXX serenity libc headers"
     mkdir -p "$BUILD"
     pushd "$BUILD"
         mkdir -p Root/usr/include/
         SRC_ROOT=$($REALPATH "$DIR"/..)
-        FILES=$(find "$SRC_ROOT"/Kernel/API "$SRC_ROOT"/Userland/Libraries/LibC "$SRC_ROOT"/Userland/Libraries/LibM "$SRC_ROOT"/Userland/Libraries/LibPthread -name '*.h' -print)
+        FILES=$(find \
+            "$SRC_ROOT"/AK \
+            "$SRC_ROOT"/Kernel/API \
+            "$SRC_ROOT"/Kernel/Arch \
+            "$SRC_ROOT"/Userland/Libraries/LibC \
+            -name '*.h' -print)
         for header in $FILES; do
-            target=$(echo "$header" | sed -e "s@$SRC_ROOT/Userland/Libraries/LibC@@" -e "s@$SRC_ROOT/Userland/Libraries/LibM@@" -e "s@$SRC_ROOT/Userland/Libraries/LibPthread@@" -e "s@$SRC_ROOT/Kernel/@Kernel/@")
-            buildstep "system_headers" $INSTALL -D "$header" "Root/usr/include/$target"
+            target=$(echo "$header" | sed \
+                -e "s@$SRC_ROOT/AK/@AK/@" \
+                -e "s@$SRC_ROOT/Userland/Libraries/LibC@@" \
+                -e "s@$SRC_ROOT/Kernel/@Kernel/@")
+            buildstep "system_headers" mkdir -p "$(dirname "Root/usr/include/$target")"
+            buildstep "system_headers" $INSTALL "$header" "Root/usr/include/$target"
         done
         unset SRC_ROOT
     popd
 
     if [ "$SYSTEM_NAME" = "OpenBSD" ]; then
         perl -pi -e 's/-no-pie/-nopie/g' "$DIR/Tarballs/gcc-$GCC_VERSION/gcc/configure"
-    fi
-
-    if [ ! -f "$DIR/Tarballs/gcc-$GCC_VERSION/gcc/config/serenity-userland.h" ]; then
-        cp "$DIR/Tarballs/gcc-$GCC_VERSION/gcc/config/serenity.h" "$DIR/Tarballs/gcc-$GCC_VERSION/gcc/config/serenity-kernel.h"
     fi
 
     rm -rf gcc
@@ -375,7 +419,6 @@ pushd "$DIR/Build/$ARCH"
                                             --target="$TARGET" \
                                             --with-sysroot="$SYSROOT" \
                                             --disable-nls \
-                                            --with-newlib \
                                             --enable-shared \
                                             --enable-languages=c,c++ \
                                             --enable-default-pie \

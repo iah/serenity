@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2023, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,10 +10,11 @@
 
 namespace JS::Intl {
 
-// 15.1.4 Number Format Functions, https://tc39.es/ecma402/#sec-number-format-functions
-NumberFormatFunction* NumberFormatFunction::create(GlobalObject& global_object, NumberFormat& number_format)
+// 15.5.2 Number Format Functions, https://tc39.es/ecma402/#sec-number-format-functions
+// 1.5.2 Number Format Functions, https://tc39.es/proposal-intl-numberformat-v3/out/numberformat/proposed.html#sec-number-format-functions
+NonnullGCPtr<NumberFormatFunction> NumberFormatFunction::create(Realm& realm, NumberFormat& number_format)
 {
-    return global_object.heap().allocate<NumberFormatFunction>(global_object, number_format, *global_object.function_prototype());
+    return realm.heap().allocate<NumberFormatFunction>(realm, number_format, *realm.intrinsics().function_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 NumberFormatFunction::NumberFormatFunction(NumberFormat& number_format, Object& prototype)
@@ -22,32 +23,32 @@ NumberFormatFunction::NumberFormatFunction(NumberFormat& number_format, Object& 
 {
 }
 
-void NumberFormatFunction::initialize(GlobalObject& global_object)
+ThrowCompletionOr<void> NumberFormatFunction::initialize(Realm& realm)
 {
     auto& vm = this->vm();
 
-    Base::initialize(global_object);
+    MUST_OR_THROW_OOM(Base::initialize(realm));
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-    define_direct_property(vm.names.name, js_string(vm, String::empty()), Attribute::Configurable);
+    define_direct_property(vm.names.name, PrimitiveString::create(vm, String {}), Attribute::Configurable);
+
+    return {};
 }
 
 ThrowCompletionOr<Value> NumberFormatFunction::call()
 {
-    auto& global_object = this->global_object();
-    auto& vm = global_object.vm();
+    auto& vm = this->vm();
 
     // 1. Let nf be F.[[NumberFormat]].
     // 2. Assert: Type(nf) is Object and nf has an [[InitializedNumberFormat]] internal slot.
     // 3. If value is not provided, let value be undefined.
     auto value = vm.argument(0);
 
-    // 4. Let x be ? ToNumeric(value).
-    value = TRY(value.to_numeric(global_object));
+    // 4. Let x be ? ToIntlMathematicalValue(value).
+    auto mathematical_value = TRY(to_intl_mathematical_value(vm, value));
 
     // 5. Return ? FormatNumeric(nf, x).
-    // Note: Our implementation of FormatNumeric does not throw.
-    auto formatted = format_numeric(global_object, m_number_format, value);
-    return js_string(vm, move(formatted));
+    auto formatted = TRY(format_numeric(vm, m_number_format, move(mathematical_value)));
+    return PrimitiveString::create(vm, move(formatted));
 }
 
 void NumberFormatFunction::visit_edges(Cell::Visitor& visitor)

@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/MemoryStream.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
-#include <LibCore/FileStream.h>
+#include <LibCore/MappedFile.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
 #include <LibWasm/AbstractMachine/AbstractMachine.h>
@@ -18,8 +19,8 @@
 #include <unistd.h>
 
 RefPtr<Line::Editor> g_line_editor;
-static auto g_stdout = Core::OutputFileStream::standard_error();
-static Wasm::Printer g_printer { g_stdout };
+static OwnPtr<Stream> g_stdout {};
+static OwnPtr<Wasm::Printer> g_printer {};
 static bool g_continue { false };
 static void (*old_signal)(int);
 static Wasm::DebuggerBytecodeInterpreter g_interpreter;
@@ -38,7 +39,7 @@ static bool post_interpret_hook(Wasm::Configuration&, Wasm::InstructionPointer& 
     if (interpreter.did_trap()) {
         g_continue = false;
         warnln("Trapped when executing ip={}", ip);
-        g_printer.print(instr);
+        g_printer->print(instr);
         warnln("Trap reason: {}", interpreter.trap_reason());
         const_cast<Wasm::Interpreter&>(interpreter).clear_trap();
     }
@@ -52,14 +53,14 @@ static bool pre_interpret_hook(Wasm::Configuration& config, Wasm::InstructionPoi
     if (always_print_stack)
         config.dump_stack();
     if (always_print_instruction) {
-        g_stdout.write(String::formatted("{:0>4} ", ip.value()).bytes());
-        g_printer.print(instr);
+        g_stdout->write(DeprecatedString::formatted("{:0>4} ", ip.value()).bytes()).release_value_but_fixme_should_propagate_errors();
+        g_printer->print(instr);
     }
     if (g_continue)
         return true;
-    g_stdout.write(String::formatted("{:0>4} ", ip.value()).bytes());
-    g_printer.print(instr);
-    String last_command = "";
+    g_stdout->write(DeprecatedString::formatted("{:0>4} ", ip.value()).bytes()).release_value_but_fixme_should_propagate_errors();
+    g_printer->print(instr);
+    DeprecatedString last_command = "";
     for (;;) {
         auto result = g_line_editor->get_line("> ");
         if (result.is_error()) {
@@ -131,7 +132,7 @@ static bool pre_interpret_hook(Wasm::Configuration& config, Wasm::InstructionPoi
                 continue;
             }
             if (what.is_one_of("i", "instr", "instruction")) {
-                g_printer.print(instr);
+                g_printer->print(instr);
                 continue;
             }
             if (what.is_one_of("f", "func", "function")) {
@@ -154,7 +155,7 @@ static bool pre_interpret_hook(Wasm::Configuration& config, Wasm::InstructionPoi
                     continue;
                 }
                 if (auto* fn_value = fn->get_pointer<Wasm::WasmFunction>()) {
-                    g_printer.print(fn_value->code());
+                    g_printer->print(fn_value->code());
                     continue;
                 }
             }
@@ -205,15 +206,17 @@ static bool pre_interpret_hook(Wasm::Configuration& config, Wasm::InstructionPoi
             Wasm::Result result { Wasm::Trap {} };
             {
                 Wasm::BytecodeInterpreter::CallFrameHandle handle { g_interpreter, config };
-                result = config.call(g_interpreter, *address, move(values));
+                result = config.call(g_interpreter, *address, move(values)).assert_wasm_result();
             }
-            if (result.is_trap())
+            if (result.is_trap()) {
                 warnln("Execution trapped: {}", result.trap().reason);
-            if (!result.values().is_empty())
-                warnln("Returned:");
-            for (auto& value : result.values()) {
-                g_stdout.write("  -> "sv.bytes());
-                g_printer.print(value);
+            } else {
+                if (!result.values().is_empty())
+                    warnln("Returned:");
+                for (auto& value : result.values()) {
+                    g_stdout->write("  -> "sv.bytes()).release_value_but_fixme_should_propagate_errors();
+                    g_printer->print(value);
+                }
             }
             continue;
         }
@@ -245,17 +248,17 @@ static bool pre_interpret_hook(Wasm::Configuration& config, Wasm::InstructionPoi
 
 static Optional<Wasm::Module> parse(StringView filename)
 {
-    auto result = Core::File::open(filename, Core::OpenMode::ReadOnly);
+    auto result = Core::MappedFile::map(filename);
     if (result.is_error()) {
         warnln("Failed to open {}: {}", filename, result.error());
         return {};
     }
 
-    auto stream = Core::InputFileStream(result.release_value());
+    FixedMemoryStream stream { ReadonlyBytes { result.value()->data(), result.value()->size() } };
     auto parse_result = Wasm::Module::parse(stream);
     if (parse_result.is_error()) {
         warnln("Something went wrong, either the file is invalid, or there's a bug with LibWasm!");
-        warnln("The parse error was {}", Wasm::parse_error_to_string(parse_result.error()));
+        warnln("The parse error was {}", Wasm::parse_error_to_deprecated_string(parse_result.error()));
         return {};
     }
     return parse_result.release_value();
@@ -269,15 +272,15 @@ static void print_link_error(Wasm::LinkError const& error)
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    char const* filename = nullptr;
+    StringView filename;
     bool print = false;
     bool attempt_instantiate = false;
     bool debug = false;
     bool export_all_imports = false;
     bool shell_mode = false;
-    String exported_function_to_execute;
+    DeprecatedString exported_function_to_execute;
     Vector<u64> values_to_push;
-    Vector<String> modules_to_link_in;
+    Vector<DeprecatedString> modules_to_link_in;
 
     Core::ArgsParser parser;
     parser.add_positional_argument(filename, "File name to parse", "file");
@@ -288,27 +291,27 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     parser.add_option(export_all_imports, "Export noop functions corresponding to imports", "export-noop", 0);
     parser.add_option(shell_mode, "Launch a REPL in the module's context (implies -i)", "shell", 's');
     parser.add_option(Core::ArgsParser::Option {
-        .requires_argument = true,
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
         .help_string = "Extra modules to link with, use to resolve imports",
         .long_name = "link",
         .short_name = 'l',
         .value_name = "file",
-        .accept_value = [&](char const* str) {
-            if (auto v = StringView { str }; !v.is_empty()) {
-                modules_to_link_in.append(v);
+        .accept_value = [&](StringView str) {
+            if (!str.is_empty()) {
+                modules_to_link_in.append(str);
                 return true;
             }
             return false;
         },
     });
     parser.add_option(Core::ArgsParser::Option {
-        .requires_argument = true,
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
         .help_string = "Supply arguments to the function (default=0) (expects u64, casts to required type)",
         .long_name = "arg",
         .short_name = 0,
         .value_name = "u64",
-        .accept_value = [&](char const* str) -> bool {
-            if (auto v = StringView { str }.to_uint<u64>(); v.has_value()) {
+        .accept_value = [&](StringView str) -> bool {
+            if (auto v = str.to_uint<u64>(); v.has_value()) {
                 values_to_push.append(v.value());
                 return true;
             }
@@ -338,9 +341,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (!parse_result.has_value())
         return 1;
 
+    g_stdout = TRY(Core::File::standard_output());
+    g_printer = TRY(try_make<Wasm::Printer>(*g_stdout));
+
     if (print && !attempt_instantiate) {
-        auto out_stream = Core::OutputFileStream::standard_output();
-        Wasm::Printer printer(out_stream);
+        Wasm::Printer printer(*g_stdout);
         printer.print(parse_result.value());
     }
 
@@ -354,7 +359,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
         // First, resolve the linked modules
-        NonnullOwnPtrVector<Wasm::ModuleInstance> linked_instances;
+        Vector<NonnullOwnPtr<Wasm::ModuleInstance>> linked_instances;
         Vector<Wasm::Module> linked_modules;
         for (auto& name : modules_to_link_in) {
             auto parse_result = parse(name);
@@ -365,7 +370,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             linked_modules.append(parse_result.release_value());
             Wasm::Linker linker { linked_modules.last() };
             for (auto& instance : linked_instances)
-                linker.link(instance);
+                linker.link(*instance);
             auto link_result = linker.finish();
             if (link_result.is_error()) {
                 warnln("Linking imported module '{}' failed", name);
@@ -382,7 +387,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         Wasm::Linker linker { parse_result.value() };
         for (auto& instance : linked_instances)
-            linker.link(instance);
+            linker.link(*instance);
 
         if (export_all_imports) {
             HashMap<Wasm::Linker::Name, Wasm::ExternValue> exports;
@@ -395,16 +400,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                         StringBuilder argument_builder;
                         bool first = true;
                         for (auto& argument : arguments) {
-                            DuplexMemoryStream stream;
+                            AllocatingMemoryStream stream;
                             Wasm::Printer { stream }.print(argument);
                             if (first)
                                 first = false;
                             else
                                 argument_builder.append(", "sv);
-                            ByteBuffer buffer = stream.copy_into_contiguous_buffer();
+                            auto buffer = ByteBuffer::create_uninitialized(stream.used_buffer_size()).release_value_but_fixme_should_propagate_errors();
+                            stream.read_entire_buffer(buffer).release_value_but_fixme_should_propagate_errors();
                             argument_builder.append(StringView(buffer).trim_whitespace());
                         }
-                        dbgln("[wasm runtime] Stub function {} was called with the following arguments: {}", name, argument_builder.to_string());
+                        dbgln("[wasm runtime] Stub function {} was called with the following arguments: {}", name, argument_builder.to_deprecated_string());
                         Vector<Wasm::Value> result;
                         result.ensure_capacity(type.results().size());
                         for (auto& result_type : type.results())
@@ -446,18 +452,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             pre_interpret_hook(config, ip, instr);
         };
 
-        auto stream = Core::OutputFileStream::standard_output();
         auto print_func = [&](auto const& address) {
             Wasm::FunctionInstance* fn = machine.store().get(address);
-            stream.write(String::formatted("- Function with address {}, ptr = {}\n", address.value(), fn).bytes());
+            g_stdout->write(DeprecatedString::formatted("- Function with address {}, ptr = {}\n", address.value(), fn).bytes()).release_value_but_fixme_should_propagate_errors();
             if (fn) {
-                stream.write(String::formatted("    wasm function? {}\n", fn->has<Wasm::WasmFunction>()).bytes());
+                g_stdout->write(DeprecatedString::formatted("    wasm function? {}\n", fn->has<Wasm::WasmFunction>()).bytes()).release_value_but_fixme_should_propagate_errors();
                 fn->visit(
                     [&](Wasm::WasmFunction const& func) {
-                        Wasm::Printer printer { stream, 3 };
-                        stream.write("    type:\n"sv.bytes());
+                        Wasm::Printer printer { *g_stdout, 3 };
+                        g_stdout->write("    type:\n"sv.bytes()).release_value_but_fixme_should_propagate_errors();
                         printer.print(func.type());
-                        stream.write("    code:\n"sv.bytes());
+                        g_stdout->write("    code:\n"sv.bytes()).release_value_but_fixme_should_propagate_errors();
                         printer.print(func.code());
                     },
                     [](Wasm::HostFunction const&) {});
@@ -510,7 +515,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 outln();
             }
 
-            auto result = machine.invoke(g_interpreter, run_address.value(), move(values));
+            auto result = machine.invoke(g_interpreter, run_address.value(), move(values)).assert_wasm_result();
 
             if (debug)
                 launch_repl();
@@ -521,9 +526,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 if (!result.values().is_empty())
                     warnln("Returned:");
                 for (auto& value : result.values()) {
-                    Wasm::Printer printer { stream };
-                    g_stdout.write("  -> "sv.bytes());
-                    g_printer.print(value);
+                    g_stdout->write("  -> "sv.bytes()).release_value_but_fixme_should_propagate_errors();
+                    g_printer->print(value);
                 }
             }
         }

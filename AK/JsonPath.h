@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 
@@ -34,7 +34,7 @@ public:
     }
 
     Kind kind() const { return m_kind; }
-    const String& key() const
+    DeprecatedString const& key() const
     {
         VERIFY(m_kind == Kind::Key);
         return m_key;
@@ -46,13 +46,13 @@ public:
         return m_index;
     }
 
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
         switch (m_kind) {
         case Kind::Key:
             return key();
         case Kind::Index:
-            return String::number(index());
+            return DeprecatedString::number(index());
         default:
             return "*";
         }
@@ -61,7 +61,7 @@ public:
     static JsonPathElement any_array_element;
     static JsonPathElement any_object_element;
 
-    bool operator==(const JsonPathElement& other) const
+    bool operator==(JsonPathElement const& other) const
     {
         switch (other.kind()) {
         case Kind::Key:
@@ -75,14 +75,10 @@ public:
         }
         return false;
     }
-    bool operator!=(const JsonPathElement& other) const
-    {
-        return !(*this == other);
-    }
 
 private:
     Kind m_kind;
-    String m_key;
+    DeprecatedString m_key;
     size_t m_index { 0 };
 
     JsonPathElement(Kind kind)
@@ -93,11 +89,13 @@ private:
 
 class JsonPath : public Vector<JsonPathElement> {
 public:
-    JsonValue resolve(const JsonValue&) const;
-    String to_string() const;
+    JsonValue resolve(JsonValue const&) const;
+    DeprecatedString to_deprecated_string() const;
 };
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::JsonPath;
 using AK::JsonPathElement;
+#endif

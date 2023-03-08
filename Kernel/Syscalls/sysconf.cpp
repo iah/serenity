@@ -12,7 +12,7 @@ namespace Kernel {
 
 ErrorOr<FlatPtr> Process::sys$sysconf(int name)
 {
-    VERIFY_NO_PROCESS_BIG_LOCK(this)
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     switch (name) {
     case _SC_MONOTONIC_CLOCK:
         return 1;
@@ -35,6 +35,8 @@ ErrorOr<FlatPtr> Process::sys$sysconf(int name)
         return Kernel::VirtualFileSystem::symlink_recursion_limit;
     case _SC_ARG_MAX:
         return Process::max_arguments_size;
+    case _SC_IOV_MAX:
+        return IOV_MAX;
     default:
         return EINVAL;
     }

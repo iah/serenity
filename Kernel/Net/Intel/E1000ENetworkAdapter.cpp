@@ -181,48 +181,44 @@ static bool is_valid_device_id(u16 device_id)
     }
 }
 
-UNMAP_AFTER_INIT RefPtr<E1000ENetworkAdapter> E1000ENetworkAdapter::try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier)
+UNMAP_AFTER_INIT ErrorOr<bool> E1000ENetworkAdapter::probe(PCI::DeviceIdentifier const& pci_device_identifier)
 {
     if (pci_device_identifier.hardware_id().vendor_id != PCI::VendorID::Intel)
-        return {};
-    if (!is_valid_device_id(pci_device_identifier.hardware_id().device_id))
-        return {};
-    u8 irq = pci_device_identifier.interrupt_line().value();
-    // FIXME: Better propagate errors here
-    auto interface_name_or_error = NetworkingManagement::generate_interface_name_from_pci_address(pci_device_identifier);
-    if (interface_name_or_error.is_error())
-        return {};
-    auto adapter = adopt_ref_if_nonnull(new (nothrow) E1000ENetworkAdapter(pci_device_identifier.address(), irq, interface_name_or_error.release_value()));
-    if (!adapter)
-        return {};
-    if (adapter->initialize())
-        return adapter;
-    return {};
+        return false;
+    return is_valid_device_id(pci_device_identifier.hardware_id().device_id);
 }
 
-UNMAP_AFTER_INIT bool E1000ENetworkAdapter::initialize()
+UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<NetworkAdapter>> E1000ENetworkAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
 {
-    dmesgln("E1000e: Found @ {}", pci_address());
+    u8 irq = pci_device_identifier.interrupt_line().value();
+    auto interface_name = TRY(NetworkingManagement::generate_interface_name_from_pci_address(pci_device_identifier));
+    auto registers_io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR0));
 
-    m_io_base = IOAddress(PCI::get_BAR2(pci_address()) & ~1);
+    auto rx_buffer_region = TRY(MM.allocate_contiguous_kernel_region(rx_buffer_size * number_of_rx_descriptors, "E1000 RX buffers"sv, Memory::Region::Access::ReadWrite));
+    auto tx_buffer_region = MM.allocate_contiguous_kernel_region(tx_buffer_size * number_of_tx_descriptors, "E1000 TX buffers"sv, Memory::Region::Access::ReadWrite).release_value();
+    auto rx_descriptors_region = TRY(MM.allocate_contiguous_kernel_region(TRY(Memory::page_round_up(sizeof(e1000_rx_desc) * number_of_rx_descriptors)), "E1000 RX Descriptors"sv, Memory::Region::Access::ReadWrite));
+    auto tx_descriptors_region = TRY(MM.allocate_contiguous_kernel_region(TRY(Memory::page_round_up(sizeof(e1000_tx_desc) * number_of_tx_descriptors)), "E1000 TX Descriptors"sv, Memory::Region::Access::ReadWrite));
 
-    enable_bus_mastering(pci_address());
+    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) E1000ENetworkAdapter(pci_device_identifier,
+        irq, move(registers_io_window),
+        move(rx_buffer_region),
+        move(tx_buffer_region),
+        move(rx_descriptors_region),
+        move(tx_descriptors_region),
+        move(interface_name))));
+}
 
-    size_t mmio_base_size = PCI::get_BAR_space_size(pci_address(), 0);
-    auto region_or_error = MM.allocate_kernel_region(PhysicalAddress(page_base_of(PCI::get_BAR0(pci_address()))), Memory::page_round_up(mmio_base_size).release_value_but_fixme_should_propagate_errors(), "E1000e MMIO", Memory::Region::Access::ReadWrite, Memory::Region::Cacheable::No);
-    if (region_or_error.is_error())
-        return false;
-    m_mmio_region = region_or_error.release_value();
-    m_mmio_base = m_mmio_region->vaddr();
-    m_use_mmio = true;
-    dmesgln("E1000e: port base: {}", m_io_base);
-    dmesgln("E1000e: MMIO base: {}", PhysicalAddress(PCI::get_BAR0(pci_address()) & 0xfffffffc));
-    dmesgln("E1000e: MMIO base size: {} bytes", mmio_base_size);
+UNMAP_AFTER_INIT ErrorOr<void> E1000ENetworkAdapter::initialize(Badge<NetworkingManagement>)
+{
+    dmesgln("E1000e: Found @ {}", device_identifier().address());
+    enable_bus_mastering(device_identifier());
+
+    dmesgln("E1000e: IO base: {}", m_registers_io_window);
     dmesgln("E1000e: Interrupt line: {}", interrupt_number());
     detect_eeprom();
     dmesgln("E1000e: Has EEPROM? {}", m_has_eeprom);
     read_mac_address();
-    const auto& mac = mac_address();
+    auto const& mac = mac_address();
     dmesgln("E1000e: MAC address: {}", mac.to_string());
 
     initialize_rx_descriptors();
@@ -230,17 +226,23 @@ UNMAP_AFTER_INIT bool E1000ENetworkAdapter::initialize()
 
     setup_link();
     setup_interrupts();
-    return true;
+    return {};
 }
 
-UNMAP_AFTER_INIT E1000ENetworkAdapter::E1000ENetworkAdapter(PCI::Address address, u8 irq, NonnullOwnPtr<KString> interface_name)
-    : E1000NetworkAdapter(address, irq, move(interface_name))
+UNMAP_AFTER_INIT E1000ENetworkAdapter::E1000ENetworkAdapter(PCI::DeviceIdentifier const& device_identifier, u8 irq,
+    NonnullOwnPtr<IOWindow> registers_io_window, NonnullOwnPtr<Memory::Region> rx_buffer_region,
+    NonnullOwnPtr<Memory::Region> tx_buffer_region, NonnullOwnPtr<Memory::Region> rx_descriptors_region,
+    NonnullOwnPtr<Memory::Region> tx_descriptors_region, NonnullOwnPtr<KString> interface_name)
+    : E1000NetworkAdapter(device_identifier, irq, move(registers_io_window),
+        move(rx_buffer_region),
+        move(tx_buffer_region),
+        move(rx_descriptors_region),
+        move(tx_descriptors_region),
+        move(interface_name))
 {
 }
 
-UNMAP_AFTER_INIT E1000ENetworkAdapter::~E1000ENetworkAdapter()
-{
-}
+UNMAP_AFTER_INIT E1000ENetworkAdapter::~E1000ENetworkAdapter() = default;
 
 UNMAP_AFTER_INIT void E1000ENetworkAdapter::detect_eeprom()
 {

@@ -17,7 +17,7 @@
 
 namespace HackStudio {
 
-DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, const PtraceRegisters& regs)
+DisassemblyModel::DisassemblyModel(Debug::DebugSession const& debug_session, PtraceRegisters const& regs)
 {
     auto lib = debug_session.library_at(regs.ip());
     if (!lib)
@@ -34,7 +34,7 @@ DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, con
     auto maybe_kernel_base = Symbolication::kernel_base();
 
     if (maybe_kernel_base.has_value() && containing_function.value().address_low >= maybe_kernel_base.value()) {
-        auto file_or_error = Core::MappedFile::map("/boot/Kernel.debug");
+        auto file_or_error = Core::MappedFile::map("/boot/Kernel.debug"sv);
         if (file_or_error.is_error())
             return;
         kernel_elf = make<ELF::Image>(file_or_error.value()->bytes());
@@ -51,7 +51,7 @@ DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, con
     auto view = symbol.value().raw_data();
 
     X86::ELFSymbolProvider symbol_provider(*elf);
-    X86::SimpleInstructionStream stream((const u8*)view.characters_without_null_termination(), view.length());
+    X86::SimpleInstructionStream stream((u8 const*)view.characters_without_null_termination(), view.length());
     X86::Disassembler disassembler(stream);
 
     size_t offset_into_symbol = 0;
@@ -60,7 +60,7 @@ DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, con
         if (!insn.has_value())
             break;
         FlatPtr address_in_profiled_program = symbol.value().value() + offset_into_symbol;
-        auto disassembly = insn.value().to_string(address_in_profiled_program, &symbol_provider);
+        auto disassembly = insn.value().to_deprecated_string(address_in_profiled_program, &symbol_provider);
         StringView instruction_bytes = view.substring_view(offset_into_symbol, insn.value().length());
         m_instructions.append({ insn.value(), disassembly, instruction_bytes, address_in_profiled_program });
 
@@ -73,7 +73,7 @@ int DisassemblyModel::row_count(const GUI::ModelIndex&) const
     return m_instructions.size();
 }
 
-String DisassemblyModel::column_name(int column) const
+DeprecatedString DisassemblyModel::column_name(int column) const
 {
     switch (column) {
     case Column::Address:
@@ -94,12 +94,12 @@ GUI::Variant DisassemblyModel::data(const GUI::ModelIndex& index, GUI::ModelRole
 
     if (role == GUI::ModelRole::Display) {
         if (index.column() == Column::Address)
-            return String::formatted("{:p}", insn.address);
+            return DeprecatedString::formatted("{:p}", insn.address);
         if (index.column() == Column::InstructionBytes) {
             StringBuilder builder;
             for (auto ch : insn.bytes)
                 builder.appendff("{:02x} ", static_cast<unsigned char>(ch));
-            return builder.to_string();
+            return builder.to_deprecated_string();
         }
         if (index.column() == Column::Disassembly)
             return insn.disassembly;

@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/RefPtr.h>
 #include <AK/Singleton.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
@@ -13,16 +14,16 @@
 
 namespace Kernel {
 
-static Singleton<MutexProtected<Custody::AllCustodiesList>> s_all_instances;
+static Singleton<SpinlockProtected<Custody::AllCustodiesList, LockRank::None>> s_all_instances;
 
-MutexProtected<Custody::AllCustodiesList>& Custody::all_instances()
+SpinlockProtected<Custody::AllCustodiesList, LockRank::None>& Custody::all_instances()
 {
     return s_all_instances;
 }
 
 ErrorOr<NonnullRefPtr<Custody>> Custody::try_create(Custody* parent, StringView name, Inode& inode, int mount_flags)
 {
-    return all_instances().with_exclusive([&](auto& all_custodies) -> ErrorOr<NonnullRefPtr<Custody>> {
+    return all_instances().with([&](auto& all_custodies) -> ErrorOr<NonnullRefPtr<Custody>> {
         for (Custody& custody : all_custodies) {
             if (custody.parent() == parent
                 && custody.name() == name
@@ -47,9 +48,7 @@ Custody::Custody(Custody* parent, NonnullOwnPtr<KString> name, Inode& inode, int
 {
 }
 
-Custody::~Custody()
-{
-}
+Custody::~Custody() = default;
 
 ErrorOr<NonnullOwnPtr<KString>> Custody::try_serialize_absolute_path() const
 {

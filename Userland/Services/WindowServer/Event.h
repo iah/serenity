@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <Kernel/API/KeyCode.h>
 #include <LibCore/Event.h>
 #include <LibCore/MimeData.h>
@@ -31,24 +31,25 @@ public:
         KeyUp,
         WindowActivated,
         WindowDeactivated,
-        WindowInputEntered,
-        WindowInputLeft,
+        WindowInputPreempted,
+        WindowInputRestored,
         WindowCloseRequest,
         WindowResized,
+        WindowMoved,
     };
 
-    Event() { }
+    Event() = default;
     explicit Event(Type type)
         : Core::Event(type)
     {
     }
-    virtual ~Event() { }
+    virtual ~Event() = default;
 
     bool is_mouse_event() const { return type() == MouseMove || type() == MouseDown || type() == MouseDoubleClick || type() == MouseUp || type() == MouseWheel; }
     bool is_key_event() const { return type() == KeyUp || type() == KeyDown; }
 };
 
-enum class MouseButton : u8 {
+enum MouseButton : u8 {
     None = 0,
     Primary = 1,
     Secondary = 2,
@@ -88,7 +89,7 @@ private:
 
 class MouseEvent final : public Event {
 public:
-    MouseEvent(Type type, const Gfx::IntPoint& position, unsigned buttons, MouseButton button, unsigned modifiers, int wheel_delta_x = 0, int wheel_delta_y = 0)
+    MouseEvent(Type type, Gfx::IntPoint position, unsigned buttons, MouseButton button, unsigned modifiers, int wheel_delta_x = 0, int wheel_delta_y = 0, int wheel_raw_delta_x = 0, int wheel_raw_delta_y = 0)
         : Event(type)
         , m_position(position)
         , m_buttons(buttons)
@@ -96,10 +97,12 @@ public:
         , m_modifiers(modifiers)
         , m_wheel_delta_x(wheel_delta_x)
         , m_wheel_delta_y(wheel_delta_y)
+        , m_wheel_raw_delta_x(wheel_raw_delta_x)
+        , m_wheel_raw_delta_y(wheel_raw_delta_y)
     {
     }
 
-    const Gfx::IntPoint& position() const { return m_position; }
+    Gfx::IntPoint position() const { return m_position; }
     int x() const { return m_position.x(); }
     int y() const { return m_position.y(); }
     MouseButton button() const { return m_button; }
@@ -107,9 +110,11 @@ public:
     unsigned modifiers() const { return m_modifiers; }
     int wheel_delta_x() const { return m_wheel_delta_x; }
     int wheel_delta_y() const { return m_wheel_delta_y; }
+    int wheel_raw_delta_x() const { return m_wheel_raw_delta_x; }
+    int wheel_raw_delta_y() const { return m_wheel_raw_delta_y; }
     bool is_drag() const { return m_drag; }
 
-    Vector<String> mime_types() const
+    Vector<DeprecatedString> mime_types() const
     {
         if (!m_mime_data)
             return {};
@@ -117,9 +122,9 @@ public:
     }
 
     void set_drag(bool b) { m_drag = b; }
-    void set_mime_data(const Core::MimeData& mime_data) { m_mime_data = mime_data; }
+    void set_mime_data(Core::MimeData const& mime_data) { m_mime_data = mime_data; }
 
-    MouseEvent translated(Gfx::IntPoint const& delta) const
+    MouseEvent translated(Gfx::IntPoint delta) const
     {
         MouseEvent event = *this;
         event.m_position = m_position.translated(delta);
@@ -133,19 +138,35 @@ private:
     unsigned m_modifiers { 0 };
     int m_wheel_delta_x { 0 };
     int m_wheel_delta_y { 0 };
+    int m_wheel_raw_delta_x { 0 };
+    int m_wheel_raw_delta_y { 0 };
     bool m_drag { false };
     RefPtr<const Core::MimeData> m_mime_data;
 };
 
 class ResizeEvent final : public Event {
 public:
-    ResizeEvent(const Gfx::IntRect& rect)
+    ResizeEvent(Gfx::IntRect const& rect)
         : Event(Event::WindowResized)
         , m_rect(rect)
     {
     }
 
-    const Gfx::IntRect& rect() const { return m_rect; }
+    Gfx::IntRect const& rect() const { return m_rect; }
+
+private:
+    Gfx::IntRect m_rect;
+};
+
+class MoveEvent final : public Event {
+public:
+    MoveEvent(Gfx::IntRect const& rect)
+        : Event(Event::WindowMoved)
+        , m_rect(rect)
+    {
+    }
+
+    Gfx::IntRect const& rect() const { return m_rect; }
 
 private:
     Gfx::IntRect m_rect;

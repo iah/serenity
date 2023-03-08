@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/ScopeGuard.h>
-#include <AK/String.h>
+#include <LibCore/File.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/System.h>
 #include <fcntl.h>
@@ -14,13 +15,18 @@
 
 namespace Core {
 
-ErrorOr<NonnullRefPtr<MappedFile>> MappedFile::map(String const& path)
+ErrorOr<NonnullRefPtr<MappedFile>> MappedFile::map(StringView path)
 {
     auto fd = TRY(Core::System::open(path, O_RDONLY | O_CLOEXEC, 0));
     return map_from_fd_and_close(fd, path);
 }
 
-ErrorOr<NonnullRefPtr<MappedFile>> MappedFile::map_from_fd_and_close(int fd, [[maybe_unused]] String const& path)
+ErrorOr<NonnullRefPtr<MappedFile>> MappedFile::map_from_file(NonnullOwnPtr<Core::File> stream, StringView path)
+{
+    return map_from_fd_and_close(stream->leak_fd(Badge<MappedFile> {}), path);
+}
+
+ErrorOr<NonnullRefPtr<MappedFile>> MappedFile::map_from_fd_and_close(int fd, [[maybe_unused]] StringView path)
 {
     TRY(Core::System::fcntl(fd, F_SETFD, FD_CLOEXEC));
 
@@ -44,7 +50,9 @@ MappedFile::MappedFile(void* ptr, size_t size)
 
 MappedFile::~MappedFile()
 {
-    MUST(Core::System::munmap(m_data, m_size));
+    auto res = Core::System::munmap(m_data, m_size);
+    if (res.is_error())
+        dbgln("Failed to unmap MappedFile (@ {:p}): {}", m_data, res.error());
 }
 
 }

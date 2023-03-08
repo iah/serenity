@@ -5,8 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "MainWidget.h"
 #include "ViewWidget.h"
 #include <AK/URL.h>
+#include <LibConfig/Client.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibDesktop/Launcher.h>
@@ -39,13 +41,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto app = TRY(GUI::Application::try_create(arguments));
 
+    Config::pledge_domain("ImageViewer");
+
+    app->set_config_domain(TRY("ImageViewer"_string));
+
     TRY(Desktop::Launcher::add_allowed_handler_with_any_url("/bin/ImageViewer"));
-    TRY(Desktop::Launcher::add_allowed_handler_with_only_specific_urls("/bin/Help", { URL::create_with_file_protocol("/usr/share/man/man1/ImageViewer.md") }));
+    TRY(Desktop::Launcher::add_allowed_handler_with_only_specific_urls("/bin/Help", { URL::create_with_file_scheme("/usr/share/man/man1/ImageViewer.md") }));
     TRY(Desktop::Launcher::seal_allowlist());
 
-    auto app_icon = GUI::Icon::default_icon("filetype-image");
+    auto app_icon = GUI::Icon::default_icon("filetype-image"sv);
 
-    const char* path = nullptr;
+    StringView path;
     Core::ArgsParser args_parser;
     args_parser.add_positional_argument(path, "The image file to be displayed.", "file", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
@@ -56,16 +62,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     window->set_icon(app_icon.bitmap_for_size(16));
     window->set_title("Image Viewer");
 
-    auto root_widget = TRY(window->try_set_main_widget<GUI::Widget>());
-    root_widget->set_fill_with_background_color(true);
-    root_widget->set_layout<GUI::VerticalBoxLayout>();
-    root_widget->layout()->set_spacing(2);
+    auto root_widget = TRY(window->set_main_widget<MainWidget>());
 
     auto toolbar_container = TRY(root_widget->try_add<GUI::ToolbarContainer>());
     auto main_toolbar = TRY(toolbar_container->try_add<GUI::Toolbar>());
 
     auto widget = TRY(root_widget->try_add<ViewWidget>());
-    if (path) {
+    if (!path.is_empty()) {
         widget->set_path(path);
     }
     widget->on_scale_change = [&](float scale) {
@@ -74,7 +77,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             return;
         }
 
-        window->set_title(String::formatted("{} {} {}% - Image Viewer", widget->path(), widget->bitmap()->size().to_string(), (int)(scale * 100)));
+        window->set_title(DeprecatedString::formatted("{} {} {}% - Image Viewer", widget->path(), widget->bitmap()->size().to_deprecated_string(), (int)(scale * 100)));
 
         if (!widget->scaled_for_first_image()) {
             widget->set_scaled_for_first_image(true);
@@ -97,7 +100,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         widget->load_from_file(path);
 
         for (size_t i = 1; i < urls.size(); ++i) {
-            Desktop::Launcher::open(URL::create_with_file_protocol(urls[i].path().characters()), "/bin/ImageViewer");
+            Desktop::Launcher::open(URL::create_with_file_scheme(urls[i].path().characters()), "/bin/ImageViewer");
         }
     };
     widget->on_doubleclick = [&] {
@@ -123,19 +126,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 return;
 
             auto msgbox_result = GUI::MessageBox::show(window,
-                String::formatted("Are you sure you want to delete {}?", path),
-                "Confirm deletion",
+                DeprecatedString::formatted("Are you sure you want to delete {}?", path),
+                "Confirm deletion"sv,
                 GUI::MessageBox::Type::Warning,
                 GUI::MessageBox::InputType::OKCancel);
 
-            if (msgbox_result == GUI::MessageBox::ExecCancel)
+            if (msgbox_result == GUI::MessageBox::ExecResult::Cancel)
                 return;
 
             auto unlinked_or_error = Core::System::unlink(widget->path());
             if (unlinked_or_error.is_error()) {
                 GUI::MessageBox::show(window,
-                    String::formatted("unlink({}) failed: {}", path, unlinked_or_error.error()),
-                    "Delete failed",
+                    DeprecatedString::formatted("unlink({}) failed: {}", path, unlinked_or_error.error()),
+                    "Delete failed"sv,
                     GUI::MessageBox::Type::Error);
 
                 return;
@@ -157,42 +160,42 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         widget->rotate(Gfx::RotationDirection::Clockwise);
     });
 
-    auto vertical_flip_action = GUI::Action::create("Flip &Vertically", { Mod_None, Key_V }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/edit-flip-vertical.png")),
+    auto vertical_flip_action = GUI::Action::create("Flip &Vertically", { Mod_None, Key_V }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/edit-flip-vertical.png"sv)),
         [&](auto&) {
             widget->flip(Gfx::Orientation::Vertical);
         });
 
-    auto horizontal_flip_action = GUI::Action::create("Flip &Horizontally", { Mod_None, Key_H }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/edit-flip-horizontal.png")),
+    auto horizontal_flip_action = GUI::Action::create("Flip &Horizontally", { Mod_None, Key_H }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/edit-flip-horizontal.png"sv)),
         [&](auto&) {
             widget->flip(Gfx::Orientation::Horizontal);
         });
 
-    auto desktop_wallpaper_action = GUI::Action::create("Set as Desktop &Wallpaper", TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-display-settings.png")),
+    auto desktop_wallpaper_action = GUI::Action::create("Set as Desktop &Wallpaper", TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-display-settings.png"sv)),
         [&](auto&) {
             if (!GUI::Desktop::the().set_wallpaper(widget->bitmap(), widget->path())) {
                 GUI::MessageBox::show(window,
-                    String::formatted("set_wallpaper({}) failed", widget->path()),
-                    "Could not set wallpaper",
+                    DeprecatedString::formatted("set_wallpaper({}) failed", widget->path()),
+                    "Could not set wallpaper"sv,
                     GUI::MessageBox::Type::Error);
             }
         });
 
-    auto go_first_action = GUI::Action::create("&Go to First", { Mod_None, Key_Home }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-first.png")),
+    auto go_first_action = GUI::Action::create("&Go to First", { Mod_None, Key_Home }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-first.png"sv)),
         [&](auto&) {
             widget->navigate(ViewWidget::Directions::First);
         });
 
-    auto go_back_action = GUI::Action::create("Go &Back", { Mod_None, Key_Left }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-back.png")),
+    auto go_back_action = GUI::Action::create("Go to &Previous", { Mod_None, Key_Left }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-back.png"sv)),
         [&](auto&) {
             widget->navigate(ViewWidget::Directions::Back);
         });
 
-    auto go_forward_action = GUI::Action::create("Go &Forward", { Mod_None, Key_Right }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-forward.png")),
+    auto go_forward_action = GUI::Action::create("Go to &Next", { Mod_None, Key_Right }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png"sv)),
         [&](auto&) {
             widget->navigate(ViewWidget::Directions::Forward);
         });
 
-    auto go_last_action = GUI::Action::create("Go to &Last", { Mod_None, Key_End }, TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-last.png")),
+    auto go_last_action = GUI::Action::create("Go to &Last", { Mod_None, Key_End }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-last.png"sv)),
         [&](auto&) {
             widget->navigate(ViewWidget::Directions::Last);
         });
@@ -215,7 +218,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         window);
 
     auto fit_image_to_view_action = GUI::Action::create(
-        "Fit Image To &View", [&](auto&) {
+        "Fit Image To &View", TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/fit-image-to-view.png"sv)), [&](auto&) {
             widget->fit_content_to_view();
         });
 
@@ -240,11 +243,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     });
     nearest_neighbor_action->set_checked(true);
 
+    auto smooth_pixels_action = GUI::Action::create_checkable("&Smooth Pixels", [&](auto&) {
+        widget->set_scaling_mode(Gfx::Painter::ScalingMode::SmoothPixels);
+    });
+
     auto bilinear_action = GUI::Action::create_checkable("&Bilinear", [&](auto&) {
         widget->set_scaling_mode(Gfx::Painter::ScalingMode::BilinearBlend);
     });
 
-    widget->on_image_change = [&](const Gfx::Bitmap* bitmap) {
+    widget->on_image_change = [&](Gfx::Bitmap const* bitmap) {
         bool should_enable_image_actions = (bitmap != nullptr);
         bool should_enable_forward_actions = (widget->is_next_available() && should_enable_image_actions);
         bool should_enable_backward_actions = (widget->is_previous_available() && should_enable_image_actions);
@@ -284,6 +291,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(file_menu->try_add_action(open_action));
     TRY(file_menu->try_add_action(delete_action));
     TRY(file_menu->try_add_separator());
+
+    TRY(file_menu->add_recent_files_list([&](auto& action) {
+        auto path = action.text();
+        widget->set_path(path);
+        widget->load_from_file(path);
+    }));
+
     TRY(file_menu->try_add_action(quit_action));
 
     auto image_menu = TRY(window->try_add_menu("&Image"));
@@ -310,21 +324,25 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(view_menu->try_add_separator());
 
     auto scaling_mode_menu = TRY(view_menu->try_add_submenu("&Scaling Mode"));
+    scaling_mode_menu->set_icon(TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/scale.png"sv)));
 
     auto scaling_mode_group = make<GUI::ActionGroup>();
     scaling_mode_group->set_exclusive(true);
     scaling_mode_group->add_action(*nearest_neighbor_action);
+    scaling_mode_group->add_action(*smooth_pixels_action);
     scaling_mode_group->add_action(*bilinear_action);
 
     TRY(scaling_mode_menu->try_add_action(nearest_neighbor_action));
+    TRY(scaling_mode_menu->try_add_action(smooth_pixels_action));
     TRY(scaling_mode_menu->try_add_action(bilinear_action));
 
     TRY(view_menu->try_add_separator());
     TRY(view_menu->try_add_action(hide_show_toolbar_action));
 
     auto help_menu = TRY(window->try_add_menu("&Help"));
+    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
     TRY(help_menu->try_add_action(GUI::CommonActions::make_help_action([](auto&) {
-        Desktop::Launcher::open(URL::create_with_file_protocol("/usr/share/man/man1/ImageViewer.md"), "/bin/Help");
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/ImageViewer.md"), "/bin/Help");
     })));
     TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Image Viewer", app_icon, window)));
 

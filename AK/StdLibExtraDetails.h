@@ -8,16 +8,9 @@
 
 #pragma once
 
+#include <AK/Platform.h>
+
 namespace AK::Detail {
-
-template<bool B, class T = void>
-struct EnableIf {
-};
-
-template<class T>
-struct EnableIf<true, T> {
-    using Type = T;
-};
 
 template<class T, T v>
 struct IntegralConstant {
@@ -35,11 +28,29 @@ template<class T>
 using AddConst = const T;
 
 template<class T>
+struct __AddConstToReferencedType {
+    using Type = T;
+};
+
+template<class T>
+struct __AddConstToReferencedType<T&> {
+    using Type = AddConst<T>&;
+};
+
+template<class T>
+struct __AddConstToReferencedType<T&&> {
+    using Type = AddConst<T>&&;
+};
+
+template<class T>
+using AddConstToReferencedType = typename __AddConstToReferencedType<T>::Type;
+
+template<class T>
 struct __RemoveConst {
     using Type = T;
 };
 template<class T>
-struct __RemoveConst<const T> {
+struct __RemoveConst<T const> {
     using Type = T;
 };
 template<class T>
@@ -51,7 +62,7 @@ struct __RemoveVolatile {
 };
 
 template<class T>
-struct __RemoveVolatile<volatile T> {
+struct __RemoveVolatile<T volatile> {
     using Type = T;
 };
 
@@ -114,9 +125,9 @@ inline constexpr bool IsFunction<Ret(Args...) const volatile&> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args..., ...) const volatile&> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args...) &&> = true;
+inline constexpr bool IsFunction<Ret(Args...)&&> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args..., ...) &&> = true;
+inline constexpr bool IsFunction<Ret(Args..., ...)&&> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args...) const&&> = true;
 template<class Ret, class... Args>
@@ -263,6 +274,12 @@ template<>
 struct __MakeUnsigned<bool> {
     using Type = bool;
 };
+#ifdef AK_ARCH_AARCH64
+template<>
+struct __MakeUnsigned<wchar_t> {
+    using Type = wchar_t;
+};
+#endif
 
 template<typename T>
 using MakeUnsigned = typename __MakeUnsigned<T>::Type;
@@ -315,6 +332,12 @@ template<>
 struct __MakeSigned<char> {
     using Type = char;
 };
+#ifdef AK_ARCH_AARCH64
+template<>
+struct __MakeSigned<wchar_t> {
+    using Type = void;
+};
+#endif
 
 template<typename T>
 using MakeSigned = typename __MakeSigned<T>::Type;
@@ -350,7 +373,7 @@ template<class T>
 inline constexpr bool IsConst = false;
 
 template<class T>
-inline constexpr bool IsConst<const T> = true;
+inline constexpr bool IsConst<T const> = true;
 
 template<typename T>
 inline constexpr bool IsEnum = __is_enum(T);
@@ -500,9 +523,6 @@ template<typename T>
 inline constexpr bool IsTriviallyCopyable = __is_trivially_copyable(T);
 
 template<typename T, typename... Args>
-inline constexpr bool IsCallableWithArguments = requires(T t) { t(declval<Args>()...); };
-
-template<typename T, typename... Args>
 inline constexpr bool IsConstructible = requires { ::new T(declval<Args>()...); };
 
 template<typename T, typename... Args>
@@ -521,7 +541,7 @@ template<typename T>
 inline constexpr bool IsDestructible = requires { declval<T>().~T(); };
 
 template<typename T>
-#if defined(__clang__)
+#if defined(AK_COMPILER_CLANG)
 inline constexpr bool IsTriviallyDestructible = __is_trivially_destructible(T);
 #else
 inline constexpr bool IsTriviallyDestructible = __has_trivial_destructor(T) && IsDestructible<T>;
@@ -558,31 +578,45 @@ template<template<typename...> typename U, typename... Us>
 inline constexpr bool IsSpecializationOf<U<Us...>, U> = true;
 
 template<typename T>
-struct __decay {
-    typedef Detail::RemoveCVReference<T> type;
+struct __Decay {
+    typedef RemoveCVReference<T> type;
 };
 template<typename T>
-struct __decay<T[]> {
+struct __Decay<T[]> {
     typedef T* type;
 };
 template<typename T, decltype(sizeof(T)) N>
-struct __decay<T[N]> {
+struct __Decay<T[N]> {
     typedef T* type;
 };
 // FIXME: Function decay
 template<typename T>
-using Decay = typename __decay<T>::type;
+using Decay = typename __Decay<T>::type;
 
 template<typename T, typename U>
-inline constexpr bool IsPointerOfType = IsPointer<Decay<U>>&& IsSame<T, RemoveCV<RemovePointer<Decay<U>>>>;
+inline constexpr bool IsPointerOfType = IsPointer<Decay<U>> && IsSame<T, RemoveCV<RemovePointer<Decay<U>>>>;
 
 template<typename T, typename U>
 inline constexpr bool IsHashCompatible = false;
 template<typename T>
 inline constexpr bool IsHashCompatible<T, T> = true;
 
+template<typename T, typename... Ts>
+inline constexpr bool IsOneOf = (IsSame<T, Ts> || ...);
+
+template<typename T, typename U>
+inline constexpr bool IsSameIgnoringCV = IsSame<RemoveCV<T>, RemoveCV<U>>;
+
+template<typename T, typename... Ts>
+inline constexpr bool IsOneOfIgnoringCV = (IsSameIgnoringCV<T, Ts> || ...);
+
 }
+
+#if !USING_AK_GLOBALLY
+namespace AK {
+#endif
 using AK::Detail::AddConst;
+using AK::Detail::AddConstToReferencedType;
 using AK::Detail::AddLvalueReference;
 using AK::Detail::AddRvalueReference;
 using AK::Detail::AssertSize;
@@ -591,7 +625,6 @@ using AK::Detail::Conditional;
 using AK::Detail::CopyConst;
 using AK::Detail::declval;
 using AK::Detail::DependentFalse;
-using AK::Detail::EnableIf;
 using AK::Detail::FalseType;
 using AK::Detail::IdentityType;
 using AK::Detail::IndexSequence;
@@ -599,7 +632,6 @@ using AK::Detail::IntegerSequence;
 using AK::Detail::IsArithmetic;
 using AK::Detail::IsAssignable;
 using AK::Detail::IsBaseOf;
-using AK::Detail::IsCallableWithArguments;
 using AK::Detail::IsClass;
 using AK::Detail::IsConst;
 using AK::Detail::IsConstructible;
@@ -617,10 +649,13 @@ using AK::Detail::IsLvalueReference;
 using AK::Detail::IsMoveAssignable;
 using AK::Detail::IsMoveConstructible;
 using AK::Detail::IsNullPointer;
+using AK::Detail::IsOneOf;
+using AK::Detail::IsOneOfIgnoringCV;
 using AK::Detail::IsPOD;
 using AK::Detail::IsPointer;
 using AK::Detail::IsRvalueReference;
 using AK::Detail::IsSame;
+using AK::Detail::IsSameIgnoringCV;
 using AK::Detail::IsSigned;
 using AK::Detail::IsSpecializationOf;
 using AK::Detail::IsTrivial;
@@ -648,3 +683,6 @@ using AK::Detail::RemoveVolatile;
 using AK::Detail::TrueType;
 using AK::Detail::UnderlyingType;
 using AK::Detail::Void;
+#if !USING_AK_GLOBALLY
+}
+#endif

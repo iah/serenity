@@ -8,20 +8,15 @@
 
 #define NONNULLREFPTR_SCRUB_BYTE 0xe1
 
-#ifdef KERNEL
-#    include <Kernel/Library/ThreadSafeNonnullRefPtr.h>
-#else
-#    include <AK/Assertions.h>
-#    include <AK/Atomic.h>
-#    include <AK/Format.h>
-#    include <AK/Traits.h>
-#    include <AK/Types.h>
+#include <AK/Assertions.h>
+#include <AK/Atomic.h>
+#include <AK/Format.h>
+#include <AK/Traits.h>
+#include <AK/Types.h>
 
 namespace AK {
 
 template<typename T>
-class OwnPtr;
-template<typename T, typename PtrTraits>
 class RefPtr;
 
 template<typename T>
@@ -40,7 +35,7 @@ ALWAYS_INLINE void unref_if_not_null(T* ptr)
 
 template<typename T>
 class [[nodiscard]] NonnullRefPtr {
-    template<typename U, typename P>
+    template<typename U>
     friend class RefPtr;
     template<typename U>
     friend class NonnullRefPtr;
@@ -59,7 +54,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(U const& object) requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE NonnullRefPtr(U const& object)
+    requires(IsConvertible<U*, T*>)
         : m_ptr(const_cast<T*>(static_cast<T const*>(&object)))
     {
         m_ptr->ref();
@@ -76,7 +72,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U>&& other)
+    requires(IsConvertible<U*, T*>)
         : m_ptr(static_cast<T*>(&other.leak_ref()))
     {
     }
@@ -88,7 +85,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U> const& other) requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U> const& other)
+    requires(IsConvertible<U*, T*>)
         : m_ptr(const_cast<T*>(static_cast<T const*>(other.ptr())))
     {
         m_ptr->ref();
@@ -98,22 +96,22 @@ public:
     {
         unref_if_not_null(m_ptr);
         m_ptr = nullptr;
-#    ifdef SANITIZE_PTRS
+#ifdef SANITIZE_PTRS
         m_ptr = reinterpret_cast<T*>(explode_byte(NONNULLREFPTR_SCRUB_BYTE));
-#    endif
+#endif
     }
 
     template<typename U>
-    NonnullRefPtr(const OwnPtr<U>&) = delete;
+    NonnullRefPtr(OwnPtr<U> const&) = delete;
     template<typename U>
-    NonnullRefPtr& operator=(const OwnPtr<U>&) = delete;
+    NonnullRefPtr& operator=(OwnPtr<U> const&) = delete;
 
     template<typename U>
-    NonnullRefPtr(const RefPtr<U>&) = delete;
+    NonnullRefPtr(RefPtr<U> const&) = delete;
     template<typename U>
-    NonnullRefPtr& operator=(const RefPtr<U>&) = delete;
-    NonnullRefPtr(const RefPtr<T>&) = delete;
-    NonnullRefPtr& operator=(const RefPtr<T>&) = delete;
+    NonnullRefPtr& operator=(RefPtr<U> const&) = delete;
+    NonnullRefPtr(RefPtr<T> const&) = delete;
+    NonnullRefPtr& operator=(RefPtr<T> const&) = delete;
 
     NonnullRefPtr& operator=(NonnullRefPtr const& other)
     {
@@ -123,7 +121,8 @@ public:
     }
 
     template<typename U>
-    NonnullRefPtr& operator=(NonnullRefPtr<U> const& other) requires(IsConvertible<U*, T*>)
+    NonnullRefPtr& operator=(NonnullRefPtr<U> const& other)
+    requires(IsConvertible<U*, T*>)
     {
         NonnullRefPtr tmp { other };
         swap(tmp);
@@ -138,7 +137,8 @@ public:
     }
 
     template<typename U>
-    NonnullRefPtr& operator=(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
+    NonnullRefPtr& operator=(NonnullRefPtr<U>&& other)
+    requires(IsConvertible<U*, T*>)
     {
         NonnullRefPtr tmp { move(other) };
         swap(tmp);
@@ -159,47 +159,27 @@ public:
         return *ptr;
     }
 
-    ALWAYS_INLINE RETURNS_NONNULL T* ptr()
-    {
-        return as_nonnull_ptr();
-    }
-    ALWAYS_INLINE RETURNS_NONNULL const T* ptr() const
+    ALWAYS_INLINE RETURNS_NONNULL T* ptr() const
     {
         return as_nonnull_ptr();
     }
 
-    ALWAYS_INLINE RETURNS_NONNULL T* operator->()
-    {
-        return as_nonnull_ptr();
-    }
-    ALWAYS_INLINE RETURNS_NONNULL const T* operator->() const
+    ALWAYS_INLINE RETURNS_NONNULL T* operator->() const
     {
         return as_nonnull_ptr();
     }
 
-    ALWAYS_INLINE T& operator*()
-    {
-        return *as_nonnull_ptr();
-    }
-    ALWAYS_INLINE const T& operator*() const
+    ALWAYS_INLINE T& operator*() const
     {
         return *as_nonnull_ptr();
     }
 
-    ALWAYS_INLINE RETURNS_NONNULL operator T*()
-    {
-        return as_nonnull_ptr();
-    }
-    ALWAYS_INLINE RETURNS_NONNULL operator const T*() const
+    ALWAYS_INLINE RETURNS_NONNULL operator T*() const
     {
         return as_nonnull_ptr();
     }
 
-    ALWAYS_INLINE operator T&()
-    {
-        return *as_nonnull_ptr();
-    }
-    ALWAYS_INLINE operator const T&() const
+    ALWAYS_INLINE operator T&() const
     {
         return *as_nonnull_ptr();
     }
@@ -213,15 +193,23 @@ public:
     }
 
     template<typename U>
-    void swap(NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
+    void swap(NonnullRefPtr<U>& other)
+    requires(IsConvertible<U*, T*>)
     {
         AK::swap(m_ptr, other.m_ptr);
     }
 
-    // clang-format off
+    bool operator==(NonnullRefPtr const& other) const { return m_ptr == other.m_ptr; }
+
+    template<typename RawPtr>
+    bool operator==(RawPtr other) const
+    requires(IsPointer<RawPtr>)
+    {
+        return m_ptr == other;
+    }
+
 private:
     NonnullRefPtr() = delete;
-    // clang-format on
 
     ALWAYS_INLINE RETURNS_NONNULL T* as_nonnull_ptr() const
     {
@@ -238,16 +226,48 @@ inline NonnullRefPtr<T> adopt_ref(T& object)
     return NonnullRefPtr<T>(NonnullRefPtr<T>::Adopt, object);
 }
 
+// Use like `adopt_nonnull_own_or_enomem(new (nothrow) T(args...))`.
 template<typename T>
-struct Formatter<NonnullRefPtr<T>> : Formatter<const T*> {
+inline ErrorOr<NonnullRefPtr<T>> adopt_nonnull_ref_or_enomem(T* object)
+{
+    if (!object)
+        return Error::from_errno(ENOMEM);
+    return NonnullRefPtr<T>(NonnullRefPtr<T>::Adopt, *object);
+}
+
+template<typename T, class... Args>
+requires(IsConstructible<T, Args...>) inline ErrorOr<NonnullRefPtr<T>> try_make_ref_counted(Args&&... args)
+{
+    return adopt_nonnull_ref_or_enomem(new (nothrow) T(forward<Args>(args)...));
+}
+
+// FIXME: Remove once P0960R3 is available in Clang.
+template<typename T, class... Args>
+inline ErrorOr<NonnullRefPtr<T>> try_make_ref_counted(Args&&... args)
+{
+    return adopt_nonnull_ref_or_enomem(new (nothrow) T { forward<Args>(args)... });
+}
+
+template<Formattable T>
+struct Formatter<NonnullRefPtr<T>> : Formatter<T> {
     ErrorOr<void> format(FormatBuilder& builder, NonnullRefPtr<T> const& value)
     {
-        return Formatter<const T*>::format(builder, value.ptr());
+        return Formatter<T>::format(builder, *value);
+    }
+};
+
+template<typename T>
+requires(!HasFormatter<T>)
+struct Formatter<NonnullRefPtr<T>> : Formatter<T const*> {
+    ErrorOr<void> format(FormatBuilder& builder, NonnullRefPtr<T> const& value)
+    {
+        return Formatter<T const*>::format(builder, value.ptr());
     }
 };
 
 template<typename T, typename U>
-inline void swap(NonnullRefPtr<T>& a, NonnullRefPtr<U>& b) requires(IsConvertible<U*, T*>)
+inline void swap(NonnullRefPtr<T>& a, NonnullRefPtr<U>& b)
+requires(IsConvertible<U*, T*>)
 {
     a.swap(b);
 }
@@ -264,18 +284,21 @@ inline NonnullRefPtr<T> make_ref_counted(Args&&... args)
 {
     return NonnullRefPtr<T>(NonnullRefPtr<T>::Adopt, *new T { forward<Args>(args)... });
 }
-}
 
 template<typename T>
 struct Traits<NonnullRefPtr<T>> : public GenericTraits<NonnullRefPtr<T>> {
     using PeekType = T*;
-    using ConstPeekType = const T*;
-    static unsigned hash(const NonnullRefPtr<T>& p) { return ptr_hash(p.ptr()); }
-    static bool equals(const NonnullRefPtr<T>& a, const NonnullRefPtr<T>& b) { return a.ptr() == b.ptr(); }
+    using ConstPeekType = T const*;
+    static unsigned hash(NonnullRefPtr<T> const& p) { return ptr_hash(p.ptr()); }
+    static bool equals(NonnullRefPtr<T> const& a, NonnullRefPtr<T> const& b) { return a.ptr() == b.ptr(); }
 };
 
+}
+
+#if USING_AK_GLOBALLY
+using AK::adopt_nonnull_ref_or_enomem;
 using AK::adopt_ref;
 using AK::make_ref_counted;
 using AK::NonnullRefPtr;
-
+using AK::try_make_ref_counted;
 #endif

@@ -9,15 +9,39 @@
 #include <LibCore/ProcessStatisticsReader.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
+
+static ErrorOr<DeprecatedString> determine_tty_pseudo_name()
+{
+    struct stat tty_stat;
+    if (fstat(STDIN_FILENO, &tty_stat) < 0) {
+        int saved_errno = errno;
+        perror("fstat");
+        return Error::from_errno(saved_errno);
+    }
+
+    int tty_device_major = major(tty_stat.st_rdev);
+    int tty_device_minor = minor(tty_stat.st_rdev);
+
+    if (tty_device_major == 201) {
+        return DeprecatedString::formatted("pts:{}", tty_device_minor);
+    }
+
+    if (tty_device_major == 4) {
+        return DeprecatedString::formatted("tty:{}", tty_device_minor);
+    }
+    return "n/a";
+}
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath tty"));
-    String this_tty = ttyname(STDIN_FILENO);
+
+    auto this_pseudo_tty_name = TRY(determine_tty_pseudo_name());
 
     TRY(Core::System::pledge("stdio rpath"));
-    TRY(Core::System::unveil("/proc/all", "r"));
+    TRY(Core::System::unveil("/sys/kernel/processes", "r"));
     TRY(Core::System::unveil("/etc/passwd", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
@@ -27,15 +51,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
 
     struct Column {
-        String title;
+        DeprecatedString title;
         Alignment alignment { Alignment::Left };
         int width { 0 };
-        String buffer;
+        DeprecatedString buffer;
     };
 
     bool every_process_flag = false;
     bool full_format_flag = false;
-    String pid_list;
+    DeprecatedString pid_list;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(every_process_flag, "Show every process", nullptr, 'e');
@@ -74,11 +98,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         cmd_column = add_column("CMD", Alignment::Left);
     }
 
-    auto all_processes = Core::ProcessStatisticsReader::get_all();
-    if (!all_processes.has_value())
-        return 1;
+    auto all_processes = TRY(Core::ProcessStatisticsReader::get_all());
 
-    auto& processes = all_processes.value().processes;
+    auto& processes = all_processes.processes;
 
     if (!pid_list.is_empty()) {
         every_process_flag = true;
@@ -108,10 +130,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         quick_sort(processes, [](auto& a, auto& b) { return a.pid < b.pid; });
     }
 
-    Vector<Vector<String>> rows;
+    Vector<Vector<DeprecatedString>> rows;
     TRY(rows.try_ensure_capacity(1 + processes.size()));
 
-    Vector<String> header;
+    Vector<DeprecatedString> header;
     TRY(header.try_ensure_capacity(columns.size()));
     for (auto& column : columns)
         header.unchecked_append(column.title);
@@ -119,30 +141,27 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     for (auto const& process : processes) {
         auto tty = process.tty;
-
-        if (!every_process_flag && tty != this_tty)
+        if (!every_process_flag && tty != this_pseudo_tty_name)
             continue;
-
-        if (tty.starts_with("/dev/"))
-            tty = tty.characters() + 5;
-        else
-            tty = "n/a";
 
         auto* state = process.threads.is_empty() ? "Zombie" : process.threads.first().state.characters();
 
-        Vector<String> row;
+        Vector<DeprecatedString> row;
         TRY(row.try_resize(columns.size()));
+
+        if (tty == "")
+            tty = "n/a";
 
         if (uid_column != -1)
             row[uid_column] = process.username;
         if (pid_column != -1)
-            row[pid_column] = String::number(process.pid);
+            row[pid_column] = DeprecatedString::number(process.pid);
         if (ppid_column != -1)
-            row[ppid_column] = String::number(process.ppid);
+            row[ppid_column] = DeprecatedString::number(process.ppid);
         if (pgid_column != -1)
-            row[pgid_column] = String::number(process.pgid);
+            row[pgid_column] = DeprecatedString::number(process.pgid);
         if (sid_column != -1)
-            row[sid_column] = String::number(process.sid);
+            row[sid_column] = DeprecatedString::number(process.sid);
         if (tty_column != -1)
             row[tty_column] = tty;
         if (state_column != -1)

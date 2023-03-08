@@ -4,26 +4,26 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <LibJS/Bytecode/BasicBlock.h>
 #include <LibJS/Bytecode/Op.h>
 #include <sys/mman.h>
 
 namespace JS::Bytecode {
 
-NonnullOwnPtr<BasicBlock> BasicBlock::create(String name, size_t size)
+NonnullOwnPtr<BasicBlock> BasicBlock::create(DeprecatedString name, size_t size)
 {
     return adopt_own(*new BasicBlock(move(name), max(size, static_cast<size_t>(4 * KiB))));
 }
 
-BasicBlock::BasicBlock(String name, size_t size)
+BasicBlock::BasicBlock(DeprecatedString name, size_t size)
     : m_name(move(name))
 {
     // FIXME: This is not the smartest solution ever. Find something cleverer!
     // The main issue we're working around here is that we don't want pointers into the bytecode stream to become invalidated
     // during code generation due to dynamic buffer resizing. Otherwise we could just use a Vector.
     m_buffer_capacity = size;
-    m_buffer = (u8*)mmap(nullptr, m_buffer_capacity, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+    m_buffer = (u8*)mmap(nullptr, m_buffer_capacity, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     VERIFY(m_buffer != MAP_FAILED);
 }
 
@@ -53,7 +53,7 @@ void BasicBlock::dump(Bytecode::Executable const& executable) const
     if (!m_name.is_empty())
         warnln("{}:", m_name);
     while (!it.at_end()) {
-        warnln("[{:4x}] {}", it.offset(), (*it).to_string(executable));
+        warnln("[{:4x}] {}", it.offset(), (*it).to_deprecated_string(executable));
         ++it;
     }
 }

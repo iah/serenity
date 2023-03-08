@@ -16,7 +16,7 @@ ErrorOr<int> serenity_main(Main::Arguments)
     TRY(Core::System::pledge("stdio recvfd thread accept cpath rpath wpath unix"));
 
     auto config = TRY(Core::ConfigFile::open_for_app("Audio", Core::ConfigFile::AllowWriting::Yes));
-    TRY(Core::System::unveil(config->filename(), "rwc"));
+    TRY(Core::System::unveil(config->filename(), "rwc"sv));
     TRY(Core::System::unveil("/dev/audio", "wc"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
@@ -25,10 +25,10 @@ ErrorOr<int> serenity_main(Main::Arguments)
     auto server = TRY(Core::LocalServer::try_create());
     TRY(server->take_over_from_system_server());
 
-    server->on_accept = [&](NonnullOwnPtr<Core::Stream::LocalSocket> client_socket) {
+    server->on_accept = [&](NonnullOwnPtr<Core::LocalSocket> client_socket) {
         static int s_next_client_id = 0;
         int client_id = ++s_next_client_id;
-        (void)IPC::new_client_connection<AudioServer::ClientConnection>(move(client_socket), client_id, *mixer);
+        (void)IPC::new_client_connection<AudioServer::ConnectionFromClient>(move(client_socket), client_id, *mixer);
     };
 
     TRY(Core::System::pledge("stdio recvfd thread accept cpath rpath wpath"));

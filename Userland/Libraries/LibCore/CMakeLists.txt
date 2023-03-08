@@ -1,33 +1,31 @@
 set(SOURCES
-    Account.cpp
     AnonymousBuffer.cpp
     ArgsParser.cpp
-    ConfigFile.cpp
     Command.cpp
+    ConfigFile.cpp
     DateTime.cpp
+    DeprecatedFile.cpp
+    Directory.cpp
+    DirectoryEntry.cpp
     DirIterator.cpp
     ElapsedTimer.cpp
     Event.cpp
     EventLoop.cpp
-    FileWatcher.cpp
     File.cpp
-    FilePermissionsMask.cpp
-    GetPassword.cpp
-    Group.cpp
     IODevice.cpp
-    LocalServer.cpp
     LockFile.cpp
     MappedFile.cpp
     MimeData.cpp
     NetworkJob.cpp
-    NetworkResponse.cpp
     Notifier.cpp
     Object.cpp
     Process.cpp
     ProcessStatisticsReader.cpp
     Property.cpp
     SecretString.cpp
-    Stream.cpp
+    SessionManagement.cpp
+    Socket.cpp
+    SOCKSProxyClient.cpp
     StandardPaths.cpp
     System.cpp
     SystemServerTakeover.cpp
@@ -37,6 +35,32 @@ set(SOURCES
     UDPServer.cpp
     Version.cpp
 )
+if (NOT ANDROID AND NOT WIN32 AND NOT EMSCRIPTEN)
+    list(APPEND SOURCES
+        Account.cpp
+        FilePermissionsMask.cpp
+        GetPassword.cpp
+        Group.cpp
+        LocalServer.cpp
+    )
+endif()
+
+# FIXME: Implement Core::FileWatcher for macOS, *BSD, and Windows.
+if (SERENITYOS)
+    list(APPEND SOURCES FileWatcherSerenity.cpp)
+elseif (LINUX AND NOT EMSCRIPTEN)
+    list(APPEND SOURCES FileWatcherLinux.cpp)
+elseif (APPLE)
+    list(APPEND SOURCES FileWatcherMacOS.mm)
+else()
+    list(APPEND SOURCES FileWatcherUnimplemented.cpp)
+endif()
 
 serenity_lib(LibCore core)
-target_link_libraries(LibCore LibC LibCrypt)
+target_link_libraries(LibCore PRIVATE LibCrypt LibSystem)
+
+if (APPLE)
+    target_link_libraries(LibCore PUBLIC "-framework CoreFoundation")
+    target_link_libraries(LibCore PUBLIC "-framework CoreServices")
+    target_link_libraries(LibCore PUBLIC "-framework Foundation")
+endif()

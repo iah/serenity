@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,7 +8,7 @@
 #include <LibGUI/CheckBox.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/CharacterBitmap.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
@@ -15,21 +16,44 @@ REGISTER_WIDGET(GUI, CheckBox)
 
 namespace GUI {
 
-static const int s_box_width = 13;
-static const int s_box_height = 13;
-static const int s_horizontal_padding = 6;
-
 CheckBox::CheckBox(String text)
     : AbstractButton(move(text))
 {
     REGISTER_BOOL_PROPERTY("autosize", is_autosize, set_autosize);
 
-    set_min_width(32);
-    set_fixed_height(22);
+    REGISTER_ENUM_PROPERTY(
+        "checkbox_position", checkbox_position, set_checkbox_position, CheckBoxPosition,
+        { CheckBoxPosition::Left, "Left" },
+        { CheckBoxPosition::Right, "Right" });
+
+    set_min_size(SpecialDimension::Shrink, SpecialDimension::Shrink);
+    set_preferred_size(SpecialDimension::OpportunisticGrow, SpecialDimension::Shrink);
 }
 
-CheckBox::~CheckBox()
+int CheckBox::gap_between_box_and_rect() const
 {
+    return 6;
+}
+
+int CheckBox::horizontal_padding() const
+{
+    return 2;
+}
+
+Gfx::IntRect CheckBox::box_rect() const
+{
+    int box_size = max(13, height() - 10);
+
+    Gfx::IntRect box_rect {
+        0,
+        height() / 2 - box_size / 2 - 1,
+        box_size,
+        box_size,
+    };
+    if (m_checkbox_position == CheckBoxPosition::Right)
+        box_rect.set_right_without_resize(rect().right());
+
+    return box_rect;
 }
 
 void CheckBox::paint_event(PaintEvent& event)
@@ -37,22 +61,19 @@ void CheckBox::paint_event(PaintEvent& event)
     Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
+    auto box_rect = this->box_rect();
     auto text_rect = rect();
-    text_rect.set_left(s_box_width + s_horizontal_padding);
-    text_rect.set_width(font().width(text()));
-    text_rect.set_top(height() / 2 - font().glyph_height() / 2);
-    text_rect.set_height(font().glyph_height());
+    if (m_checkbox_position == CheckBoxPosition::Left)
+        text_rect.set_left(box_rect.right() + 1 + gap_between_box_and_rect());
+    text_rect.set_width(static_cast<int>(ceilf(font().width(text()))));
+    text_rect.set_top(height() / 2 - font().pixel_size_rounded_up() / 2);
+    text_rect.set_height(font().pixel_size_rounded_up());
 
     if (fill_with_background_color())
         painter.fill_rect(rect(), palette().window());
 
     if (is_enabled() && is_hovered())
         painter.fill_rect(rect(), palette().hover_highlight());
-
-    Gfx::IntRect box_rect {
-        0, height() / 2 - s_box_height / 2 - 1,
-        s_box_width, s_box_height
-    };
 
     Gfx::StylePainter::paint_check_box(painter, box_rect, palette(), is_enabled(), is_checked(), is_being_pressed());
 
@@ -80,7 +101,15 @@ void CheckBox::set_autosize(bool autosize)
 
 void CheckBox::size_to_fit()
 {
-    set_fixed_width(s_box_width + font().width(text()) + s_horizontal_padding * 2);
+    set_fixed_width(box_rect().width() + gap_between_box_and_rect() + static_cast<int>(ceilf(font().width(text()))) + horizontal_padding() * 2);
+}
+
+Optional<UISize> CheckBox::calculated_min_size() const
+{
+    auto const& font = this->font();
+    int width = box_rect().width();
+    int height = max(22, max(static_cast<int>(ceilf(font.pixel_size())) + 8, box_rect().height()));
+    return UISize(width, height);
 }
 
 }

@@ -8,7 +8,6 @@
 
 #include <AK/Checked.h>
 #include <AK/Span.h>
-#include <AK/StdLibExtras.h>
 #include <string.h>
 
 TEST_CASE(constexpr_default_constructor_is_empty)
@@ -103,7 +102,7 @@ TEST_CASE(can_subspan_as_intended)
 {
     static constexpr u16 buffer[8] { 1, 2, 3, 4, 5, 6, 7, 8 };
 
-    constexpr Span<const u16> span { buffer, 8 };
+    constexpr ReadonlySpan<u16> span { buffer, 8 };
     constexpr auto slice = span.slice(3, 2);
 
     static_assert(slice.size() == 2u);
@@ -115,23 +114,23 @@ TEST_CASE(span_from_void_pointer)
 {
     int value = 0;
     [[maybe_unused]] Bytes bytes0 { reinterpret_cast<void*>(value), 4 };
-    [[maybe_unused]] ReadonlyBytes bytes1 { reinterpret_cast<const void*>(value), 4 };
+    [[maybe_unused]] ReadonlyBytes bytes1 { reinterpret_cast<void const*>(value), 4 };
 }
 
 TEST_CASE(span_from_c_string)
 {
-    const char* str = "Serenity";
+    char const* str = "Serenity";
     [[maybe_unused]] ReadonlyBytes bytes { str, strlen(str) };
 }
 
 TEST_CASE(starts_with)
 {
-    const char* str = "HeyFriends!";
+    char const* str = "HeyFriends!";
     ReadonlyBytes bytes { str, strlen(str) };
-    const char* str_hey = "Hey";
+    char const* str_hey = "Hey";
     ReadonlyBytes hey_bytes { str_hey, strlen(str_hey) };
     EXPECT(bytes.starts_with(hey_bytes));
-    const char* str_nah = "Nah";
+    char const* str_nah = "Nah";
     ReadonlyBytes nah_bytes { str_nah, strlen(str_nah) };
     EXPECT(!bytes.starts_with(nah_bytes));
 

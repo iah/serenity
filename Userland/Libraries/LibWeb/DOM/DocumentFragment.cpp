@@ -5,7 +5,7 @@
  */
 
 #include <LibWeb/DOM/DocumentFragment.h>
-#include <LibWeb/DOM/Window.h>
+#include <LibWeb/HTML/Window.h>
 
 namespace Web::DOM {
 
@@ -14,14 +14,30 @@ DocumentFragment::DocumentFragment(Document& document)
 {
 }
 
-DocumentFragment::~DocumentFragment()
+JS::ThrowCompletionOr<void> DocumentFragment::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::DocumentFragmentPrototype>(realm, "DocumentFragment"));
+
+    return {};
+}
+
+void DocumentFragment::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_host.ptr());
+}
+
+void DocumentFragment::set_host(Web::DOM::Element* element)
+{
+    m_host = element;
 }
 
 // https://dom.spec.whatwg.org/#dom-documentfragment-documentfragment
-NonnullRefPtr<DocumentFragment> DocumentFragment::create_with_global_object(Bindings::WindowObject& window)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> DocumentFragment::construct_impl(JS::Realm& realm)
 {
-    return make_ref_counted<DocumentFragment>(window.impl().associated_document());
+    auto& window = verify_cast<HTML::Window>(realm.global_object());
+    return MUST_OR_THROW_OOM(realm.heap().allocate<DocumentFragment>(realm, window.associated_document()));
 }
 
 }

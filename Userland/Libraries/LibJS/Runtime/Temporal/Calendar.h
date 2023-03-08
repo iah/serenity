@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -20,62 +20,66 @@ class Calendar final : public Object {
     JS_OBJECT(Calendar, Object);
 
 public:
-    Calendar(String identifier, Object& prototype);
     virtual ~Calendar() override = default;
 
     [[nodiscard]] String const& identifier() const { return m_identifier; }
 
 private:
+    Calendar(String identifier, Object& prototype);
+
     // 12.5 Properties of Temporal.Calendar Instances, https://tc39.es/proposal-temporal/#sec-properties-of-temporal-calendar-instances
     String m_identifier; // [[Identifier]]
 };
 
-ThrowCompletionOr<Calendar*> create_temporal_calendar(GlobalObject&, String const& identifier, FunctionObject const* new_target = nullptr);
-bool is_builtin_calendar(String const& identifier);
-ThrowCompletionOr<Calendar*> get_builtin_calendar(GlobalObject&, String const& identifier);
-Calendar* get_iso8601_calendar(GlobalObject&);
-ThrowCompletionOr<Vector<String>> calendar_fields(GlobalObject&, Object& calendar, Vector<StringView> const& field_names);
-ThrowCompletionOr<Object*> calendar_merge_fields(GlobalObject&, Object& calendar, Object& fields, Object& additional_fields);
-ThrowCompletionOr<PlainDate*> calendar_date_add(GlobalObject&, Object& calendar, Value date, Duration&, Object* options, FunctionObject* date_add = nullptr);
-ThrowCompletionOr<Duration*> calendar_date_until(GlobalObject&, Object& calendar, Value one, Value two, Object& options, FunctionObject* date_until = nullptr);
-ThrowCompletionOr<double> calendar_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<double> calendar_month(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<String> calendar_month_code(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<double> calendar_day(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_day_of_week(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_day_of_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_week_of_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_days_in_week(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_days_in_month(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_days_in_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_months_in_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_in_leap_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_era(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Value> calendar_era_year(GlobalObject&, Object& calendar, Object& date_like);
-ThrowCompletionOr<Object*> to_temporal_calendar(GlobalObject&, Value);
-ThrowCompletionOr<Object*> to_temporal_calendar_with_iso_default(GlobalObject&, Value);
-ThrowCompletionOr<Object*> get_temporal_calendar_with_iso_default(GlobalObject&, Object&);
-ThrowCompletionOr<PlainDate*> date_from_fields(GlobalObject&, Object& calendar, Object const& fields, Object const& options);
-ThrowCompletionOr<PlainYearMonth*> year_month_from_fields(GlobalObject&, Object& calendar, Object const& fields, Object const* options = nullptr);
-ThrowCompletionOr<PlainMonthDay*> month_day_from_fields(GlobalObject& global_object, Object& calendar, Object const& fields, Object const* options = nullptr);
-String format_calendar_annotation(StringView id, StringView show_calendar);
-ThrowCompletionOr<bool> calendar_equals(GlobalObject&, Object& one, Object& two);
-ThrowCompletionOr<Object*> consolidate_calendars(GlobalObject&, Object& one, Object& two);
-bool is_iso_leap_year(i32 year);
-u16 iso_days_in_year(i32 year);
+// 14.2 The Year-Week Record Specification Type, https://tc39.es/proposal-temporal/#sec-year-week-record-specification-type
+struct YearWeekRecord {
+    u8 week { 0 };
+    i32 year { 0 };
+};
+
+bool is_builtin_calendar(StringView identifier);
+ReadonlySpan<StringView> available_calendars();
+ThrowCompletionOr<Calendar*> create_temporal_calendar(VM&, String const& identifier, FunctionObject const* new_target = nullptr);
+ThrowCompletionOr<Calendar*> get_builtin_calendar(VM&, String const& identifier);
+Calendar* get_iso8601_calendar(VM&);
+ThrowCompletionOr<Vector<String>> calendar_fields(VM&, Object& calendar, Vector<StringView> const& field_names);
+ThrowCompletionOr<Object*> calendar_merge_fields(VM&, Object& calendar, Object& fields, Object& additional_fields);
+ThrowCompletionOr<PlainDate*> calendar_date_add(VM&, Object& calendar, Value date, Duration&, Object* options = nullptr, FunctionObject* date_add = nullptr);
+ThrowCompletionOr<Duration*> calendar_date_until(VM&, Object& calendar, Value one, Value two, Object& options, FunctionObject* date_until = nullptr);
+ThrowCompletionOr<double> calendar_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_month(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<String> calendar_month_code(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_day(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_day_of_week(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_day_of_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_week_of_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_year_of_week(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_days_in_week(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_days_in_month(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_days_in_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<double> calendar_months_in_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<Value> calendar_in_leap_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<Value> calendar_era(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<Value> calendar_era_year(VM&, Object& calendar, Object& date_like);
+ThrowCompletionOr<Object*> to_temporal_calendar(VM&, Value);
+ThrowCompletionOr<Object*> to_temporal_calendar_with_iso_default(VM&, Value);
+ThrowCompletionOr<Object*> get_temporal_calendar_with_iso_default(VM&, Object&);
+ThrowCompletionOr<PlainDate*> calendar_date_from_fields(VM&, Object& calendar, Object const& fields, Object const* options = nullptr);
+ThrowCompletionOr<PlainYearMonth*> calendar_year_month_from_fields(VM&, Object& calendar, Object const& fields, Object const* options = nullptr);
+ThrowCompletionOr<PlainMonthDay*> calendar_month_day_from_fields(VM&, Object& calendar, Object const& fields, Object const* options = nullptr);
+ThrowCompletionOr<String> maybe_format_calendar_annotation(VM&, Object const* calendar_object, StringView show_calendar);
+ThrowCompletionOr<String> format_calendar_annotation(VM&, StringView id, StringView show_calendar);
+ThrowCompletionOr<bool> calendar_equals(VM&, Object& one, Object& two);
+ThrowCompletionOr<Object*> consolidate_calendars(VM&, Object& one, Object& two);
 u8 iso_days_in_month(i32 year, u8 month);
-u8 to_iso_day_of_week(i32 year, u8 month, u8 day);
+YearWeekRecord to_iso_week_of_year(i32 year, u8 month, u8 day);
+ThrowCompletionOr<String> iso_month_code(VM&, u8 month);
+ThrowCompletionOr<double> resolve_iso_month(VM&, Object const& fields);
+ThrowCompletionOr<ISODateRecord> iso_date_from_fields(VM&, Object const& fields, Object const& options);
+ThrowCompletionOr<ISOYearMonth> iso_year_month_from_fields(VM&, Object const& fields, Object const& options);
+ThrowCompletionOr<ISOMonthDay> iso_month_day_from_fields(VM&, Object const& fields, Object const& options);
+ThrowCompletionOr<Object*> default_merge_calendar_fields(VM&, Object const& fields, Object const& additional_fields);
 u16 to_iso_day_of_year(i32 year, u8 month, u8 day);
-u8 to_iso_week_of_year(i32 year, u8 month, u8 day);
-String build_iso_month_code(u8 month);
-ThrowCompletionOr<double> resolve_iso_month(GlobalObject&, Object const& fields);
-ThrowCompletionOr<ISODate> iso_date_from_fields(GlobalObject&, Object const& fields, Object const& options);
-ThrowCompletionOr<ISOYearMonth> iso_year_month_from_fields(GlobalObject&, Object const& fields, Object const& options);
-ThrowCompletionOr<ISOMonthDay> iso_month_day_from_fields(GlobalObject&, Object const& fields, Object const& options);
-i32 iso_year(Object& temporal_object);
-u8 iso_month(Object& temporal_object);
-String iso_month_code(Object& temporal_object);
-u8 iso_day(Object& temporal_object);
-ThrowCompletionOr<Object*> default_merge_fields(GlobalObject&, Object const& fields, Object const& additional_fields);
+u8 to_iso_day_of_week(i32 year, u8 month, u8 day);
 
 }

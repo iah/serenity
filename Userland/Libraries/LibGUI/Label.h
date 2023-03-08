@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,15 +17,14 @@ class Label : public Frame {
     C_OBJECT(Label);
 
 public:
-    virtual ~Label() override;
+    virtual ~Label() override = default;
 
-    String text() const { return m_text; }
-    void set_text(String);
+    DeprecatedString text() const { return m_text; }
+    void set_text(DeprecatedString);
 
-    void set_icon(const Gfx::Bitmap*);
-    void set_icon_from_path(String const&);
-    const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
-    Gfx::Bitmap* icon() { return m_icon.ptr(); }
+    void set_icon(Gfx::Bitmap const*);
+    void set_icon_from_path(DeprecatedString const&);
+    Gfx::Bitmap const* icon() const { return m_icon.ptr(); }
 
     Gfx::TextAlignment text_alignment() const { return m_text_alignment; }
     void set_text_alignment(Gfx::TextAlignment text_alignment) { m_text_alignment = text_alignment; }
@@ -36,14 +36,16 @@ public:
     void set_should_stretch_icon(bool b) { m_should_stretch_icon = b; }
 
     bool is_autosize() const { return m_autosize; }
-    void set_autosize(bool);
+    void set_autosize(bool, size_t padding = 0);
 
-    int preferred_height() const;
+    virtual Optional<UISize> calculated_preferred_size() const override;
+    int text_calculated_preferred_height() const;
+    int text_calculated_preferred_width() const;
 
     Gfx::IntRect text_rect() const;
 
 protected:
-    explicit Label(String text = {});
+    explicit Label(DeprecatedString text = {});
 
     virtual void paint_event(PaintEvent&) override;
     virtual void did_change_text() { }
@@ -51,12 +53,13 @@ protected:
 private:
     void size_to_fit();
 
-    String m_text;
-    RefPtr<Gfx::Bitmap> m_icon;
+    DeprecatedString m_text;
+    RefPtr<Gfx::Bitmap const> m_icon;
     Gfx::TextAlignment m_text_alignment { Gfx::TextAlignment::Center };
     Gfx::TextWrapping m_text_wrapping { Gfx::TextWrapping::Wrap };
     bool m_should_stretch_icon { false };
     bool m_autosize { false };
+    size_t m_autosize_padding { 0 };
 };
 
 }

@@ -9,7 +9,7 @@
 
 namespace SQL {
 
-String Result::error_string() const
+DeprecatedString Result::error_string() const
 {
     VERIFY(is_error());
 
@@ -41,7 +41,7 @@ String Result::error_string() const
         builder.append(error_description);
     }
 
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 }

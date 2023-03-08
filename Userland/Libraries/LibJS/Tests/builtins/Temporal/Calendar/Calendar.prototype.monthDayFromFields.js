@@ -24,6 +24,49 @@ describe("correct behavior", () => {
         const fields = plainMonthDay.getISOFields();
         expect(fields.isoYear).toBe(1972);
     });
+
+    test("gets overflow after temporal fields", () => {
+        const operations = [];
+        const calendar = new Temporal.Calendar("iso8601");
+
+        const fields = {
+            get day() {
+                operations.push("get day");
+                return 3;
+            },
+
+            get month() {
+                operations.push("get month");
+                return 10;
+            },
+
+            get monthCode() {
+                operations.push("get monthCode");
+                return "M10";
+            },
+
+            get year() {
+                operations.push("get year");
+                return 2022;
+            },
+        };
+
+        const options = {
+            get overflow() {
+                operations.push("get overflow");
+                return "constrain";
+            },
+        };
+
+        expect(operations).toHaveLength(0);
+        calendar.monthDayFromFields(fields, options);
+        expect(operations).toHaveLength(5);
+        expect(operations[0]).toBe("get day");
+        expect(operations[1]).toBe("get month");
+        expect(operations[2]).toBe("get monthCode");
+        expect(operations[3]).toBe("get year");
+        expect(operations[4]).toBe("get overflow");
+    });
 });
 
 describe("errors", () => {
@@ -37,7 +80,7 @@ describe("errors", () => {
     test("month or monthCode field is required", () => {
         const calendar = new Temporal.Calendar("iso8601");
         expect(() => {
-            calendar.monthDayFromFields({ year: 2021 });
+            calendar.monthDayFromFields({ year: 2021, day: 1 });
         }).toThrowWithMessage(TypeError, "Required property month is missing or undefined");
     });
 

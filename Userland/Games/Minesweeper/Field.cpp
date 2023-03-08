@@ -6,9 +6,12 @@
  */
 
 #include "Field.h"
+#include <AK/Assertions.h>
 #include <AK/HashTable.h>
+#include <AK/NumberFormat.h>
 #include <AK/Queue.h>
 #include <AK/Random.h>
+#include <AK/Types.h>
 #include <LibConfig/Client.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Button.h>
@@ -105,6 +108,22 @@ private:
     bool m_chord { false };
 };
 
+ErrorOr<NonnullRefPtr<Field>> Field::create(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button, Function<void(Gfx::IntSize)> on_size_changed)
+{
+    auto field = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Field(flag_label, time_label, face_button, move(on_size_changed))));
+    field->m_mine_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/mine.png"sv));
+    field->m_flag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/flag.png"sv));
+    field->m_badflag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/badflag.png"sv));
+    field->m_consider_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/consider.png"sv));
+    field->m_default_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-default.png"sv));
+    field->m_good_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-good.png"sv));
+    field->m_bad_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-bad.png"sv));
+    for (int i = 0; i < 8; ++i)
+        field->m_number_bitmap[i] = TRY(Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/minesweeper/{}.png", i + 1)));
+    field->initialize();
+    return field;
+}
+
 Field::Field(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button, Function<void(Gfx::IntSize)> on_size_changed)
     : m_mine_palette(GUI::Application::the()->palette().impl().clone())
     , m_face_button(face_button)
@@ -112,36 +131,32 @@ Field::Field(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_b
     , m_time_label(time_label)
     , m_on_size_changed(move(on_size_changed))
 {
-    m_timer = add<Core::Timer>();
-    m_timer->on_timeout = [this] {
-        ++m_time_elapsed;
-        m_time_label.set_text(String::formatted("{}.{}", m_time_elapsed / 10, m_time_elapsed % 10));
-    };
-    m_timer->set_interval(100);
-    m_mine_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/mine.png").release_value_but_fixme_should_propagate_errors();
-    m_flag_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/flag.png").release_value_but_fixme_should_propagate_errors();
-    m_badflag_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/badflag.png").release_value_but_fixme_should_propagate_errors();
-    m_consider_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/consider.png").release_value_but_fixme_should_propagate_errors();
-    m_default_face_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/face-default.png").release_value_but_fixme_should_propagate_errors();
-    m_good_face_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/face-good.png").release_value_but_fixme_should_propagate_errors();
-    m_bad_face_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/minesweeper/face-bad.png").release_value_but_fixme_should_propagate_errors();
-    for (int i = 0; i < 8; ++i)
-        m_number_bitmap[i] = Gfx::Bitmap::try_load_from_file(String::formatted("/res/icons/minesweeper/{}.png", i + 1)).release_value_but_fixme_should_propagate_errors();
+}
+
+void Field::initialize()
+{
+    m_timer = Core::Timer::create_repeating(
+        1000, [this] {
+            ++m_time_elapsed;
+            m_time_label.set_text(human_readable_digital_time(m_time_elapsed));
+        },
+        this)
+                  .release_value_but_fixme_should_propagate_errors();
+
     // Square with mine will be filled with background color later, i.e. red
     m_mine_palette.set_color(Gfx::ColorRole::Base, Color::from_rgb(0xff4040));
 
     set_fill_with_background_color(true);
-    reset();
 
     m_face_button.on_click = [this](auto) { reset(); };
     set_face(Face::Default);
 
     {
-        bool single_chording = Config::read_bool("Minesweeper", "Game", "SingleChording", false);
-        int mine_count = Config::read_i32("Minesweeper", "Game", "MineCount", 10);
-        int rows = Config::read_i32("Minesweeper", "Game", "Rows", 9);
-        int columns = Config::read_i32("Minesweeper", "Game", "Columns", 9);
-        auto difficulty_string = Config::read_string("Minesweeper", "Game", "Difficulty", "beginner");
+        bool single_chording = Config::read_bool("Minesweeper"sv, "Game"sv, "SingleChording"sv, false);
+        int mine_count = Config::read_i32("Minesweeper"sv, "Game"sv, "MineCount"sv, 10);
+        int rows = Config::read_i32("Minesweeper"sv, "Game"sv, "Rows"sv, 9);
+        int columns = Config::read_i32("Minesweeper"sv, "Game"sv, "Columns"sv, 9);
+        auto difficulty_string = Config::read_string("Minesweeper"sv, "Game"sv, "Difficulty"sv, "beginner"sv);
         auto difficulty = difficulty_from_string(difficulty_string);
 
         // Do a quick sanity check to make sure the user hasn't tried anything crazy
@@ -199,9 +214,9 @@ void Field::reset()
     m_first_click = true;
     set_updates_enabled(false);
     m_time_elapsed = 0;
-    m_time_label.set_text("0");
+    m_time_label.set_text("00:00");
     m_flags_left = m_mine_count;
-    m_flag_label.set_text(String::number(m_flags_left));
+    m_flag_label.set_text(DeprecatedString::number(m_flags_left));
     m_timer->stop();
     set_greedy_for_hits(false);
     set_face(Face::Default);
@@ -214,13 +229,6 @@ void Field::reset()
         square->label->set_visible(false);
     }
 
-    HashTable<int> mines;
-    while (mines.size() != m_mine_count) {
-        int location = get_random_uniform(rows() * columns());
-        if (!mines.contains(location))
-            mines.set(location);
-    }
-
     size_t i = 0;
     for (size_t r = 0; r < rows(); ++r) {
         for (size_t c = 0; c < columns(); ++c) {
@@ -231,7 +239,7 @@ void Field::reset()
             square.field = this;
             square.row = r;
             square.column = c;
-            square.has_mine = mines.contains(i);
+            square.has_mine = false;
             square.has_flag = false;
             square.is_considering = false;
             square.is_swept = false;
@@ -243,7 +251,7 @@ void Field::reset()
             square.label->set_fill_with_background_color(false);
             square.label->set_relative_rect(rect);
             square.label->set_visible(false);
-            square.label->set_icon(square.has_mine ? m_mine_bitmap : nullptr);
+            square.label->set_icon(nullptr);
             if (!square.button) {
                 square.button = add<SquareButton>();
                 square.button->on_click = [this, &square](auto) {
@@ -268,6 +276,47 @@ void Field::reset()
         }
     }
 
+    set_updates_enabled(true);
+}
+
+void Field::generate_field(size_t start_row, size_t start_column)
+{
+    VERIFY(m_squares.size() >= rows() * columns());
+    size_t board_size = rows() * columns();
+
+    // FIXME: Handle possible errors
+    HashTable<size_t> free_squares;
+
+    size_t start_index = start_row * columns() + start_column;
+    free_squares.set(start_index);
+
+    square(start_row, start_column).for_each_neighbor([&](auto const& neighbor) {
+        size_t neighbor_index = neighbor.row * columns() + neighbor.column;
+        free_squares.set(neighbor_index);
+    });
+
+    VERIFY(m_mine_count <= board_size - free_squares.size());
+
+    Vector<size_t> possible_mine_positions;
+    possible_mine_positions.ensure_capacity(board_size - free_squares.size());
+
+    for (size_t i = 0; i < board_size; ++i) {
+        m_squares[i]->has_mine = false;
+        m_squares[i]->has_flag = false;
+        m_squares[i]->is_considering = false;
+        m_squares[i]->is_swept = false;
+        m_squares[i]->number = 0;
+        if (!free_squares.contains(i))
+            possible_mine_positions.unchecked_append(i);
+    }
+
+    AK::shuffle(possible_mine_positions);
+
+    for (size_t i = 0; i < m_mine_count; i++) {
+        size_t mine_location = possible_mine_positions[i];
+        m_squares[mine_location]->has_mine = true;
+    }
+
     for (size_t r = 0; r < rows(); ++r) {
         for (size_t c = 0; c < columns(); ++c) {
             auto& square = this->square(r, c);
@@ -276,15 +325,15 @@ void Field::reset()
                 number += neighbor.has_mine;
             });
             square.number = number;
-            if (square.has_mine)
-                continue;
-            if (square.number)
+            if (square.has_mine) {
+                square.label->set_icon(m_mine_bitmap);
+            } else if (square.number) {
                 square.label->set_icon(m_number_bitmap[square.number - 1]);
+            }
         }
     }
 
     m_unswept_empties = rows() * columns() - m_mine_count;
-    set_updates_enabled(true);
 }
 
 void Field::flood_fill(Square& square)
@@ -329,9 +378,8 @@ void Field::paint_event(GUI::PaintEvent& event)
 void Field::on_square_clicked_impl(Square& square, bool should_flood_fill)
 {
     if (m_first_click) {
-        while (square.has_mine || square.number != 0) {
-            reset();
-        }
+        reset();
+        generate_field(square.row, square.column);
     }
     m_first_click = false;
 
@@ -341,8 +389,10 @@ void Field::on_square_clicked_impl(Square& square, bool should_flood_fill)
         return;
     if (square.is_considering)
         return;
-    if (!m_timer->is_active())
+    if (!m_timer->is_active()) {
+        m_timer->on_timeout();
         m_timer->start();
+    }
     update();
     square.is_swept = true;
     square.button->set_visible(false);
@@ -412,7 +462,7 @@ void Field::set_flag(Square& square, bool flag)
     }
     square.has_flag = flag;
 
-    m_flag_label.set_text(String::number(m_flags_left));
+    m_flag_label.set_text(DeprecatedString::number(m_flags_left));
     square.button->set_icon(square.has_flag ? m_flag_bitmap : nullptr);
     square.button->update();
 }
@@ -424,7 +474,7 @@ void Field::on_square_middle_clicked(Square& square)
     if (square.has_flag) {
         ++m_flags_left;
         square.has_flag = false;
-        m_flag_label.set_text(String::number(m_flags_left));
+        m_flag_label.set_text(DeprecatedString::number(m_flags_left));
     }
     square.is_considering = !square.is_considering;
     square.button->set_icon(square.is_considering ? m_consider_bitmap : nullptr);
@@ -507,10 +557,10 @@ void Field::set_field_size(Difficulty difficulty, size_t rows, size_t columns, s
     if (m_rows == rows && m_columns == columns && m_mine_count == mine_count)
         return;
     {
-        Config::write_i32("Minesweeper", "Game", "MineCount", mine_count);
-        Config::write_i32("Minesweeper", "Game", "Rows", rows);
-        Config::write_i32("Minesweeper", "Game", "Columns", columns);
-        Config::write_string("Minesweeper", "Game", "Difficulty", difficulty_to_string(difficulty));
+        Config::write_i32("Minesweeper"sv, "Game"sv, "MineCount"sv, mine_count);
+        Config::write_i32("Minesweeper"sv, "Game"sv, "Rows"sv, rows);
+        Config::write_i32("Minesweeper"sv, "Game"sv, "Columns"sv, columns);
+        Config::write_string("Minesweeper"sv, "Game"sv, "Difficulty"sv, difficulty_to_string(difficulty));
     }
     m_difficulty = difficulty;
     m_rows = rows;
@@ -518,13 +568,15 @@ void Field::set_field_size(Difficulty difficulty, size_t rows, size_t columns, s
     m_mine_count = mine_count;
     set_fixed_size(frame_thickness() * 2 + m_columns * square_size(), frame_thickness() * 2 + m_rows * square_size());
     reset();
-    m_on_size_changed(min_size());
+    deferred_invoke([this] {
+        m_on_size_changed(Gfx::IntSize(min_size()));
+    });
 }
 
 void Field::set_single_chording(bool enabled)
 {
     m_single_chording = enabled;
-    Config::write_bool("Minesweeper", "Game", "SingleChording", m_single_chording);
+    Config::write_bool("Minesweeper"sv, "Game"sv, "SingleChording"sv, m_single_chording);
 }
 
 template<typename Callback>

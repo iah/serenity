@@ -23,33 +23,33 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio thread recvfd sendfd rpath unix wpath cpath"));
 
-    auto app = GUI::Application::construct(arguments);
+    auto app = TRY(GUI::Application::try_create(arguments));
     Config::pledge_domain("PixelPaint");
 
-    const char* image_file = nullptr;
+    StringView image_file;
     Core::ArgsParser args_parser;
     args_parser.add_positional_argument(image_file, "Image file to open", "path", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
     TRY(Core::System::unveil("/res", "r"));
-    TRY(Core::System::unveil("/tmp/portal/clipboard", "rw"));
-    TRY(Core::System::unveil("/tmp/portal/filesystemaccess", "rw"));
-    TRY(Core::System::unveil("/tmp/portal/image", "rw"));
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/clipboard", "rw"));
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/filesystemaccess", "rw"));
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/image", "rw"));
     TRY(Core::System::unveil("/etc/FileIconProvider.ini", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto app_icon = GUI::Icon::default_icon("app-pixel-paint");
+    auto app_icon = GUI::Icon::default_icon("app-pixel-paint"sv);
 
-    PixelPaint::g_icon_bag = TRY(PixelPaint::IconBag::try_create());
+    PixelPaint::g_icon_bag = TRY(PixelPaint::IconBag::create());
 
     auto window = GUI::Window::construct();
     window->set_title("Pixel Paint");
-    window->resize(800, 510);
+    window->resize(800, 520);
     window->set_icon(app_icon.bitmap_for_size(16));
 
-    auto main_widget = TRY(window->try_set_main_widget<PixelPaint::MainWidget>());
+    auto main_widget = TRY(window->set_main_widget<PixelPaint::MainWidget>());
 
-    main_widget->initialize_menubar(*window);
+    TRY(main_widget->initialize_menubar(*window));
 
     window->on_close_request = [&]() -> GUI::Window::CloseRequestDecision {
         if (main_widget->request_close())
@@ -72,13 +72,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     window->show();
 
-    if (image_file) {
-        auto response = FileSystemAccessClient::Client::the().try_request_file_read_only_approved(window, image_file);
+    if (!image_file.is_empty()) {
+        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window, image_file);
         if (response.is_error())
             return 1;
-        main_widget->open_image(response.value());
+        main_widget->open_image(response.release_value());
     } else {
-        main_widget->create_default_image();
+        TRY(main_widget->create_default_image());
     }
 
     return app->exec();

@@ -5,39 +5,34 @@
  */
 
 #include <AK/LexicalPath.h>
-#include <LibCore/DirIterator.h>
+#include <LibCore/Directory.h>
 #include <LibCore/File.h>
 #include <LibCpp/Parser.h>
 #include <LibTest/TestCase.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 
-constexpr char TESTS_ROOT_DIR[] = "/home/anon/cpp-tests/parser";
+constexpr StringView TESTS_ROOT_DIR = "/home/anon/Tests/cpp-tests/parser"sv;
 
-static String read_all(const String& path)
+static DeprecatedString read_all(DeprecatedString const& path)
 {
-    auto result = Core::File::open(path, Core::OpenMode::ReadOnly);
-    VERIFY(!result.is_error());
-    auto content = result.value()->read_all();
-    return { reinterpret_cast<const char*>(content.data()), content.size() };
+    auto file = MUST(Core::File::open(path, Core::File::OpenMode::Read));
+    auto file_size = MUST(file->size());
+    auto content = MUST(ByteBuffer::create_uninitialized(file_size));
+    MUST(file->read_entire_buffer(content.bytes()));
+    return DeprecatedString { content.bytes() };
 }
 
 TEST_CASE(test_regression)
 {
-    Core::DirIterator directory_iterator(TESTS_ROOT_DIR, Core::DirIterator::Flags::SkipDots);
-
-    while (directory_iterator.has_next()) {
-        auto file_path = directory_iterator.next_full_path();
-
-        auto path = LexicalPath { file_path };
-        if (!path.has_extension(".cpp"))
-            continue;
+    MUST(Core::Directory::for_each_entry(TESTS_ROOT_DIR, Core::DirIterator::Flags::SkipDots, [](auto const& entry, auto const& directory) -> ErrorOr<IterationDecision> {
+        auto path = LexicalPath::join(directory.path().string(), entry.name);
+        if (!path.has_extension(".cpp"sv))
+            return IterationDecision::Continue;
 
         outln("Checking {}...", path.basename());
+        auto file_path = path.string();
 
-        auto ast_file_path = String::formatted("{}.ast", file_path.substring(0, file_path.length() - sizeof(".cpp") + 1));
+        auto ast_file_path = DeprecatedString::formatted("{}.ast", file_path.substring(0, file_path.length() - sizeof(".cpp") + 1));
 
         auto source = read_all(file_path);
         auto target_ast = read_all(ast_file_path);
@@ -73,9 +68,10 @@ TEST_CASE(test_regression)
 
         fclose(input_stream);
 
-        String content { reinterpret_cast<const char*>(buffer.data()), buffer.size() };
+        DeprecatedString content { reinterpret_cast<char const*>(buffer.data()), buffer.size() };
 
         auto equal = content == target_ast;
         EXPECT(equal);
-    }
+        return IterationDecision::Continue;
+    }));
 }

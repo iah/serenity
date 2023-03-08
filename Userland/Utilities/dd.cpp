@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/Optional.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibMain/Main.h>
 #include <ctype.h>
@@ -15,7 +15,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-const char* usage = "usage:\n"
+char const* usage = "usage:\n"
                     "\tdd <options>\n"
                     "options:\n"
                     "\tif=<file>\tinput file (default: stdin)\n"
@@ -38,7 +38,7 @@ enum Status {
 
 static StringView split_at_equals(StringView argument)
 {
-    auto values = argument.split_view('=', true);
+    auto values = argument.split_view('=', SplitBehavior::KeepEmpty);
     if (values.size() < 2) {
         warnln("Unable to parse: {}", argument);
         return {};
@@ -54,7 +54,7 @@ static int handle_io_file_arguments(int& fd, int flags, StringView argument)
         return -1;
     }
 
-    fd = open(value.to_string().characters(), flags, 0666);
+    fd = open(value.to_deprecated_string().characters(), flags, 0666);
     if (fd == -1) {
         warnln("Unable to open: {}", value);
         return -1;
@@ -148,31 +148,31 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (argument == "--help") {
             out("{}", usage);
             return 0;
-        } else if (argument.starts_with("if=")) {
+        } else if (argument.starts_with("if="sv)) {
             if (handle_io_file_arguments(input_fd, input_flags, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("of=")) {
+        } else if (argument.starts_with("of="sv)) {
             if (handle_io_file_arguments(output_fd, output_flags, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("bs=")) {
+        } else if (argument.starts_with("bs="sv)) {
             if (handle_size_arguments(block_size, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("count=")) {
+        } else if (argument.starts_with("count="sv)) {
             if (handle_size_arguments(count, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("seek=")) {
+        } else if (argument.starts_with("seek="sv)) {
             if (handle_size_arguments(seek, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("skip=")) {
+        } else if (argument.starts_with("skip="sv)) {
             if (handle_size_arguments(skip, argument) < 0) {
                 return 1;
             }
-        } else if (argument.starts_with("status=")) {
+        } else if (argument.starts_with("status="sv)) {
             if (handle_status_arguments(status, argument) < 0) {
                 return 1;
             }

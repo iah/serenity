@@ -5,7 +5,6 @@
  */
 
 #include <AK/CharacterTypes.h>
-#include <AK/FileStream.h>
 #include <AK/ScopeGuard.h>
 #include <AK/ScopedValueRollback.h>
 #include <AK/StringBuilder.h>
@@ -38,7 +37,7 @@ void Editor::search_forwards()
     ScopedValueRollback inline_search_cursor_rollback { m_inline_search_cursor };
     StringBuilder builder;
     builder.append(Utf32View { m_buffer.data(), m_inline_search_cursor });
-    String search_phrase = builder.to_string();
+    auto search_phrase = builder.to_deprecated_string();
     if (m_search_offset_state == SearchOffsetState::Backwards)
         --m_search_offset;
     if (m_search_offset > 0) {
@@ -65,7 +64,7 @@ void Editor::search_backwards()
     ScopedValueRollback inline_search_cursor_rollback { m_inline_search_cursor };
     StringBuilder builder;
     builder.append(Utf32View { m_buffer.data(), m_inline_search_cursor });
-    String search_phrase = builder.to_string();
+    auto search_phrase = builder.to_deprecated_string();
     if (m_search_offset_state == SearchOffsetState::Forwards)
         ++m_search_offset;
     if (search(search_phrase, true)) {
@@ -161,7 +160,7 @@ void Editor::finish_edit()
     if (!m_always_refresh) {
         m_input_error = Error::Eof;
         finish();
-        really_quit_event_loop();
+        really_quit_event_loop().release_value_but_fixme_should_propagate_errors();
     }
 }
 
@@ -170,6 +169,7 @@ void Editor::kill_line()
     for (size_t i = 0; i < m_cursor; ++i)
         remove_at_index(0);
     m_cursor = 0;
+    m_inline_search_cursor = m_cursor;
     m_refresh_needed = true;
 }
 
@@ -234,18 +234,18 @@ void Editor::enter_search()
 
         m_search_editor->on_display_refresh = [this](Editor& search_editor) {
             // Remove the search editor prompt before updating ourselves (this avoids artifacts when we move the search editor around).
-            search_editor.cleanup();
+            search_editor.cleanup().release_value_but_fixme_should_propagate_errors();
 
             StringBuilder builder;
             builder.append(Utf32View { search_editor.buffer().data(), search_editor.buffer().size() });
-            if (!search(builder.build(), false, false)) {
+            if (!search(builder.to_deprecated_string(), false, false)) {
                 m_chars_touched_in_the_middle = m_buffer.size();
                 m_refresh_needed = true;
                 m_buffer.clear();
                 m_cursor = 0;
             }
 
-            refresh_display();
+            refresh_display().release_value_but_fixme_should_propagate_errors();
 
             // Move the search prompt below ours and tell it to redraw itself.
             auto prompt_end_line = current_prompt_metrics().lines_with_addition(m_cached_buffer_metrics, m_num_columns);
@@ -265,7 +265,7 @@ void Editor::enter_search()
             search_editor.finish();
             m_reset_buffer_on_search_end = true;
             search_editor.end_search();
-            search_editor.deferred_invoke([&search_editor] { search_editor.really_quit_event_loop(); });
+            search_editor.deferred_invoke([&search_editor] { search_editor.really_quit_event_loop().release_value_but_fixme_should_propagate_errors(); });
             return false;
         });
 
@@ -294,7 +294,7 @@ void Editor::enter_search()
                 TemporaryChange refresh_change { m_always_refresh, true };
                 set_origin(1, 1);
                 m_refresh_needed = true;
-                refresh_display();
+                refresh_display().release_value_but_fixme_should_propagate_errors();
             }
 
             // move the search prompt below ours
@@ -313,7 +313,7 @@ void Editor::enter_search()
             return false;
         });
 
-        auto search_prompt = "\x1b[32msearch:\x1b[0m ";
+        auto search_prompt = "\x1b[32msearch:\x1b[0m "sv;
 
         // While the search editor is active, we do not want editing events.
         m_is_editing = false;
@@ -342,13 +342,13 @@ void Editor::enter_search()
         auto& search_string = search_string_result.value();
 
         // Manually cleanup the search line.
-        OutputFileStream stderr_stream { stderr };
-        reposition_cursor(stderr_stream);
-        auto search_metrics = actual_rendered_string_metrics(search_string);
-        auto metrics = actual_rendered_string_metrics(search_prompt);
-        VT::clear_lines(0, metrics.lines_with_addition(search_metrics, m_num_columns) + search_end_row - m_origin_row - 1, stderr_stream);
+        auto stderr_stream = Core::File::standard_error().release_value_but_fixme_should_propagate_errors();
+        reposition_cursor(*stderr_stream).release_value_but_fixme_should_propagate_errors();
+        auto search_metrics = actual_rendered_string_metrics(search_string, {});
+        auto metrics = actual_rendered_string_metrics(search_prompt, {});
+        VT::clear_lines(0, metrics.lines_with_addition(search_metrics, m_num_columns) + search_end_row - m_origin_row - 1, *stderr_stream).release_value_but_fixme_should_propagate_errors();
 
-        reposition_cursor(stderr_stream);
+        reposition_cursor(*stderr_stream).release_value_but_fixme_should_propagate_errors();
 
         m_refresh_needed = true;
         m_cached_prompt_valid = false;
@@ -434,8 +434,8 @@ void Editor::go_end()
 void Editor::clear_screen()
 {
     warn("\033[3J\033[H\033[2J");
-    OutputFileStream stream { stderr };
-    VT::move_absolute(1, 1, stream);
+    auto stream = Core::File::standard_error().release_value_but_fixme_should_propagate_errors();
+    VT::move_absolute(1, 1, *stream).release_value_but_fixme_should_propagate_errors();
     set_origin(1, 1);
     m_refresh_needed = true;
     m_cached_prompt_valid = false;
@@ -515,7 +515,7 @@ void Editor::uppercase_word()
 
 void Editor::edit_in_external_editor()
 {
-    const auto* editor_command = getenv("EDITOR");
+    auto const* editor_command = getenv("EDITOR");
     if (!editor_command)
         editor_command = m_configuration.m_default_text_editor.characters();
 
@@ -528,21 +528,16 @@ void Editor::edit_in_external_editor()
     }
 
     {
-        auto* fp = fdopen(fd, "rw");
-        if (!fp) {
-            perror("fdopen");
-            return;
-        }
-
-        OutputFileStream stream { fp };
-
+        auto write_fd = dup(fd);
+        auto stream = Core::File::adopt_fd(write_fd, Core::File::OpenMode::Write).release_value_but_fixme_should_propagate_errors();
         StringBuilder builder;
         builder.append(Utf32View { m_buffer.data(), m_buffer.size() });
         auto bytes = builder.string_view().bytes();
         while (!bytes.is_empty()) {
-            auto nwritten = stream.write(bytes);
+            auto nwritten = stream->write(bytes).release_value_but_fixme_should_propagate_errors();
             bytes = bytes.slice(nwritten);
         }
+        lseek(fd, 0, SEEK_SET);
     }
 
     ScopeGuard remove_temp_file_guard {
@@ -552,7 +547,7 @@ void Editor::edit_in_external_editor()
         }
     };
 
-    Vector<const char*> args { editor_command, file_path, nullptr };
+    Vector<char const*> args { editor_command, file_path, nullptr };
     auto pid = fork();
 
     if (pid == -1) {
@@ -575,12 +570,8 @@ void Editor::edit_in_external_editor()
     }
 
     {
-        auto file_or_error = Core::File::open(file_path, Core::OpenMode::ReadOnly);
-        if (file_or_error.is_error())
-            return;
-
-        auto file = file_or_error.release_value();
-        auto contents = file->read_all();
+        auto file = Core::File::open({ file_path, strlen(file_path) }, Core::File::OpenMode::Read).release_value_but_fixme_should_propagate_errors();
+        auto contents = file->read_until_eof().release_value_but_fixme_should_propagate_errors();
         StringView data { contents };
         while (data.ends_with('\n'))
             data = data.substring_view(0, data.length() - 1);

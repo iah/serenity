@@ -1,10 +1,11 @@
 /*
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/CharacterTypes.h>
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/UIEvents/KeyboardEvent.h>
 
 namespace Web::UIEvents {
@@ -65,11 +66,11 @@ static unsigned long determine_key_code(KeyCode platform_key, u32 code_point)
     return platform_key;
 }
 
-NonnullRefPtr<KeyboardEvent> KeyboardEvent::create_from_platform_event(FlyString const& event_name, KeyCode platform_key, unsigned modifiers, u32 code_point)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<KeyboardEvent>> KeyboardEvent::create_from_platform_event(JS::Realm& realm, DeprecatedFlyString const& event_name, KeyCode platform_key, unsigned modifiers, u32 code_point)
 {
     // FIXME: Figure out what these should actually contain.
-    String event_key = key_code_to_string(platform_key);
-    String event_code = "FIXME";
+    DeprecatedString event_key = key_code_to_string(platform_key);
+    DeprecatedString event_code = "FIXME";
 
     auto key_code = determine_key_code(platform_key, code_point);
     KeyboardEventInit event_init {};
@@ -87,10 +88,10 @@ NonnullRefPtr<KeyboardEvent> KeyboardEvent::create_from_platform_event(FlyString
     event_init.bubbles = true;
     event_init.cancelable = true;
     event_init.composed = true;
-    return KeyboardEvent::create(event_name, event_init);
+    return KeyboardEvent::create(realm, event_name, event_init);
 }
 
-bool KeyboardEvent::get_modifier_state(String const& key_arg)
+bool KeyboardEvent::get_modifier_state(DeprecatedString const& key_arg)
 {
     if (key_arg == "Alt")
         return m_alt_key;
@@ -102,4 +103,41 @@ bool KeyboardEvent::get_modifier_state(String const& key_arg)
         return m_meta_key;
     return false;
 }
+
+WebIDL::ExceptionOr<JS::NonnullGCPtr<KeyboardEvent>> KeyboardEvent::create(JS::Realm& realm, DeprecatedFlyString const& event_name, KeyboardEventInit const& event_init)
+{
+    return MUST_OR_THROW_OOM(realm.heap().allocate<KeyboardEvent>(realm, realm, event_name, event_init));
+}
+
+WebIDL::ExceptionOr<JS::NonnullGCPtr<KeyboardEvent>> KeyboardEvent::construct_impl(JS::Realm& realm, DeprecatedFlyString const& event_name, KeyboardEventInit const& event_init)
+{
+    return create(realm, event_name, event_init);
+}
+
+KeyboardEvent::KeyboardEvent(JS::Realm& realm, DeprecatedFlyString const& event_name, KeyboardEventInit const& event_init)
+    : UIEvent(realm, event_name, event_init)
+    , m_key(event_init.key)
+    , m_code(event_init.code)
+    , m_location(event_init.location)
+    , m_ctrl_key(event_init.ctrl_key)
+    , m_shift_key(event_init.shift_key)
+    , m_alt_key(event_init.alt_key)
+    , m_meta_key(event_init.meta_key)
+    , m_repeat(event_init.repeat)
+    , m_is_composing(event_init.is_composing)
+    , m_key_code(event_init.key_code)
+    , m_char_code(event_init.char_code)
+{
+}
+
+KeyboardEvent::~KeyboardEvent() = default;
+
+JS::ThrowCompletionOr<void> KeyboardEvent::initialize(JS::Realm& realm)
+{
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::KeyboardEventPrototype>(realm, "KeyboardEvent"));
+
+    return {};
+}
+
 }

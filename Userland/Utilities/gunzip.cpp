@@ -6,23 +6,22 @@
 
 #include <LibCompress/Gzip.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/FileStream.h>
+#include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
 #include <unistd.h>
 
-static bool decompress_file(Buffered<Core::InputFileStream>& input_stream, Buffered<Core::OutputFileStream>& output_stream)
+static ErrorOr<void> decompress_file(NonnullOwnPtr<Core::File> input_stream, Stream& output_stream)
 {
-    auto gzip_stream = Compress::GzipDecompressor { input_stream };
+    auto gzip_stream = Compress::GzipDecompressor { move(input_stream) };
 
-    u8 buffer[4096];
-
-    while (!gzip_stream.has_any_error() && !gzip_stream.unreliable_eof()) {
-        const auto nread = gzip_stream.read({ buffer, sizeof(buffer) });
-        output_stream.write_or_error({ buffer, nread });
+    auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
+    while (!gzip_stream.is_eof()) {
+        auto span = TRY(gzip_stream.read(buffer));
+        TRY(output_stream.write_entire_buffer(span));
     }
 
-    return !gzip_stream.handle_any_error();
+    return {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments args)
@@ -42,31 +41,20 @@ ErrorOr<int> serenity_main(Main::Arguments args)
 
     for (auto filename : filenames) {
 
-        String input_filename;
-        String output_filename;
-        if (filename.ends_with(".gz")) {
+        DeprecatedString input_filename;
+        DeprecatedString output_filename;
+        if (filename.ends_with(".gz"sv)) {
             input_filename = filename;
             output_filename = filename.substring_view(0, filename.length() - 3);
         } else {
-            input_filename = String::formatted("{}.gz", filename);
+            input_filename = DeprecatedString::formatted("{}.gz", filename);
             output_filename = filename;
         }
 
-        auto input_stream_result = TRY(Core::InputFileStream::open_buffered(input_filename));
+        auto input_stream_result = TRY(Core::File::open(input_filename, Core::File::OpenMode::Read));
+        auto output_stream = write_to_stdout ? TRY(Core::File::standard_output()) : TRY(Core::File::open(output_filename, Core::File::OpenMode::Write));
 
-        auto success = false;
-        if (write_to_stdout) {
-            auto stdout = Core::OutputFileStream::stdout_buffered();
-            success = decompress_file(input_stream_result, stdout);
-        } else {
-            auto output_stream_result = TRY(Core::OutputFileStream::open_buffered(output_filename));
-
-            success = decompress_file(input_stream_result, output_stream_result);
-        }
-        if (!success) {
-            warnln("Failed gzip decompressing input file");
-            return 1;
-        }
+        TRY(decompress_file(move(input_stream_result), *output_stream));
 
         if (!keep_input_files)
             TRY(Core::System::unlink(input_filename));

@@ -7,8 +7,8 @@
 
 #include "BoardView.h"
 #include <LibGUI/Painter.h>
-#include <LibGfx/Font.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/Font.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 
 BoardView::BoardView(Game::Board const* board)
@@ -45,13 +45,13 @@ void BoardView::set_board(Game::Board const* board)
 
 void BoardView::pick_font()
 {
-    String best_font_name;
+    DeprecatedString best_font_name;
     int best_font_size = -1;
     auto& font_database = Gfx::FontDatabase::the();
     font_database.for_each_font([&](Gfx::Font const& font) {
         if (font.family() != "Liza" || font.weight() != 700)
             return;
-        auto size = font.glyph_height();
+        auto size = font.pixel_size_rounded_up();
         if (size * 2 <= m_cell_size && size > best_font_size) {
             best_font_name = font.qualified_name();
             best_font_size = size;
@@ -98,29 +98,33 @@ void BoardView::resize()
 
 void BoardView::keydown_event(GUI::KeyEvent& event)
 {
-    if (!on_move)
+    if (!on_move) {
+        event.ignore();
         return;
+    }
 
     switch (event.key()) {
     case KeyCode::Key_A:
     case KeyCode::Key_Left:
         on_move(Game::Direction::Left);
-        break;
+        return;
     case KeyCode::Key_D:
     case KeyCode::Key_Right:
         on_move(Game::Direction::Right);
-        break;
+        return;
     case KeyCode::Key_W:
     case KeyCode::Key_Up:
         on_move(Game::Direction::Up);
-        break;
+        return;
     case KeyCode::Key_S:
     case KeyCode::Key_Down:
         on_move(Game::Direction::Down);
-        break;
-    default:
         return;
+    default:
+        break;
     }
+
+    event.ignore();
 }
 
 Gfx::Color BoardView::background_color_for_cell(u32 value)
@@ -230,7 +234,7 @@ void BoardView::paint_event(GUI::PaintEvent& event)
             auto rect = Gfx::IntRect::centered_on(center, tile_size);
 
             painter.fill_rect(rect, background_color_for_cell(sliding_tile.value_from));
-            painter.draw_text(rect, String::number(sliding_tile.value_from), font(), Gfx::TextAlignment::Center, text_color_for_cell(sliding_tile.value_from));
+            painter.draw_text(rect, DeprecatedString::number(sliding_tile.value_from), font(), Gfx::TextAlignment::Center, text_color_for_cell(sliding_tile.value_from));
         }
     } else {
         for (size_t column = 0; column < columns(); ++column) {
@@ -245,7 +249,7 @@ void BoardView::paint_event(GUI::PaintEvent& event)
                 auto entry = tiles[row][column];
                 painter.fill_rect(rect, background_color_for_cell(entry));
                 if (entry > 0)
-                    painter.draw_text(rect, String::number(entry), font(), Gfx::TextAlignment::Center, text_color_for_cell(entry));
+                    painter.draw_text(rect, DeprecatedString::number(entry), font(), Gfx::TextAlignment::Center, text_color_for_cell(entry));
             }
         }
     }

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,8 +13,8 @@ namespace GUI {
 
 class TextRange {
 public:
-    TextRange() { }
-    TextRange(const TextPosition& start, const TextPosition& end)
+    TextRange() = default;
+    TextRange(TextPosition const& start, TextPosition const& end)
         : m_start(start)
         , m_end(end)
     {
@@ -28,26 +29,28 @@ public:
 
     TextPosition& start() { return m_start; }
     TextPosition& end() { return m_end; }
-    const TextPosition& start() const { return m_start; }
-    const TextPosition& end() const { return m_end; }
+    TextPosition const& start() const { return m_start; }
+    TextPosition const& end() const { return m_end; }
+
+    size_t line_count() const { return normalized_end().line() - normalized_start().line() + 1; }
 
     TextRange normalized() const { return TextRange(normalized_start(), normalized_end()); }
 
-    void set_start(const TextPosition& position) { m_start = position; }
-    void set_end(const TextPosition& position) { m_end = position; }
+    void set_start(TextPosition const& position) { m_start = position; }
+    void set_end(TextPosition const& position) { m_end = position; }
 
-    void set(const TextPosition& start, const TextPosition& end)
+    void set(TextPosition const& start, TextPosition const& end)
     {
         m_start = start;
         m_end = end;
     }
 
-    bool operator==(const TextRange& other) const
+    bool operator==(TextRange const& other) const
     {
         return m_start == other.m_start && m_end == other.m_end;
     }
 
-    bool contains(const TextPosition& position) const
+    bool contains(TextPosition const& position) const
     {
         if (!(position.line() > m_start.line() || (position.line() == m_start.line() && position.column() >= m_start.column())))
             return false;
@@ -60,8 +63,8 @@ private:
     TextPosition normalized_start() const { return m_start < m_end ? m_start : m_end; }
     TextPosition normalized_end() const { return m_start < m_end ? m_end : m_start; }
 
-    TextPosition m_start;
-    TextPosition m_end;
+    TextPosition m_start {};
+    TextPosition m_end {};
 };
 
 }
@@ -71,7 +74,7 @@ struct AK::Formatter<GUI::TextRange> : AK::Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, GUI::TextRange const& value)
     {
         if (value.is_valid())
-            return Formatter<FormatString>::format(builder, "{}-{}", value.start(), value.end());
-        return Formatter<FormatString>::format(builder, "GUI::TextRange(Invalid)");
+            return Formatter<FormatString>::format(builder, "{}-{}"sv, value.start(), value.end());
+        return builder.put_string("GUI::TextRange(Invalid)"sv);
     }
 };

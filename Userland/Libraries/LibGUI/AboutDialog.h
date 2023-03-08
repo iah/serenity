@@ -1,34 +1,31 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/String.h>
 #include <LibCore/Version.h>
 #include <LibGUI/Dialog.h>
 
 namespace GUI {
 
 class AboutDialog final : public Dialog {
-    C_OBJECT(AboutDialog)
+    C_OBJECT_ABSTRACT(AboutDialog)
 public:
-    virtual ~AboutDialog() override;
+    static ErrorOr<NonnullRefPtr<AboutDialog>> try_create(String name, String version, RefPtr<Gfx::Bitmap const> icon = nullptr, Window* parent_window = nullptr);
+    virtual ~AboutDialog() override = default;
 
-    static void show(StringView name, const Gfx::Bitmap* icon = nullptr, Window* parent_window = nullptr, const Gfx::Bitmap* window_icon = nullptr, StringView version = Core::Version::SERENITY_VERSION)
-    {
-        auto dialog = AboutDialog::construct(name, icon, parent_window, version);
-        if (window_icon)
-            dialog->set_icon(window_icon);
-        dialog->exec();
-    }
+    static ErrorOr<void> show(String name, String version, RefPtr<Gfx::Bitmap const> icon = nullptr, Window* parent_window = nullptr, RefPtr<Gfx::Bitmap const> window_icon = nullptr);
 
 private:
-    AboutDialog(StringView name, const Gfx::Bitmap* icon = nullptr, Window* parent_window = nullptr, StringView version = Core::Version::SERENITY_VERSION);
+    AboutDialog(String name, String version, RefPtr<Gfx::Bitmap const> icon = nullptr, Window* parent_window = nullptr);
 
     String m_name;
-    RefPtr<Gfx::Bitmap> m_icon;
     String m_version_string;
+    RefPtr<Gfx::Bitmap const> m_icon;
 };
 }

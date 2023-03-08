@@ -8,7 +8,6 @@
 
 #include <AK/JsonPath.h>
 #include <AK/JsonValue.h>
-#include <AK/NonnullOwnPtrVector.h>
 #include <LibGUI/Model.h>
 
 namespace Inspector {
@@ -31,7 +30,7 @@ public:
 
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
-    virtual String column_name(int) const override;
+    virtual DeprecatedString column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
     virtual void set_data(const GUI::ModelIndex&, const GUI::Variant&) override;
     virtual bool is_editable(const GUI::ModelIndex& index) const override { return index.column() == Column::Value; }
@@ -41,11 +40,11 @@ public:
 private:
     explicit RemoteObjectPropertyModel(RemoteObject&);
 
-    const JsonPath* cached_path_at(int n, const Vector<JsonPathElement>& prefix) const;
-    const JsonPath* find_cached_path(const Vector<JsonPathElement>& path) const;
+    JsonPath const* cached_path_at(int n, Vector<JsonPathElement> const& prefix) const;
+    JsonPath const* find_cached_path(Vector<JsonPathElement> const& path) const;
 
     RemoteObject& m_object;
-    mutable NonnullOwnPtrVector<JsonPath> m_paths;
+    mutable Vector<NonnullOwnPtr<JsonPath>> m_paths;
 };
 
 }

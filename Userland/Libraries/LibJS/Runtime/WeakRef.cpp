@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
+ * Copyright (c) 2021-2022, Idan Horowitz <idan.horowitz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,30 +8,38 @@
 
 namespace JS {
 
-WeakRef* WeakRef::create(GlobalObject& global_object, Object* object)
+NonnullGCPtr<WeakRef> WeakRef::create(Realm& realm, Object& value)
 {
-    return global_object.heap().allocate<WeakRef>(global_object, object, *global_object.weak_ref_prototype());
+    return realm.heap().allocate<WeakRef>(realm, value, *realm.intrinsics().weak_ref_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
-WeakRef::WeakRef(Object* object, Object& prototype)
-    : Object(prototype)
+NonnullGCPtr<WeakRef> WeakRef::create(Realm& realm, Symbol& value)
+{
+    return realm.heap().allocate<WeakRef>(realm, value, *realm.intrinsics().weak_ref_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+}
+
+WeakRef::WeakRef(Object& value, Object& prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , WeakContainer(heap())
-    , m_value(object)
+    , m_value(&value)
     , m_last_execution_generation(vm().execution_generation())
 {
 }
 
-WeakRef::~WeakRef()
+WeakRef::WeakRef(Symbol& value, Object& prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
+    , WeakContainer(heap())
+    , m_value(&value)
+    , m_last_execution_generation(vm().execution_generation())
 {
 }
 
 void WeakRef::remove_dead_cells(Badge<Heap>)
 {
-    VERIFY(m_value);
-    if (m_value->state() == Cell::State::Live)
+    if (m_value.visit([](Cell* cell) -> bool { return cell->state() == Cell::State::Live; }, [](Empty) -> bool { VERIFY_NOT_REACHED(); }))
         return;
 
-    m_value = nullptr;
+    m_value = Empty {};
     // This is an optimization, we deregister from the garbage collector early (even if we were not garbage collected ourself yet)
     // to reduce the garbage collection overhead, which we can do because a cleared weak ref cannot be reused.
     WeakContainer::deregister();
@@ -41,8 +49,10 @@ void WeakRef::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
 
-    if (vm().execution_generation() == m_last_execution_generation)
-        visitor.visit(m_value);
+    if (vm().execution_generation() == m_last_execution_generation) {
+        auto* cell = m_value.visit([](Cell* cell) -> Cell* { return cell; }, [](Empty) -> Cell* { return nullptr; });
+        visitor.visit(cell);
+    }
 }
 
 }

@@ -1,23 +1,29 @@
+include(libgl_generators)
+
 set(SOURCES
-    GLBlend.cpp
-    GLColor.cpp
+    Buffer/Buffer.cpp
+    Buffer.cpp
+    ClipPlane.cpp
+    ContextParameter.cpp
     GLContext.cpp
-    GLDraw.cpp
-    GLFog.cpp
-    GLLights.cpp
-    GLLists.cpp
-    GLMap.cpp
-    GLMatrix.cpp
-    GLStencil.cpp
-    GLTexture.cpp
-    GLUtils.cpp
-    GLVert.cpp
-    GLVertexArrays.cpp
-    SoftwareGLContext.cpp
-    Tex/NameAllocator.cpp
+    Image.cpp
+    Lighting.cpp
+    List.cpp
+    Matrix.cpp
+    NameAllocator.cpp
+    Shader.cpp
+    Shaders/Program.cpp
+    Shaders/Shader.cpp
+    Stencil.cpp
     Tex/Texture2D.cpp
-    Tex/TextureUnit.cpp
+    Texture.cpp
+    Vertex.cpp
 )
 
+generate_libgl_implementation()
+
+set(GENERATED_SOURCES
+    GLAPI.cpp)
+
 serenity_lib(LibGL gl)
-target_link_libraries(LibGL LibM LibCore LibGfx LibSoftGPU)
+target_link_libraries(LibGL PRIVATE LibCore LibGfx LibGLSL LibGPU)

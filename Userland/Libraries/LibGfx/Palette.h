@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  * Copyright (c) 2022, Filiph Sandström <filiph.sandstrom@filfatstudios.com>
  *
@@ -29,7 +29,7 @@ public:
     Color color(ColorRole role) const
     {
         VERIFY((int)role < (int)ColorRole::__Count);
-        return Color::from_rgba(theme().color[(int)role]);
+        return Color::from_argb(theme().color[(int)role]);
     }
 
     Gfx::TextAlignment alignment(AlignmentRole role) const
@@ -45,8 +45,8 @@ public:
     }
 
     int metric(MetricRole) const;
-    String path(PathRole) const;
-    const SystemTheme& theme() const { return *m_theme_buffer.data<SystemTheme>(); }
+    DeprecatedString path(PathRole) const;
+    SystemTheme const& theme() const { return *m_theme_buffer.data<SystemTheme>(); }
 
     void replace_internal_buffer(Badge<GUI::Application>, Core::AnonymousBuffer buffer);
 
@@ -59,7 +59,7 @@ private:
 class Palette {
 
 public:
-    explicit Palette(const PaletteImpl&);
+    explicit Palette(PaletteImpl&);
     ~Palette() = default;
 
     Color accent() const { return color(ColorRole::Accent); }
@@ -99,6 +99,8 @@ public:
     Color menu_selection_text() const { return color(ColorRole::MenuSelectionText); }
     Color base() const { return color(ColorRole::Base); }
     Color base_text() const { return color(ColorRole::BaseText); }
+    Color disabled_text_front() const { return color(ColorRole::DisabledTextFront); }
+    Color disabled_text_back() const { return color(ColorRole::DisabledTextBack); }
     Color button() const { return color(ColorRole::Button); }
     Color button_text() const { return color(ColorRole::ButtonText); }
     Color threed_highlight() const { return color(ColorRole::ThreedHighlight); }
@@ -115,6 +117,8 @@ public:
     Color ruler_inactive_text() const { return color(ColorRole::RulerInactiveText); }
     Color text_cursor() const { return color(ColorRole::TextCursor); }
     Color focus_outline() const { return color(ColorRole::FocusOutline); }
+    Color tray() const { return color(ColorRole::Tray); }
+    Color tray_text() const { return color(ColorRole::TrayText); }
 
     Color link() const { return color(ColorRole::Link); }
     Color active_link() const { return color(ColorRole::ActiveLink); }
@@ -138,9 +142,32 @@ public:
     Color syntax_member() const { return color(ColorRole::SyntaxMember); }
     Color syntax_parameter() const { return color(ColorRole::SyntaxParameter); }
 
+    Color background() const { return color(ColorRole::ColorSchemeBackground); }
+    Color foreground() const { return color(ColorRole::ColorSchemeForeground); }
+
+    Color black() const { return color(ColorRole::Black); }
+    Color red() const { return color(ColorRole::Red); }
+    Color green() const { return color(ColorRole::Green); }
+    Color yellow() const { return color(ColorRole::Yellow); }
+    Color blue() const { return color(ColorRole::Blue); }
+    Color magenta() const { return color(ColorRole::Magenta); }
+    Color cyan() const { return color(ColorRole::Cyan); }
+    Color white() const { return color(ColorRole::White); }
+
+    Color bright_black() const { return color(ColorRole::BrightBlack); }
+    Color bright_red() const { return color(ColorRole::BrightRed); }
+    Color bright_green() const { return color(ColorRole::BrightGreen); }
+    Color bright_yellow() const { return color(ColorRole::BrightYellow); }
+    Color bright_blue() const { return color(ColorRole::BrightBlue); }
+    Color bright_magenta() const { return color(ColorRole::BrightMagenta); }
+    Color bright_cyan() const { return color(ColorRole::BrightCyan); }
+    Color bright_white() const { return color(ColorRole::BrightWhite); }
+
     Gfx::TextAlignment title_alignment() const { return alignment(AlignmentRole::TitleAlignment); }
 
+    bool bold_text_as_bright() const { return flag(FlagRole::BoldTextAsBright); }
     bool is_dark() const { return flag(FlagRole::IsDark); }
+    bool title_buttons_icon_only() const { return flag(FlagRole::TitleButtonsIconOnly); }
 
     int window_border_thickness() const { return metric(MetricRole::BorderThickness); }
     int window_border_radius() const { return metric(MetricRole::BorderRadius); }
@@ -148,29 +175,29 @@ public:
     int window_title_button_width() const { return metric(MetricRole::TitleButtonWidth); }
     int window_title_button_height() const { return metric(MetricRole::TitleButtonHeight); }
 
-    String title_button_icons_path() const { return path(PathRole::TitleButtonIcons); }
-    String active_window_shadow_path() const { return path(PathRole::ActiveWindowShadow); }
-    String inactive_window_shadow_path() const { return path(PathRole::InactiveWindowShadow); }
-    String menu_shadow_path() const { return path(PathRole::MenuShadow); }
-    String taskbar_shadow_path() const { return path(PathRole::TaskbarShadow); }
-    String tooltip_shadow_path() const { return path(PathRole::TooltipShadow); }
+    DeprecatedString title_button_icons_path() const { return path(PathRole::TitleButtonIcons); }
+    DeprecatedString active_window_shadow_path() const { return path(PathRole::ActiveWindowShadow); }
+    DeprecatedString inactive_window_shadow_path() const { return path(PathRole::InactiveWindowShadow); }
+    DeprecatedString menu_shadow_path() const { return path(PathRole::MenuShadow); }
+    DeprecatedString taskbar_shadow_path() const { return path(PathRole::TaskbarShadow); }
+    DeprecatedString tooltip_shadow_path() const { return path(PathRole::TooltipShadow); }
 
     Color color(ColorRole role) const { return m_impl->color(role); }
     Gfx::TextAlignment alignment(AlignmentRole role) const { return m_impl->alignment(role); }
     bool flag(FlagRole role) const { return m_impl->flag(role); }
     int metric(MetricRole role) const { return m_impl->metric(role); }
-    String path(PathRole role) const { return m_impl->path(role); }
+    DeprecatedString path(PathRole role) const { return m_impl->path(role); }
 
     void set_color(ColorRole, Color);
     void set_alignment(AlignmentRole, Gfx::TextAlignment);
     void set_flag(FlagRole, bool);
     void set_metric(MetricRole, int);
-    void set_path(PathRole, String);
+    void set_path(PathRole, DeprecatedString);
 
-    const SystemTheme& theme() const { return m_impl->theme(); }
+    SystemTheme const& theme() const { return m_impl->theme(); }
 
     PaletteImpl& impl() { return *m_impl; }
-    const PaletteImpl& impl() const { return *m_impl; }
+    PaletteImpl const& impl() const { return *m_impl; }
 
 private:
     NonnullRefPtr<PaletteImpl> m_impl;

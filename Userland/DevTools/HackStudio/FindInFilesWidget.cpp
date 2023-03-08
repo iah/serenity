@@ -12,14 +12,14 @@
 #include <LibGUI/Button.h>
 #include <LibGUI/TableView.h>
 #include <LibGUI/TextBox.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 
 namespace HackStudio {
 
 struct Match {
-    String filename;
+    DeprecatedString filename;
     GUI::TextRange range;
-    String text;
+    DeprecatedString text;
 };
 
 class SearchResultsModel final : public GUI::Model {
@@ -31,7 +31,7 @@ public:
         __Count
     };
 
-    explicit SearchResultsModel(const Vector<Match>&& matches)
+    explicit SearchResultsModel(Vector<Match> const&& matches)
         : m_matches(move(matches))
     {
     }
@@ -39,7 +39,7 @@ public:
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_matches.size(); }
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
 
-    virtual String column_name(int column) const override
+    virtual DeprecatedString column_name(int column) const override
     {
         switch (column) {
         case Column::Filename:
@@ -105,7 +105,7 @@ static RefPtr<SearchResultsModel> find_in_files(StringView text)
             builder.append(file.document().text_in_range(range));
             builder.append(0x02);
             builder.append(right_part);
-            matches.append({ file.name(), range, builder.to_string() });
+            matches.append({ file.name(), range, builder.to_deprecated_string() });
         }
     });
 
@@ -118,11 +118,11 @@ FindInFilesWidget::FindInFilesWidget()
 
     auto& top_container = add<Widget>();
     top_container.set_layout<GUI::HorizontalBoxLayout>();
-    top_container.set_fixed_height(20);
+    top_container.set_fixed_height(22);
 
     m_textbox = top_container.add<GUI::TextBox>();
 
-    m_button = top_container.add<GUI::Button>("Find in files");
+    m_button = top_container.add<GUI::Button>("Find in files"_string.release_value_but_fixme_should_propagate_errors());
     m_button->set_fixed_width(100);
 
     m_result_view = add<GUI::TableView>();

@@ -6,7 +6,7 @@
 
 #include <cstring>
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <LibSQL/Serializer.h>
 #include <LibSQL/Tuple.h>
@@ -79,45 +79,32 @@ Tuple& Tuple::operator=(Tuple const& other)
     return *this;
 }
 
-Optional<size_t> Tuple::index_of(String name) const
+Optional<size_t> Tuple::index_of(StringView name) const
 {
-    auto n = move(name);
     for (auto ix = 0u; ix < m_descriptor->size(); ix++) {
         auto& part = (*m_descriptor)[ix];
-        if (part.name == n) {
-            return (int)ix;
+        if (part.name == name) {
+            return ix;
         }
     }
     return {};
 }
 
-Value const& Tuple::operator[](size_t ix) const
-{
-    VERIFY(ix < m_data.size());
-    return m_data[ix];
-}
-
-Value& Tuple::operator[](size_t ix)
-{
-    VERIFY(ix < m_data.size());
-    return m_data[ix];
-}
-
-Value const& Tuple::operator[](String const& name) const
+Value const& Tuple::operator[](DeprecatedString const& name) const
 {
     auto index = index_of(name);
     VERIFY(index.has_value());
     return (*this)[index.value()];
 }
 
-Value& Tuple::operator[](String const& name)
+Value& Tuple::operator[](DeprecatedString const& name)
 {
     auto index = index_of(name);
     VERIFY(index.has_value());
     return (*this)[index.value()];
 }
 
-void Tuple::append(const Value& value)
+void Tuple::append(Value const& value)
 {
     VERIFY(descriptor()->size() >= size());
     if (descriptor()->size() == size()) {
@@ -174,31 +161,22 @@ size_t Tuple::length() const
     return len;
 }
 
-String Tuple::to_string() const
+DeprecatedString Tuple::to_deprecated_string() const
 {
     StringBuilder builder;
     for (auto& part : m_data) {
         if (!builder.is_empty()) {
             builder.append('|');
         }
-        builder.append(part.to_string());
+        builder.append(part.to_deprecated_string());
     }
     if (pointer() != 0) {
         builder.appendff(":{}", pointer());
     }
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
-Vector<String> Tuple::to_string_vector() const
-{
-    Vector<String> ret;
-    for (auto& value : m_data) {
-        ret.append(value.to_string());
-    }
-    return ret;
-}
-
-void Tuple::copy_from(const Tuple& other)
+void Tuple::copy_from(Tuple const& other)
 {
     if (*m_descriptor != *other.m_descriptor) {
         m_descriptor->clear();
@@ -213,7 +191,7 @@ void Tuple::copy_from(const Tuple& other)
     m_pointer = other.pointer();
 }
 
-int Tuple::compare(const Tuple& other) const
+int Tuple::compare(Tuple const& other) const
 {
     auto num_values = min(m_data.size(), other.m_data.size());
     VERIFY(num_values > 0);
@@ -228,11 +206,11 @@ int Tuple::compare(const Tuple& other) const
     return 0;
 }
 
-int Tuple::match(const Tuple& other) const
+int Tuple::match(Tuple const& other) const
 {
     auto other_index = 0u;
-    for (auto& part : *other.descriptor()) {
-        auto other_value = other[other_index];
+    for (auto const& part : *other.descriptor()) {
+        auto const& other_value = other[other_index];
         if (other_value.is_null())
             return 0;
         auto my_index = index_of(part.name);

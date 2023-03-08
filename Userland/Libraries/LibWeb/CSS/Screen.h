@@ -6,26 +6,18 @@
 
 #pragma once
 
-#include <AK/RefCountForwarder.h>
 #include <LibGfx/Rect.h>
-#include <LibWeb/Bindings/Wrappable.h>
-#include <LibWeb/DOM/Window.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Window.h>
 
 namespace Web::CSS {
 
-class Screen final
-    : public RefCountForwarder<DOM::Window>
-    , public Bindings::Wrappable {
+class Screen final : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(Screen, Bindings::PlatformObject);
 
 public:
-    using WrapperType = Bindings::ScreenWrapper;
-    using AllowOwnPtr = TrueType;
-
-    static NonnullOwnPtr<Screen> create(Badge<DOM::Window>, DOM::Window& window)
-    {
-        return adopt_own(*new Screen(window));
-    }
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Screen>> create(HTML::Window&);
 
     i32 width() const { return screen_rect().width(); }
     i32 height() const { return screen_rect().height(); }
@@ -35,11 +27,16 @@ public:
     u32 pixel_depth() const { return 24; }
 
 private:
-    explicit Screen(DOM::Window&);
+    explicit Screen(HTML::Window&);
 
-    DOM::Window const& window() const { return ref_count_target(); }
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    HTML::Window const& window() const { return *m_window; }
 
     Gfx::IntRect screen_rect() const;
+
+    JS::NonnullGCPtr<HTML::Window> m_window;
 };
 
 }

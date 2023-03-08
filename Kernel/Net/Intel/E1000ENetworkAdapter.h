@@ -6,11 +6,10 @@
 
 #pragma once
 
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/OwnPtr.h>
-#include <Kernel/Arch/x86/IO.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Device.h>
+#include <Kernel/IOWindow.h>
 #include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Net/Intel/E1000NetworkAdapter.h>
 #include <Kernel/Net/NetworkAdapter.h>
@@ -21,16 +20,19 @@ namespace Kernel {
 class E1000ENetworkAdapter final
     : public E1000NetworkAdapter {
 public:
-    static RefPtr<E1000ENetworkAdapter> try_to_initialize(PCI::DeviceIdentifier const&);
-
-    virtual bool initialize() override;
+    static ErrorOr<bool> probe(PCI::DeviceIdentifier const&);
+    static ErrorOr<NonnullLockRefPtr<NetworkAdapter>> create(PCI::DeviceIdentifier const&);
+    virtual ErrorOr<void> initialize(Badge<NetworkingManagement>) override;
 
     virtual ~E1000ENetworkAdapter() override;
 
     virtual StringView purpose() const override { return class_name(); }
 
 private:
-    E1000ENetworkAdapter(PCI::Address, u8 irq, NonnullOwnPtr<KString>);
+    E1000ENetworkAdapter(PCI::DeviceIdentifier const&, u8 irq,
+        NonnullOwnPtr<IOWindow> registers_io_window, NonnullOwnPtr<Memory::Region> rx_buffer_region,
+        NonnullOwnPtr<Memory::Region> tx_buffer_region, NonnullOwnPtr<Memory::Region> rx_descriptors_region,
+        NonnullOwnPtr<Memory::Region> tx_descriptors_region, NonnullOwnPtr<KString>);
 
     virtual StringView class_name() const override { return "E1000ENetworkAdapter"sv; }
 

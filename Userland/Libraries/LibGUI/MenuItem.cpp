@@ -5,9 +5,9 @@
  */
 
 #include <LibGUI/Action.h>
+#include <LibGUI/ConnectionToWindowServer.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/MenuItem.h>
-#include <LibGUI/WindowServerConnection.h>
 
 namespace GUI {
 
@@ -50,6 +50,14 @@ void MenuItem::set_enabled(bool enabled)
     update_window_server();
 }
 
+void MenuItem::set_visible(bool visible)
+{
+    if (m_visible == visible)
+        return;
+    m_visible = visible;
+    update_window_server();
+}
+
 void MenuItem::set_checked(bool checked)
 {
     VERIFY(is_checkable());
@@ -73,8 +81,9 @@ void MenuItem::update_window_server()
     if (m_menu_id < 0)
         return;
     auto& action = *m_action;
-    auto shortcut_text = action.shortcut().is_valid() ? action.shortcut().to_string() : String();
-    WindowServerConnection::the().async_update_menu_item(m_menu_id, m_identifier, -1, action.text(), action.is_enabled(), action.is_checkable(), action.is_checkable() ? action.is_checked() : false, m_default, shortcut_text);
+    auto shortcut_text = action.shortcut().is_valid() ? action.shortcut().to_deprecated_string() : DeprecatedString();
+    auto icon = action.icon() ? action.icon()->to_shareable_bitmap() : Gfx::ShareableBitmap();
+    ConnectionToWindowServer::the().async_update_menu_item(m_menu_id, m_identifier, -1, action.text(), action.is_enabled(), action.is_visible(), action.is_checkable(), action.is_checkable() ? action.is_checked() : false, m_default, shortcut_text, icon);
 }
 
 void MenuItem::set_menu_id(Badge<Menu>, unsigned int menu_id)

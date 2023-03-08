@@ -8,6 +8,7 @@
 
 #include "FileUtils.h"
 #include <LibCore/ElapsedTimer.h>
+#include <LibCore/File.h>
 #include <LibGUI/Widget.h>
 
 namespace FileManager {
@@ -19,7 +20,8 @@ public:
     virtual ~FileOperationProgressWidget() override;
 
 private:
-    FileOperationProgressWidget(FileOperation, NonnullRefPtr<Core::File> helper_pipe);
+    // FIXME: The helper_pipe_fd parameter is only needed because we can't get the fd from a Core::Stream.
+    FileOperationProgressWidget(FileOperation, NonnullOwnPtr<Core::BufferedFile> helper_pipe, int helper_pipe_fd);
 
     void did_finish();
     void did_error(StringView message);
@@ -27,11 +29,11 @@ private:
 
     void close_pipe();
 
-    String estimate_time(off_t bytes_done, off_t total_byte_count);
+    DeprecatedString estimate_time(off_t bytes_done, off_t total_byte_count);
     Core::ElapsedTimer m_elapsed_timer;
 
     FileOperation m_operation;
     RefPtr<Core::Notifier> m_notifier;
-    RefPtr<Core::File> m_helper_pipe;
+    OwnPtr<Core::BufferedFile> m_helper_pipe;
 };
 }

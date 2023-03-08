@@ -12,6 +12,7 @@
 
 #define ENUMERATE_BYTECODE_OPS(O)    \
     O(Add)                           \
+    O(Append)                        \
     O(BitwiseAnd)                    \
     O(BitwiseNot)                    \
     O(BitwiseOr)                     \
@@ -23,19 +24,26 @@
     O(CreateEnvironment)             \
     O(CreateVariable)                \
     O(Decrement)                     \
+    O(DeleteById)                    \
+    O(DeleteByValue)                 \
+    O(DeleteVariable)                \
     O(Div)                           \
     O(EnterUnwindContext)            \
+    O(EnterObjectEnvironment)        \
     O(Exp)                           \
-    O(FinishUnwind)                  \
     O(GetById)                       \
     O(GetByValue)                    \
     O(GetIterator)                   \
+    O(GetMethod)                     \
+    O(GetNewTarget)                  \
+    O(GetObjectPropertyIterator)     \
     O(GetVariable)                   \
     O(GreaterThan)                   \
     O(GreaterThanEquals)             \
     O(In)                            \
     O(Increment)                     \
     O(InstanceOf)                    \
+    O(IteratorClose)                 \
     O(IteratorNext)                  \
     O(IteratorResultDone)            \
     O(IteratorResultValue)           \
@@ -62,6 +70,7 @@
     O(NewObject)                     \
     O(NewRegExp)                     \
     O(NewString)                     \
+    O(NewTypeError)                  \
     O(Not)                           \
     O(PushDeclarativeEnvironment)    \
     O(PutById)                       \
@@ -69,13 +78,17 @@
     O(ResolveThisBinding)            \
     O(Return)                        \
     O(RightShift)                    \
+    O(ScheduleJump)                  \
     O(SetVariable)                   \
     O(Store)                         \
     O(StrictlyEquals)                \
     O(StrictlyInequals)              \
     O(Sub)                           \
+    O(SuperCall)                     \
     O(Throw)                         \
+    O(ThrowIfNotObject)              \
     O(Typeof)                        \
+    O(TypeofVariable)                \
     O(UnaryMinus)                    \
     O(UnaryPlus)                     \
     O(UnsignedRightShift)            \
@@ -83,7 +96,7 @@
 
 namespace JS::Bytecode {
 
-class Instruction {
+class alignas(void*) Instruction {
 public:
     constexpr static bool IsTerminator = false;
 
@@ -97,9 +110,10 @@ public:
     bool is_terminator() const;
     Type type() const { return m_type; }
     size_t length() const;
-    String to_string(Bytecode::Executable const&) const;
+    DeprecatedString to_deprecated_string(Bytecode::Executable const&) const;
     ThrowCompletionOr<void> execute(Bytecode::Interpreter&) const;
     void replace_references(BasicBlock const&, BasicBlock const&);
+    void replace_references(Register, Register);
     static void destroy(Instruction&);
 
 protected:

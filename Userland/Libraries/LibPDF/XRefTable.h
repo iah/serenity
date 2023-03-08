@@ -1,15 +1,16 @@
 /*
- * Copyright (c) 2021, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2021-2022, Matthew Olsson <mattco@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/RefCounted.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibPDF/Error.h>
 
 namespace PDF {
 
@@ -19,6 +20,7 @@ struct XRefEntry {
     long byte_offset { invalid_byte_offset };
     u16 generation_number { 0 };
     bool in_use { false };
+    bool compressed { false };
 };
 
 struct XRefSection {
@@ -29,11 +31,11 @@ struct XRefSection {
 
 class XRefTable final : public RefCounted<XRefTable> {
 public:
-    bool merge(XRefTable&& other)
+    PDFErrorOr<void> merge(XRefTable&& other)
     {
         auto this_size = m_entries.size();
         auto other_size = other.m_entries.size();
-        m_entries.ensure_capacity(other_size);
+        TRY(m_entries.try_ensure_capacity(other_size));
 
         for (size_t i = 0; i < other_size; i++) {
             auto other_entry = other.m_entries[i];
@@ -44,15 +46,12 @@ public:
 
             auto this_entry = m_entries[i];
 
-            if (this_entry.byte_offset == invalid_byte_offset) {
+            // Only add values that we don't already have.
+            if (this_entry.byte_offset == invalid_byte_offset)
                 m_entries[i] = other_entry;
-            } else if (other_entry.byte_offset != invalid_byte_offset) {
-                // Both xref tables have an entry for the same object index
-                return false;
-            }
         }
 
-        return true;
+        return {};
     }
 
     void add_section(XRefSection const& section)
@@ -66,6 +65,12 @@ public:
             m_entries.append(entry);
     }
 
+    void set_trailer(RefPtr<DictObject> trailer) { m_trailer = trailer; }
+
+    ALWAYS_INLINE Vector<XRefEntry>& entries() { return m_entries; }
+
+    ALWAYS_INLINE RefPtr<DictObject> const& trailer() const { return m_trailer; }
+
     [[nodiscard]] ALWAYS_INLINE bool has_object(size_t index) const
     {
         return index < m_entries.size() && m_entries[index].byte_offset != -1;
@@ -77,10 +82,20 @@ public:
         return m_entries[index].byte_offset;
     }
 
+    [[nodiscard]] ALWAYS_INLINE long object_stream_for_object(size_t index) const
+    {
+        return byte_offset_for_object(index);
+    }
+
     [[nodiscard]] ALWAYS_INLINE u16 generation_number_for_object(size_t index) const
     {
         VERIFY(has_object(index));
         return m_entries[index].generation_number;
+    }
+
+    [[nodiscard]] ALWAYS_INLINE u16 object_stream_index_for_object(size_t index) const
+    {
+        return generation_number_for_object(index);
     }
 
     [[nodiscard]] ALWAYS_INLINE bool is_object_in_use(size_t index) const
@@ -89,10 +104,17 @@ public:
         return m_entries[index].in_use;
     }
 
+    [[nodiscard]] ALWAYS_INLINE bool is_object_compressed(size_t index) const
+    {
+        VERIFY(has_object(index));
+        return m_entries[index].compressed;
+    }
+
 private:
     friend struct AK::Formatter<PDF::XRefTable>;
 
     Vector<XRefEntry> m_entries;
+    RefPtr<DictObject> m_trailer;
 };
 
 }
@@ -104,7 +126,7 @@ struct Formatter<PDF::XRefEntry> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, PDF::XRefEntry const& entry)
     {
         return Formatter<StringView>::format(builder,
-            String::formatted("XRefEntry {{ offset={} generation={} used={} }}",
+            DeprecatedString::formatted("XRefEntry {{ offset={} generation={} used={} }}",
                 entry.byte_offset,
                 entry.generation_number,
                 entry.in_use));
@@ -116,11 +138,11 @@ struct Formatter<PDF::XRefTable> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& format_builder, PDF::XRefTable const& table)
     {
         StringBuilder builder;
-        builder.append("XRefTable {");
+        builder.append("XRefTable {"sv);
         for (auto& entry : table.m_entries)
             builder.appendff("\n  {}", entry);
-        builder.append("\n}");
-        return Formatter<StringView>::format(format_builder, builder.to_string());
+        builder.append("\n}"sv);
+        return Formatter<StringView>::format(format_builder, builder.to_deprecated_string());
     }
 };
 

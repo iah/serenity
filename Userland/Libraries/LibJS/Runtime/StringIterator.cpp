@@ -10,19 +10,15 @@
 
 namespace JS {
 
-StringIterator* StringIterator::create(GlobalObject& global_object, String string)
+NonnullGCPtr<StringIterator> StringIterator::create(Realm& realm, String string)
 {
-    return global_object.heap().allocate<StringIterator>(global_object, move(string), *global_object.string_iterator_prototype());
+    return realm.heap().allocate<StringIterator>(realm, move(string), *realm.intrinsics().string_iterator_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 StringIterator::StringIterator(String string, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_string(move(string))
     , m_iterator(Utf8View(m_string).begin())
-{
-}
-
-StringIterator::~StringIterator()
 {
 }
 

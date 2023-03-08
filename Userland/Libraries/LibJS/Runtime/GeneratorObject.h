@@ -16,21 +16,33 @@ class GeneratorObject final : public Object {
     JS_OBJECT(GeneratorObject, Object);
 
 public:
-    static ThrowCompletionOr<GeneratorObject*> create(GlobalObject&, Value, ECMAScriptFunctionObject*, ExecutionContext, Bytecode::RegisterWindow);
-    GeneratorObject(GlobalObject&, Object& prototype, ExecutionContext);
-    virtual void initialize(GlobalObject&) override;
-    virtual ~GeneratorObject() override;
+    static ThrowCompletionOr<NonnullGCPtr<GeneratorObject>> create(Realm&, Value, ECMAScriptFunctionObject*, ExecutionContext, Bytecode::RegisterWindow);
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~GeneratorObject() override = default;
     void visit_edges(Cell::Visitor&) override;
 
-    ThrowCompletionOr<Value> next_impl(VM&, GlobalObject&, Optional<Value> next_argument, Optional<Value> value_to_throw);
-    void set_done() { m_done = true; }
+    ThrowCompletionOr<Value> resume(VM&, Value value, Optional<DeprecatedString> generator_brand);
+    ThrowCompletionOr<Value> resume_abrupt(VM&, JS::Completion abrupt_completion, Optional<DeprecatedString> generator_brand);
 
 private:
+    GeneratorObject(Realm&, Object& prototype, ExecutionContext);
+
+    enum class GeneratorState {
+        SuspendedStart,
+        SuspendedYield,
+        Executing,
+        Completed,
+    };
+
+    ThrowCompletionOr<GeneratorState> validate(VM&, Optional<DeprecatedString> const& generator_brand);
+    ThrowCompletionOr<Value> execute(VM&, JS::Completion const& completion);
+
     ExecutionContext m_execution_context;
     ECMAScriptFunctionObject* m_generating_function { nullptr };
     Value m_previous_value;
     Optional<Bytecode::RegisterWindow> m_frame;
-    bool m_done { false };
+    GeneratorState m_generator_state { GeneratorState::SuspendedStart };
+    Optional<DeprecatedString> m_generator_brand;
 };
 
 }

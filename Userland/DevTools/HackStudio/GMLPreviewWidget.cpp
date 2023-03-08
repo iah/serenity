@@ -10,13 +10,13 @@
 
 namespace HackStudio {
 
-GMLPreviewWidget::GMLPreviewWidget(String const& gml_content)
+GMLPreviewWidget::GMLPreviewWidget(DeprecatedString const& gml_content)
 {
     set_layout<GUI::VerticalBoxLayout>();
     load_gml(gml_content);
 }
 
-void GMLPreviewWidget::load_gml(String const& gml)
+void GMLPreviewWidget::load_gml(DeprecatedString const& gml)
 {
     remove_all_children();
 
@@ -27,8 +27,9 @@ void GMLPreviewWidget::load_gml(String const& gml)
         return;
     }
 
-    load_from_gml(gml, [](const String& name) -> RefPtr<Core::Object> {
-        return GUI::Label::construct(String::formatted("{} is not registered as a GML element!", name));
+    // FIXME: Parsing errors happen while the user is typing. What should we do about them?
+    (void)load_from_gml(gml, [](DeprecatedString const& name) -> ErrorOr<NonnullRefPtr<Core::Object>> {
+        return GUI::Label::try_create(DeprecatedString::formatted("{} is not registered as a GML element!", name));
     });
 
     if (children().is_empty()) {

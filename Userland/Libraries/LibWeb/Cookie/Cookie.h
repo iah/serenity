@@ -1,15 +1,23 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2023, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/String.h>
-#include <LibCore/DateTime.h>
+#include <AK/DeprecatedString.h>
+#include <AK/Time.h>
+#include <LibIPC/Forward.h>
 
 namespace Web::Cookie {
+
+enum class SameSite {
+    Default,
+    None,
+    Strict,
+    Lax
+};
 
 enum class Source {
     NonHttp,
@@ -17,17 +25,35 @@ enum class Source {
 };
 
 struct Cookie {
-    String name;
-    String value;
-    Core::DateTime creation_time {};
-    Core::DateTime last_access_time {};
-    Core::DateTime expiry_time {};
-    String domain {};
-    String path {};
+    DeprecatedString creation_time_to_string() const;
+    DeprecatedString last_access_time_to_string() const;
+    DeprecatedString expiry_time_to_string() const;
+
+    DeprecatedString name;
+    DeprecatedString value;
+    SameSite same_site;
+    Time creation_time {};
+    Time last_access_time {};
+    Time expiry_time {};
+    DeprecatedString domain {};
+    DeprecatedString path {};
     bool secure { false };
     bool http_only { false };
     bool host_only { false };
     bool persistent { false };
 };
+
+StringView same_site_to_string(SameSite same_site_mode);
+SameSite same_site_from_string(StringView same_site_mode);
+
+}
+
+namespace IPC {
+
+template<>
+ErrorOr<void> encode(Encoder&, Web::Cookie::Cookie const&);
+
+template<>
+ErrorOr<Web::Cookie::Cookie> decode(Decoder&);
 
 }

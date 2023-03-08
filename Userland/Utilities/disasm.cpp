@@ -5,6 +5,7 @@
  */
 
 #include <AK/Debug.h>
+#include <AK/Demangle.h>
 #include <AK/OwnPtr.h>
 #include <AK/QuickSort.h>
 #include <AK/Vector.h>
@@ -19,7 +20,7 @@
 
 ErrorOr<int> serenity_main(Main::Arguments args)
 {
-    char const* path = nullptr;
+    StringView path {};
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help(
@@ -117,20 +118,39 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             while (current_symbol + 1 < symbols.end() && !(current_symbol + 1)->contains(virtual_offset) && (current_symbol + 1)->address() <= virtual_offset) {
                 ++current_symbol;
                 if (!is_first_symbol)
-                    outln("\n({} ({:p}-{:p}))\n", current_symbol->name, current_symbol->address(), current_symbol->address_end());
+                    outln("\n({} ({:p}-{:p}))\n", demangle(current_symbol->name), current_symbol->address(), current_symbol->address_end());
             }
             while (current_symbol + 1 < symbols.end() && (current_symbol + 1)->contains(virtual_offset)) {
                 if (!is_first_symbol && !current_instruction_is_in_symbol)
                     outln();
                 ++current_symbol;
                 current_instruction_is_in_symbol = true;
-                outln("{} ({:p}-{:p}):", current_symbol->name, current_symbol->address(), current_symbol->address_end());
+                outln("{} ({:p}-{:p}):", demangle(current_symbol->name), current_symbol->address(), current_symbol->address_end());
             }
 
             is_first_symbol = false;
         }
 
-        outln("{:p}  {}", virtual_offset, insn.value().to_string(virtual_offset, symbol_provider));
+        size_t length = insn.value().length();
+        StringBuilder builder;
+        builder.appendff("{:p}  ", virtual_offset);
+        for (size_t i = 0; i < 7; i++) {
+            if (i < length)
+                builder.appendff("{:02x} ", asm_data[offset + i]);
+            else
+                builder.append("   "sv);
+        }
+        builder.append(" "sv);
+        builder.append(insn.value().to_deprecated_string(virtual_offset, symbol_provider));
+        outln("{}", builder.string_view());
+
+        for (size_t bytes_printed = 7; bytes_printed < length; bytes_printed += 7) {
+            builder.clear();
+            builder.appendff("{:p} ", virtual_offset + bytes_printed);
+            for (size_t i = bytes_printed; i < bytes_printed + 7 && i < length; i++)
+                builder.appendff(" {:02x}", asm_data[offset + i]);
+            outln("{}", builder.string_view());
+        }
     }
     return 0;
 }

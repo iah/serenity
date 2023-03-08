@@ -1,12 +1,14 @@
 /*
  * Copyright (c) 2021, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2022, Gregory Bertilson <zaggy1024@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include "BitStream.h"
+#include "BooleanDecoder.h"
+#include "ContextStorage.h"
 #include "Enums.h"
 #include "ProbabilityTables.h"
 #include "SyntaxElementCounter.h"
@@ -15,99 +17,63 @@ namespace Video::VP9 {
 
 class Parser;
 
+struct BlockContext;
+struct FrameBlockContext;
+
+struct TokensContext {
+    TransformSize m_tx_size;
+    bool m_is_uv_plane;
+    bool m_is_inter;
+    u8 m_band;
+    u8 m_context_index;
+};
+
 class TreeParser {
 public:
-    explicit TreeParser(Parser& decoder)
-        : m_decoder(decoder)
-    {
-    }
+    static ErrorOr<Partition> parse_partition(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, bool has_rows, bool has_columns, BlockSubsize block_subsize, u8 num_8x8, PartitionContextView above_partition_context, PartitionContextView left_partition_context, u32 row, u32 column, bool frame_is_intra);
+    static ErrorOr<PredictionMode> parse_default_intra_mode(BooleanDecoder&, ProbabilityTables const&, BlockSubsize mi_size, FrameBlockContext above, FrameBlockContext left, Array<PredictionMode, 4> const& block_sub_modes, u8 index_x, u8 index_y);
+    static ErrorOr<PredictionMode> parse_default_uv_mode(BooleanDecoder&, ProbabilityTables const&, PredictionMode y_mode);
+    static ErrorOr<PredictionMode> parse_intra_mode(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, BlockSubsize mi_size);
+    static ErrorOr<PredictionMode> parse_sub_intra_mode(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&);
+    static ErrorOr<PredictionMode> parse_uv_mode(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, PredictionMode y_mode);
+    static ErrorOr<u8> parse_segment_id(BooleanDecoder&, Array<u8, 7> const& probabilities);
+    static ErrorOr<bool> parse_segment_id_predicted(BooleanDecoder&, Array<u8, 3> const& probabilities, u8 above_seg_pred_context, u8 left_seg_pred_context);
+    static ErrorOr<PredictionMode> parse_inter_mode(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 mode_context_for_ref_frame_0);
+    static ErrorOr<InterpolationFilter> parse_interpolation_filter(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<bool> parse_skip(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<TransformSize> parse_tx_size(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, TransformSize max_tx_size, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<bool> parse_block_is_inter_predicted(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<ReferenceMode> parse_comp_mode(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, ReferenceFrameType comp_fixed_ref, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<ReferenceIndex> parse_comp_ref(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, ReferenceFrameType comp_fixed_ref, ReferenceFramePair comp_var_ref, ReferenceIndex variable_reference_index, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<bool> parse_single_ref_part_1(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, FrameBlockContext above, FrameBlockContext left);
+    static ErrorOr<bool> parse_single_ref_part_2(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, FrameBlockContext above, FrameBlockContext left);
 
-    class TreeSelection {
-    public:
-        union TreeSelectionValue {
-            int const* m_tree;
-            int m_value;
-        };
+    static ErrorOr<MvJoint> parse_motion_vector_joint(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&);
+    static ErrorOr<bool> parse_motion_vector_sign(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component);
+    static ErrorOr<MvClass> parse_motion_vector_class(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component);
+    static ErrorOr<bool> parse_motion_vector_class0_bit(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component);
+    static ErrorOr<u8> parse_motion_vector_class0_fr(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component, bool class_0_bit);
+    static ErrorOr<bool> parse_motion_vector_class0_hp(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component, bool use_hp);
+    static ErrorOr<bool> parse_motion_vector_bit(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component, u8 bit_index);
+    static ErrorOr<u8> parse_motion_vector_fr(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component);
+    static ErrorOr<bool> parse_motion_vector_hp(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, u8 component, bool use_hp);
 
-        TreeSelection(int const* values);
-        TreeSelection(int value);
+    static TokensContext get_context_for_first_token(NonZeroTokensView above_non_zero_tokens, NonZeroTokensView left_non_zero_tokens, TransformSize transform_size, u8 plane, u32 sub_block_column, u32 sub_block_row, bool is_inter, u8 band);
+    static TokensContext get_context_for_other_tokens(Array<u8, 1024> token_cache, TransformSize transform_size, TransformSet transform_set, u8 plane, u16 token_position, bool is_inter, u8 band);
+    static ErrorOr<bool> parse_more_coefficients(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, TokensContext const& context);
+    static ErrorOr<Token> parse_token(BooleanDecoder&, ProbabilityTables const&, SyntaxElementCounter&, TokensContext const& context);
+};
 
-        bool is_single_value() const { return m_is_single_value; }
-        int get_single_value() const { return m_value.m_value; }
-        int const* get_tree_value() const { return m_value.m_tree; }
-
-    private:
-        bool m_is_single_value;
-        TreeSelectionValue m_value;
-    };
-
-    /* (9.3.3) */
-    template<typename T = int>
-    T parse_tree(SyntaxElementType type);
-    /* (9.3.1) */
-    TreeSelection select_tree(SyntaxElementType type);
-    /* (9.3.2) */
-    u8 select_tree_probability(SyntaxElementType type, u8 node);
-    /* (9.3.4) */
-    void count_syntax_element(SyntaxElementType type, int value);
-
-    void set_default_intra_mode_variables(u8 idx, u8 idy)
-    {
-        m_idx = idx;
-        m_idy = idy;
-    }
-
-    void set_tokens_variables(u8 band, u32 c, u32 plane, TXSize tx_size, u32 pos)
-    {
-        m_band = band;
-        m_c = c;
-        m_plane = plane;
-        m_tx_size = tx_size;
-        m_pos = pos;
-    }
-
-    void set_start_x_and_y(u32 start_x, u32 start_y)
-    {
-        m_start_x = start_x;
-        m_start_y = start_y;
-    }
-
-private:
-    u8 calculate_partition_probability(u8 node);
-    u8 calculate_default_intra_mode_probability(u8 node);
-    u8 calculate_default_uv_mode_probability(u8 node);
-    u8 calculate_intra_mode_probability(u8 node);
-    u8 calculate_sub_intra_mode_probability(u8 node);
-    u8 calculate_uv_mode_probability(u8 node);
-    u8 calculate_segment_id_probability(u8 node);
-    u8 calculate_skip_probability();
-    u8 calculate_seg_id_predicted_probability();
-    u8 calculate_is_inter_probability();
-    u8 calculate_comp_mode_probability();
-    u8 calculate_comp_ref_probability();
-    u8 calculate_single_ref_p1_probability();
-    u8 calculate_single_ref_p2_probability();
-    u8 calculate_tx_size_probability(u8 node);
-    u8 calculate_inter_mode_probability(u8 node);
-    u8 calculate_interp_filter_probability(u8 node);
-    u8 calculate_token_probability(u8 node);
-    u8 calculate_more_coefs_probability();
-
-    Parser& m_decoder;
-    // m_ctx is a member variable because it is required for syntax element counting (section 9.3.4)
-    u8 m_ctx { 0 };
-
-    // These are variables necessary for parsing tree data, but aren't useful otherwise, so they're
-    // not stored in the Decoder itself.
-    u8 m_idx { 0 };
-    u8 m_idy { 0 };
-    u8 m_band { 0 };
-    u32 m_start_x { 0 };
-    u32 m_start_y { 0 };
-    u32 m_c { 0 };
-    u32 m_plane { 0 };
-    TXSize m_tx_size;
-    u32 m_pos { 0 };
+struct PartitionTreeContext {
+    bool has_rows;
+    bool has_columns;
+    BlockSubsize block_subsize;
+    u8 num_8x8;
+    Vector<u8> const& above_partition_context;
+    Vector<u8> const& left_partition_context;
+    u32 row;
+    u32 column;
+    bool frame_is_intra;
 };
 
 }

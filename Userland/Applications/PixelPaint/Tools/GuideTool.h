@@ -27,11 +27,13 @@ public:
 
     virtual void on_tool_activation() override;
 
-    virtual GUI::Widget* get_properties_widget() override;
-    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> cursor() override { return Gfx::StandardCursor::Crosshair; }
+    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() override { return Gfx::StandardCursor::Crosshair; }
 
 private:
-    RefPtr<Guide> closest_guide(Gfx::IntPoint const&);
+    virtual StringView tool_name() const override { return "Guide Tool"sv; }
+
+    RefPtr<Guide> closest_guide(Gfx::IntPoint);
 
     RefPtr<GUI::Widget> m_properties_widget;
 

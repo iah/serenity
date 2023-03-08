@@ -1,21 +1,32 @@
 serenity_component(
     WebContent
     TARGETS WebContent
+    DEPENDS ImageDecoder RequestServer WebSocket
 )
 
 compile_ipc(WebContentServer.ipc WebContentServerEndpoint.h)
 compile_ipc(WebContentClient.ipc WebContentClientEndpoint.h)
 
+compile_ipc(WebDriverClient.ipc WebDriverClientEndpoint.h)
+compile_ipc(WebDriverServer.ipc WebDriverServerEndpoint.h)
+
 set(SOURCES
-    ClientConnection.cpp
-    ConsoleGlobalObject.cpp
-    main.cpp
+    ConnectionFromClient.cpp
+    ConsoleGlobalEnvironmentExtensions.cpp
+    ImageCodecPluginSerenity.cpp
     PageHost.cpp
     WebContentConsoleClient.cpp
-    WebContentServerEndpoint.h
+    WebDriverConnection.cpp
+    main.cpp
+)
+
+set(GENERATED_SOURCES
     WebContentClientEndpoint.h
+    WebContentServerEndpoint.h
+    WebDriverClientEndpoint.h
+    WebDriverServerEndpoint.h
 )
 
 serenity_bin(WebContent)
-target_link_libraries(WebContent LibCore LibIPC LibGfx LibWeb LibMain)
-link_with_unicode_data(WebContent)
+target_link_libraries(WebContent PRIVATE LibCore LibIPC LibGfx LibImageDecoderClient LibJS LibWebView LibWeb LibLocale LibMain)
+link_with_locale_data(WebContent)

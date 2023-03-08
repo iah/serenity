@@ -8,16 +8,29 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLStyleElement.h>
+#include <LibWeb/Infra/Strings.h>
 
 namespace Web::HTML {
 
-HTMLStyleElement::HTMLStyleElement(DOM::Document& document, QualifiedName qualified_name)
+HTMLStyleElement::HTMLStyleElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-HTMLStyleElement::~HTMLStyleElement()
+HTMLStyleElement::~HTMLStyleElement() = default;
+
+JS::ThrowCompletionOr<void> HTMLStyleElement::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLStyleElementPrototype>(realm, "HTMLStyleElement"));
+
+    return {};
+}
+
+void HTMLStyleElement::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_associated_css_style_sheet.ptr());
 }
 
 void HTMLStyleElement::children_changed()
@@ -27,6 +40,12 @@ void HTMLStyleElement::children_changed()
     HTMLElement::children_changed();
 }
 
+void HTMLStyleElement::inserted()
+{
+    update_a_style_block();
+    return HTMLElement::inserted();
+}
+
 void HTMLStyleElement::removed_from(Node* old_parent)
 {
     update_a_style_block();
@@ -34,27 +53,25 @@ void HTMLStyleElement::removed_from(Node* old_parent)
 }
 
 // https://www.w3.org/TR/cssom/#remove-a-css-style-sheet
-static void remove_a_css_style_sheet(DOM::Document& document, NonnullRefPtr<CSS::CSSStyleSheet> sheet)
+static void remove_a_css_style_sheet(DOM::Document& document, CSS::CSSStyleSheet& sheet)
 {
-    VERIFY(sheet.ptr());
-
     // 1. Remove the CSS style sheet from the list of document or shadow root CSS style sheets.
     document.style_sheets().remove_sheet(sheet);
 
     // 2. Set the CSS style sheet’s parent CSS style sheet, owner node and owner CSS rule to null.
-    sheet->set_parent_css_style_sheet(nullptr);
-    sheet->set_owner_node(nullptr);
-    sheet->set_owner_css_rule(nullptr);
+    sheet.set_parent_css_style_sheet(nullptr);
+    sheet.set_owner_node(nullptr);
+    sheet.set_owner_css_rule(nullptr);
 }
 
 // https://www.w3.org/TR/cssom/#add-a-css-style-sheet
-static void add_a_css_style_sheet(DOM::Document& document, NonnullRefPtr<CSS::CSSStyleSheet> sheet)
+static void add_a_css_style_sheet(DOM::Document& document, CSS::CSSStyleSheet& sheet)
 {
     // 1. Add the CSS style sheet to the list of document or shadow root CSS style sheets at the appropriate location. The remainder of these steps deal with the disabled flag.
     document.style_sheets().add_sheet(sheet);
 
     // 2. If the disabled flag is set, then return.
-    if (sheet->disabled())
+    if (sheet.disabled())
         return;
 
     // FIXME: 3. If the title is not the empty string, the alternate flag is unset, and preferred CSS style sheet set name is the empty string change the preferred CSS style sheet set name to the title.
@@ -68,23 +85,23 @@ static void add_a_css_style_sheet(DOM::Document& document, NonnullRefPtr<CSS::CS
 }
 
 // https://www.w3.org/TR/cssom/#create-a-css-style-sheet
-static void create_a_css_style_sheet(DOM::Document& document, String type, DOM::Element* owner_node, String media, String title, bool alternate, bool origin_clean, void* location, CSS::CSSStyleSheet* parent_style_sheet, CSS::CSSRule* owner_rule, NonnullRefPtr<CSS::CSSStyleSheet> sheet)
+static void create_a_css_style_sheet(DOM::Document& document, DeprecatedString type, DOM::Element* owner_node, DeprecatedString media, DeprecatedString title, bool alternate, bool origin_clean, DeprecatedString location, CSS::CSSStyleSheet* parent_style_sheet, CSS::CSSRule* owner_rule, CSS::CSSStyleSheet& sheet)
 {
     // 1. Create a new CSS style sheet object and set its properties as specified.
     // FIXME: We receive `sheet` from the caller already. This is weird.
 
-    sheet->set_parent_css_style_sheet(parent_style_sheet);
-    sheet->set_owner_css_rule(owner_rule);
-    sheet->set_owner_node(owner_node);
-    sheet->set_type(move(type));
-    sheet->set_media(move(media));
-    sheet->set_title(move(title));
-    sheet->set_alternate(alternate);
-    sheet->set_origin_clean(origin_clean);
-    (void)location;
+    sheet.set_parent_css_style_sheet(parent_style_sheet);
+    sheet.set_owner_css_rule(owner_rule);
+    sheet.set_owner_node(owner_node);
+    sheet.set_type(move(type));
+    sheet.set_media(move(media));
+    sheet.set_title(move(title));
+    sheet.set_alternate(alternate);
+    sheet.set_origin_clean(origin_clean);
+    sheet.set_location(move(location));
 
     // 2. Then run the add a CSS style sheet steps for the newly created CSS style sheet.
-    add_a_css_style_sheet(document, move(sheet));
+    add_a_css_style_sheet(document, sheet);
 }
 
 // The user agent must run the "update a style block" algorithm whenever one of the following conditions occur:
@@ -93,7 +110,7 @@ static void create_a_css_style_sheet(DOM::Document& document, String type, DOM::
 // NOTE: This is basically done by children_changed() today:
 // The element's children changed steps run.
 //
-// NOTE: This is basically done by removed_from() today:
+// NOTE: This is basically done by inserted() and removed_from() today:
 // The element is not on the stack of open elements of an HTML parser or XML parser, and it becomes connected or disconnected.
 //
 // https://html.spec.whatwg.org/multipage/semantics.html#update-a-style-block
@@ -115,14 +132,14 @@ void HTMLStyleElement::update_a_style_block()
 
     // 4. If element's type attribute is present and its value is neither the empty string nor an ASCII case-insensitive match for "text/css", then return.
     auto type_attribute = attribute(HTML::AttributeNames::type);
-    if (!type_attribute.is_null() && !type_attribute.is_empty() && !type_attribute.equals_ignoring_case("text/css"sv))
+    if (!type_attribute.is_null() && !type_attribute.is_empty() && !Infra::is_ascii_case_insensitive_match(type_attribute, "text/css"sv))
         return;
 
     // FIXME: 5. If the Should element's inline behavior be blocked by Content Security Policy? algorithm returns "Blocked" when executed upon the style element, "style", and the style element's child text content, then return. [CSP]
 
     // FIXME: This is a bit awkward, as the spec doesn't actually tell us when to parse the CSS text,
     //        so we just do it here and pass the parsed sheet to create_a_css_style_sheet().
-    auto sheet = parse_css(CSS::ParsingContext(document()), text_content());
+    auto sheet = parse_css_stylesheet(CSS::Parser::ParsingContext(document()), text_content());
     if (!sheet)
         return;
 
@@ -135,17 +152,24 @@ void HTMLStyleElement::update_a_style_block()
         "text/css"sv,
         this,
         attribute(HTML::AttributeNames::media),
-        in_a_document_tree() ? attribute(HTML::AttributeNames::title) : String::empty(),
+        in_a_document_tree() ? attribute(HTML::AttributeNames::title) : DeprecatedString::empty(),
         false,
         true,
+        {},
         nullptr,
         nullptr,
-        nullptr,
-        sheet.release_nonnull());
+        *sheet);
 }
 
 // https://www.w3.org/TR/cssom/#dom-linkstyle-sheet
-RefPtr<CSS::CSSStyleSheet> HTMLStyleElement::sheet() const
+CSS::CSSStyleSheet* HTMLStyleElement::sheet()
+{
+    // The sheet attribute must return the associated CSS style sheet for the node or null if there is no associated CSS style sheet.
+    return m_associated_css_style_sheet;
+}
+
+// https://www.w3.org/TR/cssom/#dom-linkstyle-sheet
+CSS::CSSStyleSheet const* HTMLStyleElement::sheet() const
 {
     // The sheet attribute must return the associated CSS style sheet for the node or null if there is no associated CSS style sheet.
     return m_associated_css_style_sheet;

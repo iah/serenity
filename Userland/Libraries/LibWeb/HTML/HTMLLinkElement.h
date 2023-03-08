@@ -16,24 +16,36 @@ namespace Web::HTML {
 class HTMLLinkElement final
     : public HTMLElement
     , public ResourceClient {
-public:
-    using WrapperType = Bindings::HTMLLinkElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLLinkElement, HTMLElement);
 
-    HTMLLinkElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLLinkElement() override;
 
     virtual void inserted() override;
 
-    String rel() const { return attribute(HTML::AttributeNames::rel); }
-    String type() const { return attribute(HTML::AttributeNames::type); }
-    String href() const { return attribute(HTML::AttributeNames::href); }
+    DeprecatedString rel() const { return attribute(HTML::AttributeNames::rel); }
+    DeprecatedString type() const { return attribute(HTML::AttributeNames::type); }
+    DeprecatedString href() const { return attribute(HTML::AttributeNames::href); }
+
+    bool has_loaded_icon() const;
+    bool load_favicon_and_use_if_window_is_active();
 
 private:
-    void parse_attribute(const FlyString&, const String&) override;
+    HTMLLinkElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    void parse_attribute(DeprecatedFlyString const&, DeprecatedString const&) override;
 
     // ^ResourceClient
     virtual void resource_did_fail() override;
     virtual void resource_did_load() override;
+
+    // ^ HTMLElement
+    virtual void did_remove_attribute(DeprecatedFlyString const&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    void resource_did_load_stylesheet();
+    void resource_did_load_favicon();
 
     struct Relationship {
         enum {
@@ -42,10 +54,12 @@ private:
             Preload = 1 << 2,
             DNSPrefetch = 1 << 3,
             Preconnect = 1 << 4,
+            Icon = 1 << 5,
         };
     };
 
     RefPtr<Resource> m_preload_resource;
+    JS::GCPtr<CSS::CSSStyleSheet> m_loaded_style_sheet;
 
     Optional<DOM::DocumentLoadEventDelayer> m_document_load_event_delayer;
     unsigned m_relationship { 0 };

@@ -1,19 +1,23 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
+#include <AK/Error.h>
 #include <AK/Function.h>
+#include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
-#include <AK/String.h>
 #include <AK/Variant.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Object.h>
 #include <LibGUI/FocusSource.h>
 #include <LibGUI/Forward.h>
+#include <LibGUI/ResizeDirection.h>
+#include <LibGUI/WindowMode.h>
 #include <LibGUI/WindowType.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Rect.h>
@@ -33,14 +37,20 @@ public:
     bool is_modified() const;
     void set_modified(bool);
 
-    bool is_modal() const { return m_modal; }
-    void set_modal(bool);
+    bool is_modal() const { return m_window_mode != WindowMode::Modeless; }
+    bool is_blocking() const { return m_window_mode == WindowMode::Blocking; }
+
+    bool is_popup() const { return m_window_type == WindowType::Popup; }
+    bool is_autocomplete() const { return m_window_type == WindowType::Autocomplete; }
 
     bool is_fullscreen() const { return m_fullscreen; }
     void set_fullscreen(bool);
 
-    bool is_maximized() const;
+    bool is_maximized() const { return m_maximized; }
     void set_maximized(bool);
+
+    bool is_minimized() const { return m_minimized; }
+    void set_minimized(bool);
 
     bool is_frameless() const { return m_frameless; }
     void set_frameless(bool);
@@ -49,6 +59,9 @@ public:
 
     bool is_resizable() const { return m_resizable; }
     void set_resizable(bool resizable) { m_resizable = resizable; }
+
+    bool is_obeying_widget_min_size() { return m_obey_widget_min_size; }
+    void set_obey_widget_min_size(bool);
 
     bool is_minimizable() const { return m_minimizable; }
     void set_minimizable(bool minimizable) { m_minimizable = minimizable; }
@@ -68,12 +81,15 @@ public:
     WindowType window_type() const { return m_window_type; }
     void set_window_type(WindowType);
 
+    WindowMode window_mode() const { return m_window_mode; }
+    void set_window_mode(WindowMode);
+
     int window_id() const { return m_window_id; }
 
     void make_window_manager(unsigned event_mask);
 
-    String title() const;
-    void set_title(String);
+    DeprecatedString title() const;
+    void set_title(DeprecatedString);
 
     enum class CloseRequestDecision {
         StayOpen,
@@ -82,7 +98,7 @@ public:
 
     Function<void()> on_close;
     Function<CloseRequestDecision()> on_close_request;
-    Function<void(bool is_active_input)> on_active_input_change;
+    Function<void(bool is_preempted)> on_input_preemption_change;
     Function<void(bool is_active_window)> on_active_window_change;
 
     int x() const { return rect().x(); }
@@ -93,58 +109,47 @@ public:
     Gfx::IntRect rect() const;
     Gfx::IntRect applet_rect_on_screen() const;
     Gfx::IntSize size() const { return rect().size(); }
-    void set_rect(const Gfx::IntRect&);
+    void set_rect(Gfx::IntRect const&);
     void set_rect(int x, int y, int width, int height) { set_rect({ x, y, width, height }); }
 
     Gfx::IntPoint position() const { return rect().location(); }
 
     Gfx::IntSize minimum_size() const;
-    void set_minimum_size(const Gfx::IntSize&);
+    void set_minimum_size(Gfx::IntSize);
     void set_minimum_size(int width, int height) { set_minimum_size({ width, height }); }
 
     void move_to(int x, int y) { move_to({ x, y }); }
-    void move_to(const Gfx::IntPoint& point) { set_rect({ point, size() }); }
+    void move_to(Gfx::IntPoint point) { set_rect({ point, size() }); }
 
     void resize(int width, int height) { resize({ width, height }); }
-    void resize(const Gfx::IntSize& size) { set_rect({ position(), size }); }
+    void resize(Gfx::IntSize size) { set_rect({ position(), size }); }
 
     void center_on_screen();
-    void center_within(const Window&);
+    void center_within(Window const&);
 
     virtual void event(Core::Event&) override;
 
     bool is_visible() const;
     bool is_active() const;
-    bool is_active_input() const { return m_is_active_input; }
-
-    bool is_accessory() const { return m_accessory; }
-    void set_accessory(bool accessory) { m_accessory = accessory; }
+    bool is_focusable() const { return is_active() || is_popup() || is_autocomplete(); }
 
     void show();
     void hide();
     virtual void close();
     void move_to_front();
 
-    void start_interactive_resize();
+    void start_interactive_resize(ResizeDirection resize_direction);
 
     Widget* main_widget() { return m_main_widget; }
-    const Widget* main_widget() const { return m_main_widget; }
+    Widget const* main_widget() const { return m_main_widget; }
     void set_main_widget(Widget*);
 
     template<class T, class... Args>
-    inline ErrorOr<NonnullRefPtr<T>> try_set_main_widget(Args&&... args)
+    inline ErrorOr<NonnullRefPtr<T>> set_main_widget(Args&&... args)
     {
         auto widget = TRY(T::try_create(forward<Args>(args)...));
         set_main_widget(widget.ptr());
         return widget;
-    }
-
-    template<class T, class... Args>
-    inline T& set_main_widget(Args&&... args)
-    {
-        auto widget = T::construct(forward<Args>(args)...);
-        set_main_widget(widget.ptr());
-        return *widget;
     }
 
     Widget* default_return_key_widget() { return m_default_return_key_widget; }
@@ -152,37 +157,37 @@ public:
     void set_default_return_key_widget(Widget*);
 
     Widget* focused_widget() { return m_focused_widget; }
-    const Widget* focused_widget() const { return m_focused_widget; }
+    Widget const* focused_widget() const { return m_focused_widget; }
     void set_focused_widget(Widget*, FocusSource = FocusSource::Programmatic);
 
     void update();
-    void update(const Gfx::IntRect&);
+    void update(Gfx::IntRect const&);
 
     void set_automatic_cursor_tracking_widget(Widget*);
     Widget* automatic_cursor_tracking_widget() { return m_automatic_cursor_tracking_widget.ptr(); }
-    const Widget* automatic_cursor_tracking_widget() const { return m_automatic_cursor_tracking_widget.ptr(); }
+    Widget const* automatic_cursor_tracking_widget() const { return m_automatic_cursor_tracking_widget.ptr(); }
 
     Widget* hovered_widget() { return m_hovered_widget.ptr(); }
-    const Widget* hovered_widget() const { return m_hovered_widget.ptr(); }
+    Widget const* hovered_widget() const { return m_hovered_widget.ptr(); }
     void set_hovered_widget(Widget*);
 
     Gfx::Bitmap* back_bitmap();
 
     Gfx::IntSize size_increment() const { return m_size_increment; }
-    void set_size_increment(const Gfx::IntSize&);
+    void set_size_increment(Gfx::IntSize);
     Gfx::IntSize base_size() const { return m_base_size; }
-    void set_base_size(const Gfx::IntSize&);
-    const Optional<Gfx::IntSize>& resize_aspect_ratio() const { return m_resize_aspect_ratio; }
+    void set_base_size(Gfx::IntSize);
+    Optional<Gfx::IntSize> const& resize_aspect_ratio() const { return m_resize_aspect_ratio; }
     void set_resize_aspect_ratio(int width, int height) { set_resize_aspect_ratio(Gfx::IntSize(width, height)); }
     void set_no_resize_aspect_ratio() { set_resize_aspect_ratio({}); }
-    void set_resize_aspect_ratio(const Optional<Gfx::IntSize>& ratio);
+    void set_resize_aspect_ratio(Optional<Gfx::IntSize> const& ratio);
 
     void set_cursor(Gfx::StandardCursor);
-    void set_cursor(NonnullRefPtr<Gfx::Bitmap>);
+    void set_cursor(NonnullRefPtr<Gfx::Bitmap const>);
 
-    void set_icon(const Gfx::Bitmap*);
+    void set_icon(Gfx::Bitmap const*);
     void apply_icon();
-    const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
+    Gfx::Bitmap const* icon() const { return m_icon.ptr(); }
 
     Vector<Widget&> focusable_widgets(FocusSource) const;
 
@@ -190,13 +195,13 @@ public:
 
     void refresh_system_theme();
 
-    static void for_each_window(Badge<WindowServerConnection>, Function<void(Window&)>);
-    static void update_all_windows(Badge<WindowServerConnection>);
-    void notify_state_changed(Badge<WindowServerConnection>, bool minimized, bool occluded);
+    static void for_each_window(Badge<ConnectionToWindowServer>, Function<void(Window&)>);
+    static void update_all_windows(Badge<ConnectionToWindowServer>);
+    void notify_state_changed(Badge<ConnectionToWindowServer>, bool minimized, bool maximized, bool occluded);
 
     virtual bool is_visible_for_timer_purposes() const override { return m_visible_for_timer_purposes; }
 
-    Action* action_for_key_event(const KeyEvent&);
+    Action* action_for_shortcut(Shortcut const&);
 
     void did_add_widget(Badge<Widget>, Widget&);
     void did_remove_widget(Badge<Widget>, Widget&);
@@ -209,14 +214,22 @@ public:
 
     void did_disable_focused_widget(Badge<Widget>);
 
-    Menu& add_menu(String name);
-    ErrorOr<NonnullRefPtr<Menu>> try_add_menu(String name);
-    void flash_menubar_menu_for(const MenuItem&);
+    Menu& add_menu(DeprecatedString name);
+    ErrorOr<NonnullRefPtr<Menu>> try_add_menu(DeprecatedString name);
+    ErrorOr<void> try_add_menu(NonnullRefPtr<Menu> menu);
+    void flash_menubar_menu_for(MenuItem const&);
 
     void flush_pending_paints_immediately();
 
     Menubar& menubar() { return *m_menubar; }
     Menubar const& menubar() const { return *m_menubar; }
+
+    void set_blocks_emoji_input(bool b) { m_blocks_emoji_input = b; }
+    bool blocks_emoji_input() const { return m_blocks_emoji_input; }
+
+    void set_always_on_top(bool always_on_top = true);
+
+    void propagate_shortcuts_up_to_application(KeyEvent& event, Widget* widget);
 
 protected:
     Window(Core::Object* parent = nullptr);
@@ -228,6 +241,8 @@ protected:
     virtual void leave_event(Core::Event&);
 
 private:
+    void update_min_size();
+
     void update_cursor();
     void focus_a_widget_if_possible(FocusSource);
 
@@ -236,7 +251,7 @@ private:
     void handle_multi_paint_event(MultiPaintEvent&);
     void handle_key_event(KeyEvent&);
     void handle_resize_event(ResizeEvent&);
-    void handle_input_entered_or_left_event(Core::Event&);
+    void handle_input_preemption_event(Core::Event&);
     void handle_became_active_or_inactive_event(Core::Event&);
     void handle_close_request();
     void handle_theme_change_event(ThemeChangeEvent&);
@@ -249,12 +264,13 @@ private:
 
     void server_did_destroy();
 
-    OwnPtr<WindowBackingStore> create_backing_store(const Gfx::IntSize&);
-    void set_current_backing_store(WindowBackingStore&, bool flush_immediately = false);
-    void flip(const Vector<Gfx::IntRect, 32>& dirty_rects);
+    ErrorOr<NonnullOwnPtr<WindowBackingStore>> create_backing_store(Gfx::IntSize);
+    Gfx::IntSize backing_store_size(Gfx::IntSize) const;
+    void set_current_backing_store(WindowBackingStore&, bool flush_immediately = false) const;
+    void flip(Vector<Gfx::IntRect, 32> const& dirty_rects);
     void force_update();
 
-    bool are_cursors_the_same(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> const&, AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> const&) const;
+    bool are_cursors_the_same(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const&, AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const&) const;
 
     WeakPtr<Widget> m_previously_focused_widget;
 
@@ -263,7 +279,7 @@ private:
 
     NonnullRefPtr<Menubar> m_menubar;
 
-    RefPtr<Gfx::Bitmap> m_icon;
+    RefPtr<Gfx::Bitmap const> m_icon;
     int m_window_id { 0 };
     float m_opacity_when_windowless { 1.0f };
     float m_alpha_hit_threshold { 0.0f };
@@ -273,32 +289,33 @@ private:
     WeakPtr<Widget> m_automatic_cursor_tracking_widget;
     WeakPtr<Widget> m_hovered_widget;
     Gfx::IntRect m_rect_when_windowless;
-    Gfx::IntSize m_minimum_size_when_windowless { 50, 50 };
-    bool m_minimum_size_modified { false };
-    String m_title_when_windowless;
+    Gfx::IntSize m_minimum_size_when_windowless { 0, 0 };
+    DeprecatedString m_title_when_windowless;
     Vector<Gfx::IntRect, 32> m_pending_paint_event_rects;
     Gfx::IntSize m_size_increment;
     Gfx::IntSize m_base_size;
     WindowType m_window_type { WindowType::Normal };
-    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> m_cursor { Gfx::StandardCursor::None };
-    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> m_effective_cursor { Gfx::StandardCursor::None };
-    bool m_is_active_input { false };
+    WindowMode m_window_mode { WindowMode::Modeless };
+    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> m_cursor { Gfx::StandardCursor::None };
+    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> m_effective_cursor { Gfx::StandardCursor::None };
     bool m_has_alpha_channel { false };
     bool m_double_buffering_enabled { true };
-    bool m_modal { false };
     bool m_resizable { true };
+    bool m_obey_widget_min_size { true };
     Optional<Gfx::IntSize> m_resize_aspect_ratio {};
     bool m_minimizable { true };
     bool m_closeable { true };
-    bool m_maximized_when_windowless { false };
+    bool m_maximized { false };
+    bool m_minimized { false };
     bool m_fullscreen { false };
     bool m_frameless { false };
     bool m_forced_shadow { false };
     bool m_layout_pending { false };
     bool m_visible_for_timer_purposes { true };
     bool m_visible { false };
-    bool m_accessory { false };
     bool m_moved_by_client { false };
+    bool m_blocks_emoji_input { false };
+    bool m_resizing { false };
 };
 
 }

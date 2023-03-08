@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2022, David Tuin <davidot@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,8 +9,10 @@
 #include <AK/AllOf.h>
 #include <AK/Assertions.h>
 #include <AK/CharacterTypes.h>
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
+#include <AK/FloatingPointStringConversions.h>
 #include <AK/StringBuilder.h>
+#include <AK/StringFloatingPointConversions.h>
 #include <AK/Utf8View.h>
 #include <LibCrypto/BigInt/SignedBigInteger.h>
 #include <LibCrypto/NumberTheory/ModularFunctions.h>
@@ -31,190 +34,236 @@
 #include <LibJS/Runtime/ProxyObject.h>
 #include <LibJS/Runtime/RegExpObject.h>
 #include <LibJS/Runtime/StringObject.h>
+#include <LibJS/Runtime/StringPrototype.h>
 #include <LibJS/Runtime/SymbolObject.h>
+#include <LibJS/Runtime/Utf16String.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
 #include <math.h>
 
 namespace JS {
 
-static inline bool same_type_for_equality(const Value& lhs, const Value& rhs)
+static inline bool same_type_for_equality(Value const& lhs, Value const& rhs)
 {
-    if (lhs.type() == rhs.type())
+    // If the top two bytes are identical then either:
+    // both are NaN boxed Values with the same type
+    // or they are doubles which happen to have the same top bytes.
+    if ((lhs.encoded() & TAG_EXTRACTION) == (rhs.encoded() & TAG_EXTRACTION))
         return true;
+
     if (lhs.is_number() && rhs.is_number())
         return true;
+
+    // One of the Values is not a number and they do not have the same tag
     return false;
 }
 
 static const Crypto::SignedBigInteger BIGINT_ZERO { 0 };
 
-ALWAYS_INLINE bool both_number(const Value& lhs, const Value& rhs)
+ALWAYS_INLINE bool both_number(Value const& lhs, Value const& rhs)
 {
     return lhs.is_number() && rhs.is_number();
 }
 
-ALWAYS_INLINE bool both_bigint(const Value& lhs, const Value& rhs)
+ALWAYS_INLINE bool both_bigint(Value const& lhs, Value const& rhs)
 {
     return lhs.is_bigint() && rhs.is_bigint();
 }
 
 // 6.1.6.1.20 Number::toString ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-tostring
-static String double_to_string(double d)
+// Implementation for radix = 10
+static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, NumberToStringMode mode)
 {
-    if (isnan(d))
-        return "NaN";
-    if (d == +0.0 || d == -0.0)
-        return "0";
-    if (d < +0.0) {
-        StringBuilder builder;
-        builder.append('-');
-        builder.append(double_to_string(-d));
-        return builder.to_string();
-    }
-    if (d == static_cast<double>(INFINITY))
-        return "Infinity";
+    auto convert_to_decimal_digits_array = [](auto x, auto& digits, auto& length) {
+        for (; x; x /= 10)
+            digits[length++] = x % 10 | '0';
+        for (i32 i = 0; 2 * i + 1 < length; ++i)
+            swap(digits[i], digits[length - i - 1]);
+    };
 
-    StringBuilder number_string_builder;
-
-    size_t start_index = 0;
-    size_t end_index = 0;
-    size_t int_part_end = 0;
-
-    // generate integer part (reversed)
-    double int_part;
-    double frac_part;
-    frac_part = modf(d, &int_part);
-    while (int_part > 0) {
-        number_string_builder.append('0' + (int)fmod(int_part, 10));
-        end_index++;
-        int_part = floor(int_part / 10);
+    // 1. If x is NaN, return "NaN".
+    if (isnan(d)) {
+        TRY(builder.try_append("NaN"sv));
+        return {};
     }
 
-    auto reversed_integer_part = number_string_builder.to_string().reverse();
-    number_string_builder.clear();
-    number_string_builder.append(reversed_integer_part);
-
-    int_part_end = end_index;
-
-    int exponent = 0;
-
-    // generate fractional part
-    while (frac_part > 0) {
-        double old_frac_part = frac_part;
-        frac_part *= 10;
-        frac_part = modf(frac_part, &int_part);
-        if (old_frac_part == frac_part)
-            break;
-        number_string_builder.append('0' + (int)int_part);
-        end_index++;
-        exponent--;
+    // 2. If x is +0𝔽 or -0𝔽, return "0".
+    if (d == +0.0 || d == -0.0) {
+        TRY(builder.try_append("0"sv));
+        return {};
     }
 
-    auto number_string = number_string_builder.to_string();
+    // 4. If x is +∞𝔽, return "Infinity".
+    if (isinf(d)) {
+        if (d > 0) {
+            TRY(builder.try_append("Infinity"sv));
+            return {};
+        }
 
-    // FIXME: Remove this hack.
-    // FIXME: Instead find the shortest round-trippable representation.
-    // Remove decimals after the 15th position
-    if (end_index > int_part_end + 15) {
-        exponent += end_index - int_part_end - 15;
-        end_index = int_part_end + 15;
+        TRY(builder.try_append("-Infinity"sv));
+        return {};
     }
 
-    // remove leading zeroes
-    while (start_index < end_index && number_string[start_index] == '0') {
-        start_index++;
+    // 5. Let n, k, and s be integers such that k ≥ 1, radix ^ (k - 1) ≤ s < radix ^ k,
+    // 𝔽(s × radix ^ (n - k)) is x, and k is as small as possible. Note that k is the number of
+    // digits in the representation of s using radix radix, that s is not divisible by radix, and
+    // that the least significant digit of s is not necessarily uniquely determined by these criteria.
+    //
+    // Note: guarantees provided by convert_floating_point_to_decimal_exponential_form satisfy
+    //       requirements of NOTE 2.
+    auto [sign, mantissa, exponent] = convert_floating_point_to_decimal_exponential_form(d);
+    i32 k = 0;
+    AK::Array<char, 20> mantissa_digits;
+    convert_to_decimal_digits_array(mantissa, mantissa_digits, k);
+
+    i32 n = exponent + k; // s = mantissa
+
+    // 3. If x < -0𝔽, return the string-concatenation of "-" and Number::toString(-x, radix).
+    if (sign)
+        TRY(builder.try_append('-'));
+
+    // Non-standard: Intl needs number-to-string conversions for extremely large numbers without any
+    // exponential formatting, as it will handle such formatting itself in a locale-aware way.
+    bool force_no_exponent = mode == NumberToStringMode::WithoutExponent;
+
+    // 6. If radix ≠ 10 or n is in the inclusive interval from -5 to 21, then
+    if ((n >= -5 && n <= 21) || force_no_exponent) {
+        // a. If n ≥ k, then
+        if (n >= k) {
+            // i. Return the string-concatenation of:
+            // the code units of the k digits of the representation of s using radix radix
+            TRY(builder.try_append(mantissa_digits.data(), k));
+            // n - k occurrences of the code unit 0x0030 (DIGIT ZERO)
+            TRY(builder.try_append_repeated('0', n - k));
+            // b. Else if n > 0, then
+        } else if (n > 0) {
+            // i. Return the string-concatenation of:
+            // the code units of the most significant n digits of the representation of s using radix radix
+            TRY(builder.try_append(mantissa_digits.data(), n));
+            // the code unit 0x002E (FULL STOP)
+            TRY(builder.try_append('.'));
+            // the code units of the remaining k - n digits of the representation of s using radix radix
+            TRY(builder.try_append(mantissa_digits.data() + n, k - n));
+            // c. Else,
+        } else {
+            // i. Assert: n ≤ 0.
+            VERIFY(n <= 0);
+            // ii. Return the string-concatenation of:
+            // the code unit 0x0030 (DIGIT ZERO)
+            TRY(builder.try_append('0'));
+            // the code unit 0x002E (FULL STOP)
+            TRY(builder.try_append('.'));
+            // -n occurrences of the code unit 0x0030 (DIGIT ZERO)
+            TRY(builder.try_append_repeated('0', -n));
+            // the code units of the k digits of the representation of s using radix radix
+            TRY(builder.try_append(mantissa_digits.data(), k));
+        }
+
+        return {};
     }
 
-    // remove trailing zeroes
-    while (end_index > 0 && number_string[end_index - 1] == '0') {
-        end_index--;
-        exponent++;
+    // 7. NOTE: In this case, the input will be represented using scientific E notation, such as 1.2e+3.
+
+    // 9. If n < 0, then
+    //     a. Let exponentSign be the code unit 0x002D (HYPHEN-MINUS).
+    // 10. Else,
+    //     a. Let exponentSign be the code unit 0x002B (PLUS SIGN).
+    char exponent_sign = n < 0 ? '-' : '+';
+
+    AK::Array<char, 5> exponent_digits;
+    i32 exponent_length = 0;
+    convert_to_decimal_digits_array(abs(n - 1), exponent_digits, exponent_length);
+
+    // 11. If k is 1, then
+    if (k == 1) {
+        // a. Return the string-concatenation of:
+        // the code unit of the single digit of s
+        TRY(builder.try_append(mantissa_digits[0]));
+        // the code unit 0x0065 (LATIN SMALL LETTER E)
+        TRY(builder.try_append('e'));
+        // exponentSign
+        TRY(builder.try_append(exponent_sign));
+        // the code units of the decimal representation of abs(n - 1)
+        TRY(builder.try_append(exponent_digits.data(), exponent_length));
+
+        return {};
     }
 
-    if (end_index <= start_index)
-        return "0";
+    // 12. Return the string-concatenation of:
+    // the code unit of the most significant digit of the decimal representation of s
+    TRY(builder.try_append(mantissa_digits[0]));
+    // the code unit 0x002E (FULL STOP)
+    TRY(builder.try_append('.'));
+    // the code units of the remaining k - 1 digits of the decimal representation of s
+    TRY(builder.try_append(mantissa_digits.data() + 1, k - 1));
+    // the code unit 0x0065 (LATIN SMALL LETTER E)
+    TRY(builder.try_append('e'));
+    // exponentSign
+    TRY(builder.try_append(exponent_sign));
+    // the code units of the decimal representation of abs(n - 1)
+    TRY(builder.try_append(exponent_digits.data(), exponent_length));
 
-    auto digits = number_string.substring_view(start_index, end_index - start_index);
+    return {};
+}
 
-    int number_of_digits = end_index - start_index;
-
-    exponent += number_of_digits;
-
+ErrorOr<String> number_to_string(double d, NumberToStringMode mode)
+{
     StringBuilder builder;
-
-    if (number_of_digits <= exponent && exponent <= 21) {
-        builder.append(digits);
-        builder.append(String::repeated('0', exponent - number_of_digits));
-        return builder.to_string();
-    }
-    if (0 < exponent && exponent <= 21) {
-        builder.append(digits.substring_view(0, exponent));
-        builder.append('.');
-        builder.append(digits.substring_view(exponent));
-        return builder.to_string();
-    }
-    if (-6 < exponent && exponent <= 0) {
-        builder.append("0.");
-        builder.append(String::repeated('0', -exponent));
-        builder.append(digits);
-        return builder.to_string();
-    }
-    if (number_of_digits == 1) {
-        builder.append(digits);
-        builder.append('e');
-
-        if (exponent - 1 > 0)
-            builder.append('+');
-        else
-            builder.append('-');
-
-        builder.append(String::number(AK::abs(exponent - 1)));
-        return builder.to_string();
-    }
-
-    builder.append(digits[0]);
-    builder.append('.');
-    builder.append(digits.substring_view(1));
-    builder.append('e');
-
-    if (exponent - 1 > 0)
-        builder.append('+');
-    else
-        builder.append('-');
-
-    builder.append(String::number(AK::abs(exponent - 1)));
+    TRY(number_to_string_impl(builder, d, mode));
     return builder.to_string();
 }
 
-// 7.2.2 IsArray ( argument ), https://tc39.es/ecma262/#sec-isarray
-ThrowCompletionOr<bool> Value::is_array(GlobalObject& global_object) const
+DeprecatedString number_to_deprecated_string(double d, NumberToStringMode mode)
 {
-    auto& vm = global_object.vm();
+    StringBuilder builder;
+    MUST(number_to_string_impl(builder, d, mode));
+    return builder.to_deprecated_string();
+}
 
+// 7.2.2 IsArray ( argument ), https://tc39.es/ecma262/#sec-isarray
+ThrowCompletionOr<bool> Value::is_array(VM& vm) const
+{
+    // 1. If argument is not an Object, return false.
     if (!is_object())
         return false;
-    auto& object = as_object();
+
+    auto const& object = as_object();
+
+    // 2. If argument is an Array exotic object, return true.
     if (is<Array>(object))
         return true;
+
+    // 3. If argument is a Proxy exotic object, then
     if (is<ProxyObject>(object)) {
-        auto& proxy = static_cast<ProxyObject const&>(object);
+        auto const& proxy = static_cast<ProxyObject const&>(object);
+
+        // a. If argument.[[ProxyHandler]] is null, throw a TypeError exception.
         if (proxy.is_revoked())
-            return vm.throw_completion<TypeError>(global_object, ErrorType::ProxyRevoked);
-        return Value(&proxy.target()).is_array(global_object);
+            return vm.throw_completion<TypeError>(ErrorType::ProxyRevoked);
+
+        // b. Let target be argument.[[ProxyTarget]].
+        auto const& target = proxy.target();
+
+        // c. Return ? IsArray(target).
+        return Value(&target).is_array(vm);
     }
+
+    // 4. Return false.
     return false;
 }
 
 Array& Value::as_array()
 {
     VERIFY(is_object() && is<Array>(as_object()));
-    return static_cast<Array&>(*m_value.as_object);
+    return static_cast<Array&>(as_object());
 }
 
 // 7.2.3 IsCallable ( argument ), https://tc39.es/ecma262/#sec-iscallable
 bool Value::is_function() const
 {
+    // 1. If argument is not an Object, return false.
+    // 2. If argument has a [[Call]] internal method, return true.
+    // 3. Return false.
     return is_object() && as_object().is_function();
 }
 
@@ -246,150 +295,207 @@ bool Value::is_constructor() const
 }
 
 // 7.2.8 IsRegExp ( argument ), https://tc39.es/ecma262/#sec-isregexp
-ThrowCompletionOr<bool> Value::is_regexp(GlobalObject& global_object) const
+ThrowCompletionOr<bool> Value::is_regexp(VM& vm) const
 {
+    // 1. If argument is not an Object, return false.
     if (!is_object())
         return false;
 
-    auto& vm = global_object.vm();
+    // 2. Let matcher be ? Get(argument, @@match).
     auto matcher = TRY(as_object().get(*vm.well_known_symbol_match()));
+
+    // 3. If matcher is not undefined, return ToBoolean(matcher).
     if (!matcher.is_undefined())
         return matcher.to_boolean();
 
+    // 4. If argument has a [[RegExpMatcher]] internal slot, return true.
+    // 5. Return false.
     return is<RegExpObject>(as_object());
 }
 
 // 13.5.3 The typeof Operator, https://tc39.es/ecma262/#sec-typeof-operator
-String Value::typeof() const
+StringView Value::typeof() const
 {
-    switch (m_type) {
-    case Value::Type::Undefined:
-        return "undefined";
-    case Value::Type::Null:
-        return "object";
-    case Value::Type::Int32:
-    case Value::Type::Double:
-        return "number";
-    case Value::Type::String:
-        return "string";
-    case Value::Type::Object:
-        // B.3.7.3 Changes to the typeof Operator, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-typeof
+    // 9. If val is a Number, return "number".
+    if (is_number())
+        return "number"sv;
+
+    switch (m_value.tag) {
+    // 4. If val is undefined, return "undefined".
+    case UNDEFINED_TAG:
+        return "undefined"sv;
+    // 5. If val is null, return "object".
+    case NULL_TAG:
+        return "object"sv;
+    // 6. If val is a String, return "string".
+    case STRING_TAG:
+        return "string"sv;
+    // 7. If val is a Symbol, return "symbol".
+    case SYMBOL_TAG:
+        return "symbol"sv;
+    // 8. If val is a Boolean, return "boolean".
+    case BOOLEAN_TAG:
+        return "boolean"sv;
+    // 10. If val is a BigInt, return "bigint".
+    case BIGINT_TAG:
+        return "bigint"sv;
+    // 11. Assert: val is an Object.
+    case OBJECT_TAG:
+        // B.3.6.3 Changes to the typeof Operator, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-typeof
+        // 12. If val has an [[IsHTMLDDA]] internal slot, return "undefined".
         if (as_object().is_htmldda())
-            return "undefined";
+            return "undefined"sv;
+        // 13. If val has a [[Call]] internal slot, return "function".
         if (is_function())
-            return "function";
-        return "object";
-    case Value::Type::Boolean:
-        return "boolean";
-    case Value::Type::Symbol:
-        return "symbol";
-    case Value::Type::BigInt:
-        return "bigint";
+            return "function"sv;
+        // 14. Return "object".
+        return "object"sv;
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-String Value::to_string_without_side_effects() const
+ErrorOr<String> Value::to_string_without_side_effects() const
 {
-    switch (m_type) {
-    case Type::Undefined:
-        return "undefined";
-    case Type::Null:
-        return "null";
-    case Type::Boolean:
-        return m_value.as_bool ? "true" : "false";
-    case Type::Int32:
-        return String::number(m_value.as_i32);
-    case Type::Double:
-        return double_to_string(m_value.as_double);
-    case Type::String:
-        return m_value.as_string->string();
-    case Type::Symbol:
-        return m_value.as_symbol->to_string();
-    case Type::BigInt:
-        return m_value.as_bigint->to_string();
-    case Type::Object:
+    if (is_double())
+        return number_to_string(m_value.as_double);
+
+    switch (m_value.tag) {
+    case UNDEFINED_TAG:
+        return "undefined"_string;
+    case NULL_TAG:
+        return "null"_string;
+    case BOOLEAN_TAG:
+        return as_bool() ? "true"_string : "false"_string;
+    case INT32_TAG:
+        return String::number(as_i32());
+    case STRING_TAG:
+        if (auto string = as_string().utf8_string(); string.is_throw_completion()) {
+            auto completion = string.release_error();
+
+            // We can't explicitly check for OOM because InternalError does not store the ErrorType
+            VERIFY(completion.value().has_value());
+            VERIFY(completion.value()->is_object());
+            VERIFY(is<InternalError>(completion.value()->as_object()));
+
+            return AK::Error::from_errno(ENOMEM);
+        } else {
+            return string.release_value();
+        }
+    case SYMBOL_TAG:
+        return as_symbol().descriptive_string();
+    case BIGINT_TAG:
+        return as_bigint().to_string();
+    case OBJECT_TAG:
         return String::formatted("[object {}]", as_object().class_name());
-    case Type::Accessor:
-        return "<accessor>";
+    case ACCESSOR_TAG:
+        return "<accessor>"_string;
+    case EMPTY_TAG:
+        return "<empty>"_string;
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-ThrowCompletionOr<PrimitiveString*> Value::to_primitive_string(GlobalObject& global_object)
+ThrowCompletionOr<PrimitiveString*> Value::to_primitive_string(VM& vm)
 {
     if (is_string())
         return &as_string();
-    auto string = TRY(to_string(global_object));
-    return js_string(global_object.heap(), string);
+    auto string = TRY(to_string(vm));
+    return PrimitiveString::create(vm, move(string)).ptr();
 }
 
 // 7.1.17 ToString ( argument ), https://tc39.es/ecma262/#sec-tostring
-ThrowCompletionOr<String> Value::to_string(GlobalObject& global_object) const
+ThrowCompletionOr<String> Value::to_string(VM& vm) const
 {
-    auto& vm = global_object.vm();
-    switch (m_type) {
-    case Type::Undefined:
-        return "undefined"sv;
-    case Type::Null:
-        return "null"sv;
-    case Type::Boolean:
-        return m_value.as_bool ? "true"sv : "false"sv;
-    case Type::Int32:
-        return String::number(m_value.as_i32);
-    case Type::Double:
-        return double_to_string(m_value.as_double);
-    case Type::String:
-        return m_value.as_string->string();
-    case Type::Symbol:
-        return vm.throw_completion<TypeError>(global_object, ErrorType::Convert, "symbol", "string");
-    case Type::BigInt:
-        return m_value.as_bigint->big_integer().to_base(10);
-    case Type::Object: {
-        auto primitive_value = TRY(to_primitive(global_object, PreferredType::String));
-        return primitive_value.to_string(global_object);
+    if (is_double())
+        return TRY_OR_THROW_OOM(vm, number_to_string(m_value.as_double));
+
+    switch (m_value.tag) {
+    // 1. If argument is a String, return argument.
+    case STRING_TAG:
+        return TRY(as_string().utf8_string());
+    // 2. If argument is a Symbol, throw a TypeError exception.
+    case SYMBOL_TAG:
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "symbol", "string");
+    // 3. If argument is undefined, return "undefined".
+    case UNDEFINED_TAG:
+        return TRY_OR_THROW_OOM(vm, "undefined"_string);
+    // 4. If argument is null, return "null".
+    case NULL_TAG:
+        return TRY_OR_THROW_OOM(vm, "null"_string);
+    // 5. If argument is true, return "true".
+    // 6. If argument is false, return "false".
+    case BOOLEAN_TAG:
+        return TRY_OR_THROW_OOM(vm, as_bool() ? "true"_string : "false"_string);
+    // 7. If argument is a Number, return Number::toString(argument, 10).
+    case INT32_TAG:
+        return TRY_OR_THROW_OOM(vm, String::number(as_i32()));
+    // 8. If argument is a BigInt, return BigInt::toString(argument, 10).
+    case BIGINT_TAG:
+        return TRY_OR_THROW_OOM(vm, as_bigint().big_integer().to_base(10));
+    // 9. Assert: argument is an Object.
+    case OBJECT_TAG: {
+        // 10. Let primValue be ? ToPrimitive(argument, string).
+        auto primitive_value = TRY(to_primitive(vm, PreferredType::String));
+
+        // 11. Assert: primValue is not an Object.
+        VERIFY(!primitive_value.is_object());
+
+        // 12. Return ? ToString(primValue).
+        return primitive_value.to_string(vm);
     }
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-ThrowCompletionOr<Utf16String> Value::to_utf16_string(GlobalObject& global_object) const
+// 7.1.17 ToString ( argument ), https://tc39.es/ecma262/#sec-tostring
+ThrowCompletionOr<DeprecatedString> Value::to_deprecated_string(VM& vm) const
 {
-    if (m_type == Type::String)
-        return m_value.as_string->utf16_string();
+    return TRY(to_string(vm)).to_deprecated_string();
+}
 
-    auto utf8_string = TRY(to_string(global_object));
-    return Utf16String(utf8_string);
+ThrowCompletionOr<Utf16String> Value::to_utf16_string(VM& vm) const
+{
+    if (is_string())
+        return TRY(as_string().utf16_string());
+
+    auto utf8_string = TRY(to_string(vm));
+    return Utf16String::create(vm, utf8_string.bytes_as_string_view());
 }
 
 // 7.1.2 ToBoolean ( argument ), https://tc39.es/ecma262/#sec-toboolean
 bool Value::to_boolean() const
 {
-    switch (m_type) {
-    case Type::Undefined:
-    case Type::Null:
-        return false;
-    case Type::Boolean:
-        return m_value.as_bool;
-    case Type::Int32:
-        return m_value.as_i32 != 0;
-    case Type::Double:
+    if (is_double()) {
         if (is_nan())
             return false;
         return m_value.as_double != 0;
-    case Type::String:
-        return !m_value.as_string->string().is_empty();
-    case Type::Symbol:
-        return true;
-    case Type::BigInt:
-        return m_value.as_bigint->big_integer() != BIGINT_ZERO;
-    case Type::Object:
-        // B.3.7.1 Changes to ToBoolean, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-to-boolean
-        if (m_value.as_object->is_htmldda())
+    }
+
+    switch (m_value.tag) {
+    // 1. If argument is a Boolean, return argument.
+    case BOOLEAN_TAG:
+        return as_bool();
+    // 2. If argument is any of undefined, null, +0𝔽, -0𝔽, NaN, 0ℤ, or the empty String, return false.
+    case UNDEFINED_TAG:
+    case NULL_TAG:
+        return false;
+    case INT32_TAG:
+        return as_i32() != 0;
+    case STRING_TAG:
+        return !as_string().is_empty();
+    case BIGINT_TAG:
+        return as_bigint().big_integer() != BIGINT_ZERO;
+    case OBJECT_TAG:
+        // B.3.6.1 Changes to ToBoolean, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-to-boolean
+        // 3. If argument is an Object and argument has an [[IsHTMLDDA]] internal slot, return false.
+        if (as_object().is_htmldda())
             return false;
+        // 4. Return true.
+        return true;
+    case SYMBOL_TAG:
         return true;
     default:
         VERIFY_NOT_REACHED();
@@ -397,56 +503,94 @@ bool Value::to_boolean() const
 }
 
 // 7.1.1 ToPrimitive ( input [ , preferredType ] ), https://tc39.es/ecma262/#sec-toprimitive
-ThrowCompletionOr<Value> Value::to_primitive(GlobalObject& global_object, PreferredType preferred_type) const
+ThrowCompletionOr<Value> Value::to_primitive(VM& vm, PreferredType preferred_type) const
 {
-    auto get_hint_for_preferred_type = [&]() -> String {
-        switch (preferred_type) {
-        case PreferredType::Default:
-            return "default";
-        case PreferredType::String:
-            return "string";
-        case PreferredType::Number:
-            return "number";
-        default:
-            VERIFY_NOT_REACHED();
-        }
-    };
+    // 1. If input is an Object, then
     if (is_object()) {
-        auto& vm = global_object.vm();
-        auto to_primitive_method = TRY(get_method(global_object, *vm.well_known_symbol_to_primitive()));
-        if (to_primitive_method) {
-            auto hint = get_hint_for_preferred_type();
-            auto result = TRY(call(global_object, *to_primitive_method, *this, js_string(vm, hint)));
+        // a. Let exoticToPrim be ? GetMethod(input, @@toPrimitive).
+        auto* exotic_to_primitive = TRY(get_method(vm, *vm.well_known_symbol_to_primitive()));
+
+        // b. If exoticToPrim is not undefined, then
+        if (exotic_to_primitive) {
+            auto hint = [&]() -> DeprecatedString {
+                switch (preferred_type) {
+                // i. If preferredType is not present, let hint be "default".
+                case PreferredType::Default:
+                    return "default";
+                // ii. Else if preferredType is string, let hint be "string".
+                case PreferredType::String:
+                    return "string";
+                // iii. Else,
+                // 1. Assert: preferredType is number.
+                // 2. Let hint be "number".
+                case PreferredType::Number:
+                    return "number";
+                default:
+                    VERIFY_NOT_REACHED();
+                }
+            }();
+
+            // iv. Let result be ? Call(exoticToPrim, input, « hint »).
+            auto result = TRY(call(vm, *exotic_to_primitive, *this, PrimitiveString::create(vm, hint)));
+
+            // v. If result is not an Object, return result.
             if (!result.is_object())
                 return result;
-            return vm.throw_completion<TypeError>(global_object, ErrorType::ToPrimitiveReturnedObject, to_string_without_side_effects(), hint);
+
+            // vi. Throw a TypeError exception.
+            return vm.throw_completion<TypeError>(ErrorType::ToPrimitiveReturnedObject, TRY_OR_THROW_OOM(vm, to_string_without_side_effects()), hint);
         }
+
+        // c. If preferredType is not present, let preferredType be number.
         if (preferred_type == PreferredType::Default)
             preferred_type = PreferredType::Number;
+
+        // d. Return ? OrdinaryToPrimitive(input, preferredType).
         return as_object().ordinary_to_primitive(preferred_type);
     }
+
+    // 2. Return input.
     return *this;
 }
 
 // 7.1.18 ToObject ( argument ), https://tc39.es/ecma262/#sec-toobject
-ThrowCompletionOr<Object*> Value::to_object(GlobalObject& global_object) const
+ThrowCompletionOr<Object*> Value::to_object(VM& vm) const
 {
-    switch (m_type) {
-    case Type::Undefined:
-    case Type::Null:
-        return global_object.vm().throw_completion<TypeError>(global_object, ErrorType::ToObjectNullOrUndefined);
-    case Type::Boolean:
-        return BooleanObject::create(global_object, m_value.as_bool);
-    case Type::Int32:
-    case Type::Double:
-        return NumberObject::create(global_object, as_double());
-    case Type::String:
-        return StringObject::create(global_object, *m_value.as_string, *global_object.string_prototype());
-    case Type::Symbol:
-        return SymbolObject::create(global_object, *m_value.as_symbol);
-    case Type::BigInt:
-        return BigIntObject::create(global_object, *m_value.as_bigint);
-    case Type::Object:
+    auto& realm = *vm.current_realm();
+    VERIFY(!is_empty());
+
+    // Number
+    if (is_number()) {
+        // Return a new Number object whose [[NumberData]] internal slot is set to argument. See 21.1 for a description of Number objects.
+        return NumberObject::create(realm, as_double()).ptr();
+    }
+
+    switch (m_value.tag) {
+    // Undefined
+    // Null
+    case UNDEFINED_TAG:
+    case NULL_TAG:
+        // Throw a TypeError exception.
+        return vm.throw_completion<TypeError>(ErrorType::ToObjectNullOrUndefined);
+    // Boolean
+    case BOOLEAN_TAG:
+        // Return a new Boolean object whose [[BooleanData]] internal slot is set to argument. See 20.3 for a description of Boolean objects.
+        return BooleanObject::create(realm, as_bool()).ptr();
+    // String
+    case STRING_TAG:
+        // Return a new String object whose [[StringData]] internal slot is set to argument. See 22.1 for a description of String objects.
+        return MUST_OR_THROW_OOM(StringObject::create(realm, const_cast<JS::PrimitiveString&>(as_string()), *realm.intrinsics().string_prototype())).ptr();
+    // Symbol
+    case SYMBOL_TAG:
+        // Return a new Symbol object whose [[SymbolData]] internal slot is set to argument. See 20.4 for a description of Symbol objects.
+        return SymbolObject::create(realm, const_cast<JS::Symbol&>(as_symbol())).ptr();
+    // BigInt
+    case BIGINT_TAG:
+        // Return a new BigInt object whose [[BigIntData]] internal slot is set to argument. See 21.2 for a description of BigInt objects.
+        return BigIntObject::create(realm, const_cast<JS::BigInt&>(as_bigint())).ptr();
+    // Object
+    case OBJECT_TAG:
+        // Return argument.
         return &const_cast<Object&>(as_object());
     default:
         VERIFY_NOT_REACHED();
@@ -454,86 +598,197 @@ ThrowCompletionOr<Object*> Value::to_object(GlobalObject& global_object) const
 }
 
 // 7.1.3 ToNumeric ( value ), https://tc39.es/ecma262/#sec-tonumeric
-FLATTEN ThrowCompletionOr<Value> Value::to_numeric(GlobalObject& global_object) const
+FLATTEN ThrowCompletionOr<Value> Value::to_numeric(VM& vm) const
 {
-    auto primitive = TRY(to_primitive(global_object, Value::PreferredType::Number));
-    if (primitive.is_bigint())
-        return primitive;
-    return primitive.to_number(global_object);
+    // 1. Let primValue be ? ToPrimitive(value, number).
+    auto primitive_value = TRY(to_primitive(vm, Value::PreferredType::Number));
+
+    // 2. If primValue is a BigInt, return primValue.
+    if (primitive_value.is_bigint())
+        return primitive_value;
+
+    // 3. Return ? ToNumber(primValue).
+    return primitive_value.to_number(vm);
+}
+
+constexpr bool is_ascii_number(u32 code_point)
+{
+    return is_ascii_digit(code_point) || code_point == '.' || (code_point == 'e' || code_point == 'E') || code_point == '+' || code_point == '-';
+}
+
+struct NumberParseResult {
+    StringView literal;
+    u8 base;
+};
+
+static Optional<NumberParseResult> parse_number_text(StringView text)
+{
+    NumberParseResult result {};
+
+    auto check_prefix = [&](auto lower_prefix, auto upper_prefix) {
+        if (text.length() <= 2)
+            return false;
+        if (!text.starts_with(lower_prefix) && !text.starts_with(upper_prefix))
+            return false;
+        return true;
+    };
+
+    // https://tc39.es/ecma262/#sec-tonumber-applied-to-the-string-type
+    if (check_prefix("0b"sv, "0B"sv)) {
+        if (!all_of(text.substring_view(2), is_ascii_binary_digit))
+            return {};
+
+        result.literal = text.substring_view(2);
+        result.base = 2;
+    } else if (check_prefix("0o"sv, "0O"sv)) {
+        if (!all_of(text.substring_view(2), is_ascii_octal_digit))
+            return {};
+
+        result.literal = text.substring_view(2);
+        result.base = 8;
+    } else if (check_prefix("0x"sv, "0X"sv)) {
+        if (!all_of(text.substring_view(2), is_ascii_hex_digit))
+            return {};
+
+        result.literal = text.substring_view(2);
+        result.base = 16;
+    } else {
+        if (!all_of(text, is_ascii_number))
+            return {};
+
+        result.literal = text;
+        result.base = 10;
+    }
+
+    return result;
+}
+
+// 7.1.4.1.1 StringToNumber ( str ), https://tc39.es/ecma262/#sec-stringtonumber
+double string_to_number(StringView string)
+{
+    // 1. Let text be StringToCodePoints(str).
+    DeprecatedString text = Utf8View(string).trim(whitespace_characters, AK::TrimMode::Both).as_string();
+
+    // 2. Let literal be ParseText(text, StringNumericLiteral).
+    if (text.is_empty())
+        return 0;
+    if (text == "Infinity" || text == "+Infinity")
+        return INFINITY;
+    if (text == "-Infinity")
+        return -INFINITY;
+
+    auto result = parse_number_text(text);
+
+    // 3. If literal is a List of errors, return NaN.
+    if (!result.has_value())
+        return NAN;
+
+    // 4. Return StringNumericValue of literal.
+    if (result->base != 10) {
+        auto bigint = Crypto::UnsignedBigInteger::from_base(result->base, result->literal);
+        return bigint.to_double();
+    }
+
+    auto maybe_double = text.to_double(AK::TrimWhitespace::No);
+    if (!maybe_double.has_value())
+        return NAN;
+
+    return *maybe_double;
 }
 
 // 7.1.4 ToNumber ( argument ), https://tc39.es/ecma262/#sec-tonumber
-ThrowCompletionOr<Value> Value::to_number(GlobalObject& global_object) const
+ThrowCompletionOr<Value> Value::to_number(VM& vm) const
 {
-    switch (m_type) {
-    case Type::Undefined:
-        return js_nan();
-    case Type::Null:
-        return Value(0);
-    case Type::Boolean:
-        return Value(m_value.as_bool ? 1 : 0);
-    case Type::Int32:
-    case Type::Double:
+    VERIFY(!is_empty());
+
+    // 1. If argument is a Number, return argument.
+    if (is_number())
         return *this;
-    case Type::String: {
-        auto string = as_string().string().trim_whitespace();
-        if (string.is_empty())
-            return Value(0);
-        if (string == "Infinity" || string == "+Infinity")
-            return js_infinity();
-        if (string == "-Infinity")
-            return js_negative_infinity();
-        char* endptr;
-        auto parsed_double = strtod(string.characters(), &endptr);
-        if (*endptr)
-            return js_nan();
-        return Value(parsed_double);
-    }
-    case Type::Symbol:
-        return global_object.vm().throw_completion<TypeError>(global_object, ErrorType::Convert, "symbol", "number");
-    case Type::BigInt:
-        return global_object.vm().throw_completion<TypeError>(global_object, ErrorType::Convert, "BigInt", "number");
-    case Type::Object: {
-        auto primitive = TRY(to_primitive(global_object, PreferredType::Number));
-        return primitive.to_number(global_object);
+
+    switch (m_value.tag) {
+    // 2. If argument is either a Symbol or a BigInt, throw a TypeError exception.
+    case SYMBOL_TAG:
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "symbol", "number");
+    case BIGINT_TAG:
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "BigInt", "number");
+    // 3. If argument is undefined, return NaN.
+    case UNDEFINED_TAG:
+        return js_nan();
+    // 4. If argument is either null or false, return +0𝔽.
+    case NULL_TAG:
+        return Value(0);
+    // 5. If argument is true, return 1𝔽.
+    case BOOLEAN_TAG:
+        return Value(as_bool() ? 1 : 0);
+    // 6. If argument is a String, return StringToNumber(argument).
+    case STRING_TAG:
+        return string_to_number(TRY(as_string().deprecated_string()));
+    // 7. Assert: argument is an Object.
+    case OBJECT_TAG: {
+        // 8. Let primValue be ? ToPrimitive(argument, number).
+        auto primitive_value = TRY(to_primitive(vm, PreferredType::Number));
+
+        // 9. Assert: primValue is not an Object.
+        VERIFY(!primitive_value.is_object());
+
+        // 10. Return ? ToNumber(primValue).
+        return primitive_value.to_number(vm);
     }
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
+static Optional<BigInt*> string_to_bigint(VM& vm, StringView string);
+
 // 7.1.13 ToBigInt ( argument ), https://tc39.es/ecma262/#sec-tobigint
-ThrowCompletionOr<BigInt*> Value::to_bigint(GlobalObject& global_object) const
+ThrowCompletionOr<BigInt*> Value::to_bigint(VM& vm) const
 {
-    auto& vm = global_object.vm();
-    auto primitive = TRY(to_primitive(global_object, PreferredType::Number));
-    switch (primitive.type()) {
-    case Type::Undefined:
-        return vm.throw_completion<TypeError>(global_object, ErrorType::Convert, "undefined", "BigInt");
-    case Type::Null:
-        return vm.throw_completion<TypeError>(global_object, ErrorType::Convert, "null", "BigInt");
-    case Type::Boolean: {
-        auto value = primitive.as_bool() ? 1 : 0;
-        return js_bigint(vm, Crypto::SignedBigInteger { value });
+    // 1. Let prim be ? ToPrimitive(argument, number).
+    auto primitive = TRY(to_primitive(vm, PreferredType::Number));
+
+    // 2. Return the value that prim corresponds to in Table 12.
+
+    // Number
+    if (primitive.is_number()) {
+        // Throw a TypeError exception.
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "number", "BigInt");
     }
-    case Type::BigInt:
+
+    switch (primitive.m_value.tag) {
+    // Undefined
+    case UNDEFINED_TAG:
+        // Throw a TypeError exception.
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "undefined", "BigInt");
+    // Null
+    case NULL_TAG:
+        // Throw a TypeError exception.
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "null", "BigInt");
+    // Boolean
+    case BOOLEAN_TAG: {
+        // Return 1n if prim is true and 0n if prim is false.
+        auto value = primitive.as_bool() ? 1 : 0;
+        return BigInt::create(vm, Crypto::SignedBigInteger { value }).ptr();
+    }
+    // BigInt
+    case BIGINT_TAG:
+        // Return prim.
         return &primitive.as_bigint();
-    case Type::Int32:
-    case Type::Double:
-        return vm.throw_completion<TypeError>(global_object, ErrorType::Convert, "number", "BigInt");
-    case Type::String: {
+    case STRING_TAG: {
         // 1. Let n be ! StringToBigInt(prim).
-        auto bigint = primitive.string_to_bigint(global_object);
+        auto bigint = string_to_bigint(vm, TRY(primitive.as_string().deprecated_string()));
 
         // 2. If n is undefined, throw a SyntaxError exception.
         if (!bigint.has_value())
-            return vm.throw_completion<SyntaxError>(global_object, ErrorType::BigIntInvalidValue, primitive);
+            return vm.throw_completion<SyntaxError>(ErrorType::BigIntInvalidValue, primitive);
 
         // 3. Return n.
         return bigint.release_value();
     }
-    case Type::Symbol:
-        return vm.throw_completion<TypeError>(global_object, ErrorType::Convert, "symbol", "BigInt");
+    // Symbol
+    case SYMBOL_TAG:
+        // Throw a TypeError exception.
+        return vm.throw_completion<TypeError>(ErrorType::Convert, "symbol", "BigInt");
     default:
         VERIFY_NOT_REACHED();
     }
@@ -585,12 +840,10 @@ static Optional<BigIntParseResult> parse_bigint_text(StringView text)
 }
 
 // 7.1.14 StringToBigInt ( str ), https://tc39.es/ecma262/#sec-stringtobigint
-Optional<BigInt*> Value::string_to_bigint(GlobalObject& global_object) const
+static Optional<BigInt*> string_to_bigint(VM& vm, StringView string)
 {
-    VERIFY(is_string());
-
-    // 1. Let text be ! StringToCodePoints(str).
-    auto text = as_string().string().view().trim_whitespace();
+    // 1. Let text be StringToCodePoints(str).
+    auto text = Utf8View(string).trim(whitespace_characters, AK::TrimMode::Both).as_string();
 
     // 2. Let literal be ParseText(text, StringIntegerLiteral).
     auto result = parse_bigint_text(text);
@@ -606,227 +859,378 @@ Optional<BigInt*> Value::string_to_bigint(GlobalObject& global_object) const
         bigint.negate();
 
     // 6. Return ℤ(mv).
-    return js_bigint(global_object.vm(), move(bigint));
+    return BigInt::create(vm, move(bigint));
 }
 
 // 7.1.15 ToBigInt64 ( argument ), https://tc39.es/ecma262/#sec-tobigint64
-ThrowCompletionOr<i64> Value::to_bigint_int64(GlobalObject& global_object) const
+ThrowCompletionOr<i64> Value::to_bigint_int64(VM& vm) const
 {
-    auto* bigint = TRY(to_bigint(global_object));
+    // 1. Let n be ? ToBigInt(argument).
+    auto* bigint = TRY(to_bigint(vm));
+
+    // 2. Let int64bit be ℝ(n) modulo 2^64.
+    // 3. If int64bit ≥ 2^63, return ℤ(int64bit - 2^64); otherwise return ℤ(int64bit).
     return static_cast<i64>(bigint->big_integer().to_u64());
 }
 
 // 7.1.16 ToBigUint64 ( argument ), https://tc39.es/ecma262/#sec-tobiguint64
-ThrowCompletionOr<u64> Value::to_bigint_uint64(GlobalObject& global_object) const
+ThrowCompletionOr<u64> Value::to_bigint_uint64(VM& vm) const
 {
-    auto* bigint = TRY(to_bigint(global_object));
+    // 1. Let n be ? ToBigInt(argument).
+    auto* bigint = TRY(to_bigint(vm));
+
+    // 2. Let int64bit be ℝ(n) modulo 2^64.
+    // 3. Return ℤ(int64bit).
     return bigint->big_integer().to_u64();
 }
 
-ThrowCompletionOr<double> Value::to_double(GlobalObject& global_object) const
+ThrowCompletionOr<double> Value::to_double(VM& vm) const
 {
-    return TRY(to_number(global_object)).as_double();
+    return TRY(to_number(vm)).as_double();
 }
 
 // 7.1.19 ToPropertyKey ( argument ), https://tc39.es/ecma262/#sec-topropertykey
-ThrowCompletionOr<PropertyKey> Value::to_property_key(GlobalObject& global_object) const
+ThrowCompletionOr<PropertyKey> Value::to_property_key(VM& vm) const
 {
-    if (type() == Type::Int32 && as_i32() >= 0)
+    // OPTIMIZATION: Return the value as a numeric PropertyKey, if possible.
+    if (is_int32() && as_i32() >= 0)
         return PropertyKey { as_i32() };
-    auto key = TRY(to_primitive(global_object, PreferredType::String));
-    if (key.is_symbol())
+
+    // 1. Let key be ? ToPrimitive(argument, string).
+    auto key = TRY(to_primitive(vm, PreferredType::String));
+
+    // 2. If key is a Symbol, then
+    if (key.is_symbol()) {
+        // a. Return key.
         return &key.as_symbol();
-    return TRY(key.to_string(global_object));
+    }
+
+    // 3. Return ! ToString(key).
+    return MUST(key.to_deprecated_string(vm));
 }
 
-ThrowCompletionOr<i32> Value::to_i32_slow_case(GlobalObject& global_object) const
+// 7.1.6 ToInt32 ( argument ), https://tc39.es/ecma262/#sec-toint32
+ThrowCompletionOr<i32> Value::to_i32_slow_case(VM& vm) const
 {
-    VERIFY(type() != Type::Int32);
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    VERIFY(!is_int32());
+
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto abs = fabs(value);
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto abs = fabs(number);
     auto int_val = floor(abs);
-    if (signbit(value))
+    if (signbit(number))
         int_val = -int_val;
-    auto remainder = fmod(int_val, 4294967296.0);
-    auto int32bit = remainder >= 0.0 ? remainder : remainder + 4294967296.0; // The notation “x modulo y” computes a value k of the same sign as y
+
+    // 4. Let int32bit be int modulo 2^32.
+    auto int32bit = modulo(int_val, NumericLimits<u32>::max() + 1.0);
+
+    // 5. If int32bit ≥ 2^31, return 𝔽(int32bit - 2^32); otherwise return 𝔽(int32bit).
     if (int32bit >= 2147483648.0)
         int32bit -= 4294967296.0;
     return static_cast<i32>(int32bit);
 }
 
-ThrowCompletionOr<i32> Value::to_i32(GlobalObject& global_object) const
+// 7.1.6 ToInt32 ( argument ), https://tc39.es/ecma262/#sec-toint32
+ThrowCompletionOr<i32> Value::to_i32(VM& vm) const
 {
-    if (m_type == Type::Int32)
-        return m_value.as_i32;
-    return to_i32_slow_case(global_object);
+    if (is_int32())
+        return as_i32();
+    return to_i32_slow_case(vm);
 }
 
 // 7.1.7 ToUint32 ( argument ), https://tc39.es/ecma262/#sec-touint32
-ThrowCompletionOr<u32> Value::to_u32(GlobalObject& global_object) const
+ThrowCompletionOr<u32> Value::to_u32(VM& vm) const
 {
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto int_val = floor(fabs(value));
-    if (signbit(value))
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto int_val = floor(fabs(number));
+    if (signbit(number))
         int_val = -int_val;
-    auto int32bit = fmod(int_val, NumericLimits<u32>::max() + 1.0);
+
+    // 4. Let int32bit be int modulo 2^32.
+    auto int32bit = modulo(int_val, NumericLimits<u32>::max() + 1.0);
+
+    // 5. Return 𝔽(int32bit).
     // Cast to i64 here to ensure that the double --> u32 cast doesn't invoke undefined behavior
     // Otherwise, negative numbers cause a UBSAN warning.
     return static_cast<u32>(static_cast<i64>(int32bit));
 }
 
 // 7.1.8 ToInt16 ( argument ), https://tc39.es/ecma262/#sec-toint16
-ThrowCompletionOr<i16> Value::to_i16(GlobalObject& global_object) const
+ThrowCompletionOr<i16> Value::to_i16(VM& vm) const
 {
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto abs = fabs(value);
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto abs = fabs(number);
     auto int_val = floor(abs);
-    if (signbit(value))
+    if (signbit(number))
         int_val = -int_val;
-    auto remainder = fmod(int_val, 65536.0);
-    auto int16bit = remainder >= 0.0 ? remainder : remainder + 65536.0; // The notation “x modulo y” computes a value k of the same sign as y
+
+    // 4. Let int16bit be int modulo 2^16.
+    auto int16bit = modulo(int_val, NumericLimits<u16>::max() + 1.0);
+
+    // 5. If int16bit ≥ 2^15, return 𝔽(int16bit - 2^16); otherwise return 𝔽(int16bit).
     if (int16bit >= 32768.0)
         int16bit -= 65536.0;
     return static_cast<i16>(int16bit);
 }
 
 // 7.1.9 ToUint16 ( argument ), https://tc39.es/ecma262/#sec-touint16
-ThrowCompletionOr<u16> Value::to_u16(GlobalObject& global_object) const
+ThrowCompletionOr<u16> Value::to_u16(VM& vm) const
 {
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto int_val = floor(fabs(value));
-    if (signbit(value))
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto int_val = floor(fabs(number));
+    if (signbit(number))
         int_val = -int_val;
-    auto int16bit = fmod(int_val, NumericLimits<u16>::max() + 1.0);
-    if (int16bit < 0)
-        int16bit += NumericLimits<u16>::max() + 1.0;
+
+    // 4. Let int16bit be int modulo 2^16.
+    auto int16bit = modulo(int_val, NumericLimits<u16>::max() + 1.0);
+
+    // 5. Return 𝔽(int16bit).
     return static_cast<u16>(int16bit);
 }
 
 // 7.1.10 ToInt8 ( argument ), https://tc39.es/ecma262/#sec-toint8
-ThrowCompletionOr<i8> Value::to_i8(GlobalObject& global_object) const
+ThrowCompletionOr<i8> Value::to_i8(VM& vm) const
 {
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto abs = fabs(value);
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto abs = fabs(number);
     auto int_val = floor(abs);
-    if (signbit(value))
+    if (signbit(number))
         int_val = -int_val;
-    auto remainder = fmod(int_val, 256.0);
-    auto int8bit = remainder >= 0.0 ? remainder : remainder + 256.0; // The notation “x modulo y” computes a value k of the same sign as y
+
+    // 4. Let int8bit be int modulo 2^8.
+    auto int8bit = modulo(int_val, NumericLimits<u8>::max() + 1.0);
+
+    // 5. If int8bit ≥ 2^7, return 𝔽(int8bit - 2^8); otherwise return 𝔽(int8bit).
     if (int8bit >= 128.0)
         int8bit -= 256.0;
     return static_cast<i8>(int8bit);
 }
 
 // 7.1.11 ToUint8 ( argument ), https://tc39.es/ecma262/#sec-touint8
-ThrowCompletionOr<u8> Value::to_u8(GlobalObject& global_object) const
+ThrowCompletionOr<u8> Value::to_u8(VM& vm) const
 {
-    double value = TRY(to_number(global_object)).as_double();
-    if (!isfinite(value) || value == 0)
+    // 1. Let number be ? ToNumber(argument).
+    double number = TRY(to_number(vm)).as_double();
+
+    // 2. If number is not finite or number is either +0𝔽 or -0𝔽, return +0𝔽.
+    if (!isfinite(number) || number == 0)
         return 0;
-    auto int_val = floor(fabs(value));
-    if (signbit(value))
+
+    // 3. Let int be the mathematical value whose sign is the sign of number and whose magnitude is floor(abs(ℝ(number))).
+    auto int_val = floor(fabs(number));
+    if (signbit(number))
         int_val = -int_val;
-    auto int8bit = fmod(int_val, NumericLimits<u8>::max() + 1.0);
-    if (int8bit < 0)
-        int8bit += NumericLimits<u8>::max() + 1.0;
+
+    // 4. Let int8bit be int modulo 2^8.
+    auto int8bit = modulo(int_val, NumericLimits<u8>::max() + 1.0);
+
+    // 5. Return 𝔽(int8bit).
     return static_cast<u8>(int8bit);
 }
 
 // 7.1.12 ToUint8Clamp ( argument ), https://tc39.es/ecma262/#sec-touint8clamp
-ThrowCompletionOr<u8> Value::to_u8_clamp(GlobalObject& global_object) const
+ThrowCompletionOr<u8> Value::to_u8_clamp(VM& vm) const
 {
-    auto number = TRY(to_number(global_object));
+    // 1. Let number be ? ToNumber(argument).
+    auto number = TRY(to_number(vm));
+
+    // 2. If number is NaN, return +0𝔽.
     if (number.is_nan())
         return 0;
+
     double value = number.as_double();
+
+    // 3. If ℝ(number) ≤ 0, return +0𝔽.
     if (value <= 0.0)
         return 0;
+
+    // 4. If ℝ(number) ≥ 255, return 255𝔽.
     if (value >= 255.0)
         return 255;
+
+    // 5. Let f be floor(ℝ(number)).
     auto int_val = floor(value);
+
+    // 6. If f + 0.5 < ℝ(number), return 𝔽(f + 1).
     if (int_val + 0.5 < value)
         return static_cast<u8>(int_val + 1.0);
+
+    // 7. If ℝ(number) < f + 0.5, return 𝔽(f).
     if (value < int_val + 0.5)
         return static_cast<u8>(int_val);
+
+    // 8. If f is odd, return 𝔽(f + 1).
     if (fmod(int_val, 2.0) == 1.0)
         return static_cast<u8>(int_val + 1.0);
+
+    // 9. Return 𝔽(f).
     return static_cast<u8>(int_val);
 }
 
 // 7.1.20 ToLength ( argument ), https://tc39.es/ecma262/#sec-tolength
-ThrowCompletionOr<size_t> Value::to_length(GlobalObject& global_object) const
+ThrowCompletionOr<size_t> Value::to_length(VM& vm) const
 {
-    auto len = TRY(to_integer_or_infinity(global_object));
+    // 1. Let len be ? ToIntegerOrInfinity(argument).
+    auto len = TRY(to_integer_or_infinity(vm));
+
+    // 2. If len ≤ 0, return +0𝔽.
     if (len <= 0)
         return 0;
-    // FIXME: The spec says that this function's output range is 0 - 2^53-1. But we don't want to overflow the size_t.
+
+    // FIXME: The expected output range is 0 - 2^53-1, but we don't want to overflow the size_t on 32-bit platforms.
+    //        Convert this to u64 so it works everywhere.
     constexpr double length_limit = sizeof(void*) == 4 ? NumericLimits<size_t>::max() : MAX_ARRAY_LIKE_INDEX;
+
+    // 3. Return 𝔽(min(len, 2^53 - 1)).
     return min(len, length_limit);
 }
 
 // 7.1.22 ToIndex ( argument ), https://tc39.es/ecma262/#sec-toindex
-ThrowCompletionOr<size_t> Value::to_index(GlobalObject& global_object) const
+ThrowCompletionOr<size_t> Value::to_index(VM& vm) const
 {
-    auto& vm = global_object.vm();
-
-    if (is_undefined())
+    // 1. If value is undefined, then
+    if (is_undefined()) {
+        // a. Return 0.
         return 0;
-    auto integer_index = TRY(to_integer_or_infinity(global_object));
-    if (integer_index < 0)
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidIndex);
-    auto index = MUST(Value(integer_index).to_length(global_object));
-    if (integer_index != index)
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidIndex);
-    return index;
+    }
+
+    // 2. Else,
+    // a. Let integer be ? ToIntegerOrInfinity(value).
+    auto integer = TRY(to_integer_or_infinity(vm));
+
+    // OPTIMIZATION: If the value is negative, ToLength normalizes it to 0, and we fail the SameValue comparison below.
+    //               Bail out early instead.
+    if (integer < 0)
+        return vm.throw_completion<RangeError>(ErrorType::InvalidIndex);
+
+    // b. Let clamped be ! ToLength(𝔽(integer)).
+    auto clamped = MUST(Value(integer).to_length(vm));
+
+    // c. If SameValue(𝔽(integer), clamped) is false, throw a RangeError exception.
+    if (integer != clamped)
+        return vm.throw_completion<RangeError>(ErrorType::InvalidIndex);
+
+    // d. Assert: 0 ≤ integer ≤ 2^53 - 1.
+    VERIFY(0 <= integer && integer <= MAX_ARRAY_LIKE_INDEX);
+
+    // e. Return integer.
+    // NOTE: We return the clamped value here, which already has the right type.
+    return clamped;
 }
 
 // 7.1.5 ToIntegerOrInfinity ( argument ), https://tc39.es/ecma262/#sec-tointegerorinfinity
-ThrowCompletionOr<double> Value::to_integer_or_infinity(GlobalObject& global_object) const
+ThrowCompletionOr<double> Value::to_integer_or_infinity(VM& vm) const
 {
-    auto number = TRY(to_number(global_object));
+    // 1. Let number be ? ToNumber(argument).
+    auto number = TRY(to_number(vm));
+
+    // 2. If number is NaN, +0𝔽, or -0𝔽, return 0.
     if (number.is_nan() || number.as_double() == 0)
         return 0;
+
+    // 3. If number is +∞𝔽, return +∞.
+    // 4. If number is -∞𝔽, return -∞.
     if (number.is_infinity())
         return number.as_double();
+
+    // 5. Let integer be floor(abs(ℝ(number))).
     auto integer = floor(fabs(number.as_double()));
-    if (number.as_double() < 0)
+
+    // 6. If number < -0𝔽, set integer to -integer.
+    // NOTE: The zero check is required as 'integer' is a double here but an MV in the spec,
+    //       which doesn't have negative zero.
+    if (number.as_double() < 0 && integer != 0)
         integer = -integer;
+
+    // 7. Return integer.
+    return integer;
+}
+
+// Standalone variant using plain doubles for cases where we already got numbers and know the AO won't throw.
+double to_integer_or_infinity(double number)
+{
+    // 1. Let number be ? ToNumber(argument).
+
+    // 2. If number is NaN, +0𝔽, or -0𝔽, return 0.
+    if (isnan(number) || number == 0)
+        return 0;
+
+    // 3. If number is +∞𝔽, return +∞.
+    if (__builtin_isinf_sign(number) > 0)
+        return static_cast<double>(INFINITY);
+
+    // 4. If number is -∞𝔽, return -∞.
+    if (__builtin_isinf_sign(number) < 0)
+        return static_cast<double>(-INFINITY);
+
+    // 5. Let integer be floor(abs(ℝ(number))).
+    auto integer = floor(fabs(number));
+
+    // 6. If number < -0𝔽, set integer to -integer.
+    // NOTE: The zero check is required as 'integer' is a double here but an MV in the spec,
+    //       which doesn't have negative zero.
+    if (number < 0 && integer != 0)
+        integer = -integer;
+
+    // 7. Return integer.
     return integer;
 }
 
 // 7.3.3 GetV ( V, P ), https://tc39.es/ecma262/#sec-getv
-ThrowCompletionOr<Value> Value::get(GlobalObject& global_object, PropertyKey const& property_key) const
+ThrowCompletionOr<Value> Value::get(VM& vm, PropertyKey const& property_key) const
 {
     // 1. Assert: IsPropertyKey(P) is true.
     VERIFY(property_key.is_valid());
 
     // 2. Let O be ? ToObject(V).
-    auto* object = TRY(to_object(global_object));
+    auto* object = TRY(to_object(vm));
 
     // 3. Return ? O.[[Get]](P, V).
     return TRY(object->internal_get(property_key, *this));
 }
 
 // 7.3.11 GetMethod ( V, P ), https://tc39.es/ecma262/#sec-getmethod
-ThrowCompletionOr<FunctionObject*> Value::get_method(GlobalObject& global_object, PropertyKey const& property_key) const
+ThrowCompletionOr<FunctionObject*> Value::get_method(VM& vm, PropertyKey const& property_key) const
 {
-    auto& vm = global_object.vm();
-
     // 1. Assert: IsPropertyKey(P) is true.
     VERIFY(property_key.is_valid());
 
     // 2. Let func be ? GetV(V, P).
-    auto function = TRY(get(global_object, property_key));
+    auto function = TRY(get(vm, property_key));
 
     // 3. If func is either undefined or null, return undefined.
     if (function.is_nullish())
@@ -834,349 +1238,649 @@ ThrowCompletionOr<FunctionObject*> Value::get_method(GlobalObject& global_object
 
     // 4. If IsCallable(func) is false, throw a TypeError exception.
     if (!function.is_function())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAFunction, function.to_string_without_side_effects());
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, function.to_string_without_side_effects()));
 
     // 5. Return func.
     return &function.as_function();
 }
 
 // 13.10 Relational Operators, https://tc39.es/ecma262/#sec-relational-operators
-ThrowCompletionOr<Value> greater_than(GlobalObject& global_object, Value lhs, Value rhs)
+// RelationalExpression : RelationalExpression > ShiftExpression
+ThrowCompletionOr<Value> greater_than(VM& vm, Value lhs, Value rhs)
 {
-    if (lhs.type() == Value::Type::Int32 && rhs.type() == Value::Type::Int32)
+    // 1. Let lref be ? Evaluation of RelationalExpression.
+    // 2. Let lval be ? GetValue(lref).
+    // 3. Let rref be ? Evaluation of ShiftExpression.
+    // 4. Let rval be ? GetValue(rref).
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // OPTIMIZATION: If both values are i32, we can do a direct comparison without calling into IsLessThan.
+    if (lhs.is_int32() && rhs.is_int32())
         return lhs.as_i32() > rhs.as_i32();
 
-    TriState relation = TRY(is_less_than(global_object, false, lhs, rhs));
+    // 5. Let r be ? IsLessThan(rval, lval, false).
+    auto relation = TRY(is_less_than(vm, lhs, rhs, false));
+
+    // 6. If r is undefined, return false. Otherwise, return r.
     if (relation == TriState::Unknown)
         return Value(false);
     return Value(relation == TriState::True);
 }
 
 // 13.10 Relational Operators, https://tc39.es/ecma262/#sec-relational-operators
-ThrowCompletionOr<Value> greater_than_equals(GlobalObject& global_object, Value lhs, Value rhs)
+// RelationalExpression : RelationalExpression >= ShiftExpression
+ThrowCompletionOr<Value> greater_than_equals(VM& vm, Value lhs, Value rhs)
 {
-    if (lhs.type() == Value::Type::Int32 && rhs.type() == Value::Type::Int32)
+    // 1. Let lref be ? Evaluation of RelationalExpression.
+    // 2. Let lval be ? GetValue(lref).
+    // 3. Let rref be ? Evaluation of ShiftExpression.
+    // 4. Let rval be ? GetValue(rref).
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // OPTIMIZATION: If both values are i32, we can do a direct comparison without calling into IsLessThan.
+    if (lhs.is_int32() && rhs.is_int32())
         return lhs.as_i32() >= rhs.as_i32();
 
-    TriState relation = TRY(is_less_than(global_object, true, lhs, rhs));
+    // 5. Let r be ? IsLessThan(lval, rval, true).
+    auto relation = TRY(is_less_than(vm, lhs, rhs, true));
+
+    // 6. If r is true or undefined, return false. Otherwise, return true.
     if (relation == TriState::Unknown || relation == TriState::True)
         return Value(false);
     return Value(true);
 }
 
 // 13.10 Relational Operators, https://tc39.es/ecma262/#sec-relational-operators
-ThrowCompletionOr<Value> less_than(GlobalObject& global_object, Value lhs, Value rhs)
+// RelationalExpression : RelationalExpression < ShiftExpression
+ThrowCompletionOr<Value> less_than(VM& vm, Value lhs, Value rhs)
 {
-    if (lhs.type() == Value::Type::Int32 && rhs.type() == Value::Type::Int32)
+    // 1. Let lref be ? Evaluation of RelationalExpression.
+    // 2. Let lval be ? GetValue(lref).
+    // 3. Let rref be ? Evaluation of ShiftExpression.
+    // 4. Let rval be ? GetValue(rref).
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // OPTIMIZATION: If both values are i32, we can do a direct comparison without calling into IsLessThan.
+    if (lhs.is_int32() && rhs.is_int32())
         return lhs.as_i32() < rhs.as_i32();
 
-    TriState relation = TRY(is_less_than(global_object, true, lhs, rhs));
+    // 5. Let r be ? IsLessThan(lval, rval, true).
+    auto relation = TRY(is_less_than(vm, lhs, rhs, true));
+
+    // 6. If r is undefined, return false. Otherwise, return r.
     if (relation == TriState::Unknown)
         return Value(false);
     return Value(relation == TriState::True);
 }
 
 // 13.10 Relational Operators, https://tc39.es/ecma262/#sec-relational-operators
-ThrowCompletionOr<Value> less_than_equals(GlobalObject& global_object, Value lhs, Value rhs)
+// RelationalExpression : RelationalExpression <= ShiftExpression
+ThrowCompletionOr<Value> less_than_equals(VM& vm, Value lhs, Value rhs)
 {
-    if (lhs.type() == Value::Type::Int32 && rhs.type() == Value::Type::Int32)
+    // 1. Let lref be ? Evaluation of RelationalExpression.
+    // 2. Let lval be ? GetValue(lref).
+    // 3. Let rref be ? Evaluation of ShiftExpression.
+    // 4. Let rval be ? GetValue(rref).
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // OPTIMIZATION: If both values are i32, we can do a direct comparison without calling into IsLessThan.
+    if (lhs.is_int32() && rhs.is_int32())
         return lhs.as_i32() <= rhs.as_i32();
 
-    TriState relation = TRY(is_less_than(global_object, false, lhs, rhs));
-    if (relation == TriState::Unknown || relation == TriState::True)
+    // 5. Let r be ? IsLessThan(rval, lval, false).
+    auto relation = TRY(is_less_than(vm, lhs, rhs, false));
+
+    // 6. If r is true or undefined, return false. Otherwise, return true.
+    if (relation == TriState::True || relation == TriState::Unknown)
         return Value(false);
     return Value(true);
 }
 
 // 13.12 Binary Bitwise Operators, https://tc39.es/ecma262/#sec-binary-bitwise-operators
-ThrowCompletionOr<Value> bitwise_and(GlobalObject& global_object, Value lhs, Value rhs)
+// BitwiseANDExpression : BitwiseANDExpression & EqualityExpression
+ThrowCompletionOr<Value> bitwise_and(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.17 Number::bitwiseAND ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-bitwiseAND
+        // 1. Return NumberBitwiseOp(&, x, y).
         if (!lhs_numeric.is_finite_number() || !rhs_numeric.is_finite_number())
             return Value(0);
-        return Value(TRY(lhs_numeric.to_i32(global_object)) & TRY(rhs_numeric.to_i32(global_object)));
+        return Value(TRY(lhs_numeric.to_i32(vm)) & TRY(rhs_numeric.to_i32(vm)));
     }
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().bitwise_and(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "bitwise AND");
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.18 BigInt::bitwiseAND ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-bitwiseAND
+        // 1. Return BigIntBitwiseOp(&, x, y).
+        return BigInt::create(vm, lhs_numeric.as_bigint().big_integer().bitwise_and(rhs_numeric.as_bigint().big_integer()));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "bitwise AND");
 }
 
 // 13.12 Binary Bitwise Operators, https://tc39.es/ecma262/#sec-binary-bitwise-operators
-ThrowCompletionOr<Value> bitwise_or(GlobalObject& global_object, Value lhs, Value rhs)
+// BitwiseORExpression : BitwiseORExpression | BitwiseXORExpression
+ThrowCompletionOr<Value> bitwise_or(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.19 Number::bitwiseOR ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-bitwiseOR
+        // 1. Return NumberBitwiseOp(|, x, y).
         if (!lhs_numeric.is_finite_number() && !rhs_numeric.is_finite_number())
             return Value(0);
         if (!lhs_numeric.is_finite_number())
             return rhs_numeric;
         if (!rhs_numeric.is_finite_number())
             return lhs_numeric;
-        return Value(TRY(lhs_numeric.to_i32(global_object)) | TRY(rhs_numeric.to_i32(global_object)));
+        return Value(TRY(lhs_numeric.to_i32(vm)) | TRY(rhs_numeric.to_i32(vm)));
     }
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().bitwise_or(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "bitwise OR");
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.20 BigInt::bitwiseOR ( x, y )
+        // 1. Return BigIntBitwiseOp(|, x, y).
+        return BigInt::create(vm, lhs_numeric.as_bigint().big_integer().bitwise_or(rhs_numeric.as_bigint().big_integer()));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "bitwise OR");
 }
 
 // 13.12 Binary Bitwise Operators, https://tc39.es/ecma262/#sec-binary-bitwise-operators
-ThrowCompletionOr<Value> bitwise_xor(GlobalObject& global_object, Value lhs, Value rhs)
+// BitwiseXORExpression : BitwiseXORExpression ^ BitwiseANDExpression
+ThrowCompletionOr<Value> bitwise_xor(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.18 Number::bitwiseXOR ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-bitwiseXOR
+        // 1. Return NumberBitwiseOp(^, x, y).
         if (!lhs_numeric.is_finite_number() && !rhs_numeric.is_finite_number())
             return Value(0);
         if (!lhs_numeric.is_finite_number())
             return rhs_numeric;
         if (!rhs_numeric.is_finite_number())
             return lhs_numeric;
-        return Value(TRY(lhs_numeric.to_i32(global_object)) ^ TRY(rhs_numeric.to_i32(global_object)));
+        return Value(TRY(lhs_numeric.to_i32(vm)) ^ TRY(rhs_numeric.to_i32(vm)));
     }
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().bitwise_xor(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "bitwise XOR");
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.19 BigInt::bitwiseXOR ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-bitwiseXOR
+        // 1. Return BigIntBitwiseOp(^, x, y).
+        return BigInt::create(vm, lhs_numeric.as_bigint().big_integer().bitwise_xor(rhs_numeric.as_bigint().big_integer()));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "bitwise XOR");
 }
 
 // 13.5.6 Bitwise NOT Operator ( ~ ), https://tc39.es/ecma262/#sec-bitwise-not-operator
-ThrowCompletionOr<Value> bitwise_not(GlobalObject& global_object, Value lhs)
+// UnaryExpression : ~ UnaryExpression
+ThrowCompletionOr<Value> bitwise_not(VM& vm, Value lhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    if (lhs_numeric.is_number())
-        return Value(~TRY(lhs_numeric.to_i32(global_object)));
-    return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().bitwise_not()));
+    // 1. Let expr be ? Evaluation of UnaryExpression.
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // 2. Let oldValue be ? ToNumeric(? GetValue(expr)).
+
+    auto old_value = TRY(lhs.to_numeric(vm));
+
+    // 3. If oldValue is a Number, then
+    if (old_value.is_number()) {
+        // a. Return Number::bitwiseNOT(oldValue).
+
+        // 6.1.6.1.2 Number::bitwiseNOT ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-bitwiseNOT
+        // 1. Let oldValue be ! ToInt32(x).
+        // 2. Return the result of applying bitwise complement to oldValue. The mathematical value of the result is
+        //    exactly representable as a 32-bit two's complement bit string.
+        return Value(~TRY(old_value.to_i32(vm)));
+    }
+
+    // 4. Else,
+    // a. Assert: oldValue is a BigInt.
+    VERIFY(old_value.is_bigint());
+
+    // b. Return BigInt::bitwiseNOT(oldValue).
+
+    // 6.1.6.2.2 BigInt::bitwiseNOT ( x ), https://tc39.es/ecma262/#sec-numeric-types-bigint-bitwiseNOT
+    // 1. Return -x - 1ℤ.
+    return BigInt::create(vm, old_value.as_bigint().big_integer().bitwise_not());
 }
 
 // 13.5.4 Unary + Operator, https://tc39.es/ecma262/#sec-unary-plus-operator
-ThrowCompletionOr<Value> unary_plus(GlobalObject& global_object, Value lhs)
+// UnaryExpression : + UnaryExpression
+ThrowCompletionOr<Value> unary_plus(VM& vm, Value lhs)
 {
-    return TRY(lhs.to_number(global_object));
+    // 1. Let expr be ? Evaluation of UnaryExpression.
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // 2. Return ? ToNumber(? GetValue(expr)).
+    return TRY(lhs.to_number(vm));
 }
 
 // 13.5.5 Unary - Operator, https://tc39.es/ecma262/#sec-unary-minus-operator
-ThrowCompletionOr<Value> unary_minus(GlobalObject& global_object, Value lhs)
+// UnaryExpression : - UnaryExpression
+ThrowCompletionOr<Value> unary_minus(VM& vm, Value lhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    if (lhs_numeric.is_number()) {
-        if (lhs_numeric.is_nan())
+    // 1. Let expr be ? Evaluation of UnaryExpression.
+    // NOTE: This is handled in the AST or Bytecode interpreter.
+
+    // 2. Let oldValue be ? ToNumeric(? GetValue(expr)).
+    auto old_value = TRY(lhs.to_numeric(vm));
+
+    // 3. If oldValue is a Number, then
+    if (old_value.is_number()) {
+        // a. Return Number::unaryMinus(oldValue).
+
+        // 6.1.6.1.1 Number::unaryMinus ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-unaryMinus
+        // 1. If x is NaN, return NaN.
+        if (old_value.is_nan())
             return js_nan();
-        return Value(-lhs_numeric.as_double());
+
+        // 2. Return the result of negating x; that is, compute a Number with the same magnitude but opposite sign.
+        return Value(-old_value.as_double());
     }
-    if (lhs_numeric.as_bigint().big_integer() == BIGINT_ZERO)
-        return Value(js_bigint(vm, BIGINT_ZERO));
-    auto big_integer_negated = lhs_numeric.as_bigint().big_integer();
+
+    // 4. Else,
+    // a. Assert: oldValue is a BigInt.
+    VERIFY(old_value.is_bigint());
+
+    // b. Return BigInt::unaryMinus(oldValue).
+
+    // 6.1.6.2.1 BigInt::unaryMinus ( x ), https://tc39.es/ecma262/#sec-numeric-types-bigint-unaryMinus
+    // 1. If x is 0ℤ, return 0ℤ.
+    if (old_value.as_bigint().big_integer() == BIGINT_ZERO)
+        return BigInt::create(vm, BIGINT_ZERO);
+
+    // 2. Return the BigInt value that represents the negation of ℝ(x).
+    auto big_integer_negated = old_value.as_bigint().big_integer();
     big_integer_negated.negate();
-    return Value(js_bigint(vm, big_integer_negated));
+    return BigInt::create(vm, big_integer_negated);
 }
 
 // 13.9.1 The Left Shift Operator ( << ), https://tc39.es/ecma262/#sec-left-shift-operator
-ThrowCompletionOr<Value> left_shift(GlobalObject& global_object, Value lhs, Value rhs)
+// ShiftExpression : ShiftExpression << AdditiveExpression
+ThrowCompletionOr<Value> left_shift(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.9 Number::leftShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-leftShift
+
+        // OPTIMIZATION: Handle infinite values according to the results returned by ToInt32/ToUint32.
         if (!lhs_numeric.is_finite_number())
             return Value(0);
         if (!rhs_numeric.is_finite_number())
             return lhs_numeric;
-        // Ok, so this performs toNumber() again but that "can't" throw
-        auto lhs_i32 = MUST(lhs_numeric.to_i32(global_object));
-        auto rhs_u32 = MUST(rhs_numeric.to_u32(global_object)) % 32;
-        return Value(lhs_i32 << rhs_u32);
+
+        // 1. Let lnum be ! ToInt32(x).
+        auto lhs_i32 = MUST(lhs_numeric.to_i32(vm));
+
+        // 2. Let rnum be ! ToUint32(y).
+        auto rhs_u32 = MUST(rhs_numeric.to_u32(vm));
+
+        // 3. Let shiftCount be ℝ(rnum) modulo 32.
+        auto shift_count = rhs_u32 % 32;
+
+        // 4. Return the result of left shifting lnum by shiftCount bits. The mathematical value of the result is
+        //    exactly representable as a 32-bit two's complement bit string.
+        return Value(lhs_i32 << shift_count);
     }
     if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.9 BigInt::leftShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-leftShift
         auto multiplier_divisor = Crypto::SignedBigInteger { Crypto::NumberTheory::Power(Crypto::UnsignedBigInteger(2), rhs_numeric.as_bigint().big_integer().unsigned_value()) };
-        if (rhs_numeric.as_bigint().big_integer().is_negative())
-            return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().divided_by(multiplier_divisor).quotient));
-        else
-            return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().multiplied_by(multiplier_divisor)));
+
+        // 1. If y < 0ℤ, then
+        if (rhs_numeric.as_bigint().big_integer().is_negative()) {
+            // a. Return the BigInt value that represents ℝ(x) / 2^-y, rounding down to the nearest integer, including for negative numbers.
+            // NOTE: Since y is negative we can just do ℝ(x) / 2^|y|
+            auto const& big_integer = lhs_numeric.as_bigint().big_integer();
+            auto division_result = big_integer.divided_by(multiplier_divisor);
+
+            // For positive initial values and no remainder just return quotient
+            if (division_result.remainder.is_zero() || !big_integer.is_negative())
+                return BigInt::create(vm, division_result.quotient);
+            // For negative round "down" to the next negative number
+            return BigInt::create(vm, division_result.quotient.minus(Crypto::SignedBigInteger { 1 }));
+        }
+        // 2. Return the BigInt value that represents ℝ(x) × 2^y.
+        return Value(BigInt::create(vm, lhs_numeric.as_bigint().big_integer().multiplied_by(multiplier_divisor)));
     }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "left-shift");
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "left-shift");
 }
 
 // 13.9.2 The Signed Right Shift Operator ( >> ), https://tc39.es/ecma262/#sec-signed-right-shift-operator
-ThrowCompletionOr<Value> right_shift(GlobalObject& global_object, Value lhs, Value rhs)
+// ShiftExpression : ShiftExpression >> AdditiveExpression
+ThrowCompletionOr<Value> right_shift(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.10 Number::signedRightShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-signedRightShift
+
+        // OPTIMIZATION: Handle infinite values according to the results returned by ToInt32/ToUint32.
         if (!lhs_numeric.is_finite_number())
             return Value(0);
         if (!rhs_numeric.is_finite_number())
             return lhs_numeric;
-        auto lhs_i32 = MUST(lhs_numeric.to_i32(global_object));
-        auto rhs_u32 = MUST(rhs_numeric.to_u32(global_object)) % 32;
-        return Value(lhs_i32 >> rhs_u32);
+
+        // 1. Let lnum be ! ToInt32(x).
+        auto lhs_i32 = MUST(lhs_numeric.to_i32(vm));
+
+        // 2. Let rnum be ! ToUint32(y).
+        auto rhs_u32 = MUST(rhs_numeric.to_u32(vm));
+
+        // 3. Let shiftCount be ℝ(rnum) modulo 32.
+        auto shift_count = rhs_u32 % 32;
+
+        // 4. Return the result of performing a sign-extending right shift of lnum by shiftCount bits.
+        //    The most significant bit is propagated. The mathematical value of the result is exactly representable
+        //    as a 32-bit two's complement bit string.
+        return Value(lhs_i32 >> shift_count);
     }
     if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.10 BigInt::signedRightShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-signedRightShift
+        // 1. Return BigInt::leftShift(x, -y).
         auto rhs_negated = rhs_numeric.as_bigint().big_integer();
         rhs_negated.negate();
-        return left_shift(global_object, lhs, js_bigint(vm, rhs_negated));
+        return left_shift(vm, lhs, BigInt::create(vm, rhs_negated));
     }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "right-shift");
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "right-shift");
 }
 
 // 13.9.3 The Unsigned Right Shift Operator ( >>> ), https://tc39.es/ecma262/#sec-unsigned-right-shift-operator
-ThrowCompletionOr<Value> unsigned_right_shift(GlobalObject& global_object, Value lhs, Value rhs)
+// ShiftExpression : ShiftExpression >>> AdditiveExpression
+ThrowCompletionOr<Value> unsigned_right_shift(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 5-6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.11 Number::unsignedRightShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-unsignedRightShift
+
+        // OPTIMIZATION: Handle infinite values according to the results returned by ToUint32.
         if (!lhs_numeric.is_finite_number())
             return Value(0);
         if (!rhs_numeric.is_finite_number())
             return lhs_numeric;
-        // Ok, so this performs toNumber() again but that "can't" throw
-        auto lhs_u32 = MUST(lhs_numeric.to_u32(global_object));
-        auto rhs_u32 = MUST(rhs_numeric.to_u32(global_object)) % 32;
-        return Value(lhs_u32 >> rhs_u32);
-    }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperator, "unsigned right-shift");
-}
 
-// https://tc39.es/ecma262/#string-concatenation
-static PrimitiveString* concatenate_strings(GlobalObject& global_object, PrimitiveString const& lhs, PrimitiveString const& rhs)
-{
-    auto& vm = global_object.vm();
+        // 1. Let lnum be ! ToUint32(x).
+        auto lhs_u32 = MUST(lhs_numeric.to_u32(vm));
 
-    if (lhs.has_utf16_string() && rhs.has_utf16_string()) {
-        auto const& lhs_string = lhs.utf16_string();
-        auto const& rhs_string = rhs.utf16_string();
+        // 2. Let rnum be ! ToUint32(y).
+        auto rhs_u32 = MUST(rhs_numeric.to_u32(vm));
 
-        Vector<u16, 1> combined;
-        combined.ensure_capacity(lhs_string.length_in_code_units() + rhs_string.length_in_code_units());
-        combined.extend(lhs_string.string());
-        combined.extend(rhs_string.string());
+        // 3. Let shiftCount be ℝ(rnum) modulo 32.
+        auto shift_count = rhs_u32 % 32;
 
-        return js_string(vm, Utf16String(move(combined)));
+        // 4. Return the result of performing a zero-filling right shift of lnum by shiftCount bits.
+        //    Vacated bits are filled with zero. The mathematical value of the result is exactly representable
+        //    as a 32-bit unsigned bit string.
+        return Value(lhs_u32 >> shift_count);
     }
 
-    auto const& lhs_string = lhs.string();
-    auto const& rhs_string = rhs.string();
-    StringBuilder builder(lhs_string.length() + rhs_string.length());
+    // 6. If lnum is a BigInt, then
+    // d. If opText is >>>, return ? BigInt::unsignedRightShift(lnum, rnum).
 
-    auto return_combined_strings = [&]() {
-        builder.append(lhs_string);
-        builder.append(rhs_string);
-        return js_string(vm, builder.to_string());
-    };
-
-    // Surrogates encoded as UTF-8 are 3 bytes.
-    if ((lhs_string.length() < 3) || (rhs_string.length() < 3))
-        return return_combined_strings();
-
-    auto lhs_leading_byte = static_cast<u8>(lhs_string[lhs_string.length() - 3]);
-    auto rhs_leading_byte = static_cast<u8>(rhs_string[0]);
-
-    if ((lhs_leading_byte & 0xf0) != 0xe0)
-        return return_combined_strings();
-    if ((rhs_leading_byte & 0xf0) != 0xe0)
-        return return_combined_strings();
-
-    auto high_surrogate = *Utf8View(lhs_string.substring_view(lhs_string.length() - 3)).begin();
-    auto low_surrogate = *Utf8View(rhs_string).begin();
-
-    if (!Utf16View::is_high_surrogate(high_surrogate) || !Utf16View::is_low_surrogate(low_surrogate))
-        return return_combined_strings();
-
-    builder.append(lhs_string.substring_view(0, lhs_string.length() - 3));
-    builder.append_code_point(Utf16View::decode_surrogate_pair(high_surrogate, low_surrogate));
-    builder.append(rhs_string.substring_view(3));
-
-    return js_string(vm, builder.to_string());
+    // 6.1.6.2.11 BigInt::unsignedRightShift ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-unsignedRightShift
+    // 1. Throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperator, "unsigned right-shift");
 }
 
 // 13.8.1 The Addition Operator ( + ), https://tc39.es/ecma262/#sec-addition-operator-plus
-ThrowCompletionOr<Value> add(GlobalObject& global_object, Value lhs, Value rhs)
+// AdditiveExpression : AdditiveExpression + MultiplicativeExpression
+ThrowCompletionOr<Value> add(VM& vm, Value lhs, Value rhs)
 {
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+
+    // 1. If opText is +, then
+
+    // OPTIMIZATION: If both values are i32 or double, we can do a direct addition without the type conversions below.
     if (both_number(lhs, rhs)) {
-        if (lhs.type() == Value::Type::Int32 && rhs.type() == Value::Type::Int32) {
+        if (lhs.is_int32() && rhs.is_int32()) {
             Checked<i32> result;
-            result = MUST(lhs.to_i32(global_object));
-            result += MUST(rhs.to_i32(global_object));
+            result = MUST(lhs.to_i32(vm));
+            result += MUST(rhs.to_i32(vm));
             if (!result.has_overflow())
                 return Value(result.value());
         }
         return Value(lhs.as_double() + rhs.as_double());
     }
-    auto& vm = global_object.vm();
-    auto lhs_primitive = TRY(lhs.to_primitive(global_object));
-    auto rhs_primitive = TRY(rhs.to_primitive(global_object));
 
+    // a. Let lprim be ? ToPrimitive(lval).
+    auto lhs_primitive = TRY(lhs.to_primitive(vm));
+
+    // b. Let rprim be ? ToPrimitive(rval).
+    auto rhs_primitive = TRY(rhs.to_primitive(vm));
+
+    // c. If lprim is a String or rprim is a String, then
     if (lhs_primitive.is_string() || rhs_primitive.is_string()) {
-        auto lhs_string = TRY(lhs_primitive.to_primitive_string(global_object));
-        auto rhs_string = TRY(rhs_primitive.to_primitive_string(global_object));
-        return concatenate_strings(global_object, *lhs_string, *rhs_string);
+        // i. Let lstr be ? ToString(lprim).
+        auto lhs_string = TRY(lhs_primitive.to_primitive_string(vm));
+
+        // ii. Let rstr be ? ToString(rprim).
+        auto rhs_string = TRY(rhs_primitive.to_primitive_string(vm));
+
+        // iii. Return the string-concatenation of lstr and rstr.
+        return PrimitiveString::create(vm, *lhs_string, *rhs_string);
     }
 
-    auto lhs_numeric = TRY(lhs_primitive.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs_primitive.to_numeric(global_object));
-    if (both_number(lhs_numeric, rhs_numeric))
-        return Value(lhs_numeric.as_double() + rhs_numeric.as_double());
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().plus(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "addition");
+    // d. Set lval to lprim.
+    // e. Set rval to rprim.
+
+    // 2. NOTE: At this point, it must be a numeric operation.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs_primitive.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs_primitive.to_numeric(vm));
+
+    // 6. N/A.
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
+    if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.7 Number::add ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-add
+        auto x = lhs_numeric.as_double();
+        auto y = rhs_numeric.as_double();
+        return Value(x + y);
+    }
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.7 BigInt::add ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-add
+        auto x = lhs_numeric.as_bigint().big_integer();
+        auto y = rhs_numeric.as_bigint().big_integer();
+        return BigInt::create(vm, x.plus(y));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "addition");
 }
 
 // 13.8.2 The Subtraction Operator ( - ), https://tc39.es/ecma262/#sec-subtraction-operator-minus
-ThrowCompletionOr<Value> sub(GlobalObject& global_object, Value lhs, Value rhs)
+// AdditiveExpression : AdditiveExpression - MultiplicativeExpression
+ThrowCompletionOr<Value> sub(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
-    if (both_number(lhs_numeric, rhs_numeric))
-        return Value(lhs_numeric.as_double() - rhs_numeric.as_double());
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().minus(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "subtraction");
-}
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
 
-// 13.7 Multiplicative Operators, https://tc39.es/ecma262/#sec-multiplicative-operators
-ThrowCompletionOr<Value> mul(GlobalObject& global_object, Value lhs, Value rhs)
-{
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
-    if (both_number(lhs_numeric, rhs_numeric))
-        return Value(lhs_numeric.as_double() * rhs_numeric.as_double());
-    if (both_bigint(lhs_numeric, rhs_numeric))
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().multiplied_by(rhs_numeric.as_bigint().big_integer())));
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "multiplication");
-}
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
 
-// 13.7 Multiplicative Operators, https://tc39.es/ecma262/#sec-multiplicative-operators
-ThrowCompletionOr<Value> div(GlobalObject& global_object, Value lhs, Value rhs)
-{
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
-    if (both_number(lhs_numeric, rhs_numeric))
-        return Value(lhs_numeric.as_double() / rhs_numeric.as_double());
-    if (both_bigint(lhs_numeric, rhs_numeric)) {
-        if (rhs_numeric.as_bigint().big_integer() == BIGINT_ZERO)
-            return vm.throw_completion<RangeError>(global_object, ErrorType::DivisionByZero);
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().divided_by(rhs_numeric.as_bigint().big_integer()).quotient));
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
+    if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.8 Number::subtract ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-subtract
+        auto x = lhs_numeric.as_double();
+        auto y = rhs_numeric.as_double();
+        // 1. Return Number::add(x, Number::unaryMinus(y)).
+        return Value(x - y);
     }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "division");
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.8 BigInt::subtract ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-subtract
+        auto x = lhs_numeric.as_bigint().big_integer();
+        auto y = rhs_numeric.as_bigint().big_integer();
+        // 1. Return the BigInt value that represents the difference x minus y.
+        return BigInt::create(vm, x.minus(y));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "subtraction");
 }
 
 // 13.7 Multiplicative Operators, https://tc39.es/ecma262/#sec-multiplicative-operators
-ThrowCompletionOr<Value> mod(GlobalObject& global_object, Value lhs, Value rhs)
+// MultiplicativeExpression : MultiplicativeExpression MultiplicativeOperator ExponentiationExpression
+ThrowCompletionOr<Value> mul(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
+    if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.4 Number::multiply ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-multiply
+        auto x = lhs_numeric.as_double();
+        auto y = rhs_numeric.as_double();
+        return Value(x * y);
+    }
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.4 BigInt::multiply ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-multiply
+        auto x = lhs_numeric.as_bigint().big_integer();
+        auto y = rhs_numeric.as_bigint().big_integer();
+        // 1. Return the BigInt value that represents the product of x and y.
+        return BigInt::create(vm, x.multiplied_by(y));
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "multiplication");
+}
+
+// 13.7 Multiplicative Operators, https://tc39.es/ecma262/#sec-multiplicative-operators
+// MultiplicativeExpression : MultiplicativeExpression MultiplicativeOperator ExponentiationExpression
+ThrowCompletionOr<Value> div(VM& vm, Value lhs, Value rhs)
+{
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
+    if (both_number(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.1.5 Number::divide ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-divide
+        return Value(lhs_numeric.as_double() / rhs_numeric.as_double());
+    }
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.5 BigInt::divide ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-divide
+        auto x = lhs_numeric.as_bigint().big_integer();
+        auto y = rhs_numeric.as_bigint().big_integer();
+        // 1. If y is 0ℤ, throw a RangeError exception.
+        if (y == BIGINT_ZERO)
+            return vm.throw_completion<RangeError>(ErrorType::DivisionByZero);
+        // 2. Let quotient be ℝ(x) / ℝ(y).
+        // 3. Return the BigInt value that represents quotient rounded towards 0 to the next integer value.
+        return BigInt::create(vm, x.divided_by(y).quotient);
+    }
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "division");
+}
+
+// 13.7 Multiplicative Operators, https://tc39.es/ecma262/#sec-multiplicative-operators
+// MultiplicativeExpression : MultiplicativeExpression MultiplicativeOperator ExponentiationExpression
+ThrowCompletionOr<Value> mod(VM& vm, Value lhs, Value rhs)
+{
+    // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+    // 1-2, 6. N/A.
+
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
     if (both_number(lhs_numeric, rhs_numeric)) {
         // 6.1.6.1.6 Number::remainder ( n, d ), https://tc39.es/ecma262/#sec-numeric-types-number-remainder
         // The ECMA specification is describing the mathematical definition of modulus
@@ -1186,129 +1890,231 @@ ThrowCompletionOr<Value> mod(GlobalObject& global_object, Value lhs, Value rhs)
         return Value(fmod(n, d));
     }
     if (both_bigint(lhs_numeric, rhs_numeric)) {
-        if (rhs_numeric.as_bigint().big_integer() == BIGINT_ZERO)
-            return vm.throw_completion<RangeError>(global_object, ErrorType::DivisionByZero);
-        return Value(js_bigint(vm, lhs_numeric.as_bigint().big_integer().divided_by(rhs_numeric.as_bigint().big_integer()).remainder));
+        // 6.1.6.2.6 BigInt::remainder ( n, d ), https://tc39.es/ecma262/#sec-numeric-types-bigint-remainder
+        auto n = lhs_numeric.as_bigint().big_integer();
+        auto d = rhs_numeric.as_bigint().big_integer();
+        // 1. If d is 0ℤ, throw a RangeError exception.
+        if (d == BIGINT_ZERO)
+            return vm.throw_completion<RangeError>(ErrorType::DivisionByZero);
+        // 2. If n is 0ℤ, return 0ℤ.
+        // 3. Let quotient be ℝ(n) / ℝ(d).
+        // 4. Let q be the BigInt whose sign is the sign of quotient and whose magnitude is floor(abs(quotient)).
+        // 5. Return n - (d × q).
+        return BigInt::create(vm, n.divided_by(d).remainder);
     }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "modulo");
+
+    // 5. If Type(lnum) is different from Type(rnum), throw a TypeError exception.
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "modulo");
 }
 
+// 6.1.6.1.3 Number::exponentiate ( base, exponent ), https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate
 static Value exp_double(Value base, Value exponent)
 {
     VERIFY(both_number(base, exponent));
+
+    // 1. If exponent is NaN, return NaN.
     if (exponent.is_nan())
         return js_nan();
+
+    // 2. If exponent is +0𝔽 or exponent is -0𝔽, return 1𝔽.
     if (exponent.is_positive_zero() || exponent.is_negative_zero())
         return Value(1);
+
+    // 3. If base is NaN, return NaN.
     if (base.is_nan())
         return js_nan();
-    if (base.is_positive_infinity())
+
+    // 4. If base is +∞𝔽, then
+    if (base.is_positive_infinity()) {
+        // a. If exponent > +0𝔽, return +∞𝔽. Otherwise, return +0𝔽.
         return exponent.as_double() > 0 ? js_infinity() : Value(0);
+    }
+
+    // 5. If base is -∞𝔽, then
     if (base.is_negative_infinity()) {
-        auto is_odd_integral_number = exponent.is_integral_number() && (exponent.as_i32() % 2 != 0);
-        if (exponent.as_double() > 0)
+        auto is_odd_integral_number = exponent.is_integral_number() && (static_cast<i32>(exponent.as_double()) % 2 != 0);
+
+        // a. If exponent > +0𝔽, then
+        if (exponent.as_double() > 0) {
+            // i. If exponent is an odd integral Number, return -∞𝔽. Otherwise, return +∞𝔽.
             return is_odd_integral_number ? js_negative_infinity() : js_infinity();
-        else
+        }
+        // b. Else,
+        else {
+            // i. If exponent is an odd integral Number, return -0𝔽. Otherwise, return +0𝔽.
             return is_odd_integral_number ? Value(-0.0) : Value(0);
+        }
     }
-    if (base.is_positive_zero())
+
+    // 6. If base is +0𝔽, then
+    if (base.is_positive_zero()) {
+        // a. If exponent > +0𝔽, return +0𝔽. Otherwise, return +∞𝔽.
         return exponent.as_double() > 0 ? Value(0) : js_infinity();
-    if (base.is_negative_zero()) {
-        auto is_odd_integral_number = exponent.is_integral_number() && (exponent.as_i32() % 2 != 0);
-        if (exponent.as_double() > 0)
-            return is_odd_integral_number ? Value(-0.0) : Value(0);
-        else
-            return is_odd_integral_number ? js_negative_infinity() : js_infinity();
     }
+
+    // 7. If base is -0𝔽, then
+    if (base.is_negative_zero()) {
+        auto is_odd_integral_number = exponent.is_integral_number() && (static_cast<i32>(exponent.as_double()) % 2 != 0);
+
+        // a. If exponent > +0𝔽, then
+        if (exponent.as_double() > 0) {
+            // i. If exponent is an odd integral Number, return -0𝔽. Otherwise, return +0𝔽.
+            return is_odd_integral_number ? Value(-0.0) : Value(0);
+        }
+        // b. Else,
+        else {
+            // i. If exponent is an odd integral Number, return -∞𝔽. Otherwise, return +∞𝔽.
+            return is_odd_integral_number ? js_negative_infinity() : js_infinity();
+        }
+    }
+
+    // 8. Assert: base is finite and is neither +0𝔽 nor -0𝔽.
     VERIFY(base.is_finite_number() && !base.is_positive_zero() && !base.is_negative_zero());
+
+    // 9. If exponent is +∞𝔽, then
     if (exponent.is_positive_infinity()) {
         auto absolute_base = fabs(base.as_double());
+
+        // a. If abs(ℝ(base)) > 1, return +∞𝔽.
         if (absolute_base > 1)
             return js_infinity();
+        // b. If abs(ℝ(base)) is 1, return NaN.
         else if (absolute_base == 1)
             return js_nan();
+        // c. If abs(ℝ(base)) < 1, return +0𝔽.
         else if (absolute_base < 1)
             return Value(0);
     }
+
+    // 10. If exponent is -∞𝔽, then
     if (exponent.is_negative_infinity()) {
         auto absolute_base = fabs(base.as_double());
+
+        // a. If abs(ℝ(base)) > 1, return +0𝔽.
         if (absolute_base > 1)
             return Value(0);
+        // b. If abs(ℝ(base)) is 1, return NaN.
         else if (absolute_base == 1)
             return js_nan();
+        // a. If abs(ℝ(base)) > 1, return +0𝔽.
         else if (absolute_base < 1)
             return js_infinity();
     }
+
+    // 11. Assert: exponent is finite and is neither +0𝔽 nor -0𝔽.
     VERIFY(exponent.is_finite_number() && !exponent.is_positive_zero() && !exponent.is_negative_zero());
+
+    // 12. If base < -0𝔽 and exponent is not an integral Number, return NaN.
     if (base.as_double() < 0 && !exponent.is_integral_number())
         return js_nan();
+
+    // 13. Return an implementation-approximated Number value representing the result of raising ℝ(base) to the ℝ(exponent) power.
     return Value(::pow(base.as_double(), exponent.as_double()));
 }
 
 // 13.6 Exponentiation Operator, https://tc39.es/ecma262/#sec-exp-operator
-ThrowCompletionOr<Value> exp(GlobalObject& global_object, Value lhs, Value rhs)
+// ExponentiationExpression : UpdateExpression ** ExponentiationExpression
+ThrowCompletionOr<Value> exp(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
-    auto lhs_numeric = TRY(lhs.to_numeric(global_object));
-    auto rhs_numeric = TRY(rhs.to_numeric(global_object));
-    if (both_number(lhs_numeric, rhs_numeric))
+    // 3. Let lnum be ? ToNumeric(lval).
+    auto lhs_numeric = TRY(lhs.to_numeric(vm));
+
+    // 4. Let rnum be ? ToNumeric(rval).
+    auto rhs_numeric = TRY(rhs.to_numeric(vm));
+
+    // 7. Let operation be the abstract operation associated with opText and Type(lnum) in the following table:
+    // [...]
+    // 8. Return operation(lnum, rnum).
+    if (both_number(lhs_numeric, rhs_numeric)) {
         return exp_double(lhs_numeric, rhs_numeric);
-    if (both_bigint(lhs_numeric, rhs_numeric)) {
-        if (rhs_numeric.as_bigint().big_integer().is_negative())
-            return vm.throw_completion<RangeError>(global_object, ErrorType::NegativeExponent);
-        return Value(js_bigint(vm, Crypto::NumberTheory::Power(lhs_numeric.as_bigint().big_integer(), rhs_numeric.as_bigint().big_integer())));
     }
-    return vm.throw_completion<TypeError>(global_object, ErrorType::BigIntBadOperatorOtherType, "exponentiation");
+    if (both_bigint(lhs_numeric, rhs_numeric)) {
+        // 6.1.6.2.3 BigInt::exponentiate ( base, exponent ), https://tc39.es/ecma262/#sec-numeric-types-bigint-exponentiate
+        auto base = lhs_numeric.as_bigint().big_integer();
+        auto exponent = rhs_numeric.as_bigint().big_integer();
+        // 1. If exponent < 0ℤ, throw a RangeError exception.
+        if (exponent.is_negative())
+            return vm.throw_completion<RangeError>(ErrorType::NegativeExponent);
+        // 2. If base is 0ℤ and exponent is 0ℤ, return 1ℤ.
+        // 3. Return the BigInt value that represents ℝ(base) raised to the power ℝ(exponent).
+        return BigInt::create(vm, Crypto::NumberTheory::Power(base, exponent));
+    }
+    return vm.throw_completion<TypeError>(ErrorType::BigIntBadOperatorOtherType, "exponentiation");
 }
 
-ThrowCompletionOr<Value> in(GlobalObject& global_object, Value lhs, Value rhs)
+ThrowCompletionOr<Value> in(VM& vm, Value lhs, Value rhs)
 {
     if (!rhs.is_object())
-        return global_object.vm().throw_completion<TypeError>(global_object, ErrorType::InOperatorWithObject);
-    auto lhs_property_key = TRY(lhs.to_property_key(global_object));
+        return vm.throw_completion<TypeError>(ErrorType::InOperatorWithObject);
+    auto lhs_property_key = TRY(lhs.to_property_key(vm));
     return Value(TRY(rhs.as_object().has_property(lhs_property_key)));
 }
 
 // 13.10.2 InstanceofOperator ( V, target ), https://tc39.es/ecma262/#sec-instanceofoperator
-ThrowCompletionOr<Value> instance_of(GlobalObject& global_object, Value lhs, Value rhs)
+ThrowCompletionOr<Value> instance_of(VM& vm, Value value, Value target)
 {
-    auto& vm = global_object.vm();
-    if (!rhs.is_object())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAnObject, rhs.to_string_without_side_effects());
-    auto has_instance_method = TRY(rhs.get_method(global_object, *vm.well_known_symbol_has_instance()));
-    if (has_instance_method) {
-        auto has_instance_result = TRY(call(global_object, *has_instance_method, rhs, lhs));
-        return Value(has_instance_result.to_boolean());
+    // 1. If target is not an Object, throw a TypeError exception.
+    if (!target.is_object())
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+
+    // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
+    auto* instance_of_handler = TRY(target.get_method(vm, *vm.well_known_symbol_has_instance()));
+
+    // 3. If instOfHandler is not undefined, then
+    if (instance_of_handler) {
+        // a. Return ToBoolean(? Call(instOfHandler, target, « V »)).
+        return Value(TRY(call(vm, *instance_of_handler, target, value)).to_boolean());
     }
-    if (!rhs.is_function())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAFunction, rhs.to_string_without_side_effects());
-    return TRY(ordinary_has_instance(global_object, lhs, rhs));
+
+    // 4. If IsCallable(target) is false, throw a TypeError exception.
+    if (!target.is_function())
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+
+    // 5. Return ? OrdinaryHasInstance(target, V).
+    return ordinary_has_instance(vm, target, value);
 }
 
 // 7.3.22 OrdinaryHasInstance ( C, O ), https://tc39.es/ecma262/#sec-ordinaryhasinstance
-ThrowCompletionOr<Value> ordinary_has_instance(GlobalObject& global_object, Value lhs, Value rhs)
+ThrowCompletionOr<Value> ordinary_has_instance(VM& vm, Value lhs, Value rhs)
 {
-    auto& vm = global_object.vm();
+    // 1. If IsCallable(C) is false, return false.
     if (!rhs.is_function())
         return Value(false);
+
     auto& rhs_function = rhs.as_function();
 
+    // 2. If C has a [[BoundTargetFunction]] internal slot, then
     if (is<BoundFunction>(rhs_function)) {
-        auto& bound_target = static_cast<const BoundFunction&>(rhs_function);
-        return instance_of(global_object, lhs, Value(&bound_target.bound_target_function()));
+        auto const& bound_target = static_cast<BoundFunction const&>(rhs_function);
+
+        // a. Let BC be C.[[BoundTargetFunction]].
+        // b. Return ? InstanceofOperator(O, BC).
+        return instance_of(vm, lhs, Value(&bound_target.bound_target_function()));
     }
 
+    // 3. If O is not an Object, return false.
     if (!lhs.is_object())
         return Value(false);
 
-    Object* lhs_object = &lhs.as_object();
+    auto* lhs_object = &lhs.as_object();
+
+    // 4. Let P be ? Get(C, "prototype").
     auto rhs_prototype = TRY(rhs_function.get(vm.names.prototype));
+
+    // 5. If P is not an Object, throw a TypeError exception.
     if (!rhs_prototype.is_object())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::InstanceOfOperatorBadPrototype, rhs.to_string_without_side_effects());
+        return vm.throw_completion<TypeError>(ErrorType::InstanceOfOperatorBadPrototype, TRY_OR_THROW_OOM(vm, rhs.to_string_without_side_effects()));
+
+    // 6. Repeat,
     while (true) {
+        // a. Set O to ? O.[[GetPrototypeOf]]().
         lhs_object = TRY(lhs_object->internal_get_prototype_of());
+
+        // b. If O is null, return false.
         if (!lhs_object)
             return Value(false);
+
+        // c. If SameValue(P, O) is true, return true.
         if (same_value(rhs_prototype, lhs_object))
             return Value(true);
     }
@@ -1317,93 +2123,117 @@ ThrowCompletionOr<Value> ordinary_has_instance(GlobalObject& global_object, Valu
 // 7.2.10 SameValue ( x, y ), https://tc39.es/ecma262/#sec-samevalue
 bool same_value(Value lhs, Value rhs)
 {
+    // 1. If Type(x) is different from Type(y), return false.
     if (!same_type_for_equality(lhs, rhs))
         return false;
 
+    // 2. If x is a Number, then
     if (lhs.is_number()) {
+        // a. Return Number::sameValue(x, y).
+
+        // 6.1.6.1.14 Number::sameValue ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-sameValue
+        // 1. If x is NaN and y is NaN, return true.
         if (lhs.is_nan() && rhs.is_nan())
             return true;
+        // 2. If x is +0𝔽 and y is -0𝔽, return false.
         if (lhs.is_positive_zero() && rhs.is_negative_zero())
             return false;
+        // 3. If x is -0𝔽 and y is +0𝔽, return false.
         if (lhs.is_negative_zero() && rhs.is_positive_zero())
             return false;
+        // 4. If x is the same Number value as y, return true.
+        // 5. Return false.
         return lhs.as_double() == rhs.as_double();
     }
 
-    if (lhs.is_bigint()) {
-        auto lhs_big_integer = lhs.as_bigint().big_integer();
-        auto rhs_big_integer = rhs.as_bigint().big_integer();
-        if (lhs_big_integer == BIGINT_ZERO && rhs_big_integer == BIGINT_ZERO && lhs_big_integer.is_negative() != rhs_big_integer.is_negative())
-            return false;
-        return lhs_big_integer == rhs_big_integer;
-    }
-
-    return same_value_non_numeric(lhs, rhs);
+    // 3. Return SameValueNonNumber(x, y).
+    return same_value_non_number(lhs, rhs);
 }
 
 // 7.2.11 SameValueZero ( x, y ), https://tc39.es/ecma262/#sec-samevaluezero
 bool same_value_zero(Value lhs, Value rhs)
 {
+    // 1. If Type(x) is different from Type(y), return false.
     if (!same_type_for_equality(lhs, rhs))
         return false;
 
+    // 2. If x is a Number, then
     if (lhs.is_number()) {
+        // a. Return Number::sameValueZero(x, y).
         if (lhs.is_nan() && rhs.is_nan())
             return true;
         return lhs.as_double() == rhs.as_double();
     }
 
-    if (lhs.is_bigint())
-        return lhs.as_bigint().big_integer() == rhs.as_bigint().big_integer();
-
-    return same_value_non_numeric(lhs, rhs);
+    // 3. Return SameValueNonNumber(x, y).
+    return same_value_non_number(lhs, rhs);
 }
 
-// 7.2.12 SameValueNonNumeric ( x, y ), https://tc39.es/ecma262/#sec-samevaluenonnumeric
-bool same_value_non_numeric(Value lhs, Value rhs)
+// 7.2.12 SameValueNonNumber ( x, y ), https://tc39.es/ecma262/#sec-samevaluenonnumeric
+bool same_value_non_number(Value lhs, Value rhs)
 {
-    VERIFY(!lhs.is_number() && !lhs.is_bigint());
+    // 1. Assert: Type(x) is the same as Type(y).
     VERIFY(same_type_for_equality(lhs, rhs));
+    VERIFY(!lhs.is_number());
 
-    switch (lhs.type()) {
-    case Value::Type::Undefined:
-    case Value::Type::Null:
-        return true;
-    case Value::Type::String:
-        return lhs.as_string().string() == rhs.as_string().string();
-    case Value::Type::Symbol:
-        return &lhs.as_symbol() == &rhs.as_symbol();
-    case Value::Type::Boolean:
-        return lhs.as_bool() == rhs.as_bool();
-    case Value::Type::Object:
-        return &lhs.as_object() == &rhs.as_object();
-    default:
-        VERIFY_NOT_REACHED();
+    // 2. If x is a BigInt, then
+    if (lhs.is_bigint()) {
+        // a. Return BigInt::equal(x, y).
+
+        // 6.1.6.2.13 BigInt::equal ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-bigint-equal
+        // 1. If ℝ(x) = ℝ(y), return true; otherwise return false.
+        return lhs.as_bigint().big_integer() == rhs.as_bigint().big_integer();
     }
+
+    // 5. If x is a String, then
+    if (lhs.is_string()) {
+        // a. If x and y are exactly the same sequence of code units (same length and same code units at corresponding indices), return true; otherwise, return false.
+        // FIXME: Propagate this error.
+        return MUST(lhs.as_string().deprecated_string()) == MUST(rhs.as_string().deprecated_string());
+    }
+
+    // 3. If x is undefined, return true.
+    // 4. If x is null, return true.
+    // 6. If x is a Boolean, then
+    //    a. If x and y are both true or both false, return true; otherwise, return false.
+    // 7. If x is a Symbol, then
+    //    a. If x and y are both the same Symbol value, return true; otherwise, return false.
+    // 8. If x and y are the same Object value, return true. Otherwise, return false.
+    // NOTE: All the options above will have the exact same bit representation in Value, so we can directly compare the bits.
+    return lhs.m_value.encoded == rhs.m_value.encoded;
 }
 
 // 7.2.15 IsStrictlyEqual ( x, y ), https://tc39.es/ecma262/#sec-isstrictlyequal
 bool is_strictly_equal(Value lhs, Value rhs)
 {
+    // 1. If Type(x) is different from Type(y), return false.
     if (!same_type_for_equality(lhs, rhs))
         return false;
 
+    // 2. If x is a Number, then
     if (lhs.is_number()) {
+        // a. Return Number::equal(x, y).
+
+        // 6.1.6.1.13 Number::equal ( x, y ), https://tc39.es/ecma262/#sec-numeric-types-number-equal
+        // 1. If x is NaN, return false.
+        // 2. If y is NaN, return false.
         if (lhs.is_nan() || rhs.is_nan())
             return false;
+        // 3. If x is the same Number value as y, return true.
+        // 4. If x is +0𝔽 and y is -0𝔽, return true.
+        // 5. If x is -0𝔽 and y is +0𝔽, return true.
         if (lhs.as_double() == rhs.as_double())
             return true;
+        // 6. Return false.
         return false;
     }
 
-    if (lhs.is_bigint())
-        return lhs.as_bigint().big_integer() == rhs.as_bigint().big_integer();
-
-    return same_value_non_numeric(lhs, rhs);
+    // 3. Return SameValueNonNumber(x, y).
+    return same_value_non_number(lhs, rhs);
 }
 
 // 7.2.14 IsLooselyEqual ( x, y ), https://tc39.es/ecma262/#sec-islooselyequal
-ThrowCompletionOr<bool> is_loosely_equal(GlobalObject& global_object, Value lhs, Value rhs)
+ThrowCompletionOr<bool> is_loosely_equal(VM& vm, Value lhs, Value rhs)
 {
     // 1. If Type(x) is the same as Type(y), then
     if (same_type_for_equality(lhs, rhs)) {
@@ -1418,59 +2248,60 @@ ThrowCompletionOr<bool> is_loosely_equal(GlobalObject& global_object, Value lhs,
 
     // 4. NOTE: This step is replaced in section B.3.6.2.
     // B.3.6.2 Changes to IsLooselyEqual, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-aec
-    // 1. If Type(x) is Object and x has an [[IsHTMLDDA]] internal slot and y is either null or undefined, return true.
+    // 4. Perform the following steps:
+    // a. If Type(x) is Object and x has an [[IsHTMLDDA]] internal slot and y is either null or undefined, return true.
     if (lhs.is_object() && lhs.as_object().is_htmldda() && rhs.is_nullish())
         return true;
 
-    // 2. If x is either null or undefined and Type(y) is Object and y has an [[IsHTMLDDA]] internal slot, return true.
+    // b. If x is either null or undefined and Type(y) is Object and y has an [[IsHTMLDDA]] internal slot, return true.
     if (lhs.is_nullish() && rhs.is_object() && rhs.as_object().is_htmldda())
         return true;
 
     // == End of B.3.6.2 ==
 
-    // 5. If Type(x) is Number and Type(y) is String, return IsLooselyEqual(x, ! ToNumber(y)).
+    // 5. If Type(x) is Number and Type(y) is String, return ! IsLooselyEqual(x, ! ToNumber(y)).
     if (lhs.is_number() && rhs.is_string())
-        return is_loosely_equal(global_object, lhs, MUST(rhs.to_number(global_object)));
+        return is_loosely_equal(vm, lhs, MUST(rhs.to_number(vm)));
 
-    // 6. If Type(x) is String and Type(y) is Number, return IsLooselyEqual(! ToNumber(x), y).
+    // 6. If Type(x) is String and Type(y) is Number, return ! IsLooselyEqual(! ToNumber(x), y).
     if (lhs.is_string() && rhs.is_number())
-        return is_loosely_equal(global_object, MUST(lhs.to_number(global_object)), rhs);
+        return is_loosely_equal(vm, MUST(lhs.to_number(vm)), rhs);
 
     // 7. If Type(x) is BigInt and Type(y) is String, then
     if (lhs.is_bigint() && rhs.is_string()) {
-        // a. Let n be ! StringToBigInt(y).
-        auto bigint = rhs.string_to_bigint(global_object);
+        // a. Let n be StringToBigInt(y).
+        auto bigint = string_to_bigint(vm, TRY(rhs.as_string().deprecated_string()));
 
         // b. If n is undefined, return false.
         if (!bigint.has_value())
             return false;
 
-        // c. Return IsLooselyEqual(x, n).
-        return is_loosely_equal(global_object, lhs, *bigint);
+        // c. Return ! IsLooselyEqual(x, n).
+        return is_loosely_equal(vm, lhs, *bigint);
     }
 
-    // 8. If Type(x) is String and Type(y) is BigInt, return IsLooselyEqual(y, x).
+    // 8. If Type(x) is String and Type(y) is BigInt, return ! IsLooselyEqual(y, x).
     if (lhs.is_string() && rhs.is_bigint())
-        return is_loosely_equal(global_object, rhs, lhs);
+        return is_loosely_equal(vm, rhs, lhs);
 
-    // 9. If Type(x) is Boolean, return IsLooselyEqual(! ToNumber(x), y).
+    // 9. If Type(x) is Boolean, return ! IsLooselyEqual(! ToNumber(x), y).
     if (lhs.is_boolean())
-        return is_loosely_equal(global_object, MUST(lhs.to_number(global_object)), rhs);
+        return is_loosely_equal(vm, MUST(lhs.to_number(vm)), rhs);
 
-    // 10. If Type(y) is Boolean, return IsLooselyEqual(x, ! ToNumber(y)).
+    // 10. If Type(y) is Boolean, return ! IsLooselyEqual(x, ! ToNumber(y)).
     if (rhs.is_boolean())
-        return is_loosely_equal(global_object, lhs, MUST(rhs.to_number(global_object)));
+        return is_loosely_equal(vm, lhs, MUST(rhs.to_number(vm)));
 
-    // 11. If Type(x) is either String, Number, BigInt, or Symbol and Type(y) is Object, return IsLooselyEqual(x, ? ToPrimitive(y)).
+    // 11. If Type(x) is either String, Number, BigInt, or Symbol and Type(y) is Object, return ! IsLooselyEqual(x, ? ToPrimitive(y)).
     if ((lhs.is_string() || lhs.is_number() || lhs.is_bigint() || lhs.is_symbol()) && rhs.is_object()) {
-        auto rhs_primitive = TRY(rhs.to_primitive(global_object));
-        return is_loosely_equal(global_object, lhs, rhs_primitive);
+        auto rhs_primitive = TRY(rhs.to_primitive(vm));
+        return is_loosely_equal(vm, lhs, rhs_primitive);
     }
 
-    // 12. If Type(x) is Object and Type(y) is either String, Number, BigInt, or Symbol, return IsLooselyEqual(? ToPrimitive(x), y).
+    // 12. If Type(x) is Object and Type(y) is either String, Number, BigInt, or Symbol, return ! IsLooselyEqual(? ToPrimitive(x), y).
     if (lhs.is_object() && (rhs.is_string() || rhs.is_number() || rhs.is_bigint() || rhs.is_symbol())) {
-        auto lhs_primitive = TRY(lhs.to_primitive(global_object));
-        return is_loosely_equal(global_object, lhs_primitive, rhs);
+        auto lhs_primitive = TRY(lhs.to_primitive(vm));
+        return is_loosely_equal(vm, lhs_primitive, rhs);
     }
 
     // 13. If Type(x) is BigInt and Type(y) is Number, or if Type(x) is Number and Type(y) is BigInt, then
@@ -1482,10 +2313,13 @@ ThrowCompletionOr<bool> is_loosely_equal(GlobalObject& global_object, Value lhs,
         // b. If ℝ(x) = ℝ(y), return true; otherwise return false.
         if ((lhs.is_number() && !lhs.is_integral_number()) || (rhs.is_number() && !rhs.is_integral_number()))
             return false;
-        if (lhs.is_number())
-            return Crypto::SignedBigInteger { MUST(lhs.to_i32(global_object)) } == rhs.as_bigint().big_integer();
-        else
-            return Crypto::SignedBigInteger { MUST(rhs.to_i32(global_object)) } == lhs.as_bigint().big_integer();
+
+        VERIFY(!lhs.is_nan() && !rhs.is_nan());
+
+        auto& number_side = lhs.is_number() ? lhs : rhs;
+        auto& bigint_side = lhs.is_number() ? rhs : lhs;
+
+        return bigint_side.as_bigint().big_integer().compare_to_double(number_side.as_double()) == Crypto::UnsignedBigInteger::CompareResult::DoubleEqualsBigInt;
     }
 
     // 14. Return false.
@@ -1493,102 +2327,145 @@ ThrowCompletionOr<bool> is_loosely_equal(GlobalObject& global_object, Value lhs,
 }
 
 // 7.2.13 IsLessThan ( x, y, LeftFirst ), https://tc39.es/ecma262/#sec-islessthan
-ThrowCompletionOr<TriState> is_less_than(GlobalObject& global_object, bool left_first, Value lhs, Value rhs)
+ThrowCompletionOr<TriState> is_less_than(VM& vm, Value lhs, Value rhs, bool left_first)
 {
     Value x_primitive;
     Value y_primitive;
 
+    // 1. If the LeftFirst flag is true, then
     if (left_first) {
-        x_primitive = TRY(lhs.to_primitive(global_object, Value::PreferredType::Number));
-        y_primitive = TRY(rhs.to_primitive(global_object, Value::PreferredType::Number));
+        // a. Let px be ? ToPrimitive(x, number).
+        x_primitive = TRY(lhs.to_primitive(vm, Value::PreferredType::Number));
+
+        // b. Let py be ? ToPrimitive(y, number).
+        y_primitive = TRY(rhs.to_primitive(vm, Value::PreferredType::Number));
     } else {
-        y_primitive = TRY(lhs.to_primitive(global_object, Value::PreferredType::Number));
-        x_primitive = TRY(rhs.to_primitive(global_object, Value::PreferredType::Number));
+        // a. NOTE: The order of evaluation needs to be reversed to preserve left to right evaluation.
+
+        // b. Let py be ? ToPrimitive(y, number).
+        y_primitive = TRY(lhs.to_primitive(vm, Value::PreferredType::Number));
+
+        // c. Let px be ? ToPrimitive(x, number).
+        x_primitive = TRY(rhs.to_primitive(vm, Value::PreferredType::Number));
     }
 
+    // 3. If px is a String and py is a String, then
     if (x_primitive.is_string() && y_primitive.is_string()) {
-        auto x_string = x_primitive.as_string().string();
-        auto y_string = y_primitive.as_string().string();
+        auto x_string = TRY(x_primitive.as_string().deprecated_string());
+        auto y_string = TRY(y_primitive.as_string().deprecated_string());
 
         Utf8View x_code_points { x_string };
         Utf8View y_code_points { y_string };
 
-        if (x_code_points.starts_with(y_code_points))
-            return TriState::False;
-        if (y_code_points.starts_with(x_code_points))
-            return TriState::True;
-
+        // a. Let lx be the length of px.
+        // b. Let ly be the length of py.
+        // c. For each integer i such that 0 ≤ i < min(lx, ly), in ascending order, do
         for (auto k = x_code_points.begin(), l = y_code_points.begin();
              k != x_code_points.end() && l != y_code_points.end();
              ++k, ++l) {
+            // i. Let cx be the integer that is the numeric value of the code unit at index i within px.
+            // ii. Let cy be the integer that is the numeric value of the code unit at index i within py.
             if (*k != *l) {
+                // iii. If cx < cy, return true.
                 if (*k < *l) {
                     return TriState::True;
-                } else {
+                }
+                // iv. If cx > cy, return false.
+                else {
                     return TriState::False;
                 }
             }
         }
-        VERIFY_NOT_REACHED();
+
+        // d. If lx < ly, return true. Otherwise, return false.
+        return x_code_points.length() < y_code_points.length()
+            ? TriState::True
+            : TriState::False;
     }
 
+    // 4. Else,
+    // a. If px is a BigInt and py is a String, then
     if (x_primitive.is_bigint() && y_primitive.is_string()) {
-        auto y_bigint = y_primitive.string_to_bigint(global_object);
+        // i. Let ny be StringToBigInt(py).
+        auto y_bigint = string_to_bigint(vm, TRY(y_primitive.as_string().deprecated_string()));
+
+        // ii. If ny is undefined, return undefined.
         if (!y_bigint.has_value())
             return TriState::Unknown;
 
+        // iii. Return BigInt::lessThan(px, ny).
         if (x_primitive.as_bigint().big_integer() < (*y_bigint)->big_integer())
             return TriState::True;
         return TriState::False;
     }
 
+    // b. If px is a String and py is a BigInt, then
     if (x_primitive.is_string() && y_primitive.is_bigint()) {
-        auto x_bigint = x_primitive.string_to_bigint(global_object);
+        // i. Let nx be StringToBigInt(px).
+        auto x_bigint = string_to_bigint(vm, TRY(x_primitive.as_string().deprecated_string()));
+
+        // ii. If nx is undefined, return undefined.
         if (!x_bigint.has_value())
             return TriState::Unknown;
 
+        // iii. Return BigInt::lessThan(nx, py).
         if ((*x_bigint)->big_integer() < y_primitive.as_bigint().big_integer())
             return TriState::True;
         return TriState::False;
     }
 
-    auto x_numeric = TRY(x_primitive.to_numeric(global_object));
-    auto y_numeric = TRY(y_primitive.to_numeric(global_object));
+    // c. NOTE: Because px and py are primitive values, evaluation order is not important.
 
+    // d. Let nx be ? ToNumeric(px).
+    auto x_numeric = TRY(x_primitive.to_numeric(vm));
+
+    // e. Let ny be ? ToNumeric(py).
+    auto y_numeric = TRY(y_primitive.to_numeric(vm));
+
+    // h. If nx or ny is NaN, return undefined.
     if (x_numeric.is_nan() || y_numeric.is_nan())
         return TriState::Unknown;
 
+    // i. If nx is -∞𝔽 or ny is +∞𝔽, return true.
     if (x_numeric.is_positive_infinity() || y_numeric.is_negative_infinity())
         return TriState::False;
 
+    // j. If nx is +∞𝔽 or ny is -∞𝔽, return false.
     if (x_numeric.is_negative_infinity() || y_numeric.is_positive_infinity())
         return TriState::True;
 
+    // f. If Type(nx) is the same as Type(ny), then
+
+    // i. If nx is a Number, then
     if (x_numeric.is_number() && y_numeric.is_number()) {
+        // 1. Return Number::lessThan(nx, ny).
         if (x_numeric.as_double() < y_numeric.as_double())
             return TriState::True;
         else
             return TriState::False;
     }
-
+    // ii. Else,
     if (x_numeric.is_bigint() && y_numeric.is_bigint()) {
+        // 1. Assert: nx is a BigInt.
+        // 2. Return BigInt::lessThan(nx, ny).
         if (x_numeric.as_bigint().big_integer() < y_numeric.as_bigint().big_integer())
             return TriState::True;
         else
             return TriState::False;
     }
 
+    // g. Assert: nx is a BigInt and ny is a Number, or nx is a Number and ny is a BigInt.
     VERIFY((x_numeric.is_number() && y_numeric.is_bigint()) || (x_numeric.is_bigint() && y_numeric.is_number()));
 
+    // k. If ℝ(nx) < ℝ(ny), return true; otherwise return false.
     bool x_lower_than_y;
+    VERIFY(!x_numeric.is_nan() && !y_numeric.is_nan());
     if (x_numeric.is_number()) {
-        x_lower_than_y = x_numeric.is_integral_number()
-            ? Crypto::SignedBigInteger { MUST(x_numeric.to_i32(global_object)) } < y_numeric.as_bigint().big_integer()
-            : (Crypto::SignedBigInteger { MUST(x_numeric.to_i32(global_object)) } < y_numeric.as_bigint().big_integer() || Crypto::SignedBigInteger { MUST(x_numeric.to_i32(global_object)) + 1 } < y_numeric.as_bigint().big_integer());
+        x_lower_than_y = y_numeric.as_bigint().big_integer().compare_to_double(x_numeric.as_double())
+            == Crypto::UnsignedBigInteger::CompareResult::DoubleLessThanBigInt;
     } else {
-        x_lower_than_y = y_numeric.is_integral_number()
-            ? x_numeric.as_bigint().big_integer() < Crypto::SignedBigInteger { MUST(y_numeric.to_i32(global_object)) }
-            : (x_numeric.as_bigint().big_integer() < Crypto::SignedBigInteger { MUST(y_numeric.to_i32(global_object)) } || x_numeric.as_bigint().big_integer() < Crypto::SignedBigInteger { MUST(y_numeric.to_i32(global_object)) + 1 });
+        x_lower_than_y = x_numeric.as_bigint().big_integer().compare_to_double(y_numeric.as_double())
+            == Crypto::UnsignedBigInteger::CompareResult::DoubleGreaterThanBigInt;
     }
     if (x_lower_than_y)
         return TriState::True;
@@ -1597,14 +2474,15 @@ ThrowCompletionOr<TriState> is_less_than(GlobalObject& global_object, bool left_
 }
 
 // 7.3.21 Invoke ( V, P [ , argumentsList ] ), https://tc39.es/ecma262/#sec-invoke
-ThrowCompletionOr<Value> Value::invoke_internal(GlobalObject& global_object, JS::PropertyKey const& property_key, Optional<MarkedVector<Value>> arguments)
+ThrowCompletionOr<Value> Value::invoke_internal(VM& vm, PropertyKey const& property_key, Optional<MarkedVector<Value>> arguments)
 {
-    auto& vm = global_object.vm();
-    auto property = TRY(get(global_object, property_key));
-    if (!property.is_function())
-        return vm.throw_completion<TypeError>(global_object, ErrorType::NotAFunction, property.to_string_without_side_effects());
+    // 1. If argumentsList is not present, set argumentsList to a new empty List.
 
-    return call(global_object, property.as_function(), *this, move(arguments));
+    // 2. Let func be ? GetV(V, P).
+    auto function = TRY(get(vm, property_key));
+
+    // 3. Return ? Call(func, V, argumentsList).
+    return call(vm, function, *this, move(arguments));
 }
 
 }

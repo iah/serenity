@@ -15,10 +15,19 @@
 
 namespace Kernel {
 
-void UDPSocket::for_each(Function<void(const UDPSocket&)> callback)
+void UDPSocket::for_each(Function<void(UDPSocket const&)> callback)
 {
-    sockets_by_port().for_each_shared([&](const auto& socket) {
+    sockets_by_port().for_each_shared([&](auto const& socket) {
         callback(*socket.value);
+    });
+}
+
+ErrorOr<void> UDPSocket::try_for_each(Function<ErrorOr<void>(UDPSocket const&)> callback)
+{
+    return sockets_by_port().with_shared([&](auto const& sockets) -> ErrorOr<void> {
+        for (auto& socket : sockets)
+            TRY(callback(*socket.value));
+        return {};
     });
 }
 
@@ -29,9 +38,9 @@ MutexProtected<HashMap<u16, UDPSocket*>>& UDPSocket::sockets_by_port()
     return *s_map;
 }
 
-RefPtr<UDPSocket> UDPSocket::from_port(u16 port)
+LockRefPtr<UDPSocket> UDPSocket::from_port(u16 port)
 {
-    return sockets_by_port().with_shared([&](const auto& table) -> RefPtr<UDPSocket> {
+    return sockets_by_port().with_shared([&](auto const& table) -> LockRefPtr<UDPSocket> {
         auto it = table.find(port);
         if (it == table.end())
             return {};
@@ -51,29 +60,29 @@ UDPSocket::~UDPSocket()
     });
 }
 
-ErrorOr<NonnullRefPtr<UDPSocket>> UDPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
+ErrorOr<NonnullLockRefPtr<UDPSocket>> UDPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
 {
-    return adopt_nonnull_ref_or_enomem(new (nothrow) UDPSocket(protocol, move(receive_buffer)));
+    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) UDPSocket(protocol, move(receive_buffer)));
 }
 
 ErrorOr<size_t> UDPSocket::protocol_size(ReadonlyBytes raw_ipv4_packet)
 {
-    auto& ipv4_packet = *(const IPv4Packet*)(raw_ipv4_packet.data());
-    auto& udp_packet = *static_cast<const UDPPacket*>(ipv4_packet.payload());
+    auto& ipv4_packet = *(IPv4Packet const*)(raw_ipv4_packet.data());
+    auto& udp_packet = *static_cast<UDPPacket const*>(ipv4_packet.payload());
     return udp_packet.length() - sizeof(UDPPacket);
 }
 
 ErrorOr<size_t> UDPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, UserOrKernelBuffer& buffer, size_t buffer_size, [[maybe_unused]] int flags)
 {
-    auto& ipv4_packet = *(const IPv4Packet*)(raw_ipv4_packet.data());
-    auto& udp_packet = *static_cast<const UDPPacket*>(ipv4_packet.payload());
+    auto& ipv4_packet = *(IPv4Packet const*)(raw_ipv4_packet.data());
+    auto& udp_packet = *static_cast<UDPPacket const*>(ipv4_packet.payload());
     VERIFY(udp_packet.length() >= sizeof(UDPPacket)); // FIXME: This should be rejected earlier.
     size_t read_size = min(buffer_size, udp_packet.length() - sizeof(UDPPacket));
     SOCKET_TRY(buffer.write(udp_packet.payload(), read_size));
     return read_size;
 }
 
-ErrorOr<size_t> UDPSocket::protocol_send(const UserOrKernelBuffer& data, size_t data_length)
+ErrorOr<size_t> UDPSocket::protocol_send(UserOrKernelBuffer const& data, size_t data_length)
 {
     auto routing_decision = route_to(peer_address(), local_address(), bound_interface());
     if (routing_decision.is_zero())
@@ -96,7 +105,7 @@ ErrorOr<size_t> UDPSocket::protocol_send(const UserOrKernelBuffer& data, size_t 
     return data_length;
 }
 
-ErrorOr<void> UDPSocket::protocol_connect(OpenFileDescription&, ShouldBlock)
+ErrorOr<void> UDPSocket::protocol_connect(OpenFileDescription&)
 {
     set_role(Role::Connected);
     set_connected(true);

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
@@ -15,7 +14,7 @@
 #include <LibDebug/Dwarf/DwarfInfo.h>
 #include <LibDebug/Dwarf/LineProgram.h>
 #include <LibELF/Image.h>
-#include <sys/arch/i386/regs.h>
+#include <sys/arch/regs.h>
 
 namespace Debug {
 
@@ -24,25 +23,25 @@ class DebugInfo {
     AK_MAKE_NONMOVABLE(DebugInfo);
 
 public:
-    explicit DebugInfo(ELF::Image const&, String source_root = {}, FlatPtr base_address = 0);
+    explicit DebugInfo(ELF::Image const&, DeprecatedString source_root = {}, FlatPtr base_address = 0);
 
     ELF::Image const& elf() const { return m_elf; }
 
     struct SourcePosition {
-        FlyString file_path;
+        DeprecatedFlyString file_path;
         size_t line_number { 0 };
         Optional<FlatPtr> address_of_first_statement;
 
         SourcePosition()
-            : SourcePosition(String::empty(), 0)
+            : SourcePosition(DeprecatedString::empty(), 0)
         {
         }
-        SourcePosition(String file_path, size_t line_number)
+        SourcePosition(DeprecatedString file_path, size_t line_number)
             : file_path(file_path)
             , line_number(line_number)
         {
         }
-        SourcePosition(String file_path, size_t line_number, FlatPtr address_of_first_statement)
+        SourcePosition(DeprecatedString file_path, size_t line_number, FlatPtr address_of_first_statement)
             : file_path(file_path)
             , line_number(line_number)
             , address_of_first_statement(address_of_first_statement)
@@ -50,7 +49,6 @@ public:
         }
 
         bool operator==(SourcePosition const& other) const { return file_path == other.file_path && line_number == other.line_number; }
-        bool operator!=(SourcePosition const& other) const { return !(*this == other); }
 
         static SourcePosition from_line_info(Dwarf::LineProgram::LineInfo const&);
     };
@@ -61,8 +59,8 @@ public:
             Address,
             Register,
         };
-        String name;
-        String type_name;
+        DeprecatedString name;
+        DeprecatedString type_name;
         LocationType location_type { LocationType::None };
         union {
             FlatPtr address;
@@ -71,12 +69,12 @@ public:
         union {
             u32 as_u32;
             u32 as_i32;
-            const char* as_string;
+            char const* as_string;
         } constant_data { 0 };
 
         Dwarf::EntryTag type_tag;
         OwnPtr<VariableInfo> type;
-        NonnullOwnPtrVector<VariableInfo> members;
+        Vector<NonnullOwnPtr<VariableInfo>> members;
         VariableInfo* parent { nullptr };
         Vector<u32> dimension_sizes;
 
@@ -85,13 +83,13 @@ public:
 
     struct VariablesScope {
         bool is_function { false };
-        String name;
+        DeprecatedString name;
         FlatPtr address_low { 0 };
         FlatPtr address_high { 0 }; // Non-inclusive - the lowest address after address_low that's not in this scope
         Vector<Dwarf::DIE> dies_of_variables;
     };
 
-    NonnullOwnPtrVector<VariableInfo> get_variables_in_current_scope(PtraceRegisters const&) const;
+    ErrorOr<Vector<NonnullOwnPtr<VariableInfo>>> get_variables_in_current_scope(PtraceRegisters const&) const;
 
     Optional<SourcePosition> get_source_position(FlatPtr address) const;
 
@@ -99,33 +97,33 @@ public:
         Optional<SourcePosition> source_position;
         Vector<SourcePosition> inline_chain;
     };
-    SourcePositionWithInlines get_source_position_with_inlines(FlatPtr address) const;
+    ErrorOr<SourcePositionWithInlines> get_source_position_with_inlines(FlatPtr address) const;
 
     struct SourcePositionAndAddress {
-        String file;
+        DeprecatedString file;
         size_t line;
         FlatPtr address;
     };
 
-    Optional<SourcePositionAndAddress> get_address_from_source_position(const String& file, size_t line) const;
+    Optional<SourcePositionAndAddress> get_address_from_source_position(DeprecatedString const& file, size_t line) const;
 
-    String name_of_containing_function(FlatPtr address) const;
-    Vector<SourcePosition> source_lines_in_scope(const VariablesScope&) const;
+    DeprecatedString name_of_containing_function(FlatPtr address) const;
+    Vector<SourcePosition> source_lines_in_scope(VariablesScope const&) const;
     Optional<VariablesScope> get_containing_function(FlatPtr address) const;
 
 private:
-    void prepare_variable_scopes();
-    void prepare_lines();
-    void parse_scopes_impl(const Dwarf::DIE& die);
-    OwnPtr<VariableInfo> create_variable_info(const Dwarf::DIE& variable_die, const PtraceRegisters&, u32 address_offset = 0) const;
-    static bool is_variable_tag_supported(const Dwarf::EntryTag& tag);
-    void add_type_info_to_variable(const Dwarf::DIE& type_die, const PtraceRegisters& regs, DebugInfo::VariableInfo* parent_variable) const;
+    ErrorOr<void> prepare_variable_scopes();
+    ErrorOr<void> prepare_lines();
+    ErrorOr<void> parse_scopes_impl(Dwarf::DIE const& die);
+    ErrorOr<OwnPtr<VariableInfo>> create_variable_info(Dwarf::DIE const& variable_die, PtraceRegisters const&, u32 address_offset = 0) const;
+    static bool is_variable_tag_supported(Dwarf::EntryTag const& tag);
+    ErrorOr<void> add_type_info_to_variable(Dwarf::DIE const& type_die, PtraceRegisters const& regs, DebugInfo::VariableInfo* parent_variable) const;
 
-    Optional<Dwarf::LineProgram::DirectoryAndFile> get_source_path_of_inline(const Dwarf::DIE&) const;
-    Optional<uint32_t> get_line_of_inline(const Dwarf::DIE&) const;
+    ErrorOr<Optional<Dwarf::LineProgram::DirectoryAndFile>> get_source_path_of_inline(Dwarf::DIE const&) const;
+    ErrorOr<Optional<uint32_t>> get_line_of_inline(Dwarf::DIE const&) const;
 
     ELF::Image const& m_elf;
-    String m_source_root;
+    DeprecatedString m_source_root;
     FlatPtr m_base_address { 0 };
     Dwarf::DwarfInfo m_dwarf_info;
 

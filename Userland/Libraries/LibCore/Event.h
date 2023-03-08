@@ -1,13 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/DeferredInvocationContext.h>
@@ -29,12 +30,12 @@ public:
         Custom,
     };
 
-    Event() { }
+    Event() = default;
     explicit Event(unsigned type)
         : m_type(type)
     {
     }
-    virtual ~Event() { }
+    virtual ~Event() = default;
 
     unsigned type() const { return m_type; }
 
@@ -70,7 +71,7 @@ public:
         , m_timer_id(timer_id)
     {
     }
-    ~TimerEvent() { }
+    ~TimerEvent() = default;
 
     int timer_id() const { return m_timer_id; }
 
@@ -85,7 +86,7 @@ public:
         , m_fd(fd)
     {
     }
-    ~NotifierReadEvent() { }
+    ~NotifierReadEvent() = default;
 
     int fd() const { return m_fd; }
 
@@ -100,7 +101,7 @@ public:
         , m_fd(fd)
     {
     }
-    ~NotifierWriteEvent() { }
+    ~NotifierWriteEvent() = default;
 
     int fd() const { return m_fd; }
 
@@ -111,13 +112,13 @@ private:
 class ChildEvent final : public Event {
 public:
     ChildEvent(Type, Object& child, Object* insertion_before_child = nullptr);
-    ~ChildEvent();
+    ~ChildEvent() = default;
 
     Object* child();
-    const Object* child() const;
+    Object const* child() const;
 
     Object* insertion_before_child();
-    const Object* insertion_before_child() const;
+    Object const* insertion_before_child() const;
 
 private:
     WeakPtr<Object> m_child;
@@ -131,7 +132,7 @@ public:
         , m_custom_type(custom_type)
     {
     }
-    ~CustomEvent() { }
+    ~CustomEvent() = default;
 
     int custom_type() const { return m_custom_type; }
 

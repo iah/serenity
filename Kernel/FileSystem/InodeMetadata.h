@@ -8,6 +8,7 @@
 
 #include <AK/Error.h>
 #include <AK/Span.h>
+#include <AK/Time.h>
 #include <Kernel/FileSystem/DeviceFileTypes.h>
 #include <Kernel/FileSystem/InodeIdentifier.h>
 #include <Kernel/Forward.h>
@@ -35,14 +36,19 @@ inline bool is_sticky(mode_t mode) { return (mode & S_ISVTX) == S_ISVTX; }
 inline bool is_setuid(mode_t mode) { return (mode & S_ISUID) == S_ISUID; }
 inline bool is_setgid(mode_t mode) { return (mode & S_ISGID) == S_ISGID; }
 
+enum class UseEffectiveIDs {
+    Yes,
+    No
+};
+
 struct InodeMetadata {
     bool is_valid() const { return inode.is_valid(); }
 
-    bool may_read(const Process&) const;
-    bool may_write(const Process&) const;
-    bool may_execute(const Process&) const;
+    bool may_read(Credentials const&, UseEffectiveIDs = UseEffectiveIDs::Yes) const;
+    bool may_write(Credentials const&, UseEffectiveIDs = UseEffectiveIDs::Yes) const;
+    bool may_execute(Credentials const&, UseEffectiveIDs = UseEffectiveIDs::Yes) const;
 
-    bool may_read(UserID u, GroupID g, Span<GroupID const> eg) const
+    bool may_read(UserID u, GroupID g, ReadonlySpan<GroupID> eg) const
     {
         if (u == 0)
             return true;
@@ -53,7 +59,7 @@ struct InodeMetadata {
         return (mode & S_IROTH) == S_IROTH;
     }
 
-    bool may_write(UserID u, GroupID g, Span<GroupID const> eg) const
+    bool may_write(UserID u, GroupID g, ReadonlySpan<GroupID> eg) const
     {
         if (u == 0)
             return true;
@@ -64,7 +70,7 @@ struct InodeMetadata {
         return (mode & S_IWOTH) == S_IWOTH;
     }
 
-    bool may_execute(UserID u, GroupID g, Span<GroupID const> eg) const
+    bool may_execute(UserID u, GroupID g, ReadonlySpan<GroupID> eg) const
     {
         if (u == 0)
             return true;
@@ -102,12 +108,9 @@ struct InodeMetadata {
         buffer.st_size = size;
         buffer.st_blksize = block_size;
         buffer.st_blocks = block_count;
-        buffer.st_atim.tv_sec = atime;
-        buffer.st_atim.tv_nsec = 0;
-        buffer.st_mtim.tv_sec = mtime;
-        buffer.st_mtim.tv_nsec = 0;
-        buffer.st_ctim.tv_sec = ctime;
-        buffer.st_ctim.tv_nsec = 0;
+        buffer.st_atim = atime.to_timespec();
+        buffer.st_mtim = mtime.to_timespec();
+        buffer.st_ctim = ctime.to_timespec();
         return buffer;
     }
 
@@ -117,10 +120,10 @@ struct InodeMetadata {
     UserID uid { 0 };
     GroupID gid { 0 };
     nlink_t link_count { 0 };
-    time_t atime { 0 };
-    time_t ctime { 0 };
-    time_t mtime { 0 };
-    time_t dtime { 0 };
+    Time atime {};
+    Time ctime {};
+    Time mtime {};
+    Time dtime {};
     blkcnt_t block_count { 0 };
     blksize_t block_size { 0 };
     MajorNumber major_device { 0 };

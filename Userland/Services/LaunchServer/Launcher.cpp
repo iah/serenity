@@ -12,7 +12,9 @@
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
+#include <LibCore/MimeData.h>
+#include <LibCore/Process.h>
 #include <LibDesktop/AppFile.h>
 #include <errno.h>
 #include <serenity.h>
@@ -23,9 +25,9 @@
 namespace LaunchServer {
 
 static Launcher* s_the;
-static bool spawn(String executable, const Vector<String>& arguments);
+static bool spawn(DeprecatedString executable, Vector<DeprecatedString> const& arguments);
 
-String Handler::name_from_executable(StringView executable)
+DeprecatedString Handler::name_from_executable(StringView executable)
 {
     auto separator = executable.find_last('/');
     if (separator.has_value()) {
@@ -35,34 +37,34 @@ String Handler::name_from_executable(StringView executable)
     return executable;
 }
 
-void Handler::from_executable(Type handler_type, const String& executable)
+void Handler::from_executable(Type handler_type, DeprecatedString const& executable)
 {
     this->handler_type = handler_type;
     this->name = name_from_executable(executable);
     this->executable = executable;
 }
 
-String Handler::to_details_str() const
+DeprecatedString Handler::to_details_str() const
 {
     StringBuilder builder;
-    JsonObjectSerializer obj { builder };
-    obj.add("executable", executable);
-    obj.add("name", name);
+    auto obj = MUST(JsonObjectSerializer<>::try_create(builder));
+    MUST(obj.add("executable"sv, executable));
+    MUST(obj.add("name"sv, name));
     switch (handler_type) {
     case Type::Application:
-        obj.add("type", "app");
+        MUST(obj.add("type"sv, "app"));
         break;
     case Type::UserDefault:
-        obj.add("type", "userdefault");
+        MUST(obj.add("type"sv, "userdefault"));
         break;
     case Type::UserPreferred:
-        obj.add("type", "userpreferred");
+        MUST(obj.add("type"sv, "userpreferred"));
         break;
     default:
         break;
     }
-    obj.finish();
-    return builder.build();
+    MUST(obj.finish());
+    return builder.to_deprecated_string();
 }
 
 Launcher::Launcher()
@@ -77,25 +79,37 @@ Launcher& Launcher::the()
     return *s_the;
 }
 
-void Launcher::load_handlers(const String& af_dir)
+void Launcher::load_handlers(DeprecatedString const& af_dir)
 {
     Desktop::AppFile::for_each([&](auto af) {
         auto app_name = af->name();
         auto app_executable = af->executable();
-        HashTable<String> file_types;
+        HashTable<DeprecatedString> mime_types;
+        for (auto& mime_type : af->launcher_mime_types())
+            mime_types.set(mime_type);
+        HashTable<DeprecatedString> file_types;
         for (auto& file_type : af->launcher_file_types())
             file_types.set(file_type);
-        HashTable<String> protocols;
+        HashTable<DeprecatedString> protocols;
         for (auto& protocol : af->launcher_protocols())
             protocols.set(protocol);
         if (access(app_executable.characters(), X_OK) == 0)
-            m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, file_types, protocols });
+            m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, mime_types, file_types, protocols });
     },
         af_dir);
 }
 
-void Launcher::load_config(const Core::ConfigFile& cfg)
+void Launcher::load_config(Core::ConfigFile const& cfg)
 {
+    for (auto key : cfg.keys("MimeType")) {
+        auto handler = cfg.read_entry("MimeType", key).trim_whitespace();
+        if (handler.is_empty())
+            continue;
+        if (access(handler.characters(), X_OK) != 0)
+            continue;
+        m_mime_handlers.set(key.to_lowercase(), handler);
+    }
+
     for (auto key : cfg.keys("FileType")) {
         auto handler = cfg.read_entry("FileType", key).trim_whitespace();
         if (handler.is_empty())
@@ -115,17 +129,25 @@ void Launcher::load_config(const Core::ConfigFile& cfg)
     }
 }
 
-Vector<String> Launcher::handlers_for_url(const URL& url)
+bool Launcher::has_mime_handlers(DeprecatedString const& mime_type)
 {
-    Vector<String> handlers;
-    if (url.protocol() == "file") {
+    for (auto& handler : m_handlers)
+        if (handler.value.mime_types.contains(mime_type))
+            return true;
+    return false;
+}
+
+Vector<DeprecatedString> Launcher::handlers_for_url(const URL& url)
+{
+    Vector<DeprecatedString> handlers;
+    if (url.scheme() == "file") {
         for_each_handler_for_path(url.path(), [&](auto& handler) -> bool {
             handlers.append(handler.executable);
             return true;
         });
     } else {
-        for_each_handler(url.protocol(), m_protocol_handlers, [&](const auto& handler) -> bool {
-            if (handler.handler_type != Handler::Type::Default || handler.protocols.contains(url.protocol())) {
+        for_each_handler(url.scheme(), m_protocol_handlers, [&](auto const& handler) -> bool {
+            if (handler.handler_type != Handler::Type::Default || handler.protocols.contains(url.scheme())) {
                 handlers.append(handler.executable);
                 return true;
             }
@@ -135,17 +157,17 @@ Vector<String> Launcher::handlers_for_url(const URL& url)
     return handlers;
 }
 
-Vector<String> Launcher::handlers_with_details_for_url(const URL& url)
+Vector<DeprecatedString> Launcher::handlers_with_details_for_url(const URL& url)
 {
-    Vector<String> handlers;
-    if (url.protocol() == "file") {
+    Vector<DeprecatedString> handlers;
+    if (url.scheme() == "file") {
         for_each_handler_for_path(url.path(), [&](auto& handler) -> bool {
             handlers.append(handler.to_details_str());
             return true;
         });
     } else {
-        for_each_handler(url.protocol(), m_protocol_handlers, [&](const auto& handler) -> bool {
-            if (handler.handler_type != Handler::Type::Default || handler.protocols.contains(url.protocol())) {
+        for_each_handler(url.scheme(), m_protocol_handlers, [&](auto const& handler) -> bool {
+            if (handler.handler_type != Handler::Type::Default || handler.protocols.contains(url.scheme())) {
                 handlers.append(handler.to_details_str());
                 return true;
             }
@@ -155,51 +177,52 @@ Vector<String> Launcher::handlers_with_details_for_url(const URL& url)
     return handlers;
 }
 
-bool Launcher::open_url(const URL& url, const String& handler_name)
+Optional<DeprecatedString> Launcher::mime_type_for_file(DeprecatedString path)
+{
+    auto file_or_error = Core::DeprecatedFile::open(path, Core::OpenMode::ReadOnly);
+    if (file_or_error.is_error()) {
+        return {};
+    } else {
+        auto file = file_or_error.release_value();
+        // Read accounts for longest possible offset + signature we currently match against.
+        auto bytes = file->read(0x9006);
+
+        return Core::guess_mime_type_based_on_sniffed_bytes(bytes.bytes());
+    }
+}
+
+bool Launcher::open_url(const URL& url, DeprecatedString const& handler_name)
 {
     if (!handler_name.is_null())
         return open_with_handler_name(url, handler_name);
 
-    if (url.protocol() == "file")
+    if (url.scheme() == "file")
         return open_file_url(url);
 
-    return open_with_user_preferences(m_protocol_handlers, url.protocol(), { url.to_string() });
+    return open_with_user_preferences(m_protocol_handlers, url.scheme(), { url.to_deprecated_string() });
 }
 
-bool Launcher::open_with_handler_name(const URL& url, const String& handler_name)
+bool Launcher::open_with_handler_name(const URL& url, DeprecatedString const& handler_name)
 {
     auto handler_optional = m_handlers.get(handler_name);
     if (!handler_optional.has_value())
         return false;
 
     auto& handler = handler_optional.value();
-    String argument;
-    if (url.protocol() == "file")
+    DeprecatedString argument;
+    if (url.scheme() == "file")
         argument = url.path();
     else
-        argument = url.to_string();
+        argument = url.to_deprecated_string();
     return spawn(handler.executable, { argument });
 }
 
-bool spawn(String executable, const Vector<String>& arguments)
+bool spawn(DeprecatedString executable, Vector<DeprecatedString> const& arguments)
 {
-    Vector<const char*> argv { executable.characters() };
-    for (auto& arg : arguments)
-        argv.append(arg.characters());
-    argv.append(nullptr);
-
-    pid_t child_pid;
-    if ((errno = posix_spawn(&child_pid, executable.characters(), nullptr, nullptr, const_cast<char**>(argv.data()), environ))) {
-        perror("posix_spawn");
-        return false;
-    } else {
-        if (disown(child_pid) < 0)
-            perror("disown");
-    }
-    return true;
+    return !Core::Process::spawn(executable, arguments).is_error();
 }
 
-Handler Launcher::get_handler_for_executable(Handler::Type handler_type, const String& executable) const
+Handler Launcher::get_handler_for_executable(Handler::Type handler_type, DeprecatedString const& executable) const
 {
     Handler handler;
     auto existing_handler = m_handlers.get(executable);
@@ -212,11 +235,22 @@ Handler Launcher::get_handler_for_executable(Handler::Type handler_type, const S
     return handler;
 }
 
-bool Launcher::open_with_user_preferences(const HashMap<String, String>& user_preferences, const String& key, const Vector<String>& arguments, const String& default_program)
+bool Launcher::open_with_user_preferences(HashMap<DeprecatedString, DeprecatedString> const& user_preferences, DeprecatedString const& key, Vector<DeprecatedString> const& arguments, DeprecatedString const& default_program)
 {
     auto program_path = user_preferences.get(key);
     if (program_path.has_value())
         return spawn(program_path.value(), arguments);
+
+    DeprecatedString executable = "";
+    if (for_each_handler(key, user_preferences, [&](auto const& handler) -> bool {
+            if (executable.is_empty() && (handler.mime_types.contains(key) || handler.file_types.contains(key) || handler.protocols.contains(key))) {
+                executable = handler.executable;
+                return true;
+            }
+            return false;
+        })) {
+        return spawn(executable, arguments);
+    }
 
     // There wasn't a handler for this, so try the fallback instead
     program_path = user_preferences.get("*");
@@ -230,7 +264,7 @@ bool Launcher::open_with_user_preferences(const HashMap<String, String>& user_pr
     return false;
 }
 
-void Launcher::for_each_handler(const String& key, HashMap<String, String>& user_preference, Function<bool(const Handler&)> f)
+size_t Launcher::for_each_handler(DeprecatedString const& key, HashMap<DeprecatedString, DeprecatedString> const& user_preference, Function<bool(Handler const&)> f)
 {
     auto user_preferred = user_preference.get(key);
     if (user_preferred.has_value())
@@ -248,9 +282,12 @@ void Launcher::for_each_handler(const String& key, HashMap<String, String>& user
     auto user_default = user_preference.get("*");
     if (counted == 0 && user_default.has_value())
         f(get_handler_for_executable(Handler::Type::UserDefault, user_default.value()));
+    // Return the number of times f() was called,
+    // which can be used to know whether there were any handlers
+    return counted;
 }
 
-void Launcher::for_each_handler_for_path(const String& path, Function<bool(const Handler&)> f)
+void Launcher::for_each_handler_for_path(DeprecatedString const& path, Function<bool(Handler const&)> f)
 {
     struct stat st;
     if (lstat(path.characters(), &st) < 0) {
@@ -271,10 +308,16 @@ void Launcher::for_each_handler_for_path(const String& path, Function<bool(const
         return;
 
     if (S_ISLNK(st.st_mode)) {
-        auto link_target = LexicalPath { Core::File::read_link(path) };
+        auto link_target_or_error = Core::DeprecatedFile::read_link(path);
+        if (link_target_or_error.is_error()) {
+            perror("read_link");
+            return;
+        }
+
+        auto link_target = LexicalPath { link_target_or_error.release_value() };
         LexicalPath absolute_link_target = link_target.is_absolute() ? link_target : LexicalPath::join(LexicalPath::dirname(path), link_target.string());
-        auto real_path = Core::File::real_path_for(absolute_link_target.string());
-        return for_each_handler_for_path(real_path, [&](const auto& handler) -> bool {
+        auto real_path = Core::DeprecatedFile::real_path_for(absolute_link_target.string());
+        return for_each_handler_for_path(real_path, [&](auto const& handler) -> bool {
             return f(handler);
         });
     }
@@ -283,8 +326,19 @@ void Launcher::for_each_handler_for_path(const String& path, Function<bool(const
         f(get_handler_for_executable(Handler::Type::Application, path));
 
     auto extension = LexicalPath::extension(path).to_lowercase();
+    auto mime_type = mime_type_for_file(path);
 
-    for_each_handler(extension, m_file_handlers, [&](const auto& handler) -> bool {
+    if (mime_type.has_value()) {
+        if (for_each_handler(mime_type.value(), m_mime_handlers, [&](auto const& handler) -> bool {
+                if (handler.handler_type != Handler::Type::Default || handler.mime_types.contains(mime_type.value()))
+                    return f(handler);
+                return false;
+            })) {
+            return;
+        }
+    }
+
+    for_each_handler(extension, m_file_handlers, [&](auto const& handler) -> bool {
         if (handler.handler_type != Handler::Type::Default || handler.file_types.contains(extension))
             return f(handler);
         return false;
@@ -300,13 +354,13 @@ bool Launcher::open_file_url(const URL& url)
     }
 
     if (S_ISDIR(st.st_mode)) {
-        Vector<String> fm_arguments;
+        Vector<DeprecatedString> fm_arguments;
         if (url.fragment().is_empty()) {
             fm_arguments.append(url.path());
         } else {
             fm_arguments.append("-s");
             fm_arguments.append("-r");
-            fm_arguments.append(String::formatted("{}/{}", url.path(), url.fragment()));
+            fm_arguments.append(DeprecatedString::formatted("{}/{}", url.path(), url.fragment()));
         }
 
         auto handler_optional = m_file_handlers.get("directory");
@@ -320,19 +374,22 @@ bool Launcher::open_file_url(const URL& url)
     if ((st.st_mode & S_IFMT) == S_IFREG && st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
         return spawn(url.path(), {});
 
-    auto extension_parts = url.path().to_lowercase().split('.');
-    String extension = {};
-    if (extension_parts.size() > 1)
-        extension = extension_parts.last();
+    auto extension = LexicalPath::extension(url.path()).to_lowercase();
+    auto mime_type = mime_type_for_file(url.path());
+
+    auto mime_type_or_extension = extension;
+    bool should_use_mime_type = mime_type.has_value() && has_mime_handlers(mime_type.value());
+    if (should_use_mime_type)
+        mime_type_or_extension = mime_type.value();
 
     auto handler_optional = m_file_handlers.get("txt");
-    if (!handler_optional.has_value())
-        return false;
-    auto& default_handler = handler_optional.value();
+    DeprecatedString default_handler = "";
+    if (handler_optional.has_value())
+        default_handler = handler_optional.value();
 
     // Additional parameters parsing, specific for the file protocol and txt file handlers
-    Vector<String> additional_parameters;
-    String filepath = url.path();
+    Vector<DeprecatedString> additional_parameters;
+    DeprecatedString filepath = url.path();
 
     auto parameters = url.query().split('&');
     for (auto const& parameter : parameters) {
@@ -341,12 +398,12 @@ bool Launcher::open_file_url(const URL& url)
             auto line = pair[1].to_int();
             if (line.has_value())
                 // TextEditor uses file:line:col to open a file at a specific line number
-                filepath = String::formatted("{}:{}", filepath, line.value());
+                filepath = DeprecatedString::formatted("{}:{}", filepath, line.value());
         }
     }
 
     additional_parameters.append(filepath);
 
-    return open_with_user_preferences(m_file_handlers, extension, additional_parameters, default_handler);
+    return open_with_user_preferences(should_use_mime_type ? m_mime_handlers : m_file_handlers, mime_type_or_extension, additional_parameters, default_handler);
 }
 }

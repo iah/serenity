@@ -6,21 +6,25 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/CharacterData.h>
 
 namespace Web::DOM {
 
 class Comment final : public CharacterData {
+    WEB_PLATFORM_OBJECT(Comment, CharacterData);
+
 public:
-    using WrapperType = Bindings::CommentWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Comment>> construct_impl(JS::Realm&, DeprecatedString const& data);
+    virtual ~Comment() override = default;
 
-    explicit Comment(Document&, const String&);
-    virtual ~Comment() override;
+    virtual DeprecatedFlyString node_name() const override { return "#comment"; }
 
-    virtual FlyString node_name() const override { return "#comment"; }
-
-    static NonnullRefPtr<Comment> create_with_global_object(Bindings::WindowObject& window, String const& data);
+private:
+    Comment(Document&, DeprecatedString const&);
 };
+
+template<>
+inline bool Node::fast_is<Comment>() const { return is_comment(); }
 
 }

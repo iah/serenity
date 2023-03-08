@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibMain/Main.h>
@@ -22,25 +22,25 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     NumberStyle number_style = NumberNonEmptyLines;
     int increment = 1;
-    const char* separator = "  ";
+    StringView separator = "  "sv;
     int start_number = 1;
     int number_width = 6;
-    Vector<const char*> files;
+    Vector<DeprecatedString> files;
 
     Core::ArgsParser args_parser;
 
     Core::ArgsParser::Option number_style_option {
-        true,
+        Core::ArgsParser::OptionArgumentMode::Required,
         "Line numbering style: 't' for non-empty lines, 'a' for all lines, 'n' for no lines",
         "body-numbering",
         'b',
         "style",
-        [&number_style](const char* s) {
-            if (!strcmp(s, "t"))
+        [&number_style](StringView s) {
+            if (s == "t"sv)
                 number_style = NumberNonEmptyLines;
-            else if (!strcmp(s, "a"))
+            else if (s == "a"sv)
                 number_style = NumberAllLines;
-            else if (!strcmp(s, "n"))
+            else if (s == "n"sv)
                 number_style = NumberNoLines;
             else
                 return false;
@@ -60,7 +60,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     Vector<FILE*> file_pointers;
     if (!files.is_empty()) {
         for (auto& file : files) {
-            FILE* file_pointer = fopen(file, "r");
+            FILE* file_pointer = fopen(file.characters(), "r");
             if (!file_pointer) {
                 warnln("Failed to open {}: {}", file, strerror(errno));
                 continue;

@@ -8,6 +8,7 @@
 
 #include <AK/IntrusiveList.h>
 #include <AK/Platform.h>
+#include <AK/StringView.h>
 #include <AK/Types.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
@@ -67,7 +68,7 @@ public:
 
     Heap& heap() { return m_heap; }
 
-    static HeapBlock* from_cell(const Cell* cell)
+    static HeapBlock* from_cell(Cell const* cell)
     {
         return reinterpret_cast<HeapBlock*>((FlatPtr)cell & ~(block_size - 1));
     }
@@ -83,7 +84,7 @@ public:
         return cell(cell_index);
     }
 
-    bool is_valid_cell_pointer(const Cell* cell)
+    bool is_valid_cell_pointer(Cell const* cell)
     {
         return cell_from_possible_pointer((FlatPtr)cell);
     }
@@ -96,9 +97,9 @@ private:
     bool has_lazy_freelist() const { return m_next_lazy_freelist_index < cell_count(); }
 
     struct FreelistEntry final : public Cell {
-        FreelistEntry* next { nullptr };
+        JS_CELL(FreelistEntry, Cell);
 
-        virtual const char* class_name() const override { return "FreelistEntry"; }
+        FreelistEntry* next { nullptr };
     };
 
     Cell* cell(size_t index)

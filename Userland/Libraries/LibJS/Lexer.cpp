@@ -16,15 +16,15 @@
 
 namespace JS {
 
-HashMap<FlyString, TokenType> Lexer::s_keywords;
-HashMap<String, TokenType> Lexer::s_three_char_tokens;
-HashMap<String, TokenType> Lexer::s_two_char_tokens;
+HashMap<DeprecatedFlyString, TokenType> Lexer::s_keywords;
+HashMap<DeprecatedString, TokenType> Lexer::s_three_char_tokens;
+HashMap<DeprecatedString, TokenType> Lexer::s_two_char_tokens;
 HashMap<char, TokenType> Lexer::s_single_char_tokens;
 
 Lexer::Lexer(StringView source, StringView filename, size_t line_number, size_t line_column)
     : m_source(source)
-    , m_current_token(TokenType::Eof, {}, StringView(nullptr), StringView(nullptr), filename, 0, 0, 0)
-    , m_filename(filename)
+    , m_current_token(TokenType::Eof, {}, {}, {}, filename, 0, 0, 0)
+    , m_filename(String::from_utf8(filename).release_value_but_fixme_should_propagate_errors())
     , m_line_number(line_number)
     , m_line_column(line_column)
     , m_parsed_identifiers(adopt_ref(*new ParsedIdentifiers))
@@ -159,7 +159,7 @@ void Lexer::consume()
 
     if (is_line_terminator()) {
         if constexpr (LEXER_DEBUG) {
-            String type;
+            DeprecatedString type;
             if (m_current_char == '\n')
                 type = "LINE FEED";
             else if (m_current_char == '\r')
@@ -572,9 +572,9 @@ Token Lexer::next()
     // This is being used to communicate info about invalid tokens to the parser, which then
     // can turn that into more specific error messages - instead of us having to make up a
     // bunch of Invalid* tokens (bad numeric literals, unterminated comments etc.)
-    String token_message;
+    DeprecatedString token_message;
 
-    Optional<FlyString> identifier;
+    Optional<DeprecatedFlyString> identifier;
     size_t identifier_length = 0;
 
     if (m_current_token.type() == TokenType::RegexLiteral && !is_eof() && is_ascii_alpha(m_current_char) && !did_consume_whitespace_or_comments) {
@@ -610,8 +610,15 @@ Token Lexer::next()
             consume();
             m_template_states.last().in_expr = true;
         } else {
+            // TemplateCharacter ::
+            //     $ [lookahead ≠ {]
+            //     \ TemplateEscapeSequence
+            //     \ NotEscapeSequence
+            //     LineContinuation
+            //     LineTerminatorSequence
+            //     SourceCharacter but not one of ` or \ or $ or LineTerminator
             while (!match('$', '{') && m_current_char != '`' && !is_eof()) {
-                if (match('\\', '$') || match('\\', '`'))
+                if (match('\\', '$') || match('\\', '`') || match('\\', '\\'))
                     consume();
                 consume();
             }
@@ -829,8 +836,8 @@ Token Lexer::next()
 
     if (m_hit_invalid_unicode.has_value()) {
         value_start = m_hit_invalid_unicode.value() - 1;
-        m_current_token = Token(TokenType::Invalid, "Invalid unicode codepoint in source",
-            "", // Since the invalid unicode can occur anywhere in the current token the trivia is not correct
+        m_current_token = Token(TokenType::Invalid, "Invalid unicode codepoint in source"_string.release_value_but_fixme_should_propagate_errors(),
+            ""sv, // Since the invalid unicode can occur anywhere in the current token the trivia is not correct
             m_source.substring_view(value_start + 1, min(4u, m_source.length() - value_start - 2)),
             m_filename,
             m_line_number,
@@ -842,7 +849,7 @@ Token Lexer::next()
     } else {
         m_current_token = Token(
             token_type,
-            token_message,
+            String::from_deprecated_string(token_message).release_value_but_fixme_should_propagate_errors(),
             m_source.substring_view(trivia_start - 1, value_start - trivia_start),
             m_source.substring_view(value_start - 1, m_position - value_start),
             m_filename,
@@ -886,7 +893,7 @@ Token Lexer::force_slash_as_regex()
 
     m_current_token = Token(
         token_type,
-        "",
+        String {},
         m_current_token.trivia(),
         m_source.substring_view(value_start - 1, m_position - value_start),
         m_filename,

@@ -11,13 +11,23 @@
 namespace Web::HTML {
 
 class HTMLTableCellElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLTableCellElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLTableCellElement, HTMLElement);
 
-    HTMLTableCellElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLTableCellElement() override;
 
+    unsigned col_span() const;
+    unsigned row_span() const;
+
+    void set_col_span(unsigned);
+    void set_row_span(unsigned);
+
+    virtual Optional<ARIA::Role> default_role() const override;
+
 private:
+    HTMLTableCellElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
     virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 };
 

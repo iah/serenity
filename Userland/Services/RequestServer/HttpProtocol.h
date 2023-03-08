@@ -7,12 +7,12 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
-#include <AK/String.h>
 #include <AK/URL.h>
 #include <LibHTTP/Job.h>
-#include <RequestServer/ClientConnection.h>
+#include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/HttpRequest.h>
 #include <RequestServer/Protocol.h>
 #include <RequestServer/Request.h>
@@ -27,7 +27,7 @@ public:
     HttpProtocol();
     ~HttpProtocol() override = default;
 
-    virtual OwnPtr<Request> start_request(ClientConnection&, const String& method, const URL&, const HashMap<String, String>& headers, ReadonlyBytes body) override;
+    virtual OwnPtr<Request> start_request(ConnectionFromClient&, DeprecatedString const& method, const URL&, HashMap<DeprecatedString, DeprecatedString> const& headers, ReadonlyBytes body, Core::ProxyData proxy_data = {}) override;
 };
 
 }

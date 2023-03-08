@@ -14,18 +14,19 @@ interface HTMLDetailsElement : HTMLElement {
 };
 ```
 
-2. If the IDL starts with `[Exposed=Window]`, remove that line from the .idl file, and add the following to [`LibWeb/Bindings/WindowObjectHelper.h`](../../Userland/Libraries/LibWeb/Bindings/WindowObjectHelper.h):
-    - `#include <LibWeb/Bindings/HTMLDetailsElementConstructor.h>` and
-    - `#include <LibWeb/Bindings/HTMLDetailsElementPrototype.h>` to the includes list.
-    - `ADD_WINDOW_OBJECT_INTERFACE(HTMLDetailsElement)      \` to the macro at the bottom.
+2. If the IDL refers to other IDL types, you need to import those. For example, `CSSRule` has an attribute that returns a `CSSStyleSheet`, so that needs to be imported:
+```webidl
+#import <CSS/CSSStyleSheet.idl>
 
-3. Add a `libweb_js_wrapper()` call to [`LibWeb/CMakeLists.txt`](../../Userland/Libraries/LibWeb/CMakeLists.txt)
+interface CSSRule {
+    readonly attribute CSSStyleSheet? parentStyleSheet;
+};
+```
 
-4. Forward declare the generated classes in [`LibWeb/Forward.h`](../../Userland/Libraries/LibWeb/Forward.h):
+3. Add a `libweb_js_bindings(HTML/HTMLDetailsElement)` call to [`LibWeb/idl_files.cmake`](../../Userland/Libraries/LibWeb/idl_files.cmake)
+
+4. Forward declare the generated class in [`LibWeb/Forward.h`](../../Userland/Libraries/LibWeb/Forward.h):
     - `HTMLDetailsElement` in its namespace.
-    - `HTMLDetailsElementWrapper` in the `Web::Bindings` namespace.
 
-5. If your interface is an Event type:
-    - Add `#import <DOM/Event.idl>` at the top of the IDL file.
-    - Open [`LibWeb/Bindings/EventWrapperFactory.cpp`](../../Userland/Libraries/LibWeb/Bindings/EventWrapperFactory.cpp) and add an `#include` directive and `if` statement for your new Event type.
-
+5. If your type isn't an Event or Element, you will need to add it to [`is_platform_object()`](../../Meta/Lagom/Tools/CodeGenerators/LibWeb/BindingsGenerator/IDLGenerators.cpp)
+   so that it can be accepted as an IDL parameter, attribute or return type.

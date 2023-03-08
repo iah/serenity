@@ -15,7 +15,7 @@ CursorWidth RegularEditingEngine::cursor_width() const
     return CursorWidth::NARROW;
 }
 
-bool RegularEditingEngine::on_key(const KeyEvent& event)
+bool RegularEditingEngine::on_key(KeyEvent const& event)
 {
     if (EditingEngine::on_key(event))
         return true;
@@ -34,7 +34,7 @@ bool RegularEditingEngine::on_key(const KeyEvent& event)
     return false;
 }
 
-static int strcmp_utf32(const u32* s1, const u32* s2, size_t n)
+static int strcmp_utf32(u32 const* s1, u32 const* s2, size_t n)
 {
     while (n-- > 0) {
         if (*s1++ != *s2++)
@@ -61,7 +61,7 @@ void RegularEditingEngine::sort_selected_lines()
     auto end = lines.begin() + (int)last_line + 1;
 
     quick_sort(start, end, [](auto& a, auto& b) {
-        return strcmp_utf32(a.code_points(), b.code_points(), min(a.length(), b.length())) < 0;
+        return strcmp_utf32(a->code_points(), b->code_points(), min(a->length(), b->length())) < 0;
     });
 
     m_editor->did_change();

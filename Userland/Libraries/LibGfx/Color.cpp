@@ -5,32 +5,32 @@
  */
 
 #include <AK/Assertions.h>
+#include <AK/DeprecatedString.h>
+#include <AK/FloatingPointStringConversions.h>
 #include <AK/Optional.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <ctype.h>
-#include <stdlib.h>
 
 namespace Gfx {
 
-String Color::to_string() const
+DeprecatedString Color::to_deprecated_string() const
 {
-    return String::formatted("#{:02x}{:02x}{:02x}{:02x}", red(), green(), blue(), alpha());
+    return DeprecatedString::formatted("#{:02x}{:02x}{:02x}{:02x}", red(), green(), blue(), alpha());
 }
 
-String Color::to_string_without_alpha() const
+DeprecatedString Color::to_deprecated_string_without_alpha() const
 {
-    return String::formatted("#{:02x}{:02x}{:02x}", red(), green(), blue());
+    return DeprecatedString::formatted("#{:02x}{:02x}{:02x}", red(), green(), blue());
 }
 
 static Optional<Color> parse_rgb_color(StringView string)
 {
-    VERIFY(string.starts_with("rgb(", CaseSensitivity::CaseInsensitive));
-    VERIFY(string.ends_with(")"));
+    VERIFY(string.starts_with("rgb("sv, CaseSensitivity::CaseInsensitive));
+    VERIFY(string.ends_with(')'));
 
     auto substring = string.substring_view(4, string.length() - 5);
     auto parts = substring.split_view(',');
@@ -50,8 +50,8 @@ static Optional<Color> parse_rgb_color(StringView string)
 
 static Optional<Color> parse_rgba_color(StringView string)
 {
-    VERIFY(string.starts_with("rgba(", CaseSensitivity::CaseInsensitive));
-    VERIFY(string.ends_with(")"));
+    VERIFY(string.starts_with("rgba("sv, CaseSensitivity::CaseInsensitive));
+    VERIFY(string.ends_with(')'));
 
     auto substring = string.substring_view(5, string.length() - 6);
     auto parts = substring.split_view(',');
@@ -63,7 +63,12 @@ static Optional<Color> parse_rgba_color(StringView string)
     auto g = parts[1].to_int().value_or(256);
     auto b = parts[2].to_int().value_or(256);
 
-    double alpha = strtod(parts[3].to_string().characters(), nullptr);
+    double alpha = 0;
+    char const* start = parts[3].characters_without_null_termination();
+    auto alpha_result = parse_first_floating_point(start, start + parts[3].length());
+    if (alpha_result.parsed_value())
+        alpha = alpha_result.value;
+
     unsigned a = alpha * 255;
 
     if (r > 255 || g > 255 || b > 255 || a > 255)
@@ -78,12 +83,12 @@ Optional<Color> Color::from_string(StringView string)
         return {};
 
     struct ColorAndWebName {
-        constexpr ColorAndWebName(RGBA32 c, char const* n)
+        constexpr ColorAndWebName(ARGB32 c, char const* n)
             : color(c)
-            , name(n)
+            , name(n != nullptr ? StringView { n, __builtin_strlen(n) } : StringView {})
         {
         }
-        RGBA32 color;
+        ARGB32 color;
         StringView name;
     };
 
@@ -244,18 +249,18 @@ Optional<Color> Color::from_string(StringView string)
         { 0x000000, nullptr }
     };
 
-    if (string.equals_ignoring_case("transparent"))
-        return Color::from_rgba(0x00000000);
+    if (string.equals_ignoring_case("transparent"sv))
+        return Color::from_argb(0x00000000);
 
     for (size_t i = 0; !web_colors[i].name.is_null(); ++i) {
         if (string.equals_ignoring_case(web_colors[i].name))
             return Color::from_rgb(web_colors[i].color);
     }
 
-    if (string.starts_with("rgb(", CaseSensitivity::CaseInsensitive) && string.ends_with(")"))
+    if (string.starts_with("rgb("sv, CaseSensitivity::CaseInsensitive) && string.ends_with(')'))
         return parse_rgb_color(string);
 
-    if (string.starts_with("rgba(", CaseSensitivity::CaseInsensitive) && string.ends_with(")"))
+    if (string.starts_with("rgba("sv, CaseSensitivity::CaseInsensitive) && string.ends_with(')'))
         return parse_rgba_color(string);
 
     if (string[0] != '#')
@@ -336,21 +341,20 @@ Vector<Color> Color::tints(u32 steps, float max) const
 
 }
 
-bool IPC::encode(IPC::Encoder& encoder, Color const& color)
+template<>
+ErrorOr<void> IPC::encode(Encoder& encoder, Color const& color)
 {
-    encoder << color.value();
-    return true;
+    return encoder.encode(color.value());
 }
 
-ErrorOr<void> IPC::decode(IPC::Decoder& decoder, Color& color)
+template<>
+ErrorOr<Gfx::Color> IPC::decode(Decoder& decoder)
 {
-    u32 rgba;
-    TRY(decoder.decode(rgba));
-    color = Color::from_rgba(rgba);
-    return {};
+    auto rgba = TRY(decoder.decode<u32>());
+    return Gfx::Color::from_argb(rgba);
 }
 
-ErrorOr<void> AK::Formatter<Gfx::Color>::format(FormatBuilder& builder, Gfx::Color const& value)
+ErrorOr<void> AK::Formatter<Gfx::Color>::format(FormatBuilder& builder, Gfx::Color value)
 {
-    return Formatter<StringView>::format(builder, value.to_string());
+    return Formatter<StringView>::format(builder, value.to_deprecated_string());
 }

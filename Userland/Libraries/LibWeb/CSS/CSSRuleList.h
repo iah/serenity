@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Luke Wilde <lukew@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,37 +10,42 @@
 
 #include <AK/Function.h>
 #include <AK/Iterator.h>
-#include <AK/NonnullRefPtrVector.h>
-#include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
+#include <LibWeb/Bindings/LegacyPlatformObject.h>
 #include <LibWeb/CSS/CSSRule.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::CSS {
 
 // https://www.w3.org/TR/cssom/#the-cssrulelist-interface
-class CSSRuleList
-    : public RefCounted<CSSRuleList>
-    , public Bindings::Wrappable {
+class CSSRuleList : public Bindings::LegacyPlatformObject {
+    WEB_PLATFORM_OBJECT(CSSRuleList, Bindings::LegacyPlatformObject);
+
 public:
-    using WrapperType = Bindings::CSSRuleListWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSRuleList>> create(JS::Realm&, JS::MarkedVector<CSSRule*> const&);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSRuleList>> create_empty(JS::Realm&);
 
-    static NonnullRefPtr<CSSRuleList> create(NonnullRefPtrVector<CSSRule>&& rules)
-    {
-        return adopt_ref(*new CSSRuleList(move(rules)));
-    }
-    ~CSSRuleList();
+    ~CSSRuleList() = default;
 
-    RefPtr<CSSRule> item(size_t index) const
+    CSSRule const* item(size_t index) const
     {
         if (index >= length())
             return nullptr;
-        return m_rules[index];
+        return &m_rules[index];
     }
+
+    CSSRule* item(size_t index)
+    {
+        if (index >= length())
+            return nullptr;
+        return &m_rules[index];
+    }
+
     size_t length() const { return m_rules.size(); }
 
-    using ConstIterator = AK::SimpleIterator<AK::NonnullPtrVector<NonnullRefPtr<CSSRule>> const, CSSRule const>;
-    using Iterator = AK::SimpleIterator<AK::NonnullPtrVector<NonnullRefPtr<CSSRule>>, CSSRule>;
+    using ConstIterator = AK::SimpleIterator<Vector<CSSRule&> const, CSSRule const>;
+    using Iterator = AK::SimpleIterator<Vector<CSSRule&>, CSSRule>;
 
     ConstIterator const begin() const { return m_rules.begin(); }
     Iterator begin() { return m_rules.begin(); }
@@ -46,19 +53,36 @@ public:
     ConstIterator const end() const { return m_rules.end(); }
     Iterator end() { return m_rules.end(); }
 
-    bool is_supported_property_index(u32 index) const;
+    virtual bool is_supported_property_index(u32 index) const override;
+    virtual WebIDL::ExceptionOr<JS::Value> item_value(size_t index) const override;
 
-    DOM::ExceptionOr<void> remove_a_css_rule(u32 index);
-    DOM::ExceptionOr<unsigned> insert_a_css_rule(NonnullRefPtr<CSSRule>, u32 index);
+    WebIDL::ExceptionOr<void> remove_a_css_rule(u32 index);
+    WebIDL::ExceptionOr<unsigned> insert_a_css_rule(Variant<StringView, CSSRule*>, u32 index);
 
     void for_each_effective_style_rule(Function<void(CSSStyleRule const&)> const& callback) const;
     // Returns whether the match state of any media queries changed after evaluation.
-    bool evaluate_media_queries(DOM::Window const&);
+    bool evaluate_media_queries(HTML::Window const&);
 
 private:
-    explicit CSSRuleList(NonnullRefPtrVector<CSSRule>&&);
+    explicit CSSRuleList(JS::Realm&);
 
-    NonnullRefPtrVector<CSSRule> m_rules;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    // ^Bindings::LegacyPlatformObject
+    virtual bool supports_indexed_properties() const override { return true; }
+    virtual bool supports_named_properties() const override { return false; }
+    virtual bool has_indexed_property_setter() const override { return false; }
+    virtual bool has_named_property_setter() const override { return false; }
+    virtual bool has_named_property_deleter() const override { return false; }
+    virtual bool has_legacy_override_built_ins_interface_extended_attribute() const override { return false; }
+    virtual bool has_legacy_unenumerable_named_properties_interface_extended_attribute() const override { return false; }
+    virtual bool has_global_interface_extended_attribute() const override { return false; }
+    virtual bool indexed_property_setter_has_identifier() const override { return false; }
+    virtual bool named_property_setter_has_identifier() const override { return false; }
+    virtual bool named_property_deleter_has_identifier() const override { return false; }
+
+    Vector<CSSRule&> m_rules;
 };
 
 }

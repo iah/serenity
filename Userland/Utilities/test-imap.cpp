@@ -5,8 +5,8 @@
  */
 
 #include <LibCore/ArgsParser.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
-#include <LibCore/File.h>
 #include <LibCore/GetPassword.h>
 #include <LibIMAP/Client.h>
 #include <LibMain/Main.h>
@@ -18,11 +18,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    String host;
+    DeprecatedString host;
     int port;
     bool tls { false };
 
-    String username;
+    DeprecatedString username;
     Core::SecretString password;
 
     bool interactive_password;
@@ -38,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (interactive_password) {
         password = TRY(Core::get_password());
     } else {
-        auto standard_input = Core::File::standard_input();
+        auto standard_input = Core::DeprecatedFile::standard_input();
         password = Core::SecretString::take_ownership(standard_input->read_all());
     }
 
@@ -51,9 +51,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     response = move(client->send_simple_command(IMAP::CommandType::Capability)->await().value().get<IMAP::SolidResponse>());
     outln("[CAPABILITY] First capability: {}", response.data().capabilities().first());
-    bool idle_supported = !response.data().capabilities().find_if([](auto capability) { return capability.equals_ignoring_case("IDLE"); }).is_end();
+    bool idle_supported = !response.data().capabilities().find_if([](auto capability) { return capability.equals_ignoring_case("IDLE"sv); }).is_end();
 
-    response = client->list("", "*")->await().release_value();
+    response = client->list(""sv, "*"sv)->await().release_value();
     outln("[LIST] First mailbox: {}", response.data().list_items().first().name);
 
     auto mailbox = "Inbox"sv;
@@ -70,7 +70,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         "This is a message just to say hello.\r\n"
         "So, \"Hello\"."
     };
-    auto promise = client->append("INBOX", move(message));
+    auto promise = client->append("INBOX"sv, move(message));
     response = promise->await().release_value();
     outln("[APPEND] Response: {}", response.response_text());
 
@@ -85,7 +85,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto added_message = search_results.first();
     outln("[SEARCH] Number of results: {}", search_results.size());
 
-    response = client->status("INBOX", { IMAP::StatusItemType::Recent, IMAP::StatusItemType::Messages })->await().release_value();
+    response = client->status("INBOX"sv, { IMAP::StatusItemType::Recent, IMAP::StatusItemType::Messages })->await().release_value();
     outln("[STATUS] Recent items: {}", response.data().status_item().get(IMAP::StatusItemType::Recent));
 
     for (auto item : search_results) {
@@ -125,7 +125,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 .first()
                 .get<IMAP::FetchResponseData>()
                 .body_data()
-                .find_if([](Tuple<IMAP::FetchCommand::DataItem, Optional<String>>& data) {
+                .find_if([](Tuple<IMAP::FetchCommand::DataItem, Optional<DeprecatedString>>& data) {
                     const auto data_item = data.get<0>();
                     return data_item.section.has_value() && data_item.section->type == IMAP::FetchCommand::DataItem::SectionType::HeaderFields;
                 })

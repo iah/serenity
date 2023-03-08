@@ -15,13 +15,6 @@ TEST_CASE(int_hash)
     static_assert(int_hash(0) == 1177991625u);
 }
 
-TEST_CASE(double_hash)
-{
-    static_assert(double_hash(666) == 171644115u);
-    static_assert(double_hash(0) == 1189591134u);
-    static_assert(double_hash(0xBA5EDB01) == 0u);
-}
-
 TEST_CASE(pair_int_hash)
 {
     static_assert(pair_int_hash(42, 17) == 339337046u);
@@ -42,14 +35,14 @@ TEST_CASE(ptr_hash)
         EXPECT_EQ(ptr_hash(FlatPtr(42)), 2824066580u);
         EXPECT_EQ(ptr_hash(FlatPtr(0)), 954888656u);
 
-        EXPECT_EQ(ptr_hash(reinterpret_cast<const void*>(42)), 2824066580u);
-        EXPECT_EQ(ptr_hash(reinterpret_cast<const void*>(0)), 954888656u);
+        EXPECT_EQ(ptr_hash(reinterpret_cast<void const*>(42)), 2824066580u);
+        EXPECT_EQ(ptr_hash(reinterpret_cast<void const*>(0)), 954888656u);
     } else {
         EXPECT_EQ(ptr_hash(FlatPtr(42)), 3564735745u);
         EXPECT_EQ(ptr_hash(FlatPtr(0)), 1177991625u);
 
-        EXPECT_EQ(ptr_hash(reinterpret_cast<const void*>(42)), 3564735745u);
-        EXPECT_EQ(ptr_hash(reinterpret_cast<const void*>(0)), 1177991625u);
+        EXPECT_EQ(ptr_hash(reinterpret_cast<void const*>(42)), 3564735745u);
+        EXPECT_EQ(ptr_hash(reinterpret_cast<void const*>(0)), 1177991625u);
     }
 }
 

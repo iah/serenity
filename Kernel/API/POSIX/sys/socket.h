@@ -37,9 +37,9 @@ extern "C" {
 #define SOCK_NONBLOCK 04000
 #define SOCK_CLOEXEC 02000000
 
-#define SHUT_RD 1
-#define SHUT_WR 2
-#define SHUT_RDWR 3
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2
 
 #define IPPROTO_IP 0
 #define IPPROTO_ICMP 1
@@ -48,6 +48,8 @@ extern "C" {
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 #define IPPROTO_IPV6 41
+#define IPPROTO_ESP 50
+#define IPPROTO_AH 51
 #define IPPROTO_ICMPV6 58
 #define IPPROTO_RAW 255
 
@@ -58,6 +60,8 @@ extern "C" {
 #define MSG_DONTROUTE 0x10
 #define MSG_WAITALL 0x20
 #define MSG_DONTWAIT 0x40
+#define MSG_NOSIGNAL 0x80
+#define MSG_EOR 0x100
 
 typedef uint16_t sa_family_t;
 
@@ -76,6 +80,32 @@ struct msghdr {
     socklen_t msg_controllen;
     int msg_flags;
 };
+
+// These three are non-POSIX, but common:
+#define CMSG_ALIGN(x) (((x) + sizeof(void*) - 1) & ~(sizeof(void*) - 1))
+#define CMSG_SPACE(x) (CMSG_ALIGN(sizeof(struct cmsghdr)) + CMSG_ALIGN(x))
+#define CMSG_LEN(x) (CMSG_ALIGN(sizeof(struct cmsghdr)) + (x))
+
+static inline struct cmsghdr* CMSG_FIRSTHDR(struct msghdr* msg)
+{
+    if (msg->msg_controllen < sizeof(struct cmsghdr))
+        return (struct cmsghdr*)0;
+    return (struct cmsghdr*)msg->msg_control;
+}
+
+static inline struct cmsghdr* CMSG_NXTHDR(struct msghdr* msg, struct cmsghdr* cmsg)
+{
+    struct cmsghdr* next = (struct cmsghdr*)((char*)cmsg + CMSG_ALIGN(cmsg->cmsg_len));
+    unsigned offset = (char*)next - (char*)msg->msg_control;
+    if (msg->msg_controllen < offset + sizeof(struct cmsghdr))
+        return (struct cmsghdr*)0;
+    return next;
+}
+
+static inline void* CMSG_DATA(struct cmsghdr* cmsg)
+{
+    return (void*)(cmsg + 1);
+}
 
 struct sockaddr {
     sa_family_t sa_family;
@@ -114,6 +144,8 @@ enum {
     SO_ACCEPTCONN,
     SO_DONTROUTE,
     SO_OOBINLINE,
+    SO_SNDLOWAT,
+    SO_RCVLOWAT,
 };
 #define SO_RCVTIMEO SO_RCVTIMEO
 #define SO_SNDTIMEO SO_SNDTIMEO
@@ -132,6 +164,8 @@ enum {
 #define SO_ACCEPTCONN SO_ACCEPTCONN
 #define SO_DONTROUTE SO_DONTROUTE
 #define SO_OOBINLINE SO_OOBINLINE
+#define SO_SNDLOWAT SO_SNDLOWAT
+#define SO_RCVLOWAT SO_RCVLOWAT
 
 enum {
     SCM_TIMESTAMP,

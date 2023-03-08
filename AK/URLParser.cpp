@@ -6,9 +6,9 @@
 
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Optional.h>
 #include <AK/SourceLocation.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringUtils.h>
 #include <AK/URLParser.h>
@@ -19,7 +19,7 @@ namespace AK {
 // NOTE: This is similar to the LibC macro EOF = -1.
 constexpr u32 end_of_file = 0xFFFFFFFF;
 
-constexpr bool is_url_code_point(u32 code_point)
+static bool is_url_code_point(u32 code_point)
 {
     // FIXME: [...] and code points in the range U+00A0 to U+10FFFD, inclusive, excluding surrogates and noncharacters.
     return is_ascii_alphanumeric(code_point) || code_point >= 0xA0 || "!$&'()*+,-./:;=?@_~"sv.contains(code_point);
@@ -30,11 +30,11 @@ static void report_validation_error(SourceLocation const& location = SourceLocat
     dbgln_if(URL_PARSER_DEBUG, "URLParser::parse: Validation error! {}", location);
 }
 
-static Optional<String> parse_opaque_host(StringView input)
+static Optional<DeprecatedString> parse_opaque_host(StringView input)
 {
-    auto forbidden_host_code_points_excluding_percent = "\0\t\n\r #/:<>?@[\\]^|"sv;
-    for (auto code_point : forbidden_host_code_points_excluding_percent) {
-        if (input.contains(code_point)) {
+    auto forbidden_host_characters_excluding_percent = "\0\t\n\r #/:<>?@[\\]^|"sv;
+    for (auto character : forbidden_host_characters_excluding_percent) {
+        if (input.contains(character)) {
             report_validation_error();
             return {};
         }
@@ -44,7 +44,7 @@ static Optional<String> parse_opaque_host(StringView input)
     return URL::percent_encode(input, URL::PercentEncodeSet::C0Control);
 }
 
-static Optional<String> parse_ipv4_address(StringView input)
+static Optional<DeprecatedString> parse_ipv4_address(StringView input)
 {
     // FIXME: Implement the correct IPv4 parser as specified by https://url.spec.whatwg.org/#concept-ipv4-parser.
     return input;
@@ -52,7 +52,7 @@ static Optional<String> parse_ipv4_address(StringView input)
 
 // https://url.spec.whatwg.org/#concept-host-parser
 // NOTE: This is a very bare-bones implementation.
-static Optional<String> parse_host(StringView input, bool is_not_special = false)
+static Optional<DeprecatedString> parse_host(StringView input, bool is_not_special = false)
 {
     if (input.starts_with('[')) {
         if (!input.ends_with(']')) {
@@ -72,9 +72,9 @@ static Optional<String> parse_host(StringView input, bool is_not_special = false
     // FIXME: Let asciiDomain be the result of running domain to ASCII on domain.
     auto& ascii_domain = domain;
 
-    auto forbidden_host_code_points = "\0\t\n\r #%/:<>?@[\\]^|"sv;
-    for (auto code_point : forbidden_host_code_points) {
-        if (ascii_domain.view().contains(code_point)) {
+    auto forbidden_host_characters = "\0\t\n\r #%/:<>?@[\\]^|"sv;
+    for (auto character : forbidden_host_characters) {
+        if (ascii_domain.view().contains(character)) {
             report_validation_error();
             return {};
         }
@@ -84,11 +84,12 @@ static Optional<String> parse_host(StringView input, bool is_not_special = false
     return ipv4_host;
 }
 
+// https://url.spec.whatwg.org/#start-with-a-windows-drive-letter
 constexpr bool starts_with_windows_drive_letter(StringView input)
 {
     if (input.length() < 2)
         return false;
-    if (!is_ascii_alpha(input[0]) && !(input[1] == ':' || input[1] == '|'))
+    if (!is_ascii_alpha(input[0]) || !(input[1] == ':' || input[1] == '|'))
         return false;
     if (input.length() == 2)
         return true;
@@ -115,23 +116,58 @@ constexpr bool is_double_dot_path_segment(StringView input)
     return input == ".."sv || input.equals_ignoring_case(".%2e"sv) || input.equals_ignoring_case("%2e."sv) || input.equals_ignoring_case("%2e%2e"sv);
 }
 
+// https://url.spec.whatwg.org/#string-percent-encode-after-encoding
+static DeprecatedString percent_encode_after_encoding(StringView input, URL::PercentEncodeSet percent_encode_set, bool space_as_plus = false)
+{
+    // NOTE: This is written somewhat ad-hoc since we don't yet implement the Encoding spec.
+
+    StringBuilder output;
+
+    // 3. For each byte of encodeOutput converted to a byte sequence:
+    for (auto byte : input) {
+        // 1. If spaceAsPlus is true and byte is 0x20 (SP), then append U+002B (+) to output and continue.
+        if (space_as_plus && byte == ' ') {
+            output.append('+');
+            continue;
+        }
+
+        // 2. Let isomorph be a code point whose value is byte’s value.
+        u32 isomorph = byte;
+
+        // 3. Assert: percentEncodeSet includes all non-ASCII code points.
+
+        // 4. If isomorphic is not in percentEncodeSet, then append isomorph to output.
+        if (!URL::code_point_is_in_percent_encode_set(isomorph, percent_encode_set)) {
+            output.append_code_point(isomorph);
+        }
+
+        // 5. Otherwise, percent-encode byte and append the result to output.
+        else {
+            output.appendff("%{:02X}", byte);
+        }
+    }
+
+    // 6. Return output.
+    return output.to_deprecated_string();
+}
+
 // https://fetch.spec.whatwg.org/#data-urls
 // FIXME: This only loosely follows the spec, as we use the same class for "regular" and data URLs, unlike the spec.
 Optional<URL> URLParser::parse_data_url(StringView raw_input)
 {
     dbgln_if(URL_PARSER_DEBUG, "URLParser::parse_data_url: Parsing '{}'.", raw_input);
-    VERIFY(raw_input.starts_with("data:"));
+    VERIFY(raw_input.starts_with("data:"sv));
     auto input = raw_input.substring_view(5);
     auto comma_offset = input.find(',');
     if (!comma_offset.has_value())
         return {};
-    auto mime_type = StringUtils::trim(input.substring_view(0, comma_offset.value()), "\t\n\f\r ", TrimMode::Both);
+    auto mime_type = StringUtils::trim(input.substring_view(0, comma_offset.value()), "\t\n\f\r "sv, TrimMode::Both);
     auto encoded_body = input.substring_view(comma_offset.value() + 1);
     auto body = URL::percent_decode(encoded_body);
     bool is_base64_encoded = false;
-    if (mime_type.ends_with("base64", CaseSensitivity::CaseInsensitive)) {
+    if (mime_type.ends_with("base64"sv, CaseSensitivity::CaseInsensitive)) {
         auto substring_view = mime_type.substring_view(0, mime_type.length() - 6);
-        auto trimmed_substring_view = StringUtils::trim(substring_view, " ", TrimMode::Right);
+        auto trimmed_substring_view = StringUtils::trim(substring_view, " "sv, TrimMode::Right);
         if (trimmed_substring_view.ends_with(';')) {
             is_base64_encoded = true;
             mime_type = trimmed_substring_view.substring_view(0, trimmed_substring_view.length() - 1);
@@ -139,14 +175,14 @@ Optional<URL> URLParser::parse_data_url(StringView raw_input)
     }
 
     StringBuilder builder;
-    if (mime_type.starts_with(";") || mime_type.is_empty()) {
-        builder.append("text/plain");
+    if (mime_type.starts_with(";"sv) || mime_type.is_empty()) {
+        builder.append("text/plain"sv);
         builder.append(mime_type);
         mime_type = builder.string_view();
     }
 
     // FIXME: Parse the MIME type's components according to https://mimesniff.spec.whatwg.org/#parse-a-mime-type
-    URL url { StringUtils::trim(mime_type, "\n\r\t ", TrimMode::Both), move(body), is_base64_encoded };
+    URL url { StringUtils::trim(mime_type, "\n\r\t "sv, TrimMode::Both), move(body), is_base64_encoded };
     dbgln_if(URL_PARSER_DEBUG, "URLParser::parse_data_url: Parsed data URL to be '{}'.", url.serialize());
     return url;
 }
@@ -165,9 +201,9 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
 {
     dbgln_if(URL_PARSER_DEBUG, "URLParser::parse: Parsing '{}'", raw_input);
     if (raw_input.is_empty())
-        return {};
+        return base_url ? *base_url : URL {};
 
-    if (raw_input.starts_with("data:")) {
+    if (raw_input.starts_with("data:"sv)) {
         auto maybe_url = parse_data_url(raw_input);
         if (!maybe_url.has_value())
             return {};
@@ -205,12 +241,12 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
     if (start_index >= end_index)
         return {};
 
-    String processed_input = raw_input.substring_view(start_index, end_index - start_index);
+    DeprecatedString processed_input = raw_input.substring_view(start_index, end_index - start_index);
 
     // NOTE: This replaces all tab and newline characters with nothing.
-    if (processed_input.contains("\t") || processed_input.contains("\n")) {
+    if (processed_input.contains("\t"sv) || processed_input.contains("\n"sv)) {
         report_validation_error();
-        processed_input = processed_input.replace("\t", "", true).replace("\n", "", true);
+        processed_input = processed_input.replace("\t"sv, ""sv, ReplaceMode::All).replace("\n"sv, ""sv, ReplaceMode::All);
     }
 
     State state = state_override.value_or(State::SchemeStart);
@@ -257,10 +293,10 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
             if (is_ascii_alphanumeric(code_point) || code_point == '+' || code_point == '-' || code_point == '.') {
                 buffer.append_as_lowercase(code_point);
             } else if (code_point == ':') {
-                url->m_scheme = buffer.to_string();
+                url->m_scheme = buffer.to_deprecated_string();
                 buffer.clear();
                 if (url->scheme() == "file") {
-                    if (!get_remaining().starts_with("//")) {
+                    if (!get_remaining().starts_with("//"sv)) {
                         report_validation_error();
                     }
                     state = State::File;
@@ -269,7 +305,7 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
                         state = State::SpecialRelativeOrAuthority;
                     else
                         state = State::SpecialAuthoritySlashes;
-                } else if (get_remaining().starts_with("/")) {
+                } else if (get_remaining().starts_with("/"sv)) {
                     state = State::PathOrAuthority;
                     ++iterator;
                 } else {
@@ -304,7 +340,7 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
             }
             break;
         case State::SpecialRelativeOrAuthority:
-            if (code_point == '/' && get_remaining().starts_with("/")) {
+            if (code_point == '/' && get_remaining().starts_with("/"sv)) {
                 state = State::SpecialAuthorityIgnoreSlashes;
                 ++iterator;
             } else {
@@ -368,7 +404,7 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
             }
             break;
         case State::SpecialAuthoritySlashes:
-            if (code_point == '/' && get_remaining().starts_with("/")) {
+            if (code_point == '/' && get_remaining().starts_with("/"sv)) {
                 state = State::SpecialAuthorityIgnoreSlashes;
                 ++iterator;
             } else {
@@ -389,9 +425,9 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
             if (code_point == '@') {
                 report_validation_error();
                 if (at_sign_seen) {
-                    auto content = buffer.to_string();
+                    auto content = buffer.to_deprecated_string();
                     buffer.clear();
-                    buffer.append("%40");
+                    buffer.append("%40"sv);
                     buffer.append(content);
                 }
                 at_sign_seen = true;
@@ -635,11 +671,11 @@ URL URLParser::parse(StringView raw_input, URL const* base_url, Optional<URL> ur
             }
             break;
         case State::Query:
+            // https://url.spec.whatwg.org/#query-state
             if (code_point == end_of_file || code_point == '#') {
                 VERIFY(url->m_query == "");
                 auto query_percent_encode_set = url->is_special() ? URL::PercentEncodeSet::SpecialQuery : URL::PercentEncodeSet::Query;
-                // NOTE: This is has to be encoded and then decoded because the original sequence could contain already percent-encoded sequences.
-                url->m_query = URL::percent_decode(URL::percent_encode(buffer.string_view(), query_percent_encode_set));
+                url->m_query = percent_encode_after_encoding(buffer.string_view(), query_percent_encode_set);
                 buffer.clear();
                 if (code_point == '#') {
                     url->m_fragment = "";

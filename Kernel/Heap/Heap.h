@@ -14,13 +14,18 @@
 
 namespace Kernel {
 
+enum class CallerWillInitializeMemory {
+    No,
+    Yes,
+};
+
 template<size_t CHUNK_SIZE, unsigned HEAP_SCRUB_BYTE_ALLOC = 0, unsigned HEAP_SCRUB_BYTE_FREE = 0>
 class Heap {
     AK_MAKE_NONCOPYABLE(Heap);
 
     struct AllocationHeader {
         size_t allocation_size_in_chunks;
-#if ARCH(X86_64)
+#if ARCH(X86_64) || ARCH(AARCH64)
         // FIXME: Get rid of this somehow
         size_t alignment_dummy;
 #endif
@@ -33,9 +38,9 @@ class Heap {
     {
         return (AllocationHeader*)((((u8*)ptr) - sizeof(AllocationHeader)));
     }
-    ALWAYS_INLINE const AllocationHeader* allocation_header(const void* ptr) const
+    ALWAYS_INLINE AllocationHeader const* allocation_header(void const* ptr) const
     {
-        return (const AllocationHeader*)((((const u8*)ptr) - sizeof(AllocationHeader)));
+        return (AllocationHeader const*)((((u8 const*)ptr) - sizeof(AllocationHeader)));
     }
 
     static size_t calculate_chunks(size_t memory_size)
@@ -44,6 +49,8 @@ class Heap {
     }
 
 public:
+    static constexpr size_t AllocationHeaderSize = sizeof(AllocationHeader);
+
     Heap(u8* memory, size_t memory_size)
         : m_total_chunks(calculate_chunks(memory_size))
         , m_chunks(memory)
@@ -61,11 +68,16 @@ public:
         return needed_chunks * CHUNK_SIZE + (needed_chunks + 7) / 8;
     }
 
-    void* allocate(size_t size)
+    void* allocate(size_t size, size_t alignment, CallerWillInitializeMemory caller_will_initialize_memory)
     {
+        // The minimum possible alignment is CHUNK_SIZE, since we only track chunks here, nothing smaller.
+        if (alignment < CHUNK_SIZE)
+            alignment = CHUNK_SIZE;
+
         // We need space for the AllocationHeader at the head of the block.
         size_t real_size = size + sizeof(AllocationHeader);
         size_t chunks_needed = (real_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        size_t chunk_alignment = (alignment + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
         if (chunks_needed > free_chunks())
             return nullptr;
@@ -73,26 +85,38 @@ public:
         Optional<size_t> first_chunk;
 
         // Choose the right policy for allocation.
+        // FIXME: These should utilize the alignment directly instead of trying to allocate `size + alignment`.
         constexpr u32 best_fit_threshold = 128;
         if (chunks_needed < best_fit_threshold) {
-            first_chunk = m_bitmap.find_first_fit(chunks_needed);
+            first_chunk = m_bitmap.find_first_fit(chunks_needed + chunk_alignment);
         } else {
-            first_chunk = m_bitmap.find_best_fit(chunks_needed);
+            first_chunk = m_bitmap.find_best_fit(chunks_needed + chunk_alignment);
         }
 
         if (!first_chunk.has_value())
             return nullptr;
 
         auto* a = (AllocationHeader*)(m_chunks + (first_chunk.value() * CHUNK_SIZE));
+
+        // Align the starting address and verify that we haven't gone outside the calculated free area.
+        a = (AllocationHeader*)((FlatPtr)a + alignment - (FlatPtr)a->data % alignment);
+        auto aligned_first_chunk = ((FlatPtr)a - (FlatPtr)m_chunks) / CHUNK_SIZE;
+        VERIFY(first_chunk.value() <= aligned_first_chunk);
+        VERIFY(aligned_first_chunk + chunks_needed <= first_chunk.value() + chunks_needed + chunk_alignment);
+
         u8* ptr = a->data;
         a->allocation_size_in_chunks = chunks_needed;
 
-        m_bitmap.set_range_and_verify_that_all_bits_flip(first_chunk.value(), chunks_needed, true);
+        m_bitmap.set_range_and_verify_that_all_bits_flip(aligned_first_chunk, chunks_needed, true);
 
         m_allocated_chunks += chunks_needed;
-        if constexpr (HEAP_SCRUB_BYTE_ALLOC != 0) {
-            __builtin_memset(ptr, HEAP_SCRUB_BYTE_ALLOC, (chunks_needed * CHUNK_SIZE) - sizeof(AllocationHeader));
+        if (caller_will_initialize_memory == CallerWillInitializeMemory::No) {
+            if constexpr (HEAP_SCRUB_BYTE_ALLOC != 0) {
+                __builtin_memset(ptr, HEAP_SCRUB_BYTE_ALLOC, (chunks_needed * CHUNK_SIZE) - sizeof(AllocationHeader));
+            }
         }
+
+        VERIFY((FlatPtr)ptr % alignment == 0);
         return ptr;
     }
 
@@ -118,12 +142,12 @@ public:
         }
     }
 
-    bool contains(const void* ptr) const
+    bool contains(void const* ptr) const
     {
-        const auto* a = allocation_header(ptr);
-        if ((const u8*)a < m_chunks)
+        auto const* a = allocation_header(ptr);
+        if ((u8 const*)a < m_chunks)
             return false;
-        if ((const u8*)ptr >= m_chunks + m_total_chunks * CHUNK_SIZE)
+        if ((u8 const*)ptr >= m_chunks + m_total_chunks * CHUNK_SIZE)
             return false;
         return true;
     }

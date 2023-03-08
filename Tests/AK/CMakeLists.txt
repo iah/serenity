@@ -1,7 +1,7 @@
 set(AK_TEST_SOURCES
-    TestFixedPoint.cpp
     TestAllOf.cpp
     TestAnyOf.cpp
+    TestArbitrarySizedEnum.cpp
     TestArray.cpp
     TestAtomic.cpp
     TestBadge.cpp
@@ -10,14 +10,16 @@ set(AK_TEST_SOURCES
     TestBinarySearch.cpp
     TestBitCast.cpp
     TestBitmap.cpp
+    TestBitStream.cpp
     TestBuiltinWrappers.cpp
     TestByteBuffer.cpp
     TestCharacterTypes.cpp
     TestChecked.cpp
+    TestCircularBuffer.cpp
     TestCircularDeque.cpp
-    TestCircularDuplexStream.cpp
     TestCircularQueue.cpp
     TestComplex.cpp
+    TestDeprecatedString.cpp
     TestDisjointChunks.cpp
     TestDistinctNumeric.cpp
     TestDoublyLinkedList.cpp
@@ -25,6 +27,10 @@ set(AK_TEST_SOURCES
     TestEnumBits.cpp
     TestFind.cpp
     TestFixedArray.cpp
+    TestFixedPoint.cpp
+    TestFloatingPoint.cpp
+    TestFloatingPointParsing.cpp
+    TestFlyString.cpp
     TestFormat.cpp
     TestGenericLexer.cpp
     TestHashFunctions.cpp
@@ -32,7 +38,9 @@ set(AK_TEST_SOURCES
     TestHashTable.cpp
     TestHex.cpp
     TestIPv4Address.cpp
+    TestIPv6Address.cpp
     TestIndexSequence.cpp
+    TestInsertionSort.cpp
     TestIntegerMath.cpp
     TestIntrusiveList.cpp
     TestIntrusiveRedBlackTree.cpp
@@ -40,23 +48,29 @@ set(AK_TEST_SOURCES
     TestLEB128.cpp
     TestLexicalPath.cpp
     TestMACAddress.cpp
-    TestMemMem.cpp
+    TestMemory.cpp
     TestMemoryStream.cpp
     TestNeverDestroyed.cpp
     TestNonnullRefPtr.cpp
     TestNumberFormat.cpp
     TestOptional.cpp
+    TestOwnPtr.cpp
+    TestPrint.cpp
     TestQueue.cpp
+    TestQuickSelect.cpp
     TestQuickSort.cpp
     TestRedBlackTree.cpp
     TestRefPtr.cpp
+    TestSIMD.cpp
     TestSinglyLinkedList.cpp
     TestSourceGenerator.cpp
     TestSourceLocation.cpp
     TestSpan.cpp
     TestStack.cpp
+    TestStatistics.cpp
     TestStdLibExtras.cpp
     TestString.cpp
+    TestStringFloatingPointConversions.cpp
     TestStringUtils.cpp
     TestStringView.cpp
     TestTime.cpp
@@ -76,3 +90,5 @@ set(AK_TEST_SOURCES
 foreach(source IN LISTS AK_TEST_SOURCES)
     serenity_test("${source}" AK)
 endforeach()
+
+target_link_libraries(TestString PRIVATE LibUnicode)

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2022, Idan Horowitz <idan.horowitz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,7 +15,7 @@
 
 namespace Kernel {
 
-Thread::BlockTimeout::BlockTimeout(bool is_absolute, const Time* time, const Time* start_time, clockid_t clock_id)
+Thread::BlockTimeout::BlockTimeout(bool is_absolute, Time const* time, Time const* start_time, clockid_t clock_id)
     : m_clock_id(clock_id)
     , m_infinite(!time)
 {
@@ -37,9 +38,7 @@ bool Thread::Blocker::add_to_blocker_set(Thread::BlockerSet& blocker_set, void* 
     return false;
 }
 
-Thread::Blocker::~Blocker()
-{
-}
+Thread::Blocker::~Blocker() = default;
 
 void Thread::Blocker::finalize()
 {
@@ -132,9 +131,7 @@ bool Thread::WaitQueueBlocker::setup_blocker()
     return add_to_blocker_set(m_wait_queue);
 }
 
-Thread::WaitQueueBlocker::~WaitQueueBlocker()
-{
-}
+Thread::WaitQueueBlocker::~WaitQueueBlocker() = default;
 
 bool Thread::WaitQueueBlocker::unblock()
 {
@@ -160,16 +157,14 @@ bool Thread::FutexBlocker::setup_blocker()
     return add_to_blocker_set(m_futex_queue);
 }
 
-Thread::FutexBlocker::~FutexBlocker()
-{
-}
+Thread::FutexBlocker::~FutexBlocker() = default;
 
 void Thread::FutexBlocker::finish_requeue(FutexQueue& futex_queue)
 {
     VERIFY(m_lock.is_locked_by_current_processor());
     set_blocker_set_raw_locked(&futex_queue);
     // We can now release the lock
-    m_lock.unlock(m_relock_flags);
+    m_lock.unlock(m_previous_interrupts_state);
 }
 
 bool Thread::FutexBlocker::unblock_bitset(u32 bitset)
@@ -251,7 +246,7 @@ void Thread::OpenFileDescriptionBlocker::will_unblock_immediately_without_blocki
     unblock_if_conditions_are_met(false, nullptr);
 }
 
-const OpenFileDescription& Thread::OpenFileDescriptionBlocker::blocked_description() const
+OpenFileDescription const& Thread::OpenFileDescriptionBlocker::blocked_description() const
 {
     return m_blocked_description;
 }
@@ -271,7 +266,7 @@ Thread::WriteBlocker::WriteBlocker(OpenFileDescription& description, BlockFlags&
 {
 }
 
-auto Thread::WriteBlocker::override_timeout(const BlockTimeout& timeout) -> const BlockTimeout&
+auto Thread::WriteBlocker::override_timeout(BlockTimeout const& timeout) -> BlockTimeout const&
 {
     auto const& description = blocked_description();
     if (description.is_socket()) {
@@ -291,7 +286,7 @@ Thread::ReadBlocker::ReadBlocker(OpenFileDescription& description, BlockFlags& u
 {
 }
 
-auto Thread::ReadBlocker::override_timeout(const BlockTimeout& timeout) -> const BlockTimeout&
+auto Thread::ReadBlocker::override_timeout(BlockTimeout const& timeout) -> BlockTimeout const&
 {
     auto const& description = blocked_description();
     if (description.is_socket()) {
@@ -306,13 +301,13 @@ auto Thread::ReadBlocker::override_timeout(const BlockTimeout& timeout) -> const
     return timeout;
 }
 
-Thread::SleepBlocker::SleepBlocker(const BlockTimeout& deadline, Time* remaining)
+Thread::SleepBlocker::SleepBlocker(BlockTimeout const& deadline, Time* remaining)
     : m_deadline(deadline)
     , m_remaining(remaining)
 {
 }
 
-auto Thread::SleepBlocker::override_timeout(const BlockTimeout& timeout) -> const BlockTimeout&
+auto Thread::SleepBlocker::override_timeout(BlockTimeout const& timeout) -> BlockTimeout const&
 {
     VERIFY(timeout.is_infinite()); // A timeout should not be provided
     // To simplify things only use the sleep deadline.
@@ -366,21 +361,25 @@ bool Thread::SelectBlocker::setup_blocker()
 
         if (!should_block)
             continue;
+        if (!fd_entry.description) {
+            should_block = false;
+            continue;
+        }
         if (!fd_entry.description->blocker_set().add_blocker(*this, &fd_entry))
             should_block = false;
     }
     return should_block;
 }
 
-Thread::SelectBlocker::~SelectBlocker()
-{
-}
+Thread::SelectBlocker::~SelectBlocker() = default;
 
 void Thread::SelectBlocker::finalize()
 {
     Thread::FileBlocker::finalize();
-    for (auto& fd_entry : m_fds)
-        fd_entry.description->blocker_set().remove_blocker(*this);
+    for (auto& fd_entry : m_fds) {
+        if (fd_entry.description)
+            fd_entry.description->blocker_set().remove_blocker(*this);
+    }
 }
 
 void Thread::SelectBlocker::will_unblock_immediately_without_blocking(UnblockImmediatelyReason reason)
@@ -405,6 +404,7 @@ bool Thread::SelectBlocker::unblock_if_conditions_are_met(bool from_add_blocker,
         if (m_did_unblock)
             return false;
 
+        VERIFY(fd_info.description);
         auto unblock_flags = fd_info.description->should_unblock(fd_info.block_flags);
         if (unblock_flags == BlockFlags::None)
             return false;
@@ -428,6 +428,11 @@ size_t Thread::SelectBlocker::collect_unblocked_flags()
     size_t count = 0;
     for (auto& fd_entry : m_fds) {
         VERIFY(fd_entry.block_flags != FileBlocker::BlockFlags::None);
+
+        if (!fd_entry.description) {
+            count++;
+            continue;
+        }
 
         // unblock will have set at least the first descriptor's unblock
         // flags that triggered the unblock. Make sure we don't discard that
@@ -482,7 +487,15 @@ bool Thread::SignalBlocker::check_pending_signals(bool from_add_blocker)
         if (m_did_unblock)
             return false;
 
-        auto matching_pending_signal = bit_scan_forward(thread().pending_signals() & m_pending_set);
+        auto pending_signals = thread().pending_signals() & m_pending_set;
+
+        // Also unblock if we have just "handled" that signal and are in the procecss
+        // of running their signal handler (i.e. we just unmarked the signal as pending).
+        if (thread().m_currently_handled_signal)
+            pending_signals |= (1 << (thread().m_currently_handled_signal - 1)) & m_pending_set;
+
+        auto matching_pending_signal = bit_scan_forward(pending_signals);
+
         if (matching_pending_signal == 0)
             return false;
 
@@ -497,16 +510,14 @@ bool Thread::SignalBlocker::check_pending_signals(bool from_add_blocker)
     return true;
 }
 
-Thread::WaitBlockerSet::ProcessBlockInfo::ProcessBlockInfo(NonnullRefPtr<Process>&& process, WaitBlocker::UnblockFlags flags, u8 signal)
+Thread::WaitBlockerSet::ProcessBlockInfo::ProcessBlockInfo(NonnullLockRefPtr<Process>&& process, WaitBlocker::UnblockFlags flags, u8 signal)
     : process(move(process))
     , flags(flags)
     , signal(signal)
 {
 }
 
-Thread::WaitBlockerSet::ProcessBlockInfo::~ProcessBlockInfo()
-{
-}
+Thread::WaitBlockerSet::ProcessBlockInfo::~ProcessBlockInfo() = default;
 
 void Thread::WaitBlockerSet::try_unblock(Thread::WaitBlocker& blocker)
 {
@@ -652,7 +663,7 @@ void Thread::WaitBlockerSet::finalize()
     }
 }
 
-Thread::WaitBlocker::WaitBlocker(int wait_options, Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee, ErrorOr<siginfo_t>& result)
+Thread::WaitBlocker::WaitBlocker(int wait_options, Variant<Empty, NonnullLockRefPtr<Process>, NonnullLockRefPtr<ProcessGroup>> waitee, ErrorOr<siginfo_t>& result)
     : m_wait_options(wait_options)
     , m_result(result)
     , m_waitee(move(waitee))
@@ -698,7 +709,7 @@ void Thread::WaitBlocker::do_was_disowned()
     m_result = ECHILD;
 }
 
-void Thread::WaitBlocker::do_set_result(const siginfo_t& result)
+void Thread::WaitBlocker::do_set_result(siginfo_t const& result)
 {
     VERIFY(!m_did_unblock);
     m_did_unblock = true;
@@ -720,10 +731,10 @@ bool Thread::WaitBlocker::unblock(Process& process, UnblockFlags flags, u8 signa
     VERIFY(flags != UnblockFlags::Terminated || signal == 0); // signal argument should be ignored for Terminated
 
     bool do_not_unblock = m_waitee.visit(
-        [&](NonnullRefPtr<Process> const& waitee_process) {
+        [&](NonnullLockRefPtr<Process> const& waitee_process) {
             return &process != waitee_process;
         },
-        [&](NonnullRefPtr<ProcessGroup> const& waitee_process_group) {
+        [&](NonnullLockRefPtr<ProcessGroup> const& waitee_process_group) {
             return waitee_process_group->pgid() != process.pgid();
         },
         [&](Empty const&) {
@@ -772,10 +783,11 @@ bool Thread::WaitBlocker::unblock(Process& process, UnblockFlags flags, u8 signa
         siginfo_t siginfo {};
         {
             SpinlockLocker lock(g_scheduler_lock);
+            auto credentials = process.credentials();
             // We need to gather the information before we release the scheduler lock!
             siginfo.si_signo = SIGCHLD;
             siginfo.si_pid = process.pid().value();
-            siginfo.si_uid = process.uid().value();
+            siginfo.si_uid = credentials->uid().value();
             siginfo.si_status = signal;
 
             switch (flags) {
@@ -807,6 +819,39 @@ bool Thread::WaitBlocker::unblock(Process& process, UnblockFlags flags, u8 signa
     // Because this may be called from add_blocker, in which case we should
     // not be actually trying to unblock the thread (because it hasn't actually
     // been blocked yet), we need to return true anyway
+    return true;
+}
+
+Thread::FlockBlocker::FlockBlocker(NonnullLockRefPtr<Inode> inode, flock const& flock)
+    : m_inode(move(inode))
+    , m_flock(flock)
+{
+}
+
+void Thread::FlockBlocker::will_unblock_immediately_without_blocking(UnblockImmediatelyReason reason)
+{
+    VERIFY(reason == UnblockImmediatelyReason::UnblockConditionAlreadyMet);
+}
+
+bool Thread::FlockBlocker::setup_blocker()
+{
+    return add_to_blocker_set(m_inode->flock_blocker_set());
+}
+
+bool Thread::FlockBlocker::try_unblock(bool from_add_blocker)
+{
+    if (!m_inode->can_apply_flock(m_flock))
+        return false;
+
+    {
+        SpinlockLocker lock(m_lock);
+        if (m_did_unblock)
+            return false;
+        m_did_unblock = true;
+    }
+
+    if (!from_add_blocker)
+        unblock_from_blocker();
     return true;
 }
 

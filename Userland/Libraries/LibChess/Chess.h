@@ -25,7 +25,7 @@ enum class Type : u8 {
     None,
 };
 
-String char_for_piece(Type type);
+StringView char_for_piece(Type type);
 Chess::Type piece_for_char_promotion(StringView str);
 
 enum class Color : u8 {
@@ -49,7 +49,7 @@ struct Piece {
     }
     Color color : 4;
     Type type : 4;
-    bool operator==(const Piece& other) const { return color == other.color && type == other.type; }
+    bool operator==(Piece const& other) const { return color == other.color && type == other.type; }
 };
 
 constexpr Piece EmptyPiece = { Color::None, Type::None };
@@ -57,13 +57,20 @@ constexpr Piece EmptyPiece = { Color::None, Type::None };
 struct Square {
     i8 rank; // zero indexed;
     i8 file;
+
     Square(StringView name);
-    Square(const int& rank, const int& file)
+
+    Square(char const name[3])
+        : Square({ name, 2 })
+    {
+    }
+
+    Square(int const& rank, int const& file)
         : rank(rank)
         , file(file)
     {
     }
-    bool operator==(const Square& other) const { return rank == other.rank && file == other.file; }
+    bool operator==(Square const& other) const { return rank == other.rank && file == other.file; }
 
     template<typename Callback>
     static void for_each(Callback callback)
@@ -78,7 +85,7 @@ struct Square {
 
     bool in_bounds() const { return rank >= 0 && file >= 0 && rank < 8 && file < 8; }
     bool is_light() const { return (rank % 2) != (file % 2); }
-    String to_algebraic() const;
+    DeprecatedString to_algebraic() const;
 };
 
 class Board;
@@ -94,35 +101,36 @@ struct Move {
     bool is_ambiguous : 1 = false;
     Square ambiguous { 50, 50 };
     Move(StringView long_algebraic);
-    Move(const Square& from, const Square& to, const Type& promote_to = Type::None)
+    Move(Square const& from, Square const& to, Type const& promote_to = Type::None)
         : from(from)
         , to(to)
         , promote_to(promote_to)
     {
     }
-    bool operator==(const Move& other) const { return from == other.from && to == other.to && promote_to == other.promote_to; }
+    bool operator==(Move const& other) const { return from == other.from && to == other.to && promote_to == other.promote_to; }
 
-    static Move from_algebraic(StringView algebraic, const Color turn, const Board& board);
-    String to_long_algebraic() const;
-    String to_algebraic() const;
+    static Move from_algebraic(StringView algebraic, const Color turn, Board const& board);
+    DeprecatedString to_long_algebraic() const;
+    DeprecatedString to_algebraic() const;
 };
 
 class Board {
 public:
     Board();
+    Board clone_without_history() const;
 
-    Piece get_piece(const Square&) const;
-    Piece set_piece(const Square&, const Piece&);
+    Piece get_piece(Square const&) const;
+    Piece set_piece(Square const&, Piece const&);
 
-    bool is_legal(const Move&, Color color = Color::None) const;
+    bool is_legal(Move const&, Color color = Color::None) const;
     bool in_check(Color color) const;
 
-    bool is_promotion_move(const Move&, Color color = Color::None) const;
+    bool is_promotion_move(Move const&, Color color = Color::None) const;
 
-    bool apply_move(const Move&, Color color = Color::None);
-    const Optional<Move>& last_move() const { return m_last_move; }
+    bool apply_move(Move const&, Color color = Color::None);
+    Optional<Move> const& last_move() const { return m_last_move; }
 
-    String to_fen() const;
+    DeprecatedString to_fen() const;
 
     enum class Result {
         CheckMate,
@@ -137,8 +145,8 @@ public:
         NotFinished,
     };
 
-    static String result_to_string(Result, Color turn);
-    static String result_to_points(Result, Color turn);
+    static StringView result_to_string(Result, Color turn);
+    static StringView result_to_points_string(Result, Color turn);
 
     template<typename Callback>
     void generate_moves(Callback callback, Color color = Color::None) const;
@@ -151,14 +159,14 @@ public:
     int material_imbalance() const;
 
     Color turn() const { return m_turn; }
-    const Vector<Move>& moves() const { return m_moves; }
+    Vector<Move> const& moves() const { return m_moves; }
 
-    bool operator==(const Board& other) const;
+    bool operator==(Board const& other) const;
 
 private:
-    bool is_legal_no_check(const Move&, Color color) const;
-    bool is_legal_promotion(const Move&, Color color) const;
-    bool apply_illegal_move(const Move&, Color color);
+    bool is_legal_no_check(Move const&, Color color) const;
+    bool is_legal_promotion(Move const&, Color color) const;
+    bool apply_illegal_move(Move const&, Color color);
 
     Piece m_board[8][8];
     Optional<Move> m_last_move;

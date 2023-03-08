@@ -6,14 +6,14 @@
  */
 
 #include <Kernel/Arch/SmapDisabler.h>
-#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
 
-ErrorOr<FlatPtr> Process::sys$sigprocmask(int how, Userspace<const sigset_t*> set, Userspace<sigset_t*> old_set)
+ErrorOr<FlatPtr> Process::sys$sigprocmask(int how, Userspace<sigset_t const*> set, Userspace<sigset_t*> old_set)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::sigaction));
     auto* current_thread = Thread::current();
     u32 previous_signal_mask;
@@ -43,30 +43,32 @@ ErrorOr<FlatPtr> Process::sys$sigprocmask(int how, Userspace<const sigset_t*> se
 
 ErrorOr<FlatPtr> Process::sys$sigpending(Userspace<sigset_t*> set)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     auto pending_signals = Thread::current()->pending_signals();
     TRY(copy_to_user(set, &pending_signals));
     return 0;
 }
 
-ErrorOr<FlatPtr> Process::sys$sigaction(int signum, Userspace<const sigaction*> user_act, Userspace<sigaction*> user_old_act)
+ErrorOr<FlatPtr> Process::sys$sigaction(int signum, Userspace<sigaction const*> user_act, Userspace<sigaction*> user_old_act)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::sigaction));
-    if (signum < 1 || signum >= 32 || signum == SIGKILL || signum == SIGSTOP)
+    if (signum < 1 || signum >= NSIG || signum == SIGKILL || signum == SIGSTOP)
         return EINVAL;
 
     InterruptDisabler disabler; // FIXME: This should use a narrower lock. Maybe a way to ignore signals temporarily?
-    auto& action = Thread::current()->m_signal_action_data[signum];
+    auto& action = m_signal_action_data[signum];
     if (user_old_act) {
         sigaction old_act {};
         old_act.sa_flags = action.flags;
         old_act.sa_sigaction = reinterpret_cast<decltype(old_act.sa_sigaction)>(action.handler_or_sigaction.as_ptr());
+        old_act.sa_mask = action.mask;
         TRY(copy_to_user(user_old_act, &old_act));
     }
     if (user_act) {
         auto act = TRY(copy_typed_from_user(user_act));
+        action.mask = act.sa_mask;
         action.flags = act.sa_flags;
         action.handler_or_sigaction = VirtualAddress { reinterpret_cast<void*>(act.sa_sigaction) };
     }
@@ -75,57 +77,46 @@ ErrorOr<FlatPtr> Process::sys$sigaction(int signum, Userspace<const sigaction*> 
 
 ErrorOr<FlatPtr> Process::sys$sigreturn([[maybe_unused]] RegisterState& registers)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     SmapDisabler disabler;
 
-#if ARCH(I386)
     // Here, we restore the state pushed by dispatch signal and asm_signal_trampoline.
-    u32* stack_ptr = (u32*)registers.userspace_esp;
-    u32 smuggled_eax = *stack_ptr;
+    auto stack_ptr = registers.userspace_sp();
 
-    // pop the stored eax, ebp, return address, handler and signal code
-    stack_ptr += 5;
+    // Stack state (created by the signal trampoline):
+    // saved_ax, ucontext, signal_info, fpu_state?.
 
-    Thread::current()->m_signal_mask = *stack_ptr;
-    stack_ptr++;
-
-    // pop edi, esi, ebp, esp, ebx, edx, ecx and eax
-    memcpy(&registers.edi, stack_ptr, 8 * sizeof(FlatPtr));
-    stack_ptr += 8;
-
-    registers.eip = *stack_ptr;
-    stack_ptr++;
-
-    registers.eflags = (registers.eflags & ~safe_eflags_mask) | (*stack_ptr & safe_eflags_mask);
-    stack_ptr++;
-
-    registers.userspace_esp = registers.esp;
-    return smuggled_eax;
-#else
-    // Here, we restore the state pushed by dispatch signal and asm_signal_trampoline.
-    FlatPtr* stack_ptr = (FlatPtr*)registers.userspace_rsp;
-    FlatPtr smuggled_rax = *stack_ptr;
-
-    // pop the stored rax, rbp, return address, handler and signal code
-    stack_ptr += 5;
-
-    Thread::current()->m_signal_mask = *stack_ptr;
-    stack_ptr++;
-
-    // pop rdi, rsi, rbp, rsp, rbx, rdx, rcx, rax, r8, r9, r10, r11, r12, r13, r14 and r15
-    memcpy(&registers.rdi, stack_ptr, 16 * sizeof(FlatPtr));
-    stack_ptr += 16;
-
-    registers.rip = *stack_ptr;
-    stack_ptr++;
-
-    registers.rflags = (registers.rflags & ~safe_eflags_mask) | (*stack_ptr & safe_eflags_mask);
-    stack_ptr++;
-
-    registers.userspace_rsp = registers.rsp;
-    return smuggled_rax;
+#if ARCH(X86_64)
+    // The FPU state is at the top here, pop it off and restore it.
+    // FIXME: The stack alignment is off by 8 bytes here, figure this out and remove this excessively aligned object.
+    alignas(alignof(FPUState) * 2) FPUState data {};
+    TRY(copy_from_user(&data, bit_cast<FPUState const*>(stack_ptr)));
+    Thread::current()->fpu_state() = data;
+    stack_ptr += sizeof(FPUState);
 #endif
+
+    stack_ptr += sizeof(siginfo); // We don't need this here.
+
+    auto ucontext = TRY(copy_typed_from_user<__ucontext>(stack_ptr));
+    stack_ptr += sizeof(__ucontext);
+
+    auto saved_ax = TRY(copy_typed_from_user<FlatPtr>(stack_ptr));
+
+    Thread::current()->m_signal_mask = ucontext.uc_sigmask;
+    Thread::current()->m_currently_handled_signal = 0;
+#if ARCH(X86_64)
+    auto sp = registers.rsp;
+#endif
+
+    copy_ptrace_registers_into_kernel_registers(registers, static_cast<PtraceRegisters const&>(ucontext.uc_mcontext));
+
+#if ARCH(X86_64)
+    registers.set_userspace_sp(registers.rsp);
+    registers.rsp = sp;
+#endif
+
+    return saved_ax;
 }
 
 ErrorOr<void> Process::remap_range_as_stack(FlatPtr address, size_t size)
@@ -138,104 +129,40 @@ ErrorOr<void> Process::remap_range_as_stack(FlatPtr address, size_t size)
     if (!is_user_range(range_to_remap))
         return EFAULT;
 
-    if (auto* whole_region = address_space().find_region_from_range(range_to_remap)) {
-        if (!whole_region->is_mmap())
-            return EPERM;
-        if (!whole_region->vmobject().is_anonymous() || whole_region->is_shared())
-            return EINVAL;
-        whole_region->unsafe_clear_access();
-        whole_region->set_readable(true);
-        whole_region->set_writable(true);
-        whole_region->set_stack(true);
-        whole_region->set_syscall_region(false);
-        whole_region->clear_to_zero();
-        whole_region->remap();
-
-        return {};
-    }
-
-    if (auto* old_region = address_space().find_region_containing(range_to_remap)) {
-        if (!old_region->is_mmap())
-            return EPERM;
-        if (!old_region->vmobject().is_anonymous() || old_region->is_shared())
-            return EINVAL;
-
-        // Remove the old region from our regions tree, since were going to add another region
-        // with the exact same start address, but do not deallocate it yet
-        auto region = address_space().take_region(*old_region);
-
-        // Unmap the old region here, specifying that we *don't* want the VM deallocated.
-        region->unmap(Memory::Region::ShouldDeallocateVirtualRange::No);
-
-        // This vector is the region(s) adjacent to our range.
-        // We need to allocate a new region for the range we wanted to change permission bits on.
-        auto adjacent_regions = TRY(address_space().try_split_region_around_range(*region, range_to_remap));
-
-        size_t new_range_offset_in_vmobject = region->offset_in_vmobject() + (range_to_remap.base().get() - region->range().base().get());
-        auto* new_region = TRY(address_space().try_allocate_split_region(*region, range_to_remap, new_range_offset_in_vmobject));
-        new_region->unsafe_clear_access();
-        new_region->set_readable(true);
-        new_region->set_writable(true);
-        new_region->set_stack(true);
-        new_region->set_syscall_region(false);
-        new_region->clear_to_zero();
-
-        // Map the new regions using our page directory (they were just allocated and don't have one).
-        for (auto* adjacent_region : adjacent_regions) {
-            TRY(adjacent_region->map(address_space().page_directory()));
-        }
-        TRY(new_region->map(address_space().page_directory()));
-
-        return {};
-    }
-
-    if (const auto& regions = TRY(address_space().find_regions_intersecting(range_to_remap)); regions.size()) {
-        size_t full_size_found = 0;
-        // Check that all intersecting regions are compatible.
-        for (const auto* region : regions) {
-            if (!region->is_mmap())
+    return address_space().with([&](auto& space) -> ErrorOr<void> {
+        if (auto* whole_region = space->find_region_from_range(range_to_remap)) {
+            if (!whole_region->is_mmap())
                 return EPERM;
-            if (!region->vmobject().is_anonymous() || region->is_shared())
+            if (!whole_region->vmobject().is_anonymous() || whole_region->is_shared())
                 return EINVAL;
-            full_size_found += region->range().intersect(range_to_remap).size();
+            whole_region->unsafe_clear_access();
+            whole_region->set_readable(true);
+            whole_region->set_writable(true);
+            whole_region->set_stack(true);
+            whole_region->set_syscall_region(false);
+            whole_region->clear_to_zero();
+            whole_region->remap();
+
+            return {};
         }
 
-        if (full_size_found != range_to_remap.size())
-            return ENOMEM;
+        if (auto* old_region = space->find_region_containing(range_to_remap)) {
+            if (!old_region->is_mmap())
+                return EPERM;
+            if (!old_region->vmobject().is_anonymous() || old_region->is_shared())
+                return EINVAL;
 
-        // Finally, iterate over each region, either updating its access flags if the range covers it wholly,
-        // or carving out a new subregion with the appropriate access flags set.
-        for (auto* old_region : regions) {
-            const auto intersection_to_remap = range_to_remap.intersect(old_region->range());
-            // If the region is completely covered by range, simply update the access flags
-            if (intersection_to_remap == old_region->range()) {
-                old_region->unsafe_clear_access();
-                old_region->set_readable(true);
-                old_region->set_writable(true);
-                old_region->set_stack(true);
-                old_region->set_syscall_region(false);
-                old_region->clear_to_zero();
-                old_region->remap();
-                continue;
-            }
             // Remove the old region from our regions tree, since were going to add another region
-            // with the exact same start address, but dont deallocate it yet
-            auto region = address_space().take_region(*old_region);
-
-            // Unmap the old region here, specifying that we *don't* want the VM deallocated.
-            region->unmap(Memory::Region::ShouldDeallocateVirtualRange::No);
+            // with the exact same start address.
+            auto region = space->take_region(*old_region);
+            region->unmap();
 
             // This vector is the region(s) adjacent to our range.
             // We need to allocate a new region for the range we wanted to change permission bits on.
-            auto adjacent_regions = TRY(address_space().try_split_region_around_range(*old_region, intersection_to_remap));
+            auto adjacent_regions = TRY(space->try_split_region_around_range(*region, range_to_remap));
 
-            // Since the range is not contained in a single region, it can only partially cover its starting and ending region,
-            // therefore carving out a chunk from the region will always produce a single extra region, and not two.
-            VERIFY(adjacent_regions.size() == 1);
-
-            size_t new_range_offset_in_vmobject = old_region->offset_in_vmobject() + (intersection_to_remap.base().get() - old_region->range().base().get());
-            auto* new_region = TRY(address_space().try_allocate_split_region(*region, intersection_to_remap, new_range_offset_in_vmobject));
-
+            size_t new_range_offset_in_vmobject = region->offset_in_vmobject() + (range_to_remap.base().get() - region->range().base().get());
+            auto* new_region = TRY(space->try_allocate_split_region(*region, range_to_remap, new_range_offset_in_vmobject));
             new_region->unsafe_clear_access();
             new_region->set_readable(true);
             new_region->set_writable(true);
@@ -243,21 +170,83 @@ ErrorOr<void> Process::remap_range_as_stack(FlatPtr address, size_t size)
             new_region->set_syscall_region(false);
             new_region->clear_to_zero();
 
-            // Map the new region using our page directory (they were just allocated and don't have one) if any.
-            TRY(adjacent_regions[0]->map(address_space().page_directory()));
+            // Map the new regions using our page directory (they were just allocated and don't have one).
+            for (auto* adjacent_region : adjacent_regions) {
+                TRY(adjacent_region->map(space->page_directory()));
+            }
+            TRY(new_region->map(space->page_directory()));
 
-            TRY(new_region->map(address_space().page_directory()));
+            return {};
         }
 
-        return {};
-    }
+        if (auto const& regions = TRY(space->find_regions_intersecting(range_to_remap)); regions.size()) {
+            size_t full_size_found = 0;
+            // Check that all intersecting regions are compatible.
+            for (auto const* region : regions) {
+                if (!region->is_mmap())
+                    return EPERM;
+                if (!region->vmobject().is_anonymous() || region->is_shared())
+                    return EINVAL;
+                full_size_found += region->range().intersect(range_to_remap).size();
+            }
 
-    return EINVAL;
+            if (full_size_found != range_to_remap.size())
+                return ENOMEM;
+
+            // Finally, iterate over each region, either updating its access flags if the range covers it wholly,
+            // or carving out a new subregion with the appropriate access flags set.
+            for (auto* old_region : regions) {
+                auto const intersection_to_remap = range_to_remap.intersect(old_region->range());
+                // If the region is completely covered by range, simply update the access flags
+                if (intersection_to_remap == old_region->range()) {
+                    old_region->unsafe_clear_access();
+                    old_region->set_readable(true);
+                    old_region->set_writable(true);
+                    old_region->set_stack(true);
+                    old_region->set_syscall_region(false);
+                    old_region->clear_to_zero();
+                    old_region->remap();
+                    continue;
+                }
+                // Remove the old region from our regions tree, since were going to add another region
+                // with the exact same start address.
+                auto region = space->take_region(*old_region);
+                region->unmap();
+
+                // This vector is the region(s) adjacent to our range.
+                // We need to allocate a new region for the range we wanted to change permission bits on.
+                auto adjacent_regions = TRY(space->try_split_region_around_range(*old_region, intersection_to_remap));
+
+                // Since the range is not contained in a single region, it can only partially cover its starting and ending region,
+                // therefore carving out a chunk from the region will always produce a single extra region, and not two.
+                VERIFY(adjacent_regions.size() == 1);
+
+                size_t new_range_offset_in_vmobject = old_region->offset_in_vmobject() + (intersection_to_remap.base().get() - old_region->range().base().get());
+                auto* new_region = TRY(space->try_allocate_split_region(*region, intersection_to_remap, new_range_offset_in_vmobject));
+
+                new_region->unsafe_clear_access();
+                new_region->set_readable(true);
+                new_region->set_writable(true);
+                new_region->set_stack(true);
+                new_region->set_syscall_region(false);
+                new_region->clear_to_zero();
+
+                // Map the new region using our page directory (they were just allocated and don't have one) if any.
+                TRY(adjacent_regions[0]->map(space->page_directory()));
+
+                TRY(new_region->map(space->page_directory()));
+            }
+
+            return {};
+        }
+
+        return EINVAL;
+    });
 }
 
-ErrorOr<FlatPtr> Process::sys$sigaltstack(Userspace<const stack_t*> user_ss, Userspace<stack_t*> user_old_ss)
+ErrorOr<FlatPtr> Process::sys$sigaltstack(Userspace<stack_t const*> user_ss, Userspace<stack_t*> user_old_ss)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::sigaction));
 
     if (user_old_ss) {
@@ -304,9 +293,9 @@ ErrorOr<FlatPtr> Process::sys$sigaltstack(Userspace<const stack_t*> user_ss, Use
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigtimedwait.html
-ErrorOr<FlatPtr> Process::sys$sigtimedwait(Userspace<const sigset_t*> set, Userspace<siginfo_t*> info, Userspace<const timespec*> timeout)
+ErrorOr<FlatPtr> Process::sys$sigtimedwait(Userspace<sigset_t const*> set, Userspace<siginfo_t*> info, Userspace<timespec const*> timeout)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::sigaction));
 
     sigset_t set_value;
@@ -332,6 +321,30 @@ ErrorOr<FlatPtr> Process::sys$sigtimedwait(Userspace<const sigset_t*> set, Users
     if (info)
         TRY(copy_to_user(info, &info_value));
     return info_value.si_signo;
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigsuspend.html
+ErrorOr<FlatPtr> Process::sys$sigsuspend(Userspace<sigset_t const*> mask)
+{
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+
+    auto sigmask = TRY(copy_typed_from_user(mask));
+
+    auto* current_thread = Thread::current();
+
+    u32 previous_signal_mask = current_thread->update_signal_mask(sigmask);
+    ScopeGuard rollback_signal_mask([&]() {
+        current_thread->update_signal_mask(previous_signal_mask);
+    });
+
+    // TODO: Ensure that/check if we never return if the action is to terminate the process.
+    // TODO: Ensure that/check if we only return after an eventual signal-catching function returns.
+    Thread::BlockTimeout timeout = {};
+    siginfo_t siginfo = {};
+    if (current_thread->block<Thread::SignalBlocker>(timeout, ~sigmask, siginfo).was_interrupted())
+        return EINTR;
+
+    return 0;
 }
 
 }

@@ -1,733 +1,733 @@
 /*
  * Copyright (c) 2021, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2022, Gregory Bertilson <zaggy1024@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "TreeParser.h"
+#include <AK/Function.h>
+
+#include "Context.h"
+#include "Enums.h"
 #include "LookupTables.h"
 #include "Parser.h"
+#include "TreeParser.h"
+#include "Utilities.h"
 
 namespace Video::VP9 {
 
-template<typename T>
-T TreeParser::parse_tree(SyntaxElementType type)
-{
-    auto tree_selection = select_tree(type);
-    int value;
-    if (tree_selection.is_single_value()) {
-        value = tree_selection.get_single_value();
-    } else {
-        auto tree = tree_selection.get_tree_value();
-        int n = 0;
-        do {
-            n = tree[n + m_decoder.m_bit_stream->read_bool(select_tree_probability(type, n >> 1))];
-        } while (n > 0);
-        value = -n;
+// Parsing of binary trees is handled here, as defined in sections 9.3.
+// Each syntax element is defined in its own section for each overarching section listed here:
+// - 9.3.1: Selection of the binary tree to be used.
+// - 9.3.2: Probability selection based on context and often the node of the tree.
+// - 9.3.4: Counting each syntax element when it is read.
+
+class TreeSelection {
+public:
+    union TreeSelectionValue {
+        int const* m_tree;
+        int m_value;
+    };
+
+    constexpr TreeSelection(int const* values)
+        : m_is_single_value(false)
+        , m_value { .m_tree = values }
+    {
     }
-    count_syntax_element(type, value);
-    return static_cast<T>(value);
+
+    constexpr TreeSelection(int value)
+        : m_is_single_value(true)
+        , m_value { .m_value = value }
+    {
+    }
+
+    bool is_single_value() const { return m_is_single_value; }
+    int single_value() const { return m_value.m_value; }
+    int const* tree() const { return m_value.m_tree; }
+
+private:
+    bool m_is_single_value;
+    TreeSelectionValue m_value;
+};
+
+template<typename OutputType>
+inline ErrorOr<OutputType> parse_tree(BooleanDecoder& decoder, TreeSelection tree_selection, Function<u8(u8)> const& probability_getter)
+{
+    // 9.3.3: The tree decoding function.
+    if (tree_selection.is_single_value())
+        return static_cast<OutputType>(tree_selection.single_value());
+
+    int const* tree = tree_selection.tree();
+    int n = 0;
+    do {
+        u8 node = n >> 1;
+        n = tree[n + TRY(decoder.read_bool(probability_getter(node)))];
+    } while (n > 0);
+
+    return static_cast<OutputType>(-n);
 }
 
-template int TreeParser::parse_tree(SyntaxElementType);
-template bool TreeParser::parse_tree(SyntaxElementType);
-template u8 TreeParser::parse_tree(SyntaxElementType);
-template u32 TreeParser::parse_tree(SyntaxElementType);
-template IntraMode TreeParser::parse_tree(SyntaxElementType);
-template TXSize TreeParser::parse_tree(SyntaxElementType);
-template InterpolationFilter TreeParser::parse_tree(SyntaxElementType);
-template ReferenceMode TreeParser::parse_tree(SyntaxElementType);
-template Token TreeParser::parse_tree(SyntaxElementType);
-template MvClass TreeParser::parse_tree(SyntaxElementType);
-template MvJoint TreeParser::parse_tree(SyntaxElementType);
-
-/*
- * Select a tree value based on the type of syntax element being parsed, as well as some parser state, as specified in section 9.3.1
- */
-TreeParser::TreeSelection TreeParser::select_tree(SyntaxElementType type)
+ErrorOr<Partition> TreeParser::parse_partition(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, bool has_rows, bool has_columns, BlockSubsize block_subsize, u8 num_8x8, PartitionContextView above_partition_context, PartitionContextView left_partition_context, u32 row, u32 column, bool frame_is_intra)
 {
-    switch (type) {
-    case SyntaxElementType::Partition:
-        if (m_decoder.m_has_rows && m_decoder.m_has_cols)
-            return { partition_tree };
-        if (m_decoder.m_has_cols)
-            return { cols_partition_tree };
-        if (m_decoder.m_has_rows)
-            return { rows_partition_tree };
-        return { PartitionSplit };
-    case SyntaxElementType::DefaultIntraMode:
-    case SyntaxElementType::DefaultUVMode:
-    case SyntaxElementType::IntraMode:
-    case SyntaxElementType::SubIntraMode:
-    case SyntaxElementType::UVMode:
-        return { intra_mode_tree };
-    case SyntaxElementType::SegmentID:
-        return { segment_tree };
-    case SyntaxElementType::Skip:
-    case SyntaxElementType::SegIDPredicted:
-    case SyntaxElementType::IsInter:
-    case SyntaxElementType::CompMode:
-    case SyntaxElementType::CompRef:
-    case SyntaxElementType::SingleRefP1:
-    case SyntaxElementType::SingleRefP2:
-    case SyntaxElementType::MVSign:
-    case SyntaxElementType::MVClass0Bit:
-    case SyntaxElementType::MVBit:
-    case SyntaxElementType::MoreCoefs:
-        return { binary_tree };
-    case SyntaxElementType::TXSize:
-        if (m_decoder.m_max_tx_size == TX_32x32)
-            return { tx_size_32_tree };
-        if (m_decoder.m_max_tx_size == TX_16x16)
-            return { tx_size_16_tree };
-        return { tx_size_8_tree };
-    case SyntaxElementType::InterMode:
-        return { inter_mode_tree };
-    case SyntaxElementType::InterpFilter:
-        return { interp_filter_tree };
-    case SyntaxElementType::MVJoint:
-        return { mv_joint_tree };
-    case SyntaxElementType::MVClass:
-        return { mv_class_tree };
-    case SyntaxElementType::MVClass0FR:
-    case SyntaxElementType::MVFR:
-        return { mv_fr_tree };
-    case SyntaxElementType::MVClass0HP:
-    case SyntaxElementType::MVHP:
-        if (m_decoder.m_use_hp)
-            return { binary_tree };
-        return { 1 };
-    case SyntaxElementType::Token:
-        return { token_tree };
-    }
-    VERIFY_NOT_REACHED();
-}
+    // Tree array
+    TreeSelection tree = { PartitionSplit };
+    if (has_rows && has_columns)
+        tree = { partition_tree };
+    else if (has_rows)
+        tree = { rows_partition_tree };
+    else if (has_columns)
+        tree = { cols_partition_tree };
 
-/*
- * Select a probability with which to read a boolean when decoding a tree, as specified in section 9.3.2
- */
-u8 TreeParser::select_tree_probability(SyntaxElementType type, u8 node)
-{
-    switch (type) {
-    case SyntaxElementType::Partition:
-        return calculate_partition_probability(node);
-    case SyntaxElementType::DefaultIntraMode:
-        return calculate_default_intra_mode_probability(node);
-    case SyntaxElementType::DefaultUVMode:
-        return calculate_default_uv_mode_probability(node);
-    case SyntaxElementType::IntraMode:
-        return calculate_intra_mode_probability(node);
-    case SyntaxElementType::SubIntraMode:
-        return calculate_sub_intra_mode_probability(node);
-    case SyntaxElementType::UVMode:
-        return calculate_uv_mode_probability(node);
-    case SyntaxElementType::SegmentID:
-        return calculate_segment_id_probability(node);
-    case SyntaxElementType::Skip:
-        return calculate_skip_probability();
-    case SyntaxElementType::SegIDPredicted:
-        return calculate_seg_id_predicted_probability();
-    case SyntaxElementType::IsInter:
-        return calculate_is_inter_probability();
-    case SyntaxElementType::CompMode:
-        return calculate_comp_mode_probability();
-    case SyntaxElementType::CompRef:
-        return calculate_comp_ref_probability();
-    case SyntaxElementType::SingleRefP1:
-        return calculate_single_ref_p1_probability();
-    case SyntaxElementType::SingleRefP2:
-        return calculate_single_ref_p2_probability();
-    case SyntaxElementType::MVSign:
-        break;
-    case SyntaxElementType::MVClass0Bit:
-        break;
-    case SyntaxElementType::MVBit:
-        break;
-    case SyntaxElementType::TXSize:
-        return calculate_tx_size_probability(node);
-    case SyntaxElementType::InterMode:
-        return calculate_inter_mode_probability(node);
-    case SyntaxElementType::InterpFilter:
-        return calculate_interp_filter_probability(node);
-    case SyntaxElementType::MVJoint:
-        break;
-    case SyntaxElementType::MVClass:
-        break;
-    case SyntaxElementType::MVClass0FR:
-        break;
-    case SyntaxElementType::MVClass0HP:
-        break;
-    case SyntaxElementType::MVFR:
-        break;
-    case SyntaxElementType::MVHP:
-        break;
-    case SyntaxElementType::Token:
-        return calculate_token_probability(node);
-    case SyntaxElementType::MoreCoefs:
-        return calculate_more_coefs_probability();
-    }
-    TODO();
-}
-
-#define ABOVE_FRAME_0 m_decoder.m_above_ref_frame[0]
-#define ABOVE_FRAME_1 m_decoder.m_above_ref_frame[1]
-#define LEFT_FRAME_0 m_decoder.m_left_ref_frame[0]
-#define LEFT_FRAME_1 m_decoder.m_left_ref_frame[1]
-#define AVAIL_U m_decoder.m_available_u
-#define AVAIL_L m_decoder.m_available_l
-#define ABOVE_INTRA m_decoder.m_above_intra
-#define LEFT_INTRA m_decoder.m_left_intra
-#define ABOVE_SINGLE m_decoder.m_above_single
-#define LEFT_SINGLE m_decoder.m_left_single
-
-u8 TreeParser::calculate_partition_probability(u8 node)
-{
-    int node2;
-    if (m_decoder.m_has_rows && m_decoder.m_has_cols) {
-        node2 = node;
-    } else if (m_decoder.m_has_cols) {
-        node2 = 1;
-    } else {
-        node2 = 2;
-    }
-
+    // Probability array
     u32 above = 0;
     u32 left = 0;
-    auto bsl = mi_width_log2_lookup[m_decoder.m_block_subsize];
+    auto bsl = mi_width_log2_lookup[block_subsize];
     auto block_offset = mi_width_log2_lookup[Block_64x64] - bsl;
-    for (auto i = 0; i < m_decoder.m_num_8x8; i++) {
-        above |= m_decoder.m_above_partition_context[m_decoder.m_col + i];
-        left |= m_decoder.m_left_partition_context[m_decoder.m_row + i];
+    for (auto i = 0; i < num_8x8; i++) {
+        above |= above_partition_context[column + i];
+        left |= left_partition_context[row + i];
     }
     above = (above & (1 << block_offset)) > 0;
     left = (left & (1 << block_offset)) > 0;
-    m_ctx = bsl * 4 + left * 2 + above;
-    if (m_decoder.m_frame_is_intra)
-        return m_decoder.m_probability_tables->kf_partition_probs()[m_ctx][node2];
-    return m_decoder.m_probability_tables->partition_probs()[m_ctx][node2];
+    auto context = bsl * 4 + left * 2 + above;
+    u8 const* probabilities = frame_is_intra ? probability_table.kf_partition_probs()[context] : probability_table.partition_probs()[context];
+
+    Function<u8(u8)> probability_getter = [&](u8 node) {
+        if (has_rows && has_columns)
+            return probabilities[node];
+        if (has_columns)
+            return probabilities[1];
+        return probabilities[2];
+    };
+
+    auto value = TRY(parse_tree<Partition>(decoder, tree, probability_getter));
+    counter.m_counts_partition[context][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_default_intra_mode_probability(u8 node)
+ErrorOr<PredictionMode> TreeParser::parse_default_intra_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, BlockSubsize mi_size, FrameBlockContext above, FrameBlockContext left, Array<PredictionMode, 4> const& block_sub_modes, u8 index_x, u8 index_y)
 {
-    u32 above_mode, left_mode;
-    if (m_decoder.m_mi_size >= Block_8x8) {
-        above_mode = AVAIL_U
-            ? m_decoder.m_sub_modes[(m_decoder.m_mi_row - 1) * m_decoder.m_mi_cols * 4 + m_decoder.m_mi_col * 4 + 2]
-            : DcPred;
-        left_mode = AVAIL_L
-            ? m_decoder.m_sub_modes[m_decoder.m_mi_row * m_decoder.m_mi_cols * 4 + (m_decoder.m_mi_col - 1) * 4 + 1]
-            : DcPred;
+    // FIXME: This should use a struct for the above and left contexts.
+
+    // Tree
+    TreeSelection tree = { intra_mode_tree };
+
+    // Probabilities
+    PredictionMode above_mode, left_mode;
+    if (mi_size >= Block_8x8) {
+        above_mode = above.sub_modes[2];
+        left_mode = left.sub_modes[1];
     } else {
-        if (m_idy) {
-            above_mode = m_decoder.m_block_sub_modes[m_idx];
-        } else {
-            above_mode = AVAIL_U
-                ? m_decoder.m_sub_modes[(m_decoder.m_mi_row - 1) * m_decoder.m_mi_cols * 4 + m_decoder.m_mi_col * 4 + 2 + m_idx]
-                : DcPred;
-        }
+        if (index_y > 0)
+            above_mode = block_sub_modes[index_x];
+        else
+            above_mode = above.sub_modes[2 + index_x];
 
-        if (m_idx) {
-            left_mode = m_decoder.m_block_sub_modes[m_idy * 2];
-        } else {
-            left_mode = AVAIL_L
-                ? m_decoder.m_sub_modes[m_decoder.m_mi_row * m_decoder.m_mi_cols * 4 + (m_decoder.m_mi_col - 1) * 4 + 1 + m_idy * 2]
-                : DcPred;
-        }
+        if (index_x > 0)
+            left_mode = block_sub_modes[index_y << 1];
+        else
+            left_mode = left.sub_modes[1 + (index_y << 1)];
     }
-    return m_decoder.m_probability_tables->kf_y_mode_probs()[above_mode][left_mode][node];
+    u8 const* probabilities = probability_table.kf_y_mode_probs()[to_underlying(above_mode)][to_underlying(left_mode)];
+
+    auto value = TRY(parse_tree<PredictionMode>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    // Default intra mode is not counted.
+    return value;
 }
 
-u8 TreeParser::calculate_default_uv_mode_probability(u8 node)
+ErrorOr<PredictionMode> TreeParser::parse_default_uv_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, PredictionMode y_mode)
 {
-    return m_decoder.m_probability_tables->kf_uv_mode_prob()[m_decoder.m_y_mode][node];
+    // Tree
+    TreeSelection tree = { intra_mode_tree };
+
+    // Probabilities
+    u8 const* probabilities = probability_table.kf_uv_mode_prob()[to_underlying(y_mode)];
+
+    auto value = TRY(parse_tree<PredictionMode>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    // Default UV mode is not counted.
+    return value;
 }
 
-u8 TreeParser::calculate_intra_mode_probability(u8 node)
+ErrorOr<PredictionMode> TreeParser::parse_intra_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, BlockSubsize mi_size)
 {
-    m_ctx = size_group_lookup[m_decoder.m_mi_size];
-    return m_decoder.m_probability_tables->y_mode_probs()[m_ctx][node];
+    // Tree
+    TreeSelection tree = { intra_mode_tree };
+
+    // Probabilities
+    auto context = size_group_lookup[mi_size];
+    u8 const* probabilities = probability_table.y_mode_probs()[context];
+
+    auto value = TRY(parse_tree<PredictionMode>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_intra_mode[context][to_underlying(value)]++;
+    return value;
 }
 
-u8 TreeParser::calculate_sub_intra_mode_probability(u8 node)
+ErrorOr<PredictionMode> TreeParser::parse_sub_intra_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter)
 {
-    m_ctx = 0;
-    return m_decoder.m_probability_tables->y_mode_probs()[m_ctx][node];
+    // Tree
+    TreeSelection tree = { intra_mode_tree };
+
+    // Probabilities
+    u8 const* probabilities = probability_table.y_mode_probs()[0];
+
+    auto value = TRY(parse_tree<PredictionMode>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_intra_mode[0][to_underlying(value)]++;
+    return value;
 }
 
-u8 TreeParser::calculate_uv_mode_probability(u8 node)
+ErrorOr<PredictionMode> TreeParser::parse_uv_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, PredictionMode y_mode)
 {
-    m_ctx = m_decoder.m_y_mode;
-    return m_decoder.m_probability_tables->uv_mode_probs()[m_ctx][node];
+    // Tree
+    TreeSelection tree = { intra_mode_tree };
+
+    // Probabilities
+    u8 const* probabilities = probability_table.uv_mode_probs()[to_underlying(y_mode)];
+
+    auto value = TRY(parse_tree<PredictionMode>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_uv_mode[to_underlying(y_mode)][to_underlying(value)]++;
+    return value;
 }
 
-u8 TreeParser::calculate_segment_id_probability(u8 node)
+ErrorOr<u8> TreeParser::parse_segment_id(BooleanDecoder& decoder, Array<u8, 7> const& probabilities)
 {
-    return m_decoder.m_segmentation_tree_probs[node];
+    auto value = TRY(parse_tree<u8>(decoder, { segment_tree }, [&](u8 node) { return probabilities[node]; }));
+    // Segment ID is not counted.
+    return value;
 }
 
-u8 TreeParser::calculate_skip_probability()
+ErrorOr<bool> TreeParser::parse_segment_id_predicted(BooleanDecoder& decoder, Array<u8, 3> const& probabilities, u8 above_seg_pred_context, u8 left_seg_pred_context)
 {
-    m_ctx = 0;
-    if (AVAIL_U)
-        m_ctx += m_decoder.m_skips[(m_decoder.m_mi_row - 1) * m_decoder.m_mi_cols + m_decoder.m_mi_col];
-    if (AVAIL_L)
-        m_ctx += m_decoder.m_skips[m_decoder.m_mi_row * m_decoder.m_mi_cols + m_decoder.m_mi_col - 1];
-    return m_decoder.m_probability_tables->skip_prob()[m_ctx];
+    auto context = left_seg_pred_context + above_seg_pred_context;
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probabilities[context]; }));
+    // Segment ID prediction is not counted.
+    return value;
 }
 
-u8 TreeParser::calculate_seg_id_predicted_probability()
+ErrorOr<PredictionMode> TreeParser::parse_inter_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 mode_context_for_ref_frame_0)
 {
-    m_ctx = m_decoder.m_left_seg_pred_context[m_decoder.m_mi_row] + m_decoder.m_above_seg_pred_context[m_decoder.m_mi_col];
-    return m_decoder.m_segmentation_pred_prob[m_ctx];
+    // Tree
+    TreeSelection tree = { inter_mode_tree };
+
+    // Probabilities
+    u8 const* probabilities = probability_table.inter_mode_probs()[mode_context_for_ref_frame_0];
+
+    auto value = TRY(parse_tree<u8>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_inter_mode[mode_context_for_ref_frame_0][value]++;
+    return static_cast<PredictionMode>(value + to_underlying(PredictionMode::NearestMv));
 }
 
-u8 TreeParser::calculate_is_inter_probability()
+ErrorOr<InterpolationFilter> TreeParser::parse_interpolation_filter(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, FrameBlockContext above, FrameBlockContext left)
 {
-    if (AVAIL_U && AVAIL_L) {
-        m_ctx = (LEFT_INTRA && ABOVE_INTRA) ? 3 : LEFT_INTRA || ABOVE_INTRA;
-    } else if (AVAIL_U || AVAIL_L) {
-        m_ctx = 2 * (AVAIL_U ? ABOVE_INTRA : LEFT_INTRA);
+    // FIXME: Above and left context should be provided by a struct.
+
+    // Tree
+    TreeSelection tree = { interp_filter_tree };
+
+    // Probabilities
+    // NOTE: SWITCHABLE_FILTERS is not used in the spec for this function. Therefore, the number
+    //       was demystified by referencing the reference codec libvpx:
+    //       https://github.com/webmproject/libvpx/blob/705bf9de8c96cfe5301451f1d7e5c90a41c64e5f/vp9/common/vp9_pred_common.h#L69
+    u8 left_interp = !left.is_intra_predicted() ? left.interpolation_filter : SWITCHABLE_FILTERS;
+    u8 above_interp = !above.is_intra_predicted() ? above.interpolation_filter : SWITCHABLE_FILTERS;
+    u8 context = SWITCHABLE_FILTERS;
+    if (above_interp == left_interp || above_interp == SWITCHABLE_FILTERS)
+        context = left_interp;
+    else if (left_interp == SWITCHABLE_FILTERS)
+        context = above_interp;
+    u8 const* probabilities = probability_table.interp_filter_probs()[context];
+
+    auto value = TRY(parse_tree<InterpolationFilter>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_interp_filter[context][to_underlying(value)]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_skip(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, FrameBlockContext above, FrameBlockContext left)
+{
+    // Probabilities
+    u8 context = 0;
+    context += static_cast<u8>(above.skip_coefficients);
+    context += static_cast<u8>(left.skip_coefficients);
+    u8 probability = probability_table.skip_prob()[context];
+
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_skip[context][value]++;
+    return value;
+}
+
+ErrorOr<TransformSize> TreeParser::parse_tx_size(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, TransformSize max_tx_size, FrameBlockContext above, FrameBlockContext left)
+{
+    // FIXME: Above and left contexts should be in structs.
+
+    // Tree
+    TreeSelection tree { tx_size_8_tree };
+    if (max_tx_size == Transform_16x16)
+        tree = { tx_size_16_tree };
+    if (max_tx_size == Transform_32x32)
+        tree = { tx_size_32_tree };
+
+    // Probabilities
+    auto above_context = max_tx_size;
+    auto left_context = max_tx_size;
+    if (above.is_available && !above.skip_coefficients)
+        above_context = above.transform_size;
+    if (left.is_available && !left.skip_coefficients)
+        left_context = left.transform_size;
+    if (!left.is_available)
+        left_context = above_context;
+    if (!above.is_available)
+        above_context = left_context;
+    auto context = (above_context + left_context) > max_tx_size;
+
+    u8 const* probabilities = probability_table.tx_probs()[max_tx_size][context];
+
+    auto value = TRY(parse_tree<TransformSize>(decoder, tree, [&](u8 node) { return probabilities[node]; }));
+    counter.m_counts_tx_size[max_tx_size][context][value]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_block_is_inter_predicted(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, FrameBlockContext above, FrameBlockContext left)
+{
+    // FIXME: Above and left contexts should be in structs.
+
+    // Probabilities
+    u8 context = 0;
+    if (above.is_available && left.is_available)
+        context = (left.is_intra_predicted() && above.is_intra_predicted()) ? 3 : static_cast<u8>(above.is_intra_predicted() || left.is_intra_predicted());
+    else if (above.is_available || left.is_available)
+        context = 2 * static_cast<u8>(above.is_available ? above.is_intra_predicted() : left.is_intra_predicted());
+    u8 probability = probability_table.is_inter_prob()[context];
+
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_is_inter[context][value]++;
+    return value;
+}
+
+ErrorOr<ReferenceMode> TreeParser::parse_comp_mode(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, ReferenceFrameType comp_fixed_ref, FrameBlockContext above, FrameBlockContext left)
+{
+    // FIXME: Above and left contexts should be in structs.
+
+    // Probabilities
+    u8 context;
+    if (above.is_available && left.is_available) {
+        if (above.is_single_reference() && left.is_single_reference()) {
+            auto is_above_fixed = above.ref_frames.primary == comp_fixed_ref;
+            auto is_left_fixed = left.ref_frames.primary == comp_fixed_ref;
+            context = is_above_fixed ^ is_left_fixed;
+        } else if (above.is_single_reference()) {
+            auto is_above_fixed = above.ref_frames.primary == comp_fixed_ref;
+            context = 2 + static_cast<u8>(is_above_fixed || above.is_intra_predicted());
+        } else if (left.is_single_reference()) {
+            auto is_left_fixed = left.ref_frames.primary == comp_fixed_ref;
+            context = 2 + static_cast<u8>(is_left_fixed || left.is_intra_predicted());
+        } else {
+            context = 4;
+        }
+    } else if (above.is_available) {
+        if (above.is_single_reference())
+            context = above.ref_frames.primary == comp_fixed_ref;
+        else
+            context = 3;
+    } else if (left.is_available) {
+        if (left.is_single_reference())
+            context = static_cast<u8>(left.ref_frames.primary == comp_fixed_ref);
+        else
+            context = 3;
     } else {
-        m_ctx = 0;
+        context = 1;
     }
-    return m_decoder.m_probability_tables->is_inter_prob()[m_ctx];
+    u8 probability = probability_table.comp_mode_prob()[context];
+
+    auto value = TRY(parse_tree<ReferenceMode>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_comp_mode[context][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_comp_mode_probability()
+ErrorOr<ReferenceIndex> TreeParser::parse_comp_ref(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, ReferenceFrameType comp_fixed_ref, ReferenceFramePair comp_var_ref, ReferenceIndex variable_reference_index, FrameBlockContext above, FrameBlockContext left)
 {
-    if (AVAIL_U && AVAIL_L) {
-        if (ABOVE_SINGLE && LEFT_SINGLE) {
-            auto is_above_fixed = ABOVE_FRAME_0 == m_decoder.m_comp_fixed_ref;
-            auto is_left_fixed = LEFT_FRAME_0 == m_decoder.m_comp_fixed_ref;
-            m_ctx = is_above_fixed ^ is_left_fixed;
-        } else if (ABOVE_SINGLE) {
-            auto is_above_fixed = ABOVE_FRAME_0 == m_decoder.m_comp_fixed_ref;
-            m_ctx = 2 + (is_above_fixed || ABOVE_INTRA);
-        } else if (LEFT_SINGLE) {
-            auto is_left_fixed = LEFT_FRAME_0 == m_decoder.m_comp_fixed_ref;
-            m_ctx = 2 + (is_left_fixed || LEFT_INTRA);
-        } else {
-            m_ctx = 4;
-        }
-    } else if (AVAIL_U) {
-        if (ABOVE_SINGLE) {
-            m_ctx = ABOVE_FRAME_0 == m_decoder.m_comp_fixed_ref;
-        } else {
-            m_ctx = 3;
-        }
-    } else if (AVAIL_L) {
-        if (LEFT_SINGLE) {
-            m_ctx = LEFT_FRAME_0 == m_decoder.m_comp_fixed_ref;
-        } else {
-            m_ctx = 3;
-        }
-    } else {
-        m_ctx = 1;
-    }
-    return m_decoder.m_probability_tables->comp_mode_prob()[m_ctx];
-}
+    // FIXME: Above and left contexts should be in structs.
 
-u8 TreeParser::calculate_comp_ref_probability()
-{
-    auto fix_ref_idx = m_decoder.m_ref_frame_sign_bias[m_decoder.m_comp_fixed_ref];
-    auto var_ref_idx = !fix_ref_idx;
-    if (AVAIL_U && AVAIL_L) {
-        if (ABOVE_INTRA && LEFT_INTRA) {
-            m_ctx = 2;
-        } else if (LEFT_INTRA) {
-            if (ABOVE_SINGLE) {
-                m_ctx = 1 + 2 * (ABOVE_FRAME_0 != m_decoder.m_comp_var_ref[1]);
+    // Probabilities
+    u8 context;
+
+    if (above.is_available && left.is_available) {
+        if (above.is_intra_predicted() && left.is_intra_predicted()) {
+            context = 2;
+        } else if (left.is_intra_predicted()) {
+            if (above.is_single_reference()) {
+                context = 1 + 2 * (above.ref_frames.primary != comp_var_ref.secondary);
             } else {
-                m_ctx = 1 + 2 * (m_decoder.m_above_ref_frame[var_ref_idx] != m_decoder.m_comp_var_ref[1]);
+                context = 1 + 2 * (above.ref_frames[variable_reference_index] != comp_var_ref.secondary);
             }
-        } else if (ABOVE_INTRA) {
-            if (LEFT_SINGLE) {
-                m_ctx = 1 + 2 * (LEFT_FRAME_0 != m_decoder.m_comp_var_ref[1]);
+        } else if (above.is_intra_predicted()) {
+            if (left.is_single_reference()) {
+                context = 1 + 2 * (left.ref_frames.primary != comp_var_ref.secondary);
             } else {
-                m_ctx = 1 + 2 * (m_decoder.m_left_ref_frame[var_ref_idx] != m_decoder.m_comp_var_ref[1]);
+                context = 1 + 2 * (left.ref_frames[variable_reference_index] != comp_var_ref.secondary);
             }
         } else {
-            auto var_ref_above = m_decoder.m_above_ref_frame[ABOVE_SINGLE ? 0 : var_ref_idx];
-            auto var_ref_left = m_decoder.m_left_ref_frame[LEFT_SINGLE ? 0 : var_ref_idx];
-            if (var_ref_above == var_ref_left && m_decoder.m_comp_var_ref[1] == var_ref_above) {
-                m_ctx = 0;
-            } else if (LEFT_SINGLE && ABOVE_SINGLE) {
-                if ((var_ref_above == m_decoder.m_comp_fixed_ref && var_ref_left == m_decoder.m_comp_var_ref[0])
-                    || (var_ref_left == m_decoder.m_comp_fixed_ref && var_ref_above == m_decoder.m_comp_var_ref[0])) {
-                    m_ctx = 4;
+            auto var_ref_above = above.is_single_reference() ? above.ref_frames.primary : above.ref_frames[variable_reference_index];
+            auto var_ref_left = left.is_single_reference() ? left.ref_frames.primary : left.ref_frames[variable_reference_index];
+            if (var_ref_above == var_ref_left && comp_var_ref.secondary == var_ref_above) {
+                context = 0;
+            } else if (left.is_single_reference() && above.is_single_reference()) {
+                if ((var_ref_above == comp_fixed_ref && var_ref_left == comp_var_ref.primary)
+                    || (var_ref_left == comp_fixed_ref && var_ref_above == comp_var_ref.primary)) {
+                    context = 4;
                 } else if (var_ref_above == var_ref_left) {
-                    m_ctx = 3;
+                    context = 3;
                 } else {
-                    m_ctx = 1;
+                    context = 1;
                 }
-            } else if (LEFT_SINGLE || ABOVE_SINGLE) {
-                auto vrfc = LEFT_SINGLE ? var_ref_above : var_ref_left;
-                auto rfs = ABOVE_SINGLE ? var_ref_above : var_ref_left;
-                if (vrfc == m_decoder.m_comp_var_ref[1] && rfs != m_decoder.m_comp_var_ref[1]) {
-                    m_ctx = 1;
-                } else if (rfs == m_decoder.m_comp_var_ref[1] && vrfc != m_decoder.m_comp_var_ref[1]) {
-                    m_ctx = 2;
+            } else if (left.is_single_reference() || above.is_single_reference()) {
+                auto vrfc = left.is_single_reference() ? var_ref_above : var_ref_left;
+                auto rfs = above.is_single_reference() ? var_ref_above : var_ref_left;
+                if (vrfc == comp_var_ref.secondary && rfs != comp_var_ref.secondary) {
+                    context = 1;
+                } else if (rfs == comp_var_ref.secondary && vrfc != comp_var_ref.secondary) {
+                    context = 2;
                 } else {
-                    m_ctx = 4;
+                    context = 4;
                 }
             } else if (var_ref_above == var_ref_left) {
-                m_ctx = 4;
+                context = 4;
             } else {
-                m_ctx = 2;
+                context = 2;
             }
         }
-    } else if (AVAIL_U) {
-        if (ABOVE_INTRA) {
-            m_ctx = 2;
+    } else if (above.is_available) {
+        if (above.is_intra_predicted()) {
+            context = 2;
         } else {
-            if (ABOVE_SINGLE) {
-                m_ctx = 3 * (ABOVE_FRAME_0 != m_decoder.m_comp_var_ref[1]);
+            if (above.is_single_reference()) {
+                context = 3 * static_cast<u8>(above.ref_frames.primary != comp_var_ref.secondary);
             } else {
-                m_ctx = 4 * (m_decoder.m_above_ref_frame[var_ref_idx] != m_decoder.m_comp_var_ref[1]);
+                context = 4 * static_cast<u8>(above.ref_frames[variable_reference_index] != comp_var_ref.secondary);
             }
         }
-    } else if (AVAIL_L) {
-        if (LEFT_INTRA) {
-            m_ctx = 2;
+    } else if (left.is_available) {
+        if (left.is_intra_predicted()) {
+            context = 2;
         } else {
-            if (LEFT_SINGLE) {
-                m_ctx = 3 * (LEFT_FRAME_0 != m_decoder.m_comp_var_ref[1]);
+            if (left.is_single_reference()) {
+                context = 3 * static_cast<u8>(left.ref_frames.primary != comp_var_ref.secondary);
             } else {
-                m_ctx = 4 * (m_decoder.m_left_ref_frame[var_ref_idx] != m_decoder.m_comp_var_ref[1]);
-            }
-        }
-    } else {
-        m_ctx = 2;
-    }
-
-    return m_decoder.m_probability_tables->comp_ref_prob()[m_ctx];
-}
-
-u8 TreeParser::calculate_single_ref_p1_probability()
-{
-    if (AVAIL_U && AVAIL_L) {
-        if (ABOVE_INTRA && LEFT_INTRA) {
-            m_ctx = 2;
-        } else if (LEFT_INTRA) {
-            if (ABOVE_SINGLE) {
-                m_ctx = 4 * (ABOVE_FRAME_0 == LastFrame);
-            } else {
-                m_ctx = 1 + (ABOVE_FRAME_0 == LastFrame || ABOVE_FRAME_1 == LastFrame);
-            }
-        } else if (ABOVE_INTRA) {
-            if (LEFT_SINGLE) {
-                m_ctx = 4 * (LEFT_FRAME_0 == LastFrame);
-            } else {
-                m_ctx = 1 + (LEFT_FRAME_0 == LastFrame || LEFT_FRAME_1 == LastFrame);
-            }
-        } else {
-            if (LEFT_SINGLE && ABOVE_SINGLE) {
-                m_ctx = 2 * (ABOVE_FRAME_0 == LastFrame) + 2 * (LEFT_FRAME_0 == LastFrame);
-            } else if (!LEFT_SINGLE && !ABOVE_SINGLE) {
-                auto above_is_last = ABOVE_FRAME_0 == LastFrame || ABOVE_FRAME_1 == LastFrame;
-                auto left_is_last = LEFT_FRAME_0 == LastFrame || LEFT_FRAME_1 == LastFrame;
-                m_ctx = 1 + (above_is_last || left_is_last);
-            } else {
-                auto rfs = ABOVE_SINGLE ? ABOVE_FRAME_0 : LEFT_FRAME_0;
-                auto crf1 = ABOVE_SINGLE ? LEFT_FRAME_0 : ABOVE_FRAME_0;
-                auto crf2 = ABOVE_SINGLE ? LEFT_FRAME_1 : ABOVE_FRAME_1;
-                m_ctx = crf1 == LastFrame || crf2 == LastFrame;
-                if (rfs == LastFrame)
-                    m_ctx += 3;
-            }
-        }
-    } else if (AVAIL_U) {
-        if (ABOVE_INTRA) {
-            m_ctx = 2;
-        } else {
-            if (ABOVE_SINGLE) {
-                m_ctx = 4 * (ABOVE_FRAME_0 == LastFrame);
-            } else {
-                m_ctx = 1 + (ABOVE_FRAME_0 == LastFrame || ABOVE_FRAME_1 == LastFrame);
-            }
-        }
-    } else if (AVAIL_L) {
-        if (LEFT_INTRA) {
-            m_ctx = 2;
-        } else {
-            if (LEFT_SINGLE) {
-                m_ctx = 4 * (LEFT_FRAME_0 == LastFrame);
-            } else {
-                m_ctx = 1 + (LEFT_FRAME_0 == LastFrame || LEFT_FRAME_1 == LastFrame);
+                context = 4 * static_cast<u8>(left.ref_frames[variable_reference_index] != comp_var_ref.secondary);
             }
         }
     } else {
-        m_ctx = 2;
+        context = 2;
     }
-    return m_decoder.m_probability_tables->single_ref_prob()[m_ctx][0];
+
+    u8 probability = probability_table.comp_ref_prob()[context];
+
+    auto value = TRY(parse_tree<ReferenceIndex>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_comp_ref[context][to_underlying(value)]++;
+    return value;
 }
 
-u8 TreeParser::calculate_single_ref_p2_probability()
+ErrorOr<bool> TreeParser::parse_single_ref_part_1(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, FrameBlockContext above, FrameBlockContext left)
 {
-    if (AVAIL_U && AVAIL_L) {
-        if (ABOVE_INTRA && LEFT_INTRA) {
-            m_ctx = 2;
-        } else if (LEFT_INTRA) {
-            if (ABOVE_SINGLE) {
-                if (ABOVE_FRAME_0 == LastFrame) {
-                    m_ctx = 3;
-                } else {
-                    m_ctx = 4 * (ABOVE_FRAME_0 == GoldenFrame);
-                }
+    // FIXME: Above and left contexts should be in structs.
+
+    // Probabilities
+    u8 context;
+    if (above.is_available && left.is_available) {
+        if (above.is_intra_predicted() && left.is_intra_predicted()) {
+            context = 2;
+        } else if (left.is_intra_predicted()) {
+            if (above.is_single_reference()) {
+                context = 4 * (above.ref_frames.primary == ReferenceFrameType::LastFrame);
             } else {
-                m_ctx = 1 + 2 * (ABOVE_FRAME_0 == GoldenFrame || ABOVE_FRAME_1 == GoldenFrame);
+                context = 1 + (above.ref_frames.primary == ReferenceFrameType::LastFrame || above.ref_frames.secondary == ReferenceFrameType::LastFrame);
             }
-        } else if (ABOVE_INTRA) {
-            if (LEFT_SINGLE) {
-                if (LEFT_FRAME_0 == LastFrame) {
-                    m_ctx = 3;
-                } else {
-                    m_ctx = 4 * (LEFT_FRAME_0 == GoldenFrame);
-                }
+        } else if (above.is_intra_predicted()) {
+            if (left.is_single_reference()) {
+                context = 4 * (left.ref_frames.primary == ReferenceFrameType::LastFrame);
             } else {
-                m_ctx = 1 + 2 * (LEFT_FRAME_0 == GoldenFrame || LEFT_FRAME_1 == GoldenFrame);
+                context = 1 + (left.ref_frames.primary == ReferenceFrameType::LastFrame || left.ref_frames.secondary == ReferenceFrameType::LastFrame);
             }
         } else {
-            if (LEFT_SINGLE && ABOVE_SINGLE) {
-                auto above_last = ABOVE_FRAME_0 == LastFrame;
-                auto left_last = LEFT_FRAME_0 == LastFrame;
+            if (left.is_single_reference() && above.is_single_reference()) {
+                context = 2 * (above.ref_frames.primary == ReferenceFrameType::LastFrame) + 2 * (left.ref_frames.primary == ReferenceFrameType::LastFrame);
+            } else if (!left.is_single_reference() && !above.is_single_reference()) {
+                auto above_used_last_frame = above.ref_frames.primary == ReferenceFrameType::LastFrame || above.ref_frames.secondary == ReferenceFrameType::LastFrame;
+                auto left_used_last_frame = left.ref_frames.primary == ReferenceFrameType::LastFrame || left.ref_frames.secondary == ReferenceFrameType::LastFrame;
+                context = 1 + (above_used_last_frame || left_used_last_frame);
+            } else {
+                auto single_reference_type = above.is_single_reference() ? above.ref_frames.primary : left.ref_frames.primary;
+                auto compound_reference_a_type = above.is_single_reference() ? left.ref_frames.primary : above.ref_frames.primary;
+                auto compound_reference_b_type = above.is_single_reference() ? left.ref_frames.secondary : above.ref_frames.secondary;
+                context = compound_reference_a_type == ReferenceFrameType::LastFrame || compound_reference_b_type == ReferenceFrameType::LastFrame;
+                if (single_reference_type == ReferenceFrameType::LastFrame)
+                    context += 3;
+            }
+        }
+    } else if (above.is_available) {
+        if (above.is_intra_predicted()) {
+            context = 2;
+        } else {
+            if (above.is_single_reference()) {
+                context = 4 * (above.ref_frames.primary == ReferenceFrameType::LastFrame);
+            } else {
+                context = 1 + (above.ref_frames.primary == ReferenceFrameType::LastFrame || above.ref_frames.secondary == ReferenceFrameType::LastFrame);
+            }
+        }
+    } else if (left.is_available) {
+        if (left.is_intra_predicted()) {
+            context = 2;
+        } else {
+            if (left.is_single_reference()) {
+                context = 4 * (left.ref_frames.primary == ReferenceFrameType::LastFrame);
+            } else {
+                context = 1 + (left.ref_frames.primary == ReferenceFrameType::LastFrame || left.ref_frames.secondary == ReferenceFrameType::LastFrame);
+            }
+        }
+    } else {
+        context = 2;
+    }
+    u8 probability = probability_table.single_ref_prob()[context][0];
+
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_single_ref[context][0][value]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_single_ref_part_2(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, FrameBlockContext above, FrameBlockContext left)
+{
+    // FIXME: Above and left contexts should be in structs.
+
+    // Probabilities
+    u8 context;
+    if (above.is_available && left.is_available) {
+        if (above.is_intra_predicted() && left.is_intra_predicted()) {
+            context = 2;
+        } else if (left.is_intra_predicted()) {
+            if (above.is_single_reference()) {
+                if (above.ref_frames.primary == ReferenceFrameType::LastFrame) {
+                    context = 3;
+                } else {
+                    context = 4 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame);
+                }
+            } else {
+                context = 1 + 2 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame || above.ref_frames.secondary == ReferenceFrameType::GoldenFrame);
+            }
+        } else if (above.is_intra_predicted()) {
+            if (left.is_single_reference()) {
+                if (left.ref_frames.primary == ReferenceFrameType::LastFrame) {
+                    context = 3;
+                } else {
+                    context = 4 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame);
+                }
+            } else {
+                context = 1 + 2 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame || left.ref_frames.secondary == ReferenceFrameType::GoldenFrame);
+            }
+        } else {
+            if (left.is_single_reference() && above.is_single_reference()) {
+                auto above_last = above.ref_frames.primary == ReferenceFrameType::LastFrame;
+                auto left_last = left.ref_frames.primary == ReferenceFrameType::LastFrame;
                 if (above_last && left_last) {
-                    m_ctx = 3;
+                    context = 3;
                 } else if (above_last) {
-                    m_ctx = 4 * (LEFT_FRAME_0 == GoldenFrame);
+                    context = 4 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame);
                 } else if (left_last) {
-                    m_ctx = 4 * (ABOVE_FRAME_0 == GoldenFrame);
+                    context = 4 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame);
                 } else {
-                    m_ctx = 2 * (ABOVE_FRAME_0 == GoldenFrame) + 2 * (LEFT_FRAME_0 == GoldenFrame);
+                    context = 2 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame) + 2 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame);
                 }
-            } else if (!LEFT_SINGLE && !ABOVE_SINGLE) {
-                if (ABOVE_FRAME_0 == LEFT_FRAME_0 && ABOVE_FRAME_1 == LEFT_FRAME_1) {
-                    m_ctx = 3 * (ABOVE_FRAME_0 == GoldenFrame || ABOVE_FRAME_1 == GoldenFrame);
+            } else if (!left.is_single_reference() && !above.is_single_reference()) {
+                if (above.ref_frames.primary == left.ref_frames.primary && above.ref_frames.secondary == left.ref_frames.secondary) {
+                    context = 3 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame || above.ref_frames.secondary == ReferenceFrameType::GoldenFrame);
                 } else {
-                    m_ctx = 2;
+                    context = 2;
                 }
             } else {
-                auto rfs = ABOVE_SINGLE ? ABOVE_FRAME_0 : LEFT_FRAME_0;
-                auto crf1 = ABOVE_SINGLE ? LEFT_FRAME_0 : ABOVE_FRAME_0;
-                auto crf2 = ABOVE_SINGLE ? LEFT_FRAME_1 : ABOVE_FRAME_1;
-                m_ctx = crf1 == GoldenFrame || crf2 == GoldenFrame;
-                if (rfs == GoldenFrame) {
-                    m_ctx += 3;
-                } else if (rfs != AltRefFrame) {
-                    m_ctx = 1 + (2 * m_ctx);
+                auto single_reference_type = above.is_single_reference() ? above.ref_frames.primary : left.ref_frames.primary;
+                auto compound_reference_a_type = above.is_single_reference() ? left.ref_frames.primary : above.ref_frames.primary;
+                auto compound_reference_b_type = above.is_single_reference() ? left.ref_frames.secondary : above.ref_frames.secondary;
+                context = compound_reference_a_type == ReferenceFrameType::GoldenFrame || compound_reference_b_type == ReferenceFrameType::GoldenFrame;
+                if (single_reference_type == ReferenceFrameType::GoldenFrame) {
+                    context += 3;
+                } else if (single_reference_type != ReferenceFrameType::AltRefFrame) {
+                    context = 1 + (2 * context);
                 }
             }
         }
-    } else if (AVAIL_U) {
-        if (ABOVE_INTRA || (ABOVE_FRAME_0 == LastFrame && ABOVE_SINGLE)) {
-            m_ctx = 2;
-        } else if (ABOVE_SINGLE) {
-            m_ctx = 4 * (ABOVE_FRAME_0 == GoldenFrame);
+    } else if (above.is_available) {
+        if (above.is_intra_predicted() || (above.ref_frames.primary == ReferenceFrameType::LastFrame && above.is_single_reference())) {
+            context = 2;
+        } else if (above.is_single_reference()) {
+            context = 4 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame);
         } else {
-            m_ctx = 3 * (ABOVE_FRAME_0 == GoldenFrame || ABOVE_FRAME_1 == GoldenFrame);
+            context = 3 * (above.ref_frames.primary == ReferenceFrameType::GoldenFrame || above.ref_frames.secondary == ReferenceFrameType::GoldenFrame);
         }
-    } else if (AVAIL_L) {
-        if (LEFT_INTRA || (LEFT_FRAME_0 == LastFrame && LEFT_SINGLE)) {
-            m_ctx = 2;
-        } else if (LEFT_SINGLE) {
-            m_ctx = 4 * (LEFT_FRAME_0 == GoldenFrame);
+    } else if (left.is_available) {
+        if (left.is_intra_predicted() || (left.ref_frames.primary == ReferenceFrameType::LastFrame && left.is_single_reference())) {
+            context = 2;
+        } else if (left.is_single_reference()) {
+            context = 4 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame);
         } else {
-            m_ctx = 3 * (LEFT_FRAME_0 == GoldenFrame || LEFT_FRAME_1 == GoldenFrame);
+            context = 3 * (left.ref_frames.primary == ReferenceFrameType::GoldenFrame || left.ref_frames.secondary == ReferenceFrameType::GoldenFrame);
         }
     } else {
-        m_ctx = 2;
+        context = 2;
     }
-    return m_decoder.m_probability_tables->single_ref_prob()[m_ctx][1];
+    u8 probability = probability_table.single_ref_prob()[context][1];
+
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_single_ref[context][1][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_tx_size_probability(u8 node)
+ErrorOr<MvJoint> TreeParser::parse_motion_vector_joint(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter)
 {
-    auto above = m_decoder.m_max_tx_size;
-    auto left = m_decoder.m_max_tx_size;
-    auto u_pos = (m_decoder.m_mi_row - 1) * m_decoder.m_mi_cols + m_decoder.m_mi_col;
-    if (AVAIL_U && !m_decoder.m_skips[u_pos])
-        above = m_decoder.m_tx_sizes[u_pos];
-    auto l_pos = m_decoder.m_mi_row * m_decoder.m_mi_cols + m_decoder.m_mi_col - 1;
-    if (AVAIL_L && !m_decoder.m_skips[l_pos])
-        left = m_decoder.m_tx_sizes[l_pos];
-    if (!AVAIL_L)
-        left = above;
-    if (!AVAIL_U)
-        above = left;
-    m_ctx = (above + left) > m_decoder.m_max_tx_size;
-    return m_decoder.m_probability_tables->tx_probs()[m_decoder.m_max_tx_size][m_ctx][node];
+    auto value = TRY(parse_tree<MvJoint>(decoder, { mv_joint_tree }, [&](u8 node) { return probability_table.mv_joint_probs()[node]; }));
+    counter.m_counts_mv_joint[value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_inter_mode_probability(u8 node)
+ErrorOr<bool> TreeParser::parse_motion_vector_sign(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component)
 {
-    //FIXME: Implement when ModeContext is implemented
-    // m_ctx = m_decoder.m_mode_context[m_decoder.m_ref_frame[0]]
-    return m_decoder.m_probability_tables->inter_mode_probs()[m_ctx][node];
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability_table.mv_sign_prob()[component]; }));
+    counter.m_counts_mv_sign[component][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_interp_filter_probability(u8 node)
+ErrorOr<MvClass> TreeParser::parse_motion_vector_class(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component)
 {
-    auto left_interp = (AVAIL_L && m_decoder.m_left_ref_frame[0] > IntraFrame)
-        ? m_decoder.m_interp_filters[m_decoder.m_mi_row * m_decoder.m_mi_cols + m_decoder.m_mi_col - 1]
-        : 3;
-    auto above_interp = (AVAIL_U && m_decoder.m_above_ref_frame[0] > IntraFrame)
-        ? m_decoder.m_interp_filters[m_decoder.m_mi_row * m_decoder.m_mi_cols + m_decoder.m_mi_col - 1]
-        : 3;
-    if (left_interp == above_interp || (left_interp != 3 && above_interp == 3))
-        m_ctx = left_interp;
-    else if (left_interp == 3 && above_interp != 3)
-        m_ctx = above_interp;
-    else
-        m_ctx = 3;
-    return m_decoder.m_probability_tables->interp_filter_probs()[m_ctx][node];
+    // Spec doesn't mention node, but the probabilities table has an extra dimension
+    // so we will use node for that.
+    auto value = TRY(parse_tree<MvClass>(decoder, { mv_class_tree }, [&](u8 node) { return probability_table.mv_class_probs()[component][node]; }));
+    counter.m_counts_mv_class[component][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_token_probability(u8 node)
+ErrorOr<bool> TreeParser::parse_motion_vector_class0_bit(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component)
 {
-    auto prob = m_decoder.m_probability_tables->coef_probs()[m_tx_size][m_plane > 0][m_decoder.m_is_inter][m_band][m_ctx][min(2, 1 + node)];
-    if (node < 2)
-        return prob;
-    auto x = (prob - 1) / 2;
-    auto& pareto_table = m_decoder.m_probability_tables->pareto_table();
-    if (prob & 1)
-        return pareto_table[x][node - 2];
-    return (pareto_table[x][node - 2] + pareto_table[x + 1][node - 2]) >> 1;
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability_table.mv_class0_bit_prob()[component]; }));
+    counter.m_counts_mv_class0_bit[component][value]++;
+    return value;
 }
 
-u8 TreeParser::calculate_more_coefs_probability()
+ErrorOr<u8> TreeParser::parse_motion_vector_class0_fr(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component, bool class_0_bit)
 {
-    if (m_c == 0) {
-        auto sx = m_plane > 0 ? m_decoder.m_subsampling_x : 0;
-        auto sy = m_plane > 0 ? m_decoder.m_subsampling_y : 0;
-        auto max_x = (2 * m_decoder.m_mi_cols) >> sx;
-        auto max_y = (2 * m_decoder.m_mi_rows) >> sy;
-        u8 numpts = 1 << m_tx_size;
-        auto x4 = m_start_x >> 2;
-        auto y4 = m_start_y >> 2;
-        u32 above = 0;
-        u32 left = 0;
-        for (size_t i = 0; i < numpts; i++) {
-            if (x4 + i < max_x)
-                above |= m_decoder.m_above_nonzero_context[m_plane][x4 + i];
-            if (y4 + i < max_y)
-                left |= m_decoder.m_left_nonzero_context[m_plane][y4 + i];
+    auto value = TRY(parse_tree<u8>(decoder, { mv_fr_tree }, [&](u8 node) { return probability_table.mv_class0_fr_probs()[component][class_0_bit][node]; }));
+    counter.m_counts_mv_class0_fr[component][class_0_bit][value]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_motion_vector_class0_hp(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component, bool use_hp)
+{
+    TreeSelection tree { 1 };
+    if (use_hp)
+        tree = { binary_tree };
+    auto value = TRY(parse_tree<bool>(decoder, tree, [&](u8) { return probability_table.mv_class0_hp_prob()[component]; }));
+    counter.m_counts_mv_class0_hp[component][value]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_motion_vector_bit(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component, u8 bit_index)
+{
+    auto value = TRY(parse_tree<bool>(decoder, { binary_tree }, [&](u8) { return probability_table.mv_bits_prob()[component][bit_index]; }));
+    counter.m_counts_mv_bits[component][bit_index][value]++;
+    return value;
+}
+
+ErrorOr<u8> TreeParser::parse_motion_vector_fr(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component)
+{
+    auto value = TRY(parse_tree<u8>(decoder, { mv_fr_tree }, [&](u8 node) { return probability_table.mv_fr_probs()[component][node]; }));
+    counter.m_counts_mv_fr[component][value]++;
+    return value;
+}
+
+ErrorOr<bool> TreeParser::parse_motion_vector_hp(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, u8 component, bool use_hp)
+{
+    TreeSelection tree { 1 };
+    if (use_hp)
+        tree = { binary_tree };
+    auto value = TRY(parse_tree<u8>(decoder, tree, [&](u8) { return probability_table.mv_hp_prob()[component]; }));
+    counter.m_counts_mv_hp[component][value]++;
+    return value;
+}
+
+TokensContext TreeParser::get_context_for_first_token(NonZeroTokensView above_non_zero_tokens, NonZeroTokensView left_non_zero_tokens_in_block, TransformSize transform_size, u8 plane, u32 sub_block_column, u32 sub_block_row, bool is_inter, u8 band)
+{
+    u8 transform_size_in_sub_blocks = transform_size_to_sub_blocks(transform_size);
+    bool above_has_non_zero_tokens = false;
+    for (u8 x = 0; x < transform_size_in_sub_blocks && x < above_non_zero_tokens[plane].size() - sub_block_column; x++) {
+        if (above_non_zero_tokens[plane][sub_block_column + x]) {
+            above_has_non_zero_tokens = true;
+            break;
         }
-        m_ctx = above + left;
-    } else {
-        u32 neighbor_0, neighbor_1;
-        auto n = 4 << m_tx_size;
-        auto i = m_pos / n;
-        auto j = m_pos % n;
-        auto a = (i - 1) * n + j;
-        auto a2 = i * n + j - 1;
-        if (i > 0 && j > 0) {
-            if (m_decoder.m_tx_type == DCT_ADST) {
-                neighbor_0 = a;
-                neighbor_1 = a;
-            } else if (m_decoder.m_tx_type == ADST_DCT) {
-                neighbor_0 = a2;
-                neighbor_1 = a2;
-            } else {
-                neighbor_0 = a;
-                neighbor_1 = a2;
-            }
-        } else if (i > 0) {
-            neighbor_0 = a;
-            neighbor_1 = a;
+    }
+    bool left_has_non_zero_tokens = false;
+    for (u8 y = 0; y < transform_size_in_sub_blocks && y < left_non_zero_tokens_in_block[plane].size() - sub_block_row; y++) {
+        if (left_non_zero_tokens_in_block[plane][sub_block_row + y]) {
+            left_has_non_zero_tokens = true;
+            break;
+        }
+    }
+
+    u8 context = above_has_non_zero_tokens + left_has_non_zero_tokens;
+    return TokensContext { transform_size, plane > 0, is_inter, band, context };
+}
+
+TokensContext TreeParser::get_context_for_other_tokens(Array<u8, 1024> token_cache, TransformSize transform_size, TransformSet transform_set, u8 plane, u16 token_position, bool is_inter, u8 band)
+{
+    auto transform_size_in_pixels = sub_blocks_to_pixels(transform_size_to_sub_blocks(transform_size));
+    auto log2_of_transform_size = transform_size + 2;
+    auto pixel_y = token_position >> log2_of_transform_size;
+    auto pixel_x = token_position - (pixel_y << log2_of_transform_size);
+    auto above_token_energy = pixel_y > 0 ? (pixel_y - 1) * transform_size_in_pixels + pixel_x : 0;
+    auto left_token_energy = pixel_y * transform_size_in_pixels + pixel_x - 1;
+
+    u32 neighbor_a, neighbor_b;
+    if (pixel_y > 0 && pixel_x > 0) {
+        if (transform_set == TransformSet { TransformType::DCT, TransformType::ADST }) {
+            neighbor_a = above_token_energy;
+            neighbor_b = above_token_energy;
+        } else if (transform_set == TransformSet { TransformType::ADST, TransformType::DCT }) {
+            neighbor_a = left_token_energy;
+            neighbor_b = left_token_energy;
         } else {
-            neighbor_0 = a2;
-            neighbor_1 = a2;
+            neighbor_a = above_token_energy;
+            neighbor_b = left_token_energy;
         }
-        m_ctx = (1 + m_decoder.m_token_cache[neighbor_0] + m_decoder.m_token_cache[neighbor_1]) >> 1;
+    } else if (pixel_y > 0) {
+        neighbor_a = above_token_energy;
+        neighbor_b = above_token_energy;
+    } else {
+        neighbor_a = left_token_energy;
+        neighbor_b = left_token_energy;
     }
-    return m_decoder.m_probability_tables->coef_probs()[m_tx_size][m_plane > 0][m_decoder.m_is_inter][m_band][m_ctx][0];
+
+    u8 context = (1 + token_cache[neighbor_a] + token_cache[neighbor_b]) >> 1;
+    return TokensContext { transform_size, plane > 0, is_inter, band, context };
 }
 
-void TreeParser::count_syntax_element(SyntaxElementType type, int value)
+ErrorOr<bool> TreeParser::parse_more_coefficients(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, TokensContext const& context)
 {
-    switch (type) {
-    case SyntaxElementType::Partition:
-        m_decoder.m_syntax_element_counter->m_counts_partition[m_ctx][value]++;
-        return;
-    case SyntaxElementType::IntraMode:
-    case SyntaxElementType::SubIntraMode:
-        m_decoder.m_syntax_element_counter->m_counts_intra_mode[m_ctx][value]++;
-        return;
-    case SyntaxElementType::UVMode:
-        m_decoder.m_syntax_element_counter->m_counts_uv_mode[m_ctx][value]++;
-        return;
-    case SyntaxElementType::Skip:
-        m_decoder.m_syntax_element_counter->m_counts_skip[m_ctx][value]++;
-        return;
-    case SyntaxElementType::IsInter:
-        m_decoder.m_syntax_element_counter->m_counts_is_inter[m_ctx][value]++;
-        return;
-    case SyntaxElementType::CompMode:
-        m_decoder.m_syntax_element_counter->m_counts_comp_mode[m_ctx][value]++;
-        return;
-    case SyntaxElementType::CompRef:
-        m_decoder.m_syntax_element_counter->m_counts_comp_ref[m_ctx][value]++;
-        return;
-    case SyntaxElementType::SingleRefP1:
-        m_decoder.m_syntax_element_counter->m_counts_single_ref[m_ctx][0][value]++;
-        return;
-    case SyntaxElementType::SingleRefP2:
-        m_decoder.m_syntax_element_counter->m_counts_single_ref[m_ctx][1][value]++;
-        return;
-    case SyntaxElementType::MVSign:
-        break;
-    case SyntaxElementType::MVClass0Bit:
-        break;
-    case SyntaxElementType::MVBit:
-        break;
-    case SyntaxElementType::TXSize:
-        m_decoder.m_syntax_element_counter->m_counts_tx_size[m_decoder.m_max_tx_size][m_ctx][value]++;
-        return;
-    case SyntaxElementType::InterMode:
-        m_decoder.m_syntax_element_counter->m_counts_inter_mode[m_ctx][value]++;
-        return;
-    case SyntaxElementType::InterpFilter:
-        m_decoder.m_syntax_element_counter->m_counts_interp_filter[m_ctx][value]++;
-        return;
-    case SyntaxElementType::MVJoint:
-        m_decoder.m_syntax_element_counter->m_counts_mv_joint[value]++;
-        return;
-    case SyntaxElementType::MVClass:
-        break;
-    case SyntaxElementType::MVClass0FR:
-        break;
-    case SyntaxElementType::MVClass0HP:
-        break;
-    case SyntaxElementType::MVFR:
-        break;
-    case SyntaxElementType::MVHP:
-        break;
-    case SyntaxElementType::Token:
-        m_decoder.m_syntax_element_counter->m_counts_token[m_tx_size][m_plane > 0][m_decoder.m_is_inter][m_band][m_ctx][min(2, value)]++;
-        return;
-    case SyntaxElementType::MoreCoefs:
-        m_decoder.m_syntax_element_counter->m_counts_more_coefs[m_tx_size][m_plane > 0][m_decoder.m_is_inter][m_band][m_ctx][value]++;
-        return;
-    case SyntaxElementType::DefaultIntraMode:
-    case SyntaxElementType::DefaultUVMode:
-    case SyntaxElementType::SegmentID:
-    case SyntaxElementType::SegIDPredicted:
-        // No counting required
-        return;
-    }
-    TODO();
+    auto probability = probability_table.coef_probs()[context.m_tx_size][context.m_is_uv_plane][context.m_is_inter][context.m_band][context.m_context_index][0];
+    auto value = TRY(parse_tree<u8>(decoder, { binary_tree }, [&](u8) { return probability; }));
+    counter.m_counts_more_coefs[context.m_tx_size][context.m_is_uv_plane][context.m_is_inter][context.m_band][context.m_context_index][value]++;
+    return value;
 }
 
-TreeParser::TreeSelection::TreeSelection(int const* values)
-    : m_is_single_value(false)
-    , m_value { .m_tree = values }
+ErrorOr<Token> TreeParser::parse_token(BooleanDecoder& decoder, ProbabilityTables const& probability_table, SyntaxElementCounter& counter, TokensContext const& context)
 {
-}
+    Function<u8(u8)> probability_getter = [&](u8 node) -> u8 {
+        auto prob = probability_table.coef_probs()[context.m_tx_size][context.m_is_uv_plane][context.m_is_inter][context.m_band][context.m_context_index][min(2, 1 + node)];
+        if (node < 2)
+            return prob;
+        auto x = (prob - 1) / 2;
+        auto const& pareto_table = probability_table.pareto_table();
+        if ((prob & 1) != 0)
+            return pareto_table[x][node - 2];
+        return (pareto_table[x][node - 2] + pareto_table[x + 1][node - 2]) >> 1;
+    };
 
-TreeParser::TreeSelection::TreeSelection(int value)
-    : m_is_single_value(true)
-    , m_value { .m_value = value }
-{
+    auto value = TRY(parse_tree<Token>(decoder, { token_tree }, probability_getter));
+    counter.m_counts_token[context.m_tx_size][context.m_is_uv_plane][context.m_is_inter][context.m_band][context.m_context_index][min(2, value)]++;
+    return value;
 }
 
 }

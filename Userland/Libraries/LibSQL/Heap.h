@@ -8,8 +8,8 @@
 
 #include <AK/Array.h>
 #include <AK/Debug.h>
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibCore/File.h>
 #include <LibCore/Object.h>
@@ -33,14 +33,15 @@ class Heap : public Core::Object {
     C_OBJECT(Heap);
 
 public:
+    static constexpr inline u32 current_version = 3;
+
     virtual ~Heap() override;
 
     ErrorOr<void> open();
     u32 size() const { return m_end_of_file; }
     ErrorOr<ByteBuffer> read_block(u32);
     [[nodiscard]] u32 new_record_pointer();
-    [[nodiscard]] bool has_block(u32 block) const { return block < size(); }
-    [[nodiscard]] bool valid() const { return m_file != nullptr; }
+    [[nodiscard]] bool valid() const { return static_cast<bool>(m_file); }
 
     u32 schemas_root() const { return m_schemas_root; }
 
@@ -83,18 +84,14 @@ public:
     void add_to_wal(u32 block, ByteBuffer& buffer)
     {
         dbgln_if(SQL_DEBUG, "Adding to WAL: block #{}, size {}", block, buffer.size());
-        dbgln_if(SQL_DEBUG, "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-            *buffer.offset_pointer(0), *buffer.offset_pointer(1),
-            *buffer.offset_pointer(2), *buffer.offset_pointer(3),
-            *buffer.offset_pointer(4), *buffer.offset_pointer(5),
-            *buffer.offset_pointer(6), *buffer.offset_pointer(7));
+        dbgln_if(SQL_DEBUG, "{:hex-dump}", buffer.bytes().trim(8));
         m_write_ahead_log.set(block, buffer);
     }
 
     ErrorOr<void> flush();
 
 private:
-    explicit Heap(String);
+    explicit Heap(DeprecatedString);
 
     ErrorOr<void> write_block(u32, ByteBuffer&);
     ErrorOr<void> seek_block(u32);
@@ -102,14 +99,14 @@ private:
     void initialize_zero_block();
     void update_zero_block();
 
-    RefPtr<Core::File> m_file { nullptr };
+    OwnPtr<Core::BufferedFile> m_file;
     u32 m_free_list { 0 };
     u32 m_next_block { 1 };
     u32 m_end_of_file { 1 };
     u32 m_schemas_root { 0 };
     u32 m_tables_root { 0 };
     u32 m_table_columns_root { 0 };
-    u32 m_version { 0x00000001 };
+    u32 m_version { current_version };
     Array<u32, 16> m_user_values { 0 };
     HashMap<u32, ByteBuffer> m_write_ahead_log;
 };

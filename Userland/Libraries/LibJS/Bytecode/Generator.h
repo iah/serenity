@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/OwnPtr.h>
 #include <AK/SinglyLinkedList.h>
 #include <LibJS/Bytecode/BasicBlock.h>
@@ -57,7 +56,7 @@ public:
         grow(sizeof(OpType));
         new (slot) OpType(forward<Args>(args)...);
         if constexpr (OpType::IsTerminator)
-            m_current_basic_block->terminate({});
+            m_current_basic_block->terminate({}, static_cast<Instruction const*>(slot));
         return *static_cast<OpType*>(slot);
     }
 
@@ -65,24 +64,28 @@ public:
     OpType& emit_with_extra_register_slots(size_t extra_register_slots, Args&&... args)
     {
         VERIFY(!is_current_block_terminated());
+
+        size_t size_to_allocate = round_up_to_power_of_two(sizeof(OpType) + extra_register_slots * sizeof(Register), alignof(void*));
+
         // If the block doesn't have enough space, switch to another block
         if constexpr (!OpType::IsTerminator)
-            ensure_enough_space(sizeof(OpType) + extra_register_slots * sizeof(Register));
+            ensure_enough_space(size_to_allocate);
 
         void* slot = next_slot();
-        grow(sizeof(OpType) + extra_register_slots * sizeof(Register));
+        grow(size_to_allocate);
         new (slot) OpType(forward<Args>(args)...);
         if constexpr (OpType::IsTerminator)
-            m_current_basic_block->terminate({});
+            m_current_basic_block->terminate({}, static_cast<Instruction const*>(slot));
         return *static_cast<OpType*>(slot);
     }
 
     CodeGenerationErrorOr<void> emit_load_from_reference(JS::ASTNode const&);
     CodeGenerationErrorOr<void> emit_store_to_reference(JS::ASTNode const&);
+    CodeGenerationErrorOr<void> emit_delete_reference(JS::ASTNode const&);
 
-    void begin_continuable_scope(Label continue_target);
+    void begin_continuable_scope(Label continue_target, Vector<DeprecatedFlyString> const& language_label_set);
     void end_continuable_scope();
-    void begin_breakable_scope(Label breakable_target);
+    void begin_breakable_scope(Label breakable_target, Vector<DeprecatedFlyString> const& language_label_set);
     void end_breakable_scope();
 
     [[nodiscard]] Label nearest_continuable_scope() const;
@@ -95,12 +98,12 @@ public:
 
     [[nodiscard]] BasicBlock& current_block() { return *m_current_basic_block; }
 
-    BasicBlock& make_block(String name = {})
+    BasicBlock& make_block(DeprecatedString name = {})
     {
         if (name.is_empty())
-            name = String::number(m_next_block++);
+            name = DeprecatedString::number(m_next_block++);
         m_root_basic_blocks.append(BasicBlock::create(name));
-        return m_root_basic_blocks.last();
+        return *m_root_basic_blocks.last();
     }
 
     bool is_current_block_terminated() const
@@ -108,12 +111,12 @@ public:
         return m_current_basic_block->is_terminated();
     }
 
-    StringTableIndex intern_string(String string)
+    StringTableIndex intern_string(DeprecatedString string)
     {
         return m_string_table->insert(move(string));
     }
 
-    IdentifierTableIndex intern_identifier(FlyString string)
+    IdentifierTableIndex intern_identifier(DeprecatedFlyString string)
     {
         return m_identifier_table->insert(move(string));
     }
@@ -137,7 +140,7 @@ public:
     {
         m_variable_scopes.last_matching([&](auto& x) { return x.mode == BindingMode::Global || x.mode == mode; })->known_bindings.set(identifier);
     }
-    bool has_binding(IdentifierTableIndex identifier, Optional<BindingMode> const& specific_binding_mode = {})
+    bool has_binding(IdentifierTableIndex identifier, Optional<BindingMode> const& specific_binding_mode = {}) const
     {
         for (auto index = m_variable_scopes.size(); index > 0; --index) {
             auto& scope = m_variable_scopes[index - 1];
@@ -150,45 +153,90 @@ public:
         }
         return false;
     }
-    void begin_variable_scope(BindingMode mode = BindingMode::Lexical, SurroundingScopeKind kind = SurroundingScopeKind::Block)
+    bool has_binding_in_current_scope(IdentifierTableIndex identifier) const
     {
-        m_variable_scopes.append({ kind, mode, {} });
-        if (mode != BindingMode::Global) {
-            emit<Bytecode::Op::CreateEnvironment>(
-                mode == BindingMode::Lexical
-                    ? Bytecode::Op::EnvironmentMode::Lexical
-                    : Bytecode::Op::EnvironmentMode::Var);
+        if (m_variable_scopes.is_empty())
+            return false;
+
+        return m_variable_scopes.last().known_bindings.contains(identifier);
+    }
+
+    void begin_variable_scope(BindingMode mode = BindingMode::Lexical, SurroundingScopeKind kind = SurroundingScopeKind::Block);
+    void end_variable_scope();
+
+    enum class BlockBoundaryType {
+        Break,
+        Continue,
+        Unwind,
+        ReturnToFinally,
+        LeaveLexicalEnvironment,
+        LeaveVariableEnvironment,
+    };
+    template<typename OpType>
+    void perform_needed_unwinds()
+    requires(OpType::IsTerminator && !IsSame<OpType, Op::Jump>)
+    {
+        for (size_t i = m_boundaries.size(); i > 0; --i) {
+            auto boundary = m_boundaries[i - 1];
+            using enum BlockBoundaryType;
+            switch (boundary) {
+            case Unwind:
+                if constexpr (IsSame<OpType, Bytecode::Op::Throw>)
+                    return;
+                emit<Bytecode::Op::LeaveUnwindContext>();
+                break;
+            case LeaveLexicalEnvironment:
+                emit<Bytecode::Op::LeaveEnvironment>(Bytecode::Op::EnvironmentMode::Lexical);
+                break;
+            case LeaveVariableEnvironment:
+                emit<Bytecode::Op::LeaveEnvironment>(Bytecode::Op::EnvironmentMode::Var);
+                break;
+            case Break:
+            case Continue:
+                break;
+            case ReturnToFinally:
+                return;
+            };
         }
     }
-    void end_variable_scope()
+
+    void generate_break();
+    void generate_break(DeprecatedFlyString const& break_label);
+
+    void generate_continue();
+    void generate_continue(DeprecatedFlyString const& continue_label);
+
+    void start_boundary(BlockBoundaryType type) { m_boundaries.append(type); }
+    void end_boundary(BlockBoundaryType type)
     {
-        auto mode = m_variable_scopes.take_last().mode;
-        if (mode != BindingMode::Global && !m_current_basic_block->is_terminated()) {
-            emit<Bytecode::Op::LeaveEnvironment>(
-                mode == BindingMode::Lexical
-                    ? Bytecode::Op::EnvironmentMode::Lexical
-                    : Bytecode::Op::EnvironmentMode::Var);
-        }
+        VERIFY(m_boundaries.last() == type);
+        m_boundaries.take_last();
     }
 
 private:
     Generator();
-    ~Generator();
+    ~Generator() = default;
 
     void grow(size_t);
     void* next_slot();
 
+    struct LabelableScope {
+        Label bytecode_target;
+        Vector<DeprecatedFlyString> language_label_set;
+    };
+
     BasicBlock* m_current_basic_block { nullptr };
-    NonnullOwnPtrVector<BasicBlock> m_root_basic_blocks;
+    Vector<NonnullOwnPtr<BasicBlock>> m_root_basic_blocks;
     NonnullOwnPtr<StringTable> m_string_table;
     NonnullOwnPtr<IdentifierTable> m_identifier_table;
 
     u32 m_next_register { 2 };
     u32 m_next_block { 1 };
     FunctionKind m_enclosing_function_kind { FunctionKind::Normal };
-    Vector<Label> m_continuable_scopes;
-    Vector<Label> m_breakable_scopes;
+    Vector<LabelableScope> m_continuable_scopes;
+    Vector<LabelableScope> m_breakable_scopes;
     Vector<LexicalScope> m_variable_scopes;
+    Vector<BlockBoundaryType> m_boundaries;
 };
 
 }

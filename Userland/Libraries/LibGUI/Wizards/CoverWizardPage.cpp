@@ -8,7 +8,7 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Wizards/CoverWizardPage.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/SystemTheme.h>
 
 namespace GUI {
@@ -21,14 +21,13 @@ CoverWizardPage::CoverWizardPage()
     set_layout<HorizontalBoxLayout>();
     m_banner_image_widget = add<ImageWidget>();
     m_banner_image_widget->set_fixed_size(160, 315);
-    m_banner_image_widget->load_from_file("/res/graphics/wizard-banner-simple.png");
+    m_banner_image_widget->load_from_file("/res/graphics/wizard-banner-simple.png"sv);
 
     m_content_widget = add<Widget>();
-    m_content_widget->set_layout<VerticalBoxLayout>();
-    m_content_widget->layout()->set_margins(20);
+    m_content_widget->set_layout<VerticalBoxLayout>(20);
 
     m_header_label = m_content_widget->add<Label>();
-    m_header_label->set_font(Gfx::FontDatabase::the().get("Pebbleton", 14, 700, 0));
+    m_header_label->set_font(Gfx::FontDatabase::the().get("Pebbleton", 14, 700, Gfx::FontWidth::Normal, 0));
     m_header_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
     m_header_label->set_fixed_height(48);
 
@@ -36,12 +35,12 @@ CoverWizardPage::CoverWizardPage()
     m_body_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
 }
 
-void CoverWizardPage::set_header_text(const String& text)
+void CoverWizardPage::set_header_text(DeprecatedString const& text)
 {
     m_header_label->set_text(text);
 }
 
-void CoverWizardPage::set_body_text(const String& text)
+void CoverWizardPage::set_body_text(DeprecatedString const& text)
 {
     m_body_label->set_text(text);
 }

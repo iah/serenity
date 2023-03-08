@@ -19,7 +19,7 @@ PlaylistWidget::PlaylistWidget()
     m_table_view->set_selection_mode(GUI::AbstractView::SelectionMode::SingleSelection);
     m_table_view->set_selection_behavior(GUI::AbstractView::SelectionBehavior::SelectRows);
     m_table_view->set_highlight_selected_rows(true);
-    m_table_view->on_doubleclick = [&](const Gfx::Point<int>& point) {
+    m_table_view->on_doubleclick = [&](Gfx::Point<int> const& point) {
         auto player = dynamic_cast<Player*>(window()->main_widget());
         auto index = m_table_view->index_at_event_position(point);
         if (!index.is_valid())
@@ -50,30 +50,30 @@ GUI::Variant PlaylistModel::data(const GUI::ModelIndex& index, GUI::ModelRole ro
     }
     if (role == GUI::ModelRole::Sort)
         return data(index, GUI::ModelRole::Display);
-    if (role == static_cast<GUI::ModelRole>(PlaylistModelCustomRole::FilePath)) //path
+    if (role == static_cast<GUI::ModelRole>(PlaylistModelCustomRole::FilePath)) // path
         return m_playlist_items[index.row()].path;
 
     return {};
 }
 
-String PlaylistModel::format_filesize(u64 size_in_bytes)
+DeprecatedString PlaylistModel::format_filesize(u64 size_in_bytes)
 {
     if (size_in_bytes > GiB)
-        return String::formatted("{:.2f} GiB", (double)size_in_bytes / GiB);
+        return DeprecatedString::formatted("{:.2f} GiB", (double)size_in_bytes / GiB);
     else if (size_in_bytes > MiB)
-        return String::formatted("{:.2f} MiB", (double)size_in_bytes / MiB);
+        return DeprecatedString::formatted("{:.2f} MiB", (double)size_in_bytes / MiB);
     else if (size_in_bytes > KiB)
-        return String::formatted("{:.2f} KiB", (double)size_in_bytes / KiB);
+        return DeprecatedString::formatted("{:.2f} KiB", (double)size_in_bytes / KiB);
     else
-        return String::formatted("{} B", size_in_bytes);
+        return DeprecatedString::formatted("{} B", size_in_bytes);
 }
 
-String PlaylistModel::format_duration(u32 duration_in_seconds)
+DeprecatedString PlaylistModel::format_duration(u32 duration_in_seconds)
 {
-    return String::formatted("{:02}:{:02}:{:02}", duration_in_seconds / 3600, duration_in_seconds / 60, duration_in_seconds % 60);
+    return DeprecatedString::formatted("{:02}:{:02}:{:02}", duration_in_seconds / 3600, duration_in_seconds / 60, duration_in_seconds % 60);
 }
 
-String PlaylistModel::column_name(int column) const
+DeprecatedString PlaylistModel::column_name(int column) const
 {
     switch (column) {
     case 0:

@@ -14,7 +14,7 @@ class AbstractSlider : public Widget {
     C_OBJECT_ABSTRACT(AbstractSlider);
 
 public:
-    virtual ~AbstractSlider() override;
+    virtual ~AbstractSlider() override = default;
 
     void set_orientation(Orientation value);
     Orientation orientation() const { return m_orientation; }
@@ -30,7 +30,12 @@ public:
     bool is_max() const { return m_value == m_max; }
 
     void set_range(int min, int max);
-    virtual void set_value(int, AllowCallback = AllowCallback::Yes);
+
+    enum class DoClamp {
+        Yes = 1,
+        No = 0
+    };
+    virtual void set_value(int, AllowCallback = AllowCallback::Yes, DoClamp = DoClamp::Yes);
 
     void set_min(int min) { set_range(min, max()); }
     void set_max(int max) { set_range(min(), max); }
@@ -38,12 +43,12 @@ public:
     void set_page_step(int page_step);
     void set_jump_to_cursor(bool b) { m_jump_to_cursor = b; }
 
-    void increase_slider_by(int delta) { set_value(value() + delta); }
-    void decrease_slider_by(int delta) { set_value(value() - delta); }
-    void increase_slider_by_page_steps(int page_steps) { set_value(value() + page_step() * page_steps); }
-    void decrease_slider_by_page_steps(int page_steps) { set_value(value() - page_step() * page_steps); }
-    void increase_slider_by_steps(int steps) { set_value(value() + step() * steps); }
-    void decrease_slider_by_steps(int steps) { set_value(value() - step() * steps); }
+    virtual void increase_slider_by(int delta) { set_value(value() + delta); }
+    virtual void decrease_slider_by(int delta) { set_value(value() - delta); }
+    virtual void increase_slider_by_page_steps(int page_steps) { set_value(value() + page_step() * page_steps); }
+    virtual void decrease_slider_by_page_steps(int page_steps) { set_value(value() - page_step() * page_steps); }
+    virtual void increase_slider_by_steps(int steps) { set_value(value() + step() * steps); }
+    virtual void decrease_slider_by_steps(int steps) { set_value(value() - step() * steps); }
 
     Function<void(int)> on_change;
 
@@ -51,8 +56,6 @@ protected:
     explicit AbstractSlider(Orientation = Orientation::Vertical);
 
 private:
-    void set_knob_hovered(bool);
-
     int m_value { 0 };
     int m_min { 0 };
     int m_max { 0 };

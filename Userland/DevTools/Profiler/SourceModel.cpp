@@ -7,9 +7,8 @@
 #include "SourceModel.h"
 #include "Gradient.h"
 #include "Profile.h"
-#include <LibCore/File.h>
 #include <LibDebug/DebugInfo.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibSymbolication/Symbolication.h>
 #include <stdio.h>
 
@@ -18,27 +17,32 @@ namespace Profiler {
 class SourceFile final {
 public:
     struct Line {
-        String content;
+        DeprecatedString content;
         size_t num_samples { 0 };
     };
 
     static constexpr StringView source_root_path = "/usr/src/serenity/"sv;
 
-public:
     SourceFile(StringView filename)
     {
-        String source_file_name = filename.replace("../../", source_root_path);
+        DeprecatedString source_file_name = filename.replace("../../"sv, source_root_path, ReplaceMode::FirstOnly);
 
-        auto maybe_file = Core::File::open(source_file_name, Core::OpenMode::ReadOnly);
-        if (maybe_file.is_error()) {
-            dbgln("Could not map source file \"{}\". Tried {}. {} (errno={})", filename, source_file_name, maybe_file.error().string_literal(), maybe_file.error().code());
+        auto try_read_lines = [&]() -> ErrorOr<void> {
+            auto unbuffered_file = TRY(Core::File::open(source_file_name, Core::File::OpenMode::Read));
+            auto file = TRY(Core::BufferedFile::create(move(unbuffered_file)));
+
+            Array<u8, 1024> buffer;
+            while (!file->is_eof())
+                m_lines.append({ TRY(file->read_line(buffer)), 0 });
+
+            return {};
+        };
+
+        auto maybe_error = try_read_lines();
+        if (maybe_error.is_error()) {
+            dbgln("Could not map source file \"{}\". Tried {}. {} (errno={})", filename, source_file_name, maybe_error.error().string_literal(), maybe_error.error().code());
             return;
         }
-
-        auto file = maybe_file.value();
-
-        while (!file->eof())
-            m_lines.append({ file->read_line(1024), 0 });
     }
 
     void try_add_samples(size_t line, size_t samples)
@@ -66,7 +70,7 @@ SourceModel::SourceModel(Profile& profile, ProfileNode& node)
             return;
         base_address = maybe_kernel_base.release_value();
         if (g_kernel_debug_info == nullptr)
-            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, String::empty(), base_address);
+            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, DeprecatedString::empty(), base_address);
         debug_info = g_kernel_debug_info.ptr();
     } else {
         auto const& process = node.process();
@@ -82,7 +86,7 @@ SourceModel::SourceModel(Profile& profile, ProfileNode& node)
     VERIFY(debug_info != nullptr);
 
     // Try to read all source files contributing to the selected function and aggregate the samples by line.
-    HashMap<String, SourceFile> source_files;
+    HashMap<DeprecatedString, SourceFile> source_files;
     for (auto const& pair : node.events_per_address()) {
         auto position = debug_info->get_source_position(pair.key - base_address);
         if (position.has_value()) {
@@ -118,7 +122,7 @@ int SourceModel::row_count(GUI::ModelIndex const&) const
     return m_source_lines.size();
 }
 
-String SourceModel::column_name(int column) const
+DeprecatedString SourceModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleCount:

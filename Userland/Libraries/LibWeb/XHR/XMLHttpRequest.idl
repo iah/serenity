@@ -1,4 +1,8 @@
+#import <DOM/Document.idl>
+#import <DOM/EventHandler.idl>
+#import <Fetch/BodyInit.idl>
 #import <XHR/XMLHttpRequestEventTarget.idl>
+#import <XHR/XMLHttpRequestUpload.idl>
 
 enum XMLHttpRequestResponseType {
   "",
@@ -9,6 +13,8 @@ enum XMLHttpRequestResponseType {
   "text"
 };
 
+// https://xhr.spec.whatwg.org/#xmlhttprequest
+[Exposed=(Window,DedicatedWorker,SharedWorker), UseNewAKString]
 interface XMLHttpRequest : XMLHttpRequestEventTarget {
 
     constructor();
@@ -21,13 +27,19 @@ interface XMLHttpRequest : XMLHttpRequestEventTarget {
 
     readonly attribute unsigned short readyState;
     readonly attribute unsigned short status;
+    readonly attribute ByteString statusText;
     readonly attribute DOMString responseText;
     readonly attribute any response;
     attribute XMLHttpRequestResponseType responseType;
+    attribute unsigned long timeout;
+    attribute boolean withCredentials;
+    [SameObject] readonly attribute XMLHttpRequestUpload upload;
 
     undefined open(DOMString method, DOMString url);
+    undefined open(ByteString method, USVString url, boolean async, optional USVString? username = null, optional USVString? password = null);
     undefined setRequestHeader(DOMString name, DOMString value);
-    undefined send(optional USVString body = {});
+    undefined send(optional (Document or XMLHttpRequestBodyInit)? body = null);
+    undefined abort();
 
     ByteString? getResponseHeader(ByteString name);
     ByteString getAllResponseHeaders();

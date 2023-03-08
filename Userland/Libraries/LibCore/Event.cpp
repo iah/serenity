@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -17,10 +18,6 @@ ChildEvent::ChildEvent(Type type, Object& child, Object* insertion_before_child)
 {
 }
 
-ChildEvent::~ChildEvent()
-{
-}
-
 Object* ChildEvent::child()
 {
     if (auto ref = m_child.strong_ref())
@@ -28,7 +25,7 @@ Object* ChildEvent::child()
     return nullptr;
 }
 
-const Object* ChildEvent::child() const
+Object const* ChildEvent::child() const
 {
     if (auto ref = m_child.strong_ref())
         return ref.ptr();
@@ -42,7 +39,7 @@ Object* ChildEvent::insertion_before_child()
     return nullptr;
 }
 
-const Object* ChildEvent::insertion_before_child() const
+Object const* ChildEvent::insertion_before_child() const
 {
     if (auto ref = m_insertion_before_child.strong_ref())
         return ref.ptr();

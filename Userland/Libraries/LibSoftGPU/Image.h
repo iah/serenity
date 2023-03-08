@@ -1,76 +1,61 @@
 /*
  * Copyright (c) 2021, Stephan Unverwerth <s.unverwerth@serenityos.org>
+ * Copyright (c) 2022, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/RefCounted.h>
-#include <AK/Vector.h>
+#include <AK/FixedArray.h>
+#include <AK/RefPtr.h>
+#include <LibGPU/Image.h>
+#include <LibGPU/ImageDataLayout.h>
+#include <LibGPU/ImageFormat.h>
 #include <LibGfx/Vector3.h>
 #include <LibGfx/Vector4.h>
-#include <LibSoftGPU/ImageDataLayout.h>
-#include <LibSoftGPU/ImageFormat.h>
+#include <LibSoftGPU/Buffer/Typed3DBuffer.h>
 
 namespace SoftGPU {
 
-class Image final : public RefCounted<Image> {
+class Image final : public GPU::Image {
 public:
-    Image(ImageFormat format, unsigned width, unsigned height, unsigned depth, unsigned levels, unsigned layers);
+    Image(void const* ownership_token, GPU::PixelFormat const&, u32 width, u32 height, u32 depth, u32 max_levels);
 
-    ImageFormat format() const { return m_format; }
-    unsigned width() const { return m_width; }
-    unsigned height() const { return m_height; }
-    unsigned depth() const { return m_depth; }
-    unsigned level_width(unsigned level) const { return m_mipmap_sizes[level].x(); }
-    unsigned level_height(unsigned level) const { return m_mipmap_sizes[level].y(); }
-    unsigned level_depth(unsigned level) const { return m_mipmap_sizes[level].z(); }
-    unsigned num_levels() const { return m_num_levels; }
-    unsigned num_layers() const { return m_num_layers; }
     bool width_is_power_of_two() const { return m_width_is_power_of_two; }
     bool height_is_power_of_two() const { return m_height_is_power_of_two; }
     bool depth_is_power_of_two() const { return m_depth_is_power_of_two; }
 
-    FloatVector4 texel(unsigned layer, unsigned level, unsigned x, unsigned y, unsigned z) const
+    GPU::ImageDataLayout image_data_layout(u32 level, Vector3<i32> offset) const;
+    virtual void regenerate_mipmaps() override;
+
+    FloatVector4 const& texel(u32 level, int x, int y, int z) const
     {
-        return unpack_color(texel_pointer(layer, level, x, y, z), m_format);
+        return *texel_pointer(level, x, y, z);
     }
 
-    void set_texel(unsigned layer, unsigned level, unsigned x, unsigned y, unsigned z, FloatVector4 const& color)
+    void set_texel(u32 level, int x, int y, int z, FloatVector4 const& color)
     {
-        pack_color(color, texel_pointer(layer, level, x, y, z), m_format);
+        *texel_pointer(level, x, y, z) = color;
     }
 
-    void write_texels(unsigned layer, unsigned level, Vector3<unsigned> const& offset, Vector3<unsigned> const& size, void const* data, ImageDataLayout const& layout);
-    void read_texels(unsigned layer, unsigned level, Vector3<unsigned> const& offset, Vector3<unsigned> const& size, void* data, ImageDataLayout const& layout) const;
-    void copy_texels(Image const& source, unsigned source_layer, unsigned source_level, Vector3<unsigned> const& source_offset, Vector3<unsigned> const& size, unsigned destination_layer, unsigned destination_level, Vector3<unsigned> const& destination_offset);
+    virtual void write_texels(u32 level, Vector3<i32> const& output_offset, void const* input_data, GPU::ImageDataLayout const&) override;
+    virtual void read_texels(u32 level, Vector3<i32> const& input_offset, void* output_data, GPU::ImageDataLayout const&) const override;
+    virtual void copy_texels(GPU::Image const& source, u32 source_level, Vector3<u32> const& source_offset, Vector3<u32> const& size, u32 destination_level, Vector3<u32> const& destination_offset) override;
+
+    FloatVector4 const* texel_pointer(u32 level, int x, int y, int z) const
+    {
+        return m_mipmap_buffers[level]->buffer_pointer(x, y, z);
+    }
+
+    FloatVector4* texel_pointer(u32 level, int x, int y, int z)
+    {
+        return m_mipmap_buffers[level]->buffer_pointer(x, y, z);
+    }
 
 private:
-    void const* texel_pointer(unsigned layer, unsigned level, unsigned x, unsigned y, unsigned z) const
-    {
-        auto size = m_mipmap_sizes[level];
-        return &m_data[m_mipchain_size * layer + m_mipmap_offsets[level] + (z * size.x() * size.y() + y * size.x() + x) * element_size(m_format)];
-    }
+    FixedArray<RefPtr<Typed3DBuffer<FloatVector4>>> m_mipmap_buffers;
 
-    void* texel_pointer(unsigned layer, unsigned level, unsigned x, unsigned y, unsigned z)
-    {
-        auto size = m_mipmap_sizes[level];
-        return &m_data[m_mipchain_size * layer + m_mipmap_offsets[level] + (z * size.x() * size.y() + y * size.x() + x) * element_size(m_format)];
-    }
-
-private:
-    ImageFormat m_format { ImageFormat::RGBA8888 };
-    unsigned m_width { 0 };
-    unsigned m_height { 0 };
-    unsigned m_depth { 0 };
-    unsigned m_num_levels { 0 };
-    unsigned m_num_layers { 0 };
-
-    size_t m_mipchain_size { 0 };
-    Vector<size_t, 16> m_mipmap_offsets;
-    Vector<Vector3<unsigned>, 16> m_mipmap_sizes;
-    Vector<u8> m_data;
     bool m_width_is_power_of_two { false };
     bool m_height_is_power_of_two { false };
     bool m_depth_is_power_of_two { false };

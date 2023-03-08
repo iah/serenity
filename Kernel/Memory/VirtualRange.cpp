@@ -8,7 +8,6 @@
 #include <AK/Vector.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Memory/VirtualRange.h>
-#include <LibC/limits.h>
 
 namespace Kernel::Memory {
 
@@ -25,6 +24,18 @@ Vector<VirtualRange, 2> VirtualRange::carve(VirtualRange const& taken) const
         parts.append({ taken.end(), end().get() - taken.end().get() });
     return parts;
 }
+
+bool VirtualRange::intersects(VirtualRange const& other) const
+{
+    auto a = *this;
+    auto b = other;
+
+    if (a.base() > b.base())
+        swap(a, b);
+
+    return a.base() < b.end() && b.base() < a.end();
+}
+
 VirtualRange VirtualRange::intersect(VirtualRange const& other) const
 {
     if (*this == other) {

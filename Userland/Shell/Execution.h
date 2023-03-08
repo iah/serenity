@@ -7,9 +7,8 @@
 #pragma once
 
 #include "Forward.h"
+#include <AK/DeprecatedString.h>
 #include <AK/Forward.h>
-#include <AK/NonnullRefPtrVector.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibCore/ElapsedTimer.h>
 
@@ -17,7 +16,7 @@ namespace Shell {
 
 class FileDescriptionCollector {
 public:
-    FileDescriptionCollector() { }
+    FileDescriptionCollector() = default;
     ~FileDescriptionCollector();
 
     void collect();
@@ -29,7 +28,7 @@ private:
 
 class SavedFileDescriptors {
 public:
-    SavedFileDescriptors(const NonnullRefPtrVector<AST::Rewiring>&);
+    SavedFileDescriptors(Vector<NonnullRefPtr<AST::Rewiring>> const&);
     ~SavedFileDescriptors();
 
 private:

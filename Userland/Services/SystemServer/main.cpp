@@ -9,13 +9,14 @@
 #include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
 #include <AK/Debug.h>
+#include <AK/String.h>
 #include <Kernel/API/DeviceEvent.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ConfigFile.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/Event.h>
 #include <LibCore/EventLoop.h>
-#include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
 #include <errno.h>
@@ -29,7 +30,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-String g_system_mode = "graphical";
+DeprecatedString g_system_mode = "graphical";
+Vector<NonnullRefPtr<Service>> g_services;
+
+// NOTE: This handler ensures that the destructor of g_services is called.
+static void sigterm_handler(int)
+{
+    exit(0);
+}
 
 static void sigchld_handler(int)
 {
@@ -51,58 +59,49 @@ static void sigchld_handler(int)
             continue;
         }
 
-        service->did_exit(status);
+        if (auto result = service->did_exit(status); result.is_error())
+            dbgln("{}: {}", service->name(), result.release_error());
     }
 }
 
 static ErrorOr<void> determine_system_mode()
 {
-    auto f = Core::File::construct("/proc/system_mode");
+    ArmedScopeGuard declare_text_mode_on_failure([&] {
+        // Note: Only if the mode is not set to self-test, degrade it to text mode.
+        if (g_system_mode != "self-test")
+            g_system_mode = "text";
+    });
+
+    auto f = Core::DeprecatedFile::construct("/sys/kernel/constants/system_mode");
     if (!f->open(Core::OpenMode::ReadOnly)) {
         dbgln("Failed to read system_mode: {}", f->error_string());
-        // Continue to assume "graphical".
+        // Continue and assume "text" mode.
         return {};
     }
-    const String system_mode = String::copy(f->read_all(), Chomp);
+    const DeprecatedString system_mode = DeprecatedString::copy(f->read_all(), Chomp);
     if (f->error()) {
         dbgln("Failed to read system_mode: {}", f->error_string());
-        // Continue to assume "graphical".
+        // Continue and assume "text" mode.
         return {};
     }
 
     g_system_mode = system_mode;
+    declare_text_mode_on_failure.disarm();
+
     dbgln("Read system_mode: {}", g_system_mode);
 
-    // FIXME: Support more than one framebuffer detection
     struct stat file_state;
-    int rc = lstat("/dev/fb0", &file_state);
-    if (rc < 0 && g_system_mode == "graphical") {
+    int rc = lstat("/dev/gpu/connector0", &file_state);
+    if (rc != 0 && g_system_mode == "graphical") {
+        dbgln("WARNING: No device nodes at /dev/gpu/ directory. This is probably a sign of disabled graphics functionality.");
+        dbgln("To cope with this, I'll turn off graphical mode.");
         g_system_mode = "text";
-    } else if (rc == 0 && g_system_mode == "text") {
-        dbgln("WARNING: Text mode with framebuffers won't work as expected! Consider using 'fbdev=off'.");
     }
-    dbgln("System in {} mode", g_system_mode);
     return {};
 }
 
-static void chown_wrapper(const char* path, uid_t uid, gid_t gid)
+static ErrorOr<void> chown_all_matching_device_nodes_under_specific_directory(StringView directory, group const& group)
 {
-    int rc = chown(path, uid, gid);
-    if (rc < 0 && errno != ENOENT) {
-        VERIFY_NOT_REACHED();
-    }
-}
-static void chmod_wrapper(const char* path, mode_t mode)
-{
-    int rc = chmod(path, mode);
-    if (rc < 0 && errno != ENOENT) {
-        VERIFY_NOT_REACHED();
-    }
-}
-
-static void chown_all_matching_device_nodes_under_specific_directory(StringView directory, group* group)
-{
-    VERIFY(group);
     struct stat cur_file_stat;
 
     Core::DirIterator di(directory, Core::DirIterator::SkipParentAndBaseDir);
@@ -113,13 +112,13 @@ static void chown_all_matching_device_nodes_under_specific_directory(StringView 
         auto rc = stat(entry_name.characters(), &cur_file_stat);
         if (rc < 0)
             continue;
-        chown_wrapper(entry_name.characters(), 0, group->gr_gid);
+        TRY(Core::System::chown(entry_name, 0, group.gr_gid));
     }
+    return {};
 }
 
-static void chown_all_matching_device_nodes(group* group, unsigned major_number)
+static ErrorOr<void> chown_all_matching_device_nodes(group const& group, unsigned major_number)
 {
-    VERIFY(group);
     struct stat cur_file_stat;
 
     Core::DirIterator di("/dev/", Core::DirIterator::SkipParentAndBaseDir);
@@ -132,8 +131,9 @@ static void chown_all_matching_device_nodes(group* group, unsigned major_number)
             continue;
         if (major(cur_file_stat.st_rdev) != major_number)
             continue;
-        chown_wrapper(entry_name.characters(), 0, group->gr_gid);
+        TRY(Core::System::chown(entry_name, 0, group.gr_gid));
     }
+    return {};
 }
 
 inline char offset_character_with_number(char base_char, u8 offset)
@@ -144,24 +144,23 @@ inline char offset_character_with_number(char base_char, u8 offset)
     return offsetted_char;
 }
 
-static void create_devtmpfs_block_device(String name, mode_t mode, unsigned major, unsigned minor)
+static ErrorOr<void> create_devtmpfs_block_device(StringView name, mode_t mode, unsigned major, unsigned minor)
 {
-    if (auto rc = mknod(name.characters(), mode | S_IFBLK, makedev(major, minor)); rc < 0)
-        VERIFY_NOT_REACHED();
+    return Core::System::mknod(name, mode | S_IFBLK, makedev(major, minor));
 }
 
-static void create_devtmpfs_char_device(String name, mode_t mode, unsigned major, unsigned minor)
+static ErrorOr<void> create_devtmpfs_char_device(StringView name, mode_t mode, unsigned major, unsigned minor)
 {
-    if (auto rc = mknod(name.characters(), mode | S_IFCHR, makedev(major, minor)); rc < 0)
-        VERIFY_NOT_REACHED();
+    return Core::System::mknod(name, mode | S_IFCHR, makedev(major, minor));
 }
 
-static void populate_devtmpfs_char_devices_based_on_sysfs()
+static ErrorOr<void> populate_devtmpfs_char_devices_based_on_sysfs()
 {
     Core::DirIterator di("/sys/dev/char/", Core::DirIterator::SkipParentAndBaseDir);
     if (di.has_error()) {
-        warnln("Failed to open /sys/dev/char - {}", di.error());
-        VERIFY_NOT_REACHED();
+        auto error = di.error();
+        warnln("Failed to open /sys/dev/char - {}", error);
+        return error;
     }
     while (di.has_next()) {
         auto entry_name = di.next_path().split(':');
@@ -172,7 +171,7 @@ static void populate_devtmpfs_char_devices_based_on_sysfs()
         case 2: {
             switch (minor_number) {
             case 10: {
-                create_devtmpfs_char_device("/dev/devctl", 0660, 2, 10);
+                TRY(create_devtmpfs_char_device("/dev/devctl"sv, 0660, 2, 10));
                 break;
             }
             default:
@@ -185,11 +184,12 @@ static void populate_devtmpfs_char_devices_based_on_sysfs()
             break;
         }
     }
+    return {};
 }
 
-static void populate_devtmpfs_devices_based_on_devctl()
+static ErrorOr<void> populate_devtmpfs_devices_based_on_devctl()
 {
-    auto f = Core::File::construct("/dev/devctl");
+    auto f = Core::DeprecatedFile::construct("/dev/devctl");
     if (!f->open(Core::OpenMode::ReadOnly)) {
         warnln("Failed to open /dev/devctl - {}", f->error_string());
         VERIFY_NOT_REACHED();
@@ -205,30 +205,26 @@ static void populate_devtmpfs_devices_based_on_devctl()
         switch (major_number) {
         case 116: {
             if (!is_block_device) {
-                create_devtmpfs_char_device(String::formatted("/dev/audio/{}", minor_number), 0220, 116, minor_number);
+                auto name = TRY(String::formatted("/dev/audio/{}", minor_number));
+                TRY(create_devtmpfs_char_device(name.bytes_as_string_view(), 0220, 116, minor_number));
                 break;
             }
             break;
         }
-        case 29: {
-            if (is_block_device) {
-                create_devtmpfs_block_device(String::formatted("/dev/fb{}", minor_number), 0666, 29, minor_number);
-                break;
-            }
-
-            switch (minor_number) {
-            case 0: {
-                create_devtmpfs_char_device("/dev/full", 0660, 29, 0);
-                break;
-            }
-            default:
-                warnln("Unknown character device {}:{}", major_number, minor_number);
-            }
+        case 28: {
+            auto name = TRY(String::formatted("/dev/gpu/render{}", minor_number));
+            TRY(create_devtmpfs_block_device(name.bytes_as_string_view(), 0666, 28, minor_number));
+            break;
+        }
+        case 226: {
+            auto name = TRY(String::formatted("/dev/gpu/connector{}", minor_number));
+            TRY(create_devtmpfs_char_device(name.bytes_as_string_view(), 0666, 226, minor_number));
             break;
         }
         case 229: {
             if (!is_block_device) {
-                create_devtmpfs_char_device(String::formatted("/dev/hvc0p{}", minor_number), 0666, major_number, minor_number);
+                auto name = TRY(String::formatted("/dev/hvc0p{}", minor_number));
+                TRY(create_devtmpfs_char_device(name.bytes_as_string_view(), 0666, 229, minor_number));
             }
             break;
         }
@@ -236,11 +232,11 @@ static void populate_devtmpfs_devices_based_on_devctl()
             if (!is_block_device) {
                 switch (minor_number) {
                 case 0: {
-                    create_devtmpfs_char_device("/dev/mouse0", 0660, 10, 0);
+                    TRY(create_devtmpfs_char_device("/dev/input/mouse/0"sv, 0666, 10, 0));
                     break;
                 }
                 case 183: {
-                    create_devtmpfs_char_device("/dev/hwrng", 0660, 10, 183);
+                    TRY(create_devtmpfs_char_device("/dev/hwrng"sv, 0666, 10, 183));
                     break;
                 }
                 default:
@@ -253,7 +249,7 @@ static void populate_devtmpfs_devices_based_on_devctl()
             if (!is_block_device) {
                 switch (minor_number) {
                 case 0: {
-                    create_devtmpfs_char_device("/dev/keyboard0", 0660, 85, 0);
+                    TRY(create_devtmpfs_char_device("/dev/input/keyboard/0"sv, 0666, 85, 0));
                     break;
                 }
                 default:
@@ -266,19 +262,23 @@ static void populate_devtmpfs_devices_based_on_devctl()
             if (!is_block_device) {
                 switch (minor_number) {
                 case 5: {
-                    create_devtmpfs_char_device("/dev/zero", 0666, 1, 5);
+                    TRY(create_devtmpfs_char_device("/dev/zero"sv, 0666, 1, 5));
                     break;
                 }
                 case 1: {
-                    create_devtmpfs_char_device("/dev/mem", 0660, 1, 1);
+                    TRY(create_devtmpfs_char_device("/dev/mem"sv, 0666, 1, 1));
                     break;
                 }
                 case 3: {
-                    create_devtmpfs_char_device("/dev/null", 0666, 1, 3);
+                    TRY(create_devtmpfs_char_device("/dev/null"sv, 0666, 1, 3));
+                    break;
+                }
+                case 7: {
+                    TRY(create_devtmpfs_char_device("/dev/full"sv, 0666, 1, 7));
                     break;
                 }
                 case 8: {
-                    create_devtmpfs_char_device("/dev/random", 0666, 1, 8);
+                    TRY(create_devtmpfs_char_device("/dev/random"sv, 0666, 1, 8));
                     break;
                 }
                 default:
@@ -289,14 +289,16 @@ static void populate_devtmpfs_devices_based_on_devctl()
             break;
         }
         case 30: {
-            if (is_block_device) {
-                create_devtmpfs_block_device(String::formatted("/dev/kcov{}", minor_number), 0666, 30, minor_number);
+            if (!is_block_device) {
+                auto name = TRY(String::formatted("/dev/kcov{}", minor_number));
+                TRY(create_devtmpfs_char_device(name.bytes_as_string_view(), 0666, 30, minor_number));
             }
             break;
         }
         case 3: {
             if (is_block_device) {
-                create_devtmpfs_block_device(String::formatted("/dev/hd{}", offset_character_with_number('a', minor_number)), 0600, 3, minor_number);
+                auto name = TRY(String::formatted("/dev/hd{}", offset_character_with_number('a', minor_number)));
+                TRY(create_devtmpfs_block_device(name.bytes_as_string_view(), 0600, 3, minor_number));
             }
             break;
         }
@@ -304,11 +306,15 @@ static void populate_devtmpfs_devices_based_on_devctl()
             if (!is_block_device) {
                 switch (minor_number) {
                 case 1: {
-                    create_devtmpfs_char_device("/dev/console", 0666, 5, 1);
+                    TRY(create_devtmpfs_char_device("/dev/console"sv, 0666, 5, 1));
                     break;
                 }
                 case 2: {
-                    create_devtmpfs_char_device("/dev/ptmx", 0666, 5, 2);
+                    TRY(create_devtmpfs_char_device("/dev/ptmx"sv, 0666, 5, 2));
+                    break;
+                }
+                case 0: {
+                    TRY(create_devtmpfs_char_device("/dev/tty"sv, 0666, 5, 0));
                     break;
                 }
                 default:
@@ -321,35 +327,35 @@ static void populate_devtmpfs_devices_based_on_devctl()
             if (!is_block_device) {
                 switch (minor_number) {
                 case 0: {
-                    create_devtmpfs_char_device("/dev/tty0", 0620, 4, 0);
+                    TRY(create_devtmpfs_char_device("/dev/tty0"sv, 0620, 4, 0));
                     break;
                 }
                 case 1: {
-                    create_devtmpfs_char_device("/dev/tty1", 0620, 4, 1);
+                    TRY(create_devtmpfs_char_device("/dev/tty1"sv, 0620, 4, 1));
                     break;
                 }
                 case 2: {
-                    create_devtmpfs_char_device("/dev/tty2", 0620, 4, 2);
+                    TRY(create_devtmpfs_char_device("/dev/tty2"sv, 0620, 4, 2));
                     break;
                 }
                 case 3: {
-                    create_devtmpfs_char_device("/dev/tty3", 0620, 4, 3);
+                    TRY(create_devtmpfs_char_device("/dev/tty3"sv, 0620, 4, 3));
                     break;
                 }
                 case 64: {
-                    create_devtmpfs_char_device("/dev/ttyS0", 0620, 4, 64);
+                    TRY(create_devtmpfs_char_device("/dev/ttyS0"sv, 0620, 4, 64));
                     break;
                 }
                 case 65: {
-                    create_devtmpfs_char_device("/dev/ttyS1", 0620, 4, 65);
+                    TRY(create_devtmpfs_char_device("/dev/ttyS1"sv, 0620, 4, 65));
                     break;
                 }
                 case 66: {
-                    create_devtmpfs_char_device("/dev/ttyS2", 0620, 4, 66);
+                    TRY(create_devtmpfs_char_device("/dev/ttyS2"sv, 0620, 4, 66));
                     break;
                 }
                 case 67: {
-                    create_devtmpfs_char_device("/dev/ttyS3", 0666, 4, 67);
+                    TRY(create_devtmpfs_char_device("/dev/ttyS3"sv, 0666, 4, 67));
                     break;
                 }
                 default:
@@ -366,59 +372,81 @@ static void populate_devtmpfs_devices_based_on_devctl()
             break;
         }
     }
+    return {};
 }
 
-static void populate_devtmpfs()
+static ErrorOr<void> populate_devtmpfs()
 {
     mode_t old_mask = umask(0);
     printf("Changing umask %#o\n", old_mask);
-    populate_devtmpfs_char_devices_based_on_sysfs();
-    populate_devtmpfs_devices_based_on_devctl();
+    TRY(populate_devtmpfs_char_devices_based_on_sysfs());
+    TRY(populate_devtmpfs_devices_based_on_devctl());
     umask(old_mask);
+    return {};
 }
 
 static ErrorOr<void> prepare_synthetic_filesystems()
 {
+    // FIXME: Don't hardcode the fs type as the ext2 filesystem and once there's
+    // more than this filesystem implementation (which is suitable for usage on
+    // physical storage), find a way to detect it.
+    TRY(Core::System::mount(-1, "/"sv, "ext2"sv, MS_REMOUNT | MS_NODEV | MS_NOSUID | MS_RDONLY));
     // FIXME: Find a better way to all of this stuff, without hardcoding all of this!
-    TRY(Core::System::mount(-1, "/proc", "proc", MS_NOSUID));
-    TRY(Core::System::mount(-1, "/sys", "sys", 0));
-    TRY(Core::System::mount(-1, "/dev", "dev", 0));
+    TRY(Core::System::mount(-1, "/proc"sv, "proc"sv, MS_NOSUID));
+    TRY(Core::System::mount(-1, "/sys"sv, "sys"sv, 0));
+    TRY(Core::System::mount(-1, "/dev"sv, "ram"sv, MS_NOSUID | MS_NOEXEC | MS_NOREGULAR));
 
-    TRY(Core::System::mkdir("/dev/audio", 0755));
+    TRY(Core::System::mount(-1, "/tmp"sv, "ram"sv, MS_NOSUID | MS_NODEV));
+    // NOTE: Set /tmp to have a sticky bit with 0777 permissions.
+    TRY(Core::System::chmod("/tmp"sv, 01777));
 
-    TRY(Core::System::symlink("/proc/self/fd/0", "/dev/stdin"));
-    TRY(Core::System::symlink("/proc/self/fd/1", "/dev/stdout"));
-    TRY(Core::System::symlink("/proc/self/fd/2", "/dev/stderr"));
-    TRY(Core::System::symlink("/proc/self/tty", "/dev/tty"));
+    TRY(Core::System::mkdir("/dev/audio"sv, 0755));
+    TRY(Core::System::mkdir("/dev/input"sv, 0755));
+    TRY(Core::System::mkdir("/dev/input/keyboard"sv, 0755));
+    TRY(Core::System::mkdir("/dev/input/mouse"sv, 0755));
 
-    populate_devtmpfs();
+    TRY(Core::System::symlink("/proc/self/fd/0"sv, "/dev/stdin"sv));
+    TRY(Core::System::symlink("/proc/self/fd/1"sv, "/dev/stdout"sv));
+    TRY(Core::System::symlink("/proc/self/fd/2"sv, "/dev/stderr"sv));
 
-    TRY(Core::System::mkdir("/dev/pts", 0755));
+    TRY(Core::System::mkdir("/dev/gpu"sv, 0755));
 
-    TRY(Core::System::mount(-1, "/dev/pts", "devpts", 0));
+    TRY(populate_devtmpfs());
 
-    TRY(Core::System::symlink("/dev/random", "/dev/urandom"));
+    TRY(Core::System::mkdir("/dev/pts"sv, 0755));
 
-    chmod_wrapper("/dev/urandom", 0666);
+    TRY(Core::System::mount(-1, "/dev/pts"sv, "devpts"sv, 0));
 
-    auto phys_group = getgrnam("phys");
-    VERIFY(phys_group);
-    // FIXME: Try to find a way to not hardcode the major number of framebuffer device nodes.
-    chown_all_matching_device_nodes(phys_group, 29);
+    TRY(Core::System::symlink("/dev/random"sv, "/dev/urandom"sv));
 
-    chown_wrapper("/dev/keyboard0", 0, phys_group->gr_gid);
+    TRY(Core::System::chmod("/dev/urandom"sv, 0666));
 
-    chown_wrapper("/dev/mouse0", 0, phys_group->gr_gid);
+    auto phys_group = TRY(Core::System::getgrnam("phys"sv));
+    VERIFY(phys_group.has_value());
+    // FIXME: Try to find a way to not hardcode the major number of display connector device nodes.
+    TRY(chown_all_matching_device_nodes(phys_group.value(), 29));
 
-    auto tty_group = getgrnam("tty");
-    VERIFY(tty_group);
+    auto const filter_chown_ENOENT = [](ErrorOr<void> result) -> ErrorOr<void> {
+        auto const chown_enoent = Error::from_syscall("chown"sv, -ENOENT);
+        if (result.is_error() && result.error() == chown_enoent) {
+            dbgln("{}", result.release_error());
+            return {};
+        }
+        return result;
+    };
+
+    TRY(filter_chown_ENOENT(Core::System::chown("/dev/input/keyboard/0"sv, 0, phys_group.value().gr_gid)));
+    TRY(filter_chown_ENOENT(Core::System::chown("/dev/input/mouse/0"sv, 0, phys_group.value().gr_gid)));
+
+    auto tty_group = TRY(Core::System::getgrnam("tty"sv));
+    VERIFY(tty_group.has_value());
     // FIXME: Try to find a way to not hardcode the major number of tty nodes.
-    chown_all_matching_device_nodes(tty_group, 4);
+    TRY(chown_all_matching_device_nodes(tty_group.release_value(), 4));
 
-    auto audio_group = getgrnam("audio");
-    VERIFY(audio_group);
-    chown_wrapper("/dev/audio", 0, audio_group->gr_gid);
-    chown_all_matching_device_nodes_under_specific_directory("/dev/audio", audio_group);
+    auto audio_group = TRY(Core::System::getgrnam("audio"sv));
+    VERIFY(audio_group.has_value());
+    TRY(Core::System::chown("/dev/audio"sv, 0, audio_group->gr_gid));
+    TRY(chown_all_matching_device_nodes_under_specific_directory("/dev/audio"sv, audio_group.release_value()));
 
     // Note: We open the /dev/null device and set file descriptors 0, 1, 2 to it
     // because otherwise these file descriptors won't have a custody, making
@@ -427,13 +455,13 @@ static ErrorOr<void> prepare_synthetic_filesystems()
     // This affects also every other process that inherits the file descriptors
     // from SystemServer, so it is important for other things (also for ProcFS
     // tests that are running in CI mode).
-    int stdin_new_fd = TRY(Core::System::open("/dev/null", O_NONBLOCK));
+    int stdin_new_fd = TRY(Core::System::open("/dev/null"sv, O_NONBLOCK));
 
     TRY(Core::System::dup2(stdin_new_fd, 0));
     TRY(Core::System::dup2(stdin_new_fd, 1));
     TRY(Core::System::dup2(stdin_new_fd, 2));
 
-    endgrent();
+    TRY(Core::System::endgrent());
     return {};
 }
 
@@ -442,13 +470,10 @@ static ErrorOr<void> mount_all_filesystems()
     dbgln("Spawning mount -a to mount all filesystems.");
     pid_t pid = TRY(Core::System::fork());
 
-    if (pid == 0) {
-        execl("/bin/mount", "mount", "-a", nullptr);
-        perror("exec");
-        VERIFY_NOT_REACHED();
-    } else {
-        wait(nullptr);
-    }
+    if (pid == 0)
+        TRY(Core::System::exec("/bin/mount"sv, Vector { "mount"sv, "-a"sv }, Core::System::SearchInPath::No));
+
+    wait(nullptr);
     return {};
 }
 
@@ -457,7 +482,29 @@ static ErrorOr<void> create_tmp_coredump_directory()
     dbgln("Creating /tmp/coredump directory");
     auto old_umask = umask(0);
     // FIXME: the coredump directory should be made read-only once CrashDaemon is no longer responsible for compressing coredumps
-    TRY(Core::System::mkdir("/tmp/coredump", 0777));
+    TRY(Core::System::mkdir("/tmp/coredump"sv, 0777));
+    umask(old_umask);
+    return {};
+}
+
+static ErrorOr<void> set_default_coredump_directory()
+{
+    dbgln("Setting /tmp/coredump as the coredump directory");
+    auto sysfs_coredump_directory_variable_fd = TRY(Core::System::open("/sys/kernel/variables/coredump_directory"sv, O_RDWR));
+    ScopeGuard close_on_exit([&] {
+        close(sysfs_coredump_directory_variable_fd);
+    });
+    auto tmp_coredump_directory_path = "/tmp/coredump"sv;
+    auto nwritten = TRY(Core::System::write(sysfs_coredump_directory_variable_fd, tmp_coredump_directory_path.bytes()));
+    VERIFY(static_cast<size_t>(nwritten) == tmp_coredump_directory_path.length());
+    return {};
+}
+
+static ErrorOr<void> create_tmp_semaphore_directory()
+{
+    dbgln("Creating /tmp/semaphore directory");
+    auto old_umask = umask(0);
+    TRY(Core::System::mkdir("/tmp/semaphore"sv, 0777));
     umask(old_umask);
     return {};
 }
@@ -478,29 +525,33 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (!user) {
         TRY(create_tmp_coredump_directory());
+        TRY(set_default_coredump_directory());
+        TRY(create_tmp_semaphore_directory());
         TRY(determine_system_mode());
     }
 
     Core::EventLoop event_loop;
 
     event_loop.register_signal(SIGCHLD, sigchld_handler);
+    event_loop.register_signal(SIGTERM, sigterm_handler);
 
     // Read our config and instantiate services.
     // This takes care of setting up sockets.
-    NonnullRefPtrVector<Service> services;
     auto config = (user)
         ? TRY(Core::ConfigFile::open_for_app("SystemServer"))
         : TRY(Core::ConfigFile::open_for_system("SystemServer"));
-    for (auto name : config->groups()) {
-        auto service = Service::construct(*config, name);
+    for (auto const& name : config->groups()) {
+        auto service = TRY(Service::try_create(*config, name));
         if (service->is_enabled())
-            services.append(service);
+            g_services.append(move(service));
     }
 
     // After we've set them all up, activate them!
-    dbgln("Activating {} services...", services.size());
-    for (auto& service : services)
-        service.activate();
+    dbgln("Activating {} services...", g_services.size());
+    for (auto& service : g_services) {
+        if (auto result = service->activate(); result.is_error())
+            dbgln("{}: {}", service->name(), result.release_error());
+    }
 
     return event_loop.exec();
 }

@@ -19,12 +19,12 @@ class WebAssemblyInstanceObject final : public JS::Object {
     JS_OBJECT(WebAssemblyInstanceObject, Object);
 
 public:
-    explicit WebAssemblyInstanceObject(JS::GlobalObject&, size_t index);
-    virtual void initialize(JS::GlobalObject&) override;
+    explicit WebAssemblyInstanceObject(JS::Realm&, size_t index);
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
     virtual ~WebAssemblyInstanceObject() override = default;
 
     size_t index() const { return m_index; }
-    Wasm::ModuleInstance& instance() const { return WebAssemblyObject::s_instantiated_modules.at(m_index); }
+    Wasm::ModuleInstance& instance() const { return *WebAssemblyObject::s_instantiated_modules[m_index]; }
     auto& cache() { return WebAssemblyObject::s_module_caches.at(m_index); }
 
     void visit_edges(Visitor&) override;

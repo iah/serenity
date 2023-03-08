@@ -6,18 +6,30 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
-#include <LibWeb/Bindings/Wrappable.h>
-#include <LibWeb/Forward.h>
+#include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/HTML/NavigatorConcurrentHardware.h>
+#include <LibWeb/HTML/NavigatorID.h>
+#include <LibWeb/HTML/NavigatorLanguage.h>
+#include <LibWeb/HTML/NavigatorOnLine.h>
 
 namespace Web::HTML {
 
-// FIXME: Add Mixin APIs from https://html.spec.whatwg.org/multipage/workers.html#the-workernavigator-object
-class WorkerNavigator
-    : public RefCounted<WorkerNavigator>
-    , public Bindings::Wrappable {
+class WorkerNavigator : public Bindings::PlatformObject
+    , public NavigatorConcurrentHardwareMixin
+    , public NavigatorIDMixin
+    , public NavigatorLanguageMixin
+    , public NavigatorOnLineMixin {
+    WEB_PLATFORM_OBJECT(WorkerNavigator, Bindings::PlatformObject);
+
 public:
-    using WrapperType = Bindings::WorkerNavigatorWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<WorkerNavigator>> create(WorkerGlobalScope&);
+
+    virtual ~WorkerNavigator() override;
+
+private:
+    explicit WorkerNavigator(WorkerGlobalScope&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

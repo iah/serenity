@@ -15,8 +15,9 @@ class IdentityCell : public CellType {
 public:
     IdentityCell();
     virtual ~IdentityCell() override = default;
-    virtual JS::ThrowCompletionOr<String> display(Cell&, const CellTypeMetadata&) const override;
-    virtual JS::ThrowCompletionOr<JS::Value> js_value(Cell&, const CellTypeMetadata&) const override;
+    virtual JS::ThrowCompletionOr<DeprecatedString> display(Cell&, CellTypeMetadata const&) const override;
+    virtual JS::ThrowCompletionOr<JS::Value> js_value(Cell&, CellTypeMetadata const&) const override;
+    DeprecatedString metadata_hint(MetadataName) const override;
 };
 
 }

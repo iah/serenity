@@ -16,8 +16,10 @@
 #include <LibGUI/Painter.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
+#include <LibGfx/BMPWriter.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PNGWriter.h>
+#include <LibGfx/QOIWriter.h>
 #include <LibMain/Main.h>
 #include <unistd.h>
 
@@ -35,9 +37,9 @@ public:
         calculate();
     }
 
-    void resize(Gfx::IntSize const& size)
+    void resize(Gfx::IntSize size)
     {
-        m_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, size).release_value_but_fixme_should_propagate_errors();
+        m_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, size).release_value_but_fixme_should_propagate_errors();
         correct_aspect();
         calculate();
     }
@@ -53,7 +55,7 @@ public:
         calculate();
     }
 
-    void pan_by(Gfx::IntPoint const& delta)
+    void pan_by(Gfx::IntPoint delta)
     {
         auto relative_width_pixel = (m_x_end - m_x_start) / m_bitmap->width();
         auto relative_height_pixel = (m_y_end - m_y_start) / m_bitmap->height();
@@ -85,8 +87,8 @@ public:
     double mandelbrot(double px, double py, i32 max_iterations)
     {
         // Based on https://en.wikipedia.org/wiki/Plotting_algorithms_for_the_Mandelbrot_set
-        const double x0 = px * (m_x_end - m_x_start) / m_bitmap->width() + m_x_start;
-        const double y0 = py * (m_y_end - m_y_start) / m_bitmap->height() + m_y_start;
+        double const x0 = px * (m_x_end - m_x_start) / m_bitmap->width() + m_x_start;
+        double const y0 = py * (m_y_end - m_y_start) / m_bitmap->height() + m_y_start;
         double x = 0;
         double y = 0;
         i32 iteration = 0;
@@ -177,7 +179,7 @@ private:
         m_y_end = y_mid + aspect_corrected_y_length / 2;
     }
 
-    void move_contents_by(Gfx::IntPoint const& delta)
+    void move_contents_by(Gfx::IntPoint delta)
     {
         // If we're moving down we paint upwards, else we paint downwards, to
         // avoid overwriting.
@@ -206,16 +208,22 @@ private:
     }
 };
 
+enum class ImageType {
+    BMP,
+    PNG,
+    QOI
+};
+
 class Mandelbrot : public GUI::Frame {
     C_OBJECT(Mandelbrot)
 
-    void export_image(String const& export_path);
+    ErrorOr<void> export_image(DeprecatedString const& export_path, ImageType image_type);
 
     enum class Zoom {
         In,
         Out,
     };
-    void zoom(Zoom in_out, const Gfx::IntPoint& center);
+    void zoom(Zoom in_out, Gfx::IntPoint center);
 
     void reset();
 
@@ -239,7 +247,7 @@ private:
     MandelbrotSet m_set;
 };
 
-void Mandelbrot::zoom(Zoom in_out, const Gfx::IntPoint& center)
+void Mandelbrot::zoom(Zoom in_out, Gfx::IntPoint center)
 {
     static constexpr double zoom_in_multiplier = 0.8;
     static constexpr double zoom_out_multiplier = 1.25;
@@ -358,19 +366,34 @@ void Mandelbrot::resize_event(GUI::ResizeEvent& event)
     m_set.resize(event.size());
 }
 
-void Mandelbrot::export_image(String const& export_path)
+ErrorOr<void> Mandelbrot::export_image(DeprecatedString const& export_path, ImageType image_type)
 {
     m_set.resize(Gfx::IntSize { 1920, 1080 });
-    auto png = Gfx::PNGWriter::encode(m_set.bitmap());
+    ByteBuffer encoded_data;
+    switch (image_type) {
+    case ImageType::BMP: {
+        Gfx::BMPWriter dumper;
+        encoded_data = dumper.dump(m_set.bitmap());
+        break;
+    }
+    case ImageType::PNG:
+        encoded_data = TRY(Gfx::PNGWriter::encode(m_set.bitmap()));
+        break;
+    case ImageType::QOI:
+        encoded_data = Gfx::QOIWriter::encode(m_set.bitmap());
+        break;
+    default:
+        VERIFY_NOT_REACHED();
+    }
     m_set.resize(size());
     auto file = fopen(export_path.characters(), "wb");
     if (!file) {
-        GUI::MessageBox::show(window(), String::formatted("Could not open '{}' for writing.", export_path), "Mandelbrot", GUI::MessageBox::Type::Error);
-        return;
+        GUI::MessageBox::show(window(), DeprecatedString::formatted("Could not open '{}' for writing.", export_path), "Mandelbrot"sv, GUI::MessageBox::Type::Error);
+        return {};
     }
-    fwrite(png.data(), 1, png.size(), file);
+    fwrite(encoded_data.data(), 1, encoded_data.size(), file);
     fclose(file);
-    GUI::MessageBox::show(window(), "Image was successfully exported.", "Mandelbrot", GUI::MessageBox::Type::Information);
+    return {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -387,18 +410,42 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto window = TRY(GUI::Window::try_create());
     window->set_double_buffering_enabled(false);
     window->set_title("Mandelbrot");
+    window->set_obey_widget_min_size(false);
     window->set_minimum_size(320, 240);
     window->resize(window->minimum_size() * 2);
-    auto mandelbrot = TRY(window->try_set_main_widget<Mandelbrot>());
+    auto mandelbrot = TRY(window->set_main_widget<Mandelbrot>());
 
     auto file_menu = TRY(window->try_add_menu("&File"));
-    TRY(file_menu->try_add_action(GUI::Action::create("&Export...", { Mod_Ctrl | Mod_Shift, Key_S }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/save.png").release_value_but_fixme_should_propagate_errors(),
+
+    auto& export_submenu = file_menu->add_submenu("&Export");
+
+    TRY(export_submenu.try_add_action(GUI::Action::create("As &BMP",
         [&](GUI::Action&) {
-            Optional<String> export_path = GUI::FilePicker::get_save_filepath(window, "untitled", "png");
+            Optional<DeprecatedString> export_path = GUI::FilePicker::get_save_filepath(window, "untitled", "bmp");
             if (!export_path.has_value())
                 return;
-            mandelbrot->export_image(export_path.value());
+            if (auto result = mandelbrot->export_image(export_path.value(), ImageType::BMP); result.is_error())
+                GUI::MessageBox::show_error(window, DeprecatedString::formatted("{}", result.error()));
         })));
+    TRY(export_submenu.try_add_action(GUI::Action::create("As &PNG", { Mod_Ctrl | Mod_Shift, Key_S },
+        [&](GUI::Action&) {
+            Optional<DeprecatedString> export_path = GUI::FilePicker::get_save_filepath(window, "untitled", "png");
+            if (!export_path.has_value())
+                return;
+            if (auto result = mandelbrot->export_image(export_path.value(), ImageType::PNG); result.is_error())
+                GUI::MessageBox::show_error(window, DeprecatedString::formatted("{}", result.error()));
+        })));
+    TRY(export_submenu.try_add_action(GUI::Action::create("As &QOI",
+        [&](GUI::Action&) {
+            Optional<DeprecatedString> export_path = GUI::FilePicker::get_save_filepath(window, "untitled", "qoi");
+            if (!export_path.has_value())
+                return;
+            if (auto result = mandelbrot->export_image(export_path.value(), ImageType::QOI); result.is_error())
+                GUI::MessageBox::show_error(window, DeprecatedString::formatted("{}", result.error()));
+        })));
+
+    export_submenu.set_icon(TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/save.png"sv)));
+
     TRY(file_menu->try_add_separator());
     TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); })));
 
@@ -421,16 +468,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         },
         window);
 
+    auto app_icon = GUI::Icon::default_icon("app-mandelbrot"sv);
+    window->set_icon(app_icon.bitmap_for_size(16));
+
     auto view_menu = TRY(window->try_add_menu("&View"));
     TRY(view_menu->try_add_action(zoom_in_action));
     TRY(view_menu->try_add_action(reset_zoom_action));
     TRY(view_menu->try_add_action(zoom_out_action));
 
+    auto help_menu = TRY(window->try_add_menu("&Help"));
+    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
+    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Mandelbrot Demo", app_icon, window)));
+
     window->show();
-
-    auto app_icon = GUI::Icon::default_icon("app-mandelbrot");
-    window->set_icon(app_icon.bitmap_for_size(16));
     window->set_cursor(Gfx::StandardCursor::Zoom);
-
     return app->exec();
 }

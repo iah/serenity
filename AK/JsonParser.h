@@ -23,7 +23,7 @@ public:
 private:
     ErrorOr<JsonValue> parse_helper();
 
-    ErrorOr<String> consume_and_unescape_string();
+    ErrorOr<DeprecatedString> consume_and_unescape_string();
     ErrorOr<JsonValue> parse_array();
     ErrorOr<JsonValue> parse_object();
     ErrorOr<JsonValue> parse_number();
@@ -31,10 +31,10 @@ private:
     ErrorOr<JsonValue> parse_false();
     ErrorOr<JsonValue> parse_true();
     ErrorOr<JsonValue> parse_null();
-
-    String m_last_string_starting_with_character[256];
 };
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::JsonParser;
+#endif

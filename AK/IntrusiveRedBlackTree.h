@@ -24,7 +24,7 @@ struct ExtractIntrusiveRedBlackTreeTypes {
 };
 
 template<Integral K, typename V, typename Container = RawPtr<V>>
-using SubstitutedIntrusiveRedBlackTreeNode = IntrusiveRedBlackTreeNode<K, V, typename Detail::SubstituteIntrusiveContainerType<V, Container>::Type>;
+using SubstitutedIntrusiveRedBlackTreeNode = IntrusiveRedBlackTreeNode<K, V, typename SubstituteIntrusiveContainerType<V, Container>::Type>;
 
 template<Integral K, typename V, typename Container, SubstitutedIntrusiveRedBlackTreeNode<K, V, Container> V::*member>
 class IntrusiveRedBlackTree : public BaseRedBlackTree<K> {
@@ -55,6 +55,14 @@ public:
         return node_to_value(*node);
     }
 
+    Container find_smallest_not_below(K key)
+    {
+        auto* node = static_cast<TreeNode*>(BaseTree::find_smallest_not_below(this->m_root, key));
+        if (!node)
+            return nullptr;
+        return node_to_value(*node);
+    }
+
     void insert(K key, V& value)
     {
         auto& node = value.*member;
@@ -70,7 +78,7 @@ public:
     class BaseIterator {
     public:
         BaseIterator() = default;
-        bool operator!=(const BaseIterator& other) const { return m_node != other.m_node; }
+        bool operator!=(BaseIterator const& other) const { return m_node != other.m_node; }
         BaseIterator& operator++()
         {
             if (!m_node)
@@ -117,11 +125,13 @@ public:
     Iterator begin() { return Iterator(static_cast<TreeNode*>(this->m_minimum)); }
     Iterator end() { return {}; }
     Iterator begin_from(K key) { return Iterator(static_cast<TreeNode*>(BaseTree::find(this->m_root, key))); }
+    Iterator begin_from(V& value) { return Iterator(&(value.*member)); }
 
-    using ConstIterator = BaseIterator<const V>;
+    using ConstIterator = BaseIterator<V const>;
     ConstIterator begin() const { return ConstIterator(static_cast<TreeNode*>(this->m_minimum)); }
     ConstIterator end() const { return {}; }
     ConstIterator begin_from(K key) const { return ConstIterator(static_cast<TreeNode*>(BaseTree::find(this->m_rootF, key))); }
+    ConstIterator begin_from(V const& value) const { return Iterator(&(value.*member)); }
 
     bool remove(K key)
     {
@@ -188,7 +198,7 @@ public:
 
     static constexpr bool IsRaw = IsPointer<Container>;
 
-#ifndef __clang__
+#if !defined(AK_COMPILER_CLANG)
 private:
     template<Integral TK, typename TV, typename TContainer, SubstitutedIntrusiveRedBlackTreeNode<TK, TV, TContainer> TV::*member>
     friend class ::AK::Detail::IntrusiveRedBlackTree;
@@ -206,6 +216,7 @@ class IntrusiveRedBlackTree<K, V, NonnullRefPtr<V>, member> : public IntrusiveRe
 public:
     [[nodiscard]] NonnullRefPtr<V> find(K key) const { return IntrusiveRedBlackTree<K, V, RefPtr<V>, member>::find(key).release_nonnull(); }
     [[nodiscard]] NonnullRefPtr<V> find_largest_not_above(K key) const { return IntrusiveRedBlackTree<K, V, RefPtr<V>, member>::find_largest_not_above(key).release_nonnull(); }
+    [[nodiscard]] NonnullRefPtr<V> find_smallest_not_below(K key) const { return IntrusiveRedBlackTree<K, V, RefPtr<V>, member>::find_smallest_not_below(key).release_nonnull(); }
 };
 
 }
@@ -224,5 +235,7 @@ using IntrusiveRedBlackTree = Detail::IntrusiveRedBlackTree<
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::IntrusiveRedBlackTree;
 using AK::IntrusiveRedBlackTreeNode;
+#endif

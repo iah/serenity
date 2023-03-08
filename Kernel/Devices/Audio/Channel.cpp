@@ -4,16 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/Devices/Audio/Management.h>
 #include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/RandomDevice.h>
 #include <Kernel/Random.h>
 #include <Kernel/Sections.h>
-#include <LibC/sys/ioctl_numbers.h>
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullRefPtr<AudioChannel> AudioChannel::must_create(AudioController const& controller, size_t channel_index)
+UNMAP_AFTER_INIT NonnullLockRefPtr<AudioChannel> AudioChannel::must_create(AudioController const& controller, size_t channel_index)
 {
     auto audio_device_or_error = DeviceManagement::try_create_device<AudioChannel>(controller, channel_index);
     // FIXME: Find a way to propagate errors
@@ -50,7 +50,7 @@ ErrorOr<void> AudioChannel::ioctl(OpenFileDescription&, unsigned request, Usersp
     }
 }
 
-bool AudioChannel::can_read(const OpenFileDescription&, u64) const
+bool AudioChannel::can_read(OpenFileDescription const&, u64) const
 {
     // FIXME: Implement input from device
     return false;

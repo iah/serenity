@@ -7,22 +7,19 @@
 
 #pragma once
 
+#include <AK/StringView.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
 class Accessor final : public Cell {
-public:
-    static Accessor* create(VM& vm, FunctionObject* getter, FunctionObject* setter)
-    {
-        return vm.heap().allocate_without_global_object<Accessor>(getter, setter);
-    }
+    JS_CELL(Accessor, Cell);
 
-    Accessor(FunctionObject* getter, FunctionObject* setter)
-        : m_getter(getter)
-        , m_setter(setter)
+public:
+    static NonnullGCPtr<Accessor> create(VM& vm, FunctionObject* getter, FunctionObject* setter)
     {
+        return vm.heap().allocate_without_realm<Accessor>(getter, setter);
     }
 
     FunctionObject* getter() const { return m_getter; }
@@ -38,7 +35,11 @@ public:
     }
 
 private:
-    const char* class_name() const override { return "Accessor"; };
+    Accessor(FunctionObject* getter, FunctionObject* setter)
+        : m_getter(getter)
+        , m_setter(setter)
+    {
+    }
 
     FunctionObject* m_getter { nullptr };
     FunctionObject* m_setter { nullptr };

@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 
 namespace Web::HTML::TagNames {
 
@@ -90,6 +90,7 @@ namespace Web::HTML::TagNames {
     __ENUMERATE_HTML_TAG(marquee)    \
     __ENUMERATE_HTML_TAG(math)       \
     __ENUMERATE_HTML_TAG(menu)       \
+    __ENUMERATE_HTML_TAG(menuitem)   \
     __ENUMERATE_HTML_TAG(meta)       \
     __ENUMERATE_HTML_TAG(meter)      \
     __ENUMERATE_HTML_TAG(nav)        \
@@ -151,7 +152,7 @@ namespace Web::HTML::TagNames {
     __ENUMERATE_HTML_TAG(wbr)        \
     __ENUMERATE_HTML_TAG(xmp)
 
-#define __ENUMERATE_HTML_TAG(name) extern FlyString name;
+#define __ENUMERATE_HTML_TAG(name) extern DeprecatedFlyString name;
 ENUMERATE_HTML_TAGS
 #undef __ENUMERATE_HTML_TAG
 

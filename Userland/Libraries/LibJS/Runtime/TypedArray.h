@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -20,8 +20,8 @@ namespace JS {
 
 class TypedArrayBase;
 
-ThrowCompletionOr<TypedArrayBase*> typed_array_from(GlobalObject&, Value);
-ThrowCompletionOr<void> validate_typed_array(GlobalObject&, TypedArrayBase&);
+ThrowCompletionOr<TypedArrayBase*> typed_array_from(VM&, Value);
+ThrowCompletionOr<void> validate_typed_array(VM&, TypedArrayBase&);
 
 class TypedArrayBase : public Object {
     JS_OBJECT(TypedArrayBase, Object);
@@ -32,11 +32,14 @@ public:
         Number,
     };
 
+    using IntrinsicConstructor = TypedArrayConstructor* (Intrinsics::*)();
+
     u32 array_length() const { return m_array_length; }
     u32 byte_length() const { return m_byte_length; }
     u32 byte_offset() const { return m_byte_offset; }
     ContentType content_type() const { return m_content_type; }
     ArrayBuffer* viewed_array_buffer() const { return m_viewed_array_buffer; }
+    IntrinsicConstructor intrinsic_constructor() const { return m_intrinsic_constructor; }
 
     void set_array_length(u32 length) { m_array_length = length; }
     void set_byte_length(u32 length) { m_byte_length = length; }
@@ -44,7 +47,7 @@ public:
     void set_viewed_array_buffer(ArrayBuffer* array_buffer) { m_viewed_array_buffer = array_buffer; }
 
     virtual size_t element_size() const = 0;
-    virtual FlyString const& element_name() const = 0;
+    virtual DeprecatedFlyString const& element_name() const = 0;
 
     // 25.1.2.6 IsUnclampedIntegerElementType ( type ), https://tc39.es/ecma262/#sec-isunclampedintegerelementtype
     virtual bool is_unclamped_integer_element_type() const = 0;
@@ -58,8 +61,9 @@ public:
     virtual Value get_modify_set_value_in_buffer(size_t byte_index, Value value, ReadWriteModifyFunction operation, bool is_little_endian = true) = 0;
 
 protected:
-    explicit TypedArrayBase(Object& prototype)
-        : Object(prototype)
+    TypedArrayBase(Object& prototype, IntrinsicConstructor intrinsic_constructor)
+        : Object(ConstructWithPrototypeTag::Tag, prototype)
+        , m_intrinsic_constructor(intrinsic_constructor)
     {
     }
 
@@ -68,6 +72,7 @@ protected:
     u32 m_byte_offset { 0 };
     ContentType m_content_type { ContentType::Number };
     ArrayBuffer* m_viewed_array_buffer { nullptr };
+    IntrinsicConstructor m_intrinsic_constructor { nullptr };
 
 private:
     virtual void visit_edges(Visitor&) override;
@@ -80,7 +85,7 @@ inline bool is_valid_integer_index(TypedArrayBase const& typed_array, CanonicalI
     if (typed_array.viewed_array_buffer()->is_detached())
         return false;
 
-    // 2. If ! IsIntegralNumber(index) is false, return false.
+    // 2. If IsIntegralNumber(index) is false, return false.
     // 3. If index is -0𝔽, return false.
     if (!property_index.is_index())
         return false;
@@ -97,18 +102,15 @@ inline bool is_valid_integer_index(TypedArrayBase const& typed_array, CanonicalI
 template<typename T>
 inline Value integer_indexed_element_get(TypedArrayBase const& typed_array, CanonicalIndex property_index)
 {
-    // 1. Assert: O is an Integer-Indexed exotic object.
-
-    // 2. If ! IsValidIntegerIndex(O, index) is false, return undefined.
+    // 1. If IsValidIntegerIndex(O, index) is false, return undefined.
     if (!is_valid_integer_index(typed_array, property_index))
         return js_undefined();
 
-    // 3. Let offset be O.[[ByteOffset]].
+    // 2. Let offset be O.[[ByteOffset]].
     auto offset = typed_array.byte_offset();
 
-    // 4. Let arrayTypeName be the String value of O.[[TypedArrayName]].
-    // 5. Let elementSize be the Element Size value specified in Table 64 for arrayTypeName.
-    // 6. Let indexedPosition be (ℝ(index) × elementSize) + offset.
+    // 3. Let elementSize be TypedArrayElementSize(O).
+    // 4. Let indexedPosition be (ℝ(index) × elementSize) + offset.
     Checked<size_t> indexed_position = property_index.as_index();
     indexed_position *= typed_array.element_size();
     indexed_position += offset;
@@ -119,8 +121,8 @@ inline Value integer_indexed_element_get(TypedArrayBase const& typed_array, Cano
         return js_undefined();
     }
 
-    // 7. Let elementType be the Element Type value in Table 64 for arrayTypeName.
-    // 8. Return GetValueFromBuffer(O.[[ViewedArrayBuffer]], indexedPosition, elementType, true, Unordered).
+    // 5. Let elementType be TypedArrayElementType(O).
+    // 6. Return GetValueFromBuffer(O.[[ViewedArrayBuffer]], indexedPosition, elementType, true, Unordered).
     return typed_array.viewed_array_buffer()->template get_value<T>(indexed_position.value(), true, ArrayBuffer::Order::Unordered);
 }
 
@@ -130,20 +132,18 @@ template<typename T>
 inline ThrowCompletionOr<void> integer_indexed_element_set(TypedArrayBase& typed_array, CanonicalIndex property_index, Value value)
 {
     VERIFY(!value.is_empty());
-    auto& global_object = typed_array.global_object();
-
-    // 1. Assert: O is an Integer-Indexed exotic object.
+    auto& vm = typed_array.vm();
 
     Value num_value;
 
-    // 2. If O.[[ContentType]] is BigInt, let numValue be ? ToBigInt(value).
+    // 1. If O.[[ContentType]] is BigInt, let numValue be ? ToBigInt(value).
     if (typed_array.content_type() == TypedArrayBase::ContentType::BigInt)
-        num_value = TRY(value.to_bigint(global_object));
-    // 3. Otherwise, let numValue be ? ToNumber(value).
+        num_value = TRY(value.to_bigint(vm));
+    // 2. Otherwise, let numValue be ? ToNumber(value).
     else
-        num_value = TRY(value.to_number(global_object));
+        num_value = TRY(value.to_number(vm));
 
-    // 4. If ! IsValidIntegerIndex(O, index) is true, then
+    // 3. If IsValidIntegerIndex(O, index) is true, then
     // NOTE: Inverted for flattened logic.
     if (!is_valid_integer_index(typed_array, property_index))
         return {};
@@ -151,9 +151,8 @@ inline ThrowCompletionOr<void> integer_indexed_element_set(TypedArrayBase& typed
     // a. Let offset be O.[[ByteOffset]].
     auto offset = typed_array.byte_offset();
 
-    // b. Let arrayTypeName be the String value of O.[[TypedArrayName]].
-    // c. Let elementSize be the Element Size value specified in Table 64 for arrayTypeName.
-    // d. Let indexedPosition be (ℝ(index) × elementSize) + offset.
+    // b. Let elementSize be TypedArrayElementSize(O).
+    // c. Let indexedPosition be (ℝ(index) × elementSize) + offset.
     Checked<size_t> indexed_position = property_index.as_index();
     indexed_position *= typed_array.element_size();
     indexed_position += offset;
@@ -164,11 +163,11 @@ inline ThrowCompletionOr<void> integer_indexed_element_set(TypedArrayBase& typed
         return {};
     }
 
-    // e. Let elementType be the Element Type value in Table 64 for arrayTypeName.
-    // f. Perform SetValueInBuffer(O.[[ViewedArrayBuffer]], indexedPosition, elementType, numValue, true, Unordered).
+    // d. Let elementType be TypedArrayElementType(O).
+    // e. Perform SetValueInBuffer(O.[[ViewedArrayBuffer]], indexedPosition, elementType, numValue, true, Unordered).
     typed_array.viewed_array_buffer()->template set_value<T>(indexed_position.value(), num_value, true, ArrayBuffer::Order::Unordered);
 
-    // 5. Return NormalCompletion(undefined).
+    // 4. Return unused.
     return {};
 }
 
@@ -182,23 +181,20 @@ public:
     // 10.4.5.1 [[GetOwnProperty]] ( P ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-getownproperty-p
     virtual ThrowCompletionOr<Optional<PropertyDescriptor>> internal_get_own_property(PropertyKey const& property_key) const override
     {
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
-
-        // 2. Assert: O is an Integer-Indexed exotic object.
 
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 3. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
             // b. If numericIndex is not undefined, then
             if (!numeric_index.is_undefined()) {
-                // i. Let value be ! IntegerIndexedElementGet(O, numericIndex).
+                // i. Let value be IntegerIndexedElementGet(O, numericIndex).
                 auto value = integer_indexed_element_get<T>(*this, numeric_index);
 
                 // ii. If value is undefined, return undefined.
@@ -215,56 +211,50 @@ public:
             }
         }
 
-        // 4. Return OrdinaryGetOwnProperty(O, P).
+        // 2. Return OrdinaryGetOwnProperty(O, P).
         return Object::internal_get_own_property(property_key);
     }
 
     // 10.4.5.2 [[HasProperty]] ( P ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
     virtual ThrowCompletionOr<bool> internal_has_property(PropertyKey const& property_key) const override
     {
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
-
-        // 2. Assert: O is an Integer-Indexed exotic object.
 
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 3. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
-            // b. If numericIndex is not undefined, return ! IsValidIntegerIndex(O, numericIndex).
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
+            // b. If numericIndex is not undefined, return IsValidIntegerIndex(O, numericIndex).
             if (!numeric_index.is_undefined())
                 return is_valid_integer_index(*this, numeric_index);
         }
 
-        // 4. Return ? OrdinaryHasProperty(O, P).
+        // 2. Return ? OrdinaryHasProperty(O, P).
         return Object::internal_has_property(property_key);
     }
 
     // 10.4.5.3 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-defineownproperty-p-desc
     virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor) override
     {
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
-
-        // 2. Assert: O is an Integer-Indexed exotic object.
 
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 3. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
             // b. If numericIndex is not undefined, then
             if (!numeric_index.is_undefined()) {
-                // i. If ! IsValidIntegerIndex(O, numericIndex) is false, return false.
+                // i. If IsValidIntegerIndex(O, numericIndex) is false, return false.
                 if (!is_valid_integer_index(*this, numeric_index))
                     return false;
 
@@ -276,7 +266,7 @@ public:
                 if (property_descriptor.enumerable.has_value() && !*property_descriptor.enumerable)
                     return false;
 
-                // iv. If ! IsAccessorDescriptor(Desc) is true, return false.
+                // iv. If IsAccessorDescriptor(Desc) is true, return false.
                 if (property_descriptor.is_accessor_descriptor())
                     return false;
 
@@ -293,7 +283,7 @@ public:
             }
         }
 
-        // 4. Return ! OrdinaryDefineOwnProperty(O, P, Desc).
+        // 2. Return ! OrdinaryDefineOwnProperty(O, P, Desc).
         return Object::internal_define_own_property(property_key, property_descriptor);
     }
 
@@ -302,25 +292,24 @@ public:
     {
         VERIFY(!receiver.is_empty());
 
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 2. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
             // b. If numericIndex is not undefined, then
             if (!numeric_index.is_undefined()) {
-                // i. Return ! IntegerIndexedElementGet(O, numericIndex).
+                // i. Return IntegerIndexedElementGet(O, numericIndex).
                 return integer_indexed_element_get<T>(*this, numeric_index);
             }
         }
 
-        // 3. Return ? OrdinaryGet(O, P, Receiver).
+        // 2. Return ? OrdinaryGet(O, P, Receiver).
         return Object::internal_get(property_key, receiver);
     }
 
@@ -330,57 +319,61 @@ public:
         VERIFY(!value.is_empty());
         VERIFY(!receiver.is_empty());
 
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 2. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
             // b. If numericIndex is not undefined, then
             if (!numeric_index.is_undefined()) {
-                // i. Perform ? IntegerIndexedElementSet(O, numericIndex, V).
-                TRY(integer_indexed_element_set<T>(*this, numeric_index, value));
+                // i. If SameValue(O, Receiver) is true, then
+                if (same_value(this, receiver)) {
+                    // 1. Perform ? IntegerIndexedElementSet(O, numericIndex, V).
+                    TRY(integer_indexed_element_set<T>(*this, numeric_index, value));
 
-                // ii. Return true.
-                return true;
+                    // 2. Return true.
+                    return true;
+                }
+
+                // ii. If IsValidIntegerIndex(O, numericIndex) is false, return true.
+                if (!is_valid_integer_index(*this, numeric_index))
+                    return true;
             }
         }
 
-        // 3. Return ? OrdinarySet(O, P, V, Receiver).
+        // 2. Return ? OrdinarySet(O, P, V, Receiver).
         return Object::internal_set(property_key, value, receiver);
     }
 
     // 10.4.5.6 [[Delete]] ( P ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-delete-p
     virtual ThrowCompletionOr<bool> internal_delete(PropertyKey const& property_key) override
     {
-        // 1. Assert: IsPropertyKey(P) is true.
         VERIFY(property_key.is_valid());
 
-        // 2. Assert: O is an Integer-Indexed exotic object.
         // NOTE: If the property name is a number type (An implementation-defined optimized
         // property key type), it can be treated as a string property that will transparently be
         // converted into a canonical numeric index.
 
-        // 3. If Type(P) is String, then
+        // 1. If Type(P) is String, then
         // NOTE: This includes an implementation-defined optimization, see note above!
         if (property_key.is_string() || property_key.is_number()) {
-            // a. Let numericIndex be ! CanonicalNumericIndexString(P).
-            auto numeric_index = canonical_numeric_index_string(property_key, CanonicalIndexMode::DetectNumericRoundtrip);
+            // a. Let numericIndex be CanonicalNumericIndexString(P).
+            auto numeric_index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm(), property_key, CanonicalIndexMode::DetectNumericRoundtrip));
             // b. If numericIndex is not undefined, then
             if (!numeric_index.is_undefined()) {
-                // i. If ! IsValidIntegerIndex(O, numericIndex) is false, return true; else return false.
+                // i. If IsValidIntegerIndex(O, numericIndex) is false, return true; else return false.
                 if (!is_valid_integer_index(*this, numeric_index))
                     return true;
                 return false;
             }
         }
 
-        // 4. Return ? OrdinaryDelete(O, P).
+        // 2. Return ? OrdinaryDelete(O, P).
         return Object::internal_delete(property_key);
     }
 
@@ -392,18 +385,16 @@ public:
         // 1. Let keys be a new empty List.
         auto keys = MarkedVector<Value> { heap() };
 
-        // 2. Assert: O is an Integer-Indexed exotic object.
-
-        // 3. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is false, then
+        // 2. If IsDetachedBuffer(O.[[ViewedArrayBuffer]]) is false, then
         if (!m_viewed_array_buffer->is_detached()) {
             // a. For each integer i starting with 0 such that i < O.[[ArrayLength]], in ascending order, do
             for (size_t i = 0; i < m_array_length; ++i) {
                 // i. Add ! ToString(𝔽(i)) as the last element of keys.
-                keys.append(js_string(vm, String::number(i)));
+                keys.append(PrimitiveString::create(vm, DeprecatedString::number(i)));
             }
         }
 
-        // 4. For each own property key P of O such that Type(P) is String and P is not an integer index, in ascending chronological order of property creation, do
+        // 3. For each own property key P of O such that Type(P) is String and P is not an integer index, in ascending chronological order of property creation, do
         for (auto& it : shape().property_table_ordered()) {
             if (it.key.is_string()) {
                 // a. Add P as the last element of keys.
@@ -411,7 +402,7 @@ public:
             }
         }
 
-        // 5. For each own property key P of O such that Type(P) is Symbol, in ascending chronological order of property creation, do
+        // 4. For each own property key P of O such that Type(P) is Symbol, in ascending chronological order of property creation, do
         for (auto& it : shape().property_table_ordered()) {
             if (it.key.is_symbol()) {
                 // a. Add P as the last element of keys.
@@ -419,13 +410,13 @@ public:
             }
         }
 
-        // 6. Return keys.
+        // 5. Return keys.
         return { move(keys) };
     }
 
-    Span<const UnderlyingBufferDataType> data() const
+    ReadonlySpan<UnderlyingBufferDataType> data() const
     {
-        return { reinterpret_cast<const UnderlyingBufferDataType*>(m_viewed_array_buffer->buffer().data() + m_byte_offset), m_array_length };
+        return { reinterpret_cast<UnderlyingBufferDataType const*>(m_viewed_array_buffer->buffer().data() + m_byte_offset), m_array_length };
     }
     Span<UnderlyingBufferDataType> data()
     {
@@ -451,8 +442,8 @@ public:
     Value get_modify_set_value_in_buffer(size_t byte_index, Value value, ReadWriteModifyFunction operation, bool is_little_endian = true) override { return viewed_array_buffer()->template get_modify_set_value<T>(byte_index, value, move(operation), is_little_endian); }
 
 protected:
-    TypedArray(Object& prototype, u32 array_length, ArrayBuffer& array_buffer)
-        : TypedArrayBase(prototype)
+    TypedArray(Object& prototype, IntrinsicConstructor intrinsic_constructor, u32 array_length, ArrayBuffer& array_buffer)
+        : TypedArrayBase(prototype, intrinsic_constructor)
     {
         VERIFY(!Checked<u32>::multiplication_would_overflow(array_length, sizeof(UnderlyingBufferDataType)));
         m_viewed_array_buffer = &array_buffer;
@@ -466,42 +457,50 @@ private:
     virtual bool is_typed_array() const final { return true; }
 };
 
-ThrowCompletionOr<TypedArrayBase*> typed_array_create(GlobalObject& global_object, FunctionObject& constructor, MarkedVector<Value> arguments);
+ThrowCompletionOr<TypedArrayBase*> typed_array_create(VM&, FunctionObject& constructor, MarkedVector<Value> arguments);
+ThrowCompletionOr<TypedArrayBase*> typed_array_create_same_type(VM&, TypedArrayBase const& exemplar, MarkedVector<Value> arguments);
+ThrowCompletionOr<double> compare_typed_array_elements(VM&, Value x, Value y, FunctionObject* comparefn);
 
-#define JS_DECLARE_TYPED_ARRAY(ClassName, snake_name, PrototypeName, ConstructorName, Type) \
-    class ClassName : public TypedArray<Type> {                                             \
-        JS_OBJECT(ClassName, TypedArray);                                                   \
-                                                                                            \
-    public:                                                                                 \
-        virtual ~ClassName();                                                               \
-        static ThrowCompletionOr<ClassName*> create(                                        \
-            GlobalObject&, u32 length, FunctionObject& new_target);                         \
-        static ThrowCompletionOr<ClassName*> create(GlobalObject&, u32 length);             \
-        static ClassName* create(GlobalObject&, u32 length, ArrayBuffer& buffer);           \
-        ClassName(Object& prototype, u32 length, ArrayBuffer& array_buffer);                \
-        virtual FlyString const& element_name() const override;                             \
-    };                                                                                      \
-    class PrototypeName final : public Object {                                             \
-        JS_OBJECT(PrototypeName, Object);                                                   \
-                                                                                            \
-    public:                                                                                 \
-        PrototypeName(GlobalObject&);                                                       \
-        virtual void initialize(GlobalObject&) override;                                    \
-        virtual ~PrototypeName() override;                                                  \
-    };                                                                                      \
-    class ConstructorName final : public TypedArrayConstructor {                            \
-        JS_OBJECT(ConstructorName, TypedArrayConstructor);                                  \
-                                                                                            \
-    public:                                                                                 \
-        explicit ConstructorName(GlobalObject&);                                            \
-        virtual void initialize(GlobalObject&) override;                                    \
-        virtual ~ConstructorName() override;                                                \
-                                                                                            \
-        virtual ThrowCompletionOr<Value> call() override;                                   \
-        virtual ThrowCompletionOr<Object*> construct(FunctionObject& new_target) override;  \
-                                                                                            \
-    private:                                                                                \
-        virtual bool has_constructor() const override { return true; }                      \
+#define JS_DECLARE_TYPED_ARRAY(ClassName, snake_name, PrototypeName, ConstructorName, Type)                       \
+    class ClassName : public TypedArray<Type> {                                                                   \
+        JS_OBJECT(ClassName, TypedArray);                                                                         \
+                                                                                                                  \
+    public:                                                                                                       \
+        virtual ~ClassName();                                                                                     \
+        static ThrowCompletionOr<NonnullGCPtr<ClassName>> create(Realm&, u32 length, FunctionObject& new_target); \
+        static ThrowCompletionOr<NonnullGCPtr<ClassName>> create(Realm&, u32 length);                             \
+        static NonnullGCPtr<ClassName> create(Realm&, u32 length, ArrayBuffer& buffer);                           \
+        virtual DeprecatedFlyString const& element_name() const override;                                         \
+                                                                                                                  \
+    protected:                                                                                                    \
+        ClassName(Object& prototype, u32 length, ArrayBuffer& array_buffer);                                      \
+    };                                                                                                            \
+    class PrototypeName final : public Object {                                                                   \
+        JS_OBJECT(PrototypeName, Object);                                                                         \
+                                                                                                                  \
+    public:                                                                                                       \
+        virtual ThrowCompletionOr<void> initialize(Realm&) override;                                              \
+        virtual ~PrototypeName() override;                                                                        \
+                                                                                                                  \
+    private:                                                                                                      \
+        PrototypeName(Object& prototype);                                                                         \
+    };                                                                                                            \
+    class ConstructorName final : public TypedArrayConstructor {                                                  \
+        JS_OBJECT(ConstructorName, TypedArrayConstructor);                                                        \
+                                                                                                                  \
+    public:                                                                                                       \
+        virtual ThrowCompletionOr<void> initialize(Realm&) override;                                              \
+        virtual ~ConstructorName() override;                                                                      \
+                                                                                                                  \
+        virtual ThrowCompletionOr<Value> call() override;                                                         \
+        virtual ThrowCompletionOr<NonnullGCPtr<Object>> construct(FunctionObject& new_target) override;           \
+                                                                                                                  \
+    private:                                                                                                      \
+        explicit ConstructorName(Realm&, Object& prototype);                                                      \
+        virtual bool has_constructor() const override                                                             \
+        {                                                                                                         \
+            return true;                                                                                          \
+        }                                                                                                         \
     };
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, Type) \

@@ -11,9 +11,9 @@
 
 namespace SQL::AST {
 
-HashMap<String, TokenType> Lexer::s_keywords;
+HashMap<DeprecatedString, TokenType> Lexer::s_keywords;
 HashMap<char, TokenType> Lexer::s_one_char_tokens;
-HashMap<String, TokenType> Lexer::s_two_char_tokens;
+HashMap<DeprecatedString, TokenType> Lexer::s_two_char_tokens;
 
 Lexer::Lexer(StringView source)
     : m_source(source)
@@ -27,16 +27,16 @@ Lexer::Lexer(StringView source)
     }
 
     if (s_one_char_tokens.is_empty()) {
-#define __ENUMERATE_SQL_TOKEN(value, type, category)                                          \
-    if (TokenCategory::category != TokenCategory::Keyword && StringView(value).length() == 1) \
+#define __ENUMERATE_SQL_TOKEN(value, type, category)                                  \
+    if (TokenCategory::category != TokenCategory::Keyword && value##sv.length() == 1) \
         s_one_char_tokens.set(value[0], TokenType::type);
         ENUMERATE_SQL_TOKENS
 #undef __ENUMERATE_SQL_TOKEN
     }
 
     if (s_two_char_tokens.is_empty()) {
-#define __ENUMERATE_SQL_TOKEN(value, type, category)                                          \
-    if (TokenCategory::category != TokenCategory::Keyword && StringView(value).length() == 2) \
+#define __ENUMERATE_SQL_TOKEN(value, type, category)                                  \
+    if (TokenCategory::category != TokenCategory::Keyword && value##sv.length() == 2) \
         s_two_char_tokens.set(value, TokenType::type);
         ENUMERATE_SQL_TOKENS
 #undef __ENUMERATE_SQL_TOKEN
@@ -109,7 +109,7 @@ Token Lexer::next()
         }
     }
 
-    Token token(token_type, current_token.build(),
+    Token token(token_type, current_token.to_deprecated_string(),
         { value_start_line_number, value_start_column_number },
         { m_line_number, m_line_column });
 

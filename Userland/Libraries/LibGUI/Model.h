@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,11 +9,11 @@
 #pragma once
 
 #include <AK/Badge.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/HashTable.h>
 #include <AK/RefCounted.h>
-#include <AK/String.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/MimeData.h>
 #include <LibGUI/Forward.h>
@@ -33,7 +34,7 @@ enum class SortOrder {
 
 class ModelClient {
 public:
-    virtual ~ModelClient() { }
+    virtual ~ModelClient() = default;
 
     virtual void model_did_update(unsigned flags) = 0;
 
@@ -50,6 +51,7 @@ public:
     enum UpdateFlag {
         DontInvalidateIndices = 0,
         InvalidateAllIndices = 1 << 0,
+        DontResizeColumns = 1 << 1,
     };
 
     enum MatchesFlag {
@@ -64,7 +66,7 @@ public:
 
     virtual int row_count(ModelIndex const& = ModelIndex()) const = 0;
     virtual int column_count(ModelIndex const& = ModelIndex()) const = 0;
-    virtual String column_name(int) const { return {}; }
+    virtual DeprecatedString column_name(int) const { return {}; }
     virtual Variant data(ModelIndex const&, ModelRole = ModelRole::Display) const = 0;
     virtual TriState data_matches(ModelIndex const&, Variant const&) const { return TriState::Unknown; }
     virtual void invalidate();
@@ -74,7 +76,7 @@ public:
     virtual bool is_searchable() const { return false; }
     virtual void set_data(ModelIndex const&, Variant const&) { }
     virtual int tree_column() const { return 0; }
-    virtual bool accepts_drag(ModelIndex const&, Vector<String> const& mime_types) const;
+    virtual bool accepts_drag(ModelIndex const&, Vector<DeprecatedString> const& mime_types) const;
     virtual Vector<ModelIndex> matches(StringView, unsigned = MatchesFlag::AllMatching, ModelIndex const& = ModelIndex()) { return {}; }
 
     virtual bool is_column_sortable([[maybe_unused]] int column_index) const { return true; }
@@ -96,6 +98,13 @@ public:
     void unregister_client(ModelClient&);
 
     WeakPtr<PersistentHandle> register_persistent_index(Badge<PersistentModelIndex>, ModelIndex const&);
+
+    // NOTE: This is a public version of create_index() which is normally protected,
+    //       but this can be used when creating a model translator like in Ladybird.
+    ModelIndex unsafe_create_index(int row, int column, void const* data = nullptr) const
+    {
+        return create_index(row, column, data);
+    }
 
 protected:
     Model();

@@ -11,6 +11,22 @@
 #include <string.h>
 #include <time.h>
 
+namespace Main {
+
+static int s_return_code_for_errors = 1;
+
+int return_code_for_errors()
+{
+    return s_return_code_for_errors;
+}
+
+void set_return_code_for_errors(int code)
+{
+    s_return_code_for_errors = code;
+}
+
+}
+
 int main(int argc, char** argv)
 {
     tzset();
@@ -18,7 +34,7 @@ int main(int argc, char** argv)
     Vector<StringView> arguments;
     arguments.ensure_capacity(argc);
     for (int i = 0; i < argc; ++i)
-        arguments.unchecked_append(argv[i]);
+        arguments.unchecked_append({ argv[i], strlen(argv[i]) });
 
     auto result = serenity_main({
         .argc = argc,
@@ -28,10 +44,10 @@ int main(int argc, char** argv)
     if (result.is_error()) {
         auto error = result.release_error();
         warnln("\033[31;1mRuntime error\033[0m: {}", error);
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
         dbgln("\033[31;1mExiting with runtime error\033[0m: {}", error);
 #endif
-        return 1;
+        return Main::return_code_for_errors();
     }
     return result.value();
 }

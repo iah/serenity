@@ -15,8 +15,9 @@ class SharedInodeVMObject final : public InodeVMObject {
     AK_MAKE_NONMOVABLE(SharedInodeVMObject);
 
 public:
-    static ErrorOr<NonnullRefPtr<SharedInodeVMObject>> try_create_with_inode(Inode&);
-    virtual ErrorOr<NonnullRefPtr<VMObject>> try_clone() override;
+    static ErrorOr<NonnullLockRefPtr<SharedInodeVMObject>> try_create_with_inode(Inode&);
+    static ErrorOr<NonnullLockRefPtr<SharedInodeVMObject>> try_create_with_inode_and_range(Inode&, u64 offset, size_t range_size);
+    virtual ErrorOr<NonnullLockRefPtr<VMObject>> try_clone() override;
 
     ErrorOr<void> sync(off_t offset_in_pages = 0, size_t pages = -1);
 

@@ -7,7 +7,7 @@
     @GUI::HorizontalSplitter {
         @GUI::TreeView {
             name: "mailbox_list"
-            fixed_width: 250
+            preferred_width: 250
         }
 
         @GUI::VerticalSplitter {
@@ -15,7 +15,7 @@
                 name: "individual_mailbox_view"
             }
 
-            @Web::OutOfProcessWebView {
+            @WebView::OutOfProcessWebView {
                 name: "web_view"
             }
         }

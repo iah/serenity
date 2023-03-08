@@ -8,8 +8,13 @@
 
 #include <AK/BuiltinWrappers.h>
 #include <AK/Concepts.h>
+#include <AK/NumericLimits.h>
 #include <AK/StdLibExtraDetails.h>
 #include <AK/Types.h>
+
+#ifdef KERNEL
+#    error "Including AK/Math.h from the Kernel is never correct! Floating point is disabled."
+#endif
 
 namespace AK {
 
@@ -19,6 +24,10 @@ template<FloatingPoint T>
 constexpr T Pi = 3.141592653589793238462643383279502884L;
 template<FloatingPoint T>
 constexpr T E = 2.718281828459045235360287471352662498L;
+template<FloatingPoint T>
+constexpr T Sqrt2 = 1.414213562373095048801688724209698079L;
+template<FloatingPoint T>
+constexpr T Sqrt1_2 = 0.707106781186547524400844362104849039L;
 
 namespace Details {
 template<size_t>
@@ -46,13 +55,31 @@ constexpr size_t product_odd() { return value * product_odd<value - 2>(); }
             return __builtin_##function##f(args); \
     }
 
+#define AARCH64_INSTRUCTION(instruction, arg) \
+    if constexpr (IsSame<T, long double>)     \
+        TODO();                               \
+    if constexpr (IsSame<T, double>) {        \
+        double res;                           \
+        asm(#instruction " %d0, %d1"          \
+            : "=w"(res)                       \
+            : "w"(arg));                      \
+        return res;                           \
+    }                                         \
+    if constexpr (IsSame<T, float>) {         \
+        float res;                            \
+        asm(#instruction " %s0, %s1"          \
+            : "=w"(res)                       \
+            : "w"(arg));                      \
+        return res;                           \
+    }
+
 namespace Division {
 template<FloatingPoint T>
 constexpr T fmod(T x, T y)
 {
     CONSTEXPR_STATE(fmod, x, y);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     u16 fpu_status;
     do {
         asm(
@@ -71,7 +98,7 @@ constexpr T remainder(T x, T y)
 {
     CONSTEXPR_STATE(remainder, x, y);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     u16 fpu_status;
     do {
         asm(
@@ -95,15 +122,48 @@ constexpr T sqrt(T x)
 {
     CONSTEXPR_STATE(sqrt, x);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
+    if constexpr (IsSame<T, float>) {
+        float res;
+        asm("sqrtss %1, %0"
+            : "=x"(res)
+            : "x"(x));
+        return res;
+    }
+    if constexpr (IsSame<T, double>) {
+        double res;
+        asm("sqrtsd %1, %0"
+            : "=x"(res)
+            : "x"(x));
+        return res;
+    }
     T res;
     asm("fsqrt"
         : "=t"(res)
         : "0"(x));
     return res;
+#elif ARCH(AARCH64)
+    AARCH64_INSTRUCTION(fsqrt, x);
 #else
     return __builtin_sqrt(x);
 #endif
+}
+
+template<FloatingPoint T>
+constexpr T rsqrt(T x)
+{
+#if ARCH(AARCH64)
+    AARCH64_INSTRUCTION(frsqrte, x);
+#elif ARCH(X86_64)
+    if constexpr (IsSame<T, float>) {
+        float res;
+        asm("rsqrtss %1, %0"
+            : "=x"(res)
+            : "x"(x));
+        return res;
+    }
+#endif
+    return (T)1. / sqrt(x);
 }
 
 template<FloatingPoint T>
@@ -151,11 +211,13 @@ constexpr T fabs(T x)
 {
     if (is_constant_evaluated())
         return x < 0 ? -x : x;
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     asm(
         "fabs"
         : "+t"(x));
     return x;
+#elif ARCH(AARCH64)
+    AARCH64_INSTRUCTION(fabs, x);
 #else
     return __builtin_fabs(x);
 #endif
@@ -174,7 +236,7 @@ constexpr T sin(T angle)
 {
     CONSTEXPR_STATE(sin, angle);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fsin"
@@ -191,7 +253,7 @@ constexpr T cos(T angle)
 {
     CONSTEXPR_STATE(cos, angle);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fcos"
@@ -204,12 +266,31 @@ constexpr T cos(T angle)
 }
 
 template<FloatingPoint T>
+constexpr void sincos(T angle, T& sin_val, T& cos_val)
+{
+    if (is_constant_evaluated()) {
+        sin_val = sin(angle);
+        cos_val = cos(angle);
+        return;
+    }
+#if ARCH(X86_64)
+    asm(
+        "fsincos"
+        : "=t"(cos_val), "=u"(sin_val)
+        : "0"(angle));
+#else
+    sin_val = sin(angle);
+    cos_val = cos(angle);
+#endif
+}
+
+template<FloatingPoint T>
 constexpr T tan(T angle)
 {
     CONSTEXPR_STATE(tan, angle);
 
-#if ARCH(I386) || ARCH(X86_64)
-    double ret, one;
+#if ARCH(X86_64)
+    T ret, one;
     asm(
         "fptan"
         : "=t"(one), "=u"(ret)
@@ -226,7 +307,7 @@ constexpr T atan(T value)
 {
     CONSTEXPR_STATE(atan, value);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fld1\n"
@@ -282,7 +363,7 @@ constexpr T atan2(T y, T x)
 {
     CONSTEXPR_STATE(atan2, y, x);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm("fpatan"
         : "=t"(ret)
@@ -303,6 +384,7 @@ using Trigonometry::atan2;
 using Trigonometry::cos;
 using Trigonometry::hypot;
 using Trigonometry::sin;
+using Trigonometry::sincos;
 using Trigonometry::tan;
 
 namespace Exponentials {
@@ -312,7 +394,7 @@ constexpr T log(T x)
 {
     CONSTEXPR_STATE(log, x);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fldln2\n"
@@ -331,7 +413,7 @@ constexpr T log2(T x)
 {
     CONSTEXPR_STATE(log2, x);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fld1\n"
@@ -350,7 +432,7 @@ constexpr T log10(T x)
 {
     CONSTEXPR_STATE(log10, x);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T ret;
     asm(
         "fldlg2\n"
@@ -369,7 +451,7 @@ constexpr T exp(T exponent)
 {
     CONSTEXPR_STATE(exp, exponent);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T res;
     asm("fldl2e\n"
         "fmulp\n"
@@ -393,7 +475,7 @@ constexpr T exp2(T exponent)
 {
     CONSTEXPR_STATE(exp2, exponent);
 
-#if ARCH(I386) || ARCH(X86_64)
+#if ARCH(X86_64)
     T res;
     asm("fld1\n"
         "fld %%st(1)\n"
@@ -479,6 +561,159 @@ using Hyperbolic::cosh;
 using Hyperbolic::sinh;
 using Hyperbolic::tanh;
 
+template<Integral I, FloatingPoint P>
+ALWAYS_INLINE I round_to(P value);
+
+#if ARCH(X86_64)
+template<Integral I>
+ALWAYS_INLINE I round_to(long double value)
+{
+    // Note: fistps outputs into a signed integer location (i16, i32, i64),
+    //       so lets be nice and tell the compiler that.
+    Conditional<sizeof(I) >= sizeof(i16), MakeSigned<I>, i16> ret;
+    if constexpr (sizeof(I) == sizeof(i64)) {
+        asm("fistpll %0"
+            : "=m"(ret)
+            : "t"(value)
+            : "st");
+    } else if constexpr (sizeof(I) == sizeof(i32)) {
+        asm("fistpl %0"
+            : "=m"(ret)
+            : "t"(value)
+            : "st");
+    } else {
+        asm("fistps %0"
+            : "=m"(ret)
+            : "t"(value)
+            : "st");
+    }
+    return static_cast<I>(ret);
+}
+
+template<Integral I>
+ALWAYS_INLINE I round_to(float value)
+{
+    // FIXME: round_to<u64> might will cause issues, aka the indefinite value being set,
+    //        if the value surpasses the i64 limit, even if the result could fit into an u64
+    //        To solve this we would either need to detect that value or do a range check and
+    //        then do a more specialized conversion, which might include a division (which is expensive)
+    if constexpr (sizeof(I) == sizeof(i64) || IsSame<I, u32>) {
+        i64 ret;
+        asm("cvtss2si %1, %0"
+            : "=r"(ret)
+            : "xm"(value));
+        return static_cast<I>(ret);
+    }
+    i32 ret;
+    asm("cvtss2si %1, %0"
+        : "=r"(ret)
+        : "xm"(value));
+    return static_cast<I>(ret);
+}
+
+template<Integral I>
+ALWAYS_INLINE I round_to(double value)
+{
+    // FIXME: round_to<u64> might will cause issues, aka the indefinite value being set,
+    //        if the value surpasses the i64 limit, even if the result could fit into an u64
+    //        To solve this we would either need to detect that value or do a range check and
+    //        then do a more specialized conversion, which might include a division (which is expensive)
+    if constexpr (sizeof(I) == sizeof(i64) || IsSame<I, u32>) {
+        i64 ret;
+        asm("cvtsd2si %1, %0"
+            : "=r"(ret)
+            : "xm"(value));
+        return static_cast<I>(ret);
+    }
+    i32 ret;
+    asm("cvtsd2si %1, %0"
+        : "=r"(ret)
+        : "xm"(value));
+    return static_cast<I>(ret);
+}
+
+#elif ARCH(AARCH64)
+template<Signed I>
+ALWAYS_INLINE I round_to(float value)
+{
+    if constexpr (sizeof(I) <= sizeof(u32)) {
+        i32 res;
+        asm("fcvtns %w0, %s1"
+            : "=r"(res)
+            : "w"(value));
+        return static_cast<I>(res);
+    }
+    i64 res;
+    asm("fcvtns %0, %s1"
+        : "=r"(res)
+        : "w"(value));
+    return static_cast<I>(res);
+}
+
+template<Signed I>
+ALWAYS_INLINE I round_to(double value)
+{
+    if constexpr (sizeof(I) <= sizeof(u32)) {
+        i32 res;
+        asm("fcvtns %w0, %d1"
+            : "=r"(res)
+            : "w"(value));
+        return static_cast<I>(res);
+    }
+    i64 res;
+    asm("fcvtns %0, %d1"
+        : "=r"(res)
+        : "w"(value));
+    return static_cast<I>(res);
+}
+
+template<Unsigned U>
+ALWAYS_INLINE U round_to(float value)
+{
+    if constexpr (sizeof(U) <= sizeof(u32)) {
+        u32 res;
+        asm("fcvtnu %w0, %s1"
+            : "=r"(res)
+            : "w"(value));
+        return static_cast<U>(res);
+    }
+    i64 res;
+    asm("fcvtnu %0, %s1"
+        : "=r"(res)
+        : "w"(value));
+    return static_cast<U>(res);
+}
+
+template<Unsigned U>
+ALWAYS_INLINE U round_to(double value)
+{
+    if constexpr (sizeof(U) <= sizeof(u32)) {
+        u32 res;
+        asm("fcvtns %w0, %d1"
+            : "=r"(res)
+            : "w"(value));
+        return static_cast<U>(res);
+    }
+    i64 res;
+    asm("fcvtns %0, %d1"
+        : "=r"(res)
+        : "w"(value));
+    return static_cast<U>(res);
+}
+
+#else
+template<Integral I, FloatingPoint P>
+ALWAYS_INLINE I round_to(P value)
+{
+    if constexpr (IsSame<P, long double>)
+        return static_cast<I>(__builtin_llrintl(value));
+    if constexpr (IsSame<P, double>)
+        return static_cast<I>(__builtin_llrint(value));
+    if constexpr (IsSame<P, float>)
+        return static_cast<I>(__builtin_llrintf(value));
+}
+#endif
+
 template<FloatingPoint T>
 constexpr T pow(T x, T y)
 {
@@ -505,6 +740,27 @@ constexpr T pow(T x, T y)
     return exp2<T>(y * log2<T>(x));
 }
 
-#undef CONSTEXPR_STATE
-
+template<FloatingPoint T>
+constexpr T ceil(T num)
+{
+    if (is_constant_evaluated()) {
+        if (num < NumericLimits<i64>::min() || num > NumericLimits<i64>::max())
+            return num;
+        return (static_cast<T>(static_cast<i64>(num)) == num)
+            ? static_cast<i64>(num)
+            : static_cast<i64>(num) + ((num > 0) ? 1 : 0);
+    }
+#if ARCH(AARCH64)
+    AARCH64_INSTRUCTION(frintp, num);
+#else
+    return __builtin_ceil(num);
+#endif
 }
+
+#undef CONSTEXPR_STATE
+#undef AARCH64_INSTRUCTION
+}
+
+#if USING_AK_GLOBALLY
+using AK::round_to;
+#endif

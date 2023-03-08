@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,7 +7,6 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
-#include <AK/NonnullRefPtrVector.h>
 #include <LibWeb/CSS/CSSConditionRule.h>
 #include <LibWeb/CSS/CSSRule.h>
 #include <LibWeb/CSS/Supports.h>
@@ -17,28 +16,24 @@ namespace Web::CSS {
 
 // https://www.w3.org/TR/css-conditional-3/#the-csssupportsrule-interface
 class CSSSupportsRule final : public CSSConditionRule {
-    AK_MAKE_NONCOPYABLE(CSSSupportsRule);
-    AK_MAKE_NONMOVABLE(CSSSupportsRule);
+    WEB_PLATFORM_OBJECT(CSSSupportsRule, CSSConditionRule);
 
 public:
-    static NonnullRefPtr<CSSSupportsRule> create(NonnullRefPtr<Supports>&& supports, NonnullRefPtrVector<CSSRule>&& rules)
-    {
-        return adopt_ref(*new CSSSupportsRule(move(supports), move(rules)));
-    }
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSSupportsRule>> create(JS::Realm&, NonnullRefPtr<Supports>&&, CSSRuleList&);
 
-    ~CSSSupportsRule();
+    virtual ~CSSSupportsRule() = default;
 
-    virtual StringView class_name() const override { return "CSSSupportsRule"; };
     virtual Type type() const override { return Type::Supports; };
 
-    String condition_text() const override;
-    void set_condition_text(String) override;
+    DeprecatedString condition_text() const override;
+    void set_condition_text(DeprecatedString) override;
     virtual bool condition_matches() const override { return m_supports->matches(); }
 
 private:
-    explicit CSSSupportsRule(NonnullRefPtr<Supports>&&, NonnullRefPtrVector<CSSRule>&&);
+    CSSSupportsRule(JS::Realm&, NonnullRefPtr<Supports>&&, CSSRuleList&);
 
-    virtual String serialized() const override;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual DeprecatedString serialized() const override;
 
     NonnullRefPtr<Supports> m_supports;
 };

@@ -9,8 +9,13 @@
 #include <LibCore/Timer.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Model.h>
+#include <LibGUI/Widget.h>
 #include <LibSymbolication/Symbolication.h>
 #include <LibThreading/BackgroundAction.h>
+
+REGISTER_WIDGET(SystemMonitor, ThreadStackWidget)
+
+namespace SystemMonitor {
 
 class ThreadStackModel final : public GUI::Model {
 
@@ -25,7 +30,7 @@ public:
     int row_count(GUI::ModelIndex const&) const override { return m_symbols.size(); };
     bool is_column_sortable(int) const override { return false; }
 
-    String column_name(int column) const override
+    DeprecatedString column_name(int column) const override
     {
         switch (column) {
         case Column::Address:
@@ -44,7 +49,7 @@ public:
         auto& symbol = m_symbols[model_index.row()];
         switch (model_index.column()) {
         case Column::Address:
-            return String::formatted("{:p}", symbol.address);
+            return DeprecatedString::formatted("{:p}", symbol.address);
         case Column::Object:
             return symbol.object;
         case Column::Symbol:
@@ -68,8 +73,7 @@ private:
 
 ThreadStackWidget::ThreadStackWidget()
 {
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_margins(4);
+    set_layout<GUI::VerticalBoxLayout>(4);
     m_stack_table = add<GUI::TableView>();
     m_stack_table->set_model(adopt_ref(*new ThreadStackModel()));
 }
@@ -77,8 +81,10 @@ ThreadStackWidget::ThreadStackWidget()
 void ThreadStackWidget::show_event(GUI::ShowEvent&)
 {
     refresh();
-    if (!m_timer)
+    if (!m_timer) {
         m_timer = add<Core::Timer>(1000, [this] { refresh(); });
+        m_timer->start();
+    }
 }
 
 void ThreadStackWidget::hide_event(GUI::HideEvent&)
@@ -115,10 +121,11 @@ void ThreadStackWidget::refresh()
             return Symbolication::symbolicate_thread(pid, tid, Symbolication::IncludeSourcePosition::No);
         },
 
-        [weak_this = make_weak_ptr()](auto result) {
+        [weak_this = make_weak_ptr()](auto result) -> ErrorOr<void> {
             if (!weak_this)
-                return;
-            Core::EventLoop::with_main_locked([&](auto* main_event_loop) { main_event_loop->post_event(const_cast<Core::Object&>(*weak_this), make<CompletionEvent>(move(result))); });
+                return {};
+            Core::EventLoop::current().post_event(const_cast<Core::Object&>(*weak_this), make<CompletionEvent>(move(result)));
+            return {};
         });
 }
 
@@ -126,4 +133,6 @@ void ThreadStackWidget::custom_event(Core::CustomEvent& event)
 {
     auto& completion_event = verify_cast<CompletionEvent>(event);
     verify_cast<ThreadStackModel>(m_stack_table->model())->set_symbols(completion_event.symbols());
+}
+
 }

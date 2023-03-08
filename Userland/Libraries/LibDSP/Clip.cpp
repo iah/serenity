@@ -6,7 +6,7 @@
 
 #include "Clip.h"
 
-namespace LibDSP {
+namespace DSP {
 
 Sample AudioClip::sample_at(u32 time)
 {
@@ -14,32 +14,29 @@ Sample AudioClip::sample_at(u32 time)
     return m_samples[time];
 }
 
+Optional<RollNote> NoteClip::note_at(u32 time, u8 pitch) const
+{
+    for (auto& note : m_notes) {
+        if (time >= note.on_sample && time <= note.off_sample && pitch == note.pitch)
+            return note;
+    }
+    return {};
+}
+
 void NoteClip::set_note(RollNote note)
 {
-    VERIFY(note.pitch >= 0 && note.pitch < note_count);
-    VERIFY(note.off_sample < m_length);
-    VERIFY(note.length() >= 2);
+    m_notes.remove_all_matching([&](auto const& other) {
+        return other.pitch == note.pitch && other.overlaps_with(note);
+    });
+    m_notes.append(note);
+}
 
-    auto& notes = m_notes[note.pitch];
-    for (auto it = notes.begin(); !it.is_end();) {
-        auto iterated_note = *it;
-        if (iterated_note.on_sample > note.off_sample) {
-            notes.insert_before(it, note);
-            return;
-        }
-        if (iterated_note.on_sample <= note.on_sample && iterated_note.off_sample >= note.on_sample) {
-            notes.remove(it);
-            return;
-        }
-        if ((note.on_sample == 0 || iterated_note.on_sample >= note.on_sample - 1) && iterated_note.on_sample <= note.off_sample) {
-            notes.remove(it);
-            it = notes.begin();
-            continue;
-        }
-        ++it;
-    }
-
-    notes.append(note);
+void NoteClip::remove_note(RollNote note)
+{
+    // FIXME: See header; this could be much faster with a better datastructure.
+    m_notes.remove_first_matching([note](auto const& element) {
+        return element.on_sample == note.on_sample && element.off_sample == note.off_sample && element.pitch == note.pitch;
+    });
 }
 
 }

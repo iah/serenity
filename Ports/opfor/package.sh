@@ -1,21 +1,21 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port="opfor"
-version="1.0.0"
-useconfigure="true"
-depends=("SDL2" "halflife")
-workdir="hlsdk-xash3d-opfor"
-files="https://github.com/SerenityPorts/hlsdk-xash3d/archive/opfor.tar.gz xash3d_gearbox.tar.gz"
-launcher_name="Half-Life: Opposing Force"
-launcher_category="Games"
+port='opfor'
+version='2022.12.26'  # Bogus version, this was the last time the commit hashes were updated.
+_hlsdk_commit='e785ec1582eece8bf8f603249c2a567f6ec3d5eb'
+useconfigure='true'
+depends=("xash3d-fwgs")
+workdir="hlsdk-portable-${_hlsdk_commit}"
+files="https://github.com/FWGS/hlsdk-portable/archive/${_hlsdk_commit}.tar.gz hlsdk-portable-${_hlsdk_commit}.tar.gz 0cf2cb120c3e350d05233cc718126436e68f4f2f1289c1f31623a4c8aef419eb"
+auth_type='sha256'
+launcher_name='Half-Life: Opposing Force'
+launcher_category='Games'
+launcher_command='sh /home/anon/Games/halflife/opfor.sh'
 
-# This one is a bit tricky to build, so I'm going a little bit off the script....
 configure() {
-    # Configure the shared object projects (client and game)
     run ./waf configure -T release
 }
 
 build() {
-    # Build game shared object
     run ./waf build
 }
 
@@ -49,6 +49,6 @@ cd $scriptdir
 EOF
     chmod +x ${SERENITY_INSTALL_ROOT}/home/anon/Games/halflife/opfor.sh
 
-    echo "Please remember to copy the 'gearbox/' folder from your own Half-Life installation"
+    echo "Please remember to copy the 'valve/' and 'gearbox/' folders from your own Half-Life installation"
     echo "into ${SERENITY_INSTALL_ROOT}/home/anon/Games/halflife/"
 }

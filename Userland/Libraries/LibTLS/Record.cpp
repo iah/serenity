@@ -141,15 +141,15 @@ void TLSv12::update_packet(ByteBuffer& packet)
                         // length (2)
                         u8 aad[13];
                         Bytes aad_bytes { aad, 13 };
-                        OutputMemoryStream aad_stream { aad_bytes };
+                        FixedMemoryStream aad_stream { aad_bytes };
 
                         u64 seq_no = AK::convert_between_host_and_network_endian(m_context.local_sequence_number);
                         u16 len = AK::convert_between_host_and_network_endian((u16)(packet.size() - header_size));
 
-                        aad_stream.write({ &seq_no, sizeof(seq_no) });
-                        aad_stream.write(packet.bytes().slice(0, 3)); // content-type + version
-                        aad_stream.write({ &len, sizeof(len) });      // length
-                        VERIFY(aad_stream.is_end());
+                        MUST(aad_stream.write_value(seq_no));                             // sequence number
+                        MUST(aad_stream.write_entire_buffer(packet.bytes().slice(0, 3))); // content-type + version
+                        MUST(aad_stream.write_value(len));                                // length
+                        VERIFY(MUST(aad_stream.tell()) == MUST(aad_stream.size()));
 
                         // AEAD IV (12)
                         // IV (4)
@@ -274,20 +274,20 @@ void TLSv12::ensure_hmac(size_t digest_size, bool local)
         m_hmac_remote = move(hmac);
 }
 
-ByteBuffer TLSv12::hmac_message(ReadonlyBytes buf, const Optional<ReadonlyBytes> buf2, size_t mac_length, bool local)
+ByteBuffer TLSv12::hmac_message(ReadonlyBytes buf, Optional<ReadonlyBytes> const buf2, size_t mac_length, bool local)
 {
     u64 sequence_number = AK::convert_between_host_and_network_endian(local ? m_context.local_sequence_number : m_context.remote_sequence_number);
     ensure_hmac(mac_length, local);
     auto& hmac = local ? *m_hmac_local : *m_hmac_remote;
     if constexpr (TLS_DEBUG) {
         dbgln("========================= PACKET DATA ==========================");
-        print_buffer((const u8*)&sequence_number, sizeof(u64));
+        print_buffer((u8 const*)&sequence_number, sizeof(u64));
         print_buffer(buf.data(), buf.size());
         if (buf2.has_value())
             print_buffer(buf2.value().data(), buf2.value().size());
         dbgln("========================= PACKET DATA ==========================");
     }
-    hmac.update((const u8*)&sequence_number, sizeof(u64));
+    hmac.update((u8 const*)&sequence_number, sizeof(u64));
     hmac.update(buf);
     if (buf2.has_value() && buf2.value().size()) {
         hmac.update(buf2.value());
@@ -382,15 +382,15 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
                 // length (2)
                 u8 aad[13];
                 Bytes aad_bytes { aad, 13 };
-                OutputMemoryStream aad_stream { aad_bytes };
+                FixedMemoryStream aad_stream { aad_bytes };
 
                 u64 seq_no = AK::convert_between_host_and_network_endian(m_context.remote_sequence_number);
                 u16 len = AK::convert_between_host_and_network_endian((u16)packet_length);
 
-                aad_stream.write({ &seq_no, sizeof(seq_no) });      // Sequence number
-                aad_stream.write(buffer.slice(0, header_size - 2)); // content-type + version
-                aad_stream.write({ &len, sizeof(u16) });
-                VERIFY(aad_stream.is_end());
+                MUST(aad_stream.write_value(seq_no));                                   // sequence number
+                MUST(aad_stream.write_entire_buffer(buffer.slice(0, header_size - 2))); // content-type + version
+                MUST(aad_stream.write_value(len));                                      // length
+                VERIFY(MUST(aad_stream.tell()) == MUST(aad_stream.size()));
 
                 auto nonce = payload.slice(0, iv_length());
                 payload = payload.slice(iv_length());

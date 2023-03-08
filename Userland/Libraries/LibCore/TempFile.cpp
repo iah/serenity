@@ -6,7 +6,7 @@
 
 #include "TempFile.h"
 #include <AK/Random.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -18,7 +18,7 @@ NonnullOwnPtr<TempFile> TempFile::create(Type type)
     return adopt_own(*new TempFile(type));
 }
 
-String TempFile::create_temp(Type type)
+DeprecatedString TempFile::create_temp(Type type)
 {
     char name_template[] = "/tmp/tmp.XXXXXX";
     switch (type) {
@@ -34,7 +34,7 @@ String TempFile::create_temp(Type type)
         break;
     }
     }
-    return String { name_template };
+    return DeprecatedString { name_template };
 }
 
 TempFile::TempFile(Type type)
@@ -45,11 +45,11 @@ TempFile::TempFile(Type type)
 
 TempFile::~TempFile()
 {
-    File::RecursionMode recursion_allowed { File::RecursionMode::Disallowed };
+    DeprecatedFile::RecursionMode recursion_allowed { DeprecatedFile::RecursionMode::Disallowed };
     if (m_type == Type::Directory)
-        recursion_allowed = File::RecursionMode::Allowed;
+        recursion_allowed = DeprecatedFile::RecursionMode::Allowed;
 
-    auto rc = File::remove(m_path.characters(), recursion_allowed, false);
+    auto rc = DeprecatedFile::remove(m_path, recursion_allowed);
     if (rc.is_error()) {
         warnln("File::remove failed: {}", rc.error().string_literal());
     }

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,16 +11,12 @@
 
 namespace Core {
 
-NetworkJob::NetworkJob(Core::Stream::Stream& output_stream)
+NetworkJob::NetworkJob(Stream& output_stream)
     : m_output_stream(output_stream)
 {
 }
 
-NetworkJob::~NetworkJob()
-{
-}
-
-void NetworkJob::start(Core::Stream::Socket&)
+void NetworkJob::start(Core::Socket&)
 {
 }
 
@@ -72,7 +69,7 @@ void NetworkJob::did_progress(Optional<u32> total_size, u32 downloaded)
         on_progress(total_size, downloaded);
 }
 
-const char* to_string(NetworkJob::Error error)
+char const* to_string(NetworkJob::Error error)
 {
     switch (error) {
     case NetworkJob::Error::ProtocolFailed:

@@ -8,6 +8,7 @@
 
 #include "Report.h"
 #include <AK/Concepts.h>
+#include <AK/FPControl.h>
 #include <AK/SIMD.h>
 #include <LibX86/Instruction.h>
 #include <LibX86/Interpreter.h>
@@ -17,6 +18,8 @@
 
 namespace UserspaceEmulator {
 using namespace AK::SIMD;
+using AK::RoundingMode;
+
 class Emulator;
 class SoftCPU;
 
@@ -35,6 +38,7 @@ public:
     SoftFPU(Emulator& emulator, SoftCPU& cpu)
         : m_emulator(emulator)
         , m_cpu(cpu)
+        , m_fpu_cw { 0x037F }
     {
     }
 
@@ -81,16 +85,9 @@ private:
         Empty = 0b11
     };
 
-    enum class RoundingMode : u8 {
-        NEAREST = 0b00,
-        DOWN = 0b01,
-        UP = 0b10,
-        TRUNC = 0b11
-    };
-
     void fpu_dump_env()
     {
-        reportln("Exceptions: #I:{} #D:{} #Z:{} #O:{} #U:{} #P:{} #SF:{} Summary:{}",
+        reportln("Exceptions: #I:{} #D:{} #Z:{} #O:{} #U:{} #P:{} #SF:{} Summary:{}"sv,
             m_fpu_error_invalid,
             m_fpu_error_denorm,
             m_fpu_error_zero_div,
@@ -99,25 +96,25 @@ private:
             m_fpu_error_precision,
             m_fpu_error_stackfault,
             m_fpu_error_summary);
-        reportln("Masks: #I:{} #D:{} #Z:{} #O:{} #U:{} #P:{}",
-            m_fpu_mask_invalid,
-            m_fpu_mask_denorm,
-            m_fpu_mask_zero_div,
-            m_fpu_mask_overflow,
-            m_fpu_mask_underflow,
-            m_fpu_mask_precision);
-        reportln("C0:{} C1:{} C2:{} C3:{}", c0(), c1(), c2(), c3());
-        reportln("fpu-stacktop: {}", m_fpu_stack_top);
-        reportln("fpu-stack /w stacktop (real):");
+        reportln("Masks: #I:{} #D:{} #Z:{} #O:{} #U:{} #P:{}"sv,
+            m_fpu_cw.mask_invalid,
+            m_fpu_cw.mask_denorm,
+            m_fpu_cw.mask_zero_div,
+            m_fpu_cw.mask_overflow,
+            m_fpu_cw.mask_underflow,
+            m_fpu_cw.mask_precision);
+        reportln("C0:{} C1:{} C2:{} C3:{}"sv, c0(), c1(), c2(), c3());
+        reportln("fpu-stacktop: {}"sv, m_fpu_stack_top);
+        reportln("fpu-stack /w stacktop (real):"sv);
         for (u8 i = 0; i < 8; ++i) {
-            reportln("\t{} ({}): fp {} ({}), mmx {:016x}",
+            reportln("\t{} ({}): fp {} ({}), mmx {:016x}"sv,
                 i, (u8)((m_fpu_stack_top + i) % 8),
                 m_storage[(m_fpu_stack_top + i) % 8].fp, fpu_is_set(i) ? "set" : "free",
                 m_storage[(m_fpu_stack_top + i) % 8].mmx.raw);
         }
     }
 
-    String fpu_exception_string(FPU_Exception ex)
+    DeprecatedString fpu_exception_string(FPU_Exception ex)
     {
         switch (ex) {
         case FPU_Exception::StackFault:
@@ -145,14 +142,14 @@ private:
 
     ALWAYS_INLINE void fpu_set_stack_overflow()
     {
-        reportln("Stack Overflow");
+        reportln("Stack Overflow"sv);
         set_c1(1);
         fpu_set_exception(FPU_Exception::StackFault);
     }
 
     ALWAYS_INLINE void fpu_set_stack_underflow()
     {
-        reportln("Stack Underflow");
+        reportln("Stack Underflow"sv);
         set_c1(0);
         fpu_set_exception(FPU_Exception::StackFault);
     }
@@ -261,18 +258,14 @@ private:
 
     ALWAYS_INLINE RoundingMode fpu_get_round_mode() const
     {
-        return RoundingMode(m_fpu_round_mode);
+        return m_fpu_cw.rounding_control;
     }
 
     template<Arithmetic T>
-    T fpu_round(long double) const;
-    template<Arithmetic T>
-    T fpu_round_checked(long double);
+    T round_checked(long double);
 
     template<FloatingPoint T>
-    T fpu_convert(long double) const;
-    template<FloatingPoint T>
-    T fpu_convert_checked(long double);
+    T convert_checked(long double);
 
     ALWAYS_INLINE void fpu_set_unordered()
     {
@@ -295,22 +288,7 @@ private:
         };
     } m_storage[8];
 
-    union {
-        u16 m_fpu_cw { 0x037F };
-        struct {
-            u16 m_fpu_mask_invalid : 1;
-            u16 m_fpu_mask_denorm : 1;
-            u16 m_fpu_mask_zero_div : 1;
-            u16 m_fpu_mask_overflow : 1;
-            u16 m_fpu_mask_underflow : 1;
-            u16 m_fpu_mask_precision : 1;
-            u16 : 2; // unused
-            u16 m_fpu_precission : 2;
-            u16 m_fpu_round_mode : 2;
-            u16 m_fpu_infinity_control : 1;
-            u16 : 3; // unused
-        };
-    };
+    AK::X87ControlWord m_fpu_cw;
 
     union {
         u16 m_fpu_sw { 0 };

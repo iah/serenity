@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <AK/Platform.h>
+
 namespace AK {
 
 template<typename T>
@@ -17,8 +19,8 @@ private:
     friend T;
     constexpr Badge() = default;
 
-    Badge(const Badge&) = delete;
-    Badge& operator=(const Badge&) = delete;
+    Badge(Badge const&) = delete;
+    Badge& operator=(Badge const&) = delete;
 
     Badge(Badge&&) = delete;
     Badge& operator=(Badge&&) = delete;
@@ -26,4 +28,6 @@ private:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::Badge;
+#endif

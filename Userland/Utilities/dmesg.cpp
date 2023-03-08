@@ -11,11 +11,11 @@
 ErrorOr<int> serenity_main(Main::Arguments)
 {
     TRY(Core::System::pledge("stdio rpath"));
-    TRY(Core::System::unveil("/proc/dmesg", "r"));
+    TRY(Core::System::unveil("/sys/kernel/dmesg", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto file = TRY(Core::File::open("/proc/dmesg", Core::OpenMode::ReadOnly));
-    auto buffer = file->read_all();
+    auto file = TRY(Core::File::open("/sys/kernel/dmesg"sv, Core::File::OpenMode::Read));
+    auto buffer = TRY(file->read_until_eof());
     out("{}", StringView { buffer });
     return 0;
 }

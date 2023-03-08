@@ -9,19 +9,15 @@
 
 namespace JS {
 
-ArrayIterator* ArrayIterator::create(GlobalObject& global_object, Value array, Object::PropertyKind iteration_kind)
+NonnullGCPtr<ArrayIterator> ArrayIterator::create(Realm& realm, Value array, Object::PropertyKind iteration_kind)
 {
-    return global_object.heap().allocate<ArrayIterator>(global_object, array, iteration_kind, *global_object.array_iterator_prototype());
+    return realm.heap().allocate<ArrayIterator>(realm, array, iteration_kind, *realm.intrinsics().array_iterator_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
 }
 
 ArrayIterator::ArrayIterator(Value array, Object::PropertyKind iteration_kind, Object& prototype)
-    : Object(prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_array(array)
     , m_iteration_kind(iteration_kind)
-{
-}
-
-ArrayIterator::~ArrayIterator()
 {
 }
 

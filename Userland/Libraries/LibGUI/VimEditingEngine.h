@@ -122,7 +122,6 @@ private:
     void calculate_document_range(TextEditor&);
     void calculate_line_range(TextEditor&, bool normalize_for_position);
     void calculate_word_range(VimCursor&, int amount, bool normalize_for_position);
-    void calculate_WORD_range(VimCursor&, int amount, bool normalize_for_position);
     void calculate_character_range(VimCursor&, int amount, bool normalize_for_position);
     void calculate_find_range(VimCursor&, int amount);
 
@@ -146,13 +145,14 @@ class VimEditingEngine final : public EditingEngine {
 public:
     virtual CursorWidth cursor_width() const override;
 
-    virtual bool on_key(const KeyEvent& event) override;
+    virtual bool on_key(KeyEvent const& event) override;
 
 private:
     enum VimMode {
         Normal,
         Insert,
-        Visual
+        Visual,
+        VisualLine
     };
 
     enum YankType {
@@ -160,11 +160,17 @@ private:
         Selection
     };
 
+    enum class Casing {
+        Uppercase,
+        Lowercase,
+        Invertcase
+    };
+
     VimMode m_vim_mode { VimMode::Normal };
     VimMotion m_motion;
 
     YankType m_yank_type {};
-    String m_yank_buffer {};
+    DeprecatedString m_yank_buffer {};
     void yank(YankType);
     void yank(TextRange, YankType yank_type);
     void put_before();
@@ -179,14 +185,18 @@ private:
     void switch_to_normal_mode();
     void switch_to_insert_mode();
     void switch_to_visual_mode();
+    void switch_to_visual_line_mode();
     void move_half_page_up();
     void move_half_page_down();
     void move_to_previous_empty_lines_block();
     void move_to_next_empty_lines_block();
 
-    bool on_key_in_insert_mode(const KeyEvent& event);
-    bool on_key_in_normal_mode(const KeyEvent& event);
-    bool on_key_in_visual_mode(const KeyEvent& event);
+    bool on_key_in_insert_mode(KeyEvent const& event);
+    bool on_key_in_normal_mode(KeyEvent const& event);
+    bool on_key_in_visual_mode(KeyEvent const& event);
+    bool on_key_in_visual_line_mode(KeyEvent const& event);
+
+    void casefold_selection(Casing);
 
     virtual EngineType engine_type() const override { return EngineType::Vim; }
 };

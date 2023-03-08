@@ -101,7 +101,8 @@ namespace Web::HTML {
 
 class HTMLTokenizer {
 public:
-    explicit HTMLTokenizer(StringView input, String const& encoding);
+    explicit HTMLTokenizer();
+    explicit HTMLTokenizer(StringView input, DeprecatedString const& encoding);
 
     enum class State {
 #define __ENUMERATE_TOKENIZER_STATE(state) state,
@@ -122,7 +123,28 @@ public:
     void set_blocked(bool b) { m_blocked = b; }
     bool is_blocked() const { return m_blocked; }
 
-    String source() const { return m_decoded_input; }
+    DeprecatedString source() const { return m_decoded_input; }
+
+    void insert_input_at_insertion_point(DeprecatedString const& input);
+    void insert_eof();
+    bool is_eof_inserted();
+
+    bool is_insertion_point_defined() const { return m_insertion_point.defined; }
+    bool is_insertion_point_reached()
+    {
+        return m_insertion_point.defined && m_utf8_view.iterator_offset(m_utf8_iterator) >= m_insertion_point.position;
+    }
+    void undefine_insertion_point() { m_insertion_point.defined = false; }
+    void store_insertion_point() { m_old_insertion_point = m_insertion_point; }
+    void restore_insertion_point() { m_insertion_point = m_old_insertion_point; }
+    void update_insertion_point()
+    {
+        m_insertion_point.defined = true;
+        m_insertion_point.position = m_utf8_view.iterator_offset(m_utf8_iterator);
+    }
+
+    // This permanently cuts off the tokenizer input stream.
+    void abort() { m_aborted = true; }
 
 private:
     void skip(size_t count);
@@ -131,7 +153,7 @@ private:
     bool consume_next_if_match(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive);
     void create_new_token(HTMLToken::Type);
     bool current_end_tag_token_is_appropriate() const;
-    String consume_current_builder();
+    DeprecatedString consume_current_builder();
 
     static char const* state_name(State state)
     {
@@ -161,7 +183,14 @@ private:
 
     Vector<u32> m_temporary_buffer;
 
-    String m_decoded_input;
+    DeprecatedString m_decoded_input;
+
+    struct InsertionPoint {
+        size_t position { 0 };
+        bool defined { false };
+    };
+    InsertionPoint m_insertion_point {};
+    InsertionPoint m_old_insertion_point {};
 
     Utf8View m_utf8_view;
     Utf8CodePointIterator m_utf8_iterator;
@@ -170,8 +199,9 @@ private:
     HTMLToken m_current_token;
     StringBuilder m_current_builder;
 
-    Optional<String> m_last_emitted_start_tag_name;
+    Optional<DeprecatedString> m_last_emitted_start_tag_name;
 
+    bool m_explicit_eof_inserted { false };
     bool m_has_emitted_eof { false };
 
     Queue<HTMLToken> m_queued_tokens;
@@ -179,6 +209,8 @@ private:
     u32 m_character_reference_code { 0 };
 
     bool m_blocked { false };
+
+    bool m_aborted { false };
 
     Vector<HTMLToken::Position> m_source_positions;
 };

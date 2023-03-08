@@ -15,6 +15,7 @@
 namespace Syntax {
 
 enum class Language {
+    CMake,
     Cpp,
     CSS,
     GitCommit,
@@ -29,18 +30,23 @@ enum class Language {
 
 struct TextStyle {
     const Gfx::Color color;
-    const bool bold { false };
+    bool const bold { false };
 };
+
+StringView language_to_string(Language);
+StringView common_language_extension(Language);
 
 class Highlighter {
     AK_MAKE_NONCOPYABLE(Highlighter);
     AK_MAKE_NONMOVABLE(Highlighter);
 
 public:
-    virtual ~Highlighter();
+    virtual ~Highlighter() = default;
 
     virtual Language language() const = 0;
-    virtual void rehighlight(const Palette&) = 0;
+    virtual Optional<StringView> comment_prefix() const = 0;
+    virtual Optional<StringView> comment_suffix() const = 0;
+    virtual void rehighlight(Palette const&) = 0;
     virtual void highlight_matching_token_pair();
 
     virtual bool is_identifier(u64) const { return false; };
@@ -63,7 +69,7 @@ public:
     virtual bool is_cpp_semantic_highlighter() const { return false; }
 
 protected:
-    Highlighter() { }
+    Highlighter() = default;
 
     // FIXME: This should be WeakPtr somehow
     HighlighterClient* m_client { nullptr };
@@ -113,6 +119,23 @@ public:
         return spans;
     }
 
+    Vector<GUI::TextDocumentFoldingRegion> corrected_folding_regions() const
+    {
+        Vector<GUI::TextDocumentFoldingRegion> folding_regions { m_folding_regions };
+        for (auto& entry : folding_regions) {
+            entry.range.start() = {
+                entry.range.start().line() + m_start.line(),
+                entry.range.start().line() == 0 ? entry.range.start().column() + m_start.column() : entry.range.start().column(),
+            };
+            entry.range.end() = {
+                entry.range.end().line() + m_start.line(),
+                entry.range.end().line() == 0 ? entry.range.end().column() + m_start.column() : entry.range.end().column(),
+            };
+        }
+
+        return folding_regions;
+    }
+
     Vector<Syntax::Highlighter::MatchingTokenPair> corrected_token_pairs(Vector<Syntax::Highlighter::MatchingTokenPair> pairs) const
     {
         for (auto& pair : pairs) {
@@ -124,16 +147,21 @@ public:
 
 private:
     virtual Vector<GUI::TextDocumentSpan>& spans() override { return m_spans; }
-    virtual const Vector<GUI::TextDocumentSpan>& spans() const override { return m_spans; }
+    virtual Vector<GUI::TextDocumentSpan> const& spans() const override { return m_spans; }
     virtual void set_span_at_index(size_t index, GUI::TextDocumentSpan span) override { m_spans.at(index) = move(span); }
 
-    virtual String highlighter_did_request_text() const override { return m_text; }
+    virtual Vector<GUI::TextDocumentFoldingRegion>& folding_regions() override { return m_folding_regions; }
+    virtual Vector<GUI::TextDocumentFoldingRegion> const& folding_regions() const override { return m_folding_regions; }
+
+    virtual DeprecatedString highlighter_did_request_text() const override { return m_text; }
     virtual void highlighter_did_request_update() override { }
     virtual GUI::TextDocument& highlighter_did_request_document() override { return m_document; }
     virtual GUI::TextPosition highlighter_did_request_cursor() const override { return {}; }
     virtual void highlighter_did_set_spans(Vector<GUI::TextDocumentSpan> spans) override { m_spans = move(spans); }
+    virtual void highlighter_did_set_folding_regions(Vector<GUI::TextDocumentFoldingRegion> folding_regions) override { m_folding_regions = folding_regions; }
 
     Vector<GUI::TextDocumentSpan> m_spans;
+    Vector<GUI::TextDocumentFoldingRegion> m_folding_regions;
     GUI::TextDocument& m_document;
     StringView m_text;
     GUI::TextPosition m_start;

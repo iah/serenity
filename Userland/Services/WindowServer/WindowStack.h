@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Jakob-Niklas See <git@nwex.de>
+ * Copyright (c) 2021, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,7 +16,7 @@ class Compositor;
 class WindowStack {
 public:
     WindowStack(unsigned row, unsigned column);
-    ~WindowStack();
+    ~WindowStack() = default;
 
     bool is_empty() const { return m_windows.is_empty(); }
     void add(Window&);
@@ -35,7 +35,7 @@ public:
         Yes,
         No,
     };
-    Window* window_at(Gfx::IntPoint const&, IncludeWindowFrame = IncludeWindowFrame::Yes) const;
+    Window* window_at(Gfx::IntPoint, IncludeWindowFrame = IncludeWindowFrame::Yes) const;
     Window* highlight_window() const;
 
     template<typename Callback>
@@ -56,21 +56,13 @@ public:
     Window const* active_window() const { return m_active_window; }
     void set_active_window(Window*);
 
-    Window* active_input_window() { return m_active_input_window; }
-    Window const* active_input_window() const { return m_active_input_window; }
-    void set_active_input_window(Window* window) { m_active_input_window = window; }
-
-    Window* active_input_tracking_window() { return m_active_input_tracking_window; }
-    Window const* active_input_tracking_window() const { return m_active_input_tracking_window; }
-    void set_active_input_tracking_window(Window* window) { m_active_input_tracking_window = window; }
-
-    Optional<HitTestResult> hit_test(Gfx::IntPoint const&) const;
+    Optional<HitTestResult> hit_test(Gfx::IntPoint) const;
 
     unsigned row() const { return m_row; }
     unsigned column() const { return m_column; }
 
-    void set_transition_offset(Badge<Compositor>, Gfx::IntPoint const& transition_offset) { m_transition_offset = transition_offset; }
-    Gfx::IntPoint const& transition_offset() const { return m_transition_offset; }
+    void set_transition_offset(Badge<Compositor>, Gfx::IntPoint transition_offset) { m_transition_offset = transition_offset; }
+    Gfx::IntPoint transition_offset() const { return m_transition_offset; }
 
     void set_stationary_window_stack(WindowStack& window_stack) { m_stationary_window_stack = &window_stack; }
     WindowStack& stationary_window_stack()
@@ -83,8 +75,6 @@ public:
 
 private:
     WeakPtr<Window> m_active_window;
-    WeakPtr<Window> m_active_input_window;
-    WeakPtr<Window> m_active_input_tracking_window;
 
     Window::List m_windows;
     unsigned m_row { 0 };

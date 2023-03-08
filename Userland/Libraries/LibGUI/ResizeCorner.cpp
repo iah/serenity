@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,7 +13,8 @@
 
 namespace GUI {
 
-static const char* s_resize_corner_shadows_data = {
+static constexpr Gfx::CharacterBitmap s_resize_corner_shadows_bitmap {
+
     "                "
     "             ## "
     "             #  "
@@ -28,10 +30,11 @@ static const char* s_resize_corner_shadows_data = {
     "                "
     " ## ## ## ## ## "
     " #  #  #  #  #  "
-    "                "
+    "                "sv,
+    16, 16
 };
 
-static const char* s_resize_corner_highlights_data = {
+static constexpr Gfx::CharacterBitmap s_resize_corner_highlights_bitmap {
     "                "
     "                "
     "              # "
@@ -47,13 +50,9 @@ static const char* s_resize_corner_highlights_data = {
     "                "
     "                "
     "  #  #  #  #  # "
-    "                "
+    "                "sv,
+    16, 16
 };
-
-static Gfx::CharacterBitmap* s_resize_corner_shadows_bitmap;
-static Gfx::CharacterBitmap* s_resize_corner_highlights_bitmap;
-static const int s_resize_corner_bitmap_width = 16;
-static const int s_resize_corner_bitmap_height = 16;
 
 ResizeCorner::ResizeCorner()
 {
@@ -62,23 +61,14 @@ ResizeCorner::ResizeCorner()
     set_fixed_size(16, 18);
 }
 
-ResizeCorner::~ResizeCorner()
-{
-}
-
 void ResizeCorner::paint_event(PaintEvent& event)
 {
     Painter painter(*this);
     painter.add_clip_rect(event.rect());
     painter.fill_rect(rect(), palette().color(background_role()));
 
-    if (!s_resize_corner_shadows_bitmap)
-        s_resize_corner_shadows_bitmap = &Gfx::CharacterBitmap::create_from_ascii(s_resize_corner_shadows_data, s_resize_corner_bitmap_width, s_resize_corner_bitmap_height).leak_ref();
-    painter.draw_bitmap({ 0, 2 }, *s_resize_corner_shadows_bitmap, palette().threed_shadow1());
-
-    if (!s_resize_corner_highlights_bitmap)
-        s_resize_corner_highlights_bitmap = &Gfx::CharacterBitmap::create_from_ascii(s_resize_corner_highlights_data, s_resize_corner_bitmap_width, s_resize_corner_bitmap_height).leak_ref();
-    painter.draw_bitmap({ 0, 2 }, *s_resize_corner_highlights_bitmap, palette().threed_highlight());
+    painter.draw_bitmap({ 0, 2 }, s_resize_corner_shadows_bitmap, palette().threed_shadow1());
+    painter.draw_bitmap({ 0, 2 }, s_resize_corner_highlights_bitmap, palette().threed_highlight());
 
     Widget::paint_event(event);
 }
@@ -86,7 +76,7 @@ void ResizeCorner::paint_event(PaintEvent& event)
 void ResizeCorner::mousedown_event(MouseEvent& event)
 {
     if (event.button() == MouseButton::Primary)
-        window()->start_interactive_resize();
+        window()->start_interactive_resize(ResizeDirection::DownRight);
     Widget::mousedown_event(event);
 }
 

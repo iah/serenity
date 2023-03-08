@@ -17,8 +17,9 @@
 
 extern "C" {
 
-extern size_t __stack_chk_guard;
-__attribute__((used)) size_t __stack_chk_guard = (size_t)0xc6c7c8c9;
+extern uintptr_t __stack_chk_guard;
+// Initialized in `initialize_libc` (we leave a placeholder value here before initialization).
+__attribute__((used)) uintptr_t __stack_chk_guard = (uintptr_t)0xc6c7c8c9;
 
 __attribute__((noreturn)) void __stack_chk_fail()
 {
@@ -26,11 +27,6 @@ __attribute__((noreturn)) void __stack_chk_fail()
     if (__stdio_is_initialized)
         warnln("Error: Stack protector failure, stack smashing detected!");
     abort();
-}
-
-__attribute__((noreturn)) void __stack_chk_fail_local()
-{
-    __stack_chk_fail();
 }
 
 } // extern "C"

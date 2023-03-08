@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,22 +16,22 @@ namespace Chess::UCI {
 class Endpoint : public Core::Object {
     C_OBJECT(Endpoint)
 public:
-    virtual ~Endpoint() override { }
+    virtual ~Endpoint() override = default;
 
     virtual void handle_uci() { }
-    virtual void handle_debug(const DebugCommand&) { }
+    virtual void handle_debug(DebugCommand const&) { }
     virtual void handle_isready() { }
-    virtual void handle_setoption(const SetOptionCommand&) { }
-    virtual void handle_position(const PositionCommand&) { }
-    virtual void handle_go(const GoCommand&) { }
+    virtual void handle_setoption(SetOptionCommand const&) { }
+    virtual void handle_position(PositionCommand const&) { }
+    virtual void handle_go(GoCommand const&) { }
     virtual void handle_stop() { }
-    virtual void handle_id(const IdCommand&) { }
+    virtual void handle_id(IdCommand const&) { }
     virtual void handle_uciok() { }
     virtual void handle_readyok() { }
-    virtual void handle_bestmove(const BestMoveCommand&) { }
-    virtual void handle_info(const InfoCommand&) { }
+    virtual void handle_bestmove(BestMoveCommand const&) { }
+    virtual void handle_info(InfoCommand const&) { }
 
-    void send_command(const Command&);
+    void send_command(Command const&);
 
     virtual void event(Core::Event&) override;
 
@@ -46,7 +46,7 @@ public:
     void set_out(RefPtr<Core::IODevice> out) { m_out = out; }
 
 protected:
-    Endpoint() { }
+    Endpoint() = default;
     Endpoint(NonnullRefPtr<Core::IODevice> in, NonnullRefPtr<Core::IODevice> out);
 
 private:

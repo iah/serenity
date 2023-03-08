@@ -36,6 +36,22 @@
 
 namespace AK {
 
+namespace Detail {
+
+template<typename T, typename Out, typename... Args>
+inline constexpr bool IsCallableWithArguments = requires(T t) {
+                                                    {
+                                                        t(declval<Args>()...)
+                                                        } -> ConvertibleTo<Out>;
+                                                } || requires(T t) {
+                                                         {
+                                                             t(declval<Args>()...)
+                                                             } -> SameAs<Out>;
+                                                     };
+}
+
+using Detail::IsCallableWithArguments;
+
 template<typename>
 class Function;
 
@@ -51,8 +67,10 @@ class Function<Out(In...)> {
     AK_MAKE_NONCOPYABLE(Function);
 
 public:
+    using ReturnType = Out;
+
     Function() = default;
-    Function(std::nullptr_t)
+    Function(nullptr_t)
     {
     }
 
@@ -62,13 +80,15 @@ public:
     }
 
     template<typename CallableType>
-    Function(CallableType&& callable) requires((IsFunctionObject<CallableType> && IsCallableWithArguments<CallableType, In...> && !IsSame<RemoveCVReference<CallableType>, Function>))
+    Function(CallableType&& callable)
+    requires((IsFunctionObject<CallableType> && IsCallableWithArguments<CallableType, Out, In...> && !IsSame<RemoveCVReference<CallableType>, Function>))
     {
         init_with_callable(forward<CallableType>(callable));
     }
 
     template<typename FunctionType>
-    Function(FunctionType f) requires((IsFunctionPointer<FunctionType> && IsCallableWithArguments<RemovePointer<FunctionType>, In...> && !IsSame<RemoveCVReference<FunctionType>, Function>))
+    Function(FunctionType f)
+    requires((IsFunctionPointer<FunctionType> && IsCallableWithArguments<RemovePointer<FunctionType>, Out, In...> && !IsSame<RemoveCVReference<FunctionType>, Function>))
     {
         init_with_callable(move(f));
     }
@@ -94,7 +114,8 @@ public:
     explicit operator bool() const { return !!callable_wrapper(); }
 
     template<typename CallableType>
-    Function& operator=(CallableType&& callable) requires((IsFunctionObject<CallableType> && IsCallableWithArguments<CallableType, In...>))
+    Function& operator=(CallableType&& callable)
+    requires((IsFunctionObject<CallableType> && IsCallableWithArguments<CallableType, Out, In...>))
     {
         clear();
         init_with_callable(forward<CallableType>(callable));
@@ -102,7 +123,8 @@ public:
     }
 
     template<typename FunctionType>
-    Function& operator=(FunctionType f) requires((IsFunctionPointer<FunctionType> && IsCallableWithArguments<RemovePointer<FunctionType>, In...>))
+    Function& operator=(FunctionType f)
+    requires((IsFunctionPointer<FunctionType> && IsCallableWithArguments<RemovePointer<FunctionType>, Out, In...>))
     {
         clear();
         if (f)
@@ -110,7 +132,7 @@ public:
         return *this;
     }
 
-    Function& operator=(std::nullptr_t)
+    Function& operator=(nullptr_t)
     {
         clear();
         return *this;
@@ -213,13 +235,18 @@ private:
     {
         VERIFY(m_call_nesting_level == 0);
         using WrapperType = CallableWrapper<Callable>;
+#ifndef KERNEL
         if constexpr (sizeof(WrapperType) > inline_capacity) {
             *bit_cast<CallableWrapperBase**>(&m_storage) = new WrapperType(forward<Callable>(callable));
             m_kind = FunctionKind::Outline;
         } else {
+#endif
+            static_assert(sizeof(WrapperType) <= inline_capacity);
             new (m_storage) WrapperType(forward<Callable>(callable));
             m_kind = FunctionKind::Inline;
+#ifndef KERNEL
         }
+#endif
     }
 
     void move_from(Function&& other)
@@ -246,11 +273,19 @@ private:
     FunctionKind m_kind { FunctionKind::NullPointer };
     bool m_deferred_clear { false };
     mutable Atomic<u16> m_call_nesting_level { 0 };
+#ifndef KERNEL
     // Empirically determined to fit most lambdas and functions.
     static constexpr size_t inline_capacity = 4 * sizeof(void*);
+#else
+    // FIXME: Try to decrease this.
+    static constexpr size_t inline_capacity = 6 * sizeof(void*);
+#endif
     alignas(max(alignof(CallableWrapperBase), alignof(CallableWrapperBase*))) u8 m_storage[inline_capacity];
 };
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::Function;
+using AK::IsCallableWithArguments;
+#endif

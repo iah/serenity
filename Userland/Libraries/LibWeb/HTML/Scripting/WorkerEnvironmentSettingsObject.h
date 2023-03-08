@@ -7,44 +7,53 @@
 #pragma once
 
 #include <AK/URL.h>
+#include <LibWeb/Bindings/DedicatedWorkerExposedInterfaces.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::HTML {
 
-// FIXME: This is a bit ugly, this implementation is basically a 1:1 copy of what is in ESO
-//        just modified to use DOM::Document instead of DOM::Window since workers have no window
 class WorkerEnvironmentSettingsObject final
-    : public EnvironmentSettingsObject
-    , public Weakable<WorkerEnvironmentSettingsObject> {
+    : public EnvironmentSettingsObject {
+    JS_CELL(WindowEnvironmentSettingsObject, EnvironmentSettingsObject);
+
 public:
-    WorkerEnvironmentSettingsObject(DOM::Document& document, JS::ExecutionContext& execution_context)
-        : EnvironmentSettingsObject(execution_context)
-        , m_document(document)
+    WorkerEnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext> execution_context)
+        : EnvironmentSettingsObject(move(execution_context))
     {
     }
 
-    static WeakPtr<WorkerEnvironmentSettingsObject> setup(DOM::Document& document, JS::ExecutionContext& execution_context /* FIXME: null or an environment reservedEnvironment, a URL topLevelCreationURL, and an origin topLevelOrigin */)
+    static JS::NonnullGCPtr<WorkerEnvironmentSettingsObject> setup(NonnullOwnPtr<JS::ExecutionContext> execution_context /* FIXME: null or an environment reservedEnvironment, a URL topLevelCreationURL, and an origin topLevelOrigin */)
     {
-        auto* realm = execution_context.realm;
+        auto* realm = execution_context->realm;
         VERIFY(realm);
-        auto settings_object = adopt_own(*new WorkerEnvironmentSettingsObject(document, execution_context));
+        auto settings_object = realm->heap().allocate<WorkerEnvironmentSettingsObject>(*realm, move(execution_context)).release_allocated_value_but_fixme_should_propagate_errors();
         settings_object->target_browsing_context = nullptr;
-        realm->set_host_defined(move(settings_object));
 
-        return static_cast<WorkerEnvironmentSettingsObject*>(realm->host_defined());
+        auto intrinsics = realm->heap().allocate<Bindings::Intrinsics>(*realm, *realm).release_allocated_value_but_fixme_should_propagate_errors();
+        auto host_defined = make<Bindings::HostDefined>(settings_object, intrinsics);
+        realm->set_host_defined(move(host_defined));
+
+        // FIXME: Shared workers should use the shared worker method
+        Bindings::add_dedicated_worker_exposed_interfaces(realm->global_object());
+
+        return settings_object;
     }
 
     virtual ~WorkerEnvironmentSettingsObject() override = default;
 
-    RefPtr<DOM::Document> responsible_document() override { return m_document; }
-    String api_url_character_encoding() override { return m_document->encoding_or_default(); }
-    AK::URL api_base_url() override { return m_document->url(); }
-    Origin origin() override { return m_document->origin(); }
+    JS::GCPtr<DOM::Document> responsible_document() override { return nullptr; }
+    DeprecatedString api_url_character_encoding() override { return m_api_url_character_encoding; }
+    AK::URL api_base_url() override { return m_url; }
+    Origin origin() override { return m_origin; }
+    PolicyContainer policy_container() override { return m_policy_container; }
     CanUseCrossOriginIsolatedAPIs cross_origin_isolated_capability() override { TODO(); }
 
 private:
-    NonnullRefPtr<DOM::Document> m_document;
+    DeprecatedString m_api_url_character_encoding;
+    AK::URL m_url;
+    HTML::Origin m_origin;
+    HTML::PolicyContainer m_policy_container;
 };
 
 }

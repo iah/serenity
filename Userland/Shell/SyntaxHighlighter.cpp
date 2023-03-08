@@ -8,7 +8,7 @@
 #include <AK/ScopedValueRollback.h>
 #include <AK/TemporaryChange.h>
 #include <LibGUI/TextEditor.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 #include <Shell/NodeVisitor.h>
 #include <Shell/Parser.h>
@@ -24,7 +24,7 @@ enum class AugmentedTokenKind : u32 {
 
 class HighlightVisitor : public AST::NodeVisitor {
 public:
-    HighlightVisitor(Vector<GUI::TextDocumentSpan>& spans, const Gfx::Palette& palette, const GUI::TextDocument& document)
+    HighlightVisitor(Vector<GUI::TextDocumentSpan>& spans, Gfx::Palette const& palette, const GUI::TextDocument& document)
         : m_spans(spans)
         , m_palette(palette)
         , m_document(document)
@@ -128,7 +128,7 @@ private:
             span.attributes.color = m_palette.syntax_keyword();
             span.attributes.bold = true;
             m_is_first_in_command = false;
-        } else if (node->text().starts_with("-")) {
+        } else if (node->text().starts_with('-')) {
             span.attributes.color = m_palette.syntax_preprocessor_statement();
         } else {
             span.attributes.color = m_palette.base_text();
@@ -421,7 +421,7 @@ private:
     {
         for (auto& entry : node->entries()) {
             ScopedValueRollback first_in_command { m_is_first_in_command };
-            entry.visit(*this);
+            entry->visit(*this);
         }
 
         for (auto& position : node->separator_positions()) {
@@ -481,6 +481,7 @@ private:
         auto& span = span_for_node(node);
         span.attributes.underline = true;
         span.attributes.background_color = Color(Color::NamedColor::MidRed).lightened(1.3f).with_alpha(128);
+        span.attributes.color = m_palette.base_text();
     }
     virtual void visit(const AST::Tilde* node) override
     {
@@ -515,7 +516,7 @@ private:
     }
 
     Vector<GUI::TextDocumentSpan>& m_spans;
-    const Gfx::Palette& m_palette;
+    Gfx::Palette const& m_palette;
     const GUI::TextDocument& m_document;
     bool m_is_first_in_command { false };
 };
@@ -536,7 +537,7 @@ bool SyntaxHighlighter::is_navigatable(u64) const
     return false;
 }
 
-void SyntaxHighlighter::rehighlight(const Palette& palette)
+void SyntaxHighlighter::rehighlight(Palette const& palette)
 {
     auto text = m_client->get_text();
 
@@ -578,10 +579,6 @@ Vector<Syntax::Highlighter::MatchingTokenPair> SyntaxHighlighter::matching_token
 bool SyntaxHighlighter::token_types_equal(u64 token0, u64 token1) const
 {
     return token0 == token1;
-}
-
-SyntaxHighlighter::~SyntaxHighlighter()
-{
 }
 
 }

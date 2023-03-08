@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, Dex♪ <dexes.ttp@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,65 +9,76 @@
 #include <AK/Debug.h>
 #include <AK/JsonObject.h>
 #include <LibCore/ElapsedTimer.h>
-#include <LibCore/EventLoop.h>
-#include <LibCore/File.h>
-#include <LibProtocol/Request.h>
-#include <LibProtocol/RequestClient.h>
+#include <LibWeb/Cookie/Cookie.h>
+#include <LibWeb/Cookie/ParsedCookie.h>
 #include <LibWeb/Loader/ContentFilter.h>
 #include <LibWeb/Loader/LoadRequest.h>
+#include <LibWeb/Loader/ProxyMappings.h>
 #include <LibWeb/Loader/Resource.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Platform/EventLoopPlugin.h>
+#include <LibWeb/Platform/Timer.h>
+
+#ifdef AK_OS_SERENITY
+#    include <serenity.h>
+#endif
 
 namespace Web {
 
+ResourceLoaderConnectorRequest::ResourceLoaderConnectorRequest() = default;
+
+ResourceLoaderConnectorRequest::~ResourceLoaderConnectorRequest() = default;
+
+ResourceLoaderConnector::ResourceLoaderConnector() = default;
+
+ResourceLoaderConnector::~ResourceLoaderConnector() = default;
+
+static RefPtr<ResourceLoader> s_resource_loader;
+
+void ResourceLoader::initialize(RefPtr<ResourceLoaderConnector> connector)
+{
+    if (connector)
+        s_resource_loader = ResourceLoader::try_create(connector.release_nonnull()).release_value_but_fixme_should_propagate_errors();
+}
+
 ResourceLoader& ResourceLoader::the()
 {
-    static RefPtr<ResourceLoader> s_the;
-    if (!s_the)
-        s_the = ResourceLoader::try_create().release_value_but_fixme_should_propagate_errors();
-    return *s_the;
+    if (!s_resource_loader) {
+        dbgln("Web::ResourceLoader was not initialized");
+        VERIFY_NOT_REACHED();
+    }
+    return *s_resource_loader;
 }
 
-ErrorOr<NonnullRefPtr<ResourceLoader>> ResourceLoader::try_create()
+ErrorOr<NonnullRefPtr<ResourceLoader>> ResourceLoader::try_create(NonnullRefPtr<ResourceLoaderConnector> connector)
 {
-
-    auto protocol_client = TRY(Protocol::RequestClient::try_create());
-    return adopt_nonnull_ref_or_enomem(new (nothrow) ResourceLoader(move(protocol_client)));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) ResourceLoader(move(connector)));
 }
 
-ResourceLoader::ResourceLoader(NonnullRefPtr<Protocol::RequestClient> protocol_client)
-    : m_protocol_client(move(protocol_client))
+ResourceLoader::ResourceLoader(NonnullRefPtr<ResourceLoaderConnector> connector)
+    : m_connector(move(connector))
     , m_user_agent(default_user_agent)
 {
 }
 
-void ResourceLoader::load_sync(LoadRequest& request, Function<void(ReadonlyBytes, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers, Optional<u32> status_code)> success_callback, Function<void(const String&, Optional<u32> status_code)> error_callback)
-{
-    Core::EventLoop loop;
-
-    load(
-        request,
-        [&](auto data, auto& response_headers, auto status_code) {
-            success_callback(data, response_headers, status_code);
-            loop.quit(0);
-        },
-        [&](auto& string, auto status_code) {
-            if (error_callback)
-                error_callback(string, status_code);
-            loop.quit(0);
-        });
-
-    loop.exec();
-}
-
 void ResourceLoader::prefetch_dns(AK::URL const& url)
 {
-    m_protocol_client->ensure_connection(url, RequestServer::CacheLevel::ResolveOnly);
+    if (ContentFilter::the().is_filtered(url)) {
+        dbgln("ResourceLoader: Refusing to prefetch DNS for '{}': \033[31;1mURL was filtered\033[0m", url);
+        return;
+    }
+
+    m_connector->prefetch_dns(url);
 }
 
 void ResourceLoader::preconnect(AK::URL const& url)
 {
-    m_protocol_client->ensure_connection(url, RequestServer::CacheLevel::CreateConnection);
+    if (ContentFilter::the().is_filtered(url)) {
+        dbgln("ResourceLoader: Refusing to pre-connect to '{}': \033[31;1mURL was filtered\033[0m", url);
+        return;
+    }
+
+    m_connector->preconnect(url);
 }
 
 static HashMap<LoadRequest, NonnullRefPtr<Resource>> s_resource_cache;
@@ -76,7 +88,7 @@ RefPtr<Resource> ResourceLoader::load_resource(Resource::Type type, LoadRequest&
     if (!request.is_valid())
         return nullptr;
 
-    bool use_cache = request.url().protocol() != "file";
+    bool use_cache = request.url().scheme() != "file";
 
     if (use_cache) {
         auto it = s_resource_cache.find(request);
@@ -107,33 +119,66 @@ RefPtr<Resource> ResourceLoader::load_resource(Resource::Type type, LoadRequest&
     return resource;
 }
 
-static String sanitized_url_for_logging(AK::URL const& url)
+static DeprecatedString sanitized_url_for_logging(AK::URL const& url)
 {
-    if (url.protocol() == "data"sv)
-        return String::formatted("[data URL, mime-type={}, size={}]", url.data_mime_type(), url.data_payload().length());
-    return url.to_string();
+    if (url.scheme() == "data"sv)
+        return DeprecatedString::formatted("[data URL, mime-type={}, size={}]", url.data_mime_type(), url.data_payload().length());
+    return url.to_deprecated_string();
 }
 
-void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers, Optional<u32> status_code)> success_callback, Function<void(const String&, Optional<u32> status_code)> error_callback)
+static void emit_signpost(DeprecatedString const& message, int id)
+{
+#ifdef AK_OS_SERENITY
+    auto string_id = perf_register_string(message.characters(), message.length());
+    perf_event(PERF_EVENT_SIGNPOST, string_id, id);
+#else
+    (void)message;
+    (void)id;
+#endif
+}
+
+static void store_response_cookies(Page& page, AK::URL const& url, DeprecatedString const& cookies)
+{
+    auto set_cookie_json_value = MUST(JsonValue::from_string(cookies));
+    VERIFY(set_cookie_json_value.type() == JsonValue::Type::Array);
+
+    for (auto const& set_cookie_entry : set_cookie_json_value.as_array().values()) {
+        VERIFY(set_cookie_entry.type() == JsonValue::Type::String);
+
+        auto cookie = Cookie::parse_cookie(set_cookie_entry.as_string());
+        if (!cookie.has_value())
+            continue;
+
+        page.client().page_did_set_cookie(url, cookie.value(), Cookie::Source::Http); // FIXME: Determine cookie source correctly
+    }
+}
+
+static size_t resource_id = 0;
+
+void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> status_code)> success_callback, Function<void(DeprecatedString const&, Optional<u32> status_code)> error_callback, Optional<u32> timeout, Function<void()> timeout_callback)
 {
     auto& url = request.url();
     request.start_timer();
-    dbgln("ResourceLoader: Starting load of: \"{}\"", sanitized_url_for_logging(url));
 
-    const auto log_success = [](const auto& request) {
-        auto& url = request.url();
+    auto id = resource_id++;
+    auto url_for_logging = sanitized_url_for_logging(url);
+    emit_signpost(DeprecatedString::formatted("Starting load: {}", url_for_logging), id);
+    dbgln("ResourceLoader: Starting load of: \"{}\"", url_for_logging);
+
+    auto const log_success = [url_for_logging, id](auto const& request) {
         auto load_time_ms = request.load_time().to_milliseconds();
-        dbgln("ResourceLoader: Finished load of: \"{}\", Duration: {}ms", sanitized_url_for_logging(url), load_time_ms);
+        emit_signpost(DeprecatedString::formatted("Finished load: {}", url_for_logging), id);
+        dbgln("ResourceLoader: Finished load of: \"{}\", Duration: {}ms", url_for_logging, load_time_ms);
     };
 
-    const auto log_failure = [](const auto& request, const auto error_message) {
-        auto& url = request.url();
+    auto const log_failure = [url_for_logging, id](auto const& request, auto const& error_message) {
         auto load_time_ms = request.load_time().to_milliseconds();
-        dbgln("ResourceLoader: Failed load of: \"{}\", \033[31;1mError: {}\033[0m, Duration: {}ms", sanitized_url_for_logging(url), error_message, load_time_ms);
+        emit_signpost(DeprecatedString::formatted("Failed load: {}", url_for_logging), id);
+        dbgln("ResourceLoader: Failed load of: \"{}\", \033[31;1mError: {}\033[0m, Duration: {}ms", url_for_logging, error_message, load_time_ms);
     };
 
     if (is_port_blocked(url.port_or_default())) {
-        log_failure(request, String::formatted("The port #{} is blocked", url.port_or_default()));
+        log_failure(request, DeprecatedString::formatted("The port #{} is blocked", url.port_or_default()));
         return;
     }
 
@@ -144,16 +189,20 @@ void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, con
         return;
     }
 
-    if (url.protocol() == "about") {
+    if (url.scheme() == "about") {
         dbgln_if(SPAM_DEBUG, "Loading about: URL {}", url);
         log_success(request);
-        deferred_invoke([success_callback = move(success_callback)] {
-            success_callback(String::empty().to_byte_buffer(), {}, {});
+
+        HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> response_headers;
+        response_headers.set("Content-Type", "text/html; charset=UTF-8");
+
+        Platform::EventLoopPlugin::the().deferred_invoke([success_callback = move(success_callback), response_headers = move(response_headers)] {
+            success_callback(DeprecatedString::empty().to_byte_buffer(), response_headers, {});
         });
         return;
     }
 
-    if (url.protocol() == "data") {
+    if (url.scheme() == "data") {
         dbgln_if(SPAM_DEBUG, "ResourceLoader loading a data URL with mime-type: '{}', base64={}, payload='{}'",
             url.data_mime_type(),
             url.data_payload_is_base64(),
@@ -174,41 +223,75 @@ void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, con
         }
 
         log_success(request);
-        deferred_invoke([data = move(data), success_callback = move(success_callback)] {
+        Platform::EventLoopPlugin::the().deferred_invoke([data = move(data), success_callback = move(success_callback)] {
             success_callback(data, {}, {});
         });
         return;
     }
 
-    if (url.protocol() == "file") {
-        auto file_result = Core::File::open(url.path(), Core::OpenMode::ReadOnly);
-        if (file_result.is_error()) {
-            auto& error = file_result.error();
-            log_failure(request, error);
-            if (error_callback)
-                error_callback(String::formatted("{}", error), error.code());
+    if (url.scheme() == "file") {
+        if (request.page().has_value())
+            m_page = request.page().value();
+
+        if (!m_page.has_value())
             return;
-        }
 
-        auto file = file_result.release_value();
-        auto data = file->read_all();
-        log_success(request);
-        deferred_invoke([data = move(data), success_callback = move(success_callback)] {
+        FileRequest file_request(url.path(), [this, success_callback = move(success_callback), error_callback = move(error_callback), log_success, log_failure, request](ErrorOr<i32> file_or_error) {
+            --m_pending_loads;
+            if (on_load_counter_change)
+                on_load_counter_change();
+
+            if (file_or_error.is_error()) {
+                log_failure(request, file_or_error.error());
+                if (error_callback)
+                    error_callback(DeprecatedString::formatted("{}", file_or_error.error()), file_or_error.error().code());
+                return;
+            }
+
+            auto const fd = file_or_error.value();
+
+            auto maybe_file = Core::File::adopt_fd(fd, Core::File::OpenMode::Read);
+            if (maybe_file.is_error()) {
+                log_failure(request, maybe_file.error());
+                if (error_callback)
+                    error_callback(DeprecatedString::formatted("{}", maybe_file.error()), maybe_file.error().code());
+                return;
+            }
+
+            auto file = maybe_file.release_value();
+            auto maybe_data = file->read_until_eof();
+            if (maybe_data.is_error()) {
+                log_failure(request, maybe_data.error());
+                if (error_callback)
+                    error_callback(DeprecatedString::formatted("{}", maybe_data.error()), maybe_data.error().code());
+                return;
+            }
+            auto data = maybe_data.release_value();
+            log_success(request);
             success_callback(data, {}, {});
         });
+
+        m_page->client().request_file(move(file_request));
+
+        ++m_pending_loads;
+        if (on_load_counter_change)
+            on_load_counter_change();
+
         return;
     }
 
-    if (url.protocol() == "http" || url.protocol() == "https" || url.protocol() == "gemini") {
-        HashMap<String, String> headers;
+    if (url.scheme() == "http" || url.scheme() == "https" || url.scheme() == "gemini") {
+        auto proxy = ProxyMappings::the().proxy_for_url(url);
+
+        HashMap<DeprecatedString, DeprecatedString> headers;
         headers.set("User-Agent", m_user_agent);
-        headers.set("Accept-Encoding", "gzip, deflate");
+        headers.set("Accept-Encoding", "gzip, deflate, br");
 
         for (auto& it : request.headers()) {
             headers.set(it.key, it.value);
         }
 
-        auto protocol_request = protocol_client().start_request(request.method(), url, headers, request.body());
+        auto protocol_request = m_connector->start_request(request.method(), url, headers, request.body(), proxy);
         if (!protocol_request) {
             auto start_request_failure_msg = "Failed to initiate load"sv;
             log_failure(request, start_request_failure_msg);
@@ -216,26 +299,48 @@ void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, con
                 error_callback(start_request_failure_msg, {});
             return;
         }
+
+        if (timeout.has_value() && timeout.value() > 0) {
+            auto timer = Platform::Timer::create_single_shot(timeout.value(), nullptr);
+            timer->on_timeout = [timer, protocol_request, timeout_callback = move(timeout_callback)] {
+                protocol_request->stop();
+                if (timeout_callback)
+                    timeout_callback();
+            };
+            timer->start();
+        }
+
         m_active_requests.set(*protocol_request);
-        protocol_request->on_buffered_request_finish = [this, success_callback = move(success_callback), error_callback = move(error_callback), log_success, log_failure, request, &protocol_request = *protocol_request](bool success, auto, auto& response_headers, auto status_code, ReadonlyBytes payload) {
+
+        protocol_request->on_buffered_request_finish = [this, success_callback = move(success_callback), error_callback = move(error_callback), log_success, log_failure, request, &protocol_request = *protocol_request](bool success, auto, auto& response_headers, auto status_code, ReadonlyBytes payload) mutable {
             --m_pending_loads;
             if (on_load_counter_change)
                 on_load_counter_change();
-            if (!success) {
-                auto http_load_failure_msg = "HTTP load failed"sv;
-                log_failure(request, http_load_failure_msg);
+
+            if (request.page().has_value()) {
+                if (auto set_cookie = response_headers.get("Set-Cookie"); set_cookie.has_value())
+                    store_response_cookies(request.page().value(), request.url(), *set_cookie);
+            }
+
+            if (!success || (status_code.has_value() && *status_code >= 400 && *status_code <= 599 && payload.is_empty())) {
+                StringBuilder error_builder;
+                if (status_code.has_value())
+                    error_builder.appendff("Load failed: {}", *status_code);
+                else
+                    error_builder.append("Load failed"sv);
+                log_failure(request, error_builder.string_view());
                 if (error_callback)
-                    error_callback(http_load_failure_msg, {});
+                    error_callback(error_builder.to_deprecated_string(), status_code);
                 return;
             }
             log_success(request);
             success_callback(payload, response_headers, status_code);
-            deferred_invoke([this, &protocol_request] {
+            Platform::EventLoopPlugin::the().deferred_invoke([this, &protocol_request] {
                 m_active_requests.remove(protocol_request);
             });
         };
         protocol_request->set_should_buffer_all_input(true);
-        protocol_request->on_certificate_requested = []() -> Protocol::Request::CertificateAndKey {
+        protocol_request->on_certificate_requested = []() -> ResourceLoaderConnectorRequest::CertificateAndKey {
             return {};
         };
         ++m_pending_loads;
@@ -244,17 +349,17 @@ void ResourceLoader::load(LoadRequest& request, Function<void(ReadonlyBytes, con
         return;
     }
 
-    auto not_implemented_error = String::formatted("Protocol not implemented: {}", url.protocol());
+    auto not_implemented_error = DeprecatedString::formatted("Protocol not implemented: {}", url.scheme());
     log_failure(request, not_implemented_error);
     if (error_callback)
         error_callback(not_implemented_error, {});
 }
 
-void ResourceLoader::load(const AK::URL& url, Function<void(ReadonlyBytes, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers, Optional<u32> status_code)> success_callback, Function<void(const String&, Optional<u32> status_code)> error_callback)
+void ResourceLoader::load(const AK::URL& url, Function<void(ReadonlyBytes, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> status_code)> success_callback, Function<void(DeprecatedString const&, Optional<u32> status_code)> error_callback, Optional<u32> timeout, Function<void()> timeout_callback)
 {
     LoadRequest request;
     request.set_url(url);
-    load(request, move(success_callback), move(error_callback));
+    load(request, move(success_callback), move(error_callback), timeout, move(timeout_callback));
 }
 
 bool ResourceLoader::is_port_blocked(int port)
@@ -274,6 +379,12 @@ void ResourceLoader::clear_cache()
 {
     dbgln_if(CACHE_DEBUG, "Clearing {} items from ResourceLoader cache", s_resource_cache.size());
     s_resource_cache.clear();
+}
+
+void ResourceLoader::evict_from_cache(LoadRequest const& request)
+{
+    dbgln_if(CACHE_DEBUG, "Removing resource {} from cache", request.url());
+    s_resource_cache.remove(request);
 }
 
 }

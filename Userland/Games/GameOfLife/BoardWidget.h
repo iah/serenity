@@ -45,7 +45,7 @@ public:
     Optional<Board::RowAndColumn> get_row_and_column_for_point(int x, int y) const;
 
     void resize_board(size_t rows, size_t columns);
-    const Board* board() const { return m_board.ptr(); }
+    Board const* board() const { return m_board.ptr(); }
 
     bool is_running() const { return m_running; }
     void set_running(bool r);
@@ -56,7 +56,7 @@ public:
     void for_each_pattern(Callback callback)
     {
         for (auto& pattern : m_patterns)
-            callback(pattern);
+            callback(*pattern);
     }
 
     void run_generation();
@@ -78,7 +78,7 @@ private:
     Board::RowAndColumn m_last_cell_toggled {};
     Board::RowAndColumn m_last_cell_hovered {};
     Pattern* m_selected_pattern { nullptr };
-    NonnullOwnPtrVector<Pattern> m_patterns;
+    Vector<NonnullOwnPtr<Pattern>> m_patterns;
 
     NonnullOwnPtr<Board> m_board;
 

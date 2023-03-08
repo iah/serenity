@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,36 +10,38 @@
 
 namespace Web::HTML {
 
-static Vector<FlyString> s_base_list { "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template" };
+static Vector<DeprecatedFlyString> s_base_list { "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template" };
 
-StackOfOpenElements::~StackOfOpenElements()
+StackOfOpenElements::~StackOfOpenElements() = default;
+
+void StackOfOpenElements::visit_edges(JS::Cell::Visitor& visitor)
 {
+    for (auto& element : m_elements)
+        visitor.visit(element);
 }
 
-bool StackOfOpenElements::has_in_scope_impl(const FlyString& tag_name, const Vector<FlyString>& list) const
+bool StackOfOpenElements::has_in_scope_impl(DeprecatedFlyString const& tag_name, Vector<DeprecatedFlyString> const& list) const
 {
-    for (ssize_t i = m_elements.size() - 1; i >= 0; --i) {
-        auto& node = m_elements.at(i);
-        if (node.local_name() == tag_name)
+    for (auto const& element : m_elements.in_reverse()) {
+        if (element->local_name() == tag_name)
             return true;
-        if (list.contains_slow(node.local_name()))
+        if (list.contains_slow(element->local_name()))
             return false;
     }
     VERIFY_NOT_REACHED();
 }
 
-bool StackOfOpenElements::has_in_scope(const FlyString& tag_name) const
+bool StackOfOpenElements::has_in_scope(DeprecatedFlyString const& tag_name) const
 {
     return has_in_scope_impl(tag_name, s_base_list);
 }
 
-bool StackOfOpenElements::has_in_scope_impl(const DOM::Element& target_node, const Vector<FlyString>& list) const
+bool StackOfOpenElements::has_in_scope_impl(const DOM::Element& target_node, Vector<DeprecatedFlyString> const& list) const
 {
-    for (ssize_t i = m_elements.size() - 1; i >= 0; --i) {
-        auto& node = m_elements.at(i);
-        if (&node == &target_node)
+    for (auto& element : m_elements.in_reverse()) {
+        if (element.ptr() == &target_node)
             return true;
-        if (list.contains_slow(node.local_name()))
+        if (list.contains_slow(element->local_name()))
             return false;
     }
     VERIFY_NOT_REACHED();
@@ -50,19 +52,19 @@ bool StackOfOpenElements::has_in_scope(const DOM::Element& target_node) const
     return has_in_scope_impl(target_node, s_base_list);
 }
 
-bool StackOfOpenElements::has_in_button_scope(const FlyString& tag_name) const
+bool StackOfOpenElements::has_in_button_scope(DeprecatedFlyString const& tag_name) const
 {
     auto list = s_base_list;
     list.append("button");
     return has_in_scope_impl(tag_name, list);
 }
 
-bool StackOfOpenElements::has_in_table_scope(const FlyString& tag_name) const
+bool StackOfOpenElements::has_in_table_scope(DeprecatedFlyString const& tag_name) const
 {
     return has_in_scope_impl(tag_name, { "html", "table", "template" });
 }
 
-bool StackOfOpenElements::has_in_list_item_scope(const FlyString& tag_name) const
+bool StackOfOpenElements::has_in_list_item_scope(DeprecatedFlyString const& tag_name) const
 {
     auto list = s_base_list;
     list.append("ol");
@@ -70,70 +72,116 @@ bool StackOfOpenElements::has_in_list_item_scope(const FlyString& tag_name) cons
     return has_in_scope_impl(tag_name, list);
 }
 
-bool StackOfOpenElements::has_in_select_scope(const FlyString& tag_name) const
+// https://html.spec.whatwg.org/multipage/parsing.html#has-an-element-in-select-scope
+// The stack of open elements is said to have a particular element in select scope
+// when it has that element in the specific scope consisting of all element types except the following:
+// - optgroup in the HTML namespace
+// - option in the HTML namespace
+// NOTE: In this case it's "all element types _except_"
+bool StackOfOpenElements::has_in_select_scope(DeprecatedFlyString const& tag_name) const
 {
-    return has_in_scope_impl(tag_name, { "option", "optgroup" });
+    // https://html.spec.whatwg.org/multipage/parsing.html#has-an-element-in-the-specific-scope
+    // 1. Initialize node to be the current node (the bottommost node of the stack).
+    for (auto& node : m_elements.in_reverse()) {
+        // 2. If node is the target node, terminate in a match state.
+        if (node->local_name() == tag_name)
+            return true;
+        // 3. Otherwise, if node is one of the element types in list, terminate in a failure state.
+        // NOTE: Here "list" refers to all elements except option and optgroup
+        if (node->local_name() != HTML::TagNames::option && node->local_name() != HTML::TagNames::optgroup)
+            return false;
+        // 4. Otherwise, set node to the previous entry in the stack of open elements and return to step 2.
+    }
+    // [4.] (This will never fail, since the loop will always terminate in the previous step if the top of the stack
+    // — an html element — is reached.)
+    VERIFY_NOT_REACHED();
 }
 
 bool StackOfOpenElements::contains(const DOM::Element& element) const
 {
     for (auto& element_on_stack : m_elements) {
-        if (&element == &element_on_stack)
+        if (&element == element_on_stack.ptr())
             return true;
     }
     return false;
 }
 
-bool StackOfOpenElements::contains(const FlyString& tag_name) const
+bool StackOfOpenElements::contains(DeprecatedFlyString const& tag_name) const
 {
     for (auto& element_on_stack : m_elements) {
-        if (element_on_stack.local_name() == tag_name)
+        if (element_on_stack->local_name() == tag_name)
             return true;
     }
     return false;
 }
 
-void StackOfOpenElements::pop_until_an_element_with_tag_name_has_been_popped(const FlyString& tag_name)
+void StackOfOpenElements::pop_until_an_element_with_tag_name_has_been_popped(DeprecatedFlyString const& tag_name)
 {
-    while (m_elements.last().local_name() != tag_name)
+    while (m_elements.last()->local_name() != tag_name)
         (void)pop();
     (void)pop();
 }
 
-DOM::Element* StackOfOpenElements::topmost_special_node_below(const DOM::Element& formatting_element)
+JS::GCPtr<DOM::Element> StackOfOpenElements::topmost_special_node_below(DOM::Element const& formatting_element)
 {
-    DOM::Element* found_element = nullptr;
-    for (ssize_t i = m_elements.size() - 1; i >= 0; --i) {
-        auto& element = m_elements[i];
-        if (&element == &formatting_element)
+    JS::GCPtr<DOM::Element> found_element = nullptr;
+    for (auto& element : m_elements.in_reverse()) {
+        if (element.ptr() == &formatting_element)
             break;
-        if (HTMLParser::is_special_tag(element.local_name(), element.namespace_()))
-            found_element = &element;
+        if (HTMLParser::is_special_tag(element->local_name(), element->namespace_()))
+            found_element = element.ptr();
     }
-    return found_element;
+    return found_element.ptr();
 }
 
-StackOfOpenElements::LastElementResult StackOfOpenElements::last_element_with_tag_name(const FlyString& tag_name)
+StackOfOpenElements::LastElementResult StackOfOpenElements::last_element_with_tag_name(DeprecatedFlyString const& tag_name)
 {
     for (ssize_t i = m_elements.size() - 1; i >= 0; --i) {
         auto& element = m_elements[i];
-        if (element.local_name() == tag_name)
-            return { &element, i };
+        if (element->local_name() == tag_name)
+            return { element.ptr(), i };
     }
     return { nullptr, -1 };
 }
 
-DOM::Element* StackOfOpenElements::element_immediately_above(DOM::Element const& target)
+JS::GCPtr<DOM::Element> StackOfOpenElements::element_immediately_above(DOM::Element const& target)
 {
     bool found_target = false;
-    for (ssize_t i = m_elements.size() - 1; i >= 0; --i) {
-        auto& element = m_elements[i];
-        if (&element == &target) {
+    for (auto& element : m_elements.in_reverse()) {
+        if (element.ptr() == &target) {
             found_target = true;
         } else if (found_target)
-            return &element;
+            return element.ptr();
     }
     return nullptr;
+}
+
+void StackOfOpenElements::remove(DOM::Element const& element)
+{
+    m_elements.remove_first_matching([&element](auto& other) {
+        return other.ptr() == &element;
+    });
+}
+
+void StackOfOpenElements::replace(DOM::Element const& to_remove, JS::NonnullGCPtr<DOM::Element> to_add)
+{
+    for (size_t i = 0; i < m_elements.size(); i++) {
+        if (m_elements[i].ptr() == &to_remove) {
+            m_elements.remove(i);
+            m_elements.insert(i, to_add);
+            break;
+        }
+    }
+}
+
+void StackOfOpenElements::insert_immediately_below(JS::NonnullGCPtr<DOM::Element> element_to_add, DOM::Element const& target)
+{
+    for (size_t i = 0; i < m_elements.size(); i++) {
+        if (m_elements[i].ptr() == &target) {
+            m_elements.insert(i + 1, element_to_add);
+            break;
+        }
+    }
 }
 
 }

@@ -17,6 +17,7 @@
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <LibLine/Editor.h>
+#include <LibRegex/Regex.h>
 
 namespace Shell::AST {
 
@@ -39,13 +40,23 @@ struct Position {
         size_t line_number { 0 };
         size_t line_column { 0 };
 
-        bool operator==(const Line& other) const
+        bool operator==(Line const& other) const
         {
             return line_number == other.line_number && line_column == other.line_column;
         }
     } start_line, end_line;
 
     bool contains(size_t offset) const { return start_offset <= offset && offset <= end_offset; }
+
+    Position with_end(Position const& end) const
+    {
+        return {
+            .start_offset = start_offset,
+            .end_offset = end.end_offset,
+            .start_line = start_line,
+            .end_line = end.end_line,
+        };
+    }
 };
 
 struct NameWithPosition {
@@ -197,7 +208,7 @@ struct NodeWithAction {
 
 struct Command {
     Vector<String> argv;
-    NonnullRefPtrVector<Redirection> redirections;
+    Vector<NonnullRefPtr<Redirection>> redirections;
     bool should_wait { true };
     bool is_pipe_source { false };
     bool should_notify_if_in_background { true };
@@ -209,19 +220,20 @@ struct Command {
 };
 
 struct HitTestResult {
-    RefPtr<Node> matching_node;
-    RefPtr<Node> closest_node_with_semantic_meaning; // This is used if matching_node is a bareword
-    RefPtr<Node> closest_command_node;               // This is used if matching_node is a bareword, and it is not the first in a list
+    RefPtr<Node const> matching_node;
+    RefPtr<Node const> closest_node_with_semantic_meaning; // This is used if matching_node is a bareword
+    RefPtr<Node const> closest_command_node;               // This is used if matching_node is a bareword, and it is not the first in a list
 };
 
 class Value : public RefCounted<Value> {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) = 0;
-    virtual Vector<Command> resolve_as_commands(RefPtr<Shell>);
-    virtual NonnullRefPtr<Value> resolve_without_cast(RefPtr<Shell>) { return *this; }
-    virtual NonnullRefPtr<Value> clone() const = 0;
-    virtual NonnullRefPtr<Value> with_slices(NonnullRefPtr<Slice> slice) const&;
-    virtual NonnullRefPtr<Value> with_slices(NonnullRefPtrVector<Slice> slices) const&;
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) = 0;
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell> shell);
+    virtual ErrorOr<Vector<Command>> resolve_as_commands(RefPtr<Shell>);
+    virtual ErrorOr<NonnullRefPtr<Value>> resolve_without_cast(RefPtr<Shell>) { return *this; }
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const = 0;
+    virtual ErrorOr<NonnullRefPtr<Value>> with_slices(NonnullRefPtr<Slice> slice) const&;
+    virtual ErrorOr<NonnullRefPtr<Value>> with_slices(Vector<NonnullRefPtr<Slice>> slices) const&;
     virtual ~Value();
     virtual bool is_command() const { return false; }
     virtual bool is_glob() const { return false; }
@@ -231,19 +243,19 @@ public:
     virtual bool is_list_without_resolution() const { return false; }
 
 protected:
-    Value& set_slices(NonnullRefPtrVector<Slice> slices)
+    Value& set_slices(Vector<NonnullRefPtr<Slice>> slices)
     {
         m_slices = move(slices);
         return *this;
     }
-    NonnullRefPtrVector<Slice> m_slices;
+    Vector<NonnullRefPtr<Slice>> m_slices;
 };
 
 class CommandValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual Vector<Command> resolve_as_commands(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<CommandValue>(m_command)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<Vector<Command>> resolve_as_commands(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<CommandValue>(m_command))->set_slices(m_slices); }
     virtual ~CommandValue();
     virtual bool is_command() const override { return true; }
     CommandValue(Command command)
@@ -262,9 +274,9 @@ private:
 
 class CommandSequenceValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual Vector<Command> resolve_as_commands(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<CommandSequenceValue>(m_contained_values)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<Vector<Command>> resolve_as_commands(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<CommandSequenceValue>(m_contained_values))->set_slices(m_slices); }
     virtual ~CommandSequenceValue();
     virtual bool is_command() const override { return true; }
     CommandSequenceValue(Vector<Command> commands)
@@ -278,9 +290,10 @@ private:
 
 class JobValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override { VERIFY_NOT_REACHED(); }
-    virtual Vector<Command> resolve_as_commands(RefPtr<Shell>) override { VERIFY_NOT_REACHED(); }
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<JobValue>(m_job)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override { VERIFY_NOT_REACHED(); }
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell>) override { return String::formatted("%{}", m_job->job_id()); }
+    virtual ErrorOr<Vector<Command>> resolve_as_commands(RefPtr<Shell>) override { VERIFY_NOT_REACHED(); }
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<JobValue>(m_job))->set_slices(m_slices); }
     virtual ~JobValue();
     virtual bool is_job() const override { return true; }
     JobValue(RefPtr<Job> job)
@@ -288,7 +301,7 @@ public:
     {
     }
 
-    const RefPtr<Job> job() const { return m_job; }
+    RefPtr<Job> const job() const { return m_job; }
 
 private:
     RefPtr<Job> m_job;
@@ -296,37 +309,34 @@ private:
 
 class ListValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> resolve_without_cast(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<ListValue>(m_contained_values)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> resolve_without_cast(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<ListValue>(m_contained_values))->set_slices(m_slices); }
     virtual ~ListValue();
     virtual bool is_list() const override { return true; }
     virtual bool is_list_without_resolution() const override { return true; }
     ListValue(Vector<String> values);
     ListValue(Vector<NonnullRefPtr<Value>> values)
-        : m_contained_values(move(static_cast<NonnullRefPtrVector<Value>&>(values)))
-    {
-    }
-    ListValue(NonnullRefPtrVector<Value> values)
         : m_contained_values(move(values))
     {
     }
 
-    const NonnullRefPtrVector<Value>& values() const { return m_contained_values; }
-    NonnullRefPtrVector<Value>& values() { return m_contained_values; }
+    Vector<NonnullRefPtr<Value>> const& values() const { return m_contained_values; }
+    Vector<NonnullRefPtr<Value>>& values() { return m_contained_values; }
 
 private:
-    NonnullRefPtrVector<Value> m_contained_values;
+    Vector<NonnullRefPtr<Value>> m_contained_values;
 };
 
 class StringValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<StringValue>(m_string, m_split, m_keep_empty)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell> shell) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<StringValue>(m_string, m_split, m_keep_empty))->set_slices(m_slices); }
     virtual ~StringValue();
-    virtual bool is_string() const override { return m_split.is_null(); }
-    virtual bool is_list() const override { return !m_split.is_null(); }
-    NonnullRefPtr<Value> resolve_without_cast(RefPtr<Shell>) override;
+    virtual bool is_string() const override { return m_split.is_empty(); }
+    virtual bool is_list() const override { return !m_split.is_empty(); }
+    ErrorOr<NonnullRefPtr<Value>> resolve_without_cast(RefPtr<Shell>) override;
     StringValue(String string, String split_by = {}, bool keep_empty = false)
         : m_string(move(string))
         , m_split(move(split_by))
@@ -342,8 +352,8 @@ private:
 
 class GlobValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<GlobValue>(m_glob, m_generation_position)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<GlobValue>(m_glob, m_generation_position))->set_slices(m_slices); }
     virtual ~GlobValue();
     virtual bool is_glob() const override { return true; }
     GlobValue(String glob, Position position)
@@ -359,9 +369,10 @@ private:
 
 class SimpleVariableValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> resolve_without_cast(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<SimpleVariableValue>(m_name)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> resolve_without_cast(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<SimpleVariableValue>(m_name))->set_slices(m_slices); }
     virtual ~SimpleVariableValue();
     SimpleVariableValue(String name)
         : m_name(move(name))
@@ -374,8 +385,10 @@ private:
 
 class SpecialVariableValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<SpecialVariableValue>(m_name)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> resolve_without_cast(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<SpecialVariableValue>(m_name))->set_slices(m_slices); }
     virtual ~SpecialVariableValue();
     SpecialVariableValue(char name)
         : m_name(name)
@@ -388,8 +401,9 @@ private:
 
 class TildeValue final : public Value {
 public:
-    virtual Vector<String> resolve_as_list(RefPtr<Shell>) override;
-    virtual NonnullRefPtr<Value> clone() const override { return make_ref_counted<TildeValue>(m_username)->set_slices(m_slices); }
+    virtual ErrorOr<Vector<String>> resolve_as_list(RefPtr<Shell>) override;
+    virtual ErrorOr<String> resolve_as_string(RefPtr<Shell>) override;
+    virtual ErrorOr<NonnullRefPtr<Value>> clone() const override { return TRY(try_make_ref_counted<TildeValue>(m_username))->set_slices(m_slices); }
     virtual ~TildeValue();
     virtual bool is_string() const override { return true; }
     TildeValue(String name)
@@ -406,21 +420,21 @@ class Node : public RefCounted<Node> {
     AK_MAKE_NONMOVABLE(Node);
 
 public:
-    virtual void dump(int level) const = 0;
-    virtual void for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback);
-    virtual RefPtr<Value> run(RefPtr<Shell>) = 0;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) = 0;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&);
-    Vector<Line::CompletionSuggestion> complete_for_editor(Shell& shell, size_t offset);
+    virtual ErrorOr<void> dump(int level) const = 0;
+    virtual ErrorOr<void> for_each_entry(RefPtr<Shell> shell, Function<ErrorOr<IterationDecision>(NonnullRefPtr<Value>)> callback);
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) = 0;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) = 0;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const;
+    ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell& shell, size_t offset);
     virtual HitTestResult hit_test_position(size_t offset) const
     {
         if (m_position.contains(offset))
             return { this, nullptr, nullptr };
         return { nullptr, nullptr, nullptr };
     }
-    virtual String class_name() const { return "Node"; }
+    virtual StringView class_name() const { return "Node"sv; }
     Node(Position);
-    virtual ~Node();
+    virtual ~Node() = default;
 
     virtual bool is_bareword() const { return false; }
     virtual bool is_command() const { return false; }
@@ -435,18 +449,18 @@ public:
     virtual bool would_execute() const { return false; }
     virtual bool should_override_execution_in_current_process() const { return false; }
 
-    const Position& position() const { return m_position; }
+    Position const& position() const { return m_position; }
     virtual void clear_syntax_error();
-    virtual void set_is_syntax_error(const SyntaxError& error_node);
-    virtual const SyntaxError& syntax_error_node() const
+    virtual void set_is_syntax_error(SyntaxError& error_node);
+    virtual SyntaxError& syntax_error_node()
     {
         VERIFY(is_syntax_error());
         return *m_syntax_error_node;
     }
 
-    virtual RefPtr<Node> leftmost_trivial_literal() const { return nullptr; }
+    virtual RefPtr<Node const> leftmost_trivial_literal() const { return nullptr; }
 
-    Vector<Command> to_lazy_evaluated_commands(RefPtr<Shell> shell);
+    ErrorOr<Vector<Command>> to_lazy_evaluated_commands(RefPtr<Shell> shell);
 
     virtual void visit(NodeVisitor&) { VERIFY_NOT_REACHED(); }
     virtual void visit(NodeVisitor& visitor) const { const_cast<Node*>(this)->visit(visitor); }
@@ -505,22 +519,28 @@ protected:
     RefPtr<SyntaxError> m_syntax_error_node;
 };
 
-#define NODE(name)                                               \
-    virtual String class_name() const override { return #name; } \
-    virtual Kind kind() const override { return Kind::name; }
+#define NODE(name)                                 \
+    virtual StringView class_name() const override \
+    {                                              \
+        return #name##sv;                          \
+    }                                              \
+    virtual Kind kind() const override             \
+    {                                              \
+        return Kind::name;                         \
+    }
 
 class PathRedirectionNode : public Node {
 public:
     PathRedirectionNode(Position, int, NonnullRefPtr<Node>);
     virtual ~PathRedirectionNode();
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t offset) const override;
     virtual bool is_command() const override { return true; }
     virtual bool is_list() const override { return true; }
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& path() const { return m_path; }
+    NonnullRefPtr<Node> const& path() const { return m_path; }
     int fd() const { return m_fd; }
 
 protected:
@@ -531,18 +551,18 @@ protected:
 class And final : public Node {
 public:
     And(Position, NonnullRefPtr<Node>, NonnullRefPtr<Node>, Position and_position);
-    virtual ~And();
+    virtual ~And() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
-    const Position& and_position() const { return m_and_position; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
+    Position const& and_position() const { return m_and_position; }
 
 private:
     NODE(And);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     NonnullRefPtr<Node> m_left;
@@ -553,19 +573,19 @@ private:
 class ListConcatenate final : public Node {
 public:
     ListConcatenate(Position, Vector<NonnullRefPtr<Node>>);
-    virtual ~ListConcatenate();
+    virtual ~ListConcatenate() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
-    const Vector<NonnullRefPtr<Node>> list() const { return m_list; }
+    Vector<NonnullRefPtr<Node>> const list() const { return m_list; }
 
 private:
     NODE(ListConcatenate);
-    virtual void dump(int level) const override;
-    virtual void for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback) override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<void> for_each_entry(RefPtr<Shell> shell, Function<ErrorOr<IterationDecision>(NonnullRefPtr<Value>)> callback) override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_list() const override { return true; }
-    virtual RefPtr<Node> leftmost_trivial_literal() const override;
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override;
 
     Vector<NonnullRefPtr<Node>> m_list;
 };
@@ -573,16 +593,16 @@ private:
 class Background final : public Node {
 public:
     Background(Position, NonnullRefPtr<Node>);
-    virtual ~Background();
+    virtual ~Background() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& command() const { return m_command; }
+    NonnullRefPtr<Node> const& command() const { return m_command; }
 
 private:
     NODE(Background);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     NonnullRefPtr<Node> m_command;
@@ -591,58 +611,58 @@ private:
 class BarewordLiteral final : public Node {
 public:
     BarewordLiteral(Position, String);
-    virtual ~BarewordLiteral();
+    virtual ~BarewordLiteral() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& text() const { return m_text; }
+    String const& text() const { return m_text; }
 
 private:
     NODE(BarewordLiteral);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual bool is_bareword() const override { return true; }
-    virtual RefPtr<Node> leftmost_trivial_literal() const override { return this; }
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override { return this; }
 
     String m_text;
 };
 
 class BraceExpansion final : public Node {
 public:
-    BraceExpansion(Position, NonnullRefPtrVector<Node>);
-    virtual ~BraceExpansion();
+    BraceExpansion(Position, Vector<NonnullRefPtr<Node>>);
+    virtual ~BraceExpansion() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtrVector<Node>& entries() const { return m_entries; }
+    Vector<NonnullRefPtr<Node>> const& entries() const { return m_entries; }
 
 private:
     NODE(BraceExpansion);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
-    NonnullRefPtrVector<Node> m_entries;
+    Vector<NonnullRefPtr<Node>> m_entries;
 };
 
 class CastToCommand final : public Node {
 public:
     CastToCommand(Position, NonnullRefPtr<Node>);
-    virtual ~CastToCommand();
+    virtual ~CastToCommand() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& inner() const { return m_inner; }
+    NonnullRefPtr<Node> const& inner() const { return m_inner; }
 
 private:
     NODE(CastToCommand);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual bool is_command() const override { return true; }
     virtual bool is_list() const override { return true; }
-    virtual RefPtr<Node> leftmost_trivial_literal() const override;
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override;
 
     NonnullRefPtr<Node> m_inner;
 };
@@ -650,20 +670,20 @@ private:
 class CastToList final : public Node {
 public:
     CastToList(Position, RefPtr<Node>);
-    virtual ~CastToList();
+    virtual ~CastToList() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const RefPtr<Node>& inner() const { return m_inner; }
+    RefPtr<Node> const& inner() const { return m_inner; }
 
 private:
     NODE(CastToList);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> for_each_entry(RefPtr<Shell> shell, Function<ErrorOr<IterationDecision>(NonnullRefPtr<Value>)> callback) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_list() const override { return true; }
-    virtual RefPtr<Node> leftmost_trivial_literal() const override;
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override;
 
     RefPtr<Node> m_inner;
 };
@@ -678,9 +698,9 @@ public:
 
 private:
     NODE(CloseFdRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual bool is_command() const override { return true; }
 
     int m_fd { -1 };
@@ -692,13 +712,13 @@ public:
     virtual ~CommandLiteral();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const Command& command() const { return m_command; }
+    Command const& command() const { return m_command; }
 
 private:
     NODE(CommandLiteral);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override { VERIFY_NOT_REACHED(); }
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override { VERIFY_NOT_REACHED(); }
     virtual bool is_command() const override { return true; }
     virtual bool is_list() const override { return true; }
 
@@ -711,13 +731,13 @@ public:
     virtual ~Comment();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& text() const { return m_text; }
+    String const& text() const { return m_text; }
 
 private:
     NODE(Comment);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
 
     String m_text;
 };
@@ -733,7 +753,7 @@ public:
         , m_kind(kind)
     {
     }
-    virtual ~ContinuationControl() { }
+    virtual ~ContinuationControl() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
     ContinuationKind continuation_kind() const { return m_kind; }
@@ -741,9 +761,9 @@ public:
 private:
     NODE(ContinuationControl);
 
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
 
     ContinuationKind m_kind { ContinuationKind::Break };
 };
@@ -754,13 +774,13 @@ public:
     virtual ~DynamicEvaluate();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& inner() const { return m_inner; }
+    NonnullRefPtr<Node> const& inner() const { return m_inner; }
 
 private:
     NODE(DynamicEvaluate);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     virtual bool is_bareword() const override { return m_inner->is_bareword(); }
@@ -781,13 +801,13 @@ public:
     virtual ~DoubleQuotedString();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const RefPtr<Node>& inner() const { return m_inner; }
+    RefPtr<Node> const& inner() const { return m_inner; }
 
 private:
     NODE(DoubleQuotedString);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     RefPtr<Node> m_inner;
@@ -804,9 +824,9 @@ public:
 
 private:
     NODE(Fd2FdRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual bool is_command() const override { return true; }
 
     int m_old_fd { -1 };
@@ -819,17 +839,17 @@ public:
     virtual ~FunctionDeclaration();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NameWithPosition& name() const { return m_name; }
-    const Vector<NameWithPosition> arguments() const { return m_arguments; }
-    const RefPtr<Node>& block() const { return m_block; }
+    NameWithPosition const& name() const { return m_name; }
+    Vector<NameWithPosition> const arguments() const { return m_arguments; }
+    RefPtr<Node> const& block() const { return m_block; }
 
 private:
     NODE(FunctionDeclaration);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual bool would_execute() const override { return true; }
     virtual bool should_override_execution_in_current_process() const override { return true; }
 
@@ -844,18 +864,18 @@ public:
     virtual ~ForLoop();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const Optional<NameWithPosition>& variable() const { return m_variable; }
-    const Optional<NameWithPosition>& index_variable() const { return m_index_variable; }
-    const RefPtr<Node>& iterated_expression() const { return m_iterated_expression; }
-    const RefPtr<Node>& block() const { return m_block; }
-    const Optional<Position> index_keyword_position() const { return m_index_kw_position; }
-    const Optional<Position> in_keyword_position() const { return m_in_kw_position; }
+    Optional<NameWithPosition> const& variable() const { return m_variable; }
+    Optional<NameWithPosition> const& index_variable() const { return m_index_variable; }
+    RefPtr<Node> const& iterated_expression() const { return m_iterated_expression; }
+    RefPtr<Node> const& block() const { return m_block; }
+    Optional<Position> const index_keyword_position() const { return m_index_kw_position; }
+    Optional<Position> const in_keyword_position() const { return m_in_kw_position; }
 
 private:
     NODE(ForLoop);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool would_execute() const override { return true; }
     virtual bool should_override_execution_in_current_process() const override { return true; }
@@ -874,13 +894,13 @@ public:
     virtual ~Glob();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& text() const { return m_text; }
+    String const& text() const { return m_text; }
 
 private:
     NODE(Glob);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual bool is_glob() const override { return true; }
     virtual bool is_list() const override { return true; }
 
@@ -933,13 +953,13 @@ public:
     virtual ~HistoryEvent();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const HistorySelector& selector() const { return m_selector; }
+    HistorySelector const& selector() const { return m_selector; }
 
 private:
     NODE(HistoryEvent);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
 
     HistorySelector m_selector;
 };
@@ -950,19 +970,19 @@ public:
     virtual ~Execute();
     void capture_stdout() { m_capture_stdout = true; }
     NonnullRefPtr<Node>& command() { return m_command; }
-    virtual void for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback) override;
+    virtual ErrorOr<void> for_each_entry(RefPtr<Shell> shell, Function<ErrorOr<IterationDecision>(NonnullRefPtr<Value>)> callback) override;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& command() const { return m_command; }
+    NonnullRefPtr<Node> const& command() const { return m_command; }
     bool does_capture_stdout() const { return m_capture_stdout; }
 
 private:
     NODE(Execute);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual bool is_execute() const override { return true; }
     virtual bool would_execute() const override { return true; }
 
@@ -976,16 +996,17 @@ public:
     virtual ~IfCond();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& condition() const { return m_condition; }
-    const RefPtr<Node>& true_branch() const { return m_true_branch; }
-    const RefPtr<Node>& false_branch() const { return m_false_branch; }
-    const Optional<Position> else_position() const { return m_else_position; }
+    NonnullRefPtr<Node> const& condition() const { return m_condition; }
+    RefPtr<Node> const& true_branch() const { return m_true_branch; }
+    RefPtr<Node> const& false_branch() const { return m_false_branch; }
+    RefPtr<Node>& false_branch() { return m_false_branch; }
+    Optional<Position> const else_position() const { return m_else_position; }
 
 private:
     NODE(IfCond);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool should_override_execution_in_current_process() const override { return true; }
 
@@ -998,25 +1019,25 @@ private:
 
 class ImmediateExpression final : public Node {
 public:
-    ImmediateExpression(Position, NameWithPosition function, NonnullRefPtrVector<AST::Node> arguments, Optional<Position> closing_brace_position);
+    ImmediateExpression(Position, NameWithPosition function, Vector<NonnullRefPtr<AST::Node>> arguments, Optional<Position> closing_brace_position);
     virtual ~ImmediateExpression();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtrVector<Node>& arguments() const { return m_arguments; }
-    const auto& function() const { return m_function; }
-    const String& function_name() const { return m_function.name; }
-    const Position& function_position() const { return m_function.position; }
+    Vector<NonnullRefPtr<Node>> const& arguments() const { return m_arguments; }
+    auto const& function() const { return m_function; }
+    String const& function_name() const { return m_function.name; }
+    Position const& function_position() const { return m_function.position; }
     bool has_closing_brace() const { return m_closing_brace_position.has_value(); }
 
 private:
     NODE(ImmediateExpression);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
-    NonnullRefPtrVector<AST::Node> m_arguments;
+    Vector<NonnullRefPtr<AST::Node>> m_arguments;
     NameWithPosition m_function;
     Optional<Position> m_closing_brace_position;
 };
@@ -1027,25 +1048,25 @@ public:
     virtual ~Join();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
 
 private:
     NODE(Join);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_command() const override { return true; }
     virtual bool is_list() const override { return true; }
-    virtual RefPtr<Node> leftmost_trivial_literal() const override;
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override;
 
     NonnullRefPtr<Node> m_left;
     NonnullRefPtr<Node> m_right;
 };
 
 struct MatchEntry {
-    NonnullRefPtrVector<Node> options;
+    Variant<Vector<NonnullRefPtr<Node>>, Vector<Regex<ECMA262>>> options;
     Optional<Vector<String>> match_names;
     Optional<Position> match_as_position;
     Vector<Position> pipe_positions;
@@ -1058,16 +1079,16 @@ public:
     virtual ~MatchExpr();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& matched_expr() const { return m_matched_expr; }
-    const String& expr_name() const { return m_expr_name; }
-    const Vector<MatchEntry>& entries() const { return m_entries; }
-    const Optional<Position>& as_position() const { return m_as_position; }
+    NonnullRefPtr<Node> const& matched_expr() const { return m_matched_expr; }
+    String const& expr_name() const { return m_expr_name; }
+    Vector<MatchEntry> const& entries() const { return m_entries; }
+    Optional<Position> const& as_position() const { return m_as_position; }
 
 private:
     NODE(MatchExpr);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool would_execute() const override { return true; }
     virtual bool should_override_execution_in_current_process() const override { return true; }
@@ -1084,15 +1105,15 @@ public:
     virtual ~Or();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
-    const Position& or_position() const { return m_or_position; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
+    Position const& or_position() const { return m_or_position; }
 
 private:
     NODE(Or);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     NonnullRefPtr<Node> m_left;
@@ -1106,14 +1127,14 @@ public:
     virtual ~Pipe();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
 
 private:
     NODE(Pipe);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_command() const override { return true; }
 
@@ -1127,14 +1148,14 @@ public:
     virtual ~Range();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& start() const { return m_start; }
-    const NonnullRefPtr<Node>& end() const { return m_end; }
+    NonnullRefPtr<Node> const& start() const { return m_start; }
+    NonnullRefPtr<Node> const& end() const { return m_end; }
 
 private:
     NODE(Range);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     NonnullRefPtr<Node> m_start;
@@ -1149,8 +1170,8 @@ public:
 
 private:
     NODE(ReadRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
 };
 
 class ReadWriteRedirection final : public PathRedirectionNode {
@@ -1161,30 +1182,31 @@ public:
 
 private:
     NODE(ReadWriteRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
 };
 
 class Sequence final : public Node {
 public:
-    Sequence(Position, NonnullRefPtrVector<Node>, Vector<Position> separator_positions);
+    Sequence(Position, Vector<NonnullRefPtr<Node>>, Vector<Position> separator_positions);
     virtual ~Sequence();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtrVector<Node>& entries() const { return m_entries; }
+    Vector<NonnullRefPtr<Node>> const& entries() const { return m_entries; }
 
-    const Vector<Position>& separator_positions() const { return m_separator_positions; }
+    Vector<Position> const& separator_positions() const { return m_separator_positions; }
 
 private:
     NODE(Sequence);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_list() const override { return true; }
     virtual bool should_override_execution_in_current_process() const override { return true; }
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override;
 
-    NonnullRefPtrVector<Node> m_entries;
+    Vector<NonnullRefPtr<Node>> m_entries;
     Vector<Position> m_separator_positions;
 };
 
@@ -1194,13 +1216,13 @@ public:
     virtual ~Subshell();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const RefPtr<Node>& block() const { return m_block; }
+    RefPtr<Node> const& block() const { return m_block; }
 
 private:
     NODE(Subshell);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool would_execute() const override { return false; }
     virtual bool should_override_execution_in_current_process() const override { return true; }
@@ -1217,10 +1239,10 @@ public:
 
     NonnullRefPtr<AST::Node> selector() const { return m_selector; }
 
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
 protected:
@@ -1243,7 +1265,7 @@ public:
             set_is_syntax_error(m_slice->syntax_error_node());
     }
 
-    const Slice* slice() const { return m_slice.ptr(); }
+    Slice const* slice() const { return m_slice.ptr(); }
 
 protected:
     RefPtr<Slice> m_slice;
@@ -1255,14 +1277,14 @@ public:
     virtual ~SimpleVariable();
 
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
-    const String& name() const { return m_name; }
+    String const& name() const { return m_name; }
 
 private:
     NODE(SimpleVariable);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_simple_variable() const override { return true; }
 
@@ -1279,10 +1301,10 @@ public:
 
 private:
     NODE(SpecialVariable);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     char m_name { 0 };
@@ -1290,74 +1312,90 @@ private:
 
 class Juxtaposition final : public Node {
 public:
-    Juxtaposition(Position, NonnullRefPtr<Node>, NonnullRefPtr<Node>);
+    enum class Mode {
+        ListExpand,
+        StringExpand,
+    };
+    Juxtaposition(Position, NonnullRefPtr<Node>, NonnullRefPtr<Node>, Mode = Mode::ListExpand);
     virtual ~Juxtaposition();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
 
 private:
     NODE(Juxtaposition);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
 
     NonnullRefPtr<Node> m_left;
     NonnullRefPtr<Node> m_right;
+    Mode m_mode { Mode::ListExpand };
 };
 
 class Heredoc final : public Node {
 public:
-    Heredoc(Position, String end, bool allow_interpolation, bool deindent);
+    Heredoc(Position, String end, bool allow_interpolation, bool deindent, Optional<int> target_fd = {});
     virtual ~Heredoc();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& end() const { return m_end; }
+    String const& end() const { return m_end; }
     bool allow_interpolation() const { return m_allows_interpolation; }
     bool deindent() const { return m_deindent; }
-    const RefPtr<AST::Node>& contents() const { return m_contents; }
+    Optional<int> target_fd() const { return m_target_fd; }
+    bool evaluates_to_string() const { return !m_target_fd.has_value(); }
+    RefPtr<AST::Node> const& contents() const { return m_contents; }
     void set_contents(RefPtr<AST::Node> contents)
     {
         m_contents = move(contents);
         if (m_contents->is_syntax_error())
             set_is_syntax_error(m_contents->syntax_error_node());
-        else
+        else if (is_syntax_error())
             clear_syntax_error();
     }
 
 private:
     NODE(Heredoc);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
-    virtual RefPtr<Node> leftmost_trivial_literal() const override { return this; };
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override { return this; };
 
     String m_end;
     bool m_allows_interpolation { false };
     bool m_deindent { false };
+    Optional<int> m_target_fd;
     RefPtr<AST::Node> m_contents;
 };
 
 class StringLiteral final : public Node {
 public:
-    StringLiteral(Position, String);
+    enum class EnclosureType {
+        None,
+        SingleQuotes,
+        DoubleQuotes,
+    };
+
+    StringLiteral(Position, String, EnclosureType);
     virtual ~StringLiteral();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& text() const { return m_text; }
+    String const& text() const { return m_text; }
+    EnclosureType enclosure_type() const { return m_enclosure_type; }
 
 private:
     NODE(StringLiteral);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual RefPtr<Node> leftmost_trivial_literal() const override { return this; };
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual RefPtr<Node const> leftmost_trivial_literal() const override { return this; };
 
     String m_text;
+    EnclosureType m_enclosure_type;
 };
 
 class StringPartCompose final : public Node {
@@ -1366,14 +1404,14 @@ public:
     virtual ~StringPartCompose();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const NonnullRefPtr<Node>& left() const { return m_left; }
-    const NonnullRefPtr<Node>& right() const { return m_right; }
+    NonnullRefPtr<Node> const& left() const { return m_left; }
+    NonnullRefPtr<Node> const& right() const { return m_right; }
 
 private:
     NODE(StringPartCompose);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
 
     NonnullRefPtr<Node> m_left;
@@ -1386,14 +1424,14 @@ public:
     virtual ~SyntaxError();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const String& error_text() const { return m_syntax_error_text; }
+    String const& error_text() const { return m_syntax_error_text; }
     bool is_continuable() const { return m_is_continuable; }
 
     virtual void clear_syntax_error() override
     {
         m_is_cleared = true;
     }
-    virtual void set_is_syntax_error(const SyntaxError& error) override
+    virtual void set_is_syntax_error(SyntaxError& error) override
     {
         m_position = error.position();
         m_is_cleared = error.m_is_cleared;
@@ -1405,11 +1443,11 @@ public:
 
 private:
     NODE(SyntaxError);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override { return { nullptr, nullptr, nullptr }; }
-    virtual const SyntaxError& syntax_error_node() const override;
+    virtual SyntaxError& syntax_error_node() override;
 
     String m_syntax_error_text;
     bool m_is_continuable { false };
@@ -1422,13 +1460,13 @@ public:
     virtual ~SyntheticNode() = default;
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const Value& value() const { return m_value; }
+    Value const& value() const { return m_value; }
 
 private:
     NODE(SyntheticValue);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
 
     NonnullRefPtr<Value> m_value;
 };
@@ -1443,10 +1481,10 @@ public:
 
 private:
     NODE(Tilde);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
-    virtual Vector<Line::CompletionSuggestion> complete_for_editor(Shell&, size_t, const HitTestResult&) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<Vector<Line::CompletionSuggestion>> complete_for_editor(Shell&, size_t, HitTestResult const&) const override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_tilde() const override { return true; }
 
@@ -1463,13 +1501,13 @@ public:
     virtual ~VariableDeclarations();
     virtual void visit(NodeVisitor& visitor) override { visitor.visit(this); }
 
-    const Vector<Variable>& variables() const { return m_variables; }
+    Vector<Variable> const& variables() const { return m_variables; }
 
 private:
     NODE(VariableDeclarations);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
-    virtual void highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> highlight_in_editor(Line::Editor&, Shell&, HighlightMetadata = {}) override;
     virtual HitTestResult hit_test_position(size_t) const override;
     virtual bool is_variable_decls() const override { return true; }
 
@@ -1484,8 +1522,8 @@ public:
 
 private:
     NODE(WriteAppendRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
 };
 
 class WriteRedirection final : public PathRedirectionNode {
@@ -1496,8 +1534,8 @@ public:
 
 private:
     NODE(WriteRedirection);
-    virtual void dump(int level) const override;
-    virtual RefPtr<Value> run(RefPtr<Shell>) override;
+    virtual ErrorOr<void> dump(int level) const override;
+    virtual ErrorOr<RefPtr<Value>> run(RefPtr<Shell>) override;
 };
 
 }

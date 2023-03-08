@@ -7,21 +7,65 @@
 
 #pragma once
 
-#include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
+#include <AK/Vector.h>
 #include <Kernel/Forward.h>
+#include <Kernel/Library/NonnullLockRefPtr.h>
+#include <Kernel/Locking/SpinlockProtected.h>
+#include <Kernel/Memory/Region.h>
 
 namespace Kernel {
 
 class Coredump {
 public:
-    static ErrorOr<NonnullOwnPtr<Coredump>> try_create(NonnullRefPtr<Process>, StringView output_path);
+    static ErrorOr<NonnullOwnPtr<Coredump>> try_create(NonnullLockRefPtr<Process>, StringView output_path);
+    static SpinlockProtected<OwnPtr<KString>, LockRank::None>& directory_path();
 
     ~Coredump() = default;
     ErrorOr<void> write();
 
 private:
-    Coredump(NonnullRefPtr<Process>, NonnullRefPtr<OpenFileDescription>);
+    class FlatRegionData {
+    public:
+        explicit FlatRegionData(Memory::Region const& region, NonnullOwnPtr<KString> name)
+            : m_access(region.access())
+            , m_is_executable(region.is_executable())
+            , m_is_kernel(region.is_kernel())
+            , m_is_readable(region.is_readable())
+            , m_is_writable(region.is_writable())
+            , m_name(move(name))
+            , m_page_count(region.page_count())
+            , m_size(region.size())
+            , m_vaddr(region.vaddr())
+        {
+        }
+
+        auto access() const { return m_access; }
+        auto name() const { return m_name->view(); }
+        auto is_executable() const { return m_is_executable; }
+        auto is_kernel() const { return m_is_kernel; }
+        auto is_readable() const { return m_is_readable; }
+        auto is_writable() const { return m_is_writable; }
+        auto page_count() const { return m_page_count; }
+        auto size() const { return m_size; }
+        auto vaddr() const { return m_vaddr; }
+
+        bool looks_like_userspace_heap_region() const;
+        bool is_consistent_with_region(Memory::Region const& region) const;
+
+    private:
+        Memory::Region::Access m_access;
+        bool m_is_executable;
+        bool m_is_kernel;
+        bool m_is_readable;
+        bool m_is_writable;
+        NonnullOwnPtr<KString> m_name;
+        size_t m_page_count;
+        size_t m_size;
+        VirtualAddress m_vaddr;
+    };
+
+    Coredump(NonnullLockRefPtr<Process>, NonnullRefPtr<OpenFileDescription>, Vector<FlatRegionData>);
     static ErrorOr<NonnullRefPtr<OpenFileDescription>> try_create_target_file(Process const&, StringView output_path);
 
     ErrorOr<void> write_elf_header();
@@ -35,9 +79,10 @@ private:
     ErrorOr<void> create_notes_regions_data(auto&) const;
     ErrorOr<void> create_notes_metadata_data(auto&) const;
 
-    NonnullRefPtr<Process> m_process;
+    NonnullLockRefPtr<Process> m_process;
     NonnullRefPtr<OpenFileDescription> m_description;
     size_t m_num_program_headers { 0 };
+    Vector<FlatRegionData> m_regions;
 };
 
 }

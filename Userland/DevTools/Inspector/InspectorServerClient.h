@@ -8,21 +8,21 @@
 
 #include <InspectorServer/InspectorClientEndpoint.h>
 #include <InspectorServer/InspectorServerEndpoint.h>
-#include <LibIPC/ServerConnection.h>
+#include <LibIPC/ConnectionToServer.h>
 
 namespace Inspector {
 
 class InspectorServerClient final
-    : public IPC::ServerConnection<InspectorClientEndpoint, InspectorServerEndpoint>
+    : public IPC::ConnectionToServer<InspectorClientEndpoint, InspectorServerEndpoint>
     , public InspectorClientEndpoint {
-    IPC_CLIENT_CONNECTION(InspectorServerClient, "/tmp/portal/inspector")
+    IPC_CLIENT_CONNECTION(InspectorServerClient, "/tmp/session/%sid/portal/inspector"sv)
 
 public:
     virtual ~InspectorServerClient() override = default;
 
 private:
-    InspectorServerClient(NonnullOwnPtr<Core::Stream::LocalSocket> socket)
-        : IPC::ServerConnection<InspectorClientEndpoint, InspectorServerEndpoint>(*this, move(socket))
+    InspectorServerClient(NonnullOwnPtr<Core::LocalSocket> socket)
+        : IPC::ConnectionToServer<InspectorClientEndpoint, InspectorServerEndpoint>(*this, move(socket))
     {
     }
 };

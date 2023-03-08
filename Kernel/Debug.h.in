@@ -31,6 +31,10 @@
 #cmakedefine01 ARP_DEBUG
 #endif
 
+#ifndef ATA_DEBUG
+#cmakedefine01 ATA_DEBUG
+#endif
+
 #ifndef BBFS_DEBUG
 #cmakedefine01 BBFS_DEBUG
 #endif
@@ -49,6 +53,10 @@
 
 #ifndef CONTIGUOUS_VMOBJECT_DEBUG
 #cmakedefine01 CONTIGUOUS_VMOBJECT_DEBUG
+#endif
+
+#ifndef DUMP_REGIONS_ON_CRASH
+#cmakedefine01 DUMP_REGIONS_ON_CRASH
 #endif
 
 #ifndef E1000_DEBUG
@@ -83,6 +91,10 @@
 #cmakedefine01 EXT2_VERY_DEBUG
 #endif
 
+#ifndef FAT_DEBUG
+#cmakedefine01 FAT_DEBUG
+#endif
+
 #ifndef FRAMEBUFFER_DEVICE_DEBUG
 #cmakedefine01 FRAMEBUFFER_DEVICE_DEBUG
 #endif
@@ -101,10 +113,6 @@
 
 #ifndef FUTEXQUEUE_DEBUG
 #cmakedefine01 FUTEXQUEUE_DEBUG
-#endif
-
-#ifndef GPT_DEBUG
-#cmakedefine01 GPT_DEBUG
 #endif
 
 #ifndef HPET_COMPARATOR_DEBUG
@@ -199,20 +207,16 @@
 #cmakedefine01 MASTERPTY_DEBUG
 #endif
 
-#ifndef MBR_DEBUG
-#cmakedefine01 MBR_DEBUG
-#endif
-
 #ifndef MOUSE_DEBUG
 #cmakedefine01 MOUSE_DEBUG
 #endif
 
-#ifndef MULTIPROCESSOR_DEBUG
-#cmakedefine01 MULTIPROCESSOR_DEBUG
+#ifndef MEMORY_DEVICE_DEBUG
+#cmakedefine01 MEMORY_DEVICE_DEBUG
 #endif
 
-#ifndef NE2000_DEBUG
-#cmakedefine01 NE2000_DEBUG
+#ifndef MULTIPROCESSOR_DEBUG
+#cmakedefine01 MULTIPROCESSOR_DEBUG
 #endif
 
 #ifndef NETWORK_TASK_DEBUG
@@ -263,10 +267,6 @@
 #cmakedefine01 ROUTING_DEBUG
 #endif
 
-#ifndef RTL8139_DEBUG
-#cmakedefine01 RTL8139_DEBUG
-#endif
-
 #ifndef RTL8168_DEBUG
 #cmakedefine01 RTL8168_DEBUG
 #endif
@@ -301,6 +301,10 @@
 
 #ifndef STORAGE_DEVICE_DEBUG
 #cmakedefine01 STORAGE_DEVICE_DEBUG
+#endif
+
+#ifndef SYSFS_DEBUG
+#cmakedefine01 SYSFS_DEBUG
 #endif
 
 #ifndef TCP_DEBUG

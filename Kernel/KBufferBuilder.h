@@ -9,7 +9,6 @@
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <Kernel/KBuffer.h>
-#include <stdarg.h>
 
 namespace Kernel {
 
@@ -27,17 +26,17 @@ public:
 
     ErrorOr<void> append(StringView);
     ErrorOr<void> append(char);
-    ErrorOr<void> append(const char*, int);
+    ErrorOr<void> append(char const*, int);
 
     ErrorOr<void> append_escaped_for_json(StringView);
     ErrorOr<void> append_bytes(ReadonlyBytes);
 
     template<typename... Parameters>
-    ErrorOr<void> appendff(CheckedFormatString<Parameters...>&& fmtstr, const Parameters&... parameters)
+    ErrorOr<void> appendff(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
     {
         // FIXME: This really not ideal, but vformat expects StringBuilder.
         StringBuilder builder;
-        AK::VariadicFormatParams variadic_format_params { parameters... };
+        AK::VariadicFormatParams<AK::AllowDebugOnlyFormatters::No, Parameters...> variadic_format_params { parameters... };
         TRY(vformat(builder, fmtstr.view(), variadic_format_params));
         return append_bytes(builder.string_view().bytes());
     }
@@ -50,6 +49,11 @@ public:
         if (!m_buffer)
             return {};
         return m_buffer->bytes();
+    }
+
+    size_t length() const
+    {
+        return m_size;
     }
 
 private:

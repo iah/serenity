@@ -20,7 +20,7 @@ static Singleton<ConsoleManagement> s_the;
 void ConsoleManagement::resolution_was_changed()
 {
     for (auto& console : m_consoles) {
-        console.refresh_after_resolution_change();
+        console->refresh_after_resolution_change();
     }
 }
 
@@ -60,7 +60,7 @@ UNMAP_AFTER_INIT void ConsoleManagement::initialize()
     if (tty_number > m_consoles.size()) {
         PANIC("Switch to tty value is invalid: {} ", tty_number);
     }
-    m_active_console = &m_consoles[tty_number];
+    m_active_console = m_consoles[tty_number];
     SpinlockLocker lock(m_lock);
     m_active_console->set_active(true);
     if (!m_active_console->is_graphical())
@@ -77,16 +77,17 @@ void ConsoleManagement::switch_to(unsigned index)
 
     bool was_graphical = m_active_console->is_graphical();
     m_active_console->set_active(false);
-    m_active_console = &m_consoles[index];
+    m_active_console = m_consoles[index];
     dbgln_if(VIRTUAL_CONSOLE_DEBUG, "Console: Switch to {}", index);
 
     // Before setting current console to be "active", switch between graphical mode to "textual" mode
     // if needed. This will ensure we clear the screen and also that WindowServer won't print anything
     // in between.
     if (m_active_console->is_graphical() && !was_graphical) {
+        m_active_console->set_active(true);
         GraphicsManagement::the().activate_graphical_mode();
-    }
-    if (!m_active_console->is_graphical() && was_graphical) {
+        return;
+    } else if (!m_active_console->is_graphical() && was_graphical) {
         GraphicsManagement::the().deactivate_graphical_mode();
     }
     m_active_console->set_active(true);

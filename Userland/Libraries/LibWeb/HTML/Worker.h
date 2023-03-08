@@ -26,52 +26,41 @@
 namespace Web::HTML {
 
 struct WorkerOptions {
-    String type { "classic" };
-    String credentials { "same-origin" };
-    String name { "" };
+    String type { "classic"_string.release_value_but_fixme_should_propagate_errors() };
+    String credentials { "same-origin"_string.release_value_but_fixme_should_propagate_errors() };
+    String name { String {} };
 };
 
 // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-worker-interface
-class Worker
-    : public RefCounted<Worker>
-    , public Weakable<Worker>
-    , public DOM::EventTarget
-    , public Bindings::Wrappable {
+class Worker : public DOM::EventTarget {
+    WEB_PLATFORM_OBJECT(Worker, DOM::EventTarget);
+
 public:
-    using WrapperType = Bindings::WorkerWrapper;
-
-    using RefCounted::ref;
-    using RefCounted::unref;
-
-    static DOM::ExceptionOr<NonnullRefPtr<Worker>> create(FlyString const& script_url, WorkerOptions const options, DOM::Document& document);
-    static DOM::ExceptionOr<NonnullRefPtr<Worker>> create_with_global_object(Bindings::WindowObject& window, FlyString const& script_url, WorkerOptions const options)
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> create(String const& script_url, WorkerOptions const options, DOM::Document& document);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> construct_impl(JS::Realm& realm, String const& script_url, WorkerOptions const options)
     {
-        return Worker::create(script_url, options, window.impl().associated_document());
+        auto& window = verify_cast<HTML::Window>(realm.global_object());
+        return Worker::create(script_url, options, window.associated_document());
     }
 
-    DOM::ExceptionOr<void> terminate();
+    WebIDL::ExceptionOr<void> terminate();
 
     void post_message(JS::Value message, JS::Value transfer);
 
     virtual ~Worker() = default;
 
-    // ^EventTarget
-    virtual void ref_event_target() override { ref(); }
-    virtual void unref_event_target() override { unref(); }
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
-
-    MessagePort* implicit_message_port() { return m_implicit_port; }
-    RefPtr<MessagePort> outside_message_port() { return m_outside_port; }
+    MessagePort* implicit_message_port() { return m_implicit_port.ptr(); }
+    JS::GCPtr<MessagePort> outside_message_port() { return m_outside_port; }
 
 #undef __ENUMERATE
-#define __ENUMERATE(attribute_name, event_name)                  \
-    void set_##attribute_name(Optional<Bindings::CallbackType>); \
-    Bindings::CallbackType* attribute_name();
+#define __ENUMERATE(attribute_name, event_name)       \
+    void set_##attribute_name(WebIDL::CallbackType*); \
+    WebIDL::CallbackType* attribute_name();
     ENUMERATE_WORKER_EVENT_HANDLERS(__ENUMERATE)
 #undef __ENUMERATE
 
 protected:
-    Worker(FlyString const&, const WorkerOptions, DOM::Document&);
+    Worker(String const&, const WorkerOptions, DOM::Document&);
 
 private:
     static HTML::EventLoop& get_vm_event_loop(JS::VM& target_vm)
@@ -79,30 +68,30 @@ private:
         return static_cast<Bindings::WebEngineCustomData*>(target_vm.custom_data())->event_loop;
     }
 
-    FlyString m_script_url;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    String m_script_url;
     WorkerOptions m_options;
-    WeakPtr<DOM::Document> m_document;
+
+    JS::GCPtr<DOM::Document> m_document;
+
     Bindings::WebEngineCustomData m_custom_data;
 
     NonnullRefPtr<JS::VM> m_worker_vm;
     NonnullOwnPtr<JS::Interpreter> m_interpreter;
-    WeakPtr<WorkerEnvironmentSettingsObject> m_inner_settings;
+    JS::GCPtr<WorkerEnvironmentSettingsObject> m_inner_settings;
     JS::VM::InterpreterExecutionScope m_interpreter_scope;
-    JS::ExecutionContext m_execution_context;
-    WeakPtr<JS::Realm> m_worker_realm;
     RefPtr<WorkerDebugConsoleClient> m_console;
-    JS::GlobalObject* m_worker_scope;
 
-    NonnullRefPtr<MessagePort> m_implicit_port;
-    RefPtr<MessagePort> m_outside_port;
+    JS::NonnullGCPtr<MessagePort> m_implicit_port;
+    JS::GCPtr<MessagePort> m_outside_port;
 
-    void run_a_worker(AK::URL& url, EnvironmentSettingsObject& outside_settings, MessagePort& outside_port, WorkerOptions const options);
+    // NOTE: These are inside the worker VM.
+    JS::GCPtr<JS::Realm> m_worker_realm;
+    JS::GCPtr<JS::Object> m_worker_scope;
+
+    void run_a_worker(AK::URL& url, EnvironmentSettingsObject& outside_settings, MessagePort& outside_port, WorkerOptions const& options);
 };
-
-} // namespace Web::HTML
-
-namespace Web::Bindings {
-
-WorkerWrapper* wrap(JS::GlobalObject&, HTML::Worker&);
 
 }

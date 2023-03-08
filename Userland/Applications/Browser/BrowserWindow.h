@@ -29,6 +29,7 @@ public:
     GUI::TabWidget& tab_widget();
     Tab& active_tab();
     void create_new_tab(URL, bool activate);
+    void create_new_window(URL);
 
     GUI::Action& go_back_action() { return *m_go_back_action; }
     GUI::Action& go_forward_action() { return *m_go_forward_action; }
@@ -39,8 +40,14 @@ public:
     GUI::Action& view_source_action() { return *m_view_source_action; }
     GUI::Action& inspect_dom_tree_action() { return *m_inspect_dom_tree_action; }
     GUI::Action& inspect_dom_node_action() { return *m_inspect_dom_node_action; }
+    GUI::Action& take_visible_screenshot_action() { return *m_take_visible_screenshot_action; }
+    GUI::Action& take_full_screenshot_action() { return *m_take_full_screenshot_action; }
 
     void content_filters_changed();
+    void proxy_mappings_changed();
+
+    void broadcast_window_position(Gfx::IntPoint);
+    void broadcast_window_size(Gfx::IntSize);
 
 private:
     explicit BrowserWindow(CookieJar&, URL);
@@ -49,8 +56,16 @@ private:
     ErrorOr<void> load_search_engines(GUI::Menu& settings_menu);
     void set_window_title_for_tab(Tab const&);
 
-    virtual void config_string_did_change(String const& domain, String const& group, String const& key, String const& value) override;
-    virtual void config_bool_did_change(String const& domain, String const& group, String const& key, bool value) override;
+    virtual void config_string_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, DeprecatedString const& value) override;
+    virtual void config_bool_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, bool value) override;
+
+    virtual void event(Core::Event&) override;
+
+    enum class ScreenshotType {
+        Visible,
+        Full,
+    };
+    ErrorOr<void> take_screenshot(ScreenshotType);
 
     RefPtr<GUI::Action> m_go_back_action;
     RefPtr<GUI::Action> m_go_forward_action;
@@ -61,6 +76,8 @@ private:
     RefPtr<GUI::Action> m_view_source_action;
     RefPtr<GUI::Action> m_inspect_dom_tree_action;
     RefPtr<GUI::Action> m_inspect_dom_node_action;
+    RefPtr<GUI::Action> m_take_visible_screenshot_action;
+    RefPtr<GUI::Action> m_take_full_screenshot_action;
 
     CookieJar& m_cookie_jar;
     WindowActions m_window_actions;

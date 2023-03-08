@@ -15,13 +15,13 @@
 ErrorOr<int> serenity_main(Main::Arguments args)
 {
     TRY(Core::System::pledge("stdio rpath"));
-    TRY(Core::System::unveil("/proc/all", "r"));
+    TRY(Core::System::unveil("/sys/kernel/processes", "r"));
     TRY(Core::System::unveil("/etc/passwd", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
     bool case_insensitive = false;
     bool invert_match = false;
-    char const* pattern = nullptr;
+    StringView pattern;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(case_insensitive, "Make matches case-insensitive", nullptr, 'i');
@@ -38,12 +38,10 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         return 1;
     }
 
-    auto all_processes = Core::ProcessStatisticsReader::get_all();
-    if (!all_processes.has_value())
-        return 1;
+    auto all_processes = TRY(Core::ProcessStatisticsReader::get_all());
 
     Vector<pid_t> matches;
-    for (auto& it : all_processes.value().processes) {
+    for (auto& it : all_processes.processes) {
         auto result = re.match(it.name, PosixFlags::Global);
         if (result.success ^ invert_match) {
             matches.append(it.pid);

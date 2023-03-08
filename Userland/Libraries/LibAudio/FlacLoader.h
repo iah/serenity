@@ -6,19 +6,14 @@
 
 #pragma once
 
-#include "Buffer.h"
 #include "FlacTypes.h"
 #include "Loader.h"
+#include <AK/BitStream.h>
 #include <AK/Error.h>
 #include <AK/Span.h>
 #include <AK/Types.h>
-#include <LibCore/InputBitStream.h>
-#include <LibCore/MemoryStream.h>
-#include <LibCore/Stream.h>
 
 namespace Audio {
-
-using Core::Stream::BigEndianInputBitStream;
 
 // Experimentally determined to be a decent buffer size on i686:
 // 4K (the default) is slightly worse, and 64K is much worse.
@@ -39,33 +34,38 @@ ALWAYS_INLINE ErrorOr<u64> read_utf8_char(BigEndianInputBitStream& input);
 // decode a single number encoded with exponential golomb encoding of the specified order
 ALWAYS_INLINE ErrorOr<i32> decode_unsigned_exp_golomb(u8 order, BigEndianInputBitStream& bit_input);
 
+// Loader for the Free Lossless Audio Codec (FLAC)
+// This loader supports all audio features of FLAC, although audio from more than two channels is discarded.
+// The loader currently supports the STREAMINFO, PADDING, and SEEKTABLE metadata blocks.
+// See: https://xiph.org/flac/documentation_format_overview.html
+//      https://xiph.org/flac/format.html (identical to IETF draft version 2)
+//      https://datatracker.ietf.org/doc/html/draft-ietf-cellar-flac-02 (all section numbers refer to this specification)
+//      https://datatracker.ietf.org/doc/html/draft-ietf-cellar-flac-03 (newer IETF draft that uses incompatible numberings and names)
 class FlacLoaderPlugin : public LoaderPlugin {
 public:
-    explicit FlacLoaderPlugin(StringView path);
-    explicit FlacLoaderPlugin(Bytes& buffer);
-    ~FlacLoaderPlugin()
-    {
-    }
+    explicit FlacLoaderPlugin(NonnullOwnPtr<SeekableStream> stream);
+    virtual ~FlacLoaderPlugin() override = default;
 
-    virtual MaybeLoaderError initialize() override;
+    static Result<NonnullOwnPtr<FlacLoaderPlugin>, LoaderError> create(StringView path);
+    static Result<NonnullOwnPtr<FlacLoaderPlugin>, LoaderError> create(Bytes buffer);
 
     virtual LoaderSamples get_more_samples(size_t max_bytes_to_read_from_input = 128 * KiB) override;
 
     virtual MaybeLoaderError reset() override;
-    virtual MaybeLoaderError seek(const int position) override;
+    virtual MaybeLoaderError seek(int sample_index) override;
 
     virtual int loaded_samples() override { return static_cast<int>(m_loaded_samples); }
     virtual int total_samples() override { return static_cast<int>(m_total_samples); }
     virtual u32 sample_rate() override { return m_sample_rate; }
     virtual u16 num_channels() override { return m_num_channels; }
-    virtual String format_name() override { return "FLAC (.flac)"; }
+    virtual DeprecatedString format_name() override { return "FLAC (.flac)"; }
     virtual PcmSampleFormat pcm_format() override { return m_sample_format; }
-    virtual RefPtr<Core::File> file() override { return m_file; }
 
     bool is_fixed_blocksize_stream() const { return m_min_block_size == m_max_block_size; }
     bool sample_count_unknown() const { return m_total_samples == 0; }
 
 private:
+    MaybeLoaderError initialize();
     MaybeLoaderError parse_header();
     // Either returns the metadata block or sets error message.
     // Additionally, increments m_data_start_location past the read meta block.
@@ -83,14 +83,13 @@ private:
     MaybeLoaderError decode_residual(Vector<i32>& decoded, FlacSubframeHeader& subframe, BigEndianInputBitStream& bit_input);
     // decode a single rice partition that has its own rice parameter
     ALWAYS_INLINE ErrorOr<Vector<i32>, LoaderError> decode_rice_partition(u8 partition_type, u32 partitions, u32 partition_index, FlacSubframeHeader& subframe, BigEndianInputBitStream& bit_input);
+    MaybeLoaderError load_seektable(FlacRawMetadataBlock&);
+    MaybeLoaderError load_picture(FlacRawMetadataBlock&);
 
     // Converters for special coding used in frame headers
     ALWAYS_INLINE ErrorOr<u32, LoaderError> convert_sample_count_code(u8 sample_count_code);
     ALWAYS_INLINE ErrorOr<u32, LoaderError> convert_sample_rate_code(u8 sample_rate_code);
     ALWAYS_INLINE ErrorOr<PcmSampleFormat, LoaderError> convert_bit_depth_code(u8 bit_depth_code);
-
-    RefPtr<Core::File> m_file;
-    Optional<LoaderError> m_error {};
 
     // Data obtained directly from the FLAC metadata: many values have specific bit counts
     u32 m_sample_rate { 0 };         // 20 bit
@@ -100,7 +99,7 @@ private:
     u16 m_min_block_size { 0 };
     u16 m_max_block_size { 0 };
     // Frames are units of encoded audio data, both of these are 24-bit
-    u32 m_min_frame_size { 0 }; //24 bit
+    u32 m_min_frame_size { 0 }; // 24 bit
     u32 m_max_frame_size { 0 }; // 24 bit
     u64 m_total_samples { 0 };  // 36 bit
     u8 m_md5_checksum[128 / 8]; // 128 bit (!)
@@ -108,11 +107,11 @@ private:
 
     // keep track of the start of the data in the FLAC stream to seek back more easily
     u64 m_data_start_location { 0 };
-    OwnPtr<Core::Stream::SeekableStream> m_stream;
     Optional<FlacFrameHeader> m_current_frame;
     // Whatever the last get_more_samples() call couldn't return gets stored here.
     Vector<Sample, FLAC_BUFFER_SIZE> m_unread_data;
     u64 m_current_sample_or_frame { 0 };
+    Vector<FlacSeekPoint> m_seektable;
 };
 
 }

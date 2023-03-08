@@ -16,10 +16,10 @@ namespace Kernel {
 
 static Atomic<int> s_next_fifo_id = 1;
 
-ErrorOr<NonnullRefPtr<FIFO>> FIFO::try_create(UserID uid)
+ErrorOr<NonnullLockRefPtr<FIFO>> FIFO::try_create(UserID uid)
 {
-    auto buffer = TRY(DoubleBuffer::try_create());
-    return adopt_nonnull_ref_or_enomem(new (nothrow) FIFO(uid, move(buffer)));
+    auto buffer = TRY(DoubleBuffer::try_create("FIFO: Buffer"sv));
+    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) FIFO(uid, move(buffer)));
 }
 
 ErrorOr<NonnullRefPtr<OpenFileDescription>> FIFO::open_direction(FIFO::Direction direction)
@@ -41,7 +41,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> FIFO::open_direction_blocking(FIFO::
 
         if (m_writers == 0) {
             locker.unlock();
-            m_write_open_queue.wait_forever("FIFO");
+            m_write_open_queue.wait_forever("FIFO"sv);
             locker.lock();
         }
     }
@@ -51,7 +51,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> FIFO::open_direction_blocking(FIFO::
 
         if (m_readers == 0) {
             locker.unlock();
-            m_read_open_queue.wait_forever("FIFO");
+            m_read_open_queue.wait_forever("FIFO"sv);
             locker.lock();
         }
     }
@@ -71,9 +71,7 @@ FIFO::FIFO(UserID uid, NonnullOwnPtr<DoubleBuffer> buffer)
     });
 }
 
-FIFO::~FIFO()
-{
-}
+FIFO::~FIFO() = default;
 
 void FIFO::attach(Direction direction)
 {
@@ -99,12 +97,12 @@ void FIFO::detach(Direction direction)
     evaluate_block_conditions();
 }
 
-bool FIFO::can_read(const OpenFileDescription&, u64) const
+bool FIFO::can_read(OpenFileDescription const&, u64) const
 {
     return !m_buffer->is_empty() || !m_writers;
 }
 
-bool FIFO::can_write(const OpenFileDescription&, u64) const
+bool FIFO::can_write(OpenFileDescription const&, u64) const
 {
     return m_buffer->space_for_writing() || !m_readers;
 }
@@ -120,19 +118,17 @@ ErrorOr<size_t> FIFO::read(OpenFileDescription& fd, u64, UserOrKernelBuffer& buf
     return m_buffer->read(buffer, size);
 }
 
-ErrorOr<size_t> FIFO::write(OpenFileDescription& fd, u64, const UserOrKernelBuffer& buffer, size_t size)
+ErrorOr<size_t> FIFO::write(OpenFileDescription& fd, u64, UserOrKernelBuffer const& buffer, size_t size)
 {
-    if (!m_readers) {
-        Thread::current()->send_signal(SIGPIPE, &Process::current());
+    if (!m_readers)
         return EPIPE;
-    }
     if (!fd.is_blocking() && m_buffer->space_for_writing() == 0)
         return EAGAIN;
 
     return m_buffer->write(buffer, size);
 }
 
-ErrorOr<NonnullOwnPtr<KString>> FIFO::pseudo_path(const OpenFileDescription&) const
+ErrorOr<NonnullOwnPtr<KString>> FIFO::pseudo_path(OpenFileDescription const&) const
 {
     return KString::formatted("fifo:{}", m_fifo_id);
 }

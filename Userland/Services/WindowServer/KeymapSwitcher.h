@@ -6,39 +6,39 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/FileWatcher.h>
 #include <LibCore/Object.h>
 #include <LibKeyboard/CharacterMap.h>
-#include <WindowServer/WMClientConnection.h>
+#include <WindowServer/WMConnectionFromClient.h>
 
 namespace WindowServer {
 
 class KeymapSwitcher final : public Core::Object {
     C_OBJECT(KeymapSwitcher)
 public:
-    virtual ~KeymapSwitcher() override;
+    virtual ~KeymapSwitcher() override = default;
 
     void next_keymap();
 
-    Function<void(String const& keymap)> on_keymap_change;
+    Function<void(DeprecatedString const& keymap)> on_keymap_change;
 
-    String get_current_keymap() const;
+    DeprecatedString get_current_keymap() const;
+
+    void set_keymap(AK::DeprecatedString const&);
 
 private:
     void refresh();
 
     KeymapSwitcher();
 
-    Vector<AK::String> m_keymaps;
-
-    void setkeymap(AK::String const&);
+    Vector<AK::DeprecatedString> m_keymaps;
 
     RefPtr<Core::FileWatcher> m_file_watcher;
 
-    const char* m_keyboard_config = "/etc/Keyboard.ini";
+    char const* m_keyboard_config = "/etc/Keyboard.ini";
 };
 
 }

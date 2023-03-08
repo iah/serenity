@@ -2,7 +2,7 @@ serenity_component(
     HackStudio
     RECOMMENDED
     TARGETS HackStudio
-    DEPENDS CppLanguageServer ShellLanguageServer
+    DEPENDS CppLanguageServer ShellLanguageServer WebContent
 )
 
 add_subdirectory(LanguageServers)
@@ -17,17 +17,12 @@ set(SOURCES
     Debugger/BacktraceModel.cpp
     Debugger/DebugInfoWidget.cpp
     Debugger/Debugger.cpp
-    Debugger/DebuggerGlobalJSObject.cpp
-    Debugger/DebuggerVariableJSObject.cpp
     Debugger/DisassemblyModel.cpp
     Debugger/DisassemblyWidget.cpp
-    Debugger/EvaluateExpressionDialog.cpp
     Debugger/RegistersModel.cpp
     Debugger/VariablesModel.cpp
     Dialogs/Git/GitCommitDialog.cpp
-    Dialogs/Git/GitCommitDialogGML.h
     Dialogs/NewProjectDialog.cpp
-    Dialogs/NewProjectDialogGML.h
     Dialogs/ProjectTemplatesModel.cpp
     Editor.cpp
     EditorWrapper.cpp
@@ -44,6 +39,7 @@ set(SOURCES
     Locator.cpp
     Project.cpp
     ProjectBuilder.cpp
+    ProjectConfig.cpp
     ProjectDeclarations.cpp
     ProjectFile.cpp
     ProjectTemplate.cpp
@@ -53,7 +49,11 @@ set(SOURCES
     main.cpp
 )
 
+set(GENERATED_SOURCES
+    Dialogs/Git/GitCommitDialogGML.h
+    Dialogs/NewProjectDialogGML.h
+)
+
 serenity_app(HackStudio ICON app-hack-studio)
-target_link_libraries(HackStudio LibWeb LibMarkdown LibGUI LibCpp LibGfx LibCore LibVT LibDebug LibX86 LibDiff LibShell LibSymbolication LibRegex LibSQL LibCoredump LibMain)
-link_with_unicode_data(HackStudio)
+target_link_libraries(HackStudio PRIVATE LibWebView LibWeb LibMarkdown LibGUI LibCpp LibCMake LibGfx LibCore LibVT LibDebug LibX86 LibDiff LibShell LibSymbolication LibSyntax LibRegex LibSQL LibConfig LibCore LibCoredump LibDesktop LibIPC LibJS LibMain LibThreading)
 add_dependencies(HackStudio CppLanguageServer)

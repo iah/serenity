@@ -11,55 +11,55 @@
 
 namespace Kernel {
 
+enum class LockRank;
+
 class BlockDevice;
 class CharacterDevice;
 class Coredump;
+class Credentials;
 class Custody;
-class DevTmpFSDeviceInode;
-class DevTmpFSDirectoryInode;
-class DevTmpFSInode;
-class DevTmpFSPtsDirectoryInode;
-class DevTmpFSRootDirectoryInode;
 class Device;
 class DiskCache;
 class DoubleBuffer;
 class File;
+class FATInode;
 class OpenFileDescription;
+class DisplayConnector;
 class FileSystem;
 class FutexQueue;
 class IPv4Socket;
 class Inode;
 class InodeIdentifier;
 class InodeWatcher;
+class Jail;
 class KBuffer;
+class KString;
 class LocalSocket;
 class Mutex;
 class MasterPTY;
 class Mount;
 class PerformanceEventBuffer;
 class ProcFS;
-class ProcFSDirectoryInode;
-class ProcFSExposedComponent;
-class ProcFSExposedDirectory;
 class ProcFSInode;
-class ProcFSProcessInformation;
-class ProcFSRootDirectory;
-class ProcFSSystemBoolean;
-class ProcFSSystemDirectory;
 class Process;
 class ProcessGroup;
+class RAMFS;
+template<LockRank Rank>
 class RecursiveSpinlock;
 class Scheduler;
 class Socket;
 class SysFS;
 class SysFSDirectory;
+class SysFSRootDirectory;
 class SysFSBusDirectory;
+class SysFSDevicesDirectory;
 class SysFSDirectoryInode;
 class SysFSInode;
 class TCPSocket;
 class TTY;
 class Thread;
 class ThreadTracer;
+class RAMFSInode;
 class UDPSocket;
 class UserOrKernelBuffer;
 class VirtualFileSystem;
@@ -80,9 +80,9 @@ class Region;
 class SharedInodeVMObject;
 class VMObject;
 class VirtualRange;
-class VirtualRangeAllocator;
 }
 
+template<LockRank Rank>
 class Spinlock;
 template<typename LockType>
 class SpinlockLocker;
@@ -90,12 +90,12 @@ class SpinlockLocker;
 struct InodeMetadata;
 struct TrapFrame;
 
-TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessID);
-TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ThreadID);
-TYPEDEF_DISTINCT_ORDERED_ID(pid_t, SessionID);
-TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessGroupID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ThreadID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(pid_t, SessionID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessGroupID);
 
-TYPEDEF_DISTINCT_ORDERED_ID(uid_t, UserID);
-TYPEDEF_DISTINCT_ORDERED_ID(gid_t, GroupID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(uid_t, UserID);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(gid_t, GroupID);
 
 }

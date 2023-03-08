@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Liav A. <liavalb@hotmail.co.il>
+ * Copyright (c) 2021-2022, Liav A. <liavalb@hotmail.co.il>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,14 +7,18 @@
 #pragma once
 
 #include <AK/NonnullOwnPtr.h>
-#include <AK/NonnullRefPtr.h>
-#include <AK/NonnullRefPtrVector.h>
+#include <AK/Platform.h>
 #include <AK/Types.h>
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/VGA/IOArbiter.h>
+#endif
 #include <Kernel/Bus/PCI/Definitions.h>
 #include <Kernel/Graphics/Console/Console.h>
+#include <Kernel/Graphics/DisplayConnector.h>
+#include <Kernel/Graphics/Generic/DisplayConnector.h>
 #include <Kernel/Graphics/GenericGraphicsAdapter.h>
-#include <Kernel/Graphics/VGACompatibleAdapter.h>
 #include <Kernel/Graphics/VirtIOGPU/GraphicsAdapter.h>
+#include <Kernel/Library/NonnullLockRefPtr.h>
 #include <Kernel/Memory/Region.h>
 
 namespace Kernel {
@@ -29,27 +33,40 @@ public:
     unsigned allocate_minor_device_number() { return m_current_minor_number++; };
     GraphicsManagement();
 
-    bool framebuffer_devices_console_only() const;
-    bool framebuffer_devices_use_bootloader_framebuffer() const;
-    bool framebuffer_devices_exist() const;
+    void attach_new_display_connector(Badge<DisplayConnector>, DisplayConnector&);
+    void detach_display_connector(Badge<DisplayConnector>, DisplayConnector&);
 
-    Spinlock& main_vga_lock() { return m_main_vga_lock; }
-    RefPtr<Graphics::Console> console() const { return m_console; }
+    void set_vga_text_mode_cursor(size_t console_width, size_t x, size_t y);
+    void disable_vga_text_mode_console_cursor();
+    void disable_vga_emulation_access_permanently();
+
+    LockRefPtr<Graphics::Console> console() const { return m_console; }
     void set_console(Graphics::Console&);
 
     void deactivate_graphical_mode();
     void activate_graphical_mode();
 
 private:
-    bool determine_and_initialize_graphics_device(PCI::DeviceIdentifier const&);
-    NonnullRefPtrVector<GenericGraphicsAdapter> m_graphics_devices;
-    RefPtr<Graphics::Console> m_console;
+    void enable_vga_text_mode_console_cursor();
 
-    // Note: there could be multiple VGA adapters, but only one can operate in VGA mode
-    RefPtr<VGACompatibleAdapter> m_vga_adapter;
+    ErrorOr<void> determine_and_initialize_graphics_device(PCI::DeviceIdentifier const&);
+
+    void initialize_preset_resolution_generic_display_connector();
+
+    Vector<NonnullLockRefPtr<GenericGraphicsAdapter>> m_graphics_devices;
+    LockRefPtr<Graphics::Console> m_console;
+
+    // Note: This is only used when booting with kernel commandline that includes "graphics_subsystem_mode=limited"
+    LockRefPtr<GenericDisplayConnector> m_preset_resolution_generic_display_connector;
+
+    LockRefPtr<DisplayConnector> m_platform_board_specific_display_connector;
+
     unsigned m_current_minor_number { 0 };
 
-    Spinlock m_main_vga_lock;
+    SpinlockProtected<IntrusiveList<&DisplayConnector::m_list_node>, LockRank::None> m_display_connector_nodes {};
+#if ARCH(X86_64)
+    OwnPtr<VGAIOArbiter> m_vga_arbiter;
+#endif
 };
 
 }

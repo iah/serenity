@@ -14,11 +14,12 @@ class IteratorPrototype : public Object {
     JS_OBJECT(IteratorPrototype, Object)
 
 public:
-    IteratorPrototype(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
-    virtual ~IteratorPrototype() override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~IteratorPrototype() override = default;
 
 private:
+    IteratorPrototype(Realm&);
+
     JS_DECLARE_NATIVE_FUNCTION(symbol_iterator);
 };
 

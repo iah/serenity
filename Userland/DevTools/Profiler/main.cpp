@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Julius Heijmen <julius.heijmen@gmail.com>
+ * Copyright (c) 2023, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -46,32 +47,32 @@ static bool generate_profile(pid_t& pid);
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     int pid = 0;
-    char const* perfcore_file_arg = nullptr;
+    StringView perfcore_file_arg;
     Core::ArgsParser args_parser;
     args_parser.add_option(pid, "PID to profile", "pid", 'p', "PID");
     args_parser.add_positional_argument(perfcore_file_arg, "Path of perfcore file", "perfcore-file", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
-    if (pid && perfcore_file_arg) {
+    if (pid && !perfcore_file_arg.is_empty()) {
         warnln("-p/--pid option and perfcore-file argument must not be used together!");
         return 1;
     }
 
     auto app = TRY(GUI::Application::try_create(arguments));
-    auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-profiler"));
+    auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-profiler"sv));
 
-    String perfcore_file;
-    if (!perfcore_file_arg) {
+    DeprecatedString perfcore_file;
+    if (perfcore_file_arg.is_empty()) {
         if (!generate_profile(pid))
             return 0;
-        perfcore_file = String::formatted("/proc/{}/perf_events", pid);
+        perfcore_file = DeprecatedString::formatted("/proc/{}/perf_events", pid);
     } else {
         perfcore_file = perfcore_file_arg;
     }
 
     auto profile_or_error = Profile::load_from_perfcore_file(perfcore_file);
     if (profile_or_error.is_error()) {
-        GUI::MessageBox::show(nullptr, String::formatted("{}", profile_or_error.error()), "Profiler", GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(nullptr, DeprecatedString::formatted("{}", profile_or_error.error()), "Profiler"sv, GUI::MessageBox::Type::Error);
         return 0;
     }
 
@@ -79,14 +80,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto window = TRY(GUI::Window::try_create());
 
-    TRY(Desktop::Launcher::add_allowed_handler_with_only_specific_urls("/bin/Help", { URL::create_with_file_protocol("/usr/share/man/man1/Profiler.md") }));
+    TRY(Desktop::Launcher::add_allowed_handler_with_only_specific_urls("/bin/Help", { URL::create_with_file_scheme("/usr/share/man/man1/Profiler.md") }));
     TRY(Desktop::Launcher::seal_allowlist());
 
     window->set_title("Profiler");
     window->set_icon(app_icon.bitmap_for_size(16));
     window->resize(800, 600);
 
-    auto main_widget = TRY(window->try_set_main_widget<GUI::Widget>());
+    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
     main_widget->set_fill_with_background_color(true);
     main_widget->set_layout<GUI::VerticalBoxLayout>();
 
@@ -131,8 +132,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto tab_widget = TRY(main_splitter->try_add<GUI::TabWidget>());
 
     auto tree_tab = TRY(tab_widget->try_add_tab<GUI::Widget>("Call Tree"));
-    tree_tab->set_layout<GUI::VerticalBoxLayout>();
-    tree_tab->layout()->set_margins(4);
+    TRY(tree_tab->try_set_layout<GUI::VerticalBoxLayout>(4));
     auto bottom_splitter = TRY(tree_tab->try_add<GUI::VerticalSplitter>());
 
     auto tree_view = TRY(bottom_splitter->try_add<GUI::TreeView>());
@@ -170,19 +170,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         update_source_model();
     };
 
-    auto disassembly_action = GUI::Action::create_checkable("Show &Disassembly", { Mod_Ctrl, Key_D }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/x86.png").release_value_but_fixme_should_propagate_errors(), [&](auto& action) {
+    auto disassembly_action = GUI::Action::create_checkable("Show &Disassembly", { Mod_Ctrl, Key_D }, Gfx::Bitmap::load_from_file("/res/icons/16x16/x86.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto& action) {
         disassembly_view->set_visible(action.is_checked());
         update_disassembly_model();
     });
 
-    auto source_action = GUI::Action::create_checkable("Show &Source", { Mod_Ctrl, Key_S }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/x86.png").release_value_but_fixme_should_propagate_errors(), [&](auto& action) {
+    auto source_action = GUI::Action::create_checkable("Show &Source", { Mod_Ctrl, Key_S }, Gfx::Bitmap::load_from_file("/res/icons/16x16/x86.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto& action) {
         source_view->set_visible(action.is_checked());
         update_source_model();
     });
 
     auto samples_tab = TRY(tab_widget->try_add_tab<GUI::Widget>("Samples"));
-    samples_tab->set_layout<GUI::VerticalBoxLayout>();
-    samples_tab->layout()->set_margins(4);
+    TRY(samples_tab->try_set_layout<GUI::VerticalBoxLayout>(4));
 
     auto samples_splitter = TRY(samples_tab->try_add<GUI::HorizontalSplitter>());
     auto samples_table_view = TRY(samples_splitter->try_add<GUI::TableView>());
@@ -196,8 +195,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
 
     auto signposts_tab = TRY(tab_widget->try_add_tab<GUI::Widget>("Signposts"));
-    signposts_tab->set_layout<GUI::VerticalBoxLayout>();
-    signposts_tab->layout()->set_margins(4);
+    TRY(signposts_tab->try_set_layout<GUI::VerticalBoxLayout>(4));
 
     auto signposts_splitter = TRY(signposts_tab->try_add<GUI::HorizontalSplitter>());
     auto signposts_table_view = TRY(signposts_splitter->try_add<GUI::TableView>());
@@ -211,8 +209,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
 
     auto flamegraph_tab = TRY(tab_widget->try_add_tab<GUI::Widget>("Flame Graph"));
-    flamegraph_tab->set_layout<GUI::VerticalBoxLayout>();
-    flamegraph_tab->layout()->set_margins({ 4, 4, 4, 4 });
+    TRY(flamegraph_tab->try_set_layout<GUI::VerticalBoxLayout>(GUI::Margins { 4, 4, 4, 4 }));
 
     auto flamegraph_view = TRY(flamegraph_tab->try_add<FlameGraphView>(profile->model(), ProfileModel::Column::StackFrame, ProfileModel::Column::SampleCount));
 
@@ -222,6 +219,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return min(end_of_trace, max(timestamp, start_of_trace));
     };
 
+    // FIXME: Make this constexpr once String is able to.
+    auto const format_sample_count = [&profile](auto const sample_count) {
+        if (profile->show_percentages())
+            return DeprecatedString::formatted("{}%", sample_count.as_string());
+        return DeprecatedString::formatted("{} Samples", sample_count.to_i32());
+    };
+
     auto statusbar = TRY(main_widget->try_add<GUI::Statusbar>());
     auto statusbar_update = [&] {
         auto& view = *timeline_view;
@@ -229,12 +233,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto flamegraph_hovered_index = flamegraph_view->hovered_index();
         if (flamegraph_hovered_index.is_valid()) {
-            auto stack = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::StackFrame)).to_string();
-            auto sample_count = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::SampleCount)).to_i32();
-            auto self_count = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::SelfCount)).to_i32();
+            auto stack = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::StackFrame)).to_deprecated_string();
+            auto sample_count = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::SampleCount));
+            auto self_count = profile->model().data(flamegraph_hovered_index.sibling_at_column(ProfileModel::Column::SelfCount));
             builder.appendff("{}, ", stack);
-            builder.appendff("Samples: {}{}, ", sample_count, profile->show_percentages() ? "%" : " Samples");
-            builder.appendff("Self: {}{}", self_count, profile->show_percentages() ? "%" : " Samples");
+            builder.appendff("Samples: {}, ", format_sample_count(sample_count));
+            builder.appendff("Self: {}", format_sample_count(self_count));
         } else {
             u64 normalized_start_time = clamp_timestamp(min(view.select_start_time(), view.select_end_time()));
             u64 normalized_end_time = clamp_timestamp(max(view.select_start_time(), view.select_end_time()));
@@ -247,10 +251,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 builder.appendff(", Duration: {} ms", end - start);
             }
         }
-        statusbar->set_text(builder.to_string());
+        statusbar->set_text(builder.to_deprecated_string());
     };
     timeline_view->on_selection_change = [&] { statusbar_update(); };
     flamegraph_view->on_hover_change = [&] { statusbar_update(); };
+
+    auto filesystem_events_tab = TRY(tab_widget->try_add_tab<GUI::Widget>("Filesystem events"));
+    TRY(filesystem_events_tab->try_set_layout<GUI::VerticalBoxLayout>(4));
+
+    auto filesystem_events_tree_view = TRY(filesystem_events_tab->try_add<GUI::TreeView>());
+    filesystem_events_tree_view->set_should_fill_selected_rows(true);
+    filesystem_events_tree_view->set_column_headers_visible(true);
+    filesystem_events_tree_view->set_selection_behavior(GUI::TreeView::SelectionBehavior::SelectRows);
+    filesystem_events_tree_view->set_model(profile->file_event_model());
 
     auto file_menu = TRY(window->try_add_menu("&File"));
     TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); })));
@@ -282,8 +295,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(view_menu->try_add_action(source_action));
 
     auto help_menu = TRY(window->try_add_menu("&Help"));
+    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
     TRY(help_menu->try_add_action(GUI::CommonActions::make_help_action([](auto&) {
-        Desktop::Launcher::open(URL::create_with_file_protocol("/usr/share/man/man1/Profiler.md"), "/bin/Help");
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Profiler.md"), "/bin/Help");
     })));
     TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Profiler", app_icon, window)));
 
@@ -291,27 +305,27 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     return app->exec();
 }
 
-static bool prompt_to_stop_profiling(pid_t pid, String const& process_name)
+static bool prompt_to_stop_profiling(pid_t pid, DeprecatedString const& process_name)
 {
     auto window = GUI::Window::construct();
-    window->set_title(String::formatted("Profiling {}({})", process_name, pid));
+    window->set_title(DeprecatedString::formatted("Profiling {}({})", process_name, pid));
     window->resize(240, 100);
-    window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-profiler.png").release_value_but_fixme_should_propagate_errors());
+    window->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-profiler.png"sv).release_value_but_fixme_should_propagate_errors());
     window->center_on_screen();
 
-    auto& widget = window->set_main_widget<GUI::Widget>();
-    widget.set_fill_with_background_color(true);
-    auto& layout = widget.set_layout<GUI::VerticalBoxLayout>();
-    layout.set_margins({ 0, 0, 16 });
+    auto widget = window->set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    widget->set_fill_with_background_color(true);
+    widget->set_layout<GUI::VerticalBoxLayout>(GUI::Margins { 0, 0, 16 });
 
-    auto& timer_label = widget.add<GUI::Label>("...");
+    auto& timer_label = widget->add<GUI::Label>("...");
     Core::ElapsedTimer clock;
     clock.start();
-    auto update_timer = Core::Timer::construct(100, [&] {
-        timer_label.set_text(String::formatted("{:.1} seconds", clock.elapsed() / 1000.0f));
-    });
+    auto update_timer = Core::Timer::create_repeating(100, [&] {
+        timer_label.set_text(DeprecatedString::formatted("{:.1} seconds", static_cast<float>(clock.elapsed()) / 1000.0f));
+    }).release_value_but_fixme_should_propagate_errors();
+    update_timer->start();
 
-    auto& stop_button = widget.add<GUI::Button>("Stop");
+    auto& stop_button = widget->add<GUI::Button>("Stop"_short_string);
     stop_button.set_fixed_size(140, 22);
     stop_button.on_click = [&](auto) {
         GUI::Application::the()->quit();
@@ -324,17 +338,17 @@ static bool prompt_to_stop_profiling(pid_t pid, String const& process_name)
 bool generate_profile(pid_t& pid)
 {
     if (!pid) {
-        auto process_chooser = GUI::ProcessChooser::construct("Profiler", "Profile", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-profiler.png").release_value_but_fixme_should_propagate_errors());
-        if (process_chooser->exec() == GUI::Dialog::ExecCancel)
+        auto process_chooser = GUI::ProcessChooser::construct("Profiler"sv, "Profile"_short_string, Gfx::Bitmap::load_from_file("/res/icons/16x16/app-profiler.png"sv).release_value_but_fixme_should_propagate_errors());
+        if (process_chooser->exec() == GUI::Dialog::ExecResult::Cancel)
             return false;
         pid = process_chooser->pid();
     }
 
-    String process_name;
+    DeprecatedString process_name;
 
     auto all_processes = Core::ProcessStatisticsReader::get_all();
-    if (all_processes.has_value()) {
-        auto& processes = all_processes->processes;
+    if (!all_processes.is_error()) {
+        auto& processes = all_processes.value().processes;
         if (auto it = processes.find_if([&](auto& entry) { return entry.pid == pid; }); it != processes.end())
             process_name = it->name;
         else
@@ -348,7 +362,7 @@ bool generate_profile(pid_t& pid)
 
     if (profiling_enable(pid, event_mask) < 0) {
         int saved_errno = errno;
-        GUI::MessageBox::show(nullptr, String::formatted("Unable to profile process {}({}): {}", process_name, pid, strerror(saved_errno)), "Profiler", GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(nullptr, DeprecatedString::formatted("Unable to profile process {}({}): {}", process_name, pid, strerror(saved_errno)), "Profiler"sv, GUI::MessageBox::Type::Error);
         return false;
     }
 

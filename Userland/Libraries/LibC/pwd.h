@@ -23,13 +23,14 @@ struct passwd {
 };
 
 struct passwd* getpwent(void);
+int getpwent_r(struct passwd*, char*, size_t, struct passwd**);
 void setpwent(void);
 void endpwent(void);
-struct passwd* getpwnam(const char* name);
+struct passwd* getpwnam(char const* name);
 struct passwd* getpwuid(uid_t);
 int putpwent(const struct passwd* p, FILE* stream);
 
-int getpwnam_r(const char* name, struct passwd* pwd, char* buf, size_t buflen, struct passwd** result);
+int getpwnam_r(char const* name, struct passwd* pwd, char* buf, size_t buflen, struct passwd** result);
 int getpwuid_r(uid_t, struct passwd* pwd, char* buf, size_t buflen, struct passwd** result);
 
 __END_DECLS

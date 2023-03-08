@@ -6,27 +6,11 @@
     }
 
     @GUI::GroupBox {
-        title: "Background Opacity"
-        fixed_height: 70
+        title: "Terminal font"
+        preferred_height: "fit"
         layout: @GUI::VerticalBoxLayout {
-            margins: [16, 8, 8]
-            spacing: 16
-        }
-
-        @GUI::OpacitySlider {
-            name: "background_opacity_slider"
-            min: 0
-            max: 255
-            orientation: "Horizontal"
-        }
-    }
-
-    @GUI::GroupBox {
-        title: "Terminal Font"
-        fixed_height: 100
-        layout: @GUI::VerticalBoxLayout {
-            margins: [16, 8, 8]
-            spacing: 16
+            margins: [8]
+            spacing: 8
         }
 
         @GUI::CheckBox {
@@ -35,20 +19,19 @@
         }
 
         @GUI::Widget {
-            shrink_to_fit: true
+            preferred_height: "fit"
             name: "terminal_font_selection"
             layout: @GUI::HorizontalBoxLayout {
                 spacing: 6
             }
 
-            @GUI::Frame {
+            @GUI::Label {
                 background_role: "Base"
+                shape: "Container"
+                shadow: "Sunken"
+                thickness: 2
                 fill_with_background_color: true
-                layout: @GUI::VerticalBoxLayout {}
-
-                @GUI::Label {
-                    name: "terminal_font_label"
-                }
+                name: "terminal_font_label"
             }
 
             @GUI::Button {
@@ -60,15 +43,89 @@
     }
 
     @GUI::GroupBox {
-        title: "Color Scheme"
-        fixed_height: 70
+        title: "Background opacity"
+        preferred_height: "fit"
         layout: @GUI::VerticalBoxLayout {
-            margins: [16, 8, 8]
-            spacing: 16
+            margins: [8]
+            spacing: 8
         }
 
-        @GUI::ComboBox {
-            name: "color_scheme_combo"
+        @GUI::HorizontalOpacitySlider {
+            name: "background_opacity_slider"
+            min: 0
+            max: 255
+            orientation: "Horizontal"
+        }
+    }
+
+    @GUI::Widget {
+        preferred_height: "shrink"
+        layout: @GUI::HorizontalBoxLayout {}
+
+        @GUI::GroupBox {
+            title: "Cursor shape"
+            layout: @GUI::VerticalBoxLayout {
+                margins: [8]
+            }
+
+            @GUI::RadioButton {
+                name: "terminal_cursor_block"
+                text: "Block"
+            }
+
+            @GUI::RadioButton {
+                name: "terminal_cursor_underline"
+                text: "Underscore"
+            }
+
+            @GUI::RadioButton {
+                name: "terminal_cursor_bar"
+                text: "Vertical bar"
+            }
+        }
+
+        @GUI::GroupBox {
+            title: "Cursor behavior"
+            layout: @GUI::VerticalBoxLayout {
+                margins: [8]
+            }
+
+            @GUI::CheckBox {
+                name: "terminal_cursor_blinking"
+                text: "Blink cursor"
+            }
+        }
+    }
+
+    @GUI::GroupBox {
+        title: "Scrollback"
+        preferred_height: "fit"
+        layout: @GUI::VerticalBoxLayout {
+            margins: [8]
+            spacing: 8
+        }
+
+        @GUI::Widget {
+            preferred_height: "shrink"
+            layout: @GUI::HorizontalBoxLayout {}
+
+            @GUI::SpinBox {
+                name: "history_size_spinbox"
+                min: 0
+                max: 40960
+                orientation: "Horizontal"
+                preferred_width: 100
+            }
+
+            @GUI::Label {
+                text: "lines"
+                autosize: true
+            }
+        }
+
+        @GUI::CheckBox {
+            name: "terminal_show_scrollbar"
+            text: "Show terminal scrollbar"
         }
     }
 }

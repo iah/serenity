@@ -4,9 +4,17 @@ serenity_component(
     DEPENDS AudioServer
 )
 
+compile_gml(VideoPlayerWindow.gml VideoPlayerWindowGML.h videoplayer_window_gml)
+
 set(SOURCES
     main.cpp
+    VideoFrameWidget.cpp
+    VideoPlayerWidget.cpp
 )
 
-serenity_bin(VideoPlayer)
-target_link_libraries(VideoPlayer LibVideo LibAudio LibGUI LibMain)
+set(GENERATED_SOURCES
+    VideoPlayerWindowGML.h
+)
+
+serenity_app(VideoPlayer ICON app-video-player)
+target_link_libraries(VideoPlayer PRIVATE LibVideo LibAudio LibCore LibGfx LibGUI LibMain)

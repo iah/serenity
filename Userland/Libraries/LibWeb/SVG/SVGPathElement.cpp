@@ -6,6 +6,7 @@
 
 #include <AK/Debug.h>
 #include <AK/ExtraMathConstants.h>
+#include <AK/Optional.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
 #include <LibWeb/DOM/Document.h>
@@ -15,7 +16,7 @@
 
 namespace Web::SVG {
 
-[[maybe_unused]] static void print_instruction(const PathInstruction& instruction)
+[[maybe_unused]] static void print_instruction(PathInstruction const& instruction)
 {
     VERIFY(PATH_DEBUG);
 
@@ -83,12 +84,20 @@ namespace Web::SVG {
     }
 }
 
-SVGPathElement::SVGPathElement(DOM::Document& document, QualifiedName qualified_name)
+SVGPathElement::SVGPathElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGGeometryElement(document, move(qualified_name))
 {
 }
 
-void SVGPathElement::parse_attribute(FlyString const& name, String const& value)
+JS::ThrowCompletionOr<void> SVGPathElement::initialize(JS::Realm& realm)
+{
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGPathElementPrototype>(realm, "SVGPathElement"));
+
+    return {};
+}
+
+void SVGPathElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
 {
     SVGGeometryElement::parse_attribute(name, value);
 
@@ -98,17 +107,15 @@ void SVGPathElement::parse_attribute(FlyString const& name, String const& value)
     }
 }
 
-Gfx::Path& SVGPathElement::get_path()
+Gfx::Path path_from_path_instructions(ReadonlySpan<PathInstruction> instructions)
 {
-    if (m_path.has_value())
-        return m_path.value();
-
     Gfx::Path path;
+    Optional<Gfx::FloatPoint> previous_control_point;
     PathInstructionType last_instruction = PathInstructionType::Invalid;
 
-    for (auto& instruction : m_instructions) {
+    for (auto& instruction : instructions) {
         // If the first path element uses relative coordinates, we treat them as absolute by making them relative to (0, 0).
-        auto last_point = path.segments().is_empty() ? Gfx::FloatPoint { 0, 0 } : path.segments().last().point();
+        auto last_point = path.segments().is_empty() ? Gfx::FloatPoint { 0, 0 } : path.segments().last()->point();
 
         auto& absolute = instruction.absolute;
         auto& data = instruction.data;
@@ -180,24 +187,24 @@ Gfx::Path& SVGPathElement::get_path()
 
             if (absolute) {
                 path.quadratic_bezier_curve_to(through, point);
-                m_previous_control_point = through;
+                previous_control_point = through;
             } else {
                 auto control_point = through + last_point;
                 path.quadratic_bezier_curve_to(control_point, point + last_point);
-                m_previous_control_point = control_point;
+                previous_control_point = control_point;
             }
             break;
         }
         case PathInstructionType::SmoothQuadraticBezierCurve: {
             clear_last_control_point = false;
 
-            if (m_previous_control_point.is_null()
+            if (!previous_control_point.has_value()
                 || ((last_instruction != PathInstructionType::QuadraticBezierCurve) && (last_instruction != PathInstructionType::SmoothQuadraticBezierCurve))) {
-                m_previous_control_point = last_point;
+                previous_control_point = last_point;
             }
 
-            auto dx_end_control = last_point.dx_relative_to(m_previous_control_point);
-            auto dy_end_control = last_point.dy_relative_to(m_previous_control_point);
+            auto dx_end_control = last_point.dx_relative_to(previous_control_point.value());
+            auto dy_end_control = last_point.dy_relative_to(previous_control_point.value());
             auto control_point = Gfx::FloatPoint { last_point.x() + dx_end_control, last_point.y() + dy_end_control };
 
             Gfx::FloatPoint end_point = { data[0], data[1] };
@@ -208,7 +215,7 @@ Gfx::Path& SVGPathElement::get_path()
                 path.quadratic_bezier_curve_to(control_point, end_point + last_point);
             }
 
-            m_previous_control_point = control_point;
+            previous_control_point = control_point;
             break;
         }
 
@@ -225,31 +232,34 @@ Gfx::Path& SVGPathElement::get_path()
             }
             path.cubic_bezier_curve_to(c1, c2, p2);
 
-            m_previous_control_point = c2;
+            previous_control_point = c2;
             break;
         }
 
         case PathInstructionType::SmoothCurve: {
             clear_last_control_point = false;
 
-            if (m_previous_control_point.is_null()
+            if (!previous_control_point.has_value()
                 || ((last_instruction != PathInstructionType::Curve) && (last_instruction != PathInstructionType::SmoothCurve))) {
-                m_previous_control_point = last_point;
+                previous_control_point = last_point;
             }
 
-            auto reflected_previous_control_x = last_point.dx_relative_to(m_previous_control_point);
-            auto reflected_previous_control_y = last_point.dy_relative_to(m_previous_control_point);
+            // 9.5.2. Reflected control points https://svgwg.org/svg2-draft/paths.html#ReflectedControlPoints
+            // If the current point is (curx, cury) and the final control point of the previous path segment is (oldx2, oldy2),
+            // then the reflected point (i.e., (newx1, newy1), the first control point of the current path segment) is:
+            // (newx1, newy1) = (curx - (oldx2 - curx), cury - (oldy2 - cury))
+            auto reflected_previous_control_x = last_point.x() - previous_control_point.value().dx_relative_to(last_point);
+            auto reflected_previous_control_y = last_point.y() - previous_control_point.value().dy_relative_to(last_point);
             Gfx::FloatPoint c1 = Gfx::FloatPoint { reflected_previous_control_x, reflected_previous_control_y };
             Gfx::FloatPoint c2 = { data[0], data[1] };
             Gfx::FloatPoint p2 = { data[2], data[3] };
             if (!absolute) {
                 p2 += last_point;
-                c1 += last_point;
                 c2 += last_point;
             }
             path.cubic_bezier_curve_to(c1, c2, p2);
 
-            m_previous_control_point = c2;
+            previous_control_point = c2;
             break;
         }
         case PathInstructionType::Invalid:
@@ -257,12 +267,19 @@ Gfx::Path& SVGPathElement::get_path()
         }
 
         if (clear_last_control_point) {
-            m_previous_control_point = Gfx::FloatPoint {};
+            previous_control_point = Gfx::FloatPoint {};
         }
         last_instruction = instruction.type;
     }
 
-    m_path = path;
+    return path;
+}
+
+Gfx::Path& SVGPathElement::get_path()
+{
+    if (!m_path.has_value()) {
+        m_path = path_from_path_instructions(m_instructions);
+    }
     return m_path.value();
 }
 

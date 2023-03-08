@@ -14,7 +14,7 @@
 namespace Spreadsheet {
 
 struct FunctionAndArgumentIndex {
-    String function_name;
+    DeprecatedString function_name;
     size_t argument_index { 0 };
 };
 Optional<FunctionAndArgumentIndex> get_function_and_argument_index(StringView source);
@@ -23,14 +23,13 @@ class SheetGlobalObject final : public JS::GlobalObject {
     JS_OBJECT(SheetGlobalObject, JS::GlobalObject);
 
 public:
-    SheetGlobalObject(Sheet&);
-
+    SheetGlobalObject(JS::Realm&, Sheet&);
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
     virtual ~SheetGlobalObject() override = default;
 
     virtual JS::ThrowCompletionOr<bool> internal_has_property(JS::PropertyKey const& name) const override;
     virtual JS::ThrowCompletionOr<JS::Value> internal_get(JS::PropertyKey const&, JS::Value receiver) const override;
     virtual JS::ThrowCompletionOr<bool> internal_set(JS::PropertyKey const&, JS::Value value, JS::Value receiver) override;
-    virtual void initialize_global_object() override;
 
     JS_DECLARE_NATIVE_FUNCTION(get_real_cell_contents);
     JS_DECLARE_NATIVE_FUNCTION(set_real_cell_contents);
@@ -39,6 +38,7 @@ public:
     JS_DECLARE_NATIVE_FUNCTION(column_index);
     JS_DECLARE_NATIVE_FUNCTION(column_arithmetic);
     JS_DECLARE_NATIVE_FUNCTION(get_column_bound);
+    JS_DECLARE_NATIVE_FUNCTION(get_name);
 
 private:
     virtual void visit_edges(Visitor&) override;
@@ -49,11 +49,11 @@ class WorkbookObject final : public JS::Object {
     JS_OBJECT(WorkbookObject, JS::Object);
 
 public:
-    WorkbookObject(Workbook&, JS::GlobalObject&);
+    WorkbookObject(JS::Realm&, Workbook&);
 
     virtual ~WorkbookObject() override = default;
 
-    virtual void initialize(JS::GlobalObject&) override;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 
     JS_DECLARE_NATIVE_FUNCTION(sheet);
 

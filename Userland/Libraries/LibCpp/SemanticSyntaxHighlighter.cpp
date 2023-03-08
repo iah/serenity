@@ -15,7 +15,7 @@ namespace Cpp {
 
 void SemanticSyntaxHighlighter::rehighlight(Palette const& palette)
 {
-    Vector<GUI::AutocompleteProvider::TokenInfo> new_tokens_info;
+    Vector<CodeComprehension::TokenInfo> new_tokens_info;
     auto text = m_client->get_text();
     {
         Threading::MutexLocker locker(m_lock);
@@ -23,23 +23,41 @@ void SemanticSyntaxHighlighter::rehighlight(Palette const& palette)
         lexer.set_ignore_whitespace(true);
         auto current_tokens = lexer.lex();
 
+        // Identify folding regions
+        Vector<Token> folding_region_start_tokens;
+        Vector<GUI::TextDocumentFoldingRegion> folding_regions;
+        for (auto& token : current_tokens) {
+            if (token.type() == Token::Type::LeftCurly) {
+                folding_region_start_tokens.append(token);
+            } else if (token.type() == Token::Type::RightCurly) {
+                if (!folding_region_start_tokens.is_empty()) {
+                    auto start_token = folding_region_start_tokens.take_last();
+                    GUI::TextDocumentFoldingRegion folding_region;
+                    folding_region.range.set_start({ start_token.end().line, start_token.end().column });
+                    folding_region.range.set_end({ token.start().line, token.start().column });
+                    folding_regions.append(move(folding_region));
+                }
+            }
+        }
+        m_client->do_set_folding_regions(move(folding_regions));
+
         StringBuilder current_tokens_as_lines;
         StringBuilder previous_tokens_as_lines;
 
         for (auto& token : current_tokens)
-            current_tokens_as_lines.appendff("{}\n", token.type_as_string());
+            current_tokens_as_lines.appendff("{}\n", token.type_as_deprecated_string());
 
         for (Cpp::Token const& token : m_saved_tokens)
-            previous_tokens_as_lines.appendff("{}\n", token.type_as_string());
+            previous_tokens_as_lines.appendff("{}\n", token.type_as_deprecated_string());
 
-        auto previous = previous_tokens_as_lines.build();
-        auto current = current_tokens_as_lines.build();
+        auto previous = previous_tokens_as_lines.to_deprecated_string();
+        auto current = current_tokens_as_lines.to_deprecated_string();
 
         // FIXME: Computing the diff on the entire document's tokens is quite inefficient.
         //        An improvement over this could be only including the tokens that are in edited text ranges in the diff.
         auto diff_hunks = Diff::from_text(previous.view(), current.view());
         for (auto& token : current_tokens) {
-            new_tokens_info.append(GUI::AutocompleteProvider::TokenInfo { GUI::AutocompleteProvider::TokenInfo::SemanticType::Unknown,
+            new_tokens_info.append(CodeComprehension::TokenInfo { CodeComprehension::TokenInfo::SemanticType::Unknown,
                 token.start().line, token.start().column, token.end().line, token.end().column });
         }
         size_t previous_token_index = 0;
@@ -67,45 +85,47 @@ void SemanticSyntaxHighlighter::rehighlight(Palette const& palette)
     update_spans(new_tokens_info, palette);
 }
 
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, GUI::AutocompleteProvider::TokenInfo::SemanticType type)
+static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, CodeComprehension::TokenInfo::SemanticType type)
 {
     switch (type) {
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Unknown:
+    case CodeComprehension::TokenInfo::SemanticType::Unknown:
         return { palette.base_text(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Keyword:
+    case CodeComprehension::TokenInfo::SemanticType::Keyword:
         return { palette.syntax_keyword(), true };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Type:
+    case CodeComprehension::TokenInfo::SemanticType::Type:
         return { palette.syntax_type(), true };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Identifier:
+    case CodeComprehension::TokenInfo::SemanticType::Identifier:
         return { palette.syntax_identifier(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::String:
+    case CodeComprehension::TokenInfo::SemanticType::String:
         return { palette.syntax_string(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Number:
+    case CodeComprehension::TokenInfo::SemanticType::Number:
         return { palette.syntax_number(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::IncludePath:
+    case CodeComprehension::TokenInfo::SemanticType::IncludePath:
         return { palette.syntax_preprocessor_value(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::PreprocessorStatement:
+    case CodeComprehension::TokenInfo::SemanticType::PreprocessorStatement:
         return { palette.syntax_preprocessor_statement(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Comment:
+    case CodeComprehension::TokenInfo::SemanticType::Comment:
         return { palette.syntax_comment(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Function:
+    case CodeComprehension::TokenInfo::SemanticType::Function:
         return { palette.syntax_function(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Variable:
+    case CodeComprehension::TokenInfo::SemanticType::Variable:
         return { palette.syntax_variable(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::CustomType:
+    case CodeComprehension::TokenInfo::SemanticType::CustomType:
         return { palette.syntax_custom_type(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Namespace:
+    case CodeComprehension::TokenInfo::SemanticType::Namespace:
         return { palette.syntax_namespace(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Member:
+    case CodeComprehension::TokenInfo::SemanticType::Member:
         return { palette.syntax_member(), false };
-    case GUI::AutocompleteProvider::TokenInfo::SemanticType::Parameter:
+    case CodeComprehension::TokenInfo::SemanticType::Parameter:
         return { palette.syntax_parameter(), false };
+    case CodeComprehension::TokenInfo::SemanticType::PreprocessorMacro:
+        return { palette.syntax_preprocessor_value(), false };
     default:
         VERIFY_NOT_REACHED();
         return { palette.base_text(), false };
     }
 }
-void SemanticSyntaxHighlighter::update_spans(Vector<GUI::AutocompleteProvider::TokenInfo> const& tokens_info, Gfx::Palette const& pallete)
+void SemanticSyntaxHighlighter::update_spans(Vector<CodeComprehension::TokenInfo> const& tokens_info, Gfx::Palette const& palette)
 {
     Vector<GUI::TextDocumentSpan> spans;
     for (auto& token : tokens_info) {
@@ -113,10 +133,10 @@ void SemanticSyntaxHighlighter::update_spans(Vector<GUI::AutocompleteProvider::T
         GUI::TextDocumentSpan span;
         span.range.set_start({ token.start_line, token.start_column });
         span.range.set_end({ token.end_line, token.end_column + 1 });
-        auto style = style_for_token_type(pallete, token.type);
+        auto style = style_for_token_type(palette, token.type);
         span.attributes.color = style.color;
         span.attributes.bold = style.bold;
-        span.is_skippable = token.type == GUI::AutocompleteProvider::TokenInfo::SemanticType::Whitespace;
+        span.is_skippable = token.type == CodeComprehension::TokenInfo::SemanticType::Whitespace;
         span.data = static_cast<u64>(token.type);
         spans.append(span);
     }
@@ -128,7 +148,7 @@ void SemanticSyntaxHighlighter::update_spans(Vector<GUI::AutocompleteProvider::T
     m_client->do_update();
 }
 
-void SemanticSyntaxHighlighter::update_tokens_info(Vector<GUI::AutocompleteProvider::TokenInfo> tokens_info)
+void SemanticSyntaxHighlighter::update_tokens_info(Vector<CodeComprehension::TokenInfo> tokens_info)
 {
     {
         Threading::MutexLocker locker(m_lock);
@@ -143,21 +163,21 @@ void SemanticSyntaxHighlighter::update_tokens_info(Vector<GUI::AutocompleteProvi
 
 bool SemanticSyntaxHighlighter::is_identifier(u64 token_type) const
 {
-    using GUI::AutocompleteProvider;
-    auto type = static_cast<AutocompleteProvider::TokenInfo::SemanticType>(token_type);
+    auto type = static_cast<CodeComprehension::TokenInfo::SemanticType>(token_type);
 
-    return type == AutocompleteProvider::TokenInfo::SemanticType::Identifier
-        || type == AutocompleteProvider::TokenInfo::SemanticType::Function
-        || type == AutocompleteProvider::TokenInfo::SemanticType::Variable
-        || type == AutocompleteProvider::TokenInfo::SemanticType::CustomType
-        || type == AutocompleteProvider::TokenInfo::SemanticType::Namespace
-        || type == AutocompleteProvider::TokenInfo::SemanticType::Member
-        || type == AutocompleteProvider::TokenInfo::SemanticType::Parameter;
+    return type == CodeComprehension::TokenInfo::SemanticType::Identifier
+        || type == CodeComprehension::TokenInfo::SemanticType::Function
+        || type == CodeComprehension::TokenInfo::SemanticType::Variable
+        || type == CodeComprehension::TokenInfo::SemanticType::CustomType
+        || type == CodeComprehension::TokenInfo::SemanticType::Namespace
+        || type == CodeComprehension::TokenInfo::SemanticType::Member
+        || type == CodeComprehension::TokenInfo::SemanticType::Parameter
+        || type == CodeComprehension::TokenInfo::SemanticType::PreprocessorMacro;
 }
 
 bool SemanticSyntaxHighlighter::is_navigatable(u64 token_type) const
 {
-    return static_cast<GUI::AutocompleteProvider::TokenInfo::SemanticType>(token_type) == GUI::AutocompleteProvider::TokenInfo::SemanticType::IncludePath;
+    return static_cast<CodeComprehension::TokenInfo::SemanticType>(token_type) == CodeComprehension::TokenInfo::SemanticType::IncludePath;
 }
 
 }

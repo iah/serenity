@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,9 +15,11 @@ class RadioButton : public AbstractButton {
     C_OBJECT(RadioButton);
 
 public:
-    virtual ~RadioButton() override;
+    virtual ~RadioButton() override = default;
 
     virtual void click(unsigned modifiers = 0) override;
+
+    virtual Optional<UISize> calculated_min_size() const override;
 
 protected:
     explicit RadioButton(String text = {});
@@ -27,6 +30,7 @@ private:
     using AbstractButton::auto_repeat_interval;
     using AbstractButton::set_auto_repeat_interval;
 
+    static int horizontal_padding();
     static Gfx::IntSize circle_size();
 };
 

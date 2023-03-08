@@ -9,50 +9,84 @@
 
 #include <AK/ByteBuffer.h>
 #include <AK/JsonObjectSerializer.h>
+#include <AK/Singleton.h>
 #include <Kernel/Coredump.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
+#include <Kernel/KBufferBuilder.h>
 #include <Kernel/KLexicalPath.h>
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/ScopedAddressSpaceSwitcher.h>
 #include <Kernel/Process.h>
-#include <Kernel/RTC.h>
 #include <LibC/elf.h>
 #include <LibELF/Core.h>
 
 #define INCLUDE_USERSPACE_HEAP_MEMORY_IN_COREDUMPS 0
 
+static Singleton<SpinlockProtected<OwnPtr<KString>, LockRank::None>> s_coredump_directory_path;
+
 namespace Kernel {
 
-[[maybe_unused]] static bool looks_like_userspace_heap_region(Memory::Region const& region)
+SpinlockProtected<OwnPtr<KString>, LockRank::None>& Coredump::directory_path()
 {
-    return region.name().starts_with("LibJS:"sv) || region.name().starts_with("malloc:"sv);
+    return s_coredump_directory_path;
 }
 
-ErrorOr<NonnullOwnPtr<Coredump>> Coredump::try_create(NonnullRefPtr<Process> process, StringView output_path)
+bool Coredump::FlatRegionData::looks_like_userspace_heap_region() const
+{
+    return name().starts_with("LibJS:"sv) || name().starts_with("malloc:"sv);
+}
+
+bool Coredump::FlatRegionData::is_consistent_with_region(Memory::Region const& region) const
+{
+    if (m_access != region.access())
+        return false;
+
+    if (m_page_count != region.page_count() || m_size != region.size())
+        return false;
+
+    if (m_vaddr != region.vaddr())
+        return false;
+
+    return true;
+}
+
+ErrorOr<NonnullOwnPtr<Coredump>> Coredump::try_create(NonnullLockRefPtr<Process> process, StringView output_path)
 {
     if (!process->is_dumpable()) {
         dbgln("Refusing to generate coredump for non-dumpable process {}", process->pid().value());
         return EPERM;
     }
 
+    Vector<FlatRegionData> regions;
+    size_t number_of_regions = process->address_space().with([](auto& space) {
+        return space->region_tree().regions().size();
+    });
+    TRY(regions.try_ensure_capacity(number_of_regions));
+    TRY(process->address_space().with([&](auto& space) -> ErrorOr<void> {
+        for (auto& region : space->region_tree().regions())
+            TRY(regions.try_empend(region, TRY(KString::try_create(region.name()))));
+        return {};
+    }));
+
     auto description = TRY(try_create_target_file(process, output_path));
-    return adopt_nonnull_own_or_enomem(new (nothrow) Coredump(move(process), move(description)));
+    return adopt_nonnull_own_or_enomem(new (nothrow) Coredump(move(process), move(description), move(regions)));
 }
 
-Coredump::Coredump(NonnullRefPtr<Process> process, NonnullRefPtr<OpenFileDescription> description)
+Coredump::Coredump(NonnullLockRefPtr<Process> process, NonnullRefPtr<OpenFileDescription> description, Vector<FlatRegionData> regions)
     : m_process(move(process))
     , m_description(move(description))
+    , m_regions(move(regions))
 {
     m_num_program_headers = 0;
-    for ([[maybe_unused]] auto& region : m_process->address_space().regions()) {
+    for (auto& region : m_regions) {
 #if !INCLUDE_USERSPACE_HEAP_MEMORY_IN_COREDUMPS
-        if (looks_like_userspace_heap_region(*region))
+        if (region.looks_like_userspace_heap_region())
             continue;
 #endif
 
-        if (region->access() == Memory::Region::Access::None)
+        if (region.access() == Memory::Region::Access::None)
             continue;
         ++m_num_program_headers;
     }
@@ -62,18 +96,21 @@ Coredump::Coredump(NonnullRefPtr<Process> process, NonnullRefPtr<OpenFileDescrip
 ErrorOr<NonnullRefPtr<OpenFileDescription>> Coredump::try_create_target_file(Process const& process, StringView output_path)
 {
     auto output_directory = KLexicalPath::dirname(output_path);
-    auto dump_directory = TRY(VirtualFileSystem::the().open_directory(output_directory, VirtualFileSystem::the().root_custody()));
+    auto dump_directory = TRY(VirtualFileSystem::the().open_directory(Process::current().credentials(), output_directory, VirtualFileSystem::the().root_custody()));
     auto dump_directory_metadata = dump_directory->inode().metadata();
     if (dump_directory_metadata.uid != 0 || dump_directory_metadata.gid != 0 || dump_directory_metadata.mode != 040777) {
         dbgln("Refusing to put coredump in sketchy directory '{}'", output_directory);
         return EINVAL;
     }
+
+    auto process_credentials = process.credentials();
     return TRY(VirtualFileSystem::the().open(
+        Process::current().credentials(),
         KLexicalPath::basename(output_path),
         O_CREAT | O_WRONLY | O_EXCL,
         S_IFREG, // We will enable reading from userspace when we finish generating the coredump file
         *dump_directory,
-        UidAndGid { process.uid(), process.gid() }));
+        UidAndGid { process_credentials->uid(), process_credentials->gid() }));
 }
 
 ErrorOr<void> Coredump::write_elf_header()
@@ -83,10 +120,10 @@ ErrorOr<void> Coredump::write_elf_header()
     elf_file_header.e_ident[EI_MAG1] = 'E';
     elf_file_header.e_ident[EI_MAG2] = 'L';
     elf_file_header.e_ident[EI_MAG3] = 'F';
-#if ARCH(I386)
-    elf_file_header.e_ident[EI_CLASS] = ELFCLASS32;
-#else
+#if ARCH(X86_64) || ARCH(AARCH64)
     elf_file_header.e_ident[EI_CLASS] = ELFCLASS64;
+#else
+#    error Unknown architecture
 #endif
     elf_file_header.e_ident[EI_DATA] = ELFDATA2LSB;
     elf_file_header.e_ident[EI_VERSION] = EV_CURRENT;
@@ -99,10 +136,12 @@ ErrorOr<void> Coredump::write_elf_header()
     elf_file_header.e_ident[EI_PAD + 5] = 0;
     elf_file_header.e_ident[EI_PAD + 6] = 0;
     elf_file_header.e_type = ET_CORE;
-#if ARCH(I386)
-    elf_file_header.e_machine = EM_386;
-#else
+#if ARCH(X86_64)
     elf_file_header.e_machine = EM_X86_64;
+#elif ARCH(AARCH64)
+    elf_file_header.e_machine = EM_AARCH64;
+#else
+#    error Unknown architecture
 #endif
     elf_file_header.e_version = 1;
     elf_file_header.e_entry = 0;
@@ -124,31 +163,30 @@ ErrorOr<void> Coredump::write_elf_header()
 ErrorOr<void> Coredump::write_program_headers(size_t notes_size)
 {
     size_t offset = sizeof(ElfW(Ehdr)) + m_num_program_headers * sizeof(ElfW(Phdr));
-    for (auto& region : m_process->address_space().regions()) {
-
+    for (auto& region : m_regions) {
 #if !INCLUDE_USERSPACE_HEAP_MEMORY_IN_COREDUMPS
-        if (looks_like_userspace_heap_region(*region))
+        if (region.looks_like_userspace_heap_region())
             continue;
 #endif
 
-        if (region->access() == Memory::Region::Access::None)
+        if (region.access() == Memory::Region::Access::None)
             continue;
 
         ElfW(Phdr) phdr {};
 
         phdr.p_type = PT_LOAD;
         phdr.p_offset = offset;
-        phdr.p_vaddr = region->vaddr().get();
+        phdr.p_vaddr = region.vaddr().get();
         phdr.p_paddr = 0;
 
-        phdr.p_filesz = region->page_count() * PAGE_SIZE;
-        phdr.p_memsz = region->page_count() * PAGE_SIZE;
+        phdr.p_filesz = region.page_count() * PAGE_SIZE;
+        phdr.p_memsz = region.page_count() * PAGE_SIZE;
         phdr.p_align = 0;
 
-        phdr.p_flags = region->is_readable() ? PF_R : 0;
-        if (region->is_writable())
+        phdr.p_flags = region.is_readable() ? PF_R : 0;
+        if (region.is_writable())
             phdr.p_flags |= PF_W;
-        if (region->is_executable())
+        if (region.is_executable())
             phdr.p_flags |= PF_X;
 
         offset += phdr.p_filesz;
@@ -175,35 +213,56 @@ ErrorOr<void> Coredump::write_regions()
 {
     u8 zero_buffer[PAGE_SIZE] = {};
 
-    for (auto& region : m_process->address_space().regions()) {
-        VERIFY(!region->is_kernel());
+    for (auto& region : m_regions) {
+        VERIFY(!region.is_kernel());
 
 #if !INCLUDE_USERSPACE_HEAP_MEMORY_IN_COREDUMPS
-        if (looks_like_userspace_heap_region(*region))
+        if (region.looks_like_userspace_heap_region())
             continue;
 #endif
 
-        if (region->access() == Memory::Region::Access::None)
+        if (region.access() == Memory::Region::Access::None)
             continue;
 
-        // If we crashed in the middle of mapping in Regions, they do not have a page directory yet, and will crash on a remap() call
-        if (!region->is_mapped())
-            continue;
+        auto buffer = TRY(KBuffer::try_create_with_size("Coredump Region Copy Buffer"sv, region.page_count() * PAGE_SIZE));
 
-        region->set_readable(true);
-        region->remap();
+        TRY(m_process->address_space().with([&](auto& space) -> ErrorOr<void> {
+            auto* real_region = space->region_tree().regions().find(region.vaddr().get());
 
-        for (size_t i = 0; i < region->page_count(); i++) {
-            auto const* page = region->physical_page(i);
-            auto src_buffer = [&]() -> ErrorOr<UserOrKernelBuffer> {
-                if (page)
-                    return UserOrKernelBuffer::for_user_buffer(reinterpret_cast<uint8_t*>((region->vaddr().as_ptr() + (i * PAGE_SIZE))), PAGE_SIZE);
-                // If the current page is not backed by a physical page, we zero it in the coredump file.
-                return UserOrKernelBuffer::for_kernel_buffer(zero_buffer);
-            }();
-            TRY(m_description->write(src_buffer.value(), PAGE_SIZE));
-        }
+            if (!real_region) {
+                dmesgln("Coredump::write_regions: Failed to find matching region in the process");
+                return Error::from_errno(EFAULT);
+            }
+
+            if (!region.is_consistent_with_region(*real_region)) {
+                dmesgln("Coredump::write_regions: Found region does not match stored metadata");
+                return Error::from_errno(EINVAL);
+            }
+
+            // If we crashed in the middle of mapping in Regions, they do not have a page directory yet, and will crash on a remap() call
+            if (!real_region->is_mapped())
+                return {};
+
+            real_region->set_readable(true);
+            real_region->remap();
+
+            for (size_t i = 0; i < region.page_count(); i++) {
+                auto page = real_region->physical_page(i);
+                auto src_buffer = [&]() -> ErrorOr<UserOrKernelBuffer> {
+                    if (page)
+                        return UserOrKernelBuffer::for_user_buffer(reinterpret_cast<uint8_t*>((region.vaddr().as_ptr() + (i * PAGE_SIZE))), PAGE_SIZE);
+                    // If the current page is not backed by a physical page, we zero it in the coredump file.
+                    return UserOrKernelBuffer::for_kernel_buffer(zero_buffer);
+                }();
+                TRY(src_buffer.value().read(buffer->bytes().slice(i * PAGE_SIZE, PAGE_SIZE)));
+            }
+
+            return {};
+        }));
+
+        TRY(m_description->write(UserOrKernelBuffer::for_kernel_buffer(buffer->data()), buffer->size()));
     }
+
     return {};
 }
 
@@ -220,22 +279,26 @@ ErrorOr<void> Coredump::create_notes_process_data(auto& builder) const
     TRY(builder.append_bytes(ReadonlyBytes { (void*)&info, sizeof(info) }));
 
     {
-        JsonObjectSerializer process_obj { builder };
-        process_obj.add("pid"sv, m_process->pid().value());
-        process_obj.add("termination_signal"sv, m_process->termination_signal());
-        process_obj.add("executable_path"sv, m_process->executable() ? TRY(m_process->executable()->try_serialize_absolute_path())->view() : ""sv);
+        auto process_obj = TRY(JsonObjectSerializer<>::try_create(builder));
+        TRY(process_obj.add("pid"sv, m_process->pid().value()));
+        TRY(process_obj.add("termination_signal"sv, m_process->termination_signal()));
+        TRY(process_obj.add("executable_path"sv, m_process->executable() ? TRY(m_process->executable()->try_serialize_absolute_path())->view() : ""sv));
 
         {
-            auto arguments_array = process_obj.add_array("arguments"sv);
+            auto arguments_array = TRY(process_obj.add_array("arguments"sv));
             for (auto const& argument : m_process->arguments())
-                arguments_array.add(argument.view());
+                TRY(arguments_array.add(argument->view()));
+            TRY(arguments_array.finish());
         }
 
         {
-            auto environment_array = process_obj.add_array("environment"sv);
+            auto environment_array = TRY(process_obj.add_array("environment"sv));
             for (auto const& variable : m_process->environment())
-                environment_array.add(variable.view());
+                TRY(environment_array.add(variable->view()));
+            TRY(environment_array.finish());
         }
+
+        TRY(process_obj.finish());
     }
 
     TRY(builder.append('\0'));
@@ -247,10 +310,10 @@ ErrorOr<void> Coredump::create_notes_threads_data(auto& builder) const
     for (auto const& thread : m_process->threads_for_coredump({})) {
         ELF::Core::ThreadInfo info {};
         info.header.type = ELF::Core::NotesEntryHeader::Type::ThreadInfo;
-        info.tid = thread.tid().value();
+        info.tid = thread->tid().value();
 
-        if (thread.current_trap())
-            copy_kernel_registers_into_ptrace_registers(info.regs, thread.get_register_dump_from_stack());
+        if (thread->current_trap())
+            copy_kernel_registers_into_ptrace_registers(info.regs, thread->get_register_dump_from_stack());
 
         TRY(builder.append_bytes(ReadonlyBytes { &info, sizeof(info) }));
     }
@@ -260,32 +323,32 @@ ErrorOr<void> Coredump::create_notes_threads_data(auto& builder) const
 ErrorOr<void> Coredump::create_notes_regions_data(auto& builder) const
 {
     size_t region_index = 0;
-    for (auto const& region : m_process->address_space().regions()) {
-
+    for (auto const& region : m_regions) {
 #if !INCLUDE_USERSPACE_HEAP_MEMORY_IN_COREDUMPS
-        if (looks_like_userspace_heap_region(*region))
+        if (region.looks_like_userspace_heap_region())
             continue;
 #endif
 
-        if (region->access() == Memory::Region::Access::None)
+        if (region.access() == Memory::Region::Access::None)
             continue;
 
         ELF::Core::MemoryRegionInfo info {};
         info.header.type = ELF::Core::NotesEntryHeader::Type::MemoryRegionInfo;
 
-        info.region_start = region->vaddr().get();
-        info.region_end = region->vaddr().offset(region->size()).get();
+        info.region_start = region.vaddr().get();
+        info.region_end = region.vaddr().offset(region.size()).get();
         info.program_header_index = region_index++;
 
         TRY(builder.append_bytes(ReadonlyBytes { (void*)&info, sizeof(info) }));
 
         // NOTE: The region name *is* null-terminated, so the following is ok:
-        auto name = region->name();
+        auto name = region.name();
         if (name.is_empty())
             TRY(builder.append('\0'));
         else
             TRY(builder.append(name.characters_without_null_termination(), name.length() + 1));
     }
+
     return {};
 }
 
@@ -296,10 +359,12 @@ ErrorOr<void> Coredump::create_notes_metadata_data(auto& builder) const
     TRY(builder.append_bytes(ReadonlyBytes { (void*)&metadata, sizeof(metadata) }));
 
     {
-        JsonObjectSerializer metadata_obj { builder };
-        m_process->for_each_coredump_property([&](auto& key, auto& value) {
-            metadata_obj.add(key.view(), value.view());
-        });
+        auto metadata_obj = TRY(JsonObjectSerializer<>::try_create(builder));
+        TRY(m_process->for_each_coredump_property([&](auto& key, auto& value) -> ErrorOr<void> {
+            TRY(metadata_obj.add(key.view(), value.view()));
+            return {};
+        }));
+        TRY(metadata_obj.finish());
     }
     TRY(builder.append('\0'));
     return {};
@@ -321,7 +386,6 @@ ErrorOr<void> Coredump::create_notes_segment_data(auto& builder) const
 
 ErrorOr<void> Coredump::write()
 {
-    SpinlockLocker lock(m_process->address_space().get_lock());
     ScopedAddressSpaceSwitcher switcher(m_process);
 
     auto builder = TRY(KBufferBuilder::try_create());
@@ -331,7 +395,7 @@ ErrorOr<void> Coredump::write()
     TRY(write_regions());
     TRY(write_notes_segment(builder.bytes()));
 
-    return m_description->chmod(0600); // Make coredump file read/writable
+    return m_description->chmod(Process::current().credentials(), 0600); // Make coredump file read/writable
 }
 
 }

@@ -29,23 +29,29 @@ Mount::Mount(Inode& source, Custody& host_custody, int flags)
 
 ErrorOr<NonnullOwnPtr<KString>> Mount::absolute_path() const
 {
-    if (!m_host_custody)
-        return KString::try_create("/"sv);
-    return m_host_custody->try_serialize_absolute_path();
+    return m_host_custody.with([&](auto& host_custody) -> ErrorOr<NonnullOwnPtr<KString>> {
+        if (!host_custody)
+            return KString::try_create("/"sv);
+        return host_custody->try_serialize_absolute_path();
+    });
 }
 
-Inode* Mount::host()
+LockRefPtr<Inode> Mount::host()
 {
-    if (!m_host_custody)
-        return nullptr;
-    return &m_host_custody->inode();
+    return m_host_custody.with([](auto& host_custody) -> LockRefPtr<Inode> {
+        if (!host_custody)
+            return nullptr;
+        return &host_custody->inode();
+    });
 }
 
-Inode const* Mount::host() const
+LockRefPtr<Inode const> Mount::host() const
 {
-    if (!m_host_custody)
-        return nullptr;
-    return &m_host_custody->inode();
+    return m_host_custody.with([](auto& host_custody) -> LockRefPtr<Inode const> {
+        if (!host_custody)
+            return nullptr;
+        return &host_custody->inode();
+    });
 }
 
 }

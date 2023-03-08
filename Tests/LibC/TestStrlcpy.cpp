@@ -14,15 +14,15 @@
 #include <string.h>
 
 struct Testcase {
-    const char* dest;
+    char const* dest;
     size_t dest_n;
-    const char* src;
+    char const* src;
     size_t src_n;
-    const char* dest_expected;
+    char const* dest_expected;
     size_t dest_expected_n; // == dest_n
 };
 
-static String show(const ByteBuffer& buf)
+static DeprecatedString show(ByteBuffer const& buf)
 {
     StringBuilder builder;
     for (size_t i = 0; i < buf.size(); ++i) {
@@ -37,10 +37,10 @@ static String show(const ByteBuffer& buf)
             builder.append('_');
     }
     builder.append(')');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
-static bool test_single(const Testcase& testcase)
+static bool test_single(Testcase const& testcase)
 {
     constexpr size_t SANDBOX_CANARY_SIZE = 8;
 
@@ -69,9 +69,9 @@ static bool test_single(const Testcase& testcase)
 
     // Checking the results:
     bool return_ok = actual_return == testcase.src_n;
-    bool canary_1_ok = actual.slice(0, SANDBOX_CANARY_SIZE) == expected.slice(0, SANDBOX_CANARY_SIZE);
-    bool main_ok = actual.slice(SANDBOX_CANARY_SIZE, testcase.dest_n) == expected.slice(SANDBOX_CANARY_SIZE, testcase.dest_n);
-    bool canary_2_ok = actual.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE) == expected.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE);
+    bool canary_1_ok = MUST(actual.slice(0, SANDBOX_CANARY_SIZE)) == MUST(expected.slice(0, SANDBOX_CANARY_SIZE));
+    bool main_ok = MUST(actual.slice(SANDBOX_CANARY_SIZE, testcase.dest_n)) == MUST(expected.slice(SANDBOX_CANARY_SIZE, testcase.dest_n));
+    bool canary_2_ok = MUST(actual.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE)) == MUST(expected.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE));
     bool buf_ok = actual == expected;
 
     // Evaluate gravity:
@@ -82,20 +82,20 @@ static bool test_single(const Testcase& testcase)
     if (!canary_1_ok) {
         warnln("Canary 1 overwritten: Expected canary {}\n"
                "                          instead got {}",
-            show(expected.slice(0, SANDBOX_CANARY_SIZE)),
-            show(actual.slice(0, SANDBOX_CANARY_SIZE)));
+            show(MUST(expected.slice(0, SANDBOX_CANARY_SIZE))),
+            show(MUST(actual.slice(0, SANDBOX_CANARY_SIZE))));
     }
     if (!main_ok) {
         warnln("Wrong output: Expected {}\n"
                "           instead got {}",
-            show(expected.slice(SANDBOX_CANARY_SIZE, testcase.dest_n)),
-            show(actual.slice(SANDBOX_CANARY_SIZE, testcase.dest_n)));
+            show(MUST(expected.slice(SANDBOX_CANARY_SIZE, testcase.dest_n))),
+            show(MUST(actual.slice(SANDBOX_CANARY_SIZE, testcase.dest_n))));
     }
     if (!canary_2_ok) {
         warnln("Canary 2 overwritten: Expected {}\n"
                "                   instead got {}",
-            show(expected.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE)),
-            show(actual.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE)));
+            show(MUST(expected.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE))),
+            show(MUST(actual.slice(SANDBOX_CANARY_SIZE + testcase.dest_n, SANDBOX_CANARY_SIZE))));
     }
     if (!return_ok) {
         warnln("Wrong return value: Expected {}, got {} instead!", testcase.src_n, actual_return);

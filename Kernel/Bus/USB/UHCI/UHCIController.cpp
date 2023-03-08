@@ -5,7 +5,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Find.h>
 #include <AK/Platform.h>
+#include <Kernel/Arch/Delay.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/USB/UHCI/UHCIController.h>
 #include <Kernel/Bus/USB/USBRequest.h>
@@ -62,36 +64,36 @@ static constexpr u16 UHCI_PORTSC_NON_WRITE_CLEAR_BIT_MASK = 0x1FF5; // This is u
 static constexpr u8 UHCI_NUMBER_OF_ISOCHRONOUS_TDS = 128;
 static constexpr u16 UHCI_NUMBER_OF_FRAMES = 1024;
 
-ErrorOr<NonnullRefPtr<UHCIController>> UHCIController::try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier)
+ErrorOr<NonnullLockRefPtr<UHCIController>> UHCIController::try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier)
 {
     // NOTE: This assumes that address is pointing to a valid UHCI controller.
-    auto controller = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) UHCIController(pci_device_identifier)));
+    auto registers_io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR4));
+    auto controller = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) UHCIController(pci_device_identifier, move(registers_io_window))));
     TRY(controller->initialize());
     return controller;
 }
 
 ErrorOr<void> UHCIController::initialize()
 {
-    dmesgln("UHCI: Controller found {} @ {}", PCI::get_hardware_id(pci_address()), pci_address());
-    dmesgln("UHCI: I/O base {}", m_io_base);
-    dmesgln("UHCI: Interrupt line: {}", interrupt_number());
+    dmesgln_pci(*this, "Controller found {} @ {}", PCI::get_hardware_id(device_identifier()), device_identifier().address());
+    dmesgln_pci(*this, "I/O base {}", m_registers_io_window);
+    dmesgln_pci(*this, "Interrupt line: {}", interrupt_number());
 
+    TRY(spawn_async_poll_process());
     TRY(spawn_port_process());
 
     TRY(reset());
     return start();
 }
 
-UNMAP_AFTER_INIT UHCIController::UHCIController(PCI::DeviceIdentifier const& pci_device_identifier)
-    : PCI::Device(pci_device_identifier.address())
+UNMAP_AFTER_INIT UHCIController::UHCIController(PCI::DeviceIdentifier const& pci_device_identifier, NonnullOwnPtr<IOWindow> registers_io_window)
+    : PCI::Device(const_cast<PCI::DeviceIdentifier&>(pci_device_identifier))
     , IRQHandler(pci_device_identifier.interrupt_line().value())
-    , m_io_base(PCI::get_BAR4(pci_address()) & ~1)
+    , m_registers_io_window(move(registers_io_window))
 {
 }
 
-UNMAP_AFTER_INIT UHCIController::~UHCIController()
-{
-}
+UNMAP_AFTER_INIT UHCIController::~UHCIController() = default;
 
 ErrorOr<void> UHCIController::reset()
 {
@@ -107,7 +109,7 @@ ErrorOr<void> UHCIController::reset()
     }
 
     // Let's allocate the physical page for the Frame List (which is 4KiB aligned)
-    m_framelist = TRY(MM.allocate_dma_buffer_page("UHCI Framelist", Memory::Region::Access::Write));
+    m_framelist = TRY(MM.allocate_dma_buffer_page("UHCI Framelist"sv, Memory::Region::Access::Write));
     dbgln("UHCI: Allocated framelist at physical address {}", m_framelist->physical_page(0)->paddr());
     dbgln("UHCI: Framelist is at virtual address {}", m_framelist->vaddr());
     write_sofmod(64); // 1mS frame time
@@ -131,17 +133,19 @@ UNMAP_AFTER_INIT ErrorOr<void> UHCIController::create_structures()
 {
     m_queue_head_pool = TRY(UHCIDescriptorPool<QueueHead>::try_create("Queue Head Pool"sv));
 
-    // Create the Full Speed, Low Speed Control and Bulk Queue Heads
-    m_interrupt_transfer_queue = allocate_queue_head();
-    m_lowspeed_control_qh = allocate_queue_head();
-    m_fullspeed_control_qh = allocate_queue_head();
-    m_bulk_qh = allocate_queue_head();
-    m_dummy_qh = allocate_queue_head();
+    // Doesn't do anything other than give interrupt transfer queues something to set as prev QH so that we don't have to handle that as an extra edge case
+    m_schedule_begin_anchor = allocate_queue_head();
+
+    // Create the Interrupt, Full Speed, Low Speed Control and Bulk Queue Heads
+    m_interrupt_qh_anchor = allocate_queue_head();
+    m_ls_control_qh_anchor = allocate_queue_head();
+    m_fs_control_qh_anchor = allocate_queue_head();
+    m_bulk_qh_anchor = allocate_queue_head();
 
     // Now the Transfer Descriptor pool
     m_transfer_descriptor_pool = TRY(UHCIDescriptorPool<TransferDescriptor>::try_create("Transfer Descriptor Pool"sv));
 
-    m_isochronous_transfer_pool = TRY(MM.allocate_dma_buffer_page("UHCI Isochronous Descriptor Pool", Memory::Region::Access::ReadWrite));
+    m_isochronous_transfer_pool = TRY(MM.allocate_dma_buffer_page("UHCI Isochronous Descriptor Pool"sv, Memory::Region::Access::ReadWrite));
 
     // Set up the Isochronous Transfer Descriptor list
     m_iso_td_list.resize(UHCI_NUMBER_OF_ISOCHRONOUS_TDS);
@@ -157,7 +161,6 @@ UNMAP_AFTER_INIT ErrorOr<void> UHCIController::create_structures()
         auto transfer_descriptor = m_iso_td_list.at(i);
         transfer_descriptor->set_in_use(true); // Isochronous transfers are ALWAYS marked as in use (in case we somehow get allocated one...)
         transfer_descriptor->set_isochronous();
-        transfer_descriptor->link_queue_head(m_interrupt_transfer_queue->paddr());
 
         if constexpr (UHCI_VERBOSE_DEBUG)
             transfer_descriptor->print();
@@ -196,39 +199,37 @@ UNMAP_AFTER_INIT void UHCIController::setup_schedule()
     // Not specified in the datasheet, however, is another Queue Head with an "inactive" Transfer Descriptor. This
     // is to circumvent a bug in the silicon of the PIIX4's UHCI controller.
     // https://github.com/openbsd/src/blob/master/sys/dev/usb/uhci.c#L390
-    //
+    m_schedule_begin_anchor->link_next_queue_head(m_interrupt_qh_anchor);
+    m_schedule_begin_anchor->terminate_element_link_ptr();
 
-    m_interrupt_transfer_queue->link_next_queue_head(m_lowspeed_control_qh);
-    m_interrupt_transfer_queue->terminate_element_link_ptr();
+    m_interrupt_qh_anchor->link_next_queue_head(m_ls_control_qh_anchor);
+    m_interrupt_qh_anchor->terminate_element_link_ptr();
 
-    m_lowspeed_control_qh->link_next_queue_head(m_fullspeed_control_qh);
-    m_lowspeed_control_qh->terminate_element_link_ptr();
+    m_ls_control_qh_anchor->link_next_queue_head(m_fs_control_qh_anchor);
+    m_ls_control_qh_anchor->terminate_element_link_ptr();
 
-    m_fullspeed_control_qh->link_next_queue_head(m_bulk_qh);
-    m_fullspeed_control_qh->terminate_element_link_ptr();
-
-    m_bulk_qh->link_next_queue_head(m_dummy_qh);
-    m_bulk_qh->terminate_element_link_ptr();
+    m_fs_control_qh_anchor->link_next_queue_head(m_bulk_qh_anchor);
+    m_fs_control_qh_anchor->terminate_element_link_ptr();
 
     auto piix4_td_hack = allocate_transfer_descriptor();
     piix4_td_hack->terminate();
     piix4_td_hack->set_max_len(0x7ff); // Null data packet
     piix4_td_hack->set_device_address(0x7f);
     piix4_td_hack->set_packet_id(PacketID::IN);
-    m_dummy_qh->terminate_with_stray_descriptor(piix4_td_hack);
-    m_dummy_qh->terminate_element_link_ptr();
+    m_bulk_qh_anchor->link_next_queue_head(m_fs_control_qh_anchor);
+    m_bulk_qh_anchor->attach_transfer_descriptor_chain(piix4_td_hack);
 
     u32* framelist = reinterpret_cast<u32*>(m_framelist->vaddr().as_ptr());
-    for (int frame = 0; frame < UHCI_NUMBER_OF_FRAMES; frame++) {
-        // Each frame pointer points to iso_td % NUM_ISO_TDS
-        framelist[frame] = m_iso_td_list.at(frame % UHCI_NUMBER_OF_ISOCHRONOUS_TDS)->paddr();
+    for (int frame_num = 0; frame_num < UHCI_NUMBER_OF_FRAMES; frame_num++) {
+        auto& frame_iso_td = m_iso_td_list.at(frame_num % UHCI_NUMBER_OF_ISOCHRONOUS_TDS);
+        frame_iso_td->link_queue_head(m_schedule_begin_anchor->paddr());
+        framelist[frame_num] = frame_iso_td->paddr();
     }
 
-    m_interrupt_transfer_queue->print();
-    m_lowspeed_control_qh->print();
-    m_fullspeed_control_qh->print();
-    m_bulk_qh->print();
-    m_dummy_qh->print();
+    m_interrupt_qh_anchor->print();
+    m_ls_control_qh_anchor->print();
+    m_fs_control_qh_anchor->print();
+    m_bulk_qh_anchor->print();
 }
 
 QueueHead* UHCIController::allocate_queue_head()
@@ -357,6 +358,85 @@ void UHCIController::free_descriptor_chain(TransferDescriptor* first_descriptor)
     }
 }
 
+void UHCIController::enqueue_qh(QueueHead* transfer_queue, QueueHead* anchor)
+{
+    SpinlockLocker locker(m_schedule_lock);
+
+    auto prev_qh = anchor->prev_qh();
+    prev_qh->link_next_queue_head(transfer_queue);
+    transfer_queue->link_next_queue_head(anchor);
+}
+
+void UHCIController::dequeue_qh(QueueHead* transfer_queue)
+{
+    SpinlockLocker locker(m_schedule_lock);
+    transfer_queue->prev_qh()->link_next_queue_head(transfer_queue->next_qh());
+}
+
+ErrorOr<QueueHead*> UHCIController::create_transfer_queue(Transfer& transfer)
+{
+    Pipe& pipe = transfer.pipe();
+
+    // Create a new descriptor chain
+    TransferDescriptor* last_data_descriptor;
+    TransferDescriptor* data_descriptor_chain;
+    auto buffer_address = Ptr32<u8>(transfer.buffer_physical().as_ptr());
+    TRY(create_chain(pipe, transfer.pipe().direction() == Pipe::Direction::In ? PacketID::IN : PacketID::OUT, buffer_address, pipe.max_packet_size(), transfer.transfer_data_size(), &data_descriptor_chain, &last_data_descriptor));
+
+    last_data_descriptor->terminate();
+
+    if constexpr (UHCI_VERBOSE_DEBUG) {
+        if (data_descriptor_chain) {
+            dbgln("Data TD");
+            data_descriptor_chain->print();
+        }
+    }
+
+    QueueHead* transfer_queue = allocate_queue_head();
+    if (!transfer_queue) {
+        free_descriptor_chain(data_descriptor_chain);
+        return ENOMEM;
+    }
+
+    transfer_queue->attach_transfer_descriptor_chain(data_descriptor_chain);
+    transfer_queue->set_transfer(&transfer);
+
+    return transfer_queue;
+}
+
+ErrorOr<void> UHCIController::submit_async_transfer(NonnullOwnPtr<AsyncTransferHandle> async_handle, QueueHead* anchor, QueueHead* transfer_queue)
+{
+    {
+        SpinlockLocker locker { m_async_lock };
+        auto iter = find_if(m_active_async_transfers.begin(), m_active_async_transfers.end(), [](auto& handle) { return handle == nullptr; });
+        if (iter == m_active_async_transfers.end())
+            return ENOMEM;
+        *iter = move(async_handle);
+    }
+
+    enqueue_qh(transfer_queue, anchor);
+
+    return {};
+}
+
+void UHCIController::cancel_async_transfer(NonnullLockRefPtr<Transfer> transfer)
+{
+    SpinlockLocker locker { m_async_lock };
+
+    auto iter = find_if(m_active_async_transfers.begin(), m_active_async_transfers.end(), [transfer](auto& handle) { return handle != nullptr && handle->transfer.ptr() == transfer.ptr(); });
+    if (iter == m_active_async_transfers.end()) {
+        dbgln("Error: couldn't cancel supplied async transfer");
+        return; // We can't really do anything here, so just give up
+    }
+
+    auto& transfer_queue = (*iter)->qh;
+    dequeue_qh(transfer_queue);
+    free_descriptor_chain(transfer_queue->get_first_td());
+    transfer_queue->free();
+    m_queue_head_pool->release_to_pool(transfer_queue);
+    *iter = nullptr;
+}
+
 ErrorOr<size_t> UHCIController::submit_control_transfer(Transfer& transfer)
 {
     Pipe& pipe = transfer.pipe(); // Short circuit the pipe related to this transfer
@@ -413,23 +493,62 @@ ErrorOr<size_t> UHCIController::submit_control_transfer(Transfer& transfer)
     QueueHead* transfer_queue = allocate_queue_head();
     if (!transfer_queue) {
         free_descriptor_chain(data_descriptor_chain);
-        return 0;
+        return ENOMEM;
     }
 
     transfer_queue->attach_transfer_descriptor_chain(setup_td);
     transfer_queue->set_transfer(&transfer);
 
-    m_fullspeed_control_qh->attach_transfer_queue(*transfer_queue);
+    enqueue_qh(transfer_queue, m_fs_control_qh_anchor);
 
     size_t transfer_size = 0;
-    while (!transfer.complete())
+    while (!transfer.complete()) {
+        dbgln_if(USB_DEBUG, "Control transfer size: {}", transfer_size);
         transfer_size = poll_transfer_queue(*transfer_queue);
+    }
 
+    dequeue_qh(transfer_queue);
     free_descriptor_chain(transfer_queue->get_first_td());
     transfer_queue->free();
     m_queue_head_pool->release_to_pool(transfer_queue);
 
     return transfer_size;
+}
+
+ErrorOr<size_t> UHCIController::submit_bulk_transfer(Transfer& transfer)
+{
+    auto transfer_queue = TRY(create_transfer_queue(transfer));
+    enqueue_qh(transfer_queue, m_bulk_qh_anchor);
+
+    dbgln_if(UHCI_DEBUG, "UHCI: Received bulk transfer for address {}. Root Hub is at address {}.", transfer.pipe().device_address(), m_root_hub->device_address());
+
+    size_t transfer_size = 0;
+    while (!transfer.complete()) {
+        transfer_size = poll_transfer_queue(*transfer_queue);
+        dbgln_if(USB_DEBUG, "Bulk transfer size: {}", transfer_size);
+    }
+
+    dequeue_qh(transfer_queue);
+    free_descriptor_chain(transfer_queue->get_first_td());
+    transfer_queue->free();
+    m_queue_head_pool->release_to_pool(transfer_queue);
+
+    return transfer_size;
+}
+
+ErrorOr<void> UHCIController::submit_async_interrupt_transfer(NonnullLockRefPtr<Transfer> transfer, u16 ms_interval)
+{
+    dbgln_if(UHCI_DEBUG, "UHCI: Received interrupt transfer for address {}. Root Hub is at address {}.", transfer->pipe().device_address(), m_root_hub->device_address());
+
+    if (ms_interval == 0) {
+        return EINVAL;
+    }
+
+    auto transfer_queue = TRY(create_transfer_queue(*transfer));
+    auto async_transfer_handle = TRY(adopt_nonnull_own_or_enomem(new (nothrow) AsyncTransferHandle { transfer, transfer_queue, ms_interval }));
+    TRY(submit_async_transfer(move(async_transfer_handle), m_interrupt_qh_anchor, transfer_queue));
+
+    return {};
 }
 
 size_t UHCIController::poll_transfer_queue(QueueHead& transfer_queue)
@@ -466,8 +585,8 @@ size_t UHCIController::poll_transfer_queue(QueueHead& transfer_queue)
 
 ErrorOr<void> UHCIController::spawn_port_process()
 {
-    RefPtr<Thread> usb_hotplug_thread;
-    (void)Process::create_kernel_process(usb_hotplug_thread, TRY(KString::try_create("UHCI hotplug")), [&] {
+    LockRefPtr<Thread> usb_hotplug_thread;
+    (void)Process::create_kernel_process(usb_hotplug_thread, TRY(KString::try_create("UHCI Hot Plug Task"sv)), [&] {
         for (;;) {
             if (m_root_hub)
                 m_root_hub->check_for_port_updates();
@@ -478,7 +597,34 @@ ErrorOr<void> UHCIController::spawn_port_process()
     return {};
 }
 
-bool UHCIController::handle_irq(const RegisterState&)
+ErrorOr<void> UHCIController::spawn_async_poll_process()
+{
+    LockRefPtr<Thread> async_poll_thread;
+    (void)Process::create_kernel_process(async_poll_thread, TRY(KString::try_create("UHCI Async Poll Task"sv)), [&] {
+        u16 poll_interval_ms = 1024;
+        for (;;) {
+            {
+                SpinlockLocker locker { m_async_lock };
+                for (OwnPtr<AsyncTransferHandle>& handle : m_active_async_transfers) {
+                    if (handle != nullptr) {
+                        poll_interval_ms = min(poll_interval_ms, handle->ms_poll_interval);
+                        QueueHead* qh = handle->qh;
+                        for (auto td = qh->get_first_td(); td != nullptr && !td->active(); td = td->next_td()) {
+                            if (td->next_td() == nullptr) { // Finished QH
+                                handle->transfer->invoke_async_callback();
+                                qh->reinitialize(); // Set the QH to be active again
+                            }
+                        }
+                    }
+                }
+            }
+            (void)Thread::current()->sleep(Time::from_milliseconds(poll_interval_ms));
+        }
+    });
+    return {};
+}
+
+bool UHCIController::handle_irq(RegisterState const&)
 {
     u32 status = read_usbsts();
 
@@ -557,7 +703,7 @@ void UHCIController::reset_port(u8 port)
     // Wait at least 50 ms for the port to reset.
     // This is T DRSTR in the USB 2.0 Specification Page 186 Table 7-13.
     constexpr u16 reset_delay = 50 * 1000;
-    IO::delay(reset_delay);
+    microseconds_delay(reset_delay);
 
     port_data &= ~UHCI_PORTSC_PORT_RESET;
     if (port == 0)
@@ -568,7 +714,7 @@ void UHCIController::reset_port(u8 port)
     // Wait 10 ms for the port to recover.
     // This is T RSTRCY in the USB 2.0 Specification Page 188 Table 7-14.
     constexpr u16 reset_recovery_delay = 10 * 1000;
-    IO::delay(reset_recovery_delay);
+    microseconds_delay(reset_recovery_delay);
 
     port_data = port == 0 ? read_portsc1() : read_portsc2();
     port_data |= UHCI_PORTSC_PORT_ENABLED;

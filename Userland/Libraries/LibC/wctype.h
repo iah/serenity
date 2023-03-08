@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <sys/cdefs.h>
 #include <wchar.h>
 
 __BEGIN_DECLS
@@ -27,10 +28,10 @@ int iswlower(wint_t wc);
 int iswupper(wint_t wc);
 int iswblank(wint_t wc);
 int iswctype(wint_t, wctype_t);
-wctype_t wctype(const char*);
+wctype_t wctype(char const*);
 wint_t towlower(wint_t wc);
 wint_t towupper(wint_t wc);
 wint_t towctrans(wint_t, wctrans_t);
-wctrans_t wctrans(const char*);
+wctrans_t wctrans(char const*);
 
 __END_DECLS

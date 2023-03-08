@@ -11,7 +11,7 @@
 
 namespace GUI::GML {
 
-void AutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> callback)
+void AutocompleteProvider::provide_completions(Function<void(Vector<CodeComprehension::AutocompleteResultEntry>)> callback)
 {
     auto cursor = m_editor->cursor();
     auto text = m_editor->text();
@@ -25,8 +25,8 @@ void AutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> cal
         InIdentifier,
         AfterIdentifier, // Can we introspect this?
     } state { Free };
-    String identifier_string;
-    Vector<String> class_names;
+    DeprecatedString identifier_string;
+    Vector<DeprecatedString> class_names;
     Vector<State> previous_states;
     bool should_push_state { true };
     Token* last_seen_token { nullptr };
@@ -107,8 +107,8 @@ void AutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> cal
         state = previous_states.take_last();
     }
 
-    auto& widget_class = *Core::ObjectClassRegistration::find("GUI::Widget");
-    auto& layout_class = *Core::ObjectClassRegistration::find("GUI::Layout");
+    auto& widget_class = *Core::ObjectClassRegistration::find("GUI::Widget"sv);
+    auto& layout_class = *Core::ObjectClassRegistration::find("GUI::Layout"sv);
 
     // FIXME: Can this be done without a StringBuilder?
     auto make_fuzzy = [](StringView str) {
@@ -118,46 +118,46 @@ void AutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> cal
             fuzzy_str_builder.append(character);
             fuzzy_str_builder.append('*');
         }
-        return fuzzy_str_builder.build();
+        return fuzzy_str_builder.to_deprecated_string();
     };
 
-    Vector<AutocompleteProvider::Entry> class_entries, identifier_entries;
+    Vector<CodeComprehension::AutocompleteResultEntry> class_entries, identifier_entries;
 
-    auto register_layouts_matching_pattern = [&](String pattern, size_t partial_input_length) {
+    auto register_layouts_matching_pattern = [&](DeprecatedString pattern, size_t partial_input_length) {
         Core::ObjectClassRegistration::for_each([&](const Core::ObjectClassRegistration& registration) {
             if (registration.is_derived_from(layout_class) && &registration != &layout_class && registration.class_name().matches(pattern))
-                class_entries.empend(String::formatted("@{}", registration.class_name()), partial_input_length);
+                class_entries.empend(DeprecatedString::formatted("@{}", registration.class_name()), partial_input_length);
         });
     };
 
-    auto register_widgets_matching_pattern = [&](String pattern, size_t partial_input_length) {
+    auto register_widgets_matching_pattern = [&](DeprecatedString pattern, size_t partial_input_length) {
         Core::ObjectClassRegistration::for_each([&](const Core::ObjectClassRegistration& registration) {
             if (registration.is_derived_from(widget_class) && registration.class_name().matches(pattern))
-                class_entries.empend(String::formatted("@{}", registration.class_name()), partial_input_length);
+                class_entries.empend(DeprecatedString::formatted("@{}", registration.class_name()), partial_input_length);
         });
     };
 
-    auto register_class_properties_matching_pattern = [&](String pattern, size_t partial_input_length) {
+    auto register_class_properties_matching_pattern = [&](DeprecatedString pattern, size_t partial_input_length) {
         auto class_name = class_names.last();
 
         // FIXME: Don't show properties that are already specified in the scope.
         auto registration = Core::ObjectClassRegistration::find(class_name);
         if (registration && (registration->is_derived_from(widget_class) || registration->is_derived_from(layout_class))) {
-            if (auto instance = registration->construct()) {
-                for (auto& it : instance->properties()) {
+            if (auto instance = registration->construct(); !instance.is_error()) {
+                for (auto& it : instance.value()->properties()) {
                     if (!it.value->is_readonly() && it.key.matches(pattern))
-                        identifier_entries.empend(String::formatted("{}: ", it.key), partial_input_length, Language::Unspecified, it.key);
+                        identifier_entries.empend(DeprecatedString::formatted("{}: ", it.key), partial_input_length, CodeComprehension::Language::Unspecified, it.key);
                 }
             }
         }
 
         if (can_have_declared_layout(class_names.last()) && "layout"sv.matches(pattern))
-            identifier_entries.empend("layout: ", partial_input_length, Language::Unspecified, "layout", AutocompleteProvider::Entry::HideAutocompleteAfterApplying::No);
+            identifier_entries.empend("layout: ", partial_input_length, CodeComprehension::Language::Unspecified, "layout", CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying::No);
         if (class_names.last() == "GUI::ScrollableContainerWidget" && "content_widget"sv.matches(pattern))
-            identifier_entries.empend("content_widget: ", partial_input_length, Language::Unspecified, "content_widget", AutocompleteProvider::Entry::HideAutocompleteAfterApplying::No);
+            identifier_entries.empend("content_widget: ", partial_input_length, CodeComprehension::Language::Unspecified, "content_widget", CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying::No);
     };
 
-    auto register_properties_and_widgets_matching_pattern = [&](String pattern, size_t partial_input_length) {
+    auto register_properties_and_widgets_matching_pattern = [&](DeprecatedString pattern, size_t partial_input_length) {
         if (!class_names.is_empty()) {
             register_class_properties_matching_pattern(pattern, partial_input_length);
 
@@ -235,7 +235,7 @@ void AutocompleteProvider::provide_completions(Function<void(Vector<Entry>)> cal
     quick_sort(class_entries, [](auto& a, auto& b) { return a.completion < b.completion; });
     quick_sort(identifier_entries, [](auto& a, auto& b) { return a.completion < b.completion; });
 
-    Vector<GUI::AutocompleteProvider::Entry> entries;
+    Vector<CodeComprehension::AutocompleteResultEntry> entries;
     entries.extend(move(identifier_entries));
     entries.extend(move(class_entries));
 

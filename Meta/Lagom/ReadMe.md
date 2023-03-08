@@ -14,22 +14,35 @@ Lagom can be used to fuzz parts of SerenityOS's code base. Fuzzers can be run lo
 
 ### Fuzzing locally
 
-Lagom can be used to fuzz parts of SerenityOS's code base. This requires building with `clang`, so it's convenient to use a different build directory for that. Fuzzers work best with Address Sanitizer enabled. Run CMake like this:
+Lagom can be used to fuzz parts of SerenityOS's code base. This requires building with `clang`, so it's convenient to use a different build directory for that. Fuzzers work best with Address Sanitizer enabled. The fuzzer build requires code generators to be pre-built without fuzzing in a two stage build. To build with LLVM's libFuzzer, invoke
+the ``BuildFuzzers.sh`` script with no arguments. The script does the equivalent of the CMake commands below:
 
-    # From the root of the SerenityOS checkout:
-    cmake -GNinja -S Meta/Lagom -B Build/lagom-fuzzers \
+```sh
+    # From the Meta/Lagom directory:
+    # Stage 1: Build and install code generators and other tools
+    cmake -GNinja -B Build/tools \
+      -DBUILD_LAGOM=OFF \
+      -DCMAKE_INSTALL_PREFIX=Build/tool-install \
+      -Dpackage=LagomTools
+    ninja -C Build/tools install
+    # Stage 2: Build fuzzers, making sure the build can find the tools we just built
+    cmake -GNinja -B Build/lagom-fuzzers \
       -DBUILD_LAGOM=ON \
-      -DENABLE_FUZZER_SANITIZER=ON \
+      -DENABLE_FUZZERS_LIBFUZZER=ON \
       -DENABLE_ADDRESS_SANITIZER=ON \
       -DENABLE_UNDEFINED_SANITIZER=ON \
+      -DCMAKE_PREFIX_PATH=Build/tool-install \
       -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_C_COMPILER=clang
     cd Build/lagom-fuzzers
     ninja
     # Or as a handy rebuild-rerun line:
     ninja FuzzJs && ./Fuzzers/FuzzJs
+```
 
-(Note that we require clang >= 12, so depending on your package manager you may need to specify `clang++-12` and `clang-12` instead.)
+(Note that we require clang >= 13, see the pick_clang() function in the script for the paths that are searched)
+
+The fuzzing build's CMake cache can be manipulated with commands like `cmake -B Build/fuzzers -S . -DENABLE_LAGOM_LIBWEB=OFF`.
 
 Any fuzzing results (particularly slow inputs, crashes, etc.) will be dropped in the current directory.
 
@@ -62,7 +75,7 @@ Feel free to upload lots and lots files there, or use them for great good!
 
 ### Fuzzing on OSS-Fuzz
 
-https://oss-fuzz.com/ automatically runs all fuzzers in the Fuzzers/ subdirectory whose name starts with "Fuzz" and which are added to the build in `Fuzzers/CMakeLists.txt` if `ENABLE_OSS_FUZZ` is set. Looking for "serenity" on oss-fuzz.com finds interesting links, in particular:
+https://oss-fuzz.com/ automatically runs all fuzzers in the Fuzzers/ subdirectory whose name starts with "Fuzz" and which are added to the build in `Fuzzers/CMakeLists.txt` if `ENABLE_FUZZERS_OSSFUZZ` is set. Looking for "serenity" on oss-fuzz.com finds interesting links, in particular:
 
 * [known open bugs found by fuzzers](https://oss-fuzz.com/testcases?project=serenity&open=yes)
   * [oss-fuzz bug tracker for these](https://bugs.chromium.org/p/oss-fuzz/issues/list?sort=-opened&can=1&q=proj:serenity)

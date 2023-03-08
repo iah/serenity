@@ -33,6 +33,11 @@ int FilteringProxyModel::column_count(ModelIndex const& index) const
     return m_model->column_count(m_matching_indices[index.row()]);
 }
 
+DeprecatedString FilteringProxyModel::column_name(int column) const
+{
+    return m_model->column_name(column);
+}
+
 Variant FilteringProxyModel::data(ModelIndex const& index, ModelRole role) const
 {
     if (!index.is_valid())
@@ -41,8 +46,8 @@ Variant FilteringProxyModel::data(ModelIndex const& index, ModelRole role) const
     if ((size_t)index.row() > m_matching_indices.size() || index.row() < 0)
         return {};
 
-    // FIXME: Support hierarchical models (with a non-empty index.parent()).
-    auto underlying_index = m_model->index(m_matching_indices[index.row()].row(), index.column(), {});
+    auto matching_index = m_matching_indices[index.row()];
+    auto underlying_index = m_model->index(matching_index.row(), index.column(), matching_index.parent());
     return underlying_index.data(role);
 }
 

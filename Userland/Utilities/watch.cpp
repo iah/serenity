@@ -5,12 +5,12 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/FileWatcher.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
@@ -25,25 +25,25 @@
 static int opt_interval = 2;
 static bool flag_noheader = false;
 static bool flag_beep_on_fail = false;
-static volatile int exit_code = 0;
+static int volatile exit_code = 0;
 static volatile pid_t child_pid = -1;
 
-static String build_header_string(Vector<char const*> const& command, struct timeval const& interval)
+static DeprecatedString build_header_string(Vector<DeprecatedString> const& command, struct timeval const& interval)
 {
     StringBuilder builder;
     builder.appendff("Every {}.{}s: \x1b[1m", interval.tv_sec, interval.tv_usec / 100000);
     builder.join(' ', command);
-    builder.append("\x1b[0m");
-    return builder.build();
+    builder.append("\x1b[0m"sv);
+    return builder.to_deprecated_string();
 }
 
-static String build_header_string(Vector<char const*> const& command, Vector<String> const& filenames)
+static DeprecatedString build_header_string(Vector<DeprecatedString> const& command, Vector<DeprecatedString> const& filenames)
 {
     StringBuilder builder;
     builder.appendff("Every time any of {} changes: \x1b[1m", filenames);
     builder.join(' ', command);
-    builder.append("\x1b[0m");
-    return builder.build();
+    builder.append("\x1b[0m"sv);
+    return builder.to_deprecated_string();
 }
 
 static struct timeval get_current_time()
@@ -78,11 +78,15 @@ static void handle_signal(int signal)
     exit(exit_code);
 }
 
-static int run_command(Vector<char const*> const& command)
+static int run_command(Vector<DeprecatedString> const& command)
 {
-    VERIFY(command[command.size() - 1] == nullptr);
+    Vector<char const*> argv;
+    argv.ensure_capacity(command.size() + 1);
+    for (auto& arg : command)
+        argv.unchecked_append(arg.characters());
+    argv.unchecked_append(nullptr);
 
-    if ((errno = posix_spawnp(const_cast<pid_t*>(&child_pid), command[0], nullptr, nullptr, const_cast<char**>(command.data()), environ))) {
+    if ((errno = posix_spawnp(const_cast<pid_t*>(&child_pid), argv[0], nullptr, nullptr, const_cast<char**>(argv.data()), environ))) {
         exit_code = 1;
         perror("posix_spawn");
         return errno;
@@ -110,10 +114,10 @@ static int run_command(Vector<char const*> const& command)
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::signal(SIGINT, handle_signal));
-    TRY(Core::System::pledge("stdio proc exec rpath", nullptr));
+    TRY(Core::System::pledge("stdio proc exec rpath"));
 
-    Vector<String> files_to_watch;
-    Vector<char const*> command;
+    Vector<DeprecatedString> files_to_watch;
+    Vector<DeprecatedString> command;
     Core::ArgsParser args_parser;
     args_parser.set_stop_on_first_non_option(true);
     args_parser.set_general_help("Execute a command repeatedly, and watch its output over time.");
@@ -121,7 +125,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(flag_noheader, "Turn off the header describing the command and interval", "no-title", 't');
     args_parser.add_option(flag_beep_on_fail, "Beep if the command has a non-zero exit code", "beep", 'b');
     Core::ArgsParser::Option file_arg {
-        .requires_argument = true,
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
         .help_string = "Run command whenever this file changes. Can be used multiple times.",
         .long_name = "file",
         .short_name = 'f',
@@ -135,9 +139,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_positional_argument(command, "Command to run", "command");
     args_parser.parse(arguments);
 
-    command.append(nullptr);
-
-    String header;
+    DeprecatedString header;
 
     auto watch_callback = [&] {
         // Clear the screen, then reset the cursor position to the top left.
@@ -163,7 +165,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto file_watcher = Core::BlockingFileWatcher();
         for (auto const& file : files_to_watch) {
-            if (!Core::File::exists(file)) {
+            if (!Core::DeprecatedFile::exists(file)) {
                 warnln("Cannot watch '{}', it does not exist.", file);
                 return 1;
             }
@@ -184,7 +186,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
         }
     } else {
-        TRY(Core::System::pledge("stdio proc exec", nullptr));
+        TRY(Core::System::pledge("stdio proc exec"));
 
         struct timeval interval;
         if (opt_interval <= 0) {

@@ -8,17 +8,30 @@
 
 #include <AK/Iterator.h>
 #include <AK/Span.h>
+#include <AK/StdLibExtras.h>
+#include <AK/TypedTransfer.h>
 
 namespace AK {
 
 template<typename T, size_t Size>
 struct Array {
+    using ValueType = T;
+
+    // This is a static function because constructors mess up Array's POD-ness.
+    static Array from_span(Span<T> span)
+    {
+        Array array;
+        VERIFY(span.size() == Size);
+        TypedTransfer<T>::copy(array.data(), span.data(), Size);
+        return array;
+    }
+
     [[nodiscard]] constexpr T const* data() const { return __data; }
     [[nodiscard]] constexpr T* data() { return __data; }
 
     [[nodiscard]] constexpr size_t size() const { return Size; }
 
-    [[nodiscard]] constexpr Span<T const> span() const { return { __data, Size }; }
+    [[nodiscard]] constexpr ReadonlySpan<T> span() const { return { __data, Size }; }
     [[nodiscard]] constexpr Span<T> span() { return { __data, Size }; }
 
     [[nodiscard]] constexpr T const& at(size_t index) const
@@ -32,11 +45,19 @@ struct Array {
         return __data[index];
     }
 
-    [[nodiscard]] constexpr T const& front() const { return at(0); }
-    [[nodiscard]] constexpr T& front() { return at(0); }
+    [[nodiscard]] constexpr T const& first() const { return at(0); }
+    [[nodiscard]] constexpr T& first() { return at(0); }
 
-    [[nodiscard]] constexpr T const& back() const requires(Size > 0) { return at(Size - 1); }
-    [[nodiscard]] constexpr T& back() requires(Size > 0) { return at(Size - 1); }
+    [[nodiscard]] constexpr T const& last() const
+    requires(Size > 0)
+    {
+        return at(Size - 1);
+    }
+    [[nodiscard]] constexpr T& last()
+    requires(Size > 0)
+    {
+        return at(Size - 1);
+    }
 
     [[nodiscard]] constexpr bool is_empty() const { return size() == 0; }
 
@@ -55,7 +76,7 @@ struct Array {
     [[nodiscard]] constexpr ConstIterator end() const { return ConstIterator::end(*this); }
     [[nodiscard]] constexpr Iterator end() { return Iterator::end(*this); }
 
-    [[nodiscard]] constexpr operator Span<T const>() const { return span(); }
+    [[nodiscard]] constexpr operator ReadonlySpan<T>() const { return span(); }
     [[nodiscard]] constexpr operator Span<T>() { return span(); }
 
     constexpr size_t fill(T const& value)
@@ -66,7 +87,8 @@ struct Array {
         return Size;
     }
 
-    [[nodiscard]] constexpr T max() requires(requires(T x, T y) { x < y; })
+    [[nodiscard]] constexpr T max() const
+    requires(requires(T x, T y) { x < y; })
     {
         static_assert(Size > 0, "No values to max() over");
 
@@ -76,7 +98,8 @@ struct Array {
         return value;
     }
 
-    [[nodiscard]] constexpr T min() requires(requires(T x, T y) { x > y; })
+    [[nodiscard]] constexpr T min() const
+    requires(requires(T x, T y) { x > y; })
     {
         static_assert(Size > 0, "No values to min() over");
 
@@ -109,5 +132,7 @@ constexpr static auto iota_array(T const offset = {})
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::Array;
 using AK::iota_array;
+#endif

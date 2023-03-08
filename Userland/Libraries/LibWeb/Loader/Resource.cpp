@@ -7,27 +7,43 @@
 #include <AK/Debug.h>
 #include <AK/Function.h>
 #include <LibCore/MimeData.h>
+#include <LibTextCodec/Decoder.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/Loader/Resource.h>
+#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Platform/EventLoopPlugin.h>
 
 namespace Web {
 
-NonnullRefPtr<Resource> Resource::create(Badge<ResourceLoader>, Type type, const LoadRequest& request)
+NonnullRefPtr<Resource> Resource::create(Badge<ResourceLoader>, Type type, LoadRequest const& request)
 {
     if (type == Type::Image)
         return adopt_ref(*new ImageResource(request));
     return adopt_ref(*new Resource(type, request));
 }
 
-Resource::Resource(Type type, const LoadRequest& request)
+Resource::Resource(Type type, LoadRequest const& request)
     : m_request(request)
     , m_type(type)
 {
 }
 
-Resource::~Resource()
+Resource::Resource(Type type, Resource& resource)
+    : m_request(resource.m_request)
+    , m_encoded_data(move(resource.m_encoded_data))
+    , m_type(type)
+    , m_loaded(resource.m_loaded)
+    , m_failed(resource.m_failed)
+    , m_error(move(resource.m_error))
+    , m_encoding(move(resource.m_encoding))
+    , m_mime_type(move(resource.m_mime_type))
+    , m_response_headers(move(resource.m_response_headers))
+    , m_status_code(move(resource.m_status_code))
 {
+    ResourceLoader::the().evict_from_cache(m_request);
 }
+
+Resource::~Resource() = default;
 
 void Resource::for_each_client(Function<void(ResourceClient&)> callback)
 {
@@ -41,7 +57,7 @@ void Resource::for_each_client(Function<void(ResourceClient&)> callback)
     }
 }
 
-static Optional<String> encoding_from_content_type(const String& content_type)
+static Optional<DeprecatedString> encoding_from_content_type(DeprecatedString const& content_type)
 {
     auto offset = content_type.find("charset="sv);
     if (offset.has_value()) {
@@ -56,7 +72,7 @@ static Optional<String> encoding_from_content_type(const String& content_type)
     return {};
 }
 
-static String mime_type_from_content_type(const String& content_type)
+static DeprecatedString mime_type_from_content_type(DeprecatedString const& content_type)
 {
     auto offset = content_type.find(';');
     if (offset.has_value())
@@ -65,7 +81,12 @@ static String mime_type_from_content_type(const String& content_type)
     return content_type;
 }
 
-void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap<String, String, CaseInsensitiveStringTraits>& headers, Optional<u32> status_code)
+static bool is_valid_encoding(StringView encoding)
+{
+    return TextCodec::decoder_for(encoding).has_value();
+}
+
+void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& headers, Optional<u32> status_code)
 {
     VERIFY(!m_loaded);
     // FIXME: Handle OOM failure.
@@ -82,14 +103,14 @@ void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap
         // FIXME: "The Quite OK Image Format" doesn't have an official mime type yet,
         //        and servers like nginx will send a generic octet-stream mime type instead.
         //        Let's use image/x-qoi for now, which is also what our Core::MimeData uses & would guess.
-        if (m_mime_type == "application/octet-stream" && url().path().ends_with(".qoi"))
+        if (m_mime_type == "application/octet-stream" && url().path().ends_with(".qoi"sv))
             m_mime_type = "image/x-qoi";
-    } else if (url().protocol() == "data" && !url().data_mime_type().is_empty()) {
+    } else if (url().scheme() == "data" && !url().data_mime_type().is_empty()) {
         dbgln_if(RESOURCE_DEBUG, "This is a data URL with mime-type _{}_", url().data_mime_type());
         m_mime_type = url().data_mime_type();
     } else {
         auto content_type_options = headers.get("X-Content-Type-Options");
-        if (content_type_options.value_or("").equals_ignoring_case("nosniff")) {
+        if (content_type_options.value_or("").equals_ignoring_case("nosniff"sv)) {
             m_mime_type = "text/plain";
         } else {
             m_mime_type = Core::guess_mime_type_based_on_filename(url().path());
@@ -99,8 +120,8 @@ void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap
     m_encoding = {};
     if (content_type.has_value()) {
         auto encoding = encoding_from_content_type(content_type.value());
-        if (encoding.has_value()) {
-            dbgln_if(RESOURCE_DEBUG, "Set encoding '{}' from Content-Type", encoding.has_value());
+        if (encoding.has_value() && is_valid_encoding(encoding.value())) {
+            dbgln_if(RESOURCE_DEBUG, "Set encoding '{}' from Content-Type", encoding.value());
             m_encoding = encoding.value();
         }
     }
@@ -110,7 +131,7 @@ void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap
     });
 }
 
-void Resource::did_fail(Badge<ResourceLoader>, const String& error, Optional<u32> status_code)
+void Resource::did_fail(Badge<ResourceLoader>, DeprecatedString const& error, Optional<u32> status_code)
 {
     m_error = error;
     m_status_code = move(status_code);
@@ -143,13 +164,30 @@ void ResourceClient::set_resource(Resource* resource)
 
         m_resource->register_client({}, *this);
 
-        // Make sure that reused resources also have their load callback fired.
-        if (resource->is_loaded())
-            resource_did_load();
+        // For resources that are already loaded, we fire their load/fail callbacks via the event loop.
+        // This ensures that these callbacks always happen in a consistent way, instead of being invoked
+        // synchronously in some cases, and asynchronously in others.
+        if (resource->is_loaded() || resource->is_failed()) {
+            Platform::EventLoopPlugin::the().deferred_invoke([weak_this = make_weak_ptr(), strong_resource = NonnullRefPtr { *m_resource }] {
+                if (!weak_this)
+                    return;
 
-        // Make sure that reused resources also have their fail callback fired.
-        if (resource->is_failed())
-            resource_did_fail();
+                if (weak_this->m_resource != strong_resource.ptr())
+                    return;
+
+                // Make sure that reused resources also have their load callback fired.
+                if (weak_this->m_resource->is_loaded()) {
+                    weak_this->resource_did_load();
+                    return;
+                }
+
+                // Make sure that reused resources also have their fail callback fired.
+                if (weak_this->m_resource->is_failed()) {
+                    weak_this->resource_did_fail();
+                    return;
+                }
+            });
+        }
     }
 }
 

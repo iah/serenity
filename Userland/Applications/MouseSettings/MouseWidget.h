@@ -22,11 +22,17 @@ public:
 private:
     MouseWidget();
 
+    void update_speed_label();
+    void update_double_click_speed_label();
+    void update_switch_buttons_image_label();
+
     RefPtr<GUI::HorizontalSlider> m_speed_slider;
     RefPtr<GUI::Label> m_speed_label;
     RefPtr<GUI::SpinBox> m_scroll_length_spinbox;
     RefPtr<GUI::HorizontalSlider> m_double_click_speed_slider;
     RefPtr<GUI::Label> m_double_click_speed_label;
     RefPtr<GUI::CheckBox> m_switch_buttons_checkbox;
+    RefPtr<GUI::Label> m_switch_buttons_image_label;
+    RefPtr<GUI::CheckBox> m_natural_scroll_checkbox;
     RefPtr<MouseSettings::DoubleClickArrowWidget> m_double_click_arrow_widget;
 };

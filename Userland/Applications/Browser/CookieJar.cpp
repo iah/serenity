@@ -1,19 +1,75 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "CookieJar.h"
+#include "Database.h"
 #include <AK/IPv4Address.h>
 #include <AK/StringBuilder.h>
+#include <AK/StringView.h>
+#include <AK/Time.h>
 #include <AK/URL.h>
 #include <AK/Vector.h>
+#include <LibCore/Promise.h>
+#include <LibSQL/TupleDescriptor.h>
+#include <LibSQL/Value.h>
 #include <LibWeb/Cookie/ParsedCookie.h>
 
 namespace Browser {
 
-String CookieJar::get_cookie(const URL& url, Web::Cookie::Source source)
+ErrorOr<CookieJar> CookieJar::create(Database& database)
+{
+    Statements statements {};
+
+    statements.create_table = TRY(database.prepare_statement(R"#(
+        CREATE TABLE IF NOT EXISTS Cookies (
+            name TEXT,
+            value TEXT,
+            same_site INTEGER,
+            creation_time INTEGER,
+            last_access_time INTEGER,
+            expiry_time INTEGER,
+            domain TEXT,
+            path TEXT,
+            secure BOOLEAN,
+            http_only BOOLEAN,
+            host_only BOOLEAN,
+            persistent BOOLEAN
+        );)#"sv));
+
+    statements.update_cookie = TRY(database.prepare_statement(R"#(
+        UPDATE Cookies SET
+            value=?,
+            same_site=?,
+            creation_time=?,
+            last_access_time=?,
+            expiry_time=?,
+            secure=?,
+            http_only=?,
+            host_only=?,
+            persistent=?
+        WHERE ((name = ?) AND (domain = ?) AND (path = ?));)#"sv));
+
+    statements.insert_cookie = TRY(database.prepare_statement("INSERT INTO Cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"sv));
+    statements.expire_cookie = TRY(database.prepare_statement("DELETE FROM Cookies WHERE (expiry_time < ?);"sv));
+    statements.select_cookie = TRY(database.prepare_statement("SELECT * FROM Cookies WHERE ((name = ?) AND (domain = ?) AND (path = ?));"sv));
+    statements.select_all_cookies = TRY(database.prepare_statement("SELECT * FROM Cookies;"sv));
+
+    return CookieJar { database, move(statements) };
+}
+
+CookieJar::CookieJar(Database& database, Statements statements)
+    : m_database(database)
+    , m_statements(move(statements))
+{
+    m_database.execute_statement(m_statements.create_table, {}, {}, {});
+}
+
+DeprecatedString CookieJar::get_cookie(const URL& url, Web::Cookie::Source source)
 {
     purge_expired_cookies();
 
@@ -24,56 +80,118 @@ String CookieJar::get_cookie(const URL& url, Web::Cookie::Source source)
     auto cookie_list = get_matching_cookies(url, domain.value(), source);
     StringBuilder builder;
 
-    for (const auto& cookie : cookie_list) {
+    for (auto const& cookie : cookie_list) {
         // If there is an unprocessed cookie in the cookie-list, output the characters %x3B and %x20 ("; ")
         if (!builder.is_empty())
-            builder.append("; ");
+            builder.append("; "sv);
 
         // Output the cookie's name, the %x3D ("=") character, and the cookie's value.
         builder.appendff("{}={}", cookie.name, cookie.value);
     }
 
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
-void CookieJar::set_cookie(const URL& url, const Web::Cookie::ParsedCookie& parsed_cookie, Web::Cookie::Source source)
+void CookieJar::set_cookie(const URL& url, Web::Cookie::ParsedCookie const& parsed_cookie, Web::Cookie::Source source)
 {
     auto domain = canonicalize_domain(url);
     if (!domain.has_value())
         return;
 
     store_cookie(parsed_cookie, url, move(domain.value()), source);
-    purge_expired_cookies();
 }
 
-void CookieJar::dump_cookies() const
+// This is based on https://www.rfc-editor.org/rfc/rfc6265#section-5.3 as store_cookie() below
+// however the whole ParsedCookie->Cookie conversion is skipped.
+void CookieJar::update_cookie(Web::Cookie::Cookie cookie)
 {
-    static const char* key_color = "\033[34;1m";
-    static const char* attribute_color = "\033[33m";
-    static const char* no_color = "\033[0m";
+    select_cookie_from_database(
+        move(cookie),
+
+        // 11. If the cookie store contains a cookie with the same name, domain, and path as the newly created cookie:
+        [this](auto& cookie, auto old_cookie) {
+            // Update the creation-time of the newly created cookie to match the creation-time of the old-cookie.
+            cookie.creation_time = old_cookie.creation_time;
+
+            // Remove the old-cookie from the cookie store.
+            // NOTE: Rather than deleting then re-inserting this cookie, we update it in-place.
+            update_cookie_in_database(cookie);
+        },
+
+        // 12. Insert the newly created cookie into the cookie store.
+        [this](auto cookie) {
+            insert_cookie_into_database(cookie);
+        });
+}
+
+void CookieJar::dump_cookies()
+{
+    static constexpr auto key_color = "\033[34;1m"sv;
+    static constexpr auto attribute_color = "\033[33m"sv;
+    static constexpr auto no_color = "\033[0m"sv;
 
     StringBuilder builder;
-    builder.appendff("{} cookies stored\n", m_cookies.size());
+    size_t total_cookies { 0 };
 
-    for (const auto& cookie : m_cookies) {
-        builder.appendff("{}{}{} - ", key_color, cookie.key.name, no_color);
-        builder.appendff("{}{}{} - ", key_color, cookie.key.domain, no_color);
-        builder.appendff("{}{}{}\n", key_color, cookie.key.path, no_color);
+    select_all_cookies_from_database([&](auto cookie) {
+        ++total_cookies;
 
-        builder.appendff("\t{}Value{} = {}\n", attribute_color, no_color, cookie.value.value);
-        builder.appendff("\t{}CreationTime{} = {}\n", attribute_color, no_color, cookie.value.creation_time.to_string());
-        builder.appendff("\t{}LastAccessTime{} = {}\n", attribute_color, no_color, cookie.value.last_access_time.to_string());
-        builder.appendff("\t{}ExpiryTime{} = {}\n", attribute_color, no_color, cookie.value.expiry_time.to_string());
-        builder.appendff("\t{}Secure{} = {:s}\n", attribute_color, no_color, cookie.value.secure);
-        builder.appendff("\t{}HttpOnly{} = {:s}\n", attribute_color, no_color, cookie.value.http_only);
-        builder.appendff("\t{}HostOnly{} = {:s}\n", attribute_color, no_color, cookie.value.host_only);
-        builder.appendff("\t{}Persistent{} = {:s}\n", attribute_color, no_color, cookie.value.persistent);
-    }
+        builder.appendff("{}{}{} - ", key_color, cookie.name, no_color);
+        builder.appendff("{}{}{} - ", key_color, cookie.domain, no_color);
+        builder.appendff("{}{}{}\n", key_color, cookie.path, no_color);
 
-    dbgln("{}", builder.build());
+        builder.appendff("\t{}Value{} = {}\n", attribute_color, no_color, cookie.value);
+        builder.appendff("\t{}CreationTime{} = {}\n", attribute_color, no_color, cookie.creation_time_to_string());
+        builder.appendff("\t{}LastAccessTime{} = {}\n", attribute_color, no_color, cookie.last_access_time_to_string());
+        builder.appendff("\t{}ExpiryTime{} = {}\n", attribute_color, no_color, cookie.expiry_time_to_string());
+        builder.appendff("\t{}Secure{} = {:s}\n", attribute_color, no_color, cookie.secure);
+        builder.appendff("\t{}HttpOnly{} = {:s}\n", attribute_color, no_color, cookie.http_only);
+        builder.appendff("\t{}HostOnly{} = {:s}\n", attribute_color, no_color, cookie.host_only);
+        builder.appendff("\t{}Persistent{} = {:s}\n", attribute_color, no_color, cookie.persistent);
+        builder.appendff("\t{}SameSite{} = {:s}\n", attribute_color, no_color, Web::Cookie::same_site_to_string(cookie.same_site));
+    });
+
+    dbgln("{} cookies stored\n{}", total_cookies, builder.to_deprecated_string());
 }
 
-Optional<String> CookieJar::canonicalize_domain(const URL& url)
+Vector<Web::Cookie::Cookie> CookieJar::get_all_cookies()
+{
+    Vector<Web::Cookie::Cookie> cookies;
+
+    select_all_cookies_from_database([&](auto cookie) {
+        cookies.append(move(cookie));
+    });
+
+    return cookies;
+}
+
+// https://w3c.github.io/webdriver/#dfn-associated-cookies
+Vector<Web::Cookie::Cookie> CookieJar::get_all_cookies(URL const& url)
+{
+    auto domain = canonicalize_domain(url);
+    if (!domain.has_value())
+        return {};
+
+    return get_matching_cookies(url, domain.value(), Web::Cookie::Source::Http, MatchingCookiesSpecMode::WebDriver);
+}
+
+Optional<Web::Cookie::Cookie> CookieJar::get_named_cookie(URL const& url, DeprecatedString const& name)
+{
+    auto domain = canonicalize_domain(url);
+    if (!domain.has_value())
+        return {};
+
+    auto cookie_list = get_matching_cookies(url, domain.value(), Web::Cookie::Source::Http, MatchingCookiesSpecMode::WebDriver);
+
+    for (auto const& cookie : cookie_list) {
+        if (cookie.name == name)
+            return cookie;
+    }
+
+    return {};
+}
+
+Optional<DeprecatedString> CookieJar::canonicalize_domain(const URL& url)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.1.2
     if (!url.is_valid())
@@ -83,7 +201,7 @@ Optional<String> CookieJar::canonicalize_domain(const URL& url)
     return url.host().to_lowercase();
 }
 
-bool CookieJar::domain_matches(const String& string, const String& domain_string)
+bool CookieJar::domain_matches(DeprecatedString const& string, DeprecatedString const& domain_string)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.1.3
 
@@ -107,7 +225,7 @@ bool CookieJar::domain_matches(const String& string, const String& domain_string
     return true;
 }
 
-bool CookieJar::path_matches(const String& request_path, const String& cookie_path)
+bool CookieJar::path_matches(DeprecatedString const& request_path, DeprecatedString const& cookie_path)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.1.4
 
@@ -130,12 +248,12 @@ bool CookieJar::path_matches(const String& request_path, const String& cookie_pa
     return false;
 }
 
-String CookieJar::default_path(const URL& url)
+DeprecatedString CookieJar::default_path(const URL& url)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.1.4
 
     // 1. Let uri-path be the path portion of the request-uri if such a portion exists (and empty otherwise).
-    String uri_path = url.path();
+    DeprecatedString uri_path = url.path();
 
     // 2. If the uri-path is empty or if the first character of the uri-path is not a %x2F ("/") character, output %x2F ("/") and skip the remaining steps.
     if (uri_path.is_empty() || (uri_path[0] != '/'))
@@ -152,13 +270,13 @@ String CookieJar::default_path(const URL& url)
     return uri_path.substring(0, last_separator);
 }
 
-void CookieJar::store_cookie(const Web::Cookie::ParsedCookie& parsed_cookie, const URL& url, String canonicalized_domain, Web::Cookie::Source source)
+void CookieJar::store_cookie(Web::Cookie::ParsedCookie const& parsed_cookie, const URL& url, DeprecatedString canonicalized_domain, Web::Cookie::Source source)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.3
 
     // 2. Create a new cookie with name cookie-name, value cookie-value. Set the creation-time and the last-access-time to the current date and time.
-    Web::Cookie::Cookie cookie { parsed_cookie.name, parsed_cookie.value };
-    cookie.creation_time = Core::DateTime::now();
+    Web::Cookie::Cookie cookie { parsed_cookie.name, parsed_cookie.value, parsed_cookie.same_site_attribute };
+    cookie.creation_time = Time::now_realtime();
     cookie.last_access_time = cookie.creation_time;
 
     if (parsed_cookie.expiry_time_from_max_age_attribute.has_value()) {
@@ -172,9 +290,9 @@ void CookieJar::store_cookie(const Web::Cookie::ParsedCookie& parsed_cookie, con
         cookie.persistent = true;
         cookie.expiry_time = parsed_cookie.expiry_time_from_expires_attribute.value();
     } else {
-        // Set the cookie's persistent-flag to false. Set the cookie's expiry-time to the latest representable gddate.
+        // Set the cookie's persistent-flag to false. Set the cookie's expiry-time to the latest representable date.
         cookie.persistent = false;
-        cookie.expiry_time = Core::DateTime::create(9999, 12, 31, 23, 59, 59);
+        cookie.expiry_time = Time::max();
     }
 
     // 4. If the cookie-attribute-list contains an attribute with an attribute-name of "Domain":
@@ -218,87 +336,254 @@ void CookieJar::store_cookie(const Web::Cookie::ParsedCookie& parsed_cookie, con
     if (source != Web::Cookie::Source::Http && cookie.http_only)
         return;
 
-    // 11. If the cookie store contains a cookie with the same name, domain, and path as the newly created cookie:
-    CookieStorageKey key { cookie.name, cookie.domain, cookie.path };
+    select_cookie_from_database(
+        move(cookie),
 
-    if (auto old_cookie = m_cookies.find(key); old_cookie != m_cookies.end()) {
-        // If the newly created cookie was received from a "non-HTTP" API and the old-cookie's http-only-flag is set, abort these
-        // steps and ignore the newly created cookie entirely.
-        if (source != Web::Cookie::Source::Http && old_cookie->value.http_only)
-            return;
+        // 11. If the cookie store contains a cookie with the same name, domain, and path as the newly created cookie:
+        [this, source](auto& cookie, auto old_cookie) {
+            // If the newly created cookie was received from a "non-HTTP" API and the old-cookie's http-only-flag is set, abort these
+            // steps and ignore the newly created cookie entirely.
+            if (source != Web::Cookie::Source::Http && old_cookie.http_only)
+                return;
 
-        // Update the creation-time of the newly created cookie to match the creation-time of the old-cookie.
-        cookie.creation_time = old_cookie->value.creation_time;
+            // Update the creation-time of the newly created cookie to match the creation-time of the old-cookie.
+            cookie.creation_time = old_cookie.creation_time;
 
-        // Remove the old-cookie from the cookie store.
-        m_cookies.remove(old_cookie);
-    }
+            // Remove the old-cookie from the cookie store.
+            // NOTE: Rather than deleting then re-inserting this cookie, we update it in-place.
+            update_cookie_in_database(cookie);
+        },
 
-    // 12. Insert the newly created cookie into the cookie store.
-    m_cookies.set(key, move(cookie));
+        // 12. Insert the newly created cookie into the cookie store.
+        [this](auto cookie) {
+            insert_cookie_into_database(cookie);
+        });
 }
 
-Vector<Web::Cookie::Cookie&> CookieJar::get_matching_cookies(const URL& url, const String& canonicalized_domain, Web::Cookie::Source source)
+Vector<Web::Cookie::Cookie> CookieJar::get_matching_cookies(const URL& url, DeprecatedString const& canonicalized_domain, Web::Cookie::Source source, MatchingCookiesSpecMode mode)
 {
     // https://tools.ietf.org/html/rfc6265#section-5.4
 
-    auto now = Core::DateTime::now();
-
     // 1. Let cookie-list be the set of cookies from the cookie store that meets all of the following requirements:
-    Vector<Web::Cookie::Cookie&> cookie_list;
+    Vector<Web::Cookie::Cookie> cookie_list;
 
-    for (auto& cookie : m_cookies) {
+    select_all_cookies_from_database([&](auto cookie) {
         // Either: The cookie's host-only-flag is true and the canonicalized request-host is identical to the cookie's domain.
         // Or: The cookie's host-only-flag is false and the canonicalized request-host domain-matches the cookie's domain.
-        bool is_host_only_and_has_identical_domain = cookie.value.host_only && (canonicalized_domain == cookie.value.domain);
-        bool is_not_host_only_and_domain_matches = !cookie.value.host_only && domain_matches(canonicalized_domain, cookie.value.domain);
+        bool is_host_only_and_has_identical_domain = cookie.host_only && (canonicalized_domain == cookie.domain);
+        bool is_not_host_only_and_domain_matches = !cookie.host_only && domain_matches(canonicalized_domain, cookie.domain);
         if (!is_host_only_and_has_identical_domain && !is_not_host_only_and_domain_matches)
-            continue;
+            return;
 
         // The request-uri's path path-matches the cookie's path.
-        if (!path_matches(url.path(), cookie.value.path))
-            continue;
+        if (!path_matches(url.path(), cookie.path))
+            return;
 
         // If the cookie's secure-only-flag is true, then the request-uri's scheme must denote a "secure" protocol.
-        if (cookie.value.secure && (url.protocol() != "https"))
-            continue;
+        if (cookie.secure && (url.scheme() != "https"))
+            return;
 
         // If the cookie's http-only-flag is true, then exclude the cookie if the cookie-string is being generated for a "non-HTTP" API.
-        if (cookie.value.http_only && (source != Web::Cookie::Source::Http))
-            continue;
+        if (cookie.http_only && (source != Web::Cookie::Source::Http))
+            return;
+
+        // NOTE: The WebDriver spec expects only step 1 above to be executed to match cookies.
+        if (mode == MatchingCookiesSpecMode::WebDriver) {
+            cookie_list.append(move(cookie));
+            return;
+        }
 
         // 2.  The user agent SHOULD sort the cookie-list in the following order:
         //   - Cookies with longer paths are listed before cookies with shorter paths.
         //   - Among cookies that have equal-length path fields, cookies with earlier creation-times are listed before cookies with later creation-times.
-        cookie_list.insert_before_matching(cookie.value, [&cookie](auto& entry) {
-            if (cookie.value.path.length() > entry.path.length()) {
+        auto cookie_path_length = cookie.path.length();
+        auto cookie_creation_time = cookie.creation_time;
+
+        cookie_list.insert_before_matching(move(cookie), [cookie_path_length, cookie_creation_time](auto const& entry) {
+            if (cookie_path_length > entry.path.length()) {
                 return true;
-            } else if (cookie.value.path.length() == entry.path.length()) {
-                if (cookie.value.creation_time.timestamp() < entry.creation_time.timestamp())
+            } else if (cookie_path_length == entry.path.length()) {
+                if (cookie_creation_time < entry.creation_time)
                     return true;
             }
             return false;
         });
+    });
 
-        // 3. Update the last-access-time of each cookie in the cookie-list to the current date and time.
-        cookie.value.last_access_time = now;
+    // 3. Update the last-access-time of each cookie in the cookie-list to the current date and time.
+    auto now = Time::now_realtime();
+
+    for (auto& cookie : cookie_list) {
+        cookie.last_access_time = now;
+        update_cookie_in_database(cookie);
     }
 
     return cookie_list;
 }
 
-void CookieJar::purge_expired_cookies()
+static ErrorOr<Web::Cookie::Cookie> parse_cookie(ReadonlySpan<SQL::Value> row)
 {
-    time_t now = Core::DateTime::now().timestamp();
-    Vector<CookieStorageKey> keys_to_evict;
+    if (row.size() != 12)
+        return Error::from_string_view("Incorrect number of columns to parse cookie"sv);
 
-    for (const auto& cookie : m_cookies) {
-        if (cookie.value.expiry_time.timestamp() < now)
-            keys_to_evict.append(cookie.key);
+    size_t index = 0;
+
+    auto convert_text = [&](auto& field, StringView name) -> ErrorOr<void> {
+        auto const& value = row[index++];
+        if (value.type() != SQL::SQLType::Text)
+            return Error::from_string_view(name);
+
+        field = value.to_deprecated_string();
+        return {};
+    };
+
+    auto convert_bool = [&](auto& field, StringView name) -> ErrorOr<void> {
+        auto const& value = row[index++];
+        if (value.type() != SQL::SQLType::Boolean)
+            return Error::from_string_view(name);
+
+        field = value.to_bool().value();
+        return {};
+    };
+
+    auto convert_time = [&](auto& field, StringView name) -> ErrorOr<void> {
+        auto const& value = row[index++];
+        if (value.type() != SQL::SQLType::Integer)
+            return Error::from_string_view(name);
+
+        auto time = value.to_int<i64>().value();
+        field = Time::from_seconds(time);
+        return {};
+    };
+
+    auto convert_same_site = [&](auto& field, StringView name) -> ErrorOr<void> {
+        auto const& value = row[index++];
+        if (value.type() != SQL::SQLType::Integer)
+            return Error::from_string_view(name);
+
+        auto same_site = value.to_int<UnderlyingType<Web::Cookie::SameSite>>().value();
+        if (same_site > to_underlying(Web::Cookie::SameSite::Lax))
+            return Error::from_string_view(name);
+
+        field = static_cast<Web::Cookie::SameSite>(same_site);
+        return {};
+    };
+
+    Web::Cookie::Cookie cookie;
+    TRY(convert_text(cookie.name, "name"sv));
+    TRY(convert_text(cookie.value, "value"sv));
+    TRY(convert_same_site(cookie.same_site, "same_site"sv));
+    TRY(convert_time(cookie.creation_time, "creation_time"sv));
+    TRY(convert_time(cookie.last_access_time, "last_access_time"sv));
+    TRY(convert_time(cookie.expiry_time, "expiry_time"sv));
+    TRY(convert_text(cookie.domain, "domain"sv));
+    TRY(convert_text(cookie.path, "path"sv));
+    TRY(convert_bool(cookie.secure, "secure"sv));
+    TRY(convert_bool(cookie.http_only, "http_only"sv));
+    TRY(convert_bool(cookie.host_only, "host_only"sv));
+    TRY(convert_bool(cookie.persistent, "persistent"sv));
+
+    return cookie;
+}
+
+void CookieJar::insert_cookie_into_database(Web::Cookie::Cookie const& cookie)
+{
+    m_database.execute_statement(
+        m_statements.insert_cookie, {}, [this]() { purge_expired_cookies(); }, {},
+        cookie.name,
+        cookie.value,
+        to_underlying(cookie.same_site),
+        cookie.creation_time.to_seconds(),
+        cookie.last_access_time.to_seconds(),
+        cookie.expiry_time.to_seconds(),
+        cookie.domain,
+        cookie.path,
+        cookie.secure,
+        cookie.http_only,
+        cookie.host_only,
+        cookie.persistent);
+}
+
+void CookieJar::update_cookie_in_database(Web::Cookie::Cookie const& cookie)
+{
+    m_database.execute_statement(
+        m_statements.update_cookie, {}, [this]() { purge_expired_cookies(); }, {},
+        cookie.value,
+        to_underlying(cookie.same_site),
+        cookie.creation_time.to_seconds(),
+        cookie.last_access_time.to_seconds(),
+        cookie.expiry_time.to_seconds(),
+        cookie.secure,
+        cookie.http_only,
+        cookie.host_only,
+        cookie.persistent,
+        cookie.name,
+        cookie.domain,
+        cookie.path);
+}
+
+struct WrappedCookie : public RefCounted<WrappedCookie> {
+    explicit WrappedCookie(Web::Cookie::Cookie cookie_)
+        : RefCounted()
+        , cookie(move(cookie_))
+    {
     }
 
-    for (const auto& key : keys_to_evict)
-        m_cookies.remove(key);
+    Web::Cookie::Cookie cookie;
+    bool had_any_results { false };
+};
+
+void CookieJar::select_cookie_from_database(Web::Cookie::Cookie cookie, OnCookieFound on_result, OnCookieNotFound on_complete_without_results)
+{
+    auto wrapped_cookie = make_ref_counted<WrappedCookie>(move(cookie));
+
+    m_database.execute_statement(
+        m_statements.select_cookie,
+        [on_result = move(on_result), wrapped_cookie = wrapped_cookie](auto row) {
+            if (auto selected_cookie = parse_cookie(row); selected_cookie.is_error())
+                dbgln("Failed to parse cookie '{}': {}", selected_cookie.error(), row);
+            else
+                on_result(wrapped_cookie->cookie, selected_cookie.release_value());
+
+            wrapped_cookie->had_any_results = true;
+        },
+        [on_complete_without_results = move(on_complete_without_results), wrapped_cookie = wrapped_cookie]() {
+            if (!wrapped_cookie->had_any_results)
+                on_complete_without_results(move(wrapped_cookie->cookie));
+        },
+        {},
+        wrapped_cookie->cookie.name,
+        wrapped_cookie->cookie.domain,
+        wrapped_cookie->cookie.path);
+}
+
+void CookieJar::select_all_cookies_from_database(OnSelectAllCookiesResult on_result)
+{
+    // FIXME: Make surrounding APIs asynchronous.
+    auto promise = Core::Promise<Empty>::construct();
+
+    m_database.execute_statement(
+        m_statements.select_all_cookies,
+        [on_result = move(on_result)](auto row) {
+            if (auto cookie = parse_cookie(row); cookie.is_error())
+                dbgln("Failed to parse cookie '{}': {}", cookie.error(), row);
+            else
+                on_result(cookie.release_value());
+        },
+        [&]() {
+            promise->resolve({});
+        },
+        [&](auto) {
+            promise->resolve({});
+        });
+
+    promise->await();
+}
+
+void CookieJar::purge_expired_cookies()
+{
+    auto now = Time::now_realtime().to_seconds();
+    m_database.execute_statement(m_statements.expire_cookie, {}, {}, {}, now);
 }
 
 }

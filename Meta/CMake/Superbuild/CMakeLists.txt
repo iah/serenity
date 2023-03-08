@@ -32,7 +32,7 @@ get_filename_component(
     SERENITY_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../../.."
     ABSOLUTE CACHE
 )
-set(SERENITY_ARCH "i686" CACHE STRING "Target architecture for SerenityOS.")
+set(SERENITY_ARCH "x86_64" CACHE STRING "Target architecture for SerenityOS.")
 set(SERENITY_TOOLCHAIN "GNU" CACHE STRING "Compiler toolchain to use for Serenity (GNU or Clang)")
 
 # FIXME: It is preferred to keep all the sub-build artifacts below the binary directory for the superbuild
@@ -44,14 +44,21 @@ if(NOT SERENITY_TOOLCHAIN STREQUAL "GNU")
 endif()
 set(SERENITY_BUILD_DIR "${PROJECT_BINARY_DIR}/../${SERENITY_ARCH}${SERENITY_BUILD_DIR_SUFFIX}")
 
-if (CMAKE_HOST_SYSTEM_NAME MATCHES "SerenityOS")
-    message(STATUS "Good job on building cmake!")
-else()
-    configure_file("${SERENITY_SOURCE_DIR}/Toolchain/CMake/${SERENITY_TOOLCHAIN}Toolchain.txt.in" "${SERENITY_BUILD_DIR}/CMakeToolchain.txt" @ONLY)
-    set(SERENITY_TOOLCHAIN_FILE "${SERENITY_BUILD_DIR}/CMakeToolchain.txt" CACHE PATH "Toolchain file to use for cross-compilation")
-    # Support non-cross builds by stuffing this in a variable
-    set(SERENITY_TOOLCHAIN_FILE_ARG "-DCMAKE_TOOLCHAIN_FILE:STRING=${SERENITY_TOOLCHAIN_FILE}")
-endif()
+# Location to cache artifacts downloaded during the build.
+file(REAL_PATH "${PROJECT_BINARY_DIR}/../caches" SERENITY_CACHE_DIR)
+
+# Pkgconf incorrectly discards a sysroot if it doesn't match the start of the path to the
+# library file. To avoid that, resolve our sysroot into an absolute and canonical path
+# that matches pkgconf's result for resolving the library file.
+get_filename_component(SERENITY_BUILD_DIR "${SERENITY_BUILD_DIR}" ABSOLUTE)
+
+# TODO: Figure out if and how we can skip this when building on Serenity.
+configure_file("${SERENITY_SOURCE_DIR}/Toolchain/CMake/${SERENITY_TOOLCHAIN}Toolchain.txt.in" "${SERENITY_BUILD_DIR}/CMakeToolchain.txt" @ONLY)
+set(SERENITY_TOOLCHAIN_FILE "${SERENITY_BUILD_DIR}/CMakeToolchain.txt" CACHE PATH "Toolchain file to use for cross-compilation")
+# Support non-cross builds by stuffing this in a variable
+set(SERENITY_TOOLCHAIN_FILE_ARG "-DCMAKE_TOOLCHAIN_FILE:STRING=${SERENITY_TOOLCHAIN_FILE}")
+
+configure_file("${SERENITY_SOURCE_DIR}/Toolchain/CMake/meson-cross-file-${SERENITY_TOOLCHAIN}.txt.in" "${SERENITY_BUILD_DIR}/meson-cross-file.txt" @ONLY)
 
 # Allow the Ninja generators to output messages as they happen by assigning
 # these jobs to the 'console' job pool
@@ -93,8 +100,7 @@ ExternalProject_Add(
     EXCLUDE_FROM_ALL YES
     CMAKE_CACHE_ARGS
     "-DCMAKE_INSTALL_PREFIX:STRING=<INSTALL_DIR>"
-    "-DUCD_PATH:STRING=${SERENITY_BUILD_DIR}/UCD"
-    "-DCLDR_PATH:STRING=${SERENITY_BUILD_DIR}/CLDR"
+    "-DSERENITY_CACHE_DIR:STRING=${SERENITY_CACHE_DIR}"
     ${lagom_options}
     # Always call the build step of tools, so keeping things up-to-date is easy
     BUILD_ALWAYS YES
@@ -121,8 +127,7 @@ ExternalProject_Add(
     # Tell the find_package(Lagom REQUIRED) command call where to find
     # the CMake package
     "-DCMAKE_PREFIX_PATH:STRING=${PROJECT_BINARY_DIR}/../lagom-install"
-    "-DUCD_PATH:STRING=${SERENITY_BUILD_DIR}/UCD"
-    "-DCLDR_PATH:STRING=${SERENITY_BUILD_DIR}/CLDR"
+    "-DSERENITY_CACHE_DIR:STRING=${SERENITY_CACHE_DIR}"
     "-DSERENITY_ARCH:STRING=${SERENITY_ARCH}"
     "${SERENITY_TOOLCHAIN_FILE_ARG}"
     ${serenity_options}

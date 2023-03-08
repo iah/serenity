@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/ChildNode.h>
 #include <LibWeb/DOM/Node.h>
 
@@ -15,32 +15,35 @@ namespace Web::DOM {
 class DocumentType final
     : public Node
     , public ChildNode<DocumentType> {
+    WEB_PLATFORM_OBJECT(DocumentType, Node);
+
 public:
-    using WrapperType = Bindings::DocumentTypeWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentType>> create(Document&);
 
-    static NonnullRefPtr<DocumentType> create(Document& document)
-    {
-        return adopt_ref(*new DocumentType(document));
-    }
+    virtual ~DocumentType() override = default;
 
-    explicit DocumentType(Document&);
-    virtual ~DocumentType() override;
+    virtual DeprecatedFlyString node_name() const override { return "#doctype"; }
 
-    virtual FlyString node_name() const override { return "#doctype"; }
+    DeprecatedString const& name() const { return m_name; }
+    void set_name(DeprecatedString const& name) { m_name = name; }
 
-    const String& name() const { return m_name; }
-    void set_name(const String& name) { m_name = name; }
+    DeprecatedString const& public_id() const { return m_public_id; }
+    void set_public_id(DeprecatedString const& public_id) { m_public_id = public_id; }
 
-    const String& public_id() const { return m_public_id; }
-    void set_public_id(const String& public_id) { m_public_id = public_id; }
-
-    const String& system_id() const { return m_system_id; }
-    void set_system_id(const String& system_id) { m_system_id = system_id; }
+    DeprecatedString const& system_id() const { return m_system_id; }
+    void set_system_id(DeprecatedString const& system_id) { m_system_id = system_id; }
 
 private:
-    String m_name;
-    String m_public_id;
-    String m_system_id;
+    explicit DocumentType(Document&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
+    DeprecatedString m_name;
+    DeprecatedString m_public_id;
+    DeprecatedString m_system_id;
 };
+
+template<>
+inline bool Node::fast_is<DocumentType>() const { return is_document_type(); }
 
 }

@@ -12,7 +12,7 @@
 #include <grp.h>
 #include <unistd.h>
 
-static void print_account_gids(const Core::Account& account)
+static void print_account_gids(Core::Account const& account)
 {
     auto* gr = getgrgid(account.gid());
     if (!gr) {
@@ -33,9 +33,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/etc/passwd", "r"));
     TRY(Core::System::unveil("/etc/group", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
-    TRY(Core::System::pledge("stdio rpath", nullptr));
+    TRY(Core::System::pledge("stdio rpath"));
 
-    Vector<const char*> usernames;
+    Vector<DeprecatedString> usernames;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Print group memberships for each username or, if no username is specified, for the current process.");
@@ -47,7 +47,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         print_account_gids(account);
     }
 
-    for (auto username : usernames) {
+    for (auto const& username : usernames) {
         auto result = Core::Account::from_name(username, Core::Account::Read::PasswdOnly);
         if (result.is_error()) {
             warnln("{} '{}'", result.error(), username);

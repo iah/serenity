@@ -5,10 +5,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#if defined(__serenity__) && !defined(KERNEL)
+#include <AK/kmalloc.h>
+
+#if defined(AK_OS_SERENITY) && !defined(KERNEL)
 
 #    include <AK/Assertions.h>
-#    include <AK/kmalloc.h>
 
 // However deceptively simple these functions look, they must not be inlined.
 // Memory allocated in one translation unit has to be deallocatable in another
@@ -22,7 +23,7 @@ void* operator new(size_t size)
     return ptr;
 }
 
-void* operator new(size_t size, const std::nothrow_t&) noexcept
+void* operator new(size_t size, std::nothrow_t const&) noexcept
 {
     return malloc(size);
 }
@@ -44,7 +45,7 @@ void* operator new[](size_t size)
     return ptr;
 }
 
-void* operator new[](size_t size, const std::nothrow_t&) noexcept
+void* operator new[](size_t size, std::nothrow_t const&) noexcept
 {
     return malloc(size);
 }
@@ -57,6 +58,12 @@ void operator delete[](void* ptr) noexcept
 void operator delete[](void* ptr, size_t) noexcept
 {
     return free(ptr);
+}
+
+// This is usually provided by libstdc++ in most cases, and the kernel has its own definition in
+// Kernel/Heap/kmalloc.cpp. If neither of those apply, the following should suffice to not fail during linking.
+namespace AK_REPLACED_STD_NAMESPACE {
+const nothrow_t nothrow;
 }
 
 #endif

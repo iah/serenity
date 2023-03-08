@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Marcus Nilsson <brainbomb@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,7 +9,7 @@
 #include <LibGUI/Painter.h>
 #include <LibGUI/TextBox.h>
 #include <LibGUI/ValueSlider.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
@@ -20,10 +21,10 @@ ValueSlider::ValueSlider(Gfx::Orientation orientation, String suffix)
     : AbstractSlider(orientation)
     , m_suffix(move(suffix))
 {
-    //FIXME: Implement vertical mode
+    // FIXME: Implement vertical mode
     VERIFY(orientation == Orientation::Horizontal);
 
-    set_fixed_height(20);
+    set_preferred_size(SpecialDimension::Fit);
 
     m_textbox = add<GUI::TextBox>();
     m_textbox->set_relative_rect({ 0, 0, 34, 20 });
@@ -31,9 +32,9 @@ ValueSlider::ValueSlider(Gfx::Orientation orientation, String suffix)
     m_textbox->set_font_size(8);
 
     m_textbox->on_change = [&]() {
-        String value = m_textbox->text();
+        DeprecatedString value = m_textbox->text();
         if (value.ends_with(m_suffix, AK::CaseSensitivity::CaseInsensitive))
-            value = value.substring_view(0, value.length() - m_suffix.length());
+            value = value.substring_view(0, value.length() - m_suffix.bytes_as_string_view().length());
         auto integer_value = value.to_int();
         if (integer_value.has_value())
             AbstractSlider::set_value(integer_value.value());
@@ -67,13 +68,9 @@ ValueSlider::ValueSlider(Gfx::Orientation orientation, String suffix)
     };
 }
 
-ValueSlider::~ValueSlider()
+DeprecatedString ValueSlider::formatted_value() const
 {
-}
-
-String ValueSlider::formatted_value() const
-{
-    return String::formatted("{:2}{}", value(), m_suffix);
+    return DeprecatedString::formatted("{:2}{}", value(), m_suffix);
 }
 
 void ValueSlider::paint_event(PaintEvent& event)
@@ -122,9 +119,14 @@ Gfx::IntRect ValueSlider::bar_rect() const
     return bar_rect;
 }
 
+int ValueSlider::knob_length() const
+{
+    return m_knob_style == KnobStyle::Wide ? 13 : 7;
+}
+
 Gfx::IntRect ValueSlider::knob_rect() const
 {
-    int knob_thickness = m_knob_style == KnobStyle::Wide ? 13 : 7;
+    int knob_thickness = knob_length();
 
     Gfx::IntRect knob_rect = bar_rect();
     knob_rect.set_width(knob_thickness);
@@ -135,19 +137,21 @@ Gfx::IntRect ValueSlider::knob_rect() const
     return knob_rect;
 }
 
-int ValueSlider::value_at(const Gfx::IntPoint& position) const
+int ValueSlider::value_at(Gfx::IntPoint position) const
 {
     if (position.x() < bar_rect().left())
         return min();
     if (position.x() > bar_rect().right())
         return max();
     float relative_offset = (float)(position.x() - bar_rect().left()) / (float)bar_rect().width();
-    return (int)(relative_offset * (float)max());
+
+    int range = max() - min();
+    return min() + (int)(relative_offset * (float)range);
 }
 
-void ValueSlider::set_value(int value, AllowCallback allow_callback)
+void ValueSlider::set_value(int value, AllowCallback allow_callback, DoClamp do_clamp)
 {
-    AbstractSlider::set_value(value, allow_callback);
+    AbstractSlider::set_value(value, allow_callback, do_clamp);
     m_textbox->set_text(formatted_value());
 }
 
@@ -201,6 +205,22 @@ void ValueSlider::mouseup_event(MouseEvent& event)
         return;
 
     m_dragging = false;
+}
+
+Optional<UISize> ValueSlider::calculated_min_size() const
+{
+    auto content_min_size = m_textbox->effective_min_size();
+
+    if (orientation() == Gfx::Orientation::Vertical)
+        return { { content_min_size.width(), content_min_size.height().as_int() + knob_length() } };
+    return { { content_min_size.width().as_int() + knob_length(), content_min_size.height() } };
+}
+
+Optional<UISize> ValueSlider::calculated_preferred_size() const
+{
+    if (orientation() == Gfx::Orientation::Vertical)
+        return { { SpecialDimension::Shrink, SpecialDimension::OpportunisticGrow } };
+    return { { SpecialDimension::OpportunisticGrow, SpecialDimension::Shrink } };
 }
 
 }

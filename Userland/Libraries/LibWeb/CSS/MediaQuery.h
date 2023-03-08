@@ -1,18 +1,18 @@
 /*
- * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/FlyString.h>
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
 #include <LibWeb/CSS/GeneralEnclosed.h>
+#include <LibWeb/CSS/MediaFeatureID.h>
+#include <LibWeb/CSS/Ratio.h>
 #include <LibWeb/CSS/StyleValue.h>
 
 namespace Web::CSS {
@@ -20,7 +20,7 @@ namespace Web::CSS {
 // https://www.w3.org/TR/mediaqueries-4/#typedef-mf-value
 class MediaFeatureValue {
 public:
-    explicit MediaFeatureValue(String ident)
+    explicit MediaFeatureValue(ValueID ident)
         : m_value(move(ident))
     {
     }
@@ -30,22 +30,34 @@ public:
     {
     }
 
-    explicit MediaFeatureValue(double number)
+    explicit MediaFeatureValue(Ratio ratio)
+        : m_value(move(ratio))
+    {
+    }
+
+    explicit MediaFeatureValue(Resolution resolution)
+        : m_value(move(resolution))
+    {
+    }
+
+    explicit MediaFeatureValue(float number)
         : m_value(number)
     {
     }
 
-    String to_string() const;
+    ErrorOr<String> to_string() const;
 
-    bool is_ident() const { return m_value.has<String>(); }
+    bool is_ident() const { return m_value.has<ValueID>(); }
     bool is_length() const { return m_value.has<Length>(); }
-    bool is_number() const { return m_value.has<double>(); }
+    bool is_number() const { return m_value.has<float>(); }
+    bool is_ratio() const { return m_value.has<Ratio>(); }
+    bool is_resolution() const { return m_value.has<Resolution>(); }
     bool is_same_type(MediaFeatureValue const& other) const;
 
-    String const& ident() const
+    ValueID const& ident() const
     {
         VERIFY(is_ident());
-        return m_value.get<String>();
+        return m_value.get<ValueID>();
     }
 
     Length const& length() const
@@ -54,15 +66,26 @@ public:
         return m_value.get<Length>();
     }
 
-    double number() const
+    Ratio const& ratio() const
+    {
+        VERIFY(is_ratio());
+        return m_value.get<Ratio>();
+    }
+
+    Resolution const& resolution() const
+    {
+        VERIFY(is_resolution());
+        return m_value.get<Resolution>();
+    }
+
+    float number() const
     {
         VERIFY(is_number());
-        return m_value.get<double>();
+        return m_value.get<float>();
     }
 
 private:
-    // TODO: Support <ratio> once we have that.
-    Variant<String, Length, double> m_value;
+    Variant<ValueID, Length, Ratio, Resolution, float> m_value;
 };
 
 // https://www.w3.org/TR/mediaqueries-4/#mq-features
@@ -77,25 +100,29 @@ public:
     };
 
     // Corresponds to `<mf-boolean>` grammar
-    static MediaFeature boolean(String const& name)
+    static MediaFeature boolean(MediaFeatureID id)
     {
-        return MediaFeature(Type::IsTrue, name);
+        return MediaFeature(Type::IsTrue, id);
     }
 
     // Corresponds to `<mf-plain>` grammar
-    static MediaFeature plain(String const& name, MediaFeatureValue value)
+    static MediaFeature plain(MediaFeatureID id, MediaFeatureValue value)
     {
-        if (name.starts_with("min-", CaseSensitivity::CaseInsensitive))
-            return MediaFeature(Type::MinValue, name.substring_view(4), move(value));
-        if (name.starts_with("max-", CaseSensitivity::CaseInsensitive))
-            return MediaFeature(Type::MaxValue, name.substring_view(4), move(value));
-        return MediaFeature(Type::ExactValue, move(name), move(value));
+        return MediaFeature(Type::ExactValue, move(id), move(value));
+    }
+    static MediaFeature min(MediaFeatureID id, MediaFeatureValue value)
+    {
+        return MediaFeature(Type::MinValue, id, move(value));
+    }
+    static MediaFeature max(MediaFeatureID id, MediaFeatureValue value)
+    {
+        return MediaFeature(Type::MaxValue, id, move(value));
     }
 
     // Corresponds to `<mf-range>` grammar, with a single comparison
-    static MediaFeature half_range(MediaFeatureValue value, Comparison comparison, String const& name)
+    static MediaFeature half_range(MediaFeatureValue value, Comparison comparison, MediaFeatureID id)
     {
-        MediaFeature feature { Type::Range, name };
+        MediaFeature feature { Type::Range, id };
         feature.m_range = Range {
             .left_value = value,
             .left_comparison = comparison,
@@ -104,9 +131,9 @@ public:
     }
 
     // Corresponds to `<mf-range>` grammar, with two comparisons
-    static MediaFeature range(MediaFeatureValue left_value, Comparison left_comparison, String const& name, Comparison right_comparison, MediaFeatureValue right_value)
+    static MediaFeature range(MediaFeatureValue left_value, Comparison left_comparison, MediaFeatureID id, Comparison right_comparison, MediaFeatureValue right_value)
     {
-        MediaFeature feature { Type::Range, name };
+        MediaFeature feature { Type::Range, id };
         feature.m_range = Range {
             .left_value = left_value,
             .left_comparison = left_comparison,
@@ -116,8 +143,8 @@ public:
         return feature;
     }
 
-    bool evaluate(DOM::Window const&) const;
-    String to_string() const;
+    bool evaluate(HTML::Window const&) const;
+    ErrorOr<String> to_string() const;
 
 private:
     enum class Type {
@@ -128,14 +155,14 @@ private:
         Range,
     };
 
-    MediaFeature(Type type, FlyString name, Optional<MediaFeatureValue> value = {})
+    MediaFeature(Type type, MediaFeatureID id, Optional<MediaFeatureValue> value = {})
         : m_type(type)
-        , m_name(move(name))
+        , m_id(move(id))
         , m_value(move(value))
     {
     }
 
-    static bool compare(DOM::Window const& window, MediaFeatureValue left, Comparison comparison, MediaFeatureValue right);
+    static bool compare(HTML::Window const& window, MediaFeatureValue left, Comparison comparison, MediaFeatureValue right);
 
     struct Range {
         MediaFeatureValue left_value;
@@ -145,7 +172,7 @@ private:
     };
 
     Type m_type;
-    FlyString m_name;
+    MediaFeatureID m_id;
     Optional<MediaFeatureValue> m_value {};
     Optional<Range> m_range {};
 };
@@ -169,22 +196,22 @@ struct MediaCondition {
     static NonnullOwnPtr<MediaCondition> from_general_enclosed(GeneralEnclosed&&);
     static NonnullOwnPtr<MediaCondition> from_feature(MediaFeature&&);
     static NonnullOwnPtr<MediaCondition> from_not(NonnullOwnPtr<MediaCondition>&&);
-    static NonnullOwnPtr<MediaCondition> from_and_list(NonnullOwnPtrVector<MediaCondition>&&);
-    static NonnullOwnPtr<MediaCondition> from_or_list(NonnullOwnPtrVector<MediaCondition>&&);
+    static NonnullOwnPtr<MediaCondition> from_and_list(Vector<NonnullOwnPtr<MediaCondition>>&&);
+    static NonnullOwnPtr<MediaCondition> from_or_list(Vector<NonnullOwnPtr<MediaCondition>>&&);
 
-    MatchResult evaluate(DOM::Window const&) const;
-    String to_string() const;
+    MatchResult evaluate(HTML::Window const&) const;
+    ErrorOr<String> to_string() const;
 
 private:
-    MediaCondition() { }
+    MediaCondition() = default;
     Type type;
     Optional<MediaFeature> feature;
-    NonnullOwnPtrVector<MediaCondition> conditions;
+    Vector<NonnullOwnPtr<MediaCondition>> conditions;
     Optional<GeneralEnclosed> general_enclosed;
 };
 
 class MediaQuery : public RefCounted<MediaQuery> {
-    friend class Parser;
+    friend class Parser::Parser;
 
 public:
     ~MediaQuery() = default;
@@ -194,6 +221,7 @@ public:
         All,
         Print,
         Screen,
+        Unknown,
 
         // Deprecated, must never match:
         TTY,
@@ -210,8 +238,8 @@ public:
     static NonnullRefPtr<MediaQuery> create() { return adopt_ref(*new MediaQuery); }
 
     bool matches() const { return m_matches; }
-    bool evaluate(DOM::Window const&);
-    String to_string() const;
+    bool evaluate(HTML::Window const&);
+    ErrorOr<String> to_string() const;
 
 private:
     MediaQuery() = default;
@@ -225,9 +253,12 @@ private:
     bool m_matches { false };
 };
 
-String serialize_a_media_query_list(NonnullRefPtrVector<MediaQuery> const&);
+ErrorOr<String> serialize_a_media_query_list(Vector<NonnullRefPtr<MediaQuery>> const&);
 
 bool is_media_feature_name(StringView name);
+
+MediaQuery::MediaType media_type_from_string(StringView);
+StringView to_string(MediaQuery::MediaType);
 
 }
 
@@ -237,7 +268,7 @@ template<>
 struct Formatter<Web::CSS::MediaFeature> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaFeature const& media_feature)
     {
-        return Formatter<StringView>::format(builder, media_feature.to_string());
+        return Formatter<StringView>::format(builder, TRY(media_feature.to_string()));
     }
 };
 
@@ -245,7 +276,7 @@ template<>
 struct Formatter<Web::CSS::MediaCondition> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaCondition const& media_condition)
     {
-        return Formatter<StringView>::format(builder, media_condition.to_string());
+        return Formatter<StringView>::format(builder, TRY(media_condition.to_string()));
     }
 };
 
@@ -253,7 +284,7 @@ template<>
 struct Formatter<Web::CSS::MediaQuery> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaQuery const& media_query)
     {
-        return Formatter<StringView>::format(builder, media_query.to_string());
+        return Formatter<StringView>::format(builder, TRY(media_query.to_string()));
     }
 };
 

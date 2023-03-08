@@ -16,9 +16,9 @@ namespace Kernel {
 
 class DoubleBuffer {
 public:
-    static ErrorOr<NonnullOwnPtr<DoubleBuffer>> try_create(size_t capacity = 65536);
-    ErrorOr<size_t> write(const UserOrKernelBuffer&, size_t);
-    ErrorOr<size_t> write(const u8* data, size_t size)
+    static ErrorOr<NonnullOwnPtr<DoubleBuffer>> try_create(StringView name, size_t capacity = 65536);
+    ErrorOr<size_t> write(UserOrKernelBuffer const&, size_t);
+    ErrorOr<size_t> write(u8 const* data, size_t size)
     {
         return write(UserOrKernelBuffer::for_kernel_buffer(const_cast<u8*>(data)), size);
     }
@@ -58,7 +58,7 @@ private:
 
     struct InnerBuffer {
         u8* data { nullptr };
-        size_t size;
+        size_t size { 0 };
     };
 
     InnerBuffer* m_write_buffer { nullptr };
@@ -72,7 +72,7 @@ private:
     size_t m_read_buffer_index { 0 };
     size_t m_space_for_writing { 0 };
     bool m_empty { true };
-    mutable Mutex m_lock { "DoubleBuffer" };
+    mutable Mutex m_lock { "DoubleBuffer"sv };
 };
 
 }

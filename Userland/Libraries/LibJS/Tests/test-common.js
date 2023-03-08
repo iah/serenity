@@ -1,6 +1,7 @@
 var describe;
 var test;
 var expect;
+var withinSameSecond;
 
 // Stores the results of each test and suite. Has a terrible
 // name to avoid name collision.
@@ -144,15 +145,24 @@ class ExpectationError extends Error {
 
                 if (Array.isArray(property)) {
                     for (let key of property) {
-                        this.__expect(object !== undefined && object !== null);
+                        this.__expect(
+                            object !== undefined && object !== null,
+                            "got undefined or null as array key"
+                        );
                         object = object[key];
                     }
                 } else {
                     object = object[property];
                 }
 
-                this.__expect(object !== undefined);
-                if (value !== undefined) this.__expect(deepEquals(object, value));
+                this.__expect(object !== undefined, "should not be undefined");
+                if (value !== undefined)
+                    this.__expect(
+                        deepEquals(object, value),
+                        `value does not equal property ${valueToString(object)} vs ${valueToString(
+                            value
+                        )}`
+                    );
             });
         }
 
@@ -167,13 +177,19 @@ class ExpectationError extends Error {
 
         toBeInstanceOf(class_) {
             this.__doMatcher(() => {
-                this.__expect(this.target instanceof class_);
+                this.__expect(
+                    this.target instanceof class_,
+                    `Expected ${valueToString(this.target)} to be instance of ${class_.name}`
+                );
             });
         }
 
         toBeNull() {
             this.__doMatcher(() => {
-                this.__expect(this.target === null);
+                this.__expect(
+                    this.target === null,
+                    `Expected target to be null got ${valueToString(this.target)}`
+                );
             });
         }
 
@@ -198,24 +214,26 @@ class ExpectationError extends Error {
             });
         }
 
-        toBeTrue() {
+        toBeTrue(customDetails = undefined) {
             this.__doMatcher(() => {
                 this.__expect(
                     this.target === true,
                     () =>
-                        `toBeTrue: expected target to be true, got _${valueToString(this.target)}_`
+                        `toBeTrue: expected target to be true, got _${valueToString(this.target)}_${
+                            customDetails ? ` (${customDetails})` : ""
+                        }`
                 );
             });
         }
 
-        toBeFalse() {
+        toBeFalse(customDetails = undefined) {
             this.__doMatcher(() => {
                 this.__expect(
                     this.target === false,
                     () =>
                         `toBeFalse: expected target to be false, got _${valueToString(
                             this.target
-                        )}_`
+                        )}_${customDetails ?? ""}`
                 );
             });
         }
@@ -280,7 +298,13 @@ class ExpectationError extends Error {
 
         toEqual(value) {
             this.__doMatcher(() => {
-                this.__expect(deepEquals(this.target, value));
+                this.__expect(
+                    deepEquals(this.target, value),
+                    () =>
+                        `Expected _${valueToString(value)}_, but got _${valueToString(
+                            this.target
+                        )}_`
+                );
             });
         }
 
@@ -300,14 +324,30 @@ class ExpectationError extends Error {
                     threw = false;
                 } catch (e) {
                     if (typeof value === "string") {
-                        this.__expect(e.message.includes(value));
+                        this.__expect(
+                            e.message.includes(value),
+                            `Expected ${this.target.toString()} to throw and message to include "${value}" but message "${
+                                e.message
+                            }" did not contain it`
+                        );
                     } else if (typeof value === "function") {
-                        this.__expect(e instanceof value);
+                        this.__expect(
+                            e instanceof value,
+                            `Expected ${this.target.toString()} to throw and be of type ${value} but it threw ${e}`
+                        );
                     } else if (typeof value === "object") {
-                        this.__expect(e.message === value.message);
+                        this.__expect(
+                            e.message === value.message,
+                            `Expected ${this.target.toString()} to throw and message to be ${value} but it threw with message ${
+                                e.message
+                            }`
+                        );
                     }
                 }
-                this.__expect(threw);
+                this.__expect(
+                    threw,
+                    `Expected ${this.target.toString()} to throw but it didn't throw anything`
+                );
             });
         }
 
@@ -359,7 +399,7 @@ class ExpectationError extends Error {
             this.__expect(
                 this.inverted ? !success : success,
                 () =>
-                    `Expected _${valueToString(this.target)}_` +
+                    `Expected _${valueToString(this.target)}_ ` +
                     (this.inverted ? "not to eval but it did" : "to eval but it didn't")
             );
         }
@@ -506,7 +546,8 @@ class ExpectationError extends Error {
         __expect(value, details) {
             if (value !== true) {
                 if (details !== undefined) {
-                    throw new ExpectationError(details());
+                    if (details instanceof Function) throw new ExpectationError(details());
+                    else throw new ExpectationError(details);
                 } else {
                     throw new ExpectationError();
                 }
@@ -530,6 +571,7 @@ class ExpectationError extends Error {
             __TestResults__[suiteMessage][defaultSuiteMessage] = {
                 result: "fail",
                 details: String(e),
+                duration: 0,
             };
         }
         suiteMessage = defaultSuiteMessage;
@@ -543,19 +585,25 @@ class ExpectationError extends Error {
             suite[message] = {
                 result: "fail",
                 details: "Another test with the same message did already run",
+                duration: 0,
             };
             return;
         }
 
+        const now = () => Temporal.Now.instant().epochNanoseconds;
+        const start = now();
+        const time_us = () => Number(BigInt.asIntN(53, (now() - start) / 1000n));
         try {
             callback();
             suite[message] = {
                 result: "pass",
+                duration: time_us(),
             };
         } catch (e) {
             suite[message] = {
                 result: "fail",
                 details: String(e),
+                duration: time_us(),
             };
         }
     };
@@ -571,12 +619,36 @@ class ExpectationError extends Error {
             suite[message] = {
                 result: "fail",
                 details: "Another test with the same message did already run",
+                duration: 0,
             };
             return;
         }
 
         suite[message] = {
             result: "skip",
+            duration: 0,
         };
+    };
+
+    withinSameSecond = callback => {
+        let callbackDuration;
+        for (let tries = 0; tries < 5; tries++) {
+            const start = Temporal.Now.instant();
+            const result = callback();
+            const end = Temporal.Now.instant();
+            if (start.epochSeconds !== end.epochSeconds) {
+                callbackDuration = start.until(end);
+                continue;
+            }
+            return result;
+        }
+        throw new ExpectationError(
+            `Tried to execute callback '${callback}' 5 times within the same second but ` +
+                `failed. Make sure the callback does as little work as possible (the last run ` +
+                `took ${callbackDuration.total(
+                    "milliseconds"
+                )} ms) and the machine is not overloaded. If you see this ` +
+                `error appearing in the CI it is most likely a flaky failure!`
+        );
     };
 })();

@@ -6,6 +6,7 @@
  */
 
 #include <AK/Assertions.h>
+#include <AK/Debug.h>
 #include <AK/Format.h>
 #include <AK/Utf8View.h>
 
@@ -22,7 +23,12 @@ Utf8CodePointIterator Utf8View::iterator_at_byte_offset(size_t byte_offset) cons
     return end();
 }
 
-size_t Utf8View::byte_offset_of(const Utf8CodePointIterator& it) const
+Utf8CodePointIterator Utf8View::iterator_at_byte_offset_without_validation(size_t byte_offset) const
+{
+    return Utf8CodePointIterator { reinterpret_cast<u8 const*>(m_string.characters_without_null_termination()) + byte_offset, m_string.length() - byte_offset };
+}
+
+size_t Utf8View::byte_offset_of(Utf8CodePointIterator const& it) const
 {
     VERIFY(it.m_ptr >= begin_ptr());
     VERIFY(it.m_ptr <= end_ptr());
@@ -64,62 +70,6 @@ Utf8View Utf8View::unicode_substring_view(size_t code_point_offset, size_t code_
     VERIFY_NOT_REACHED();
 }
 
-static inline bool decode_first_byte(
-    unsigned char byte,
-    size_t& out_code_point_length_in_bytes,
-    u32& out_value)
-{
-    if ((byte & 128) == 0) {
-        out_value = byte;
-        out_code_point_length_in_bytes = 1;
-        return true;
-    }
-    if ((byte & 64) == 0) {
-        return false;
-    }
-    if ((byte & 32) == 0) {
-        out_value = byte & 31;
-        out_code_point_length_in_bytes = 2;
-        return true;
-    }
-    if ((byte & 16) == 0) {
-        out_value = byte & 15;
-        out_code_point_length_in_bytes = 3;
-        return true;
-    }
-    if ((byte & 8) == 0) {
-        out_value = byte & 7;
-        out_code_point_length_in_bytes = 4;
-        return true;
-    }
-
-    return false;
-}
-
-bool Utf8View::validate(size_t& valid_bytes) const
-{
-    valid_bytes = 0;
-    for (auto ptr = begin_ptr(); ptr < end_ptr(); ptr++) {
-        size_t code_point_length_in_bytes;
-        u32 value;
-        bool first_byte_makes_sense = decode_first_byte(*ptr, code_point_length_in_bytes, value);
-        if (!first_byte_makes_sense)
-            return false;
-
-        for (size_t i = 1; i < code_point_length_in_bytes; i++) {
-            ptr++;
-            if (ptr >= end_ptr())
-                return false;
-            if (*ptr >> 6 != 2)
-                return false;
-        }
-
-        valid_bytes += code_point_length_in_bytes;
-    }
-
-    return true;
-}
-
 size_t Utf8View::calculate_length() const
 {
     size_t length = 0;
@@ -129,7 +79,7 @@ size_t Utf8View::calculate_length() const
     return length;
 }
 
-bool Utf8View::starts_with(const Utf8View& start) const
+bool Utf8View::starts_with(Utf8View const& start) const
 {
     if (start.is_empty())
         return true;
@@ -156,7 +106,7 @@ bool Utf8View::contains(u32 needle) const
     return false;
 }
 
-Utf8View Utf8View::trim(const Utf8View& characters, TrimMode mode) const
+Utf8View Utf8View::trim(Utf8View const& characters, TrimMode mode) const
 {
     size_t substring_start = 0;
     size_t substring_length = byte_length();
@@ -196,7 +146,7 @@ Utf8CodePointIterator& Utf8CodePointIterator::operator++()
     if (code_point_length_in_bytes > m_length) {
         // We don't have enough data for the next code point. Skip one character and try again.
         // The rest of the code will output replacement characters as needed for any eventual extension bytes we might encounter afterwards.
-        dbgln("Expected code point size {} is too big for the remaining length {}. Moving forward one byte.", code_point_length_in_bytes, m_length);
+        dbgln_if(UTF8_DEBUG, "Expected code point size {} is too big for the remaining length {}. Moving forward one byte.", code_point_length_in_bytes, m_length);
         m_ptr += 1;
         m_length -= 1;
         return *this;
@@ -210,9 +160,7 @@ Utf8CodePointIterator& Utf8CodePointIterator::operator++()
 size_t Utf8CodePointIterator::underlying_code_point_length_in_bytes() const
 {
     VERIFY(m_length > 0);
-    size_t code_point_length_in_bytes = 0;
-    u32 value;
-    bool first_byte_makes_sense = decode_first_byte(*m_ptr, code_point_length_in_bytes, value);
+    auto [code_point_length_in_bytes, value, first_byte_makes_sense] = Utf8View::decode_leading_byte(*m_ptr);
 
     // If any of these tests fail, we will output a replacement character for this byte and treat it as a code point of size 1.
     if (!first_byte_makes_sense)
@@ -237,28 +185,24 @@ ReadonlyBytes Utf8CodePointIterator::underlying_code_point_bytes() const
 u32 Utf8CodePointIterator::operator*() const
 {
     VERIFY(m_length > 0);
-
-    u32 code_point_value_so_far = 0;
-    size_t code_point_length_in_bytes = 0;
-
-    bool first_byte_makes_sense = decode_first_byte(m_ptr[0], code_point_length_in_bytes, code_point_value_so_far);
+    auto [code_point_length_in_bytes, code_point_value_so_far, first_byte_makes_sense] = Utf8View::decode_leading_byte(*m_ptr);
 
     if (!first_byte_makes_sense) {
         // The first byte of the code point doesn't make sense: output a replacement character
-        dbgln("First byte doesn't make sense: {:#02x}.", m_ptr[0]);
+        dbgln_if(UTF8_DEBUG, "First byte doesn't make sense: {:#02x}.", m_ptr[0]);
         return 0xFFFD;
     }
 
     if (code_point_length_in_bytes > m_length) {
         // There is not enough data left for the full code point: output a replacement character
-        dbgln("Not enough bytes (need {}, have {}), first byte is: {:#02x}.", code_point_length_in_bytes, m_length, m_ptr[0]);
+        dbgln_if(UTF8_DEBUG, "Not enough bytes (need {}, have {}), first byte is: {:#02x}.", code_point_length_in_bytes, m_length, m_ptr[0]);
         return 0xFFFD;
     }
 
     for (size_t offset = 1; offset < code_point_length_in_bytes; offset++) {
         if (m_ptr[offset] >> 6 != 2) {
             // One of the extension bytes of the code point doesn't make sense: output a replacement character
-            dbgln("Extension byte {:#02x} in {} position after first byte {:#02x} doesn't make sense.", m_ptr[offset], offset, m_ptr[0]);
+            dbgln_if(UTF8_DEBUG, "Extension byte {:#02x} in {} position after first byte {:#02x} doesn't make sense.", m_ptr[offset], offset, m_ptr[0]);
             return 0xFFFD;
         }
 
@@ -266,6 +210,10 @@ u32 Utf8CodePointIterator::operator*() const
         code_point_value_so_far |= m_ptr[offset] & 63;
     }
 
+    if (code_point_value_so_far > 0x10FFFF) {
+        dbgln_if(UTF8_DEBUG, "Multi-byte sequence is otherwise valid, but code point {:#x} is not permissible.", code_point_value_so_far);
+        return 0xFFFD;
+    }
     return code_point_value_so_far;
 }
 
@@ -284,6 +232,11 @@ Optional<u32> Utf8CodePointIterator::peek(size_t offset) const
             return {};
     }
     return *new_iterator;
+}
+
+ErrorOr<void> Formatter<Utf8View>::format(FormatBuilder& builder, Utf8View const& string)
+{
+    return Formatter<StringView>::format(builder, string.as_string());
 }
 
 }

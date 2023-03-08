@@ -9,10 +9,10 @@
 
 namespace Debug {
 
-const LoadedLibrary* ProcessInspector::library_at(FlatPtr address) const
+LoadedLibrary const* ProcessInspector::library_at(FlatPtr address) const
 {
-    const LoadedLibrary* result = nullptr;
-    for_each_loaded_library([&result, address](const auto& lib) {
+    LoadedLibrary const* result = nullptr;
+    for_each_loaded_library([&result, address](auto const& lib) {
         if (address >= lib.base_address && address < lib.base_address + lib.debug_info->elf().size()) {
             result = &lib;
             return IterationDecision::Break;
@@ -27,12 +27,12 @@ Optional<ProcessInspector::SymbolicationResult> ProcessInspector::symbolicate(Fl
     auto* lib = library_at(address);
     if (!lib)
         return {};
-    // FIXME: ELF::Image symbolicate() API should return String::empty() if symbol is not found (It currently returns ??)
+    // FIXME: ELF::Image symbolicate() API should return DeprecatedString::empty() if symbol is not found (It currently returns ??)
     auto symbol = lib->debug_info->elf().symbolicate(address - lib->base_address);
     return { { lib->name, symbol } };
 }
 
-Optional<DebugInfo::SourcePositionAndAddress> ProcessInspector::get_address_from_source_position(String const& file, size_t line) const
+Optional<DebugInfo::SourcePositionAndAddress> ProcessInspector::get_address_from_source_position(DeprecatedString const& file, size_t line) const
 {
     Optional<DebugInfo::SourcePositionAndAddress> result;
     for_each_loaded_library([file, line, &result](auto& lib) {

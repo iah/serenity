@@ -1,18 +1,19 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Forward.h>
 #include <AK/HashMap.h>
 #include <AK/IntrusiveList.h>
 #include <AK/Noncopyable.h>
-#include <AK/NonnullRefPtrVector.h>
 #include <AK/OwnPtr.h>
-#include <AK/String.h>
+#include <AK/StringView.h>
 #include <AK/TypeCasts.h>
 #include <AK/Weakable.h>
 #include <LibCore/Forward.h>
@@ -20,18 +21,18 @@
 
 namespace Core {
 
-#define REGISTER_ABSTRACT_CORE_OBJECT(namespace_, class_name)                                                                 \
-    namespace Core {                                                                                                          \
-    namespace Registration {                                                                                                  \
-    Core::ObjectClassRegistration registration_##class_name(#namespace_ "::" #class_name, []() { return RefPtr<Object>(); }); \
-    }                                                                                                                         \
+#define REGISTER_ABSTRACT_CORE_OBJECT(namespace_, class_name)                                                                                                                             \
+    namespace Core {                                                                                                                                                                      \
+    namespace Registration {                                                                                                                                                              \
+    Core::ObjectClassRegistration registration_##class_name(#namespace_ "::" #class_name##sv, []() { return Error::from_string_literal("Attempted to construct an abstract object."); }); \
+    }                                                                                                                                                                                     \
     }
 
-#define REGISTER_CORE_OBJECT(namespace_, class_name)                                                                                             \
-    namespace Core {                                                                                                                             \
-    namespace Registration {                                                                                                                     \
-    Core::ObjectClassRegistration registration_##class_name(#namespace_ "::" #class_name, []() { return namespace_::class_name::construct(); }); \
-    }                                                                                                                                            \
+#define REGISTER_CORE_OBJECT(namespace_, class_name)                                                                                                  \
+    namespace Core {                                                                                                                                  \
+    namespace Registration {                                                                                                                          \
+    Core::ObjectClassRegistration registration_##class_name(#namespace_ "::" #class_name##sv, []() { return namespace_::class_name::try_create(); }); \
+    }                                                                                                                                                 \
     }
 
 class ObjectClassRegistration {
@@ -39,20 +40,20 @@ class ObjectClassRegistration {
     AK_MAKE_NONMOVABLE(ObjectClassRegistration);
 
 public:
-    ObjectClassRegistration(StringView class_name, Function<RefPtr<Object>()> factory, ObjectClassRegistration* parent_class = nullptr);
-    ~ObjectClassRegistration();
+    ObjectClassRegistration(StringView class_name, Function<ErrorOr<NonnullRefPtr<Object>>()> factory, ObjectClassRegistration* parent_class = nullptr);
+    ~ObjectClassRegistration() = default;
 
-    String class_name() const { return m_class_name; }
-    const ObjectClassRegistration* parent_class() const { return m_parent_class; }
-    RefPtr<Object> construct() const { return m_factory(); }
-    bool is_derived_from(const ObjectClassRegistration& base_class) const;
+    StringView class_name() const { return m_class_name; }
+    ObjectClassRegistration const* parent_class() const { return m_parent_class; }
+    ErrorOr<NonnullRefPtr<Object>> construct() const { return m_factory(); }
+    bool is_derived_from(ObjectClassRegistration const& base_class) const;
 
-    static void for_each(Function<void(const ObjectClassRegistration&)>);
-    static const ObjectClassRegistration* find(StringView class_name);
+    static void for_each(Function<void(ObjectClassRegistration const&)>);
+    static ObjectClassRegistration const* find(StringView class_name);
 
 private:
     StringView m_class_name;
-    Function<RefPtr<Object>()> m_factory;
+    Function<ErrorOr<NonnullRefPtr<Object>>()> m_factory;
     ObjectClassRegistration* m_parent_class { nullptr };
 };
 
@@ -63,23 +64,29 @@ enum class TimerShouldFireWhenNotVisible {
     Yes
 };
 
-#define C_OBJECT(klass)                                                                  \
-public:                                                                                  \
-    virtual const char* class_name() const override { return #klass; }                   \
-    template<typename Klass = klass, class... Args>                                      \
-    static NonnullRefPtr<klass> construct(Args&&... args)                                \
-    {                                                                                    \
-        return adopt_ref(*new Klass(forward<Args>(args)...));                            \
-    }                                                                                    \
-    template<typename Klass = klass, class... Args>                                      \
-    static ErrorOr<NonnullRefPtr<klass>> try_create(Args&&... args)                      \
-    {                                                                                    \
-        return adopt_nonnull_ref_or_enomem(new (nothrow) Klass(forward<Args>(args)...)); \
+#define C_OBJECT(klass)                                                                    \
+public:                                                                                    \
+    virtual StringView class_name() const override                                         \
+    {                                                                                      \
+        return #klass##sv;                                                                 \
+    }                                                                                      \
+    template<typename Klass = klass, class... Args>                                        \
+    static NonnullRefPtr<klass> construct(Args&&... args)                                  \
+    {                                                                                      \
+        return adopt_ref(*new Klass(::forward<Args>(args)...));                            \
+    }                                                                                      \
+    template<typename Klass = klass, class... Args>                                        \
+    static ErrorOr<NonnullRefPtr<klass>> try_create(Args&&... args)                        \
+    {                                                                                      \
+        return adopt_nonnull_ref_or_enomem(new (nothrow) Klass(::forward<Args>(args)...)); \
     }
 
-#define C_OBJECT_ABSTRACT(klass) \
-public:                          \
-    virtual const char* class_name() const override { return #klass; }
+#define C_OBJECT_ABSTRACT(klass)                   \
+public:                                            \
+    virtual StringView class_name() const override \
+    {                                              \
+        return #klass##sv;                         \
+    }
 
 class Object
     : public RefCounted<Object>
@@ -94,36 +101,44 @@ class Object
 public:
     virtual ~Object();
 
-    virtual const char* class_name() const = 0;
+    virtual StringView class_name() const = 0;
 
-    const String& name() const { return m_name; }
-    void set_name(String name) { m_name = move(name); }
+    template<typename T>
+    bool fast_is() const = delete;
 
-    NonnullRefPtrVector<Object>& children() { return m_children; }
-    const NonnullRefPtrVector<Object>& children() const { return m_children; }
+    virtual bool is_widget() const { return false; }
+
+    DeprecatedString const& name() const { return m_name; }
+    void set_name(DeprecatedString name) { m_name = move(name); }
+
+    Vector<NonnullRefPtr<Object>>& children() { return m_children; }
+    Vector<NonnullRefPtr<Object>> const& children() const { return m_children; }
 
     template<typename Callback>
     void for_each_child(Callback callback)
     {
         for (auto& child : m_children) {
-            if (callback(child) == IterationDecision::Break)
+            if (callback(*child) == IterationDecision::Break)
                 return;
         }
     }
 
     template<typename T, typename Callback>
-    void for_each_child_of_type(Callback callback) requires IsBaseOf<Object, T>;
+    void for_each_child_of_type(Callback callback)
+    requires IsBaseOf<Object, T>;
 
     template<typename T>
-    T* find_child_of_type_named(const String&) requires IsBaseOf<Object, T>;
+    T* find_child_of_type_named(DeprecatedString const&)
+    requires IsBaseOf<Object, T>;
 
     template<typename T>
-    T* find_descendant_of_type_named(const String&) requires IsBaseOf<Object, T>;
+    T* find_descendant_of_type_named(DeprecatedString const&)
+    requires IsBaseOf<Object, T>;
 
-    bool is_ancestor_of(const Object&) const;
+    bool is_ancestor_of(Object const&) const;
 
     Object* parent() { return m_parent; }
-    const Object* parent() const { return m_parent; }
+    Object const* parent() const { return m_parent; }
 
     void start_timer(int ms, TimerShouldFireWhenNotVisible = TimerShouldFireWhenNotVisible::No);
     void stop_timer();
@@ -144,9 +159,9 @@ public:
 
     void save_to(JsonObject&);
 
-    bool set_property(String const& name, const JsonValue& value);
-    JsonValue property(String const& name) const;
-    const HashMap<String, NonnullOwnPtr<Property>>& properties() const { return m_properties; }
+    bool set_property(DeprecatedString const& name, JsonValue const& value);
+    JsonValue property(DeprecatedString const& name) const;
+    HashMap<DeprecatedString, NonnullOwnPtr<Property>> const& properties() const { return m_properties; }
 
     static IntrusiveList<&Object::m_all_objects_list_node>& all_objects();
 
@@ -184,7 +199,7 @@ public:
 protected:
     explicit Object(Object* parent = nullptr);
 
-    void register_property(const String& name, Function<JsonValue()> getter, Function<bool(const JsonValue&)> setter = nullptr);
+    void register_property(DeprecatedString const& name, Function<JsonValue()> getter, Function<bool(JsonValue const&)> setter = nullptr);
 
     virtual void event(Core::Event&);
 
@@ -199,11 +214,11 @@ protected:
 
 private:
     Object* m_parent { nullptr };
-    String m_name;
+    DeprecatedString m_name;
     int m_timer_id { 0 };
     unsigned m_inspector_count { 0 };
-    HashMap<String, NonnullOwnPtr<Property>> m_properties;
-    NonnullRefPtrVector<Object> m_children;
+    HashMap<DeprecatedString, NonnullOwnPtr<Property>> m_properties;
+    Vector<NonnullRefPtr<Object>> m_children;
     Function<bool(Core::Event&)> m_event_filter;
 };
 
@@ -211,15 +226,16 @@ private:
 
 template<>
 struct AK::Formatter<Core::Object> : AK::Formatter<FormatString> {
-    ErrorOr<void> format(FormatBuilder& builder, const Core::Object& value)
+    ErrorOr<void> format(FormatBuilder& builder, Core::Object const& value)
     {
-        return AK::Formatter<FormatString>::format(builder, "{}({})", value.class_name(), &value);
+        return AK::Formatter<FormatString>::format(builder, "{}({})"sv, value.class_name(), &value);
     }
 };
 
 namespace Core {
 template<typename T, typename Callback>
-inline void Object::for_each_child_of_type(Callback callback) requires IsBaseOf<Object, T>
+inline void Object::for_each_child_of_type(Callback callback)
+requires IsBaseOf<Object, T>
 {
     for_each_child([&](auto& child) {
         if (is<T>(child))
@@ -229,7 +245,8 @@ inline void Object::for_each_child_of_type(Callback callback) requires IsBaseOf<
 }
 
 template<typename T>
-T* Object::find_child_of_type_named(const String& name) requires IsBaseOf<Object, T>
+T* Object::find_child_of_type_named(DeprecatedString const& name)
+requires IsBaseOf<Object, T>
 {
     T* found_child = nullptr;
     for_each_child_of_type<T>([&](auto& child) {
@@ -244,7 +261,8 @@ T* Object::find_child_of_type_named(const String& name) requires IsBaseOf<Object
 }
 
 template<typename T>
-T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<Object, T>
+T* Object::find_descendant_of_type_named(DeprecatedString const& name)
+requires IsBaseOf<Object, T>
 {
     if (is<T>(*this) && this->name() == name) {
         return static_cast<T*>(this);
@@ -282,7 +300,7 @@ T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<O
         property_name,                                          \
         [this] { return this->getter(); },                      \
         [this](auto& value) {                                   \
-            this->setter(value.to_string());                    \
+            this->setter(value.to_deprecated_string());         \
             return true;                                        \
         });
 
@@ -292,48 +310,77 @@ T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<O
         [this] { return this->getter(); },                       \
         {});
 
-#define REGISTER_RECT_PROPERTY(property_name, getter, setter)          \
-    register_property(                                                 \
-        property_name,                                                 \
-        [this] {                                                       \
-            auto rect = this->getter();                                \
-            JsonObject rect_object;                                    \
-            rect_object.set("x", rect.x());                            \
-            rect_object.set("y", rect.y());                            \
-            rect_object.set("width", rect.width());                    \
-            rect_object.set("height", rect.height());                  \
-            return rect_object;                                        \
-        },                                                             \
-        [this](auto& value) {                                          \
-            if (!value.is_object())                                    \
-                return false;                                          \
-            Gfx::IntRect rect;                                         \
-            rect.set_x(value.as_object().get("x").to_i32());           \
-            rect.set_y(value.as_object().get("y").to_i32());           \
-            rect.set_width(value.as_object().get("width").to_i32());   \
-            rect.set_height(value.as_object().get("height").to_i32()); \
-            setter(rect);                                              \
-            return true;                                               \
+#define REGISTER_WRITE_ONLY_STRING_PROPERTY(property_name, setter) \
+    register_property(                                             \
+        property_name,                                             \
+        {},                                                        \
+        [this](auto& value) {                                      \
+            this->setter(value.to_deprecated_string());            \
+            return true;                                           \
         });
 
-#define REGISTER_SIZE_PROPERTY(property_name, getter, setter)          \
-    register_property(                                                 \
-        property_name,                                                 \
-        [this] {                                                       \
-            auto size = this->getter();                                \
-            JsonObject size_object;                                    \
-            size_object.set("width", size.width());                    \
-            size_object.set("height", size.height());                  \
-            return size_object;                                        \
-        },                                                             \
-        [this](auto& value) {                                          \
-            if (!value.is_object())                                    \
-                return false;                                          \
-            Gfx::IntSize size;                                         \
-            size.set_width(value.as_object().get("width").to_i32());   \
-            size.set_height(value.as_object().get("height").to_i32()); \
-            setter(size);                                              \
-            return true;                                               \
+#define REGISTER_READONLY_SIZE_PROPERTY(property_name, getter) \
+    register_property(                                         \
+        property_name,                                         \
+        [this] {                                               \
+            auto size = this->getter();                        \
+            JsonArray size_array;                              \
+            size_array.append(size.width());                   \
+            size_array.append(size.height());                  \
+            return size_array;                                 \
+        },                                                     \
+        {});
+
+#define REGISTER_RECT_PROPERTY(property_name, getter, setter)                       \
+    register_property(                                                              \
+        property_name,                                                              \
+        [this] {                                                                    \
+            auto rect = this->getter();                                             \
+            JsonObject rect_object;                                                 \
+            rect_object.set("x"sv, rect.x());                                       \
+            rect_object.set("y"sv, rect.y());                                       \
+            rect_object.set("width"sv, rect.width());                               \
+            rect_object.set("height"sv, rect.height());                             \
+            return rect_object;                                                     \
+        },                                                                          \
+        [this](auto& value) {                                                       \
+            Gfx::IntRect rect;                                                      \
+            if (value.is_object()) {                                                \
+                rect.set_x(value.as_object().get_i32("x"sv).value_or(0));           \
+                rect.set_y(value.as_object().get_i32("y"sv).value_or(0));           \
+                rect.set_width(value.as_object().get_i32("width"sv).value_or(0));   \
+                rect.set_height(value.as_object().get_i32("height"sv).value_or(0)); \
+            } else if (value.is_array() && value.as_array().size() == 4) {          \
+                rect.set_x(value.as_array()[0].to_i32());                           \
+                rect.set_y(value.as_array()[1].to_i32());                           \
+                rect.set_width(value.as_array()[2].to_i32());                       \
+                rect.set_height(value.as_array()[3].to_i32());                      \
+            } else {                                                                \
+                return false;                                                       \
+            }                                                                       \
+            setter(rect);                                                           \
+                                                                                    \
+            return true;                                                            \
+        });
+
+#define REGISTER_SIZE_PROPERTY(property_name, getter, setter) \
+    register_property(                                        \
+        property_name,                                        \
+        [this] {                                              \
+            auto size = this->getter();                       \
+            JsonArray size_array;                             \
+            size_array.append(size.width());                  \
+            size_array.append(size.height());                 \
+            return size_array;                                \
+        },                                                    \
+        [this](auto& value) {                                 \
+            if (!value.is_array())                            \
+                return false;                                 \
+            Gfx::IntSize size;                                \
+            size.set_width(value.as_array()[0].to_i32());     \
+            size.set_height(value.as_array()[1].to_i32());    \
+            setter(size);                                     \
+            return true;                                      \
         });
 
 #define REGISTER_ENUM_PROPERTY(property_name, getter, setter, EnumType, ...) \
@@ -342,7 +389,7 @@ T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<O
         [this]() -> JsonValue {                                              \
             struct {                                                         \
                 EnumType enum_value;                                         \
-                String string_value;                                         \
+                DeprecatedString string_value;                               \
             } options[] = { __VA_ARGS__ };                                   \
             auto enum_value = getter();                                      \
             for (size_t i = 0; i < array_size(options); ++i) {               \
@@ -355,7 +402,7 @@ T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<O
         [this](auto& value) {                                                \
             struct {                                                         \
                 EnumType enum_value;                                         \
-                String string_value;                                         \
+                DeprecatedString string_value;                               \
             } options[] = { __VA_ARGS__ };                                   \
             if (!value.is_string())                                          \
                 return false;                                                \
@@ -376,8 +423,10 @@ T* Object::find_descendant_of_type_named(String const& name) requires IsBaseOf<O
         { Gfx::TextAlignment::Center, "Center" },                       \
         { Gfx::TextAlignment::CenterLeft, "CenterLeft" },               \
         { Gfx::TextAlignment::CenterRight, "CenterRight" },             \
+        { Gfx::TextAlignment::TopCenter, "TopCenter" },                 \
         { Gfx::TextAlignment::TopLeft, "TopLeft" },                     \
         { Gfx::TextAlignment::TopRight, "TopRight" },                   \
+        { Gfx::TextAlignment::BottomCenter, "BottomCenter" },           \
         { Gfx::TextAlignment::BottomLeft, "BottomLeft" },               \
         { Gfx::TextAlignment::BottomRight, "BottomRight" })
 

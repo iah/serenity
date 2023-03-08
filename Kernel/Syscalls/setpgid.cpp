@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Process.h>
 #include <Kernel/TTY/TTY.h>
 
@@ -12,11 +12,11 @@ namespace Kernel {
 
 ErrorOr<FlatPtr> Process::sys$getsid(pid_t pid)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
-    TRY(require_promise(Pledge::proc));
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    TRY(require_promise(Pledge::stdio));
     if (pid == 0)
         return sid().value();
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
     if (sid() != process->sid())
@@ -26,32 +26,33 @@ ErrorOr<FlatPtr> Process::sys$getsid(pid_t pid)
 
 ErrorOr<FlatPtr> Process::sys$setsid()
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::proc));
     InterruptDisabler disabler;
     bool found_process_with_same_pgid_as_my_pid = false;
-    Process::for_each_in_pgrp(pid().value(), [&](auto&) {
+    TRY(Process::for_each_in_pgrp_in_same_jail(pid().value(), [&](auto&) -> ErrorOr<void> {
         found_process_with_same_pgid_as_my_pid = true;
-        return IterationDecision::Break;
-    });
+        return {};
+    }));
     if (found_process_with_same_pgid_as_my_pid)
         return EPERM;
     // Create a new Session and a new ProcessGroup.
 
     m_pg = TRY(ProcessGroup::try_create(ProcessGroupID(pid().value())));
     m_tty = nullptr;
-    ProtectedDataMutationScope scope { *this };
-    m_protected_values.sid = pid().value();
-    return sid().value();
+    return with_mutable_protected_data([&](auto& protected_data) -> ErrorOr<FlatPtr> {
+        protected_data.sid = pid().value();
+        return protected_data.sid.value();
+    });
 }
 
 ErrorOr<FlatPtr> Process::sys$getpgid(pid_t pid)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
-    TRY(require_promise(Pledge::proc));
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    TRY(require_promise(Pledge::stdio));
     if (pid == 0)
         return pgid().value();
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
     return process->pgid().value();
@@ -59,7 +60,7 @@ ErrorOr<FlatPtr> Process::sys$getpgid(pid_t pid)
 
 ErrorOr<FlatPtr> Process::sys$getpgrp()
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     return pgid().value();
 }
@@ -69,24 +70,24 @@ SessionID Process::get_sid_from_pgid(ProcessGroupID pgid)
     // FIXME: This xor sys$setsid() uses the wrong locking mechanism.
 
     SessionID sid { -1 };
-    Process::for_each_in_pgrp(pgid, [&](auto& process) {
+    MUST(Process::current().for_each_in_pgrp_in_same_jail(pgid, [&](auto& process) -> ErrorOr<void> {
         sid = process.sid();
-        return IterationDecision::Break;
-    });
+        return {};
+    }));
 
     return sid;
 }
 
 ErrorOr<FlatPtr> Process::sys$setpgid(pid_t specified_pid, pid_t specified_pgid)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::proc));
     ProcessID pid = specified_pid ? ProcessID(specified_pid) : this->pid();
     if (specified_pgid < 0) {
         // The value of the pgid argument is less than 0, or is not a value supported by the implementation.
         return EINVAL;
     }
-    auto process = Process::from_pid(pid);
+    auto process = Process::from_pid_in_same_jail(pid);
     if (!process)
         return ESRCH;
     if (process != this && process->ppid() != this->pid()) {
@@ -119,7 +120,45 @@ ErrorOr<FlatPtr> Process::sys$setpgid(pid_t specified_pid, pid_t specified_pgid)
     }
     // FIXME: There are more EPERM conditions to check for here..
     process->m_pg = TRY(ProcessGroup::try_find_or_create(new_pgid));
-    return 0;
+    return with_mutable_protected_data([&](auto& protected_data) -> ErrorOr<FlatPtr> {
+        auto credentials = this->credentials();
+
+        auto new_credentials = TRY(Credentials::create(
+            credentials->uid(),
+            credentials->gid(),
+            credentials->euid(),
+            credentials->egid(),
+            credentials->suid(),
+            credentials->sgid(),
+            credentials->extra_gids(),
+            new_sid,
+            new_pgid));
+
+        protected_data.credentials = move(new_credentials);
+        return 0;
+    });
+}
+
+ErrorOr<FlatPtr> Process::sys$get_root_session_id(pid_t force_sid)
+{
+    TRY(require_promise(Pledge::stdio));
+    pid_t sid = (force_sid == -1) ? this->sid().value() : force_sid;
+    if (sid == 0)
+        return 0;
+    while (true) {
+        auto sid_process = Process::from_pid_in_same_jail(sid);
+        if (!sid_process)
+            return ESRCH;
+        auto parent_pid = sid_process->ppid().value();
+        auto parent_process = Process::from_pid_in_same_jail(parent_pid);
+        if (!parent_process)
+            return ESRCH;
+        pid_t parent_sid = parent_process->sid().value();
+        if (parent_sid == 0)
+            break;
+        sid = parent_sid;
+    }
+    return sid;
 }
 
 }

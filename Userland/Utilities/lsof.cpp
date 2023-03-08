@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/GenericLexer.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
@@ -21,10 +21,10 @@
 struct OpenFile {
     int fd;
     int pid;
-    String type;
-    String name;
-    String state;
-    String full_name;
+    DeprecatedString type;
+    DeprecatedString name;
+    DeprecatedString state;
+    DeprecatedString full_name;
 };
 
 static bool parse_name(StringView name, OpenFile& file)
@@ -65,14 +65,18 @@ static bool parse_name(StringView name, OpenFile& file)
 
 static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 {
-    auto file = Core::File::open(String::formatted("/proc/{}/fds", pid), Core::OpenMode::ReadOnly);
+    auto file = Core::File::open(DeprecatedString::formatted("/proc/{}/fds", pid), Core::File::OpenMode::Read);
     if (file.is_error()) {
         outln("lsof: PID {}: {}", pid, file.error());
         return Vector<OpenFile>();
     }
-    auto data = file.value()->read_all();
+    auto data = file.value()->read_until_eof();
+    if (data.is_error()) {
+        outln("lsof: PID {}: {}", pid, data.error());
+        return {};
+    }
 
-    auto json_or_error = JsonValue::from_string(data);
+    auto json_or_error = JsonValue::from_string(data.value());
     if (json_or_error.is_error()) {
         outln("lsof: {}", json_or_error.error());
         return Vector<OpenFile>();
@@ -80,12 +84,12 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
     auto json = json_or_error.release_value();
 
     Vector<OpenFile> files;
-    json.as_array().for_each([pid, &files](const JsonValue& object) {
+    json.as_array().for_each([pid, &files](JsonValue const& object) {
         OpenFile open_file;
         open_file.pid = pid;
-        open_file.fd = object.as_object().get("fd").to_int();
+        open_file.fd = object.as_object().get_integer<int>("fd"sv).value();
 
-        String name = object.as_object().get("absolute_path").to_string();
+        DeprecatedString name = object.as_object().get_deprecated_string("absolute_path"sv).value_or({});
         VERIFY(parse_name(name, open_file));
         open_file.full_name = name;
 
@@ -94,7 +98,7 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
     return files;
 }
 
-static void display_entry(const OpenFile& file, const Core::ProcessStatistics& statistics)
+static void display_entry(OpenFile const& file, Core::ProcessStatistics const& statistics)
 {
     outln("{:28} {:>4} {:>4} {:10} {:>4} {}", statistics.name, file.pid, statistics.pgid, statistics.username, file.fd, file.full_name);
 }
@@ -105,6 +109,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     TRY(Core::System::unveil("/proc", "r"));
     // needed by ProcessStatisticsReader::get_all()
+    TRY(Core::System::unveil("/sys/kernel/processes", "r"));
     TRY(Core::System::unveil("/etc/passwd", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
@@ -130,17 +135,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
     {
         // try convert UID to int
-        auto arg = String(arg_uid).to_int();
+        auto arg = DeprecatedString(arg_uid).to_int();
         if (arg.has_value())
             arg_uid_int = arg.value();
     }
 
     outln("{:28} {:>4} {:>4} {:10} {:>4} {}", "COMMAND", "PID", "PGID", "USER", "FD", "NAME");
-    auto all_processes = Core::ProcessStatisticsReader::get_all();
-    if (!all_processes.has_value())
-        return 1;
+    auto all_processes = TRY(Core::ProcessStatisticsReader::get_all());
     if (arg_pid == -1) {
-        for (auto& process : all_processes.value().processes) {
+        for (auto& process : all_processes.processes) {
             if (process.pid == 0)
                 continue;
             auto open_files = get_open_files_by_pid(process.pid);
@@ -165,7 +168,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             return 0;
 
         for (auto& file : open_files) {
-            display_entry(file, *all_processes->processes.find_if([&](auto& entry) { return entry.pid == arg_pid; }));
+            display_entry(file, *all_processes.processes.find_if([&](auto& entry) { return entry.pid == arg_pid; }));
         }
     }
 

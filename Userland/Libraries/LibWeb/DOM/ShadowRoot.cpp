@@ -12,14 +12,22 @@
 
 namespace Web::DOM {
 
-ShadowRoot::ShadowRoot(Document& document, Element& host)
+ShadowRoot::ShadowRoot(Document& document, Element& host, Bindings::ShadowRootMode mode)
     : DocumentFragment(document)
+    , m_mode(mode)
 {
-    set_host(host);
+    set_host(&host);
+}
+
+JS::ThrowCompletionOr<void> ShadowRoot::initialize(JS::Realm& realm)
+{
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::ShadowRootPrototype>(realm, "ShadowRoot"));
+    return {};
 }
 
 // https://dom.spec.whatwg.org/#ref-for-get-the-parent%E2%91%A6
-EventTarget* ShadowRoot::get_parent(const Event& event)
+EventTarget* ShadowRoot::get_parent(Event const& event)
 {
     if (!event.composed()) {
         auto& events_first_invocation_target = verify_cast<Node>(*event.path().first().invocation_target);
@@ -31,17 +39,15 @@ EventTarget* ShadowRoot::get_parent(const Event& event)
 }
 
 // https://w3c.github.io/DOM-Parsing/#dom-innerhtml-innerhtml
-String ShadowRoot::inner_html() const
+WebIDL::ExceptionOr<DeprecatedString> ShadowRoot::inner_html() const
 {
-    return serialize_fragment(/* FIXME: Providing true for the require well-formed flag (which may throw) */);
+    return serialize_fragment(DOMParsing::RequireWellFormed::Yes);
 }
 
 // https://w3c.github.io/DOM-Parsing/#dom-innerhtml-innerhtml
-ExceptionOr<void> ShadowRoot::set_inner_html(String const& markup)
+WebIDL::ExceptionOr<void> ShadowRoot::set_inner_html(DeprecatedString const& markup)
 {
-    auto result = DOMParsing::inner_html_setter(*this, markup);
-    if (result.is_exception())
-        return result.exception();
+    TRY(DOMParsing::inner_html_setter(*this, markup));
 
     set_needs_style_update(true);
     return {};

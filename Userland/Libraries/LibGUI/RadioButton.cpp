@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,7 +8,7 @@
 #include <LibGUI/Painter.h>
 #include <LibGUI/RadioButton.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
@@ -20,12 +21,13 @@ RadioButton::RadioButton(String text)
 {
     set_exclusive(true);
     set_checkable(true);
-    set_min_width(32);
-    set_fixed_height(22);
+    set_min_size(SpecialDimension::Shrink, SpecialDimension::Shrink);
+    set_preferred_size(SpecialDimension::OpportunisticGrow, SpecialDimension::Shrink);
 }
 
-RadioButton::~RadioButton()
+int RadioButton::horizontal_padding()
 {
+    return 2;
 }
 
 Gfx::IntSize RadioButton::circle_size()
@@ -44,12 +46,12 @@ void RadioButton::paint_event(PaintEvent& event)
     if (is_enabled() && is_hovered())
         painter.fill_rect(rect(), palette().hover_highlight());
 
-    Gfx::IntRect circle_rect { { 2, 0 }, circle_size() };
+    Gfx::IntRect circle_rect { { horizontal_padding(), 0 }, circle_size() };
     circle_rect.center_vertically_within(rect());
 
     Gfx::StylePainter::paint_radio_button(painter, circle_rect, palette(), is_checked(), is_being_pressed());
 
-    Gfx::IntRect text_rect { circle_rect.right() + 7, 0, font().width(text()), font().glyph_height() };
+    Gfx::IntRect text_rect { circle_rect.right() + 5 + horizontal_padding(), 0, static_cast<int>(ceilf(font().width(text()))), font().pixel_size_rounded_up() };
     text_rect.center_vertically_within(rect());
     paint_text(painter, text_rect, font(), Gfx::TextAlignment::TopLeft);
 
@@ -62,6 +64,14 @@ void RadioButton::click(unsigned)
     if (!is_enabled())
         return;
     set_checked(true);
+}
+
+Optional<UISize> RadioButton::calculated_min_size() const
+{
+    auto const& font = this->font();
+    int width = horizontal_padding() * 2 + circle_size().width() + static_cast<int>(ceilf(font.width(text())));
+    int height = max(22, max(font.pixel_size_rounded_up() + 8, circle_size().height()));
+    return UISize(width, height);
 }
 
 }

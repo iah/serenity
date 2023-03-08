@@ -1,24 +1,27 @@
+include(libweb_generators)
+
 set(SOURCES
+    ARIA/ARIAMixin.cpp
+    ARIA/ARIAMixin.idl
+    ARIA/Roles.cpp
+    Bindings/AudioConstructor.cpp
     Bindings/CSSNamespace.cpp
-    Bindings/CSSRuleWrapperFactory.cpp
-    Bindings/CSSStyleDeclarationWrapperCustom.cpp
-    Bindings/EventListenerWrapper.cpp
-    Bindings/EventTargetWrapperFactory.cpp
-    Bindings/EventWrapperFactory.cpp
-    Bindings/IDLAbstractOperations.cpp
+    Bindings/HostDefined.cpp
     Bindings/ImageConstructor.cpp
-    Bindings/LocationObject.cpp
+    Bindings/Intrinsics.cpp
+    Bindings/LegacyPlatformObject.cpp
+    Bindings/LocationConstructor.cpp
     Bindings/MainThreadVM.cpp
-    Bindings/NavigatorObject.cpp
-    Bindings/NodeWrapperFactory.cpp
-    Bindings/WindowObject.cpp
-    Bindings/Wrappable.cpp
+    Bindings/OptionConstructor.cpp
+    Bindings/PlatformObject.cpp
     Crypto/Crypto.cpp
     Crypto/SubtleCrypto.cpp
-    CSS/Serialize.cpp
+    CSS/Angle.cpp
+    CSS/Clip.cpp
     CSS/CSSConditionRule.cpp
     CSS/CSSGroupingRule.cpp
     CSS/CSSImportRule.cpp
+    CSS/CSSFontFaceRule.cpp
     CSS/CSSMediaRule.cpp
     CSS/CSSRule.cpp
     CSS/CSSRuleList.cpp
@@ -26,25 +29,36 @@ set(SOURCES
     CSS/CSSStyleRule.cpp
     CSS/CSSStyleSheet.cpp
     CSS/CSSSupportsRule.cpp
-    CSS/ResolvedCSSStyleDeclaration.cpp
-    CSS/DefaultStyleSheetSource.cpp
     CSS/Display.cpp
+    CSS/FontFace.cpp
+    CSS/Frequency.cpp
+    CSS/GridTrackPlacement.cpp
+    CSS/GridTrackSize.cpp
     CSS/Length.cpp
+    CSS/LengthBox.cpp
     CSS/MediaList.cpp
     CSS/MediaQuery.cpp
     CSS/MediaQueryList.cpp
+    CSS/MediaQueryListEvent.cpp
+    CSS/Parser/Block.cpp
+    CSS/Parser/ComponentValue.cpp
+    CSS/Parser/Declaration.cpp
+    CSS/Parser/DeclarationOrAtRule.cpp
+    CSS/Parser/Function.cpp
     CSS/Parser/Parser.cpp
-    CSS/Parser/StyleRules.cpp
+    CSS/Parser/Rule.cpp
     CSS/Parser/Token.cpp
     CSS/Parser/Tokenizer.cpp
     CSS/Percentage.cpp
     CSS/PreferredColorScheme.cpp
-    CSS/PropertyID.cpp
-    CSS/PropertyID.h
-    CSS/QuirksModeStyleSheetSource.cpp
+    CSS/Ratio.cpp
+    CSS/Resolution.cpp
+    CSS/ResolvedCSSStyleDeclaration.cpp
     CSS/Screen.cpp
     CSS/Selector.cpp
     CSS/SelectorEngine.cpp
+    CSS/Serialize.cpp
+    CSS/Size.cpp
     CSS/StyleComputer.cpp
     CSS/StyleProperties.cpp
     CSS/StyleSheet.cpp
@@ -52,13 +66,16 @@ set(SOURCES
     CSS/StyleValue.cpp
     CSS/Supports.cpp
     CSS/SyntaxHighlighter/SyntaxHighlighter.cpp
-    CSS/ValueID.cpp
-    CSS/ValueID.h
+    CSS/Time.cpp
+    Cookie/Cookie.cpp
     Cookie/ParsedCookie.cpp
     DOM/AbortController.cpp
     DOM/AbortSignal.cpp
-    DOM/Attribute.cpp
-    DOM/Attribute.idl
+    DOM/AbstractRange.cpp
+    DOM/AccessibilityTreeNode.cpp
+    DOM/Attr.cpp
+    DOM/Attr.idl
+    DOM/CDATASection.cpp
     DOM/CharacterData.cpp
     DOM/CharacterData.idl
     DOM/Comment.cpp
@@ -77,40 +94,98 @@ set(SOURCES
     DOM/EventDispatcher.cpp
     DOM/EventTarget.cpp
     DOM/HTMLCollection.cpp
+    DOM/IDLEventListener.cpp
     DOM/LiveNodeList.cpp
+    DOM/MutationObserver.cpp
+    DOM/MutationRecord.cpp
+    DOM/MutationType.cpp
     DOM/NamedNodeMap.cpp
     DOM/Node.cpp
+    DOM/NodeFilter.cpp
+    DOM/NodeIterator.cpp
+    DOM/NodeList.cpp
     DOM/NodeOperations.cpp
     DOM/ParentNode.cpp
     DOM/Position.cpp
     DOM/ProcessingInstruction.cpp
+    DOM/QualifiedName.cpp
     DOM/Range.cpp
     DOM/ShadowRoot.cpp
     DOM/StaticNodeList.cpp
+    DOM/StaticRange.cpp
     DOM/Text.cpp
     DOM/Text.idl
-    DOM/Timer.cpp
-    DOM/Window.cpp
+    DOM/TreeWalker.cpp
     DOMParsing/InnerHTML.cpp
-    DOMTreeModel.cpp
+    DOMParsing/XMLSerializer.cpp
     Dump.cpp
     Encoding/TextDecoder.cpp
     Encoding/TextEncoder.cpp
-    Fetch/AbstractOperations.cpp
+    Fetch/Body.cpp
+    Fetch/BodyInit.cpp
+    Fetch/Enums.cpp
+    Fetch/Fetching/Checks.cpp
+    Fetch/Fetching/Fetching.cpp
+    Fetch/Fetching/PendingResponse.cpp
+    Fetch/Fetching/RefCountedFlag.cpp
+    Fetch/FetchMethod.cpp
+    Fetch/Headers.cpp
+    Fetch/HeadersIterator.cpp
+    Fetch/Infrastructure/ConnectionTimingInfo.cpp
+    Fetch/Infrastructure/FetchAlgorithms.cpp
+    Fetch/Infrastructure/FetchController.cpp
+    Fetch/Infrastructure/FetchParams.cpp
+    Fetch/Infrastructure/FetchTimingInfo.cpp
+    Fetch/Infrastructure/HTTP.cpp
+    Fetch/Infrastructure/HTTP/Bodies.cpp
+    Fetch/Infrastructure/HTTP/Headers.cpp
+    Fetch/Infrastructure/HTTP/Methods.cpp
+    Fetch/Infrastructure/HTTP/Requests.cpp
+    Fetch/Infrastructure/HTTP/Responses.cpp
+    Fetch/Infrastructure/HTTP/Statuses.cpp
+    Fetch/Infrastructure/MimeTypeBlocking.cpp
+    Fetch/Infrastructure/NoSniffBlocking.cpp
+    Fetch/Infrastructure/PortBlocking.cpp
+    Fetch/Infrastructure/Task.cpp
+    Fetch/Infrastructure/URL.cpp
+    Fetch/Request.cpp
+    Fetch/Response.cpp
+    FileAPI/Blob.cpp
+    FileAPI/File.cpp
+    FileAPI/FileList.cpp
     FontCache.cpp
+    Geometry/DOMMatrix.cpp
+    Geometry/DOMMatrixReadOnly.cpp
+    Geometry/DOMPoint.cpp
+    Geometry/DOMPointReadOnly.cpp
+    Geometry/DOMRect.cpp
     Geometry/DOMRectList.cpp
+    Geometry/DOMRectReadOnly.cpp
     HTML/AttributeNames.cpp
     HTML/BrowsingContext.cpp
     HTML/BrowsingContextContainer.cpp
+    HTML/BrowsingContextGroup.cpp
+    HTML/Canvas/CanvasDrawImage.cpp
+    HTML/Canvas/CanvasPath.cpp
+    HTML/Canvas/CanvasState.cpp
     HTML/CanvasGradient.cpp
+    HTML/CanvasPattern.cpp
     HTML/CanvasRenderingContext2D.cpp
+    HTML/CloseEvent.cpp
+    HTML/CrossOrigin/AbstractOperations.cpp
+    HTML/CrossOrigin/Reporting.cpp
     HTML/DOMParser.cpp
     HTML/DOMStringMap.cpp
+    HTML/ErrorEvent.cpp
+    HTML/EventHandler.cpp
     HTML/EventLoop/EventLoop.cpp
     HTML/EventLoop/Task.cpp
     HTML/EventLoop/TaskQueue.cpp
     HTML/EventNames.cpp
+    HTML/Focus.cpp
     HTML/FormAssociatedElement.cpp
+    HTML/FormControlInfrastructure.cpp
+    HTML/FormDataEvent.cpp
     HTML/GlobalEventHandlers.cpp
     HTML/History.cpp
     HTML/HTMLAnchorElement.cpp
@@ -159,6 +234,7 @@ set(SOURCES
     HTML/HTMLObjectElement.cpp
     HTML/HTMLOptGroupElement.cpp
     HTML/HTMLOptionElement.cpp
+    HTML/HTMLOptionsCollection.cpp
     HTML/HTMLOutputElement.cpp
     HTML/HTMLParagraphElement.cpp
     HTML/HTMLParamElement.cpp
@@ -187,8 +263,15 @@ set(SOURCES
     HTML/HTMLUnknownElement.cpp
     HTML/HTMLVideoElement.cpp
     HTML/ImageData.cpp
+    HTML/Location.cpp
     HTML/MessageChannel.cpp
+    HTML/MessageEvent.cpp
     HTML/MessagePort.cpp
+    HTML/MimeType.cpp
+    HTML/MimeTypeArray.cpp
+    HTML/Navigator.cpp
+    HTML/NavigatorID.cpp
+    HTML/PageTransitionEvent.cpp
     HTML/Parser/Entities.cpp
     HTML/Parser/HTMLEncodingDetection.cpp
     HTML/Parser/HTMLParser.cpp
@@ -196,23 +279,42 @@ set(SOURCES
     HTML/Parser/HTMLTokenizer.cpp
     HTML/Parser/ListOfActiveFormattingElements.cpp
     HTML/Parser/StackOfOpenElements.cpp
+    HTML/Path2D.cpp
+    HTML/Plugin.cpp
+    HTML/PluginArray.cpp
+    HTML/PromiseRejectionEvent.cpp
     HTML/Scripting/ClassicScript.cpp
     HTML/Scripting/Environments.cpp
     HTML/Scripting/ExceptionReporter.cpp
+    HTML/Scripting/Fetching.cpp
+    HTML/Scripting/ModuleMap.cpp
+    HTML/Scripting/ModuleScript.cpp
     HTML/Scripting/Script.cpp
     HTML/Scripting/WindowEnvironmentSettingsObject.cpp
     HTML/Storage.cpp
+    HTML/StructuredSerialize.cpp
+    HTML/SubmitEvent.cpp
     HTML/SyntaxHighlighter/SyntaxHighlighter.cpp
     HTML/TagNames.cpp
     HTML/TextMetrics.cpp
+    HTML/Timer.cpp
+    HTML/Window.cpp
+    HTML/WindowEventHandlers.cpp
+    HTML/WindowOrWorkerGlobalScope.cpp
+    HTML/WindowProxy.cpp
     HTML/Worker.cpp
     HTML/WorkerDebugConsoleClient.cpp
     HTML/WorkerGlobalScope.cpp
     HTML/WorkerLocation.cpp
+    HTML/WorkerNavigator.cpp
     HighResolutionTime/Performance.cpp
-    ImageDecoding.cpp
-    InProcessWebView.cpp
+    HighResolutionTime/TimeOrigin.cpp
+    Infra/Base64.cpp
+    Infra/ByteSequences.cpp
+    Infra/JSON.cpp
+    Infra/Strings.cpp
     IntersectionObserver/IntersectionObserver.cpp
+    Layout/AvailableSpace.cpp
     Layout/BlockContainer.cpp
     Layout/BlockFormattingContext.cpp
     Layout/Box.cpp
@@ -224,13 +326,15 @@ set(SOURCES
     Layout/FlexFormattingContext.cpp
     Layout/FormattingContext.cpp
     Layout/FrameBox.cpp
+    Layout/GridFormattingContext.cpp
     Layout/ImageBox.cpp
-    Layout/InitialContainingBlock.cpp
+    Layout/Viewport.cpp
     Layout/InlineFormattingContext.cpp
     Layout/InlineLevelIterator.cpp
     Layout/InlineNode.cpp
     Layout/Label.cpp
-    Layout/LayoutPosition.cpp
+    Layout/LabelableNode.cpp
+    Layout/LayoutState.cpp
     Layout/LineBox.cpp
     Layout/LineBoxFragment.cpp
     Layout/LineBuilder.cpp
@@ -250,30 +354,67 @@ set(SOURCES
     Layout/TableFormattingContext.cpp
     Layout/TableRowBox.cpp
     Layout/TableRowGroupBox.cpp
+    Layout/TableWrapper.cpp
     Layout/TextNode.cpp
     Layout/TreeBuilder.cpp
     Loader/ContentFilter.cpp
+    Loader/FileRequest.cpp
     Loader/FrameLoader.cpp
     Loader/ImageLoader.cpp
     Loader/ImageResource.cpp
     Loader/LoadRequest.cpp
+    Loader/ProxyMappings.cpp
     Loader/Resource.cpp
     Loader/ResourceLoader.cpp
     MimeSniff/MimeType.cpp
     Namespace.cpp
     NavigationTiming/PerformanceTiming.cpp
-    OutOfProcessWebView.cpp
     Page/EditEventHandler.cpp
     Page/EventHandler.cpp
     Page/Page.cpp
     Painting/BackgroundPainting.cpp
     Painting/BorderPainting.cpp
+    Painting/BorderRadiusCornerClipper.cpp
+    Painting/ButtonPaintable.cpp
+    Painting/CanvasPaintable.cpp
+    Painting/CheckBoxPaintable.cpp
+    Painting/GradientPainting.cpp
+    Painting/FilterPainting.cpp
+    Painting/ImagePaintable.cpp
+    Painting/InlinePaintable.cpp
+    Painting/LabelablePaintable.cpp
+    Painting/MarkerPaintable.cpp
+    Painting/NestedBrowsingContextPaintable.cpp
+    Painting/PaintContext.cpp
+    Painting/Paintable.cpp
+    Painting/PaintableBox.cpp
+    Painting/ProgressPaintable.cpp
+    Painting/RadioButtonPaintable.cpp
+    Painting/SVGGeometryPaintable.cpp
+    Painting/SVGGraphicsPaintable.cpp
+    Painting/SVGPaintable.cpp
+    Painting/SVGSVGPaintable.cpp
     Painting/ShadowPainting.cpp
     Painting/StackingContext.cpp
+    Painting/TextPaintable.cpp
+    Platform/EventLoopPlugin.cpp
+    Platform/EventLoopPluginSerenity.cpp
+    Platform/FontPlugin.cpp
+    Platform/FontPluginSerenity.cpp
+    Platform/ImageCodecPlugin.cpp
+    Platform/Timer.cpp
+    Platform/TimerSerenity.cpp
+    ReferrerPolicy/AbstractOperations.cpp
     RequestIdleCallback/IdleDeadline.cpp
     ResizeObserver/ResizeObserver.cpp
+    SecureContexts/AbstractOperations.cpp
+    Streams/AbstractOperations.cpp
+    Streams/ReadableStream.cpp
     SVG/AttributeNames.cpp
     SVG/AttributeParser.cpp
+    SVG/SVGAnimatedLength.cpp
+    SVG/SVGClipPathElement.cpp
+    SVG/SVGDefsElement.cpp
     SVG/SVGElement.cpp
     SVG/SVGGElement.cpp
     SVG/SVGGeometryElement.cpp
@@ -281,19 +422,23 @@ set(SOURCES
     SVG/SVGPathElement.cpp
     SVG/SVGCircleElement.cpp
     SVG/SVGEllipseElement.cpp
+    SVG/SVGForeignObjectElement.cpp
+    SVG/SVGLength.cpp
     SVG/SVGLineElement.cpp
     SVG/SVGPolygonElement.cpp
     SVG/SVGPolylineElement.cpp
     SVG/SVGRectElement.cpp
     SVG/SVGSVGElement.cpp
+    SVG/SVGTextContentElement.cpp
     SVG/TagNames.cpp
     SVG/ViewBox.cpp
     Selection/Selection.cpp
-    StylePropertiesModel.cpp
     UIEvents/EventNames.cpp
     UIEvents/FocusEvent.cpp
     UIEvents/KeyboardEvent.cpp
     UIEvents/MouseEvent.cpp
+    UIEvents/UIEvent.cpp
+    UIEvents/WheelEvent.cpp
     URL/URL.cpp
     URL/URLSearchParams.cpp
     URL/URLSearchParamsIterator.cpp
@@ -308,325 +453,52 @@ set(SOURCES
     WebAssembly/WebAssemblyTableConstructor.cpp
     WebAssembly/WebAssemblyTableObject.cpp
     WebAssembly/WebAssemblyTablePrototype.cpp
-    WebContentClient.cpp
+    WebDriver/Capabilities.cpp
+    WebDriver/Client.cpp
+    WebDriver/ElementLocationStrategies.cpp
+    WebDriver/Error.cpp
+    WebDriver/ExecuteScript.cpp
+    WebDriver/Response.cpp
+    WebDriver/Screenshot.cpp
+    WebDriver/TimeoutsConfiguration.cpp
+    WebGL/WebGLContextAttributes.cpp
+    WebGL/WebGLContextEvent.cpp
+    WebGL/WebGLRenderingContext.cpp
+    WebGL/WebGLRenderingContextBase.cpp
+    WebIDL/AbstractOperations.cpp
+    WebIDL/CallbackType.cpp
+    WebIDL/DOMException.cpp
+    WebIDL/OverloadResolution.cpp
+    WebIDL/Promise.cpp
     WebSockets/WebSocket.cpp
     XHR/EventNames.cpp
+    XHR/FormData.cpp
+    XHR/ProgressEvent.cpp
     XHR/XMLHttpRequest.cpp
     XHR/XMLHttpRequestEventTarget.cpp
+    XHR/XMLHttpRequestUpload.cpp
+    XML/XMLDocumentBuilder.cpp
 )
 
+generate_css_implementation()
+
 set(GENERATED_SOURCES
-    ../../Services/RequestServer/RequestClientEndpoint.h
-    ../../Services/RequestServer/RequestServerEndpoint.h
-    ../../Services/WebContent/WebContentClientEndpoint.h
-    ../../Services/WebContent/WebContentServerEndpoint.h
+    CSS/DefaultStyleSheetSource.cpp
+    CSS/Enums.cpp
+    CSS/MediaFeatureID.cpp
+    CSS/PropertyID.cpp
+    CSS/QuirksModeStyleSheetSource.cpp
+    CSS/TransformFunctions.cpp
+    CSS/ValueID.cpp
 )
 
 serenity_lib(LibWeb web)
-target_link_libraries(LibWeb LibCore LibJS LibMarkdown LibGemini LibGUI LibGfx LibTextCodec LibProtocol LibImageDecoderClient LibWasm)
 
-function(libweb_js_wrapper class)
-    cmake_parse_arguments(PARSE_ARGV 1 LIBWEB_WRAPPER "ITERABLE" "" "")
-    get_filename_component(basename "${class}" NAME)
-    set(BINDINGS_SOURCES
-        "Bindings/${basename}Wrapper.h"
-        "Bindings/${basename}Wrapper.cpp"
-        "Bindings/${basename}Constructor.h"
-        "Bindings/${basename}Constructor.cpp"
-        "Bindings/${basename}Prototype.h"
-        "Bindings/${basename}Prototype.cpp"
-    )
-    set(BINDINGS_TYPES
-        header
-        implementation
-        constructor-header
-        constructor-implementation
-        prototype-header
-        prototype-implementation
-    )
-    # FIXME: Instead of requiring a manual declaration of iterable wrappers, we should ask WrapperGenerator if it's iterable
-    if(LIBWEB_WRAPPER_ITERABLE)
-        list(APPEND BINDINGS_SOURCES
-            "Bindings/${basename}IteratorWrapper.h"
-            "Bindings/${basename}IteratorWrapper.cpp"
-            "Bindings/${basename}IteratorPrototype.h"
-            "Bindings/${basename}IteratorPrototype.cpp"
-        )
-        list(APPEND BINDINGS_TYPES
-            iterator-header
-            iterator-implementation
-            iterator-prototype-header
-            iterator-prototype-implementation
-        )
-    endif()
-    target_sources(LibWeb PRIVATE ${BINDINGS_SOURCES})
-    # FIXME: cmake_minimum_required(3.17) for ZIP_LISTS
-    list(LENGTH BINDINGS_SOURCES num_bindings)
-    math(EXPR bindings_end "${num_bindings} - 1")
-    foreach(iter RANGE "${bindings_end}")
-        list(GET BINDINGS_SOURCES ${iter} bindings_src)
-        list(GET BINDINGS_TYPES ${iter} bindings_type)
-        get_property(include_paths DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES)
-        list(TRANSFORM include_paths PREPEND -i)
-        add_custom_command(
-            OUTPUT "${bindings_src}"
-            COMMAND "$<TARGET_FILE:Lagom::WrapperGenerator>" "--${bindings_type}" ${include_paths} "${CMAKE_CURRENT_SOURCE_DIR}/${class}.idl" "${CMAKE_CURRENT_SOURCE_DIR}/" > "${bindings_src}.tmp"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${bindings_src}.tmp" "${bindings_src}"
-            COMMAND "${CMAKE_COMMAND}" -E remove "${bindings_src}.tmp"
-            VERBATIM
-            DEPENDS Lagom::WrapperGenerator
-            MAIN_DEPENDENCY ${class}.idl
-        )
-    endforeach()
-    add_custom_target(generate_${basename}Wrapper.h DEPENDS Bindings/${basename}Wrapper.h)
-    add_dependencies(all_generated generate_${basename}Wrapper.h)
-    add_custom_target(generate_${basename}Wrapper.cpp DEPENDS Bindings/${basename}Wrapper.cpp)
-    add_dependencies(all_generated generate_${basename}Wrapper.cpp)
-    add_custom_target(generate_${basename}Constructor.h DEPENDS Bindings/${basename}Constructor.h)
-    add_dependencies(all_generated generate_${basename}Constructor.h)
-    add_custom_target(generate_${basename}Constructor.cpp DEPENDS Bindings/${basename}Constructor.cpp)
-    add_dependencies(all_generated generate_${basename}Constructor.cpp)
-    add_custom_target(generate_${basename}Prototype.h DEPENDS Bindings/${basename}Prototype.h)
-    add_dependencies(all_generated generate_${basename}Prototype.h)
-    add_custom_target(generate_${basename}Prototype.cpp DEPENDS Bindings/${basename}Prototype.cpp)
-    add_dependencies(all_generated generate_${basename}Prototype.cpp)
-endfunction()
+# NOTE: We link with LibSoftGPU here instead of lazy loading it via dlopen() so that we do not have to unveil the library and pledge prot_exec.
+target_link_libraries(LibWeb PRIVATE LibCore LibCrypto LibJS LibMarkdown LibHTTP LibGemini LibGL LibGUI LibGfx LibIPC LibLocale LibRegex LibSoftGPU LibSyntax LibTextCodec LibUnicode LibWasm LibXML LibIDL)
+link_with_locale_data(LibWeb)
 
-libweb_js_wrapper(Crypto/Crypto)
-libweb_js_wrapper(Crypto/SubtleCrypto)
-libweb_js_wrapper(CSS/CSSRule)
-libweb_js_wrapper(CSS/CSSRuleList)
-libweb_js_wrapper(CSS/CSSStyleDeclaration)
-libweb_js_wrapper(CSS/CSSStyleRule)
-libweb_js_wrapper(CSS/CSSStyleSheet)
-libweb_js_wrapper(CSS/MediaQueryList)
-libweb_js_wrapper(CSS/MediaQueryListEvent)
-libweb_js_wrapper(CSS/Screen)
-libweb_js_wrapper(CSS/StyleSheet)
-libweb_js_wrapper(CSS/StyleSheetList)
-libweb_js_wrapper(DOM/Attribute)
-libweb_js_wrapper(DOM/AbortController)
-libweb_js_wrapper(DOM/AbortSignal)
-libweb_js_wrapper(DOM/CharacterData)
-libweb_js_wrapper(DOM/Comment)
-libweb_js_wrapper(DOM/CustomEvent)
-libweb_js_wrapper(DOM/Document)
-libweb_js_wrapper(DOM/DocumentFragment)
-libweb_js_wrapper(DOM/DocumentType)
-libweb_js_wrapper(DOM/DOMException)
-libweb_js_wrapper(DOM/DOMImplementation)
-libweb_js_wrapper(DOM/DOMTokenList)
-libweb_js_wrapper(DOM/Element)
-libweb_js_wrapper(DOM/Event)
-libweb_js_wrapper(DOM/EventTarget)
-libweb_js_wrapper(DOM/HTMLCollection)
-libweb_js_wrapper(DOM/NamedNodeMap)
-libweb_js_wrapper(DOM/Node)
-libweb_js_wrapper(DOM/NodeList)
-libweb_js_wrapper(DOM/ProcessingInstruction)
-libweb_js_wrapper(DOM/Range)
-libweb_js_wrapper(DOM/ShadowRoot)
-libweb_js_wrapper(DOM/Text)
-libweb_js_wrapper(Encoding/TextDecoder)
-libweb_js_wrapper(Encoding/TextEncoder)
-libweb_js_wrapper(Geometry/DOMRect)
-libweb_js_wrapper(Geometry/DOMRectList)
-libweb_js_wrapper(Geometry/DOMRectReadOnly)
-libweb_js_wrapper(HTML/CanvasGradient)
-libweb_js_wrapper(HTML/CanvasRenderingContext2D)
-libweb_js_wrapper(HTML/CloseEvent)
-libweb_js_wrapper(HTML/DOMParser)
-libweb_js_wrapper(HTML/DOMStringMap)
-libweb_js_wrapper(HTML/ErrorEvent)
-libweb_js_wrapper(HTML/History)
-libweb_js_wrapper(HTML/HTMLAnchorElement)
-libweb_js_wrapper(HTML/HTMLAreaElement)
-libweb_js_wrapper(HTML/HTMLAudioElement)
-libweb_js_wrapper(HTML/HTMLBaseElement)
-libweb_js_wrapper(HTML/HTMLBodyElement)
-libweb_js_wrapper(HTML/HTMLBRElement)
-libweb_js_wrapper(HTML/HTMLButtonElement)
-libweb_js_wrapper(HTML/HTMLCanvasElement)
-libweb_js_wrapper(HTML/HTMLDataElement)
-libweb_js_wrapper(HTML/HTMLDataListElement)
-libweb_js_wrapper(HTML/HTMLDetailsElement)
-libweb_js_wrapper(HTML/HTMLDialogElement)
-libweb_js_wrapper(HTML/HTMLDirectoryElement)
-libweb_js_wrapper(HTML/HTMLDivElement)
-libweb_js_wrapper(HTML/HTMLDListElement)
-libweb_js_wrapper(HTML/HTMLElement)
-libweb_js_wrapper(HTML/HTMLEmbedElement)
-libweb_js_wrapper(HTML/HTMLFieldSetElement)
-libweb_js_wrapper(HTML/HTMLFontElement)
-libweb_js_wrapper(HTML/HTMLFormElement)
-libweb_js_wrapper(HTML/HTMLFrameElement)
-libweb_js_wrapper(HTML/HTMLFrameSetElement)
-libweb_js_wrapper(HTML/HTMLHeadElement)
-libweb_js_wrapper(HTML/HTMLHeadingElement)
-libweb_js_wrapper(HTML/HTMLHRElement)
-libweb_js_wrapper(HTML/HTMLHtmlElement)
-libweb_js_wrapper(HTML/HTMLIFrameElement)
-libweb_js_wrapper(HTML/HTMLImageElement)
-libweb_js_wrapper(HTML/HTMLInputElement)
-libweb_js_wrapper(HTML/HTMLLabelElement)
-libweb_js_wrapper(HTML/HTMLLegendElement)
-libweb_js_wrapper(HTML/HTMLLIElement)
-libweb_js_wrapper(HTML/HTMLLinkElement)
-libweb_js_wrapper(HTML/HTMLMapElement)
-libweb_js_wrapper(HTML/HTMLMarqueeElement)
-libweb_js_wrapper(HTML/HTMLMediaElement)
-libweb_js_wrapper(HTML/HTMLMenuElement)
-libweb_js_wrapper(HTML/HTMLMetaElement)
-libweb_js_wrapper(HTML/HTMLMeterElement)
-libweb_js_wrapper(HTML/HTMLModElement)
-libweb_js_wrapper(HTML/HTMLObjectElement)
-libweb_js_wrapper(HTML/HTMLOListElement)
-libweb_js_wrapper(HTML/HTMLOptGroupElement)
-libweb_js_wrapper(HTML/HTMLOptionElement)
-libweb_js_wrapper(HTML/HTMLOutputElement)
-libweb_js_wrapper(HTML/HTMLParagraphElement)
-libweb_js_wrapper(HTML/HTMLParamElement)
-libweb_js_wrapper(HTML/HTMLPictureElement)
-libweb_js_wrapper(HTML/HTMLPreElement)
-libweb_js_wrapper(HTML/HTMLProgressElement)
-libweb_js_wrapper(HTML/HTMLQuoteElement)
-libweb_js_wrapper(HTML/HTMLScriptElement)
-libweb_js_wrapper(HTML/HTMLSelectElement)
-libweb_js_wrapper(HTML/HTMLSlotElement)
-libweb_js_wrapper(HTML/HTMLSourceElement)
-libweb_js_wrapper(HTML/HTMLSpanElement)
-libweb_js_wrapper(HTML/HTMLStyleElement)
-libweb_js_wrapper(HTML/HTMLTableCaptionElement)
-libweb_js_wrapper(HTML/HTMLTableCellElement)
-libweb_js_wrapper(HTML/HTMLTableColElement)
-libweb_js_wrapper(HTML/HTMLTableElement)
-libweb_js_wrapper(HTML/HTMLTableRowElement)
-libweb_js_wrapper(HTML/HTMLTableSectionElement)
-libweb_js_wrapper(HTML/HTMLTemplateElement)
-libweb_js_wrapper(HTML/HTMLTextAreaElement)
-libweb_js_wrapper(HTML/HTMLTimeElement)
-libweb_js_wrapper(HTML/HTMLTitleElement)
-libweb_js_wrapper(HTML/HTMLTrackElement)
-libweb_js_wrapper(HTML/HTMLUListElement)
-libweb_js_wrapper(HTML/HTMLUnknownElement)
-libweb_js_wrapper(HTML/HTMLVideoElement)
-libweb_js_wrapper(HTML/ImageData)
-libweb_js_wrapper(HTML/MessageChannel)
-libweb_js_wrapper(HTML/MessageEvent)
-libweb_js_wrapper(HTML/MessagePort)
-libweb_js_wrapper(HTML/PageTransitionEvent)
-libweb_js_wrapper(HTML/PromiseRejectionEvent)
-libweb_js_wrapper(HTML/Storage)
-libweb_js_wrapper(HTML/SubmitEvent)
-libweb_js_wrapper(HTML/TextMetrics)
-libweb_js_wrapper(HTML/Worker)
-libweb_js_wrapper(HTML/WorkerGlobalScope)
-libweb_js_wrapper(HTML/WorkerLocation)
-libweb_js_wrapper(HTML/WorkerNavigator)
-libweb_js_wrapper(HighResolutionTime/Performance)
-libweb_js_wrapper(IntersectionObserver/IntersectionObserver)
-libweb_js_wrapper(NavigationTiming/PerformanceTiming)
-libweb_js_wrapper(RequestIdleCallback/IdleDeadline)
-libweb_js_wrapper(ResizeObserver/ResizeObserver)
-libweb_js_wrapper(SVG/SVGElement)
-libweb_js_wrapper(SVG/SVGGeometryElement)
-libweb_js_wrapper(SVG/SVGGraphicsElement)
-libweb_js_wrapper(SVG/SVGCircleElement)
-libweb_js_wrapper(SVG/SVGEllipseElement)
-libweb_js_wrapper(SVG/SVGLineElement)
-libweb_js_wrapper(SVG/SVGPathElement)
-libweb_js_wrapper(SVG/SVGPolygonElement)
-libweb_js_wrapper(SVG/SVGPolylineElement)
-libweb_js_wrapper(SVG/SVGRectElement)
-libweb_js_wrapper(SVG/SVGSVGElement)
-libweb_js_wrapper(Selection/Selection)
-libweb_js_wrapper(UIEvents/FocusEvent)
-libweb_js_wrapper(UIEvents/KeyboardEvent)
-libweb_js_wrapper(UIEvents/MouseEvent)
-libweb_js_wrapper(UIEvents/UIEvent)
-libweb_js_wrapper(URL/URL)
-libweb_js_wrapper(URL/URLSearchParams ITERABLE)
-libweb_js_wrapper(WebSockets/WebSocket)
-libweb_js_wrapper(XHR/ProgressEvent)
-libweb_js_wrapper(XHR/XMLHttpRequest)
-libweb_js_wrapper(XHR/XMLHttpRequestEventTarget)
+generate_js_bindings(LibWeb)
 
-add_custom_command(
-    OUTPUT CSS/PropertyID.h
-    COMMAND ${CMAKE_COMMAND} -E make_directory CSS
-    COMMAND "$<TARGET_FILE:Lagom::Generate_CSS_PropertyID_h>" "${CMAKE_CURRENT_SOURCE_DIR}/CSS/Properties.json" > CSS/PropertyID.h.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/PropertyID.h.tmp CSS/PropertyID.h
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/PropertyID.h.tmp
-    VERBATIM
-    DEPENDS Lagom::Generate_CSS_PropertyID_h
-    MAIN_DEPENDENCY CSS/Properties.json
-)
-add_custom_target(generate_PropertyID.h DEPENDS CSS/PropertyID.h)
-add_dependencies(all_generated generate_PropertyID.h)
-
-add_custom_command(
-    OUTPUT CSS/PropertyID.cpp
-    COMMAND ${CMAKE_COMMAND} -E make_directory CSS
-    COMMAND "$<TARGET_FILE:Lagom::Generate_CSS_PropertyID_cpp>" "${CMAKE_CURRENT_SOURCE_DIR}/CSS/Properties.json" > CSS/PropertyID.cpp.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/PropertyID.cpp.tmp CSS/PropertyID.cpp
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/PropertyID.cpp.tmp
-    VERBATIM
-    DEPENDS Lagom::Generate_CSS_PropertyID_cpp
-    MAIN_DEPENDENCY CSS/Properties.json
-)
-add_custom_target(generate_PropertyID.cpp DEPENDS CSS/PropertyID.cpp)
-add_dependencies(all_generated generate_PropertyID.cpp)
-
-add_custom_command(
-    OUTPUT CSS/ValueID.h
-    COMMAND "${CMAKE_COMMAND}" -E make_directory CSS
-    COMMAND "$<TARGET_FILE:Lagom::Generate_CSS_ValueID_h>" "${CMAKE_CURRENT_SOURCE_DIR}/CSS/Identifiers.json" > CSS/ValueID.h.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/ValueID.h.tmp CSS/ValueID.h
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/ValueID.h.tmp
-    VERBATIM
-    DEPENDS Lagom::Generate_CSS_ValueID_h
-    MAIN_DEPENDENCY CSS/Identifiers.json
-)
-add_custom_target(generate_ValueID.h DEPENDS CSS/ValueID.h)
-add_dependencies(all_generated generate_ValueID.h)
-
-add_custom_command(
-    OUTPUT CSS/ValueID.cpp
-    COMMAND "${CMAKE_COMMAND}" -E make_directory CSS
-    COMMAND "$<TARGET_FILE:Lagom::Generate_CSS_ValueID_cpp>" "${CMAKE_CURRENT_SOURCE_DIR}/CSS/Identifiers.json" > CSS/ValueID.cpp.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/ValueID.cpp.tmp CSS/ValueID.cpp
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/ValueID.cpp.tmp
-    VERBATIM
-    DEPENDS Lagom::Generate_CSS_ValueID_cpp
-    MAIN_DEPENDENCY CSS/Identifiers.json
-)
-add_custom_target(generate_ValueID.cpp DEPENDS CSS/ValueID.cpp)
-add_dependencies(all_generated generate_ValueID.cpp)
-
-add_custom_command(
-    OUTPUT CSS/DefaultStyleSheetSource.cpp
-    COMMAND "${CMAKE_COMMAND}" -E make_directory CSS
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh" default_stylesheet_source "${CMAKE_CURRENT_SOURCE_DIR}/CSS/Default.css" > CSS/DefaultStyleSheetSource.cpp.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/DefaultStyleSheetSource.cpp.tmp CSS/DefaultStyleSheetSource.cpp
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/DefaultStyleSheetSource.cpp.tmp
-    VERBATIM
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh"
-    MAIN_DEPENDENCY CSS/Default.css
-)
-add_custom_target(generate_DefaultStyleSheetSource.cpp DEPENDS CSS/DefaultStyleSheetSource.cpp)
-add_dependencies(all_generated generate_DefaultStyleSheetSource.cpp)
-
-add_custom_command(
-    OUTPUT CSS/QuirksModeStyleSheetSource.cpp
-    COMMAND "${CMAKE_COMMAND}" -E make_directory CSS
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh" quirks_mode_stylesheet_source "${CMAKE_CURRENT_SOURCE_DIR}/CSS/QuirksMode.css" > CSS/QuirksModeStyleSheetSource.cpp.tmp
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different CSS/QuirksModeStyleSheetSource.cpp.tmp CSS/QuirksModeStyleSheetSource.cpp
-    COMMAND "${CMAKE_COMMAND}" -E remove CSS/QuirksModeStyleSheetSource.cpp.tmp
-    VERBATIM
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh"
-    MAIN_DEPENDENCY CSS/Default.css
-)
-add_custom_target(generate_QuirksModeStyleSheetSource.cpp DEPENDS CSS/QuirksModeStyleSheetSource.cpp)
-add_dependencies(all_generated generate_QuirksModeStyleSheetSource.cpp)
-
-add_subdirectory(DumpLayoutTree)
+# Note: If you're looking for the calls to "libweb_js_bindings()",
+# they have been moved to "idl_files.cmake"

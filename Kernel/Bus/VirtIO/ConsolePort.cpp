@@ -12,11 +12,11 @@ namespace Kernel::VirtIO {
 
 unsigned ConsolePort::next_device_id = 0;
 
-ErrorOr<NonnullRefPtr<ConsolePort>> ConsolePort::try_create(unsigned port, Console& console)
+ErrorOr<NonnullLockRefPtr<ConsolePort>> ConsolePort::try_create(unsigned port, Console& console)
 {
     auto receive_buffer = TRY(Memory::RingBuffer::try_create("VirtIO::ConsolePort Receive"sv, RINGBUFFER_SIZE));
     auto transmit_buffer = TRY(Memory::RingBuffer::try_create("VirtIO::ConsolePort Transmit"sv, RINGBUFFER_SIZE));
-    return adopt_nonnull_ref_or_enomem(new (nothrow) ConsolePort(port, console, move(receive_buffer), move(transmit_buffer)));
+    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) ConsolePort(port, console, move(receive_buffer), move(transmit_buffer)));
 }
 
 ConsolePort::ConsolePort(unsigned port, VirtIO::Console& console, NonnullOwnPtr<Memory::RingBuffer> receive_buffer, NonnullOwnPtr<Memory::RingBuffer> transmit_buffer)
@@ -92,7 +92,7 @@ void ConsolePort::handle_queue_update(Badge<VirtIO::Console>, u16 queue_index)
     }
 }
 
-bool ConsolePort::can_read(const OpenFileDescription&, u64) const
+bool ConsolePort::can_read(OpenFileDescription const&, u64) const
 {
     return m_receive_buffer->used_bytes() > 0;
 }
@@ -122,12 +122,12 @@ ErrorOr<size_t> ConsolePort::read(OpenFileDescription& desc, u64, UserOrKernelBu
     return bytes_copied;
 }
 
-bool ConsolePort::can_write(const OpenFileDescription&, u64) const
+bool ConsolePort::can_write(OpenFileDescription const&, u64) const
 {
     return m_console.get_queue(m_transmit_queue).has_free_slots() && m_transmit_buffer->has_space();
 }
 
-ErrorOr<size_t> ConsolePort::write(OpenFileDescription& desc, u64, const UserOrKernelBuffer& data, size_t size)
+ErrorOr<size_t> ConsolePort::write(OpenFileDescription& desc, u64, UserOrKernelBuffer const& data, size_t size)
 {
     if (!size)
         return 0;
@@ -166,7 +166,7 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> ConsolePort::open(int options)
     if (!m_open)
         m_console.send_open_control_message(m_port, true);
 
-    return File::open(options);
+    return Device::open(options);
 }
 
 }

@@ -15,13 +15,16 @@ class NumberFormatPrototype final : public PrototypeObject<NumberFormatPrototype
     JS_PROTOTYPE_OBJECT(NumberFormatPrototype, NumberFormat, Intl.NumberFormat);
 
 public:
-    explicit NumberFormatPrototype(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
     virtual ~NumberFormatPrototype() override = default;
 
 private:
+    explicit NumberFormatPrototype(Realm&);
+
     JS_DECLARE_NATIVE_FUNCTION(format);
     JS_DECLARE_NATIVE_FUNCTION(format_to_parts);
+    JS_DECLARE_NATIVE_FUNCTION(format_range);
+    JS_DECLARE_NATIVE_FUNCTION(format_range_to_parts);
     JS_DECLARE_NATIVE_FUNCTION(resolved_options);
 };
 

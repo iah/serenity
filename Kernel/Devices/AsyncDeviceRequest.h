@@ -7,7 +7,7 @@
 #pragma once
 
 #include <AK/IntrusiveList.h>
-#include <AK/NonnullRefPtr.h>
+#include <Kernel/Library/NonnullLockRefPtr.h>
 #include <Kernel/Memory/ScopedAddressSpaceSwitcher.h>
 #include <Kernel/Process.h>
 #include <Kernel/Thread.h>
@@ -20,7 +20,7 @@ class Device;
 
 extern WorkQueue* g_io_work;
 
-class AsyncDeviceRequest : public RefCounted<AsyncDeviceRequest> {
+class AsyncDeviceRequest : public AtomicRefCounted<AsyncDeviceRequest> {
     AK_MAKE_NONCOPYABLE(AsyncDeviceRequest);
     AK_MAKE_NONMOVABLE(AsyncDeviceRequest);
 
@@ -31,6 +31,7 @@ public:
         Success,
         Failure,
         MemoryFault,
+        OutOfMemory,
         Cancelled
     };
 
@@ -57,11 +58,11 @@ public:
     virtual StringView name() const = 0;
     virtual void start() = 0;
 
-    void add_sub_request(NonnullRefPtr<AsyncDeviceRequest>);
+    void add_sub_request(NonnullLockRefPtr<AsyncDeviceRequest>);
 
     [[nodiscard]] RequestWaitResult wait(Time* = nullptr);
 
-    void do_start(SpinlockLocker<Spinlock>&& requests_lock)
+    void do_start(SpinlockLocker<Spinlock<LockRank::None>>&& requests_lock)
     {
         if (is_completed_result(m_result))
             return;
@@ -99,7 +100,7 @@ public:
     }
 
     template<typename... Args>
-    ErrorOr<void> read_from_buffer(const UserOrKernelBuffer& buffer, Args... args)
+    ErrorOr<void> read_from_buffer(UserOrKernelBuffer const& buffer, Args... args)
     {
         if (in_target_context(buffer))
             return buffer.read(forward<Args>(args)...);
@@ -108,7 +109,7 @@ public:
     }
 
     template<size_t BUFFER_BYTES, typename... Args>
-    ErrorOr<size_t> read_from_buffer_buffered(const UserOrKernelBuffer& buffer, Args... args)
+    ErrorOr<size_t> read_from_buffer_buffered(UserOrKernelBuffer const& buffer, Args... args)
     {
         if (in_target_context(buffer))
             return buffer.read_buffered<BUFFER_BYTES>(forward<Args>(args)...);
@@ -125,7 +126,7 @@ private:
     void sub_request_finished(AsyncDeviceRequest&);
     void request_finished();
 
-    [[nodiscard]] bool in_target_context(const UserOrKernelBuffer& buffer) const
+    [[nodiscard]] bool in_target_context(UserOrKernelBuffer const& buffer) const
     {
         if (buffer.is_kernel_buffer())
             return true;
@@ -141,16 +142,16 @@ private:
 
     AsyncDeviceRequest* m_parent_request { nullptr };
     RequestResult m_result { Pending };
-    IntrusiveListNode<AsyncDeviceRequest, RefPtr<AsyncDeviceRequest>> m_list_node;
+    IntrusiveListNode<AsyncDeviceRequest, LockRefPtr<AsyncDeviceRequest>> m_list_node;
 
     using AsyncDeviceSubRequestList = IntrusiveList<&AsyncDeviceRequest::m_list_node>;
 
     AsyncDeviceSubRequestList m_sub_requests_pending;
     AsyncDeviceSubRequestList m_sub_requests_complete;
     WaitQueue m_queue;
-    NonnullRefPtr<Process> m_process;
+    NonnullLockRefPtr<Process> m_process;
     void* m_private { nullptr };
-    mutable Spinlock m_lock;
+    mutable Spinlock<LockRank::None> m_lock {};
 };
 
 }

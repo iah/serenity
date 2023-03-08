@@ -1,5 +1,8 @@
+compile_gml(AboutDialog.gml AboutDialogGML.h about_dialog_gml)
+compile_gml(EmojiInputDialog.gml EmojiInputDialogGML.h emoji_input_dialog_gml)
 compile_gml(FontPickerDialog.gml FontPickerDialogGML.h font_picker_dialog_gml)
 compile_gml(FilePickerDialog.gml FilePickerDialogGML.h file_picker_dialog_gml)
+compile_gml(IncrementalSearchBanner.gml IncrementalSearchBannerGML.h incremental_search_banner_gml)
 compile_gml(PasswordInputDialog.gml PasswordInputDialogGML.h password_input_dialog_gml)
 
 set(SOURCES
@@ -8,6 +11,7 @@ set(SOURCES
     AbstractScrollableWidget.cpp
     AbstractSlider.cpp
     AbstractTableView.cpp
+    AbstractThemePreview.cpp
     AbstractView.cpp
     AbstractZoomPanWidget.cpp
     Action.cpp
@@ -23,11 +27,13 @@ set(SOURCES
     ColorInput.cpp
     ColorPicker.cpp
     ColumnsView.cpp
+    ComboBox.cpp
+    CommandPalette.cpp
     CommonActions.cpp
     CommonLocationsProvider.cpp
-    ComboBox.cpp
-    Command.cpp
-    CommandPalette.cpp
+    CommonMenus.cpp
+    ConnectionToWindowManagerServer.cpp
+    ConnectionToWindowServer.cpp
     Desktop.cpp
     Dialog.cpp
     DisplayLink.cpp
@@ -37,11 +43,9 @@ set(SOURCES
     Event.cpp
     FileIconProvider.cpp
     FilePicker.cpp
-    FilePickerDialogGML.h
     FileSystemModel.cpp
     FilteringProxyModel.cpp
     FontPicker.cpp
-    FontPickerDialogGML.h
     Frame.cpp
     GitCommitLexer.cpp
     GitCommitSyntaxHighlighter.cpp
@@ -52,11 +56,12 @@ set(SOURCES
     GML/SyntaxHighlighter.cpp
     GroupBox.cpp
     HeaderView.cpp
-    INILexer.cpp
-    INISyntaxHighlighter.cpp
     Icon.cpp
     IconView.cpp
     ImageWidget.cpp
+    IncrementalSearchBanner.cpp
+    INILexer.cpp
+    INISyntaxHighlighter.cpp
     InputBox.cpp
     JsonArrayModel.cpp
     Label.cpp
@@ -65,8 +70,8 @@ set(SOURCES
     LinkLabel.cpp
     ListView.cpp
     Menu.cpp
-    MenuItem.cpp
     Menubar.cpp
+    MenuItem.cpp
     MessageBox.cpp
     Model.cpp
     ModelIndex.cpp
@@ -77,8 +82,9 @@ set(SOURCES
     OpacitySlider.cpp
     Painter.cpp
     PasswordInputDialog.cpp
-    PasswordInputDialogGML.h
+    PathBreadcrumbbar.cpp
     PersistentModelIndex.cpp
+    Process.cpp
     ProcessChooser.cpp
     Progressbar.cpp
     RadioButton.cpp
@@ -97,8 +103,8 @@ set(SOURCES
     Splitter.cpp
     StackWidget.cpp
     Statusbar.cpp
-    TabWidget.cpp
     TableView.cpp
+    TabWidget.cpp
     TextBox.cpp
     TextDocument.cpp
     TextEditor.cpp
@@ -106,30 +112,35 @@ set(SOURCES
     ToolbarContainer.cpp
     Tray.cpp
     TreeView.cpp
+    TreeViewModel.cpp
     UndoStack.cpp
     ValueSlider.cpp
     Variant.cpp
     VimEditingEngine.cpp
     Widget.cpp
     Window.cpp
-    WindowServerConnection.cpp
-    WindowManagerServerConnection.cpp
-    Wizards/WizardDialog.cpp
     Wizards/AbstractWizardPage.cpp
     Wizards/CoverWizardPage.cpp
+    Wizards/WizardDialog.cpp
     Wizards/WizardPage.cpp
 )
 
 set(GENERATED_SOURCES
-    ../../Services/WindowServer/WindowClientEndpoint.h
-    ../../Services/WindowServer/WindowServerEndpoint.h
-    ../../Services/WindowServer/WindowManagerClientEndpoint.h
-    ../../Services/WindowServer/WindowManagerServerEndpoint.h
-    ../../Services/NotificationServer/NotificationClientEndpoint.h
-    ../../Services/NotificationServer/NotificationServerEndpoint.h
     ../../Services/Clipboard/ClipboardClientEndpoint.h
     ../../Services/Clipboard/ClipboardServerEndpoint.h
+    ../../Services/NotificationServer/NotificationClientEndpoint.h
+    ../../Services/NotificationServer/NotificationServerEndpoint.h
+    ../../Services/WindowServer/WindowClientEndpoint.h
+    ../../Services/WindowServer/WindowManagerClientEndpoint.h
+    ../../Services/WindowServer/WindowManagerServerEndpoint.h
+    ../../Services/WindowServer/WindowServerEndpoint.h
+    AboutDialogGML.h
+    EmojiInputDialogGML.h
+    FilePickerDialogGML.h
+    FontPickerDialogGML.h
+    IncrementalSearchBannerGML.h
+    PasswordInputDialogGML.h
 )
 
 serenity_lib(LibGUI gui)
-target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThreading LibRegex LibSyntax LibConfig)
+target_link_libraries(LibGUI PRIVATE LibCore LibGfx LibIPC LibThreading LibRegex LibSyntax LibConfig LibUnicode)

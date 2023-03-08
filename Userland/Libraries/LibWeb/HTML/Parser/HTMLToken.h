@@ -7,10 +7,10 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
 #include <AK/OwnPtr.h>
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
@@ -39,10 +39,10 @@ public:
     };
 
     struct Attribute {
-        String prefix;
-        String local_name { "" };
-        String namespace_;
-        String value { "" };
+        DeprecatedString prefix;
+        DeprecatedString local_name { "" };
+        DeprecatedString namespace_;
+        DeprecatedString value { "" };
         Position name_start_position;
         Position value_start_position;
         Position name_end_position;
@@ -51,9 +51,9 @@ public:
 
     struct DoctypeData {
         // NOTE: "Missing" is a distinct state from the empty string.
-        String name;
-        String public_identifier;
-        String system_identifier;
+        DeprecatedString name;
+        DeprecatedString public_identifier;
+        DeprecatedString system_identifier;
         bool missing_name { true };
         bool missing_public_identifier { true };
         bool missing_system_identifier { true };
@@ -67,7 +67,7 @@ public:
         return token;
     }
 
-    static HTMLToken make_start_tag(FlyString const& tag_name)
+    static HTMLToken make_start_tag(DeprecatedFlyString const& tag_name)
     {
         HTMLToken token { Type::StartTag };
         token.set_tag_name(tag_name);
@@ -134,25 +134,25 @@ public:
         m_data.get<u32>() = code_point;
     }
 
-    String const& comment() const
+    DeprecatedFlyString const& comment() const
     {
         VERIFY(is_comment());
         return m_string_data;
     }
 
-    void set_comment(String comment)
+    void set_comment(DeprecatedString comment)
     {
         VERIFY(is_comment());
         m_string_data = move(comment);
     }
 
-    String const& tag_name() const
+    DeprecatedFlyString const& tag_name() const
     {
         VERIFY(is_start_tag() || is_end_tag());
         return m_string_data;
     }
 
-    void set_tag_name(String name)
+    void set_tag_name(DeprecatedString name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         m_string_data = move(name);
@@ -247,7 +247,7 @@ public:
         }
     }
 
-    StringView attribute(FlyString const& attribute_name)
+    StringView attribute(DeprecatedFlyString const& attribute_name)
     {
         VERIFY(is_start_tag() || is_end_tag());
 
@@ -261,19 +261,19 @@ public:
         return {};
     }
 
-    bool has_attribute(FlyString const& attribute_name)
+    bool has_attribute(DeprecatedFlyString const& attribute_name)
     {
         return !attribute(attribute_name).is_null();
     }
 
-    void adjust_tag_name(FlyString const& old_name, FlyString const& new_name)
+    void adjust_tag_name(DeprecatedFlyString const& old_name, DeprecatedFlyString const& new_name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         if (old_name == tag_name())
             set_tag_name(new_name);
     }
 
-    void adjust_attribute_name(FlyString const& old_name, FlyString const& new_name)
+    void adjust_attribute_name(DeprecatedFlyString const& old_name, DeprecatedFlyString const& new_name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         for_each_attribute([&](Attribute& attribute) {
@@ -283,7 +283,7 @@ public:
         });
     }
 
-    void adjust_foreign_attribute(FlyString const& old_name, FlyString const& prefix, FlyString const& local_name, FlyString const& namespace_)
+    void adjust_foreign_attribute(DeprecatedFlyString const& old_name, DeprecatedFlyString const& prefix, DeprecatedFlyString const& local_name, DeprecatedFlyString const& namespace_)
     {
         VERIFY(is_start_tag() || is_end_tag());
         for_each_attribute([&](Attribute& attribute) {
@@ -315,7 +315,7 @@ public:
 
     Type type() const { return m_type; }
 
-    String to_string() const;
+    DeprecatedString to_deprecated_string() const;
 
     Position const& start_position() const { return m_start_position; }
     Position const& end_position() const { return m_end_position; }
@@ -350,7 +350,7 @@ private:
     bool m_tag_self_closing_acknowledged { false };
 
     // Type::Comment (comment data), Type::StartTag and Type::EndTag (tag name)
-    String m_string_data;
+    DeprecatedFlyString m_string_data;
 
     Variant<Empty, u32, OwnPtr<DoctypeData>, OwnPtr<Vector<Attribute>>> m_data {};
 

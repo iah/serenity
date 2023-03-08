@@ -5,17 +5,17 @@
  */
 
 #include "LookupServer.h"
-#include "ClientConnection.h"
-#include "DNSPacket.h"
+#include "ConnectionFromClient.h"
 #include <AK/Debug.h>
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
 #include <AK/Random.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/LocalServer.h>
-#include <LibCore/Stream.h>
+#include <LibDNS/Packet.h>
+#include <limits.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
@@ -72,17 +72,17 @@ LookupServer::LookupServer()
     }
     m_mdns = MulticastDNS::construct(this);
 
-    m_server = MUST(IPC::MultiServer<ClientConnection>::try_create());
+    m_server = MUST(IPC::MultiServer<ConnectionFromClient>::try_create());
 }
 
 void LookupServer::load_etc_hosts()
 {
     m_etc_hosts.clear();
-    auto add_answer = [this](const DNSName& name, DNSRecordType record_type, String data) {
-        m_etc_hosts.ensure(name).empend(name, record_type, DNSRecordClass::IN, s_static_ttl, move(data), false);
+    auto add_answer = [this](Name const& name, RecordType record_type, DeprecatedString data) {
+        m_etc_hosts.ensure(name).empend(name, record_type, RecordClass::IN, s_static_ttl, move(data), false);
     };
 
-    auto file = Core::File::construct("/etc/hosts");
+    auto file = Core::DeprecatedFile::construct("/etc/hosts");
     if (!file->open(Core::OpenMode::ReadOnly)) {
         dbgln("Failed to open '/etc/hosts'");
         return;
@@ -95,8 +95,8 @@ void LookupServer::load_etc_hosts()
         if (original_line.is_empty())
             break;
         auto trimmed_line = original_line.view().trim_whitespace();
-        auto replaced_line = trimmed_line.replace(" ", "\t", true);
-        auto fields = replaced_line.split_view('\t', false);
+        auto replaced_line = trimmed_line.replace(" "sv, "\t"sv, ReplaceMode::All);
+        auto fields = replaced_line.split_view('\t');
 
         if (fields.size() < 2) {
             dbgln("Failed to parse line {} from '/etc/hosts': '{}'", line_number, original_line);
@@ -114,30 +114,30 @@ void LookupServer::load_etc_hosts()
 
         auto raw_addr = maybe_address->to_in_addr_t();
 
-        DNSName name { fields[1] };
-        add_answer(name, DNSRecordType::A, String { (const char*)&raw_addr, sizeof(raw_addr) });
+        Name name { fields[1] };
+        add_answer(name, RecordType::A, DeprecatedString { (char const*)&raw_addr, sizeof(raw_addr) });
 
         StringBuilder builder;
-        builder.append(maybe_address->to_string_reversed());
-        builder.append(".in-addr.arpa");
-        add_answer(builder.to_string(), DNSRecordType::PTR, name.as_string());
+        builder.append(maybe_address->to_deprecated_string_reversed());
+        builder.append(".in-addr.arpa"sv);
+        add_answer(builder.to_deprecated_string(), RecordType::PTR, name.as_string());
     }
 }
 
-static String get_hostname()
+static DeprecatedString get_hostname()
 {
-    char buffer[HOST_NAME_MAX];
+    char buffer[_POSIX_HOST_NAME_MAX];
     VERIFY(gethostname(buffer, sizeof(buffer)) == 0);
     return buffer;
 }
 
-ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, DNSRecordType record_type)
+ErrorOr<Vector<Answer>> LookupServer::lookup(Name const& name, RecordType record_type)
 {
     dbgln_if(LOOKUPSERVER_DEBUG, "Got request for '{}'", name.as_string());
 
-    Vector<DNSAnswer> answers;
-    auto add_answer = [&](const DNSAnswer& answer) {
-        DNSAnswer answer_with_original_case {
+    Vector<Answer> answers;
+    auto add_answer = [&](Answer const& answer) {
+        Answer answer_with_original_case {
             name,
             answer.type(),
             answer.class_code(),
@@ -160,10 +160,10 @@ ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, DNSRecordTy
 
     // Second, try the hostname.
     // NOTE: We don't cache the hostname since it could change during runtime.
-    if (record_type == DNSRecordType::A && get_hostname() == name) {
+    if (record_type == RecordType::A && get_hostname() == name) {
         IPv4Address address = { 127, 0, 0, 1 };
         auto raw_address = address.to_in_addr_t();
-        DNSAnswer answer { name, DNSRecordType::A, DNSRecordClass::IN, s_static_ttl, String { (const char*)&raw_address, sizeof(raw_address) }, false };
+        Answer answer { name, RecordType::A, RecordClass::IN, s_static_ttl, DeprecatedString { (char const*)&raw_address, sizeof(raw_address) }, false };
         answers.append(move(answer));
         return answers;
     }
@@ -182,8 +182,8 @@ ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, DNSRecordTy
     }
 
     // Fourth, look up .local names using mDNS instead of DNS nameservers.
-    if (name.as_string().ends_with(".local")) {
-        answers = m_mdns->lookup(name, record_type);
+    if (name.as_string().ends_with(".local"sv)) {
+        answers = TRY(m_mdns->lookup(name, record_type));
         for (auto& answer : answers)
             put_in_cache(answer);
         return answers;
@@ -194,9 +194,12 @@ ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, DNSRecordTy
         dbgln_if(LOOKUPSERVER_DEBUG, "Doing lookup using nameserver '{}'", nameserver);
         bool did_get_response = false;
         int retries = 3;
-        Vector<DNSAnswer> upstream_answers;
+        Vector<Answer> upstream_answers;
         do {
-            upstream_answers = TRY(lookup(name, nameserver, did_get_response, record_type));
+            auto upstream_answers_or_error = lookup(name, nameserver, did_get_response, record_type);
+            if (upstream_answers_or_error.is_error())
+                continue;
+            upstream_answers = upstream_answers_or_error.release_value();
             if (did_get_response)
                 break;
         } while (--retries);
@@ -215,81 +218,81 @@ ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, DNSRecordTy
     // Sixth, fail.
     if (answers.is_empty()) {
         dbgln("Tried all nameservers but never got a response :(");
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
     }
 
     return answers;
 }
 
-ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, const String& nameserver, bool& did_get_response, DNSRecordType record_type, ShouldRandomizeCase should_randomize_case)
+ErrorOr<Vector<Answer>> LookupServer::lookup(Name const& name, DeprecatedString const& nameserver, bool& did_get_response, RecordType record_type, ShouldRandomizeCase should_randomize_case)
 {
-    DNSPacket request;
+    Packet request;
     request.set_is_query();
     request.set_id(get_random_uniform(UINT16_MAX));
-    DNSName name_in_question = name;
+    Name name_in_question = name;
     if (should_randomize_case == ShouldRandomizeCase::Yes)
         name_in_question.randomize_case();
-    request.add_question({ name_in_question, record_type, DNSRecordClass::IN, false });
+    request.add_question({ name_in_question, record_type, RecordClass::IN, false });
 
-    auto buffer = request.to_byte_buffer();
+    auto buffer = TRY(request.to_byte_buffer());
 
-    auto udp_socket = TRY(Core::Stream::UDPSocket::connect(nameserver, 53, Time::from_seconds(1)));
+    auto udp_socket = TRY(Core::UDPSocket::connect(nameserver, 53, Time::from_seconds(1)));
     TRY(udp_socket->set_blocking(true));
 
     TRY(udp_socket->write(buffer));
 
     u8 response_buffer[4096];
-    int nrecv = TRY(udp_socket->read({ response_buffer, sizeof(response_buffer) }));
+    int nrecv = TRY(udp_socket->read({ response_buffer, sizeof(response_buffer) })).size();
     if (udp_socket->is_eof())
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
 
     did_get_response = true;
 
-    auto o_response = DNSPacket::from_raw_packet(response_buffer, nrecv);
+    auto o_response = Packet::from_raw_packet(response_buffer, nrecv);
     if (!o_response.has_value())
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
 
     auto& response = o_response.value();
 
     if (response.id() != request.id()) {
         dbgln("LookupServer: ID mismatch ({} vs {}) :(", response.id(), request.id());
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
     }
 
-    if (response.code() == DNSPacket::Code::REFUSED) {
+    if (response.code() == Packet::Code::REFUSED) {
         if (should_randomize_case == ShouldRandomizeCase::Yes) {
             // Retry with 0x20 case randomization turned off.
             return lookup(name, nameserver, did_get_response, record_type, ShouldRandomizeCase::No);
         }
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
     }
 
     if (response.question_count() != request.question_count()) {
         dbgln("LookupServer: Question count ({} vs {}) :(", response.question_count(), request.question_count());
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
     }
 
-    // Verify the questions in our request and in their response match exactly, including case.
+    // Verify the questions in our request and in their response match, ignoring case.
     for (size_t i = 0; i < request.question_count(); ++i) {
         auto& request_question = request.questions()[i];
         auto& response_question = response.questions()[i];
-        bool exact_match = request_question.class_code() == response_question.class_code()
+        bool match = request_question.class_code() == response_question.class_code()
             && request_question.record_type() == response_question.record_type()
-            && request_question.name().as_string() == response_question.name().as_string();
-        if (!exact_match) {
+            && request_question.name().as_string().equals_ignoring_case(response_question.name().as_string());
+        if (!match) {
             dbgln("Request and response questions do not match");
             dbgln("   Request: name=_{}_, type={}, class={}", request_question.name().as_string(), response_question.record_type(), response_question.class_code());
             dbgln("  Response: name=_{}_, type={}, class={}", response_question.name().as_string(), response_question.record_type(), response_question.class_code());
-            return Vector<DNSAnswer> {};
+            return Vector<Answer> {};
         }
     }
 
     if (response.answer_count() < 1) {
         dbgln("LookupServer: No answers :(");
-        return Vector<DNSAnswer> {};
+        return Vector<Answer> {};
     }
 
-    Vector<DNSAnswer, 8> answers;
+    Vector<Answer, 8> answers;
     for (auto& answer : response.answers()) {
         put_in_cache(answer);
         if (answer.type() != record_type)
@@ -300,7 +303,7 @@ ErrorOr<Vector<DNSAnswer>> LookupServer::lookup(const DNSName& name, const Strin
     return answers;
 }
 
-void LookupServer::put_in_cache(const DNSAnswer& answer)
+void LookupServer::put_in_cache(Answer const& answer)
 {
     if (answer.has_expired())
         return;
@@ -317,7 +320,7 @@ void LookupServer::put_in_cache(const DNSAnswer& answer)
         if (answer.mdns_cache_flush()) {
             auto now = time(nullptr);
 
-            it->value.remove_all_matching([&](DNSAnswer const& other_answer) {
+            it->value.remove_all_matching([&](Answer const& other_answer) {
                 if (other_answer.type() != answer.type() || other_answer.class_code() != answer.class_code())
                     return false;
 

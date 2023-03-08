@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,14 +14,15 @@ class ShadowRealmConstructor final : public NativeFunction {
     JS_OBJECT(ShadowRealmConstructor, NativeFunction);
 
 public:
-    explicit ShadowRealmConstructor(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
     virtual ~ShadowRealmConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
-    virtual ThrowCompletionOr<Object*> construct(FunctionObject& new_target) override;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> construct(FunctionObject& new_target) override;
 
 private:
+    explicit ShadowRealmConstructor(Realm&);
+
     virtual bool has_constructor() const override { return true; }
 };
 

@@ -11,7 +11,7 @@
 #include <AK/StringBuilder.h>
 
 #ifndef KERNEL
-#    include <AK/String.h>
+#    include <AK/DeprecatedString.h>
 #endif
 
 namespace AK {
@@ -35,13 +35,14 @@ public:
 
     static ErrorOr<JsonValue> from_string(StringView);
 
-    explicit JsonValue(Type = Type::Null);
+    JsonValue() = default;
+    explicit JsonValue(Type);
     ~JsonValue() { clear(); }
 
-    JsonValue(const JsonValue&);
+    JsonValue(JsonValue const&);
     JsonValue(JsonValue&&);
 
-    JsonValue& operator=(const JsonValue&);
+    JsonValue& operator=(JsonValue const&);
     JsonValue& operator=(JsonValue&&);
 
     JsonValue(int);
@@ -54,14 +55,22 @@ public:
 #if !defined(KERNEL)
     JsonValue(double);
 #endif
-    JsonValue(bool);
-    JsonValue(const char*);
+    JsonValue(char const*);
 #ifndef KERNEL
-    JsonValue(const String&);
+    JsonValue(DeprecatedString const&);
 #endif
     JsonValue(StringView);
-    JsonValue(const JsonArray&);
-    JsonValue(const JsonObject&);
+
+    template<typename T>
+    requires(SameAs<RemoveCVReference<T>, bool>)
+    JsonValue(T value)
+        : m_type(Type::Bool)
+        , m_value { .as_bool = value }
+    {
+    }
+
+    JsonValue(JsonArray const&);
+    JsonValue(JsonObject const&);
 
     JsonValue(JsonArray&&);
     JsonValue(JsonObject&&);
@@ -76,14 +85,14 @@ public:
     void serialize(Builder&) const;
 
 #ifndef KERNEL
-    String as_string_or(String const& alternative) const
+    DeprecatedString as_string_or(DeprecatedString const& alternative) const
     {
         if (is_string())
             return as_string();
         return alternative;
     }
 
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
         if (is_string())
             return as_string();
@@ -101,6 +110,13 @@ public:
     unsigned to_uint(unsigned default_value = 0) const { return to_u32(default_value); }
     u32 to_u32(u32 default_value = 0) const { return to_number<u32>(default_value); }
     u64 to_u64(u64 default_value = 0) const { return to_number<u64>(default_value); }
+#if !defined(KERNEL)
+    float to_float(float default_value = 0) const
+    {
+        return to_number<float>(default_value);
+    }
+    double to_double(double default_value = 0) const { return to_number<double>(default_value); }
+#endif
 
     FlatPtr to_addr(FlatPtr default_value = 0) const
     {
@@ -149,20 +165,32 @@ public:
     }
 
 #ifndef KERNEL
-    String as_string() const
+    DeprecatedString as_string() const
     {
         VERIFY(is_string());
         return *m_value.as_string;
     }
 #endif
 
-    const JsonObject& as_object() const
+    JsonObject& as_object()
     {
         VERIFY(is_object());
         return *m_value.as_object;
     }
 
-    const JsonArray& as_array() const
+    JsonObject const& as_object() const
+    {
+        VERIFY(is_object());
+        return *m_value.as_object;
+    }
+
+    JsonArray& as_array()
+    {
+        VERIFY(is_array());
+        return *m_value.as_array;
+    }
+
+    JsonArray const& as_array() const
     {
         VERIFY(is_array());
         return *m_value.as_array;
@@ -233,11 +261,47 @@ public:
         return default_value;
     }
 
-    bool equals(const JsonValue& other) const;
+    template<Integral T>
+    bool is_integer() const
+    {
+        switch (m_type) {
+        case Type::Int32:
+            return is_within_range<T>(m_value.as_i32);
+        case Type::UnsignedInt32:
+            return is_within_range<T>(m_value.as_u32);
+        case Type::Int64:
+            return is_within_range<T>(m_value.as_i64);
+        case Type::UnsignedInt64:
+            return is_within_range<T>(m_value.as_u64);
+        default:
+            return false;
+        }
+    }
+
+    template<Integral T>
+    T as_integer() const
+    {
+        VERIFY(is_integer<T>());
+
+        switch (m_type) {
+        case Type::Int32:
+            return static_cast<T>(m_value.as_i32);
+        case Type::UnsignedInt32:
+            return static_cast<T>(m_value.as_u32);
+        case Type::Int64:
+            return static_cast<T>(m_value.as_i64);
+        case Type::UnsignedInt64:
+            return static_cast<T>(m_value.as_u64);
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    bool equals(JsonValue const& other) const;
 
 private:
     void clear();
-    void copy_from(const JsonValue&);
+    void copy_from(JsonValue const&);
 
     Type m_type { Type::Null };
 
@@ -263,11 +327,13 @@ template<>
 struct Formatter<JsonValue> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, JsonValue const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_string());
+        return Formatter<StringView>::format(builder, value.to_deprecated_string());
     }
 };
 #endif
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::JsonValue;
+#endif

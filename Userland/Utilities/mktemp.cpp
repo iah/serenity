@@ -13,9 +13,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-constexpr StringView default_template = "tmp.XXXXXXXXXX";
+constexpr StringView default_template = "tmp.XXXXXXXXXX"sv;
 
-static String generate_random_filename(String const& pattern)
+static DeprecatedString generate_random_filename(DeprecatedString const& pattern)
 {
     StringBuilder new_filename { pattern.length() };
 
@@ -27,10 +27,10 @@ static String generate_random_filename(String const& pattern)
             new_filename.append(pattern[i]);
     }
 
-    return new_filename.to_string();
+    return new_filename.to_deprecated_string();
 }
 
-static ErrorOr<String> make_temp(String const& pattern, bool directory, bool dry_run)
+static ErrorOr<DeprecatedString> make_temp(DeprecatedString const& pattern, bool directory, bool dry_run)
 {
     for (int i = 0; i < 100; ++i) {
         auto path = generate_random_filename(pattern);
@@ -49,7 +49,7 @@ static ErrorOr<String> make_temp(String const& pattern, bool directory, bool dry
             }
         }
     }
-    return String {};
+    return DeprecatedString {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -73,11 +73,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (target_directory.is_empty()) {
         if (!file_template.is_empty()) { // If a custom template is specified we assume the target directory is the current directory
-            target_directory = getcwd(nullptr, 0);
+            // FIXME: Get rid of this minor memory leak.
+            auto const* cwd_ptr = getcwd(nullptr, 0);
+            target_directory = StringView { cwd_ptr, strlen(cwd_ptr) };
         } else {
             LexicalPath template_path(file_template);
-            const char* env_directory = getenv("TMPDIR");
-            target_directory = env_directory && *env_directory ? env_directory : "/tmp";
+            char const* env_directory = getenv("TMPDIR");
+            target_directory = env_directory && *env_directory ? StringView { env_directory, strlen(env_directory) } : "/tmp"sv;
         }
     }
 
@@ -85,7 +87,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         file_template = default_template;
     }
 
-    if (!file_template.find("XXX").has_value()) {
+    if (!file_template.find("XXX"sv).has_value()) {
         if (!quiet)
             warnln("Too few X's in template {}", file_template);
         return 1;

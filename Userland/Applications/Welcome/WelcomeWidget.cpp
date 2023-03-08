@@ -6,113 +6,106 @@
 
 #include "WelcomeWidget.h"
 #include <AK/Random.h>
+#include <AK/String.h>
 #include <Applications/Welcome/WelcomeWindowGML.h>
 #include <LibConfig/Client.h>
-#include <LibCore/File.h>
-#include <LibCore/Process.h>
+#include <LibCore/StandardPaths.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/CheckBox.h>
+#include <LibGUI/Frame.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
-#include <LibGfx/BitmapFont.h>
+#include <LibGUI/Process.h>
 #include <LibGfx/Palette.h>
-#include <LibMarkdown/Document.h>
-#include <LibWeb/OutOfProcessWebView.h>
-#include <serenity.h>
 
-WelcomeWidget::WelcomeWidget()
+ErrorOr<NonnullRefPtr<WelcomeWidget>> WelcomeWidget::try_create()
 {
-    load_from_gml(welcome_window_gml);
+    auto welcome_widget = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) WelcomeWidget()));
+    TRY(welcome_widget->create_widgets());
 
-    auto& tip_frame = *find_descendant_of_type_named<GUI::Frame>("tip_frame");
-    tip_frame.set_background_role(Gfx::ColorRole::Base);
-    tip_frame.set_fill_with_background_color(true);
+    return welcome_widget;
+}
 
-    auto& light_bulb_label = *find_descendant_of_type_named<GUI::Label>("light_bulb_label");
-    light_bulb_label.set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/32x32/app-welcome.png").release_value_but_fixme_should_propagate_errors());
+ErrorOr<void> WelcomeWidget::create_widgets()
+{
+    TRY(load_from_gml(welcome_window_gml));
 
-    m_web_view = *find_descendant_of_type_named<Web::OutOfProcessWebView>("web_view");
+    m_banner_widget = find_descendant_of_type_named<GUI::Widget>("welcome_banner");
+    m_banner_font = TRY(Gfx::BitmapFont::try_load_from_file("/res/fonts/MarietaRegular24.font"sv));
 
-    m_tip_label = *find_descendant_of_type_named<GUI::Label>("tip_label");
+    m_web_view = find_descendant_of_type_named<WebView::OutOfProcessWebView>("web_view");
+    auto path = TRY(String::formatted("{}/README.md", Core::StandardPaths::home_directory()));
+    m_web_view->load(URL::create_with_file_scheme(path.to_deprecated_string()));
 
-    m_next_button = *find_descendant_of_type_named<GUI::Button>("next_button");
-    m_next_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-forward.png").release_value_but_fixme_should_propagate_errors());
+    m_tip_label = find_descendant_of_type_named<GUI::Label>("tip_label");
+    m_tip_frame = find_descendant_of_type_named<GUI::Frame>("tip_frame");
+
+    m_next_button = find_descendant_of_type_named<GUI::Button>("next_button");
     m_next_button->on_click = [&](auto) {
-        if (!tip_frame.is_visible()) {
-            m_web_view->set_visible(false);
-            tip_frame.set_visible(true);
-        }
+        m_web_view->set_visible(false);
+        m_tip_frame->set_visible(true);
         if (m_tips.is_empty())
             return;
-        m_initial_tip_index++;
-        if (m_initial_tip_index >= m_tips.size())
-            m_initial_tip_index = 0;
-        m_tip_label->set_text(m_tips[m_initial_tip_index]);
+        m_tip_index++;
+        if (m_tip_index >= m_tips.size())
+            m_tip_index = 0;
+        m_tip_label->set_text(m_tips[m_tip_index].to_deprecated_string());
     };
 
-    m_help_button = *find_descendant_of_type_named<GUI::Button>("help_button");
-    m_help_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/book-open.png").release_value_but_fixme_should_propagate_errors());
-    m_help_button->on_click = [](auto) {
-        Core::Process::spawn("/bin/Help"sv);
+    m_help_button = find_descendant_of_type_named<GUI::Button>("help_button");
+    m_help_button->on_click = [&](auto) {
+        GUI::Process::spawn_or_show_error(window(), "/bin/Help"sv);
     };
 
-    m_new_button = *find_descendant_of_type_named<GUI::Button>("new_button");
+    m_new_button = find_descendant_of_type_named<GUI::Button>("new_button");
     m_new_button->on_click = [&](auto) {
         m_web_view->set_visible(!m_web_view->is_visible());
-        tip_frame.set_visible(!tip_frame.is_visible());
+        m_tip_frame->set_visible(!m_tip_frame->is_visible());
     };
 
-    m_close_button = *find_descendant_of_type_named<GUI::Button>("close_button");
+    m_close_button = find_descendant_of_type_named<GUI::Button>("close_button");
     m_close_button->on_click = [](auto) {
         GUI::Application::the()->quit();
     };
 
-    auto exec_path = Config::read_string("SystemServer", "Welcome", "Executable", {});
-    m_startup_checkbox = *find_descendant_of_type_named<GUI::CheckBox>("startup_checkbox");
-    m_startup_checkbox->set_checked(!exec_path.is_empty());
+    auto welcome = Config::list_groups("SystemServer"sv).first_matching([](auto& group) { return group == "Welcome"sv; });
+    m_startup_checkbox = find_descendant_of_type_named<GUI::CheckBox>("startup_checkbox");
+    m_startup_checkbox->set_checked(welcome.has_value());
     m_startup_checkbox->on_checked = [](bool is_checked) {
-        Config::write_string("SystemServer", "Welcome", "Executable", is_checked ? "/bin/Welcome" : "");
+        if (is_checked)
+            Config::add_group("SystemServer"sv, "Welcome"sv);
+        else
+            Config::remove_group("SystemServer"sv, "Welcome"sv);
     };
 
-    open_and_parse_readme_file();
-    open_and_parse_tips_file();
+    if (auto result = open_and_parse_tips_file(); result.is_error()) {
+        auto path = TRY(String::formatted("{}/tips.txt", Core::StandardPaths::documents_directory()));
+        auto error = TRY(String::formatted("Opening \"{}\" failed: {}", path, result.error()));
+        m_tip_label->set_text(error.to_deprecated_string());
+        warnln(error);
+    }
+
     set_random_tip();
+
+    return {};
 }
 
-void WelcomeWidget::open_and_parse_tips_file()
+ErrorOr<void> WelcomeWidget::open_and_parse_tips_file()
 {
-    auto file = Core::File::construct("/home/anon/Documents/tips.txt");
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        m_tip_label->set_text("~/Documents/tips.txt has gone missing!");
-        return;
-    }
+    auto path = TRY(String::formatted("{}/tips.txt", Core::StandardPaths::documents_directory()));
+    auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
+    auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+    Array<u8, PAGE_SIZE> buffer;
 
-    while (file->can_read_line()) {
-        auto line = file->read_line();
-        auto* ch = line.characters();
-        switch (*ch) {
-        case '\n':
-        case '\r':
-        case '\0':
-        case '#':
+    while (TRY(buffered_file->can_read_line())) {
+        auto line = TRY(buffered_file->read_line(buffer));
+        if (line.starts_with('#') || line.is_empty())
             continue;
-        }
-        m_tips.append(line);
+        TRY(m_tips.try_append(TRY(String::from_utf8(line))));
     }
-}
 
-void WelcomeWidget::open_and_parse_readme_file()
-{
-    auto file = Core::File::construct("/home/anon/README.md");
-    if (!file->open(Core::OpenMode::ReadOnly))
-        return;
-
-    auto document = Markdown::Document::parse(file->read_all());
-    if (document) {
-        auto html = document->render_to_html();
-        m_web_view->load_html(html, URL::create_with_file_protocol("/home/anon/README.md"));
-    }
+    return {};
 }
 
 void WelcomeWidget::set_random_tip()
@@ -120,8 +113,8 @@ void WelcomeWidget::set_random_tip()
     if (m_tips.is_empty())
         return;
 
-    m_initial_tip_index = get_random_uniform(m_tips.size());
-    m_tip_label->set_text(m_tips[m_initial_tip_index]);
+    m_tip_index = get_random_uniform(m_tips.size());
+    m_tip_label->set_text(m_tips[m_tip_index].to_deprecated_string());
 }
 
 void WelcomeWidget::paint_event(GUI::PaintEvent& event)
@@ -129,8 +122,10 @@ void WelcomeWidget::paint_event(GUI::PaintEvent& event)
     GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
-    static auto font = Gfx::BitmapFont::load_from_file("/res/fonts/MarietaRegular24.font");
-    painter.draw_text({ 12, 4, 1, 30 }, "Welcome to ", *font, Gfx::TextAlignment::CenterLeft, palette().base_text());
-    painter.draw_text({ 12 + font->width("Welcome to "), 4, 1, 30 }, "Serenity", font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().base_text());
-    painter.draw_text({ 12 + font->width("Welcome to ") + font->bold_variant().width("Serenity"), 4, 1, 30 }, "OS", font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().base() == palette().window() ? palette().base_text() : palette().base());
+    auto rect = m_banner_widget->relative_rect();
+    painter.draw_text(rect, "Welcome to "sv, *m_banner_font, Gfx::TextAlignment::CenterLeft, palette().base_text());
+    rect.set_x(rect.x() + static_cast<int>(ceilf(m_banner_font->width("Welcome to "sv))));
+    painter.draw_text(rect, "Serenity"sv, m_banner_font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().base_text());
+    rect.set_x(rect.x() + static_cast<int>(ceilf(m_banner_font->bold_variant().width("Serenity"sv))));
+    painter.draw_text(rect, "OS"sv, m_banner_font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().tray_text());
 }

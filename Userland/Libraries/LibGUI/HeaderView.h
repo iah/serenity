@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,12 +16,12 @@ class HeaderView final : public Widget {
     C_OBJECT(HeaderView);
 
 public:
-    virtual ~HeaderView() override;
+    virtual ~HeaderView() override = default;
 
     Gfx::Orientation orientation() const { return m_orientation; }
 
     Model* model();
-    const Model* model() const;
+    Model const* model() const;
 
     void set_section_size(int section, int size);
     int section_size(int section) const;
@@ -39,6 +40,21 @@ public:
     Gfx::IntRect section_rect(int section) const;
 
     Function<void(int section)> on_resize_doubleclick;
+
+    static constexpr auto const sorting_arrow_offset = 3;
+    static constexpr auto const sorting_arrow_width = 6;
+
+    static constexpr auto const ascending_arrow_coordinates = Array {
+        Gfx::IntPoint { 4, 2 },
+        Gfx::IntPoint { 1, 5 },
+        Gfx::IntPoint { 7, 5 },
+    };
+
+    static constexpr auto const descending_arrow_coordinates = Array {
+        Gfx::IntPoint { 1, 3 },
+        Gfx::IntPoint { 7, 3 },
+        Gfx::IntPoint { 4, 6 },
+    };
 
 private:
     HeaderView(AbstractTableView&, Gfx::Orientation);

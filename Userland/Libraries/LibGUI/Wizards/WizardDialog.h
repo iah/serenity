@@ -1,12 +1,12 @@
 /*
  * Copyright (c) 2021, Nick Vella <nick@nxk.io>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/NonnullRefPtrVector.h>
 #include <LibGUI/Dialog.h>
 #include <LibGUI/Wizards/AbstractWizardPage.h>
 
@@ -15,7 +15,7 @@ namespace GUI {
 class WizardDialog : public Dialog {
     C_OBJECT(WizardDialog)
 public:
-    virtual ~WizardDialog() override;
+    virtual ~WizardDialog() override = default;
 
     static void show(AbstractWizardPage& first_page, Window* parent_window = nullptr)
     {
@@ -48,6 +48,6 @@ private:
     RefPtr<Button> m_next_button;
     RefPtr<Button> m_cancel_button;
 
-    NonnullRefPtrVector<AbstractWizardPage> m_page_stack;
+    Vector<NonnullRefPtr<AbstractWizardPage>> m_page_stack;
 };
 }

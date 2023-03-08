@@ -9,16 +9,15 @@
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <AK/LexicalPath.h>
 #include <AK/QuickSort.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
-#include <LibCore/DirIterator.h>
 #include <LibTest/Results.h>
-#include <fcntl.h>
-#include <sys/time.h>
+#include <LibTest/TestRunnerUtil.h>
 
 namespace Test {
 
@@ -29,11 +28,12 @@ public:
         return s_the;
     }
 
-    TestRunner(String test_root, bool print_times, bool print_progress, bool print_json)
+    TestRunner(DeprecatedString test_root, bool print_times, bool print_progress, bool print_json, bool detailed_json = false)
         : m_test_root(move(test_root))
         , m_print_times(print_times)
         , m_print_progress(print_progress)
         , m_print_json(print_json)
+        , m_detailed_json(detailed_json)
     {
         VERIFY(!s_the);
         s_the = this;
@@ -41,11 +41,21 @@ public:
 
     virtual ~TestRunner() { s_the = nullptr; };
 
-    virtual void run(String test_glob);
+    virtual void run(DeprecatedString test_glob);
 
-    const Test::Counts& counts() const { return m_counts; }
+    Test::Counts const& counts() const { return m_counts; }
 
     bool is_printing_progress() const { return m_print_progress; }
+
+    bool needs_detailed_suites() const { return m_detailed_json; }
+    Vector<Test::Suite> const& suites() const { return *m_suites; }
+
+    Vector<Test::Suite>& ensure_suites()
+    {
+        if (!m_suites.has_value())
+            m_suites = Vector<Suite> {};
+        return *m_suites;
+    }
 
 protected:
     static TestRunner* s_the;
@@ -53,17 +63,19 @@ protected:
     void print_test_results() const;
     void print_test_results_as_json() const;
 
-    virtual Vector<String> get_test_paths() const = 0;
-    virtual void do_run_single_test(const String&, size_t current_test_index, size_t num_tests) = 0;
-    virtual const Vector<String>* get_failed_test_names() const { return nullptr; }
+    virtual Vector<DeprecatedString> get_test_paths() const = 0;
+    virtual void do_run_single_test(DeprecatedString const&, size_t current_test_index, size_t num_tests) = 0;
+    virtual Vector<DeprecatedString> const* get_failed_test_names() const { return nullptr; }
 
-    String m_test_root;
+    DeprecatedString m_test_root;
     bool m_print_times;
     bool m_print_progress;
     bool m_print_json;
+    bool m_detailed_json;
 
     double m_total_elapsed_time_in_ms { 0 };
     Test::Counts m_counts;
+    Optional<Vector<Test::Suite>> m_suites;
 };
 
 inline void cleanup()
@@ -79,35 +91,7 @@ inline void cleanup()
     exit(1);
 }
 
-inline double get_time_in_ms()
-{
-    struct timeval tv1;
-    auto return_code = gettimeofday(&tv1, nullptr);
-    VERIFY(return_code >= 0);
-    return static_cast<double>(tv1.tv_sec) * 1000.0 + static_cast<double>(tv1.tv_usec) / 1000.0;
-}
-
-template<typename Callback>
-inline void iterate_directory_recursively(const String& directory_path, Callback callback)
-{
-    Core::DirIterator directory_iterator(directory_path, Core::DirIterator::Flags::SkipDots);
-
-    while (directory_iterator.has_next()) {
-        auto name = directory_iterator.next_path();
-        struct stat st = {};
-        if (fstatat(directory_iterator.fd(), name.characters(), &st, AT_SYMLINK_NOFOLLOW) < 0)
-            continue;
-        bool is_directory = S_ISDIR(st.st_mode);
-        auto full_path = String::formatted("{}/{}", directory_path, name);
-        if (is_directory && name != "/Fixtures"sv) {
-            iterate_directory_recursively(full_path, callback);
-        } else if (!is_directory) {
-            callback(full_path);
-        }
-    }
-}
-
-inline void TestRunner::run(String test_glob)
+inline void TestRunner::run(DeprecatedString test_glob)
 {
     size_t progress_counter = 0;
     auto test_paths = get_test_paths();
@@ -223,27 +207,64 @@ inline void TestRunner::print_test_results() const
 
 inline void TestRunner::print_test_results_as_json() const
 {
-    JsonObject suites;
-    suites.set("failed", m_counts.suites_failed);
-    suites.set("passed", m_counts.suites_passed);
-    suites.set("total", m_counts.suites_failed + m_counts.suites_passed);
-
-    JsonObject tests;
-    tests.set("failed", m_counts.tests_failed);
-    tests.set("passed", m_counts.tests_passed);
-    tests.set("skipped", m_counts.tests_skipped);
-    tests.set("total", m_counts.tests_failed + m_counts.tests_passed + m_counts.tests_skipped);
-
-    JsonObject results;
-    results.set("suites", suites);
-    results.set("tests", tests);
-
     JsonObject root;
-    root.set("results", results);
-    root.set("files_total", m_counts.files_total);
-    root.set("duration", m_total_elapsed_time_in_ms / 1000.0);
+    if (needs_detailed_suites()) {
+        auto& suites = this->suites();
+        u64 duration_us = 0;
+        JsonObject tests;
 
-    outln("{}", root.to_string());
+        for (auto& suite : suites) {
+            for (auto& case_ : suite.tests) {
+                duration_us += case_.duration_us;
+                StringView result_name;
+                switch (case_.result) {
+                case Result::Pass:
+                    result_name = "PASSED"sv;
+                    break;
+                case Result::Fail:
+                    result_name = "FAILED"sv;
+                    break;
+                case Result::Skip:
+                    result_name = "SKIPPED"sv;
+                    break;
+                case Result::Crashed:
+                    result_name = "PROCESS_ERROR"sv;
+                    break;
+                }
+
+                auto name = suite.name;
+                if (name == "__$$TOP_LEVEL$$__"sv)
+                    name = DeprecatedString::empty();
+
+                auto path = LexicalPath::relative_path(suite.path, m_test_root);
+
+                tests.set(DeprecatedString::formatted("{}/{}::{}", path, name, case_.name), result_name);
+            }
+        }
+
+        root.set("duration", static_cast<double>(duration_us) / 1000000.);
+        root.set("results", move(tests));
+    } else {
+        JsonObject suites;
+        suites.set("failed", m_counts.suites_failed);
+        suites.set("passed", m_counts.suites_passed);
+        suites.set("total", m_counts.suites_failed + m_counts.suites_passed);
+
+        JsonObject tests;
+        tests.set("failed", m_counts.tests_failed);
+        tests.set("passed", m_counts.tests_passed);
+        tests.set("skipped", m_counts.tests_skipped);
+        tests.set("total", m_counts.tests_failed + m_counts.tests_passed + m_counts.tests_skipped);
+
+        JsonObject results;
+        results.set("suites", suites);
+        results.set("tests", tests);
+
+        root.set("results", results);
+        root.set("files_total", m_counts.files_total);
+        root.set("duration", m_total_elapsed_time_in_ms / 1000.0);
+    }
+    outln("{}", root.to_deprecated_string());
 }
 
 }

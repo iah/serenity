@@ -1,48 +1,37 @@
 /*
  * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, MacDue <macdue@dueutil.tech>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/RefCounted.h>
-#include <LibGfx/Color.h>
-#include <LibWeb/Bindings/Wrappable.h>
+#include <LibGfx/PaintStyle.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 
 namespace Web::HTML {
 
-class CanvasGradient final
-    : public RefCounted<CanvasGradient>
-    , public Bindings::Wrappable {
+class CanvasGradient final : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(CanvasGradient, Bindings::PlatformObject);
+
 public:
-    using WrapperType = Bindings::CanvasGradientWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CanvasGradient>> create_radial(JS::Realm&, double x0, double y0, double r0, double x1, double y1, double r1);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CanvasGradient>> create_linear(JS::Realm&, double x0, double y0, double x1, double y1);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CanvasGradient>> create_conic(JS::Realm&, double start_angle, double x, double y);
 
-    enum class Type {
-        Linear,
-        Radial,
-        Conic,
-    };
-
-    static NonnullRefPtr<CanvasGradient> create_radial(double x0, double y0, double r0, double x1, double y1, double r1);
-    static NonnullRefPtr<CanvasGradient> create_linear(double x0, double y0, double x1, double y1);
-    static NonnullRefPtr<CanvasGradient> create_conic(double start_angle, double x, double y);
-
-    DOM::ExceptionOr<void> add_color_stop(double offset, String const& color);
+    WebIDL::ExceptionOr<void> add_color_stop(double offset, DeprecatedString const& color);
 
     ~CanvasGradient();
 
+    NonnullRefPtr<Gfx::PaintStyle> to_gfx_paint_style() { return m_gradient; }
+
 private:
-    explicit CanvasGradient(Type);
+    CanvasGradient(JS::Realm&, Gfx::GradientPaintStyle& gradient);
 
-    Type m_type {};
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 
-    struct ColorStop {
-        double offset { 0 };
-        Gfx::Color color;
-    };
-
-    Vector<ColorStop> m_color_stops;
+    NonnullRefPtr<Gfx::GradientPaintStyle> m_gradient;
 };
 
 }

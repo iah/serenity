@@ -10,11 +10,12 @@
 #include <AK/IPv4Address.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Notifier.h>
-#include <LibCore/Stream.h>
+#include <LibCore/Socket.h>
 #include <LibCore/Timer.h>
 #include <LibCrypto/Authentication/HMAC.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 #include <LibCrypto/Cipher/AES.h>
+#include <LibCrypto/Curves/EllipticCurve.h>
 #include <LibCrypto/Hash/HashManager.h>
 #include <LibCrypto/PK/RSA.h>
 #include <LibTLS/CipherSuite.h>
@@ -27,12 +28,12 @@ inline void print_buffer(ReadonlyBytes buffer)
     dbgln("{:hex-dump}", buffer);
 }
 
-inline void print_buffer(const ByteBuffer& buffer)
+inline void print_buffer(ByteBuffer const& buffer)
 {
     print_buffer(buffer.bytes());
 }
 
-inline void print_buffer(const u8* buffer, size_t size)
+inline void print_buffer(u8 const* buffer, size_t size)
 {
     print_buffer(ReadonlyBytes { buffer, size });
 }
@@ -74,17 +75,17 @@ enum class AlertDescription : u8 {
 #undef ENUMERATE_ALERT_DESCRIPTION
 };
 
-constexpr static const char* alert_name(AlertDescription descriptor)
+constexpr static StringView alert_name(AlertDescription descriptor)
 {
 #define ENUMERATE_ALERT_DESCRIPTION(name, value) \
     case AlertDescription::name:                 \
-        return #name;
+        return #name##sv;
 
     switch (descriptor) {
         ENUMERATE_ALERT_DESCRIPTIONS
     }
 
-    return "Unknown";
+    return "Unknown"sv;
 #undef ENUMERATE_ALERT_DESCRIPTION
 }
 
@@ -109,6 +110,7 @@ enum class Error : i8 {
     DecryptionFailed = -20,
     NeedMoreData = -21,
     TimedOut = -22,
+    OutOfMemory = -23,
 };
 
 enum class AlertLevel : u8 {
@@ -221,18 +223,21 @@ struct Options {
     }
     Vector<CipherSuite> usable_cipher_suites = default_usable_cipher_suites();
 
-#define OPTION_WITH_DEFAULTS(typ, name, ...)                    \
-    static typ default_##name() { return typ { __VA_ARGS__ }; } \
-    typ name = default_##name();                                \
-    Options& set_##name(typ new_value)&                         \
-    {                                                           \
-        name = move(new_value);                                 \
-        return *this;                                           \
-    }                                                           \
-    Options&& set_##name(typ new_value)&&                       \
-    {                                                           \
-        name = move(new_value);                                 \
-        return move(*this);                                     \
+#define OPTION_WITH_DEFAULTS(typ, name, ...) \
+    static typ default_##name()              \
+    {                                        \
+        return typ { __VA_ARGS__ };          \
+    }                                        \
+    typ name = default_##name();             \
+    Options& set_##name(typ new_value)&      \
+    {                                        \
+        name = move(new_value);              \
+        return *this;                        \
+    }                                        \
+    Options&& set_##name(typ new_value)&&    \
+    {                                        \
+        name = move(new_value);              \
+        return move(*this);                  \
     }
 
     OPTION_WITH_DEFAULTS(Version, version, Version::V12)
@@ -241,12 +246,16 @@ struct Options {
         { HashAlgorithm::SHA384, SignatureAlgorithm::RSA },
         { HashAlgorithm::SHA256, SignatureAlgorithm::RSA },
         { HashAlgorithm::SHA1, SignatureAlgorithm::RSA });
-    OPTION_WITH_DEFAULTS(Vector<NamedCurve>, elliptic_curves, NamedCurve::x25519)
+    OPTION_WITH_DEFAULTS(Vector<NamedCurve>, elliptic_curves,
+        NamedCurve::x25519,
+        NamedCurve::secp256r1,
+        NamedCurve::x448)
     OPTION_WITH_DEFAULTS(Vector<ECPointFormat>, supported_ec_point_formats, ECPointFormat::Uncompressed)
 
     OPTION_WITH_DEFAULTS(bool, use_sni, true)
     OPTION_WITH_DEFAULTS(bool, use_compression, false)
     OPTION_WITH_DEFAULTS(bool, validate_certificates, true)
+    OPTION_WITH_DEFAULTS(bool, allow_self_signed_certificates, false)
     OPTION_WITH_DEFAULTS(Optional<Vector<Certificate>>, root_certificates, )
     OPTION_WITH_DEFAULTS(Function<void(AlertDescription)>, alert_handler, [](auto) {})
     OPTION_WITH_DEFAULTS(Function<void()>, finish_callback, [] {})
@@ -256,7 +265,8 @@ struct Options {
 };
 
 struct Context {
-    bool verify_chain() const;
+    bool verify_chain(StringView host) const;
+    bool verify_certificate_pair(Certificate const& subject, Certificate const& issuer) const;
 
     Options options;
 
@@ -300,7 +310,7 @@ struct Context {
 
     struct {
         // Server Name Indicator
-        String SNI; // I hate your existence
+        DeprecatedString SNI; // I hate your existence
     } extensions;
 
     u8 request_client_certificate { 0 };
@@ -316,9 +326,9 @@ struct Context {
     // message flags
     u8 handshake_messages[11] { 0 };
     ByteBuffer user_data;
-    Vector<Certificate> root_certificates;
+    HashMap<DeprecatedString, Certificate> root_certificates;
 
-    Vector<String> alpn;
+    Vector<DeprecatedString> alpn;
     StringView negotiated_alpn;
 
     size_t send_retries { 0 };
@@ -330,35 +340,34 @@ struct Context {
         ByteBuffer g;
         ByteBuffer Ys;
     } server_diffie_hellman_params;
+
+    OwnPtr<Crypto::Curves::EllipticCurve> server_key_exchange_curve;
 };
 
-class TLSv12 final : public Core::Stream::Socket {
+class TLSv12 final : public Core::Socket {
 private:
-    Core::Stream::Socket& underlying_stream()
+    Core::Socket& underlying_stream()
     {
-        return *m_stream.visit([&](auto& stream) -> Core::Stream::Socket* { return stream; });
+        return *m_stream.visit([&](auto& stream) -> Core::Socket* { return stream; });
     }
-    Core::Stream::Socket const& underlying_stream() const
+    Core::Socket const& underlying_stream() const
     {
-        return *m_stream.visit([&](auto& stream) -> Core::Stream::Socket const* { return stream; });
+        return *m_stream.visit([&](auto& stream) -> Core::Socket const* { return stream; });
     }
 
 public:
-    virtual bool is_readable() const override { return true; }
-    virtual bool is_writable() const override { return true; }
-
     /// Reads into a buffer, with the maximum size being the size of the buffer.
     /// The amount of bytes read can be smaller than the size of the buffer.
-    /// Returns either the amount of bytes read, or an errno in the case of
+    /// Returns either the bytes that were read, or an errno in the case of
     /// failure.
-    virtual ErrorOr<size_t> read(Bytes) override;
+    virtual ErrorOr<Bytes> read(Bytes) override;
 
     /// Tries to write the entire contents of the buffer. It is possible for
     /// less than the full buffer to be written. Returns either the amount of
     /// bytes written into the stream, or an errno in the case of failure.
     virtual ErrorOr<size_t> write(ReadonlyBytes) override;
 
-    virtual bool is_eof() const override { return m_context.connection_finished && m_context.application_buffer.is_empty(); }
+    virtual bool is_eof() const override { return m_context.application_buffer.is_empty() && (m_context.connection_finished || underlying_stream().is_eof()); }
 
     virtual bool is_open() const override { return is_established(); }
     virtual void close() override;
@@ -374,10 +383,10 @@ public:
 
     virtual void set_notifications_enabled(bool enabled) override { underlying_stream().set_notifications_enabled(enabled); }
 
-    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(String const& host, u16 port, Options = {});
-    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(String const& host, Core::Stream::Socket& underlying_stream, Options = {});
+    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(DeprecatedString const& host, u16 port, Options = {});
+    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(DeprecatedString const& host, Core::Socket& underlying_stream, Options = {});
 
-    using StreamVariantType = Variant<OwnPtr<Core::Stream::Socket>, Core::Stream::Socket*>;
+    using StreamVariantType = Variant<OwnPtr<Core::Socket>, Core::Socket*>;
     explicit TLSv12(StreamVariantType, Options);
 
     bool is_established() const { return m_context.connection_status == ConnectionStatus::Established; }
@@ -391,18 +400,11 @@ public:
         m_context.extensions.SNI = sni;
     }
 
-    bool load_certificates(ReadonlyBytes pem_buffer);
-    bool load_private_key(ReadonlyBytes pem_buffer);
-
     void set_root_certificates(Vector<Certificate>);
 
     static Vector<Certificate> parse_pem_certificate(ReadonlyBytes certificate_pem_buffer, ReadonlyBytes key_pem_buffer);
 
-    ByteBuffer finish_build();
-
     StringView alpn() const { return m_context.negotiated_alpn; }
-    void add_alpn(StringView alpn);
-    bool has_alpn(StringView alpn) const;
 
     bool supports_cipher(CipherSuite suite) const
     {
@@ -426,7 +428,7 @@ public:
 
     bool can_read_line() const { return m_context.application_buffer.size() && memchr(m_context.application_buffer.data(), '\n', m_context.application_buffer.size()); }
     bool can_read() const { return m_context.application_buffer.size() > 0; }
-    String read_line(size_t max_size);
+    DeprecatedString read_line(size_t max_size);
 
     Function<void(AlertDescription)> on_tls_error;
     Function<void()> on_tls_finished;
@@ -438,7 +440,7 @@ private:
 
     void consume(ReadonlyBytes record);
 
-    ByteBuffer hmac_message(ReadonlyBytes buf, const Optional<ReadonlyBytes> buf2, size_t mac_length, bool local = false);
+    ByteBuffer hmac_message(ReadonlyBytes buf, Optional<ReadonlyBytes> const buf2, size_t mac_length, bool local = false);
     void ensure_hmac(size_t digest_size, bool local);
 
     void update_packet(ByteBuffer& packet);
@@ -452,10 +454,8 @@ private:
     ByteBuffer build_hello();
     ByteBuffer build_handshake_finished();
     ByteBuffer build_certificate();
-    ByteBuffer build_done();
     ByteBuffer build_alert(bool critical, u8 code);
     ByteBuffer build_change_cipher_spec();
-    ByteBuffer build_verify_request();
     void build_rsa_pre_master_secret(PacketBuilder&);
     void build_dhe_rsa_pre_master_secret(PacketBuilder&);
     void build_ecdhe_rsa_pre_master_secret(PacketBuilder&);
@@ -477,9 +477,10 @@ private:
     ssize_t handle_certificate_verify(ReadonlyBytes);
     ssize_t handle_handshake_payload(ReadonlyBytes);
     ssize_t handle_message(ReadonlyBytes);
-    ssize_t handle_random(ReadonlyBytes);
 
-    void pseudorandom_function(Bytes output, ReadonlyBytes secret, const u8* label, size_t label_length, ReadonlyBytes seed, ReadonlyBytes seed_b);
+    void pseudorandom_function(Bytes output, ReadonlyBytes secret, u8 const* label, size_t label_length, ReadonlyBytes seed, ReadonlyBytes seed_b);
+
+    ssize_t verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer);
 
     size_t key_length() const
     {
@@ -550,8 +551,6 @@ private:
     bool expand_key();
 
     bool compute_master_secret_from_pre_master_secret(size_t length);
-
-    Optional<size_t> verify_chain_and_get_matching_certificate(StringView host) const;
 
     void try_disambiguate_error() const;
 

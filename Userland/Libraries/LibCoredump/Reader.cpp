@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,9 +11,9 @@
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <LibCompress/Gzip.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCoredump/Reader.h>
-#include <signal_numbers.h>
+#include <signal.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -66,8 +67,8 @@ Reader::Reader(ReadonlyBytes coredump_bytes)
 Optional<ByteBuffer> Reader::decompress_coredump(ReadonlyBytes raw_coredump)
 {
     auto decompressed_coredump = Compress::GzipDecompressor::decompress_all(raw_coredump);
-    if (decompressed_coredump.has_value())
-        return decompressed_coredump;
+    if (!decompressed_coredump.is_error())
+        return decompressed_coredump.release_value();
 
     // If we didn't manage to decompress it, try and parse it as decompressed coredump
     auto bytebuffer = ByteBuffer::copy(raw_coredump);
@@ -76,11 +77,7 @@ Optional<ByteBuffer> Reader::decompress_coredump(ReadonlyBytes raw_coredump)
     return bytebuffer.release_value();
 }
 
-Reader::~Reader()
-{
-}
-
-Reader::NotesEntryIterator::NotesEntryIterator(const u8* notes_data)
+Reader::NotesEntryIterator::NotesEntryIterator(u8 const* notes_data)
     : m_current(bit_cast<const ELF::Core::NotesEntry*>(notes_data))
     , start(notes_data)
 {
@@ -106,22 +103,22 @@ void Reader::NotesEntryIterator::next()
     VERIFY(!at_end());
     switch (type()) {
     case ELF::Core::NotesEntryHeader::Type::ProcessInfo: {
-        const auto* current = bit_cast<const ELF::Core::ProcessInfo*>(m_current);
+        auto const* current = bit_cast<const ELF::Core::ProcessInfo*>(m_current);
         m_current = bit_cast<const ELF::Core::NotesEntry*>(current->json_data + strlen(current->json_data) + 1);
         break;
     }
     case ELF::Core::NotesEntryHeader::Type::ThreadInfo: {
-        const auto* current = bit_cast<const ELF::Core::ThreadInfo*>(m_current);
+        auto const* current = bit_cast<const ELF::Core::ThreadInfo*>(m_current);
         m_current = bit_cast<const ELF::Core::NotesEntry*>(current + 1);
         break;
     }
     case ELF::Core::NotesEntryHeader::Type::MemoryRegionInfo: {
-        const auto* current = bit_cast<const ELF::Core::MemoryRegionInfo*>(m_current);
+        auto const* current = bit_cast<const ELF::Core::MemoryRegionInfo*>(m_current);
         m_current = bit_cast<const ELF::Core::NotesEntry*>(current->region_name + strlen(current->region_name) + 1);
         break;
     }
     case ELF::Core::NotesEntryHeader::Type::Metadata: {
-        const auto* current = bit_cast<const ELF::Core::Metadata*>(m_current);
+        auto const* current = bit_cast<const ELF::Core::Metadata*>(m_current);
         m_current = bit_cast<const ELF::Core::NotesEntry*>(current->json_data + strlen(current->json_data) + 1);
         break;
     }
@@ -142,7 +139,7 @@ Optional<FlatPtr> Reader::peek_memory(FlatPtr address) const
         return {};
 
     FlatPtr offset_in_region = address - region->region_start;
-    auto* region_data = bit_cast<const u8*>(image().program_header(region->program_header_index).raw_data());
+    auto* region_data = bit_cast<u8 const*>(image().program_header(region->program_header_index).raw_data());
     FlatPtr value { 0 };
     ByteReader::load(region_data + offset_in_region, value);
     return value;
@@ -151,7 +148,7 @@ Optional<FlatPtr> Reader::peek_memory(FlatPtr address) const
 const JsonObject Reader::process_info() const
 {
     const ELF::Core::ProcessInfo* process_info_notes_entry = nullptr;
-    NotesEntryIterator it(bit_cast<const u8*>(m_coredump_image.program_header(m_notes_segment_index).raw_data()));
+    NotesEntryIterator it(bit_cast<u8 const*>(m_coredump_image.program_header(m_notes_segment_index).raw_data()));
     for (; !it.at_end(); it.next()) {
         if (it.type() != ELF::Core::NotesEntryHeader::Type::ProcessInfo)
             continue;
@@ -160,7 +157,8 @@ const JsonObject Reader::process_info() const
     }
     if (!process_info_notes_entry)
         return {};
-    auto process_info_json_value = JsonValue::from_string(process_info_notes_entry->json_data);
+    auto const* json_data_ptr = process_info_notes_entry->json_data;
+    auto process_info_json_value = JsonValue::from_string({ json_data_ptr, strlen(json_data_ptr) });
     if (process_info_json_value.is_error())
         return {};
     if (!process_info_json_value.value().is_object())
@@ -185,7 +183,7 @@ Optional<MemoryRegionInfo> Reader::first_region_for_object(StringView object_nam
 Optional<MemoryRegionInfo> Reader::region_containing(FlatPtr address) const
 {
     Optional<MemoryRegionInfo> ret;
-    for_each_memory_region_info([&ret, address](const auto& region_info) {
+    for_each_memory_region_info([&ret, address](auto const& region_info) {
         if (region_info.region_start <= address && region_info.region_end >= address) {
             ret = region_info;
             return IterationDecision::Break;
@@ -198,59 +196,58 @@ Optional<MemoryRegionInfo> Reader::region_containing(FlatPtr address) const
 int Reader::process_pid() const
 {
     auto process_info = this->process_info();
-    auto pid = process_info.get("pid");
-    return pid.to_number<int>();
+    auto pid = process_info.get_integer<int>("pid"sv).value_or(0);
+    return pid;
 }
 
 u8 Reader::process_termination_signal() const
 {
     auto process_info = this->process_info();
-    auto termination_signal = process_info.get("termination_signal");
-    auto signal_number = termination_signal.to_number<u8>();
-    if (signal_number <= SIGINVAL || signal_number >= NSIG)
+    auto termination_signal = process_info.get_u8("termination_signal"sv);
+    if (!termination_signal.has_value() || *termination_signal <= SIGINVAL || *termination_signal >= NSIG)
         return SIGINVAL;
-    return signal_number;
+    return *termination_signal;
 }
 
-String Reader::process_executable_path() const
+DeprecatedString Reader::process_executable_path() const
 {
     auto process_info = this->process_info();
-    auto executable_path = process_info.get("executable_path");
-    return executable_path.as_string_or({});
+    auto executable_path = process_info.get_deprecated_string("executable_path"sv);
+    return executable_path.value_or({});
 }
 
-Vector<String> Reader::process_arguments() const
+Vector<DeprecatedString> Reader::process_arguments() const
 {
     auto process_info = this->process_info();
-    auto arguments = process_info.get("arguments");
-    if (!arguments.is_array())
+    auto arguments = process_info.get_array("arguments"sv);
+    if (!arguments.has_value())
         return {};
-    Vector<String> vector;
-    arguments.as_array().for_each([&](auto& value) {
+    Vector<DeprecatedString> vector;
+    arguments->for_each([&](auto& value) {
         if (value.is_string())
             vector.append(value.as_string());
     });
     return vector;
 }
 
-Vector<String> Reader::process_environment() const
+Vector<DeprecatedString> Reader::process_environment() const
 {
     auto process_info = this->process_info();
-    auto environment = process_info.get("environment");
-    if (!environment.is_array())
+    auto environment = process_info.get_array("environment"sv);
+    if (!environment.has_value())
         return {};
-    Vector<String> vector;
-    environment.as_array().for_each([&](auto& value) {
+    Vector<DeprecatedString> vector;
+    environment->for_each([&](auto& value) {
         if (value.is_string())
             vector.append(value.as_string());
     });
     return vector;
 }
 
-HashMap<String, String> Reader::metadata() const
+HashMap<DeprecatedString, DeprecatedString> Reader::metadata() const
 {
     const ELF::Core::Metadata* metadata_notes_entry = nullptr;
-    NotesEntryIterator it(bit_cast<const u8*>(m_coredump_image.program_header(m_notes_segment_index).raw_data()));
+    NotesEntryIterator it(bit_cast<u8 const*>(m_coredump_image.program_header(m_notes_segment_index).raw_data()));
     for (; !it.at_end(); it.next()) {
         if (it.type() != ELF::Core::NotesEntryHeader::Type::Metadata)
             continue;
@@ -259,27 +256,28 @@ HashMap<String, String> Reader::metadata() const
     }
     if (!metadata_notes_entry)
         return {};
-    auto metadata_json_value = JsonValue::from_string(metadata_notes_entry->json_data);
+    auto const* json_data_ptr = metadata_notes_entry->json_data;
+    auto metadata_json_value = JsonValue::from_string({ json_data_ptr, strlen(json_data_ptr) });
     if (metadata_json_value.is_error())
         return {};
     if (!metadata_json_value.value().is_object())
         return {};
-    HashMap<String, String> metadata;
+    HashMap<DeprecatedString, DeprecatedString> metadata;
     metadata_json_value.value().as_object().for_each_member([&](auto& key, auto& value) {
         metadata.set(key, value.as_string_or({}));
     });
     return metadata;
 }
 
-const Reader::LibraryData* Reader::library_containing(FlatPtr address) const
+Reader::LibraryData const* Reader::library_containing(FlatPtr address) const
 {
-    static HashMap<String, OwnPtr<LibraryData>> cached_libs;
+    static HashMap<DeprecatedString, OwnPtr<LibraryData>> cached_libs;
     auto region = region_containing(address);
     if (!region.has_value())
         return {};
 
     auto name = region->object_name();
-    String path = resolve_object_path(name);
+    DeprecatedString path = resolve_object_path(name);
 
     if (!cached_libs.contains(path)) {
         auto file_or_error = Core::MappedFile::map(path);
@@ -293,17 +291,17 @@ const Reader::LibraryData* Reader::library_containing(FlatPtr address) const
     return lib_data;
 }
 
-String Reader::resolve_object_path(StringView name) const
+DeprecatedString Reader::resolve_object_path(StringView name) const
 {
     // TODO: There are other places where similar method is implemented or would be useful.
     //       (e.g. UserspaceEmulator, LibSymbolication, Profiler, and DynamicLinker itself)
     //       We should consider creating unified implementation in the future.
 
-    if (name.starts_with('/') || !Core::File::looks_like_shared_library(name)) {
+    if (name.starts_with('/') || !Core::DeprecatedFile::looks_like_shared_library(name)) {
         return name;
     }
 
-    Vector<String> library_search_directories;
+    Vector<DeprecatedString> library_search_directories;
 
     // If LD_LIBRARY_PATH is present, check its folders first
     for (auto& environment_variable : process_environment()) {
@@ -337,7 +335,7 @@ String Reader::resolve_object_path(StringView name) const
 
 void Reader::for_each_library(Function<void(LibraryInfo)> func) const
 {
-    HashTable<String> libraries;
+    HashTable<DeprecatedString> libraries;
     for_each_memory_region_info([&](auto const& region) {
         auto name = region.object_name();
         if (name.is_null() || libraries.contains(name))
@@ -345,7 +343,7 @@ void Reader::for_each_library(Function<void(LibraryInfo)> func) const
 
         libraries.set(name);
 
-        String path = resolve_object_path(name);
+        DeprecatedString path = resolve_object_path(name);
 
         func(LibraryInfo { name, path, static_cast<FlatPtr>(region.region_start) });
         return IterationDecision::Continue;

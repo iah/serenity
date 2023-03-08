@@ -6,13 +6,13 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
+#include <AK/AtomicRefCounted.h>
 #include <AK/Types.h>
 #include <Kernel/Graphics/GenericGraphicsAdapter.h>
 
 namespace Kernel::Graphics {
 
-class Console : public RefCounted<Console> {
+class Console : public AtomicRefCounted<Console> {
 public:
     // Stanadard VGA text mode colors
     enum Color : u8 {
@@ -50,8 +50,6 @@ public:
     virtual bool has_hardware_cursor() const = 0;
 
     virtual void set_cursor(size_t x, size_t y) = 0;
-    virtual void hide_cursor() = 0;
-    virtual void show_cursor() = 0;
 
     virtual void clear(size_t x, size_t y, size_t length) = 0;
     virtual void write(size_t x, size_t y, char ch, Color background, Color foreground, bool critical = false) = 0;
@@ -59,9 +57,12 @@ public:
     virtual void write(char ch, bool critical = false) = 0;
     virtual void flush(size_t x, size_t y, size_t width, size_t height) = 0;
 
-    virtual ~Console() { }
+    virtual ~Console() = default;
 
 protected:
+    virtual void hide_cursor() = 0;
+    virtual void show_cursor() = 0;
+
     Console(size_t width, size_t height)
         : m_width(width)
         , m_height(height)

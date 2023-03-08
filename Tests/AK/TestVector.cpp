@@ -6,9 +6,9 @@
 
 #include <LibTest/TestCase.h>
 
-#include <AK/NonnullOwnPtrVector.h>
+#include <AK/DeprecatedString.h>
 #include <AK/OwnPtr.h>
-#include <AK/String.h>
+#include <AK/ReverseIterator.h>
 #include <AK/Vector.h>
 
 TEST_CASE(construct)
@@ -37,19 +37,19 @@ TEST_CASE(ints)
 
 TEST_CASE(strings)
 {
-    Vector<String> strings;
+    Vector<DeprecatedString> strings;
     strings.append("ABC");
     strings.append("DEF");
 
     int loop_counter = 0;
-    for (const String& string : strings) {
+    for (DeprecatedString const& string : strings) {
         EXPECT(!string.is_null());
         EXPECT(!string.is_empty());
         ++loop_counter;
     }
 
     loop_counter = 0;
-    for (auto& string : (const_cast<const Vector<String>&>(strings))) {
+    for (auto& string : (const_cast<Vector<DeprecatedString> const&>(strings))) {
         EXPECT(!string.is_null());
         EXPECT(!string.is_empty());
         ++loop_counter;
@@ -59,13 +59,13 @@ TEST_CASE(strings)
 
 TEST_CASE(strings_insert_ordered)
 {
-    Vector<String> strings;
+    Vector<DeprecatedString> strings;
     strings.append("abc");
     strings.append("def");
     strings.append("ghi");
 
-    strings.insert_before_matching("f-g", [](auto& entry) {
-        return "f-g" < entry;
+    strings.insert_before_matching("f-g"sv, [](auto& entry) {
+        return "f-g"sv < entry;
     });
 
     EXPECT_EQ(strings[0], "abc");
@@ -162,12 +162,12 @@ TEST_CASE(vector_compare)
     EXPECT_EQ(ints.size(), 1000u);
     EXPECT_EQ(ints, same_ints);
 
-    Vector<String> strings;
-    Vector<String> same_strings;
+    Vector<DeprecatedString> strings;
+    Vector<DeprecatedString> same_strings;
 
     for (int i = 0; i < 1000; ++i) {
-        strings.append(String::number(i));
-        same_strings.append(String::number(i));
+        strings.append(DeprecatedString::number(i));
+        same_strings.append(DeprecatedString::number(i));
     }
 
     EXPECT_EQ(strings.size(), 1000u);
@@ -177,9 +177,9 @@ TEST_CASE(vector_compare)
 TEST_CASE(grow_past_inline_capacity)
 {
     auto make_vector = [] {
-        Vector<String, 16> strings;
+        Vector<DeprecatedString, 16> strings;
         for (int i = 0; i < 32; ++i) {
-            strings.append(String::number(i));
+            strings.append(DeprecatedString::number(i));
         }
         return strings;
     };
@@ -285,9 +285,9 @@ TEST_CASE(remove_all_matching)
 TEST_CASE(nonnullownptrvector)
 {
     struct Object {
-        String string;
+        DeprecatedString string;
     };
-    NonnullOwnPtrVector<Object> objects;
+    Vector<NonnullOwnPtr<Object>> objects;
 
     objects.append(make<Object>());
     EXPECT_EQ(objects.size(), 1u);
@@ -401,7 +401,7 @@ TEST_CASE(should_find_value)
 {
     Vector<int> v { 1, 2, 3, 4, 0, 6, 7, 8, 0, 0 };
 
-    const auto expected = v.begin() + 4;
+    auto const expected = v.begin() + 4;
 
     EXPECT_EQ(expected, v.find(0));
 }
@@ -410,9 +410,9 @@ TEST_CASE(should_find_predicate)
 {
     Vector<int> v { 1, 2, 3, 4, 0, 6, 7, 8, 0, 0 };
 
-    const auto expected = v.begin() + 4;
+    auto const expected = v.begin() + 4;
 
-    EXPECT_EQ(expected, v.find_if([](const auto v) { return v == 0; }));
+    EXPECT_EQ(expected, v.find_if([](auto const v) { return v == 0; }));
 }
 
 TEST_CASE(should_find_index)
@@ -532,4 +532,87 @@ TEST_CASE(reference_deletion_should_not_affect_object)
             references.append(counter);
     }
     EXPECT_EQ(times_deleted, 1u);
+}
+
+TEST_CASE(rbegin)
+{
+    Vector<int> v { 1, 2, 3, 4, 5, 6, 7, 8, 0 };
+
+    auto const expected = v.begin() + 4;
+    auto const expected_in_reverse = v.rbegin() + 4;
+    EXPECT_EQ(*expected, *expected_in_reverse);
+}
+
+TEST_CASE(rend)
+{
+    Vector<int> v { 1, 2, 3, 4, 5, 6, 7, 8, 0 };
+
+    auto const expected = v.end() - 5;
+    auto const expected_in_reverse = v.rend() - 5;
+    EXPECT_EQ(*expected, *expected_in_reverse);
+}
+
+TEST_CASE(reverse_iterator_for_loop)
+{
+    Vector<int> v { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    int index = 9;
+    for (auto rev = v.rbegin(); rev != v.rend(); ++rev)
+        EXPECT_EQ(*rev, index--);
+}
+
+TEST_CASE(reverse_range_for_loop)
+{
+    Vector<int> v { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    int index = 9;
+    for (auto item : AK::ReverseWrapper::in_reverse(v))
+        EXPECT_EQ(item, index--);
+
+    index = 9;
+    for (auto item : v.in_reverse())
+        EXPECT_EQ(item, index--);
+}
+
+static bool is_inline_element(auto& el, auto& vector)
+{
+    uintptr_t vector_ptr = (uintptr_t)&vector;
+    uintptr_t element_ptr = (uintptr_t)&el;
+    return (element_ptr >= vector_ptr && element_ptr < (vector_ptr + sizeof(vector)));
+}
+
+TEST_CASE(uses_inline_capacity_when_appended_to)
+{
+    Vector<int, 10> v;
+    v.unchecked_append(1);
+    v.unchecked_append(123);
+    v.unchecked_append(50);
+    v.unchecked_append(43);
+
+    for (auto& el : v)
+        EXPECT(is_inline_element(el, v));
+}
+
+TEST_CASE(uses_inline_capacity_when_constructed_from_initializer_list)
+{
+    Vector<int, 10> v { 10, 9, 3, 1, 3 };
+
+    for (auto& el : v)
+        EXPECT(is_inline_element(el, v));
+}
+
+TEST_CASE(uses_inline_capacity_when_constructed_from_other_vector)
+{
+    Vector other { 4, 3, 2, 1 };
+    Vector<int, 10> v(other);
+
+    for (auto& el : v)
+        EXPECT(is_inline_element(el, v));
+}
+
+TEST_CASE(uses_inline_capacity_when_constructed_from_span)
+{
+    Array array { "f00", "bar", "baz" };
+    Vector<char const*, 10> v(array.span());
+
+    for (auto& el : v)
+        EXPECT(is_inline_element(el, v));
 }

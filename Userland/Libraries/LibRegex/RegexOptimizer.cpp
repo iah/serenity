@@ -4,11 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <AK/QuickSort.h>
 #include <AK/RedBlackTree.h>
 #include <AK/Stack.h>
 #include <LibRegex/Regex.h>
 #include <LibRegex/RegexBytecodeStreamOptimizer.h>
+#if REGEX_DEBUG
+#    include <AK/ScopeGuard.h>
+#    include <AK/ScopeLogger.h>
+#endif
 
 namespace regex {
 
@@ -104,6 +109,190 @@ typename Regex<Parser>::BasicBlockList Regex<Parser>::split_basic_blocks(ByteCod
     return block_boundaries;
 }
 
+static bool has_overlap(Vector<CompareTypeAndValuePair> const& lhs, Vector<CompareTypeAndValuePair> const& rhs)
+{
+
+    // We have to fully interpret the two sequences to determine if they overlap (that is, keep track of inversion state and what ranges they cover).
+    bool inverse { false };
+    bool temporary_inverse { false };
+    bool reset_temporary_inverse { false };
+
+    auto current_lhs_inversion_state = [&]() -> bool { return temporary_inverse ^ inverse; };
+
+    RedBlackTree<u32, u32> lhs_ranges;
+    RedBlackTree<u32, u32> lhs_negated_ranges;
+    HashTable<CharClass> lhs_char_classes;
+    HashTable<CharClass> lhs_negated_char_classes;
+
+    auto range_contains = [&]<typename T>(T& value) -> bool {
+        u32 start;
+        u32 end;
+
+        if constexpr (IsSame<T, CharRange>) {
+            start = value.from;
+            end = value.to;
+        } else {
+            start = value;
+            end = value;
+        }
+
+        auto* max = lhs_ranges.find_smallest_not_below(start);
+        return max && *max <= end;
+    };
+
+    auto char_class_contains = [&](CharClass const& value) -> bool {
+        if (lhs_char_classes.contains(value))
+            return true;
+
+        if (lhs_negated_char_classes.contains(value))
+            return false;
+
+        // This char class might match something in the ranges we have, and checking that is far too expensive, so just bail out.
+        return true;
+    };
+
+    for (auto const& pair : lhs) {
+        if (reset_temporary_inverse) {
+            reset_temporary_inverse = false;
+            temporary_inverse = false;
+        } else {
+            reset_temporary_inverse = true;
+        }
+
+        switch (pair.type) {
+        case CharacterCompareType::Inverse:
+            inverse = !inverse;
+            break;
+        case CharacterCompareType::TemporaryInverse:
+            temporary_inverse = true;
+            reset_temporary_inverse = true;
+            break;
+        case CharacterCompareType::AnyChar:
+            // Special case: if not inverted, AnyChar is always in the range.
+            if (!current_lhs_inversion_state())
+                return true;
+            break;
+        case CharacterCompareType::Char:
+            if (!current_lhs_inversion_state())
+                lhs_ranges.insert(pair.value, pair.value);
+            else
+                lhs_negated_ranges.insert(pair.value, pair.value);
+            break;
+        case CharacterCompareType::String:
+            // FIXME: We just need to look at the last character of this string, but we only have the first character here.
+            //        Just bail out to avoid false positives.
+            return true;
+        case CharacterCompareType::CharClass:
+            if (!current_lhs_inversion_state())
+                lhs_char_classes.set(static_cast<CharClass>(pair.value));
+            else
+                lhs_negated_char_classes.set(static_cast<CharClass>(pair.value));
+            break;
+        case CharacterCompareType::CharRange: {
+            auto range = CharRange(pair.value);
+            if (!current_lhs_inversion_state())
+                lhs_ranges.insert(range.from, range.to);
+            else
+                lhs_negated_ranges.insert(range.from, range.to);
+            break;
+        }
+        case CharacterCompareType::LookupTable:
+            // We've transformed this into a series of ranges in flat_compares(), so bail out if we see it.
+            return true;
+        case CharacterCompareType::Reference:
+            // We've handled this before coming here.
+            break;
+        case CharacterCompareType::Property:
+        case CharacterCompareType::GeneralCategory:
+        case CharacterCompareType::Script:
+        case CharacterCompareType::ScriptExtension:
+        case CharacterCompareType::And:
+        case CharacterCompareType::Or:
+        case CharacterCompareType::EndAndOr:
+            // FIXME: These are too difficult to handle, so bail out.
+            return true;
+        case CharacterCompareType::Undefined:
+        case CharacterCompareType::RangeExpressionDummy:
+            // These do not occur in valid bytecode.
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    if constexpr (REGEX_DEBUG) {
+        dbgln("lhs ranges:");
+        for (auto it = lhs_ranges.begin(); it != lhs_ranges.end(); ++it)
+            dbgln("  {}..{}", it.key(), *it);
+        dbgln("lhs negated ranges:");
+        for (auto it = lhs_negated_ranges.begin(); it != lhs_negated_ranges.end(); ++it)
+            dbgln("  {}..{}", it.key(), *it);
+    }
+
+    for (auto const& pair : rhs) {
+        if (reset_temporary_inverse) {
+            reset_temporary_inverse = false;
+            temporary_inverse = false;
+        } else {
+            reset_temporary_inverse = true;
+        }
+
+        dbgln_if(REGEX_DEBUG, "check {} ({})...", character_compare_type_name(pair.type), pair.value);
+
+        switch (pair.type) {
+        case CharacterCompareType::Inverse:
+            inverse = !inverse;
+            break;
+        case CharacterCompareType::TemporaryInverse:
+            temporary_inverse = true;
+            reset_temporary_inverse = true;
+            break;
+        case CharacterCompareType::AnyChar:
+            // Special case: if not inverted, AnyChar is always in the range.
+            if (!current_lhs_inversion_state())
+                return true;
+            break;
+        case CharacterCompareType::Char:
+            if (current_lhs_inversion_state() ^ range_contains(pair.value))
+                return true;
+            break;
+        case CharacterCompareType::String:
+            // FIXME: We just need to look at the last character of this string, but we only have the first character here.
+            //        Just bail out to avoid false positives.
+            return true;
+        case CharacterCompareType::CharClass:
+            if (current_lhs_inversion_state() ^ char_class_contains(static_cast<CharClass>(pair.value)))
+                return true;
+            break;
+        case CharacterCompareType::CharRange: {
+            auto range = CharRange(pair.value);
+            if (current_lhs_inversion_state() ^ range_contains(range))
+                return true;
+            break;
+        }
+        case CharacterCompareType::LookupTable:
+            // We've transformed this into a series of ranges in flat_compares(), so bail out if we see it.
+            return true;
+        case CharacterCompareType::Reference:
+            // We've handled this before coming here.
+            break;
+        case CharacterCompareType::Property:
+        case CharacterCompareType::GeneralCategory:
+        case CharacterCompareType::Script:
+        case CharacterCompareType::ScriptExtension:
+        case CharacterCompareType::And:
+        case CharacterCompareType::Or:
+        case CharacterCompareType::EndAndOr:
+            // FIXME: These are too difficult to handle, so bail out.
+            return true;
+        case CharacterCompareType::Undefined:
+        case CharacterCompareType::RangeExpressionDummy:
+            // These do not occur in valid bytecode.
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    return false;
+}
+
 enum class AtomicRewritePreconditionResult {
     SatisfiedWithProperHeader,
     SatisfiedWithEmptyHeader,
@@ -114,10 +303,12 @@ static AtomicRewritePreconditionResult block_satisfies_atomic_rewrite_preconditi
     Vector<Vector<CompareTypeAndValuePair>> repeated_values;
     HashTable<size_t> active_capture_groups;
     MatchState state;
+    auto has_seen_actionable_opcode = false;
     for (state.instruction_position = repeated_block.start; state.instruction_position < repeated_block.end;) {
         auto& opcode = bytecode.get_opcode(state);
         switch (opcode.opcode_id()) {
         case OpCodeId::Compare: {
+            has_seen_actionable_opcode = true;
             auto compares = static_cast<OpCode_Compare const&>(opcode).flat_compares();
             if (repeated_values.is_empty() && any_of(compares, [](auto& compare) { return compare.type == CharacterCompareType::AnyChar; }))
                 return AtomicRewritePreconditionResult::NotSatisfied;
@@ -126,6 +317,7 @@ static AtomicRewritePreconditionResult block_satisfies_atomic_rewrite_preconditi
         }
         case OpCodeId::CheckBegin:
         case OpCodeId::CheckEnd:
+            has_seen_actionable_opcode = true;
             if (repeated_values.is_empty())
                 return AtomicRewritePreconditionResult::SatisfiedWithProperHeader;
             break;
@@ -140,6 +332,13 @@ static AtomicRewritePreconditionResult block_satisfies_atomic_rewrite_preconditi
             break;
         case OpCodeId::SaveLeftCaptureGroup:
             active_capture_groups.set(static_cast<OpCode_SaveLeftCaptureGroup const&>(opcode).id());
+            break;
+        case OpCodeId::ForkJump:
+        case OpCodeId::ForkReplaceJump:
+        case OpCodeId::JumpNonEmpty:
+            // We could attempt to recursively resolve the follow set, but pretending that this just goes nowhere is faster.
+            if (!has_seen_actionable_opcode)
+                return AtomicRewritePreconditionResult::NotSatisfied;
             break;
         default:
             break;
@@ -175,17 +374,9 @@ static AtomicRewritePreconditionResult block_satisfies_atomic_rewrite_preconditi
                 }))
                 return AtomicRewritePreconditionResult::NotSatisfied;
 
-            for (auto& repeated_value : repeated_values) {
-                // FIXME: This is too naive!
-                if (any_of(repeated_value, [](auto& compare) { return compare.type == CharacterCompareType::AnyChar; }))
-                    return AtomicRewritePreconditionResult::NotSatisfied;
+            if (any_of(repeated_values, [&](auto& repeated_value) { return has_overlap(compares, repeated_value); }))
+                return AtomicRewritePreconditionResult::NotSatisfied;
 
-                for (auto& repeated_compare : repeated_value) {
-                    // FIXME: This is too naive! it will miss _tons_ of cases since it doesn't check ranges!
-                    if (any_of(compares, [&](auto& compare) { return compare.type == repeated_compare.type && compare.value == repeated_compare.value; }))
-                        return AtomicRewritePreconditionResult::NotSatisfied;
-                }
-            }
             return AtomicRewritePreconditionResult::SatisfiedWithProperHeader;
         }
         case OpCodeId::CheckBegin:
@@ -194,6 +385,13 @@ static AtomicRewritePreconditionResult block_satisfies_atomic_rewrite_preconditi
         case OpCodeId::CheckBoundary:
             // FIXME: What should we do with these? For now, consider them a failure.
             return AtomicRewritePreconditionResult::NotSatisfied;
+        case OpCodeId::ForkJump:
+        case OpCodeId::ForkReplaceJump:
+        case OpCodeId::JumpNonEmpty:
+            // See note in the previous switch, same cases.
+            if (!following_block_has_at_least_one_compare)
+                return AtomicRewritePreconditionResult::NotSatisfied;
+            break;
         default:
             break;
         }
@@ -303,7 +501,8 @@ void Regex<Parser>::attempt_rewrite_loops_as_atomic_groups(BasicBlockList const&
             if (is_an_eligible_jump(opcode, state.instruction_position, forking_block.start, AlternateForm::DirectLoopWithoutHeader)) {
                 // We've found RE0 (and RE1 is just the following block, if any), let's see if the precondition applies.
                 // if RE1 is empty, there's no first(RE1), so this is an automatic pass.
-                if (!fork_fallback_block.has_value() || fork_fallback_block->end == fork_fallback_block->start) {
+                if (!fork_fallback_block.has_value()
+                    || (fork_fallback_block->end == fork_fallback_block->start && block_satisfies_atomic_rewrite_precondition(bytecode, forking_block, *fork_fallback_block) != AtomicRewritePreconditionResult::NotSatisfied)) {
                     candidate_blocks.append({ forking_block, fork_fallback_block, AlternateForm::DirectLoopWithoutHeader });
                     break;
                 }
@@ -444,78 +643,166 @@ void Regex<Parser>::attempt_rewrite_loops_as_atomic_groups(BasicBlockList const&
 
 void Optimizer::append_alternation(ByteCode& target, ByteCode&& left, ByteCode&& right)
 {
-    auto left_is_empty = left.is_empty();
-    auto right_is_empty = right.is_empty();
-    if (left_is_empty || right_is_empty) {
-        if (left_is_empty && right_is_empty)
-            return;
+    Array<ByteCode, 2> alternatives;
+    alternatives[0] = move(left);
+    alternatives[1] = move(right);
 
-        // ForkJump left (+ 2 + right.size())
-        // (right)
-        // Jump end (+ left.size())
-        // (left)
-        // LABEL end
-        target.append(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
-        target.append(2 + right.size());
-        target.extend(move(right));
-        target.append(static_cast<ByteCodeValueType>(OpCodeId::Jump));
-        target.append(left.size());
-        target.extend(move(left));
+    append_alternation(target, alternatives);
+}
+
+void Optimizer::append_alternation(ByteCode& target, Span<ByteCode> alternatives)
+{
+    if (alternatives.size() == 0)
         return;
+
+    if (alternatives.size() == 1)
+        return target.extend(move(alternatives[0]));
+
+    if (all_of(alternatives, [](auto& x) { return x.is_empty(); }))
+        return;
+
+    for (auto& entry : alternatives)
+        entry.flatten();
+
+#if REGEX_DEBUG
+    ScopeLogger<true> log;
+    warnln("Alternations:");
+    RegexDebug dbg;
+    for (auto& entry : alternatives) {
+        warnln("----------");
+        dbg.print_bytecode(entry);
     }
+    ScopeGuard print_at_end {
+        [&] {
+            warnln("======================");
+            RegexDebug dbg;
+            dbg.print_bytecode(target);
+        }
+    };
+#endif
 
-    left.flatten();
-    right.flatten();
+    Vector<Vector<Detail::Block>> basic_blocks;
+    basic_blocks.ensure_capacity(alternatives.size());
 
-    auto left_blocks = Regex<PosixBasicParser>::split_basic_blocks(left);
-    auto right_blocks = Regex<PosixBasicParser>::split_basic_blocks(right);
+    for (auto& entry : alternatives)
+        basic_blocks.append(Regex<PosixBasicParser>::split_basic_blocks(entry));
 
     size_t left_skip = 0;
+    size_t shared_block_count = basic_blocks.first().size();
+    for (auto& entry : basic_blocks)
+        shared_block_count = min(shared_block_count, entry.size());
+
     MatchState state;
-    for (size_t block_index = 0; block_index < left_blocks.size() && block_index < right_blocks.size(); block_index++) {
-        auto& left_block = left_blocks[block_index];
-        auto& right_block = right_blocks[block_index];
-        auto left_end = block_index + 1 == left_blocks.size() ? left_block.end : left_blocks[block_index + 1].start;
-        auto right_end = block_index + 1 == right_blocks.size() ? right_block.end : right_blocks[block_index + 1].start;
+    for (size_t block_index = 0; block_index < shared_block_count; block_index++) {
+        auto& left_block = basic_blocks.first()[block_index];
+        auto left_end = block_index + 1 == basic_blocks.first().size() ? left_block.end : basic_blocks.first()[block_index + 1].start;
+        auto can_continue = true;
+        for (size_t i = 1; i < alternatives.size(); ++i) {
+            auto& right_blocks = basic_blocks[i];
+            auto& right_block = right_blocks[block_index];
+            auto right_end = block_index + 1 == right_blocks.size() ? right_block.end : right_blocks[block_index + 1].start;
 
-        if (left_end - left_block.start != right_end - right_block.start)
+            if (left_end - left_block.start != right_end - right_block.start) {
+                can_continue = false;
+                break;
+            }
+
+            if (alternatives[0].spans().slice(left_block.start, left_end - left_block.start) != alternatives[i].spans().slice(right_block.start, right_end - right_block.start)) {
+                can_continue = false;
+                break;
+            }
+        }
+        if (!can_continue)
             break;
 
-        if (left.spans().slice(left_block.start, left_end - left_block.start) != right.spans().slice(right_block.start, right_end - right_block.start))
-            break;
-
-        state.instruction_position = 0;
-        while (state.instruction_position < left_end) {
-            auto& opcode = left.get_opcode(state);
-            left_skip = state.instruction_position;
-            state.instruction_position += opcode.size();
+        size_t i = 0;
+        for (auto& entry : alternatives) {
+            auto& blocks = basic_blocks[i];
+            auto& block = blocks[block_index];
+            auto end = block_index + 1 == blocks.size() ? block.end : blocks[block_index + 1].start;
+            state.instruction_position = block.start;
+            size_t skip = 0;
+            while (state.instruction_position < end) {
+                auto& opcode = entry.get_opcode(state);
+                state.instruction_position += opcode.size();
+                skip = state.instruction_position;
+            }
+            left_skip = min(skip, left_skip);
         }
     }
 
-    dbgln_if(REGEX_DEBUG, "Skipping {}/{} bytecode entries from {}/{}", left_skip, 0, left.size(), right.size());
+    dbgln_if(REGEX_DEBUG, "Skipping {}/{} bytecode entries from {}", left_skip, 0, alternatives[0].size());
 
     if (left_skip > 0) {
-        target.extend(left.release_slice(left_blocks.first().start, left_skip));
-        right = right.release_slice(left_skip);
+        target.extend(alternatives[0].release_slice(basic_blocks.first().first().start, left_skip));
+        auto first = true;
+        for (auto& entry : alternatives) {
+            if (first) {
+                first = false;
+                continue;
+            }
+            entry = entry.release_slice(left_skip);
+        }
     }
 
-    auto left_size = left.size();
+    if (all_of(alternatives, [](auto& entry) { return entry.is_empty(); }))
+        return;
 
-    target.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
-    target.empend(right.size() + (left_size > 0 ? 2 : 0)); // Jump to the _ALT label
+    size_t patch_start = target.size();
+    for (size_t i = 1; i < alternatives.size(); ++i) {
+        target.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
+        target.empend(0u); // To be filled later.
+    }
 
-    target.extend(move(right));
+    size_t size_to_jump = 0;
+    bool seen_one_empty = false;
+    for (size_t i = alternatives.size(); i > 0; --i) {
+        auto& entry = alternatives[i - 1];
+        if (entry.is_empty()) {
+            if (seen_one_empty)
+                continue;
+            seen_one_empty = true;
+        }
 
-    if (left_size != 0) {
+        auto is_first = i == 1;
+        auto instruction_size = entry.size() + (is_first ? 0 : 2); // Jump; -> +2
+        size_to_jump += instruction_size;
+
+        if (!is_first)
+            target[patch_start + (i - 2) * 2 + 1] = size_to_jump + (alternatives.size() - i) * 2;
+
+        dbgln_if(REGEX_DEBUG, "{} size = {}, cum={}", i - 1, instruction_size, size_to_jump);
+    }
+
+    seen_one_empty = false;
+    for (size_t i = alternatives.size(); i > 0; --i) {
+        auto& chunk = alternatives[i - 1];
+        if (chunk.is_empty()) {
+            if (seen_one_empty)
+                continue;
+            seen_one_empty = true;
+        }
+
+        ByteCode* previous_chunk = nullptr;
+        size_t j = i - 1;
+        auto seen_one_empty_before = chunk.is_empty();
+        while (j >= 1) {
+            --j;
+            auto& candidate_chunk = alternatives[j];
+            if (candidate_chunk.is_empty()) {
+                if (seen_one_empty_before)
+                    continue;
+            }
+            previous_chunk = &candidate_chunk;
+            break;
+        }
+
+        size_to_jump -= chunk.size() + (previous_chunk ? 2 : 0);
+
+        target.extend(move(chunk));
         target.empend(static_cast<ByteCodeValueType>(OpCodeId::Jump));
-        target.empend(left.size()); // Jump to the _END label
+        target.empend(size_to_jump); // Jump to the _END label
     }
-
-    // LABEL _ALT = bytecode.size() + 2
-
-    target.extend(move(left));
-
-    // LABEL _END = alterantive_bytecode.size
 }
 
 enum class LookupTableInsertionOutcome {
@@ -523,6 +810,8 @@ enum class LookupTableInsertionOutcome {
     ReplaceWithAnyChar,
     TemporaryInversionNeeded,
     PermanentInversionNeeded,
+    FlushOnInsertion,
+    FinishFlushOnInsertion,
     CannotPlaceInTable,
 };
 static LookupTableInsertionOutcome insert_into_lookup_table(RedBlackTree<ByteCodeValueType, CharRange>& table, CompareTypeAndValuePair pair)
@@ -544,11 +833,16 @@ static LookupTableInsertionOutcome insert_into_lookup_table(RedBlackTree<ByteCod
         table.insert(range.from, range);
         break;
     }
+    case CharacterCompareType::EndAndOr:
+        return LookupTableInsertionOutcome::FinishFlushOnInsertion;
+    case CharacterCompareType::And:
+        return LookupTableInsertionOutcome::FlushOnInsertion;
     case CharacterCompareType::Reference:
     case CharacterCompareType::Property:
     case CharacterCompareType::GeneralCategory:
     case CharacterCompareType::Script:
     case CharacterCompareType::ScriptExtension:
+    case CharacterCompareType::Or:
         return LookupTableInsertionOutcome::CannotPlaceInTable;
     case CharacterCompareType::Undefined:
     case CharacterCompareType::RangeExpressionDummy:
@@ -568,7 +862,12 @@ void Optimizer::append_character_class(ByteCode& target, Vector<CompareTypeAndVa
     if (pairs.size() <= 1) {
         for (auto& pair : pairs) {
             arguments.append(to_underlying(pair.type));
-            if (pair.type != CharacterCompareType::AnyChar && pair.type != CharacterCompareType::TemporaryInverse && pair.type != CharacterCompareType::Inverse)
+            if (pair.type != CharacterCompareType::AnyChar
+                && pair.type != CharacterCompareType::TemporaryInverse
+                && pair.type != CharacterCompareType::Inverse
+                && pair.type != CharacterCompareType::And
+                && pair.type != CharacterCompareType::Or
+                && pair.type != CharacterCompareType::EndAndOr)
                 arguments.append(pair.value);
             ++argument_count;
         }
@@ -580,6 +879,51 @@ void Optimizer::append_character_class(ByteCode& target, Vector<CompareTypeAndVa
         bool invert_for_next_iteration = false;
         bool is_currently_inverted = false;
 
+        auto flush_tables = [&] {
+            auto append_table = [&](auto& table) {
+                ++argument_count;
+                arguments.append(to_underlying(CharacterCompareType::LookupTable));
+                auto size_index = arguments.size();
+                arguments.append(0);
+                Optional<CharRange> active_range;
+                size_t range_count = 0;
+                for (auto& range : table) {
+                    if (!active_range.has_value()) {
+                        active_range = range;
+                        continue;
+                    }
+
+                    if (range.from <= active_range->to + 1 && range.to + 1 >= active_range->from) {
+                        active_range = CharRange { min(range.from, active_range->from), max(range.to, active_range->to) };
+                    } else {
+                        ++range_count;
+                        arguments.append(active_range.release_value());
+                        active_range = range;
+                    }
+                }
+                if (active_range.has_value()) {
+                    ++range_count;
+                    arguments.append(active_range.release_value());
+                }
+                arguments[size_index] = range_count;
+            };
+
+            auto contains_regular_table = !table.is_empty();
+            auto contains_inverted_table = !inverted_table.is_empty();
+            if (contains_regular_table)
+                append_table(table);
+
+            if (contains_inverted_table) {
+                ++argument_count;
+                arguments.append(to_underlying(CharacterCompareType::TemporaryInverse));
+                append_table(inverted_table);
+            }
+
+            table.clear();
+            inverted_table.clear();
+        };
+
+        auto flush_on_every_insertion = false;
         for (auto& value : pairs) {
             auto should_invert_after_this_iteration = invert_for_next_iteration;
             invert_for_next_iteration = false;
@@ -587,6 +931,8 @@ void Optimizer::append_character_class(ByteCode& target, Vector<CompareTypeAndVa
             auto insertion_result = insert_into_lookup_table(*current_table, value);
             switch (insertion_result) {
             case LookupTableInsertionOutcome::Successful:
+                if (flush_on_every_insertion)
+                    flush_tables();
                 break;
             case LookupTableInsertionOutcome::ReplaceWithAnyChar: {
                 table.clear();
@@ -601,16 +947,29 @@ void Optimizer::append_character_class(ByteCode& target, Vector<CompareTypeAndVa
                 is_currently_inverted = !is_currently_inverted;
                 break;
             case LookupTableInsertionOutcome::PermanentInversionNeeded:
-                swap(current_table, current_inverted_table);
-                is_currently_inverted = !is_currently_inverted;
+                flush_tables();
+                arguments.append(to_underlying(CharacterCompareType::Inverse));
+                ++argument_count;
                 break;
+            case LookupTableInsertionOutcome::FlushOnInsertion:
+            case LookupTableInsertionOutcome::FinishFlushOnInsertion:
+                flush_tables();
+                flush_on_every_insertion = insertion_result == LookupTableInsertionOutcome::FlushOnInsertion;
+                [[fallthrough]];
             case LookupTableInsertionOutcome::CannotPlaceInTable:
                 if (is_currently_inverted) {
                     arguments.append(to_underlying(CharacterCompareType::TemporaryInverse));
                     ++argument_count;
                 }
                 arguments.append(to_underlying(value.type));
-                arguments.append(value.value);
+
+                if (value.type != CharacterCompareType::AnyChar
+                    && value.type != CharacterCompareType::TemporaryInverse
+                    && value.type != CharacterCompareType::Inverse
+                    && value.type != CharacterCompareType::And
+                    && value.type != CharacterCompareType::Or
+                    && value.type != CharacterCompareType::EndAndOr)
+                    arguments.append(value.value);
                 ++argument_count;
                 break;
             }
@@ -620,42 +979,8 @@ void Optimizer::append_character_class(ByteCode& target, Vector<CompareTypeAndVa
                 is_currently_inverted = !is_currently_inverted;
             }
         }
-        auto append_table = [&](auto& table) {
-            ++argument_count;
-            arguments.append(to_underlying(CharacterCompareType::LookupTable));
-            auto size_index = arguments.size();
-            arguments.append(0);
-            Optional<CharRange> active_range;
-            size_t range_count = 0;
-            for (auto& range : table) {
-                if (!active_range.has_value()) {
-                    active_range = range;
-                    continue;
-                }
 
-                if (range.from <= active_range->to + 1 && range.to + 1 >= active_range->from) {
-                    active_range = CharRange { min(range.from, active_range->from), max(range.to, active_range->to) };
-                } else {
-                    ++range_count;
-                    arguments.append(active_range.release_value());
-                    active_range = range;
-                }
-            }
-            if (active_range.has_value()) {
-                ++range_count;
-                arguments.append(active_range.release_value());
-            }
-            arguments[size_index] = range_count;
-        };
-
-        if (!table.is_empty())
-            append_table(table);
-
-        if (!inverted_table.is_empty()) {
-            ++argument_count;
-            arguments.append(to_underlying(CharacterCompareType::TemporaryInverse));
-            append_table(inverted_table);
-        }
+        flush_tables();
     }
 
     target.empend(static_cast<ByteCodeValueType>(OpCodeId::Compare));

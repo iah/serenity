@@ -7,10 +7,11 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
-#include <LibJS/Heap/Handle.h>
+#include <AK/DeprecatedFlyString.h>
+#include <LibJS/Heap/GCPtr.h>
 #include <LibJS/Runtime/Environment.h>
 #include <LibJS/Runtime/Realm.h>
+#include <LibJS/Script.h>
 
 namespace JS {
 
@@ -36,7 +37,7 @@ struct ResolvedBinding {
 
     Type type { Null };
     Module* module { nullptr };
-    FlyString export_name;
+    DeprecatedFlyString export_name;
 
     bool is_valid() const
     {
@@ -55,52 +56,57 @@ struct ResolvedBinding {
 };
 
 // 16.2.1.4 Abstract Module Records, https://tc39.es/ecma262/#sec-abstract-module-records
-class Module
-    : public RefCounted<Module>
-    , public Weakable<Module> {
-public:
-    virtual ~Module();
+class Module : public Cell {
+    JS_CELL(Module, Cell);
 
-    Realm& realm() { return *m_realm.cell(); }
-    Realm const& realm() const { return *m_realm.cell(); }
+public:
+    virtual ~Module() override;
+
+    Realm& realm() { return *m_realm; }
+    Realm const& realm() const { return *m_realm; }
 
     StringView filename() const { return m_filename; }
 
-    Environment* environment() { return m_environment.cell(); }
+    Environment* environment() { return m_environment; }
+
+    Script::HostDefined* host_defined() const { return m_host_defined; }
 
     ThrowCompletionOr<Object*> get_module_namespace(VM& vm);
 
     virtual ThrowCompletionOr<void> link(VM& vm) = 0;
     virtual ThrowCompletionOr<Promise*> evaluate(VM& vm) = 0;
 
-    virtual ThrowCompletionOr<Vector<FlyString>> get_exported_names(VM& vm, Vector<Module*> export_star_set = {}) = 0;
-    virtual ThrowCompletionOr<ResolvedBinding> resolve_export(VM& vm, FlyString const& export_name, Vector<ResolvedBinding> resolve_set = {}) = 0;
+    virtual ThrowCompletionOr<Vector<DeprecatedFlyString>> get_exported_names(VM& vm, Vector<Module*> export_star_set = {}) = 0;
+    virtual ThrowCompletionOr<ResolvedBinding> resolve_export(VM& vm, DeprecatedFlyString const& export_name, Vector<ResolvedBinding> resolve_set = {}) = 0;
 
     virtual ThrowCompletionOr<u32> inner_module_linking(VM& vm, Vector<Module*>& stack, u32 index);
     virtual ThrowCompletionOr<u32> inner_module_evaluation(VM& vm, Vector<Module*>& stack, u32 index);
 
 protected:
-    Module(Realm&, String filename);
+    Module(Realm&, DeprecatedString filename, Script::HostDefined* host_defined = nullptr);
+
+    virtual void visit_edges(Cell::Visitor&) override;
 
     void set_environment(Environment* environment)
     {
-        m_environment = make_handle(environment);
+        m_environment = environment;
     }
 
 private:
-    Object* module_namespace_create(VM& vm, Vector<FlyString> unambiguous_names);
+    Object* module_namespace_create(VM& vm, Vector<DeprecatedFlyString> unambiguous_names);
 
     // These handles are only safe as long as the VM they live in is valid.
     // But evaluated modules SHOULD be stored in the VM so unless you intentionally
     // destroy the VM but keep the modules this should not happen. Because VM
     // stores modules with a RefPtr we cannot just store the VM as that leads to
     // cycles.
-    Handle<Realm> m_realm;             // [[Realm]]
-    Handle<Environment> m_environment; // [[Environment]]
-    Handle<Object> m_namespace;        // [[Namespace]]
+    GCPtr<Realm> m_realm;                            // [[Realm]]
+    GCPtr<Environment> m_environment;                // [[Environment]]
+    GCPtr<Object> m_namespace;                       // [[Namespace]]
+    Script::HostDefined* m_host_defined { nullptr }; // [[HostDefined]]
 
     // Needed for potential lookups of modules.
-    String m_filename;
+    DeprecatedString m_filename;
 };
 
 }

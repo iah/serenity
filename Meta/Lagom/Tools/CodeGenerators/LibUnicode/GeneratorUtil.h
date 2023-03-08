@@ -6,23 +6,23 @@
 
 #pragma once
 
-#include <AK/Format.h>
+#include <AK/DeprecatedString.h>
+#include <AK/Function.h>
 #include <AK/HashFunctions.h>
 #include <AK/HashMap.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/NumericLimits.h>
 #include <AK/Optional.h>
 #include <AK/QuickSort.h>
 #include <AK/SourceGenerator.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <AK/Traits.h>
 #include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
-#include <LibCore/Stream.h>
-#include <LibUnicode/Locale.h>
+#include <LibLocale/Locale.h>
 
 template<class T>
 inline constexpr bool StorageTypeIsList = false;
@@ -50,10 +50,10 @@ struct AK::Traits<Vector<T>> : public GenericTraits<Vector<T>> {
     }
 };
 
-template<typename StorageType, typename IndexType>
+template<typename StorageType>
 class UniqueStorage {
 public:
-    IndexType ensure(StorageType value)
+    size_t ensure(StorageType value)
     {
         // We maintain a set of unique values in two structures: a vector which stores the values in
         // the order they are added, and a hash map which maps that value to its index in the vector.
@@ -67,17 +67,14 @@ public:
             return *index;
 
         m_storage.append(move(value));
-        size_t index = m_storage.size();
 
-        VERIFY(index < NumericLimits<IndexType>::max());
-
-        auto storage_index = static_cast<IndexType>(index);
+        auto storage_index = m_storage.size();
         m_storage_indices.set(m_storage.last(), storage_index);
 
         return storage_index;
     }
 
-    StorageType const& get(IndexType index) const
+    StorageType const& get(size_t index) const
     {
         if (index == 0) {
             static StorageType empty {};
@@ -88,11 +85,23 @@ public:
         return m_storage.at(index - 1);
     }
 
-    void generate(SourceGenerator& generator, StringView type, StringView name, size_t max_values_per_row) requires(!StorageTypeIsList<StorageType>)
+    StringView type_that_fits() const
+    {
+        if (m_storage.size() <= NumericLimits<u8>::max())
+            return "u8"sv;
+        if (m_storage.size() <= NumericLimits<u16>::max())
+            return "u16"sv;
+        if (m_storage.size() <= NumericLimits<u32>::max())
+            return "u32"sv;
+        return "u64"sv;
+    }
+
+    void generate(SourceGenerator& generator, StringView type, StringView name, size_t max_values_per_row)
+    requires(!StorageTypeIsList<StorageType>)
     {
         generator.set("type"sv, type);
         generator.set("name"sv, name);
-        generator.set("size"sv, String::number(m_storage.size()));
+        generator.set("size"sv, DeprecatedString::number(m_storage.size()));
 
         generator.append(R"~~~(
 static constexpr Array<@type@, @size@ + 1> @name@ { {
@@ -104,10 +113,10 @@ static constexpr Array<@type@, @size@ + 1> @name@ { {
             if (values_in_current_row++ > 0)
                 generator.append(", ");
 
-            if constexpr (IsSame<StorageType, String>)
-                generator.append(String::formatted("\"{}\"sv", value));
+            if constexpr (IsSame<StorageType, DeprecatedString>)
+                generator.append(DeprecatedString::formatted("\"{}\"sv", value));
             else
-                generator.append(String::formatted("{}", value));
+                generator.append(DeprecatedString::formatted("{}", value));
 
             if (values_in_current_row == max_values_per_row) {
                 values_in_current_row = 0;
@@ -120,7 +129,8 @@ static constexpr Array<@type@, @size@ + 1> @name@ { {
 )~~~");
     }
 
-    void generate(SourceGenerator& generator, StringView type, StringView name) requires(StorageTypeIsList<StorageType>)
+    void generate(SourceGenerator& generator, StringView type, StringView name)
+    requires(StorageTypeIsList<StorageType>)
     {
         generator.set("type"sv, type);
         generator.set("name"sv, name);
@@ -128,27 +138,27 @@ static constexpr Array<@type@, @size@ + 1> @name@ { {
         for (size_t i = 0; i < m_storage.size(); ++i) {
             auto const& list = m_storage[i];
 
-            generator.set("index"sv, String::number(i));
-            generator.set("size"sv, String::number(list.size()));
+            generator.set("index"sv, DeprecatedString::number(i));
+            generator.set("size"sv, DeprecatedString::number(list.size()));
 
             generator.append(R"~~~(
 static constexpr Array<@type@, @size@> @name@@index@ { {)~~~");
 
             bool first = true;
             for (auto const& value : list) {
-                generator.append(first ? " " : ", ");
-                generator.append(String::formatted("{}", value));
+                generator.append(first ? " "sv : ", "sv);
+                generator.append(DeprecatedString::formatted("{}", value));
                 first = false;
             }
 
             generator.append(" } };");
         }
 
-        generator.set("size"sv, String::number(m_storage.size()));
+        generator.set("size"sv, DeprecatedString::number(m_storage.size()));
 
         generator.append(R"~~~(
 
-static constexpr Array<Span<@type@ const>, @size@ + 1> @name@ { {
+static constexpr Array<ReadonlySpan<@type@>, @size@ + 1> @name@ { {
     {})~~~");
 
         constexpr size_t max_values_per_row = 10;
@@ -158,7 +168,7 @@ static constexpr Array<Span<@type@ const>, @size@ + 1> @name@ { {
             if (values_in_current_row++ > 0)
                 generator.append(", ");
 
-            generator.set("index"sv, String::number(i));
+            generator.set("index"sv, DeprecatedString::number(i));
             generator.append("@name@@index@.span()");
 
             if (values_in_current_row == max_values_per_row) {
@@ -172,33 +182,106 @@ static constexpr Array<Span<@type@ const>, @size@ + 1> @name@ { {
 )~~~");
     }
 
-    // clang-format off
-    // clang-format gets confused by the requires() clauses above, and formats this section very weirdly.
-private:
+protected:
     Vector<StorageType> m_storage;
-    HashMap<StorageType, IndexType> m_storage_indices;
-    // clang-format on
+    HashMap<StorageType, size_t> m_storage_indices;
 };
 
-template<typename StringIndexType>
-class UniqueStringStorage : public UniqueStorage<String, StringIndexType> {
-    using Base = UniqueStorage<String, StringIndexType>;
+class UniqueStringStorage : public UniqueStorage<DeprecatedString> {
+    using Base = UniqueStorage<DeprecatedString>;
 
 public:
-    void generate(SourceGenerator& generator)
+    // The goal of the string table generator is to ensure the table is located within the read-only
+    // section of the shared library. If StringViews are generated directly, the table will be located
+    // in the initialized data section. So instead, we generate run-length encoded (RLE) arrays to
+    // represent the strings.
+    void generate(SourceGenerator& generator) const
     {
-        Base::generate(generator, "StringView"sv, "s_string_list"sv, 40);
+        constexpr size_t max_values_per_row = 300;
+        size_t values_in_current_row = 0;
+
+        auto append_hex_value = [&](auto value) {
+            if (values_in_current_row++ > 0)
+                generator.append(", ");
+
+            generator.append(DeprecatedString::formatted("{:#x}", value));
+
+            if (values_in_current_row == max_values_per_row) {
+                values_in_current_row = 0;
+                generator.append(",\n    ");
+            }
+        };
+
+        Vector<u32> string_indices;
+        string_indices.ensure_capacity(Base::m_storage.size());
+        u32 next_index { 0 };
+
+        for (auto const& string : Base::m_storage) {
+            // Ensure the string length may be encoded as two u8s.
+            VERIFY(string.length() <= NumericLimits<u16>::max());
+
+            string_indices.unchecked_append(next_index);
+            next_index += string.length() + 2;
+        }
+
+        generator.set("size", DeprecatedString::number(next_index));
+        generator.append(R"~~~(
+static constexpr Array<u8, @size@> s_encoded_strings { {
+    )~~~");
+
+        for (auto const& string : Base::m_storage) {
+            auto length = string.length();
+            append_hex_value((length & 0xff00) >> 8);
+            append_hex_value(length & 0x00ff);
+
+            for (auto ch : string)
+                append_hex_value(static_cast<u8>(ch));
+        }
+
+        generator.append(R"~~~(
+} };
+)~~~");
+
+        generator.set("size", DeprecatedString::number(string_indices.size()));
+        generator.append(R"~~~(
+static constexpr Array<u32, @size@> s_encoded_string_indices { {
+    )~~~");
+
+        values_in_current_row = 0;
+        for (auto index : string_indices)
+            append_hex_value(index);
+
+        generator.append(R"~~~(
+} };
+
+static constexpr StringView decode_string(size_t index)
+{
+    if (index == 0)
+        return {};
+
+    index = s_encoded_string_indices[index - 1];
+
+    auto length_high = s_encoded_strings[index];
+    auto length_low = s_encoded_strings[index + 1];
+
+    size_t length = (length_high << 8) | length_low;
+    if (length == 0)
+        return {};
+
+    auto const* start = &s_encoded_strings[index + 2];
+    return { reinterpret_cast<char const*>(start), length };
+}
+)~~~");
     }
 };
 
 struct Alias {
-    String name;
-    String alias;
+    DeprecatedString name;
+    DeprecatedString alias;
 };
 
-template<typename StringIndexType>
 struct CanonicalLanguageID {
-    static ErrorOr<CanonicalLanguageID> parse(UniqueStringStorage<StringIndexType>& unique_strings, StringView language)
+    static ErrorOr<CanonicalLanguageID> parse(UniqueStringStorage& unique_strings, StringView language)
     {
         CanonicalLanguageID language_id {};
 
@@ -206,67 +289,59 @@ struct CanonicalLanguageID {
         VERIFY(!segments.is_empty());
         size_t index = 0;
 
-        if (Unicode::is_unicode_language_subtag(segments[index])) {
+        if (Locale::is_unicode_language_subtag(segments[index])) {
             language_id.language = unique_strings.ensure(segments[index]);
             if (segments.size() == ++index)
                 return language_id;
         } else {
-            return Error::from_string_literal("Expected language subtag"sv);
+            return Error::from_string_literal("Expected language subtag");
         }
 
-        if (Unicode::is_unicode_script_subtag(segments[index])) {
+        if (Locale::is_unicode_script_subtag(segments[index])) {
             language_id.script = unique_strings.ensure(segments[index]);
             if (segments.size() == ++index)
                 return language_id;
         }
 
-        if (Unicode::is_unicode_region_subtag(segments[index])) {
+        if (Locale::is_unicode_region_subtag(segments[index])) {
             language_id.region = unique_strings.ensure(segments[index]);
             if (segments.size() == ++index)
                 return language_id;
         }
 
         while (index < segments.size()) {
-            if (!Unicode::is_unicode_variant_subtag(segments[index]))
-                return Error::from_string_literal("Expected variant subtag"sv);
+            if (!Locale::is_unicode_variant_subtag(segments[index]))
+                return Error::from_string_literal("Expected variant subtag");
             language_id.variants.append(unique_strings.ensure(segments[index++]));
         }
 
         return language_id;
     }
 
-    StringIndexType language { 0 };
-    StringIndexType script { 0 };
-    StringIndexType region { 0 };
-    Vector<StringIndexType> variants {};
+    size_t language { 0 };
+    size_t script { 0 };
+    size_t region { 0 };
+    Vector<size_t> variants {};
 };
 
-inline ErrorOr<NonnullOwnPtr<Core::Stream::BufferedFile>> open_file(StringView path, Core::Stream::OpenMode mode)
+inline ErrorOr<NonnullOwnPtr<Core::BufferedFile>> open_file(StringView path, Core::File::OpenMode mode)
 {
     if (path.is_empty())
-        return Error::from_string_literal("Provided path is empty, please provide all command line options"sv);
+        return Error::from_string_literal("Provided path is empty, please provide all command line options");
 
-    auto file = TRY(Core::Stream::File::open(path, mode));
-    return Core::Stream::BufferedFile::create(move(file));
+    auto file = TRY(Core::File::open(path, mode));
+    return Core::BufferedFile::create(move(file));
 }
 
 inline ErrorOr<JsonValue> read_json_file(StringView path)
 {
-    auto file = TRY(open_file(path, Core::Stream::OpenMode::Read));
+    auto file = TRY(open_file(path, Core::File::OpenMode::Read));
+    auto buffer = TRY(file->read_until_eof());
 
-    StringBuilder builder;
-    Array<u8, 4096> buffer;
-
-    // FIXME: When Core::Stream supports reading an entire file, use that.
-    while (TRY(file->can_read_line())) {
-        auto nread = TRY(file->read(buffer));
-        TRY(builder.try_append(reinterpret_cast<char const*>(buffer.data()), nread));
-    }
-
-    return JsonValue::from_string(builder.build());
+    return JsonValue::from_string(buffer);
 }
 
-inline ErrorOr<Core::DirIterator> path_to_dir_iterator(String path, StringView subpath = "main"sv)
+inline ErrorOr<Core::DirIterator> path_to_dir_iterator(DeprecatedString path, StringView subpath = "main"sv)
 {
     LexicalPath lexical_path(move(path));
     if (!subpath.is_empty())
@@ -274,16 +349,16 @@ inline ErrorOr<Core::DirIterator> path_to_dir_iterator(String path, StringView s
 
     Core::DirIterator iterator(lexical_path.string(), Core::DirIterator::SkipParentAndBaseDir);
     if (iterator.has_error())
-        return Error::from_string_literal(iterator.error_string());
+        return iterator.error();
 
     return iterator;
 }
 
-inline ErrorOr<String> next_path_from_dir_iterator(Core::DirIterator& iterator)
+inline ErrorOr<DeprecatedString> next_path_from_dir_iterator(Core::DirIterator& iterator)
 {
     auto next_path = iterator.next_full_path();
     if (iterator.has_error())
-        return Error::from_string_literal(iterator.error_string());
+        return iterator.error();
 
     return next_path;
 }
@@ -332,11 +407,11 @@ void generate_value_from_string(SourceGenerator& generator, StringView method_na
 {
     ensure_from_string_types_are_generated(generator);
 
-    generator.set("method_name", String::formatted(method_name_format, value_name));
+    generator.set("method_name", DeprecatedString::formatted(method_name_format, value_name));
     generator.set("value_type", value_type);
     generator.set("value_name", value_name);
     generator.set("return_type", options.return_type.has_value() ? *options.return_type : value_type);
-    generator.set("size", String::number(hashes.size()));
+    generator.set("size", DeprecatedString::number(hashes.size()));
 
     generator.append(R"~~~(
 Optional<@return_type@> @method_name@(StringView key)
@@ -355,11 +430,11 @@ Optional<@return_type@> @method_name@(StringView key)
             generator.append(" ");
 
         if constexpr (IsIntegral<ValueType>)
-            generator.set("value"sv, String::number(hashes.get(hash_key).value()));
+            generator.set("value"sv, DeprecatedString::number(hashes.get(hash_key).value()));
         else
-            generator.set("value"sv, String::formatted("{}::{}", value_type, hashes.get(hash_key).value()));
+            generator.set("value"sv, DeprecatedString::formatted("{}::{}", value_type, hashes.get(hash_key).value()));
 
-        generator.set("hash"sv, String::number(hash_key));
+        generator.set("hash"sv, DeprecatedString::number(hash_key));
         generator.append("{ @hash@U, @value@ },"sv);
 
         if (values_in_current_row == max_values_per_row) {
@@ -368,7 +443,7 @@ Optional<@return_type@> @method_name@(StringView key)
         }
     }
 
-    generator.set("return_statement", String::formatted(options.return_format, "value->value"sv));
+    generator.set("return_statement", DeprecatedString::formatted(options.return_format, "value->value"sv));
     generator.append(R"~~~(
     } };
 )~~~");
@@ -392,9 +467,9 @@ Optional<@return_type@> @method_name@(StringView key)
 }
 
 template<typename IdentifierFormatter>
-void generate_value_to_string(SourceGenerator& generator, StringView method_name_format, StringView value_type, StringView value_name, IdentifierFormatter&& format_identifier, Span<String const> values)
+void generate_value_to_string(SourceGenerator& generator, StringView method_name_format, StringView value_type, StringView value_name, IdentifierFormatter&& format_identifier, ReadonlySpan<DeprecatedString> values)
 {
-    generator.set("method_name", String::formatted(method_name_format, value_name));
+    generator.set("method_name", DeprecatedString::formatted(method_name_format, value_name));
     generator.set("value_type", value_type);
     generator.set("value_name", value_name);
 
@@ -422,7 +497,7 @@ StringView @method_name@(@value_type@ @value_name@)
 }
 
 template<typename IdentifierFormatter>
-void generate_enum(SourceGenerator& generator, IdentifierFormatter&& format_identifier, StringView name, StringView default_, Vector<String>& values, Vector<Alias> aliases = {})
+void generate_enum(SourceGenerator& generator, IdentifierFormatter&& format_identifier, StringView name, StringView default_, Vector<DeprecatedString>& values, Vector<Alias> aliases = {})
 {
     quick_sort(values, [](auto const& value1, auto const& value2) { return value1.to_lowercase() < value2.to_lowercase(); });
     quick_sort(aliases, [](auto const& alias1, auto const& alias2) { return alias1.alias.to_lowercase() < alias2.alias.to_lowercase(); });
@@ -461,20 +536,20 @@ template<typename LocalesType, typename IdentifierFormatter, typename ListFormat
 void generate_mapping(SourceGenerator& generator, LocalesType const& locales, StringView type, StringView name, StringView format, IdentifierFormatter&& format_identifier, ListFormatter&& format_list)
 {
     auto format_mapping_name = [&](StringView format, StringView name) {
-        String mapping_name;
+        DeprecatedString mapping_name;
 
         if constexpr (IsNullPointer<IdentifierFormatter>)
-            mapping_name = name.replace("-"sv, "_"sv, true);
+            mapping_name = name.replace("-"sv, "_"sv, ReplaceMode::All);
         else
             mapping_name = format_identifier(type, name);
 
-        return String::formatted(format, mapping_name.to_lowercase());
+        return DeprecatedString::formatted(format, mapping_name.to_lowercase());
     };
 
-    Vector<String> mapping_names;
+    Vector<DeprecatedString> mapping_names;
 
     for (auto const& locale : locales) {
-        String mapping_name;
+        DeprecatedString mapping_name;
 
         if constexpr (requires { locale.key; }) {
             mapping_name = format_mapping_name(format, locale.key);
@@ -491,9 +566,9 @@ void generate_mapping(SourceGenerator& generator, LocalesType const& locales, St
 
     generator.set("type", type);
     generator.set("name", name);
-    generator.set("size", String::number(locales.size()));
+    generator.set("size", DeprecatedString::number(locales.size()));
     generator.append(R"~~~(
-static constexpr Array<Span<@type@ const>, @size@> @name@ { {
+static constexpr Array<ReadonlySpan<@type@>, @size@> @name@ { {
     )~~~");
 
     constexpr size_t max_values_per_row = 10;
@@ -518,28 +593,30 @@ static constexpr Array<Span<@type@ const>, @size@> @name@ { {
 }
 
 template<typename T>
-void generate_available_values(SourceGenerator& generator, StringView name, Vector<T> const& values, Vector<Alias> const& aliases = {})
+void generate_available_values(SourceGenerator& generator, StringView name, Vector<T> const& values, Vector<Alias> const& aliases = {}, Function<bool(StringView)> value_filter = {})
 {
     generator.set("name", name);
-    generator.set("size", String::number(values.size()));
 
     generator.append(R"~~~(
-Span<StringView const> @name@()
+ReadonlySpan<StringView> @name@()
 {
-    static constexpr Array<StringView, @size@> values { {)~~~");
+    static constexpr auto values = Array {)~~~");
 
     bool first = true;
     for (auto const& value : values) {
-        generator.append(first ? " " : ", ");
+        if (value_filter && !value_filter(value))
+            continue;
+
+        generator.append(first ? " "sv : ", "sv);
         first = false;
 
         if (auto it = aliases.find_if([&](auto const& alias) { return alias.alias == value; }); it != aliases.end())
-            generator.append(String::formatted("\"{}\"sv", it->name));
+            generator.append(DeprecatedString::formatted("\"{}\"sv", it->name));
         else
-            generator.append(String::formatted("\"{}\"sv", value));
+            generator.append(DeprecatedString::formatted("\"{}\"sv", value));
     }
 
-    generator.append(R"~~~( } };
+    generator.append(R"~~~( };
     return values.span();
 }
 )~~~");

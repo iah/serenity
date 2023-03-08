@@ -10,7 +10,7 @@
 #include <LibDebug/ProcessInspector.h>
 #include <LibGUI/ListView.h>
 #include <LibGUI/Model.h>
-#include <sys/arch/i386/regs.h>
+#include <sys/arch/regs.h>
 
 namespace Debug {
 
@@ -27,7 +27,7 @@ public:
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_frames.size(); }
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return 1; }
 
-    virtual String column_name(int) const override
+    virtual DeprecatedString column_name(int) const override
     {
         return "";
     }
@@ -37,13 +37,13 @@ public:
     virtual GUI::ModelIndex index(int row, int column, const GUI::ModelIndex&) const override;
 
     struct FrameInfo {
-        String function_name;
+        DeprecatedString function_name;
         FlatPtr instruction_address { 0 };
         FlatPtr frame_base { 0 };
         Optional<Debug::DebugInfo::SourcePosition> m_source_position;
     };
 
-    const Vector<FrameInfo>& frames() const { return m_frames; }
+    Vector<FrameInfo> const& frames() const { return m_frames; }
 
 private:
     explicit BacktraceModel(Vector<FrameInfo>&& frames)

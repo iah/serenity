@@ -10,16 +10,17 @@
 #include <LibCore/GetPassword.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
-#include <stdio.h>
 #include <unistd.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    Vector<char const*> command;
+    Vector<StringView> command;
     Core::ArgsParser args_parser;
     uid_t as_user_uid = 0;
+    bool preserve_env = false;
     args_parser.set_stop_on_first_non_option(true);
     args_parser.add_option(as_user_uid, "User to execute as", nullptr, 'u', "UID");
+    args_parser.add_option(preserve_env, "Preserve user environment when running command", "preserve-env", 'E');
     args_parser.add_positional_argument(command, "Command to run at elevated privilege level", "command");
     args_parser.parse(arguments);
 
@@ -35,34 +36,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (account.has_password()) {
             auto password = TRY(Core::get_password());
             if (!account.authenticate(password))
-                return Error::from_string_literal("Incorrect or disabled password."sv);
+                return Error::from_string_literal("Incorrect or disabled password.");
         }
     }
 
     TRY(Core::System::pledge("stdio rpath exec id"));
 
-    TRY(Core::System::setgid(0));
-    TRY(Core::System::setuid(as_user_uid));
+    TRY(as_user.login());
 
     TRY(Core::System::pledge("stdio rpath exec"));
-
-    Vector<char const*> exec_arguments;
-    for (auto const& arg : command)
-        exec_arguments.append(arg);
-    exec_arguments.append(nullptr);
-
-    Vector<String> environment_strings;
-    if (auto* term = getenv("TERM"))
-        environment_strings.append(String::formatted("TERM={}", term));
-
-    Vector<char const*> exec_environment;
-    for (auto& item : environment_strings)
-        exec_environment.append(item.characters());
-    exec_environment.append(nullptr);
-
-    if (execvpe(command.at(0), const_cast<char**>(exec_arguments.data()), const_cast<char**>(exec_environment.data())) < 0) {
-        perror("execvpe");
-        exit(1);
-    }
+    TRY(Core::System::exec_command(command, preserve_env));
     return 0;
 }

@@ -1,17 +1,18 @@
 /*
  * Copyright (c) 2021, Sergey Bugaev <bugaevc@serenityos.org>
+ * Copyright (c) 2022, Alexander Narsudinov <a.narsudinov@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "MulticastDNS.h"
-#include "DNSPacket.h"
+#include <AK/DeprecatedString.h>
 #include <AK/IPv4Address.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
-#include <AK/String.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
+#include <LibCore/System.h>
 #include <limits.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -23,11 +24,11 @@ MulticastDNS::MulticastDNS(Object* parent)
     : Core::UDPServer(parent)
     , m_hostname("courage.local")
 {
-    char buffer[HOST_NAME_MAX];
+    char buffer[_POSIX_HOST_NAME_MAX];
     if (gethostname(buffer, sizeof(buffer)) < 0) {
         perror("gethostname");
     } else {
-        m_hostname = String::formatted("{}.local", buffer);
+        m_hostname = DeprecatedString::formatted("{}.local", buffer);
     }
 
     u8 zero = 0;
@@ -43,28 +44,31 @@ MulticastDNS::MulticastDNS(Object* parent)
     bind(IPv4Address(), 5353);
 
     on_ready_to_receive = [this]() {
-        handle_packet();
+        if (auto result = handle_packet(); result.is_error()) {
+            dbgln("Failed to handle packet: {}", result.error());
+        }
     };
 
     // TODO: Announce on startup. We cannot just call announce() here,
     // because it races with the network interfaces getting configured.
 }
 
-void MulticastDNS::handle_packet()
+ErrorOr<void> MulticastDNS::handle_packet()
 {
-    auto buffer = receive(1024);
-    auto optional_packet = DNSPacket::from_raw_packet(buffer.data(), buffer.size());
+    auto buffer = TRY(receive(1024));
+    auto optional_packet = Packet::from_raw_packet(buffer.data(), buffer.size());
     if (!optional_packet.has_value()) {
         dbgln("Got an invalid mDNS packet");
-        return;
+        return {};
     }
     auto& packet = optional_packet.value();
 
     if (packet.is_query())
         handle_query(packet);
+    return {};
 }
 
-void MulticastDNS::handle_query(const DNSPacket& packet)
+void MulticastDNS::handle_query(Packet const& packet)
 {
     bool should_reply = false;
 
@@ -80,21 +84,21 @@ void MulticastDNS::handle_query(const DNSPacket& packet)
 
 void MulticastDNS::announce()
 {
-    DNSPacket response;
+    Packet response;
     response.set_is_response();
-    response.set_code(DNSPacket::Code::NOERROR);
+    response.set_code(Packet::Code::NOERROR);
     response.set_authoritative_answer(true);
     response.set_recursion_desired(false);
     response.set_recursion_available(false);
 
     for (auto& address : local_addresses()) {
         auto raw_addr = address.to_in_addr_t();
-        DNSAnswer answer {
+        Answer answer {
             m_hostname,
-            DNSRecordType::A,
-            DNSRecordClass::IN,
+            RecordType::A,
+            RecordClass::IN,
             120,
-            String { (const char*)&raw_addr, sizeof(raw_addr) },
+            DeprecatedString { (char const*)&raw_addr, sizeof(raw_addr) },
             true,
         };
         response.add_answer(answer);
@@ -104,9 +108,9 @@ void MulticastDNS::announce()
         perror("Failed to emit response packet");
 }
 
-ErrorOr<size_t> MulticastDNS::emit_packet(const DNSPacket& packet, const sockaddr_in* destination)
+ErrorOr<size_t> MulticastDNS::emit_packet(Packet const& packet, sockaddr_in const* destination)
 {
-    auto buffer = packet.to_byte_buffer();
+    auto buffer = TRY(packet.to_byte_buffer());
     if (!destination)
         destination = &mdns_addr;
 
@@ -115,9 +119,9 @@ ErrorOr<size_t> MulticastDNS::emit_packet(const DNSPacket& packet, const sockadd
 
 Vector<IPv4Address> MulticastDNS::local_addresses() const
 {
-    auto file = Core::File::construct("/proc/net/adapters");
+    auto file = Core::DeprecatedFile::construct("/sys/kernel/net/adapters");
     if (!file->open(Core::OpenMode::ReadOnly)) {
-        dbgln("Failed to open /proc/net/adapters: {}", file->error_string());
+        dbgln("Failed to open /sys/kernel/net/adapters: {}", file->error_string());
         return {};
     }
 
@@ -128,7 +132,7 @@ Vector<IPv4Address> MulticastDNS::local_addresses() const
 
     json.as_array().for_each([&addresses](auto& value) {
         auto if_object = value.as_object();
-        auto address = if_object.get("ipv4_address").to_string();
+        auto address = if_object.get_deprecated_string("ipv4_address"sv).value_or({});
         auto ipv4_address = IPv4Address::from_string(address);
         // Skip unconfigured interfaces.
         if (!ipv4_address.has_value())
@@ -142,36 +146,29 @@ Vector<IPv4Address> MulticastDNS::local_addresses() const
     return addresses;
 }
 
-Vector<DNSAnswer> MulticastDNS::lookup(const DNSName& name, DNSRecordType record_type)
+ErrorOr<Vector<Answer>> MulticastDNS::lookup(Name const& name, RecordType record_type)
 {
-    DNSPacket request;
+    Packet request;
     request.set_is_query();
     request.set_recursion_desired(false);
-    request.add_question({ name, record_type, DNSRecordClass::IN, false });
+    request.add_question({ name, record_type, RecordClass::IN, false });
 
-    if (emit_packet(request).is_error()) {
-        perror("failed to emit request packet");
-        return {};
-    }
-
-    Vector<DNSAnswer> answers;
+    TRY(emit_packet(request));
+    Vector<Answer> answers;
 
     // FIXME: It would be better not to block
     // the main loop while we wait for a response.
     while (true) {
-        pollfd pfd { fd(), POLLIN, 0 };
-        auto rc = poll(&pfd, 1, 1000);
-        if (rc < 0) {
-            perror("poll");
-        } else if (rc == 0) {
+        auto pfd = pollfd { fd(), POLLIN, 0 };
+        auto rc = TRY(Core::System::poll({ &pfd, 1 }, 1000));
+        if (rc == 0) {
             // Timed out.
-            return {};
+            return Vector<Answer> {};
         }
-
-        auto buffer = receive(1024);
+        auto buffer = TRY(receive(1024));
         if (buffer.is_empty())
-            return {};
-        auto optional_packet = DNSPacket::from_raw_packet(buffer.data(), buffer.size());
+            return Vector<Answer> {};
+        auto optional_packet = Packet::from_raw_packet(buffer.data(), buffer.size());
         if (!optional_packet.has_value()) {
             dbgln("Got an invalid mDNS packet");
             continue;

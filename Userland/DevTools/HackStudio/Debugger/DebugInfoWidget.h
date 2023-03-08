@@ -17,28 +17,34 @@
 #include <LibGUI/ToolbarContainer.h>
 #include <LibGUI/TreeView.h>
 #include <LibGUI/Widget.h>
-#include <sys/arch/i386/regs.h>
+#include <sys/arch/regs.h>
 
 namespace HackStudio {
 
 class DebugInfoWidget final : public GUI::Widget {
     C_OBJECT(DebugInfoWidget)
 public:
+    static ErrorOr<NonnullRefPtr<DebugInfoWidget>> create();
     virtual ~DebugInfoWidget() override { }
 
     void update_state(Debug::ProcessInspector&, PtraceRegisters const&);
     void program_stopped();
-    void set_debug_actions_enabled(bool enabled);
+
+    enum class DebugActionsState {
+        DebuggeeRunning,
+        DebuggeeStopped,
+    };
+    void set_debug_actions_enabled(bool enabled, Optional<DebugActionsState>);
 
     Function<void(Debug::DebugInfo::SourcePosition const&)> on_backtrace_frame_selection;
 
 private:
     explicit DebugInfoWidget();
-    void init_toolbar();
+    ErrorOr<void> init_toolbar();
 
     NonnullRefPtr<GUI::Widget> build_variables_tab();
     NonnullRefPtr<GUI::Widget> build_registers_tab();
-    bool does_variable_support_writing(const Debug::DebugInfo::VariableInfo*);
+    bool does_variable_support_writing(Debug::DebugInfo::VariableInfo const*);
     RefPtr<GUI::Menu> get_context_menu_for_variable(const GUI::ModelIndex&);
 
     RefPtr<GUI::TreeView> m_variables_view;
@@ -50,6 +56,7 @@ private:
     RefPtr<GUI::Action> m_singlestep_action;
     RefPtr<GUI::Action> m_step_in_action;
     RefPtr<GUI::Action> m_step_out_action;
+    RefPtr<GUI::Action> m_pause_action;
 };
 
 }

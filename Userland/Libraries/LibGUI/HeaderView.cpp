@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,7 +12,7 @@
 #include <LibGUI/Model.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
@@ -28,10 +29,6 @@ HeaderView::HeaderView(AbstractTableView& table_view, Gfx::Orientation orientati
     } else {
         set_fixed_width(40);
     }
-}
-
-HeaderView::~HeaderView()
-{
 }
 
 void HeaderView::set_section_size(int section, int size)
@@ -85,7 +82,7 @@ HeaderView::VisibleSectionRange HeaderView::visible_section_range() const
     auto is_horizontal = m_orientation == Orientation::Horizontal;
     auto rect = m_table_view.visible_content_rect();
     auto start = is_horizontal ? rect.top_left().x() : rect.top_left().y();
-    auto end = is_horizontal ? rect.top_right().x() : rect.bottom_left().y();
+    auto end = is_horizontal ? (rect.top_left().x() + m_table_view.content_width()) : rect.bottom_left().y();
     auto offset = 0;
     VisibleSectionRange range;
     for (; range.end < section_count; ++range.end) {
@@ -267,22 +264,22 @@ void HeaderView::paint_horizontal(Painter& painter)
         bool pressed = section == m_pressed_section && m_pressed_section_is_pressed;
         bool hovered = section == m_hovered_section && model()->is_column_sortable(section);
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, pressed, hovered);
-        String text;
-        if (is_key_column) {
-            StringBuilder builder;
-            builder.append(model()->column_name(section));
-            if (m_table_view.sort_order() == SortOrder::Ascending)
-                builder.append(" \xE2\xAC\x86"); // UPWARDS BLACK ARROW
-            else if (m_table_view.sort_order() == SortOrder::Descending)
-                builder.append(" \xE2\xAC\x87"); // DOWNWARDS BLACK ARROW
-            text = builder.to_string();
-        } else {
-            text = model()->column_name(section);
-        }
+
+        auto text = model()->column_name(section);
         auto text_rect = cell_rect.shrunken(m_table_view.horizontal_padding() * 2, 0);
         if (pressed)
             text_rect.translate_by(1, 1);
         painter.draw_text(text_rect, text, font(), section_data.alignment, palette().button_text());
+
+        if (is_key_column && (m_table_view.sort_order() != SortOrder::None)) {
+            Gfx::IntPoint offset { text_rect.x() + static_cast<int>(ceilf(font().width(text))) + sorting_arrow_offset, sorting_arrow_offset };
+            auto coordinates = m_table_view.sort_order() == SortOrder::Ascending
+                ? ascending_arrow_coordinates.span()
+                : descending_arrow_coordinates.span();
+
+            painter.draw_triangle(offset, coordinates, palette().button_text());
+        }
+
         x_offset += section_width + m_table_view.horizontal_padding() * 2;
     }
 
@@ -307,7 +304,7 @@ void HeaderView::paint_vertical(Painter& painter)
         bool pressed = section == m_pressed_section && m_pressed_section_is_pressed;
         bool hovered = false;
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, pressed, hovered);
-        String text = String::number(section);
+        DeprecatedString text = DeprecatedString::number(section);
         auto text_rect = cell_rect.shrunken(m_table_view.horizontal_padding() * 2, 0);
         if (pressed)
             text_rect.translate_by(1, 1);
@@ -436,7 +433,7 @@ Model* HeaderView::model()
     return m_table_view.model();
 }
 
-const Model* HeaderView::model() const
+Model const* HeaderView::model() const
 {
     return m_table_view.model();
 }

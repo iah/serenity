@@ -8,16 +8,20 @@
 
 #include <AK/Optional.h>
 #include <AK/Result.h>
-#include <LibJS/AST.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibRegex/Regex.h>
 
 namespace JS {
 
-ThrowCompletionOr<RegExpObject*> regexp_create(GlobalObject&, Value pattern, Value flags);
+ThrowCompletionOr<NonnullGCPtr<RegExpObject>> regexp_create(VM&, Value pattern, Value flags);
+ThrowCompletionOr<NonnullGCPtr<RegExpObject>> regexp_alloc(VM&, FunctionObject& new_target);
 
-Result<regex::RegexOptions<ECMAScriptFlags>, String> regex_flags_from_string(StringView flags);
-String parse_regex_pattern(StringView pattern, bool unicode);
+Result<regex::RegexOptions<ECMAScriptFlags>, DeprecatedString> regex_flags_from_string(StringView flags);
+struct ParseRegexPatternError {
+    DeprecatedString error;
+};
+ErrorOr<DeprecatedString, ParseRegexPatternError> parse_regex_pattern(StringView pattern, bool unicode, bool unicode_sets);
+ThrowCompletionOr<DeprecatedString> parse_regex_pattern(VM& vm, StringView pattern, bool unicode, bool unicode_sets);
 
 class RegExpObject : public Object {
     JS_OBJECT(RegExpObject, Object);
@@ -32,26 +36,34 @@ public:
         | regex::ECMAScriptFlags::BrowserExtended
     };
 
-    static RegExpObject* create(GlobalObject&);
-    static RegExpObject* create(GlobalObject&, Regex<ECMA262> regex, String pattern, String flags);
+    static NonnullGCPtr<RegExpObject> create(Realm&);
+    static NonnullGCPtr<RegExpObject> create(Realm&, Regex<ECMA262> regex, DeprecatedString pattern, DeprecatedString flags);
 
-    RegExpObject(Object& prototype);
-    RegExpObject(Regex<ECMA262> regex, String pattern, String flags, Object& prototype);
+    ThrowCompletionOr<NonnullGCPtr<RegExpObject>> regexp_initialize(VM&, Value pattern, Value flags);
+    DeprecatedString escape_regexp_pattern() const;
 
-    ThrowCompletionOr<RegExpObject*> regexp_initialize(GlobalObject&, Value pattern, Value flags);
-    String escape_regexp_pattern() const;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~RegExpObject() override = default;
 
-    virtual void initialize(GlobalObject&) override;
-    virtual ~RegExpObject() override;
-
-    const String& pattern() const { return m_pattern; }
-    const String& flags() const { return m_flags; }
-    const Regex<ECMA262>& regex() { return *m_regex; }
-    const Regex<ECMA262>& regex() const { return *m_regex; }
+    DeprecatedString const& pattern() const { return m_pattern; }
+    DeprecatedString const& flags() const { return m_flags; }
+    Regex<ECMA262> const& regex() { return *m_regex; }
+    Regex<ECMA262> const& regex() const { return *m_regex; }
+    Realm& realm() { return *m_realm; }
+    Realm const& realm() const { return *m_realm; }
+    bool legacy_features_enabled() const { return m_legacy_features_enabled; }
+    void set_legacy_features_enabled(bool legacy_features_enabled) { m_legacy_features_enabled = legacy_features_enabled; }
+    void set_realm(Realm& realm) { m_realm = &realm; }
 
 private:
-    String m_pattern;
-    String m_flags;
+    RegExpObject(Object& prototype);
+    RegExpObject(Regex<ECMA262> regex, DeprecatedString pattern, DeprecatedString flags, Object& prototype);
+
+    DeprecatedString m_pattern;
+    DeprecatedString m_flags;
+    bool m_legacy_features_enabled { false }; // [[LegacyFeaturesEnabled]]
+    // Note: This is initialized in RegExpAlloc, but will be non-null afterwards
+    GCPtr<Realm> m_realm; // [[Realm]]
     Optional<Regex<ECMA262>> m_regex;
 };
 

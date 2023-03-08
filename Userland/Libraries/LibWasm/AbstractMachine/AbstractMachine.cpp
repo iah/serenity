@@ -141,7 +141,7 @@ ErrorOr<void, ValidationError> AbstractMachine::validate(Module& module)
 InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<ExternValue> externs)
 {
     if (auto result = validate(const_cast<Module&>(module)); result.is_error())
-        return InstantiationError { String::formatted("Validation failed: {}", result.error()) };
+        return InstantiationError { DeprecatedString::formatted("Validation failed: {}", result.error()) };
 
     auto main_module_instance_pointer = make<ModuleInstance>();
     auto& main_module_instance = *main_module_instance_pointer;
@@ -175,9 +175,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                 entry.expression(),
                 1,
             });
-            auto result = config.execute(interpreter);
+            auto result = config.execute(interpreter).assert_wasm_result();
             if (result.is_trap())
-                instantiation_result = InstantiationError { String::formatted("Global value construction trapped: {}", result.trap().reason) };
+                instantiation_result = InstantiationError { DeprecatedString::formatted("Global value construction trapped: {}", result.trap().reason) };
             else
                 global_values.append(result.values().first());
         }
@@ -202,9 +202,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                     entry,
                     entry.instructions().size(),
                 });
-                auto result = config.execute(interpreter);
+                auto result = config.execute(interpreter).assert_wasm_result();
                 if (result.is_trap()) {
-                    instantiation_result = InstantiationError { String::formatted("Element construction trapped: {}", result.trap().reason) };
+                    instantiation_result = InstantiationError { DeprecatedString::formatted("Element construction trapped: {}", result.trap().reason) };
                     return IterationDecision::Continue;
                 }
 
@@ -255,9 +255,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                 active_ptr->expression,
                 1,
             });
-            auto result = config.execute(interpreter);
+            auto result = config.execute(interpreter).assert_wasm_result();
             if (result.is_trap()) {
-                instantiation_result = InstantiationError { String::formatted("Element section initialisation trapped: {}", result.trap().reason) };
+                instantiation_result = InstantiationError { DeprecatedString::formatted("Element section initialisation trapped: {}", result.trap().reason) };
                 return IterationDecision::Break;
             }
             auto d = result.values().first().to<i32>();
@@ -315,9 +315,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                         data.offset,
                         1,
                     });
-                    auto result = config.execute(interpreter);
+                    auto result = config.execute(interpreter).assert_wasm_result();
                     if (result.is_trap()) {
-                        instantiation_result = InstantiationError { String::formatted("Data section initialisation trapped: {}", result.trap().reason) };
+                        instantiation_result = InstantiationError { DeprecatedString::formatted("Data section initialisation trapped: {}", result.trap().reason) };
                         return;
                     }
                     size_t offset = 0;
@@ -328,7 +328,7 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                         return;
                     if (main_module_instance.memories().size() <= data.index.value()) {
                         instantiation_result = InstantiationError {
-                            String::formatted("Data segment referenced out-of-bounds memory ({}) of max {} entries",
+                            DeprecatedString::formatted("Data segment referenced out-of-bounds memory ({}) of max {} entries",
                                 data.index.value(), main_module_instance.memories().size())
                         };
                         return;
@@ -345,9 +345,9 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
                     auto address = main_module_instance.memories()[data.index.value()];
                     if (auto instance = m_store.get(address)) {
                         if (auto max = instance->type().limits().max(); max.has_value()) {
-                            if (*max < data.init.size() + offset) {
+                            if (*max * Constants::page_size < data.init.size() + offset) {
                                 instantiation_result = InstantiationError {
-                                    String::formatted("Data segment attempted to write to out-of-bounds memory ({}) of max {} bytes",
+                                    DeprecatedString::formatted("Data segment attempted to write to out-of-bounds memory ({}) of max {} bytes",
                                         data.init.size() + offset, instance->type().limits().max().value())
                                 };
                                 return;
@@ -373,7 +373,7 @@ InstantiationResult AbstractMachine::instantiate(Module const& module, Vector<Ex
         auto& functions = main_module_instance.functions();
         auto index = section.function().index();
         if (functions.size() <= index.value()) {
-            instantiation_result = InstantiationError { String::formatted("Start section function referenced invalid index {} of max {} entries", index.value(), functions.size()) };
+            instantiation_result = InstantiationError { DeprecatedString::formatted("Start section function referenced invalid index {} of max {} entries", index.value(), functions.size()) };
             return;
         }
         invoke(functions[index.value()], {});

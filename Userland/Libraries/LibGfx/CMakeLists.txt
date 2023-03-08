@@ -1,37 +1,52 @@
 set(SOURCES
     AffineTransform.cpp
     AntiAliasingPainter.cpp
-    Bitmap.cpp
-    BitmapMixer.cpp
-    BitmapFont.cpp
     BMPLoader.cpp
     BMPWriter.cpp
-    CharacterBitmap.cpp
+    Bitmap.cpp
+    BitmapMixer.cpp
     ClassicStylePainter.cpp
     ClassicWindowTheme.cpp
     Color.cpp
     CursorParams.cpp
     DDSLoader.cpp
-    DisjointRectSet.cpp
-    Emoji.cpp
     Filters/ColorBlindnessFilter.cpp
     Filters/FastBoxBlurFilter.cpp
     Filters/LumaFilter.cpp
-    FontDatabase.cpp
+    Filters/StackBlurFilter.cpp
+    Font/BitmapFont.cpp
+    Font/Emoji.cpp
+    Font/Font.cpp
+    Font/FontDatabase.cpp
+    Font/OpenType/Cmap.cpp
+    Font/OpenType/Font.cpp
+    Font/OpenType/Glyf.cpp
+    Font/OpenType/Hinting/Opcodes.cpp
+    Font/PathRasterizer.cpp
+    Font/ScaledFont.cpp
+    Font/Typeface.cpp
+    Font/WOFF/Font.cpp
+    GradientPainting.cpp
     GIFLoader.cpp
+    ICC/BinaryWriter.cpp
+    ICC/Profile.cpp
+    ICC/Tags.cpp
+    ICC/TagTypes.cpp
+    ICC/WellKnownProfiles.cpp
     ICOLoader.cpp
     ImageDecoder.cpp
-    JPGLoader.cpp
-    Painter.cpp
-    Palette.cpp
-    Path.cpp
+    JPEGLoader.cpp
     PBMLoader.cpp
     PGMLoader.cpp
     PNGLoader.cpp
     PNGWriter.cpp
     PPMLoader.cpp
+    Painter.cpp
+    Palette.cpp
+    Path.cpp
     Point.cpp
     QOILoader.cpp
+    QOIWriter.cpp
     Rect.cpp
     ShareableBitmap.cpp
     Size.cpp
@@ -39,13 +54,11 @@ set(SOURCES
     SystemTheme.cpp
     TextDirection.cpp
     TextLayout.cpp
+    TGALoader.cpp
     Triangle.cpp
-    TrueTypeFont/Font.cpp
-    TrueTypeFont/Glyf.cpp
-    TrueTypeFont/Cmap.cpp
-    Typeface.cpp
+    WebPLoader.cpp
     WindowTheme.cpp
 )
 
 serenity_lib(LibGfx gfx)
-target_link_libraries(LibGfx LibM LibCompress LibCore LibTextCodec LibIPC)
+target_link_libraries(LibGfx PRIVATE LibCompress LibCore LibCrypto LibTextCodec LibIPC LibUnicode)

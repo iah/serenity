@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Assertions.h>
+#include <AK/Error.h>
 #include <AK/Find.h>
 #include <AK/StdLibExtras.h>
 
@@ -15,8 +16,8 @@ namespace AK {
 template<typename ListType, typename ElementType>
 class DoublyLinkedListIterator {
 public:
-    bool operator!=(const DoublyLinkedListIterator& other) const { return m_node != other.m_node; }
-    bool operator==(const DoublyLinkedListIterator& other) const { return m_node == other.m_node; }
+    bool operator!=(DoublyLinkedListIterator const& other) const { return m_node != other.m_node; }
+    bool operator==(DoublyLinkedListIterator const& other) const { return m_node == other.m_node; }
     DoublyLinkedListIterator& operator++()
     {
         m_node = m_node->next;
@@ -74,7 +75,7 @@ public:
         VERIFY(m_head);
         return m_head->value;
     }
-    [[nodiscard]] const T& first() const
+    [[nodiscard]] T const& first() const
     {
         VERIFY(m_head);
         return m_head->value;
@@ -84,50 +85,70 @@ public:
         VERIFY(m_head);
         return m_tail->value;
     }
-    [[nodiscard]] const T& last() const
+    [[nodiscard]] T const& last() const
     {
         VERIFY(m_head);
         return m_tail->value;
     }
 
     template<typename U>
-    void append(U&& value)
+    ErrorOr<void> try_append(U&& value)
     {
         static_assert(
             requires { T(value); }, "Conversion operator is missing.");
-        auto* node = new Node(forward<U>(value));
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
         if (!m_head) {
             VERIFY(!m_tail);
             m_head = node;
             m_tail = node;
-            return;
+            return {};
         }
         VERIFY(m_tail);
         VERIFY(!node->next);
         m_tail->next = node;
         node->prev = m_tail;
         m_tail = node;
+        return {};
     }
 
     template<typename U>
-    void prepend(U&& value)
+    ErrorOr<void> try_prepend(U&& value)
     {
         static_assert(IsSame<T, U>);
-        auto* node = new Node(forward<U>(value));
+        auto* node = new (nothrow) Node(forward<U>(value));
+        if (!node)
+            return Error::from_errno(ENOMEM);
         if (!m_head) {
             VERIFY(!m_tail);
             m_head = node;
             m_tail = node;
-            return;
+            return {};
         }
         VERIFY(m_tail);
         VERIFY(!node->prev);
         m_head->prev = node;
         node->next = m_head;
         m_head = node;
+        return {};
     }
 
-    [[nodiscard]] bool contains_slow(const T& value) const
+#ifndef KERNEL
+    template<typename U>
+    void append(U&& value)
+    {
+        MUST(try_append(forward<U>(value)));
+    }
+
+    template<typename U>
+    void prepend(U&& value)
+    {
+        MUST(try_prepend(forward<U>(value)));
+    }
+#endif
+
+    [[nodiscard]] bool contains_slow(T const& value) const
     {
         return find(value) != end();
     }
@@ -137,17 +158,17 @@ public:
     Iterator begin() { return Iterator(m_head); }
     Iterator end() { return Iterator::universal_end(); }
 
-    using ConstIterator = DoublyLinkedListIterator<const DoublyLinkedList, const T>;
+    using ConstIterator = DoublyLinkedListIterator<const DoublyLinkedList, T const>;
     friend ConstIterator;
     ConstIterator begin() const { return ConstIterator(m_head); }
     ConstIterator end() const { return ConstIterator::universal_end(); }
 
-    ConstIterator find(const T& value) const
+    ConstIterator find(T const& value) const
     {
         return AK::find(begin(), end(), value);
     }
 
-    Iterator find(const T& value)
+    Iterator find(T const& value)
     {
         return AK::find(begin(), end(), value);
     }
@@ -180,4 +201,6 @@ private:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::DoublyLinkedList;
+#endif

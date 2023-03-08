@@ -16,12 +16,18 @@
 
 namespace Operators {
 
-#define DEFINE_BINARY_OPERATOR(Name, operation)                               \
-    struct Name {                                                             \
-        template<typename Lhs, typename Rhs>                                  \
-        auto operator()(Lhs lhs, Rhs rhs) const { return lhs operation rhs; } \
-                                                                              \
-        static StringView name() { return #operation; }                       \
+#define DEFINE_BINARY_OPERATOR(Name, operation) \
+    struct Name {                               \
+        template<typename Lhs, typename Rhs>    \
+        auto operator()(Lhs lhs, Rhs rhs) const \
+        {                                       \
+            return lhs operation rhs;           \
+        }                                       \
+                                                \
+        static StringView name()                \
+        {                                       \
+            return #operation##sv;              \
+        }                                       \
     }
 
 DEFINE_BINARY_OPERATOR(Equals, ==);
@@ -54,7 +60,7 @@ struct Divide {
         }
     }
 
-    static StringView name() { return "/"; }
+    static StringView name() { return "/"sv; }
 };
 struct Modulo {
     template<typename Lhs, typename Rhs>
@@ -69,19 +75,19 @@ struct Modulo {
         return AK::Result<Lhs, StringView>(lhs % rhs);
     }
 
-    static StringView name() { return "%"; }
+    static StringView name() { return "%"sv; }
 };
 struct BitShiftLeft {
     template<typename Lhs, typename Rhs>
     auto operator()(Lhs lhs, Rhs rhs) const { return lhs << (rhs % (sizeof(lhs) * 8)); }
 
-    static StringView name() { return "<<"; }
+    static StringView name() { return "<<"sv; }
 };
 struct BitShiftRight {
     template<typename Lhs, typename Rhs>
     auto operator()(Lhs lhs, Rhs rhs) const { return lhs >> (rhs % (sizeof(lhs) * 8)); }
 
-    static StringView name() { return ">>"; }
+    static StringView name() { return ">>"sv; }
 };
 struct BitRotateLeft {
     template<typename Lhs, typename Rhs>
@@ -94,7 +100,7 @@ struct BitRotateLeft {
         return (lhs << rhs) | (lhs >> ((-rhs) & mask));
     }
 
-    static StringView name() { return "rotate_left"; }
+    static StringView name() { return "rotate_left"sv; }
 };
 struct BitRotateRight {
     template<typename Lhs, typename Rhs>
@@ -107,7 +113,7 @@ struct BitRotateRight {
         return (lhs >> rhs) | (lhs << ((-rhs) & mask));
     }
 
-    static StringView name() { return "rotate_right"; }
+    static StringView name() { return "rotate_right"sv; }
 };
 struct Minimum {
     template<typename Lhs, typename Rhs>
@@ -126,7 +132,7 @@ struct Minimum {
         return min(lhs, rhs);
     }
 
-    static StringView name() { return "minimum"; }
+    static StringView name() { return "minimum"sv; }
 };
 struct Maximum {
     template<typename Lhs, typename Rhs>
@@ -145,7 +151,7 @@ struct Maximum {
         return max(lhs, rhs);
     }
 
-    static StringView name() { return "maximum"; }
+    static StringView name() { return "maximum"sv; }
 };
 struct CopySign {
     template<typename Lhs, typename Rhs>
@@ -159,7 +165,7 @@ struct CopySign {
             static_assert(DependentFalse<Lhs, Rhs>, "Invalid types to CopySign");
     }
 
-    static StringView name() { return "copysign"; }
+    static StringView name() { return "copysign"sv; }
 };
 
 // Unary
@@ -168,7 +174,7 @@ struct EqualsZero {
     template<typename Lhs>
     auto operator()(Lhs lhs) const { return lhs == 0; }
 
-    static StringView name() { return "== 0"; }
+    static StringView name() { return "== 0"sv; }
 };
 struct CountLeadingZeros {
     template<typename Lhs>
@@ -183,7 +189,7 @@ struct CountLeadingZeros {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "clz"; }
+    static StringView name() { return "clz"sv; }
 };
 struct CountTrailingZeros {
     template<typename Lhs>
@@ -198,7 +204,7 @@ struct CountTrailingZeros {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "ctz"; }
+    static StringView name() { return "ctz"sv; }
 };
 struct PopCount {
     template<typename Lhs>
@@ -210,19 +216,19 @@ struct PopCount {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "popcnt"; }
+    static StringView name() { return "popcnt"sv; }
 };
 struct Absolute {
     template<typename Lhs>
     auto operator()(Lhs lhs) const { return AK::abs(lhs); }
 
-    static StringView name() { return "abs"; }
+    static StringView name() { return "abs"sv; }
 };
 struct Negate {
     template<typename Lhs>
     auto operator()(Lhs lhs) const { return -lhs; }
 
-    static StringView name() { return "== 0"; }
+    static StringView name() { return "== 0"sv; }
 };
 struct Ceil {
     template<typename Lhs>
@@ -236,7 +242,7 @@ struct Ceil {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "ceil"; }
+    static StringView name() { return "ceil"sv; }
 };
 struct Floor {
     template<typename Lhs>
@@ -250,7 +256,7 @@ struct Floor {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "floor"; }
+    static StringView name() { return "floor"sv; }
 };
 struct Truncate {
     template<typename Lhs>
@@ -264,7 +270,7 @@ struct Truncate {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "truncate"; }
+    static StringView name() { return "truncate"sv; }
 };
 struct NearbyIntegral {
     template<typename Lhs>
@@ -278,7 +284,7 @@ struct NearbyIntegral {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "round"; }
+    static StringView name() { return "round"sv; }
 };
 struct SquareRoot {
     template<typename Lhs>
@@ -292,7 +298,7 @@ struct SquareRoot {
             VERIFY_NOT_REACHED();
     }
 
-    static StringView name() { return "sqrt"; }
+    static StringView name() { return "sqrt"sv; }
 };
 
 template<typename Result>
@@ -303,7 +309,7 @@ struct Wrap {
         return static_cast<MakeUnsigned<Result>>(bit_cast<MakeUnsigned<Lhs>>(lhs));
     }
 
-    static StringView name() { return "wrap"; }
+    static StringView name() { return "wrap"sv; }
 };
 
 template<typename ResultT>
@@ -331,7 +337,7 @@ struct CheckedTruncate {
         return static_cast<ResultT>(truncated);
     }
 
-    static StringView name() { return "truncate.checked"; }
+    static StringView name() { return "truncate.checked"sv; }
 };
 
 template<typename ResultT>
@@ -342,7 +348,7 @@ struct Extend {
         return lhs;
     }
 
-    static StringView name() { return "extend"; }
+    static StringView name() { return "extend"sv; }
 };
 
 template<typename ResultT>
@@ -354,7 +360,7 @@ struct Convert {
         return static_cast<ResultT>(signed_interpretation);
     }
 
-    static StringView name() { return "convert"; }
+    static StringView name() { return "convert"sv; }
 };
 
 template<typename ResultT>
@@ -365,7 +371,7 @@ struct Reinterpret {
         return bit_cast<ResultT>(lhs);
     }
 
-    static StringView name() { return "reinterpret"; }
+    static StringView name() { return "reinterpret"sv; }
 };
 
 struct Promote {
@@ -376,7 +382,7 @@ struct Promote {
         return static_cast<double>(lhs);
     }
 
-    static StringView name() { return "promote"; }
+    static StringView name() { return "promote"sv; }
 };
 
 struct Demote {
@@ -391,7 +397,7 @@ struct Demote {
         return static_cast<float>(lhs);
     }
 
-    static StringView name() { return "demote"; }
+    static StringView name() { return "demote"sv; }
 };
 
 template<typename InitialType>
@@ -405,7 +411,7 @@ struct SignExtend {
         return static_cast<Lhs>(initial_value);
     }
 
-    static StringView name() { return "extend"; }
+    static StringView name() { return "extend"sv; }
 };
 
 template<typename ResultT>
@@ -425,11 +431,16 @@ struct SaturatingTruncate {
         // FIXME: This assumes that all values in ResultT are representable in 'double'.
         //        that assumption is not correct, which makes this function yield incorrect values
         //        for 'edge' values of type i64.
-        constexpr auto convert = [](auto truncated_value) {
+        constexpr auto convert = []<typename ConvertT>(ConvertT truncated_value) {
             if (truncated_value < NumericLimits<ResultT>::min())
                 return NumericLimits<ResultT>::min();
-            if (static_cast<double>(truncated_value) > static_cast<double>(NumericLimits<ResultT>::max()))
-                return NumericLimits<ResultT>::max();
+            if constexpr (IsSame<ConvertT, float>) {
+                if (truncated_value >= static_cast<ConvertT>(NumericLimits<ResultT>::max()))
+                    return NumericLimits<ResultT>::max();
+            } else {
+                if (static_cast<double>(truncated_value) >= static_cast<double>(NumericLimits<ResultT>::max()))
+                    return NumericLimits<ResultT>::max();
+            }
             return static_cast<ResultT>(truncated_value);
         };
 
@@ -439,7 +450,7 @@ struct SaturatingTruncate {
             return convert(trunc(lhs));
     }
 
-    static StringView name() { return "truncate.saturating"; }
+    static StringView name() { return "truncate.saturating"sv; }
 };
 
 }

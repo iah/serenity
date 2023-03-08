@@ -6,38 +6,64 @@
 
 #include <LibAudio/FlacLoader.h>
 #include <LibAudio/Loader.h>
+#include <LibAudio/MP3Loader.h>
 #include <LibAudio/WavLoader.h>
 
 namespace Audio {
+
+LoaderPlugin::LoaderPlugin(NonnullOwnPtr<SeekableStream> stream)
+    : m_stream(move(stream))
+{
+}
 
 Loader::Loader(NonnullOwnPtr<LoaderPlugin> plugin)
     : m_plugin(move(plugin))
 {
 }
 
-Result<NonnullOwnPtr<LoaderPlugin>, LoaderError> Loader::try_create(StringView path)
+Result<NonnullOwnPtr<LoaderPlugin>, LoaderError> Loader::create_plugin(StringView path)
 {
-    NonnullOwnPtr<LoaderPlugin> plugin = adopt_own(*new WavLoaderPlugin(path));
-    auto initstate0 = plugin->initialize();
-    if (!initstate0.is_error())
-        return plugin;
+    {
+        auto plugin = WavLoaderPlugin::create(path);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
 
-    plugin = adopt_own(*new FlacLoaderPlugin(path));
-    auto initstate1 = plugin->initialize();
-    if (!initstate1.is_error())
-        return plugin;
+    {
+        auto plugin = FlacLoaderPlugin::create(path);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
+
+    {
+        auto plugin = MP3LoaderPlugin::create(path);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
 
     return LoaderError { "No loader plugin available" };
 }
 
-Result<NonnullOwnPtr<LoaderPlugin>, LoaderError> Loader::try_create(Bytes& buffer)
+Result<NonnullOwnPtr<LoaderPlugin>, LoaderError> Loader::create_plugin(Bytes buffer)
 {
-    NonnullOwnPtr<LoaderPlugin> plugin = adopt_own(*new WavLoaderPlugin(buffer));
-    if (auto initstate = plugin->initialize(); !initstate.is_error())
-        return plugin;
-    plugin = adopt_own(*new FlacLoaderPlugin(buffer));
-    if (auto initstate = plugin->initialize(); !initstate.is_error())
-        return plugin;
+    {
+        auto plugin = WavLoaderPlugin::create(buffer);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
+
+    {
+        auto plugin = FlacLoaderPlugin::create(buffer);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
+
+    {
+        auto plugin = MP3LoaderPlugin::create(buffer);
+        if (!plugin.is_error())
+            return NonnullOwnPtr<LoaderPlugin>(plugin.release_value());
+    }
+
     return LoaderError { "No loader plugin available" };
 }
 

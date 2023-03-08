@@ -11,6 +11,11 @@
 
 #include <LibCore/Timer.h>
 #include <LibCrypto/ASN1/DER.h>
+#include <LibCrypto/Curves/EllipticCurve.h>
+#include <LibCrypto/Curves/SECP256r1.h>
+#include <LibCrypto/Curves/X25519.h>
+#include <LibCrypto/Curves/X448.h>
+#include <LibCrypto/PK/Code/EMSA_PKCS1_V1_5.h>
 #include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
 
@@ -128,7 +133,7 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                 // Exactly one ServerName should be present
                 if (buffer.size() - res < 3)
                     return (i8)Error::NeedMoreData;
-                auto sni_name_type = (NameType)(*(const u8*)buffer.offset_pointer(res++));
+                auto sni_name_type = (NameType)(*(u8 const*)buffer.offset_pointer(res++));
                 auto sni_name_length = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res += 2)));
 
                 if (sni_name_type != NameType::HostName)
@@ -140,7 +145,7 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                 // Read out the host_name
                 if (buffer.size() - res < sni_name_length)
                     return (i8)Error::NeedMoreData;
-                m_context.extensions.SNI = String { (const char*)buffer.offset_pointer(res), sni_name_length };
+                m_context.extensions.SNI = DeprecatedString { (char const*)buffer.offset_pointer(res), sni_name_length };
                 res += sni_name_length;
                 dbgln("SNI host_name: {}", m_context.extensions.SNI);
             }
@@ -148,13 +153,13 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
             if (buffer.size() - res > 2) {
                 auto alpn_length = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res)));
                 if (alpn_length && alpn_length <= extension_length - 2) {
-                    const u8* alpn = buffer.offset_pointer(res + 2);
+                    u8 const* alpn = buffer.offset_pointer(res + 2);
                     size_t alpn_position = 0;
                     while (alpn_position < alpn_length) {
                         u8 alpn_size = alpn[alpn_position++];
                         if (alpn_size + alpn_position >= extension_length)
                             break;
-                        String alpn_str { (const char*)alpn + alpn_position, alpn_length };
+                        DeprecatedString alpn_str { (char const*)alpn + alpn_position, alpn_length };
                         if (alpn_size && m_context.alpn.contains_slow(alpn_str)) {
                             m_context.negotiated_alpn = alpn_str;
                             dbgln("negotiated alpn: {}", alpn_str);
@@ -225,8 +230,7 @@ ssize_t TLSv12::handle_server_key_exchange(ReadonlyBytes buffer)
         TODO();
         break;
     case KeyExchangeAlgorithm::DHE_RSA:
-        handle_dhe_rsa_server_key_exchange(buffer);
-        break;
+        return handle_dhe_rsa_server_key_exchange(buffer);
     case KeyExchangeAlgorithm::DH_anon:
         dbgln("Server key exchange for DH_anon is not implemented");
         TODO();
@@ -255,7 +259,7 @@ ssize_t TLSv12::handle_dhe_rsa_server_key_exchange(ReadonlyBytes buffer)
     auto p_result = ByteBuffer::copy(dh_p);
     if (p_result.is_error()) {
         dbgln("dhe_rsa_server_key_exchange failed: Not enough memory");
-        return 0;
+        return (i8)Error::OutOfMemory;
     }
     m_context.server_diffie_hellman_params.p = p_result.release_value();
 
@@ -264,7 +268,7 @@ ssize_t TLSv12::handle_dhe_rsa_server_key_exchange(ReadonlyBytes buffer)
     auto g_result = ByteBuffer::copy(dh_g);
     if (g_result.is_error()) {
         dbgln("dhe_rsa_server_key_exchange failed: Not enough memory");
-        return 0;
+        return (i8)Error::OutOfMemory;
     }
     m_context.server_diffie_hellman_params.g = g_result.release_value();
 
@@ -273,7 +277,7 @@ ssize_t TLSv12::handle_dhe_rsa_server_key_exchange(ReadonlyBytes buffer)
     auto Ys_result = ByteBuffer::copy(dh_Ys);
     if (Ys_result.is_error()) {
         dbgln("dhe_rsa_server_key_exchange failed: Not enough memory");
-        return 0;
+        return (i8)Error::OutOfMemory;
     }
     m_context.server_diffie_hellman_params.Ys = Ys_result.release_value();
 
@@ -283,34 +287,50 @@ ssize_t TLSv12::handle_dhe_rsa_server_key_exchange(ReadonlyBytes buffer)
         dbgln("dh_Ys: {:hex-dump}", dh_Ys);
     }
 
-    // FIXME: Validate signature of Diffie-Hellman parameters as defined in RFC 5246 section 7.4.3.
-
-    return 0;
+    auto server_key_info = buffer.slice(3, 6 + dh_p_length + dh_g_length + dh_Ys_length);
+    auto signature = buffer.slice(9 + dh_p_length + dh_g_length + dh_Ys_length);
+    return verify_rsa_server_key_exchange(server_key_info, signature);
 }
 
 ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
 {
-    auto x25519_key_size_bytes = named_curve_key_size(NamedCurve::x25519) / 8;
-    if (buffer.size() < x25519_key_size_bytes + 7)
+    if (buffer.size() < 7)
         return (i8)Error::NeedMoreData;
 
     auto curve_type = buffer[3];
     if (curve_type != (u8)ECCurveType::NamedCurve)
-        return (i8)Error::FeatureNotSupported;
+        return (i8)Error::NotUnderstood;
 
-    auto curve = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(4)));
-    if (curve != (u16)NamedCurve::x25519)
-        return (i8)Error::FeatureNotSupported;
+    auto curve = static_cast<NamedCurve>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(4))));
+    if (!m_context.options.elliptic_curves.contains_slow(curve))
+        return (i8)Error::NotUnderstood;
+
+    switch ((NamedCurve)curve) {
+    case NamedCurve::x25519:
+        m_context.server_key_exchange_curve = make<Crypto::Curves::X25519>();
+        break;
+    case NamedCurve::x448:
+        m_context.server_key_exchange_curve = make<Crypto::Curves::X448>();
+        break;
+    case NamedCurve::secp256r1:
+        m_context.server_key_exchange_curve = make<Crypto::Curves::SECP256r1>();
+        break;
+    default:
+        return (i8)Error::NotUnderstood;
+    }
 
     auto server_public_key_length = buffer[6];
-    if (server_public_key_length != x25519_key_size_bytes)
-        return (i8)Error::FeatureNotSupported;
+    if (server_public_key_length != m_context.server_key_exchange_curve->key_size())
+        return (i8)Error::NotUnderstood;
+
+    if (buffer.size() < 7u + server_public_key_length)
+        return (i8)Error::NeedMoreData;
 
     auto server_public_key = buffer.slice(7, server_public_key_length);
     auto server_public_key_copy_result = ByteBuffer::copy(server_public_key);
     if (server_public_key_copy_result.is_error()) {
         dbgln("ecdhe_rsa_server_key_exchange failed: Not enough memory");
-        return 0;
+        return (i8)Error::OutOfMemory;
     }
     m_context.server_diffie_hellman_params.p = server_public_key_copy_result.release_value();
 
@@ -318,9 +338,78 @@ ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
         dbgln("ECDHE server public key: {:hex-dump}", server_public_key);
     }
 
-    // FIXME: Validate signature of Elliptic Curve Diffie-Hellman public key
+    auto server_key_info = buffer.slice(3, 4 + server_public_key_length);
+    auto signature = buffer.slice(7 + server_public_key_length);
+    return verify_rsa_server_key_exchange(server_key_info, signature);
+}
+
+ssize_t TLSv12::verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer)
+{
+    auto signature_hash = signature_buffer[0];
+    auto signature_algorithm = signature_buffer[1];
+    if (signature_algorithm != (u8)SignatureAlgorithm::RSA) {
+        dbgln("verify_rsa_server_key_exchange failed: Signature algorithm is not RSA, instead {}", signature_algorithm);
+        return (i8)Error::NotUnderstood;
+    }
+
+    auto signature_length = AK::convert_between_host_and_network_endian(ByteReader::load16(signature_buffer.offset_pointer(2)));
+    auto signature = signature_buffer.slice(4, signature_length);
+
+    if (m_context.certificates.is_empty()) {
+        dbgln("verify_rsa_server_key_exchange failed: Attempting to verify signature without certificates");
+        return (i8)Error::NotSafe;
+    }
+    // RFC5246 section 7.4.2: The sender's certificate MUST come first in the list.
+    auto certificate_public_key = m_context.certificates.first().public_key;
+    Crypto::PK::RSAPrivateKey dummy_private_key;
+    auto rsa = Crypto::PK::RSA(certificate_public_key, dummy_private_key);
+
+    auto signature_verify_buffer_result = ByteBuffer::create_uninitialized(signature_length);
+    if (signature_verify_buffer_result.is_error()) {
+        dbgln("verify_rsa_server_key_exchange failed: Not enough memory");
+        return (i8)Error::OutOfMemory;
+    }
+    auto signature_verify_buffer = signature_verify_buffer_result.release_value();
+    auto signature_verify_bytes = signature_verify_buffer.bytes();
+    rsa.verify(signature, signature_verify_bytes);
+
+    auto message_result = ByteBuffer::create_uninitialized(64 + server_key_info_buffer.size());
+    if (message_result.is_error()) {
+        dbgln("verify_rsa_server_key_exchange failed: Not enough memory");
+        return (i8)Error::OutOfMemory;
+    }
+    auto message = message_result.release_value();
+    message.overwrite(0, m_context.local_random, 32);
+    message.overwrite(32, m_context.remote_random, 32);
+    message.overwrite(64, server_key_info_buffer.data(), server_key_info_buffer.size());
+
+    Crypto::Hash::HashKind hash_kind;
+    switch ((HashAlgorithm)signature_hash) {
+    case HashAlgorithm::SHA1:
+        hash_kind = Crypto::Hash::HashKind::SHA1;
+        break;
+    case HashAlgorithm::SHA256:
+        hash_kind = Crypto::Hash::HashKind::SHA256;
+        break;
+    case HashAlgorithm::SHA384:
+        hash_kind = Crypto::Hash::HashKind::SHA384;
+        break;
+    case HashAlgorithm::SHA512:
+        hash_kind = Crypto::Hash::HashKind::SHA512;
+        break;
+    default:
+        dbgln("verify_rsa_server_key_exchange failed: Hash algorithm is not SHA1/256/384/512, instead {}", signature_hash);
+        return (i8)Error::NotUnderstood;
+    }
+
+    auto pkcs1 = Crypto::PK::EMSA_PKCS1_V1_5<Crypto::Hash::Manager>(hash_kind);
+    auto verification = pkcs1.verify(message, signature_verify_bytes, signature_length * 8);
+
+    if (verification == Crypto::VerificationConsistency::Inconsistent) {
+        dbgln("verify_rsa_server_key_exchange failed: Verification of signature inconsistent");
+        return (i8)Error::NotSafe;
+    }
 
     return 0;
 }
-
 }

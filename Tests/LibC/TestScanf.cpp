@@ -8,7 +8,6 @@
 
 #include <AK/Array.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 typedef long double longdouble;
@@ -65,7 +64,7 @@ constexpr static Array<unsigned char, 32> to_value_t(T x)
 }
 
 template<size_t N>
-constexpr static Array<unsigned char, 32> str_to_value_t(const char (&x)[N])
+constexpr static Array<unsigned char, 32> str_to_value_t(char const (&x)[N])
 {
     Array<unsigned char, 32> value { 0 };
     for (size_t i = 0; i < N; ++i)
@@ -78,7 +77,7 @@ struct Argument {
     void* data;
 };
 
-static Array<u8, 32> arg_to_value_t(const Argument& arg)
+static Array<u8, 32> arg_to_value_t(Argument const& arg)
 {
     if (arg.size == 1)
         return to_value_t(*(u8*)arg.data);
@@ -140,8 +139,8 @@ Argument charstararg1 { sizeof(charstar), &_charstararg1[0] };
 Argument charstararg2 { sizeof(charstar), &_charstararg2[0] };
 
 struct TestSuite {
-    const char* format;
-    const char* input;
+    char const* format;
+    char const* input;
     int expected_return_value;
     size_t argument_count;
     Argument arguments[8];
@@ -178,11 +177,14 @@ const TestSuite test_suites[] {
     { "%llu", "9223372036854775810", 1, 1, { unsignedlonglongarg0 }, { to_value_t(9223372036854775810ULL) } },
     { "%n", "", 0, 1, { intarg0 }, { to_value_t(0) } },
     { "%d %n", "1 a", 1, 2, { intarg0, intarg1 }, { to_value_t(1), to_value_t(2) } },
+    { "%*d", "  42", 0, 0, {}, {} },
+    { "%d%*1[:/]%d", "24/7", 2, 2, { intarg0, intarg1 }, { to_value_t(24), to_value_t(7) } },
+    { " %[^a]", " b", 1, 1, { charstararg0 }, { str_to_value_t("b") } },
 };
 
 bool g_any_failed = false;
 
-static bool check_value_conformance(const TestSuite& test)
+static bool check_value_conformance(TestSuite const& test)
 {
     bool fail = false;
     for (size_t i = 0; i < test.argument_count; ++i) {
@@ -190,8 +192,8 @@ static bool check_value_conformance(const TestSuite& test)
         auto arg_value = arg_to_value_t(arg);
         auto& value = test.expected_values[i];
         if (arg_value != value) {
-            auto arg_ptr = (const u32*)arg_value.data();
-            auto value_ptr = (const u32*)value.data();
+            auto arg_ptr = (u32 const*)arg_value.data();
+            auto value_ptr = (u32 const*)value.data();
             printf("        value %zu FAIL,\n", i);
             printf("          expected %08x%08x%08x%08x%08x%08x%08x%08x\n",
                 value_ptr[0], value_ptr[1], value_ptr[2], value_ptr[3],
@@ -208,7 +210,7 @@ static bool check_value_conformance(const TestSuite& test)
     return !fail;
 }
 
-static void do_one_test(const TestSuite& test)
+static void do_one_test(TestSuite const& test)
 {
     printf("Testing '%s' against '%s'...\n", test.input, test.format);
 

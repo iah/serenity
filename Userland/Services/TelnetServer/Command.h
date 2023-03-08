@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <AK/Types.h>
 
@@ -21,42 +21,42 @@ struct Command {
     u8 command;
     u8 subcommand;
 
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
         StringBuilder builder;
 
         switch (command) {
         case CMD_WILL:
-            builder.append("WILL");
+            builder.append("WILL"sv);
             break;
         case CMD_WONT:
-            builder.append("WONT");
+            builder.append("WONT"sv);
             break;
         case CMD_DO:
-            builder.append("DO");
+            builder.append("DO"sv);
             break;
         case CMD_DONT:
-            builder.append("DONT");
+            builder.append("DONT"sv);
             break;
         default:
-            builder.append(String::formatted("UNKNOWN<{:02x}>", command));
+            builder.append(DeprecatedString::formatted("UNKNOWN<{:02x}>", command));
             break;
         }
 
-        builder.append(" ");
+        builder.append(" "sv);
 
         switch (subcommand) {
         case SUB_ECHO:
-            builder.append("ECHO");
+            builder.append("ECHO"sv);
             break;
         case SUB_SUPPRESS_GO_AHEAD:
-            builder.append("SUPPRESS_GO_AHEAD");
+            builder.append("SUPPRESS_GO_AHEAD"sv);
             break;
         default:
-            builder.append(String::formatted("UNKNOWN<{:02x}>", subcommand));
+            builder.append(DeprecatedString::formatted("UNKNOWN<{:02x}>", subcommand));
             break;
         }
 
-        return builder.to_string();
+        return builder.to_deprecated_string();
     };
 };

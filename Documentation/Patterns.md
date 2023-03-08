@@ -30,7 +30,7 @@ ErrorOr<NonnullRefPtr<Menu>> Window::try_add_menu(String name)
     auto menu = TRY(m_menubar->try_add_menu({}, move(name)));
     if (m_window_id) {
         menu->realize_menu_if_needed();
-        WindowServerConnection::the().async_add_menu(m_window_id, menu->menu_id());
+        ConnectionToWindowServer::the().async_add_menu(m_window_id, menu->menu_id());
     }
     return menu;
 }
@@ -63,19 +63,67 @@ Note: Our `TRY(...)` macro functions similarly to the `?` [operator in rust](htt
 The `MUST(...)` macro is similar to `TRY(...)` except the macro enforces that
 the code run inside the macro must succeed, otherwise we assert.
 
+Note that `MUST(...)` should not be used as a replacement for `TRY(...)` in cases where error propagation is not (currently) possible.
+Instead, the `release_value_but_fixme_should_propagate_errors()` method of `ErrorOr<>` should be used to retrieve the value
+and to mark the location for future improvement. `MUST(...)` is reserved for cases where we determine through other circumstances that it
+should not be possible for the code inside the macro to fail or if a failure is serious enough that the program _needs_ to crash.
+
 ### Example:
 
 ```cpp
-#include <AK/Try.h>
-#include <AK/String.h>
+#include <AK/Vector.h>
 
 ... snip ...
 
-void log_that_can_not_fail(StringView fmtstr, TypeErasedFormatParams& params)
+ErrorOr<void> insert_one_to_onehundred(Vector<int>& vector)
 {
-    StringBuilder builder;
-    MUST(vformat(builder, fmtstr, params));
-    return builder.to_string();
+    TRY(vector.try_ensure_capacity(vector.size() + 100));
+
+    for (int i = 1; i <= 100; i++) {
+        // We previously made sure that we allocated enough space, so the append operation shouldn't ever fail.
+        MUST(vector.try_append(i));
+    }
+
+    return {};
+}
+```
+
+## Fallible Constructors
+
+The usual C++ constructors are incompatible with SerenityOS' method of handling errors,
+as potential errors are passed using the `ErrorOr` return type. As a replacement, classes
+that require fallible operations during their construction define a static function that
+is fallible instead.
+
+This fallible function (which should usually be named `create`) will handle any errors while
+preparing arguments for the internal constructor and run any required fallible operations after
+the object has been initialized. The resulting object is then returned as `ErrorOr<T>` or
+`ErrorOr<NonnullOwnPtr<T>>`.
+
+### Example:
+
+```cpp
+class Decompressor {
+public:
+    static ErrorOr<NonnullOwnPtr<Decompressor>> create(NonnullOwnPtr<Core::Stream::Stream> stream)
+    {
+        auto buffer = TRY(CircularBuffer::create_empty(32 * KiB));
+        auto decompressor = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Decompressor(move(stream), move(buffer))));
+        TRY(decompressor->initialize_settings_from_header());
+        return decompressor;
+    }
+
+... snip ...
+
+private:
+    Decompressor(NonnullOwnPtr<Core::Stream::Stream> stream, CircularBuffer buffer)
+        : m_stream(move(stream))
+        , m_buffer(move(buffer))
+    {
+    }
+
+    CircularBuffer m_buffer;
+    NonnullOwnPtr<Core::Stream::Stream> m_stream;
 }
 ```
 
@@ -289,5 +337,5 @@ Note that `Span<type>` differs from all of these types in that it provides a *vi
 
 * C-style arrays are generally discouraged (and this also holds for pointer+size-style arrays when passing them around). They are only used for the implementation of other collections or in specific circumstances.
 * `Array` is a thin wrapper around C-style arrays similar to `std::array`, where the template arguments include the size of the array. It allocates its data inline, just as arrays do, and never does any dynamic allocations.
-* `Vector` is similar to `std::vector` and represents a dynamic resizeable array. For most basic use cases of lists, this is the go-to collection. It has an optional inline capacity (the second template argument) which will allocate inline as the name suggests, but this is not always used. If the contents outgrow the inline capacity, Vector will automatically switch to the standard out-of-line storage. This is allocated on the heap, and the space is automatically resized and moved when more (or less) space is needed.
+* `Vector` is similar to `std::vector` and represents a dynamic resizable array. For most basic use cases of lists, this is the go-to collection. It has an optional inline capacity (the second template argument) which will allocate inline as the name suggests, but this is not always used. If the contents outgrow the inline capacity, Vector will automatically switch to the standard out-of-line storage. This is allocated on the heap, and the space is automatically resized and moved when more (or less) space is needed.
 * `FixedArray` is essentially a runtime-sized `Array`. It can't resize like `Vector`, but it's ideal for circumstances where the size is not known at compile time but doesn't need to change once the collection is initialized. `FixedArray` guarantees to not allocate or deallocate except for its constructor and destructor.

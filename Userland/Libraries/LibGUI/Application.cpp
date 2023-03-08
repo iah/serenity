@@ -1,21 +1,22 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/NeverDestroyed.h>
+#include <LibConfig/Client.h>
 #include <LibCore/EventLoop.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>
+#include <LibGUI/ConnectionToWindowServer.h>
 #include <LibGUI/Desktop.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Menubar.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
-#include <LibGUI/WindowServerConnection.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
 namespace GUI {
@@ -24,13 +25,13 @@ class Application::TooltipWindow final : public Window {
     C_OBJECT(TooltipWindow);
 
 public:
-    void set_tooltip(const String& tooltip)
+    void set_tooltip(DeprecatedString const& tooltip)
     {
         m_label->set_text(Gfx::parse_ampersand_string(tooltip));
-        int tooltip_width = m_label->min_width() + 10;
-        int line_count = m_label->text().count("\n");
-        int glyph_height = m_label->font().glyph_height();
-        int tooltip_height = glyph_height * (1 + line_count) + ((glyph_height + 1) / 2) * line_count + 8;
+        int tooltip_width = m_label->effective_min_size().width().as_int() + 10;
+        int line_count = m_label->text().count("\n"sv);
+        int font_size = m_label->font().pixel_size_rounded_up();
+        int tooltip_height = font_size * (1 + line_count) + ((font_size + 1) / 2) * line_count + 8;
 
         Gfx::IntRect desktop_rect = Desktop::the().rect();
         if (tooltip_width > desktop_rect.width())
@@ -43,7 +44,8 @@ private:
     TooltipWindow()
     {
         set_window_type(WindowType::Tooltip);
-        m_label = set_main_widget<Label>();
+        set_obey_widget_min_size(false);
+        m_label = set_main_widget<Label>().release_value_but_fixme_should_propagate_errors();
         m_label->set_background_role(Gfx::ColorRole::Tooltip);
         m_label->set_foreground_role(Gfx::ColorRole::TooltipText);
         m_label->set_fill_with_background_color(true);
@@ -73,7 +75,7 @@ Application::Application(int argc, char** argv, Core::EventLoop::MakeInspectable
     VERIFY(!*s_the);
     *s_the = *this;
     m_event_loop = make<Core::EventLoop>(make_inspectable);
-    WindowServerConnection::the();
+    ConnectionToWindowServer::the();
     Clipboard::initialize({});
     if (argc > 0)
         m_invoked_as = argv[0];
@@ -88,17 +90,17 @@ Application::Application(int argc, char** argv, Core::EventLoop::MakeInspectable
         m_dnd_debugging_enabled = true;
 
     for (int i = 1; i < argc; i++) {
-        String arg(argv[i]);
+        DeprecatedString arg(argv[i]);
         m_args.append(move(arg));
     }
 
     m_tooltip_show_timer = Core::Timer::create_single_shot(700, [this] {
         request_tooltip_show();
-    });
+    }).release_value_but_fixme_should_propagate_errors();
 
     m_tooltip_hide_timer = Core::Timer::create_single_shot(50, [this] {
         tooltip_hide_timer_did_fire();
-    });
+    }).release_value_but_fixme_should_propagate_errors();
 }
 
 static bool s_in_teardown;
@@ -136,16 +138,18 @@ void Application::unregister_global_shortcut_action(Badge<Action>, Action& actio
     m_global_shortcut_actions.remove(action.alternate_shortcut());
 }
 
-Action* Application::action_for_key_event(const KeyEvent& event)
+Action* Application::action_for_shortcut(Shortcut const& shortcut) const
 {
-    auto it = m_global_shortcut_actions.find(Shortcut(event.modifiers(), (KeyCode)event.key()));
+    auto it = m_global_shortcut_actions.find(shortcut);
     if (it == m_global_shortcut_actions.end())
         return nullptr;
     return (*it).value;
 }
 
-void Application::show_tooltip(String tooltip, const Widget* tooltip_source_widget)
+void Application::show_tooltip(DeprecatedString tooltip, Widget const* tooltip_source_widget)
 {
+    if (!Desktop::the().system_effects().tooltips())
+        return;
     m_tooltip_source_widget = tooltip_source_widget;
     if (!m_tooltip_window) {
         m_tooltip_window = TooltipWindow::construct();
@@ -163,8 +167,10 @@ void Application::show_tooltip(String tooltip, const Widget* tooltip_source_widg
     }
 }
 
-void Application::show_tooltip_immediately(String tooltip, const Widget* tooltip_source_widget)
+void Application::show_tooltip_immediately(DeprecatedString tooltip, Widget const* tooltip_source_widget)
 {
+    if (!Desktop::the().system_effects().tooltips())
+        return;
     m_tooltip_source_widget = tooltip_source_widget;
     if (!m_tooltip_window) {
         m_tooltip_window = TooltipWindow::construct();
@@ -206,7 +212,7 @@ void Application::set_system_palette(Core::AnonymousBuffer& buffer)
         m_palette = m_system_palette;
 }
 
-void Application::set_palette(const Palette& palette)
+void Application::set_palette(Palette& palette)
 {
     m_palette = palette.impl();
 }
@@ -221,10 +227,10 @@ void Application::request_tooltip_show()
     VERIFY(m_tooltip_window);
     Gfx::IntRect desktop_rect = Desktop::the().rect();
 
-    const int margin = 30;
-    Gfx::IntPoint adjusted_pos = WindowServerConnection::the().get_global_cursor_position();
+    int const margin = 30;
+    Gfx::IntPoint adjusted_pos = ConnectionToWindowServer::the().get_global_cursor_position();
 
-    adjusted_pos.translate_by(0, 18);
+    adjusted_pos.translate_by(0, 14);
 
     if (adjusted_pos.x() + m_tooltip_window->width() >= desktop_rect.width() - margin) {
         adjusted_pos = adjusted_pos.translated(-m_tooltip_window->width(), 0);
@@ -271,7 +277,7 @@ void Application::set_pending_drop_widget(Widget* widget)
         m_pending_drop_widget->update();
 }
 
-void Application::set_drag_hovered_widget_impl(Widget* widget, const Gfx::IntPoint& position, Vector<String> mime_types)
+void Application::set_drag_hovered_widget_impl(Widget* widget, Gfx::IntPoint position, Vector<DeprecatedString> mime_types)
 {
     if (widget == m_drag_hovered_widget)
         return;
@@ -290,10 +296,11 @@ void Application::set_drag_hovered_widget_impl(Widget* widget, const Gfx::IntPoi
         m_drag_hovered_widget->dispatch_event(enter_event, m_drag_hovered_widget->window());
         if (enter_event.is_accepted())
             set_pending_drop_widget(m_drag_hovered_widget);
+        ConnectionToWindowServer::the().async_set_accepts_drag(enter_event.is_accepted());
     }
 }
 
-void Application::notify_drag_cancelled(Badge<WindowServerConnection>)
+void Application::notify_drag_cancelled(Badge<ConnectionToWindowServer>)
 {
     set_drag_hovered_widget_impl(nullptr);
 }
@@ -311,7 +318,81 @@ void Application::event(Core::Event& event)
                 on_action_leave(action);
         }
     }
+    if (event.type() == GUI::Event::ThemeChange) {
+        if (on_theme_change)
+            on_theme_change();
+    }
     Object::event(event);
+}
+
+void Application::set_config_domain(String config_domain)
+{
+    m_config_domain = move(config_domain);
+}
+
+void Application::register_recent_file_actions(Badge<GUI::Menu>, Vector<NonnullRefPtr<GUI::Action>> actions)
+{
+    m_recent_file_actions = move(actions);
+    update_recent_file_actions();
+}
+
+void Application::update_recent_file_actions()
+{
+    VERIFY(!m_config_domain.is_empty());
+
+    size_t number_of_recently_open_files = 0;
+    auto update_action = [&](size_t index) {
+        auto& action = m_recent_file_actions[index];
+        char buffer = static_cast<char>('0' + index);
+        auto key = StringView(&buffer, 1);
+        auto path = Config::read_string(m_config_domain, "RecentFiles"sv, key);
+
+        if (path.is_empty()) {
+            action->set_visible(false);
+            action->set_enabled(false);
+        } else {
+            action->set_visible(true);
+            action->set_enabled(true);
+            action->set_text(path);
+            ++number_of_recently_open_files;
+        }
+    };
+    for (size_t i = 0; i < max_recently_open_files(); ++i)
+        update_action(i);
+
+    // Hide or show the "(No recently open files)" placeholder.
+    m_recent_file_actions.last()->set_visible(number_of_recently_open_files == 0);
+}
+
+void Application::set_most_recently_open_file(String new_path)
+{
+    Vector<DeprecatedString> new_recent_files_list;
+
+    for (size_t i = 0; i < max_recently_open_files(); ++i) {
+        static_assert(max_recently_open_files() < 10);
+        char buffer = static_cast<char>('0' + i);
+        auto key = StringView(&buffer, 1);
+        new_recent_files_list.append(Config::read_string(m_config_domain, "RecentFiles"sv, key));
+    }
+
+    new_recent_files_list.remove_all_matching([&](auto& existing_path) {
+        return existing_path.view() == new_path;
+    });
+
+    new_recent_files_list.prepend(new_path.to_deprecated_string());
+
+    for (size_t i = 0; i < max_recently_open_files(); ++i) {
+        auto& path = new_recent_files_list[i];
+        char buffer = static_cast<char>('0' + i);
+        auto key = StringView(&buffer, 1);
+        Config::write_string(
+            m_config_domain,
+            "RecentFiles"sv,
+            key,
+            path);
+    }
+
+    update_recent_file_actions();
 }
 
 }

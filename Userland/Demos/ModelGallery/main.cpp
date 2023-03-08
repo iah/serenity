@@ -22,13 +22,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     TRY(Core::System::pledge("stdio recvfd sendfd rpath"));
 
-    auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-model-gallery"));
+    auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-model-gallery"sv));
 
     auto window = TRY(GUI::Window::try_create());
     window->set_title("Model Gallery");
     window->set_icon(app_icon.bitmap_for_size(16));
     window->resize(430, 480);
-    (void)TRY(window->try_set_main_widget<GalleryWidget>());
+    (void)TRY(window->set_main_widget<GalleryWidget>());
 
     window->show();
     return app->exec();

@@ -13,7 +13,7 @@ namespace AK {
 
 struct DefaultComparator {
     template<typename T, typename S>
-    constexpr int operator()(T& lhs, S& rhs)
+    [[nodiscard]] constexpr int operator()(T& lhs, S& rhs)
     {
         if (lhs > rhs)
             return 1;
@@ -67,4 +67,6 @@ constexpr auto binary_search(
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::binary_search;
+#endif

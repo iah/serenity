@@ -20,27 +20,32 @@ Button::Button(WindowFrame& frame, Function<void(Button&)>&& on_click_handler)
 {
 }
 
-Button::~Button()
-{
-}
+Button::~Button() = default;
 
 void Button::paint(Screen& screen, Gfx::Painter& painter)
 {
     auto palette = WindowManager::the().palette();
     Gfx::PainterStateSaver saver(painter);
     painter.translate(relative_rect().location());
-    Gfx::StylePainter::paint_button(painter, rect(), palette, Gfx::ButtonStyle::Normal, m_pressed, m_hovered);
 
-    if (m_icon) {
-        auto& bitmap = m_icon->bitmap(screen.scale_factor());
+    if (m_style == Style::Normal)
+        Gfx::StylePainter::paint_button(painter, rect(), palette, Gfx::ButtonStyle::Normal, m_pressed, m_hovered);
+
+    auto paint_icon = [&](auto& multiscale_bitmap) {
+        auto& bitmap = multiscale_bitmap->bitmap(screen.scale_factor());
         auto icon_location = rect().center().translated(-(bitmap.width() / 2), -(bitmap.height() / 2));
         if (m_pressed)
             painter.translate(1, 1);
         painter.blit(icon_location, bitmap, bitmap.rect());
-    }
+    };
+
+    if (m_hovered && m_icon.hover_bitmap && !m_icon.hover_bitmap->is_empty())
+        paint_icon(m_icon.hover_bitmap);
+    else if (m_icon.bitmap)
+        paint_icon(m_icon.bitmap);
 }
 
-void Button::on_mouse_event(const MouseEvent& event)
+void Button::on_mouse_event(MouseEvent const& event)
 {
     auto interesting_button = false;
 

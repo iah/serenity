@@ -11,13 +11,14 @@
 #include <AK/StringBuilder.h>
 #include <AK/kstdio.h>
 
-#if defined(__serenity__) && !defined(KERNEL)
+#if defined(AK_OS_SERENITY) && !defined(KERNEL)
 #    include <serenity.h>
 #endif
 
 #ifdef KERNEL
 #    include <Kernel/Process.h>
 #    include <Kernel/Thread.h>
+#    include <Kernel/Time/TimeManagement.h>
 #else
 #    include <math.h>
 #    include <stdio.h>
@@ -51,8 +52,8 @@ static constexpr size_t convert_unsigned_to_string(u64 value, Array<u8, 128>& bu
 {
     VERIFY(base >= 2 && base <= 16);
 
-    constexpr const char* lowercase_lookup = "0123456789abcdef";
-    constexpr const char* uppercase_lookup = "0123456789ABCDEF";
+    constexpr char const* lowercase_lookup = "0123456789abcdef";
+    constexpr char const* uppercase_lookup = "0123456789ABCDEF";
 
     if (value == 0) {
         buffer[0] = '0';
@@ -77,7 +78,7 @@ static constexpr size_t convert_unsigned_to_string(u64 value, Array<u8, 128>& bu
 
 ErrorOr<void> vformat_impl(TypeErasedFormatParams& params, FormatBuilder& builder, FormatParser& parser)
 {
-    const auto literal = parser.consume_literal();
+    auto const literal = parser.consume_literal();
     TRY(builder.put_literal(literal));
 
     FormatParser::FormatSpecifier specifier;
@@ -105,7 +106,7 @@ FormatParser::FormatParser(StringView input)
 }
 StringView FormatParser::consume_literal()
 {
-    const auto begin = tell();
+    auto const begin = tell();
 
     while (!is_eof()) {
         if (consume_specific("{{"))
@@ -114,7 +115,7 @@ StringView FormatParser::consume_literal()
         if (consume_specific("}}"))
             continue;
 
-        if (next_is(is_any_of("{}")))
+        if (next_is(is_any_of("{}"sv)))
             return m_input.substring_view(begin, tell() - begin);
 
         consume();
@@ -146,7 +147,7 @@ bool FormatParser::consume_specifier(FormatSpecifier& specifier)
         specifier.index = use_next_index;
 
     if (consume_specific(':')) {
-        const auto begin = tell();
+        auto const begin = tell();
 
         size_t level = 1;
         while (level > 0) {
@@ -170,7 +171,7 @@ bool FormatParser::consume_specifier(FormatSpecifier& specifier)
         if (!consume_specific('}'))
             VERIFY_NOT_REACHED();
 
-        specifier.flags = "";
+        specifier.flags = ""sv;
     }
 
     return true;
@@ -212,8 +213,8 @@ ErrorOr<void> FormatBuilder::put_string(
     size_t max_width,
     char fill)
 {
-    const auto used_by_string = min(max_width, value.length());
-    const auto used_by_padding = max(min_width, used_by_string) - used_by_string;
+    auto const used_by_string = min(max_width, value.length());
+    auto const used_by_padding = max(min_width, used_by_string) - used_by_string;
 
     if (used_by_string < value.length())
         value = value.substring_view(0, used_by_string);
@@ -222,8 +223,8 @@ ErrorOr<void> FormatBuilder::put_string(
         TRY(m_builder.try_append(value));
         TRY(put_padding(fill, used_by_padding));
     } else if (align == Align::Center) {
-        const auto used_by_left_padding = used_by_padding / 2;
-        const auto used_by_right_padding = ceil_div<size_t, size_t>(used_by_padding, 2);
+        auto const used_by_left_padding = used_by_padding / 2;
+        auto const used_by_right_padding = ceil_div<size_t, size_t>(used_by_padding, 2);
 
         TRY(put_padding(fill, used_by_left_padding));
         TRY(m_builder.try_append(value));
@@ -252,11 +253,11 @@ ErrorOr<void> FormatBuilder::put_u64(
 
     Array<u8, 128> buffer;
 
-    const auto used_by_digits = convert_unsigned_to_string(value, buffer, base, upper_case);
+    auto const used_by_digits = convert_unsigned_to_string(value, buffer, base, upper_case);
 
     size_t used_by_prefix = 0;
     if (align == Align::Right && zero_pad) {
-        // We want String::formatted("{:#08x}", 32) to produce '0x00000020' instead of '0x000020'. This
+        // We want DeprecatedString::formatted("{:#08x}", 32) to produce '0x00000020' instead of '0x000020'. This
         // behavior differs from both fmtlib and printf, but is more intuitive.
         used_by_prefix = 0;
     } else {
@@ -273,10 +274,10 @@ ErrorOr<void> FormatBuilder::put_u64(
         }
     }
 
-    const auto used_by_field = used_by_prefix + used_by_digits;
-    const auto used_by_padding = max(used_by_field, min_width) - used_by_field;
+    auto const used_by_field = used_by_prefix + used_by_digits;
+    auto const used_by_padding = max(used_by_field, min_width) - used_by_field;
 
-    const auto put_prefix = [&]() -> ErrorOr<void> {
+    auto const put_prefix = [&]() -> ErrorOr<void> {
         if (is_negative)
             TRY(m_builder.try_append('-'));
         else if (sign_mode == SignMode::Always)
@@ -287,43 +288,43 @@ ErrorOr<void> FormatBuilder::put_u64(
         if (prefix) {
             if (base == 2) {
                 if (upper_case)
-                    TRY(m_builder.try_append("0B"));
+                    TRY(m_builder.try_append("0B"sv));
                 else
-                    TRY(m_builder.try_append("0b"));
+                    TRY(m_builder.try_append("0b"sv));
             } else if (base == 8) {
-                TRY(m_builder.try_append("0"));
+                TRY(m_builder.try_append("0"sv));
             } else if (base == 16) {
                 if (upper_case)
-                    TRY(m_builder.try_append("0X"));
+                    TRY(m_builder.try_append("0X"sv));
                 else
-                    TRY(m_builder.try_append("0x"));
+                    TRY(m_builder.try_append("0x"sv));
             }
         }
         return {};
     };
 
-    const auto put_digits = [&]() -> ErrorOr<void> {
+    auto const put_digits = [&]() -> ErrorOr<void> {
         for (size_t i = 0; i < used_by_digits; ++i)
             TRY(m_builder.try_append(buffer[i]));
         return {};
     };
 
     if (align == Align::Left) {
-        const auto used_by_right_padding = used_by_padding;
+        auto const used_by_right_padding = used_by_padding;
 
         TRY(put_prefix());
         TRY(put_digits());
         TRY(put_padding(fill, used_by_right_padding));
     } else if (align == Align::Center) {
-        const auto used_by_left_padding = used_by_padding / 2;
-        const auto used_by_right_padding = ceil_div<size_t, size_t>(used_by_padding, 2);
+        auto const used_by_left_padding = used_by_padding / 2;
+        auto const used_by_right_padding = ceil_div<size_t, size_t>(used_by_padding, 2);
 
         TRY(put_padding(fill, used_by_left_padding));
         TRY(put_prefix());
         TRY(put_digits());
         TRY(put_padding(fill, used_by_right_padding));
     } else if (align == Align::Right) {
-        const auto used_by_left_padding = used_by_padding;
+        auto const used_by_left_padding = used_by_padding;
 
         if (zero_pad) {
             TRY(put_prefix());
@@ -349,7 +350,7 @@ ErrorOr<void> FormatBuilder::put_i64(
     char fill,
     SignMode sign_mode)
 {
-    const auto is_negative = value < 0;
+    auto const is_negative = value < 0;
     value = is_negative ? -value : value;
 
     TRY(put_u64(static_cast<u64>(value), base, prefix, upper_case, zero_pad, align, min_width, fill, sign_mode, is_negative));
@@ -357,6 +358,7 @@ ErrorOr<void> FormatBuilder::put_i64(
 }
 
 ErrorOr<void> FormatBuilder::put_fixed_point(
+    bool is_negative,
     i64 integer_value,
     u64 fraction_value,
     u64 fraction_one,
@@ -367,12 +369,12 @@ ErrorOr<void> FormatBuilder::put_fixed_point(
     size_t min_width,
     size_t precision,
     char fill,
-    SignMode sign_mode)
+    SignMode sign_mode,
+    RealNumberDisplayMode display_mode)
 {
     StringBuilder string_builder;
     FormatBuilder format_builder { string_builder };
 
-    bool is_negative = integer_value < 0;
     if (is_negative)
         integer_value = -integer_value;
 
@@ -388,6 +390,15 @@ ErrorOr<void> FormatBuilder::put_fixed_point(
         auto fraction = (scale * fraction_value) / fraction_one; // TODO: overflows
         if (is_negative)
             fraction = scale - fraction;
+
+        size_t leading_zeroes = 0;
+        {
+            auto scale_tmp = scale / 10;
+            for (; fraction < scale_tmp; ++leading_zeroes) {
+                scale_tmp /= 10;
+            }
+        }
+
         while (fraction != 0 && fraction % 10 == 0)
             fraction /= 10;
 
@@ -395,20 +406,26 @@ ErrorOr<void> FormatBuilder::put_fixed_point(
         {
             auto fraction_tmp = fraction;
             for (; visible_precision < precision; ++visible_precision) {
-                if (fraction_tmp == 0)
+                if (fraction_tmp == 0 && display_mode != RealNumberDisplayMode::FixedPoint)
                     break;
                 fraction_tmp /= 10;
             }
         }
 
+        if (visible_precision == 0)
+            leading_zeroes = 0;
+
         if (zero_pad || visible_precision > 0)
             TRY(string_builder.try_append('.'));
+
+        if (leading_zeroes > 0)
+            TRY(format_builder.put_u64(0, base, false, false, true, Align::Right, leading_zeroes));
 
         if (visible_precision > 0)
             TRY(format_builder.put_u64(fraction, base, false, upper_case, true, Align::Right, visible_precision));
 
-        if (zero_pad && (precision - visible_precision) > 0)
-            TRY(format_builder.put_u64(0, base, false, false, true, Align::Right, precision - visible_precision));
+        if (zero_pad && (precision - leading_zeroes - visible_precision) > 0)
+            TRY(format_builder.put_u64(0, base, false, false, true, Align::Right, precision - leading_zeroes - visible_precision));
     }
 
     TRY(put_string(string_builder.string_view(), align, min_width, NumericLimits<size_t>::max(), fill));
@@ -425,7 +442,8 @@ ErrorOr<void> FormatBuilder::put_f64(
     size_t min_width,
     size_t precision,
     char fill,
-    SignMode sign_mode)
+    SignMode sign_mode,
+    RealNumberDisplayMode display_mode)
 {
     StringBuilder string_builder;
     FormatBuilder format_builder { string_builder };
@@ -464,7 +482,7 @@ ErrorOr<void> FormatBuilder::put_f64(
 
         size_t visible_precision = 0;
         for (; visible_precision < precision; ++visible_precision) {
-            if (value - static_cast<i64>(value) < epsilon)
+            if (value - static_cast<i64>(value) < epsilon && display_mode != RealNumberDisplayMode::FixedPoint)
                 break;
             value *= 10.0;
             epsilon *= 10.0;
@@ -492,7 +510,8 @@ ErrorOr<void> FormatBuilder::put_f80(
     size_t min_width,
     size_t precision,
     char fill,
-    SignMode sign_mode)
+    SignMode sign_mode,
+    RealNumberDisplayMode display_mode)
 {
     StringBuilder string_builder;
     FormatBuilder format_builder { string_builder };
@@ -531,7 +550,7 @@ ErrorOr<void> FormatBuilder::put_f80(
 
         size_t visible_precision = 0;
         for (; visible_precision < precision; ++visible_precision) {
-            if (value - static_cast<i64>(value) < epsilon)
+            if (value - static_cast<i64>(value) < epsilon && display_mode != RealNumberDisplayMode::FixedPoint)
                 break;
             value *= 10.0l;
             epsilon *= 10.0l;
@@ -587,8 +606,8 @@ ErrorOr<void> vformat(StringBuilder& builder, StringView fmtstr, TypeErasedForma
 
 void StandardFormatter::parse(TypeErasedFormatParams& params, FormatParser& parser)
 {
-    if (StringView { "<^>" }.contains(parser.peek(1))) {
-        VERIFY(!parser.next_is(is_any_of("{}")));
+    if ("<^>"sv.contains(parser.peek(1))) {
+        VERIFY(!parser.next_is(is_any_of("{}"sv)));
         m_fill = parser.consume();
     }
 
@@ -651,7 +670,7 @@ void StandardFormatter::parse(TypeErasedFormatParams& params, FormatParser& pars
     else if (parser.consume_specific('p'))
         m_mode = Mode::Pointer;
     else if (parser.consume_specific('f'))
-        m_mode = Mode::Float;
+        m_mode = Mode::FixedPoint;
     else if (parser.consume_specific('a'))
         m_mode = Mode::Hexfloat;
     else if (parser.consume_specific('A'))
@@ -668,8 +687,6 @@ void StandardFormatter::parse(TypeErasedFormatParams& params, FormatParser& pars
 ErrorOr<void> Formatter<StringView>::format(FormatBuilder& builder, StringView value)
 {
     if (m_sign_mode != FormatBuilder::SignMode::Default)
-        VERIFY_NOT_REACHED();
-    if (m_alternative_form)
         VERIFY_NOT_REACHED();
     if (m_zero_pad)
         VERIFY_NOT_REACHED();
@@ -692,17 +709,17 @@ ErrorOr<void> Formatter<FormatString>::vformat(FormatBuilder& builder, StringVie
     return {};
 }
 
-template<typename T>
-ErrorOr<void> Formatter<T, typename EnableIf<IsIntegral<T>>::Type>::format(FormatBuilder& builder, T value)
+template<Integral T>
+ErrorOr<void> Formatter<T>::format(FormatBuilder& builder, T value)
 {
     if (m_mode == Mode::Character) {
         // FIXME: We just support ASCII for now, in the future maybe unicode?
-        VERIFY(value >= 0 && value <= 127);
+        //        VERIFY(value >= 0 && value <= 127);
 
         m_mode = Mode::String;
 
         Formatter<StringView> formatter { *this };
-        return formatter.format(builder, StringView { reinterpret_cast<const char*>(&value), 1 });
+        return formatter.format(builder, StringView { reinterpret_cast<char const*>(&value), 1 });
     }
 
     if (m_precision.has_value())
@@ -788,7 +805,7 @@ ErrorOr<void> Formatter<bool>::format(FormatBuilder& builder, bool value)
         return builder.put_hexdump({ &value, sizeof(value) }, m_width.value_or(32), m_fill);
     } else {
         Formatter<StringView> formatter { *this };
-        return formatter.format(builder, value ? "true" : "false");
+        return formatter.format(builder, value ? "true"sv : "false"sv);
     }
 }
 #ifndef KERNEL
@@ -796,9 +813,12 @@ ErrorOr<void> Formatter<long double>::format(FormatBuilder& builder, long double
 {
     u8 base;
     bool upper_case;
-    if (m_mode == Mode::Default || m_mode == Mode::Float) {
+    FormatBuilder::RealNumberDisplayMode real_number_display_mode = FormatBuilder::RealNumberDisplayMode::General;
+    if (m_mode == Mode::Default || m_mode == Mode::FixedPoint) {
         base = 10;
         upper_case = false;
+        if (m_mode == Mode::FixedPoint)
+            real_number_display_mode = FormatBuilder::RealNumberDisplayMode::FixedPoint;
     } else if (m_mode == Mode::Hexfloat) {
         base = 16;
         upper_case = false;
@@ -812,16 +832,19 @@ ErrorOr<void> Formatter<long double>::format(FormatBuilder& builder, long double
     m_width = m_width.value_or(0);
     m_precision = m_precision.value_or(6);
 
-    return builder.put_f80(value, base, upper_case, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode);
+    return builder.put_f80(value, base, upper_case, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode, real_number_display_mode);
 }
 
 ErrorOr<void> Formatter<double>::format(FormatBuilder& builder, double value)
 {
     u8 base;
     bool upper_case;
-    if (m_mode == Mode::Default || m_mode == Mode::Float) {
+    FormatBuilder::RealNumberDisplayMode real_number_display_mode = FormatBuilder::RealNumberDisplayMode::General;
+    if (m_mode == Mode::Default || m_mode == Mode::FixedPoint) {
         base = 10;
         upper_case = false;
+        if (m_mode == Mode::FixedPoint)
+            real_number_display_mode = FormatBuilder::RealNumberDisplayMode::FixedPoint;
     } else if (m_mode == Mode::Hexfloat) {
         base = 16;
         upper_case = false;
@@ -835,7 +858,7 @@ ErrorOr<void> Formatter<double>::format(FormatBuilder& builder, double value)
     m_width = m_width.value_or(0);
     m_precision = m_precision.value_or(6);
 
-    return builder.put_f64(value, base, upper_case, m_zero_pad, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode);
+    return builder.put_f64(value, base, upper_case, m_zero_pad, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode, real_number_display_mode);
 }
 
 ErrorOr<void> Formatter<float>::format(FormatBuilder& builder, float value)
@@ -854,8 +877,8 @@ void vout(FILE* file, StringView fmtstr, TypeErasedFormatParams& params, bool ne
     if (newline)
         builder.append('\n');
 
-    const auto string = builder.string_view();
-    const auto retval = ::fwrite(string.characters_without_null_termination(), 1, string.length(), file);
+    auto const string = builder.string_view();
+    auto const retval = ::fwrite(string.characters_without_null_termination(), 1, string.length(), file);
     if (static_cast<size_t>(retval) != string.length()) {
         auto error = ferror(file);
         dbgln("vout() failed ({} written out of {}), error was {} ({})", retval, string.length(), error, strerror(error));
@@ -877,15 +900,15 @@ void vdbgln(StringView fmtstr, TypeErasedFormatParams& params)
 
     StringBuilder builder;
 
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
 #    ifdef KERNEL
-    if (Kernel::Processor::is_initialized()) {
-        struct timespec ts = {};
-        if (TimeManagement::is_initialized())
-            ts = TimeManagement::the().monotonic_time(TimePrecision::Coarse).to_timespec();
+    if (Kernel::Processor::is_initialized() && TimeManagement::is_initialized()) {
+        struct timespec ts = TimeManagement::the().monotonic_time(TimePrecision::Coarse).to_timespec();
         if (Kernel::Thread::current()) {
             auto& thread = *Kernel::Thread::current();
-            builder.appendff("{}.{:03} \033[34;1m[#{} {}({}:{})]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000, Kernel::Processor::current_id(), thread.process().name(), thread.pid().value(), thread.tid().value());
+            thread.process().name().with([&](auto& process_name) {
+                builder.appendff("{}.{:03} \033[34;1m[#{} {}({}:{})]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000, Kernel::Processor::current_id(), process_name->view(), thread.pid().value(), thread.tid().value());
+            });
         } else {
             builder.appendff("{}.{:03} \033[34;1m[#{} Kernel]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000, Kernel::Processor::current_id());
         }
@@ -912,9 +935,9 @@ void vdbgln(StringView fmtstr, TypeErasedFormatParams& params)
     MUST(vformat(builder, fmtstr, params));
     builder.append('\n');
 
-    const auto string = builder.string_view();
+    auto const string = builder.string_view();
 
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
 #    ifdef KERNEL
     if (!Kernel::Processor::is_initialized()) {
         kernelearlyputstr(string.characters_without_null_termination(), string.length());
@@ -930,26 +953,29 @@ void vdmesgln(StringView fmtstr, TypeErasedFormatParams& params)
 {
     StringBuilder builder;
 
-#    ifdef __serenity__
+#    ifdef AK_OS_SERENITY
     struct timespec ts = {};
 
-#        if !ARCH(AARCH64)
-    if (TimeManagement::is_initialized())
+    if (TimeManagement::is_initialized()) {
         ts = TimeManagement::the().monotonic_time(TimePrecision::Coarse).to_timespec();
-#        endif
 
-    if (Kernel::Processor::is_initialized() && Kernel::Thread::current()) {
-        auto& thread = *Kernel::Thread::current();
-        builder.appendff("{}.{:03} \033[34;1m[{}({}:{})]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000, thread.process().name(), thread.pid().value(), thread.tid().value());
+        if (Kernel::Processor::is_initialized() && Kernel::Thread::current()) {
+            auto& thread = *Kernel::Thread::current();
+            thread.process().name().with([&](auto& process_name) {
+                builder.appendff("{}.{:03} \033[34;1m[{}({}:{})]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000, process_name->view(), thread.pid().value(), thread.tid().value());
+            });
+        } else {
+            builder.appendff("{}.{:03} \033[34;1m[Kernel]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000);
+        }
     } else {
-        builder.appendff("{}.{:03} \033[34;1m[Kernel]\033[0m: ", ts.tv_sec, ts.tv_nsec / 1000000);
+        builder.appendff("\033[34;1m[Kernel]\033[0m: ");
     }
 #    endif
 
     MUST(vformat(builder, fmtstr, params));
     builder.append('\n');
 
-    const auto string = builder.string_view();
+    auto const string = builder.string_view();
     kernelputstr(string.characters_without_null_termination(), string.length());
 }
 
@@ -959,10 +985,12 @@ void v_critical_dmesgln(StringView fmtstr, TypeErasedFormatParams& params)
     // at OOM conditions.
 
     StringBuilder builder;
-#    ifdef __serenity__
+#    ifdef AK_OS_SERENITY
     if (Kernel::Processor::is_initialized() && Kernel::Thread::current()) {
         auto& thread = *Kernel::Thread::current();
-        builder.appendff("[{}({}:{})]: ", thread.process().name(), thread.pid().value(), thread.tid().value());
+        thread.process().name().with([&](auto& process_name) {
+            builder.appendff("[{}({}:{})]: ", process_name->view(), thread.pid().value(), thread.tid().value());
+        });
     } else {
         builder.appendff("[Kernel]: ");
     }
@@ -971,7 +999,7 @@ void v_critical_dmesgln(StringView fmtstr, TypeErasedFormatParams& params)
     MUST(vformat(builder, fmtstr, params));
     builder.append('\n');
 
-    const auto string = builder.string_view();
+    auto const string = builder.string_view();
     kernelcriticalputstr(string.characters_without_null_termination(), string.length());
 }
 

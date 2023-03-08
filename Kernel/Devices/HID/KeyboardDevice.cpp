@@ -8,10 +8,10 @@
 
 #include <AK/Assertions.h>
 #include <AK/Types.h>
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/Devices/HID/KeyboardDevice.h>
 #include <Kernel/Sections.h>
 #include <Kernel/TTY/VirtualConsole.h>
-#include <LibC/sys/ioctl_numbers.h>
 
 namespace Kernel {
 
@@ -98,7 +98,7 @@ static constexpr KeyCode unshifted_key_map[0x80] = {
     Key_End,
     Key_Down, // 80
     Key_PageDown,
-    Key_Invalid,
+    Key_Insert,
     Key_Delete, // 83
     Key_Invalid,
     Key_Invalid,
@@ -195,7 +195,7 @@ static constexpr KeyCode shifted_key_map[0x100] = {
     Key_End,
     Key_Down, // 80
     Key_PageDown,
-    Key_Invalid,
+    Key_Insert,
     Key_Delete, // 83
     Key_Invalid,
     Key_Invalid,
@@ -254,8 +254,12 @@ void KeyboardDevice::key_state_changed(u8 scan_code, bool pressed)
 
     if (pressed)
         event.flags |= Is_Press;
-    if (HIDManagement::the().m_client)
-        HIDManagement::the().m_client->on_key_pressed(event);
+
+    {
+        SpinlockLocker locker(HIDManagement::the().m_client_lock);
+        if (HIDManagement::the().m_client)
+            HIDManagement::the().m_client->on_key_pressed(event);
+    }
 
     {
         SpinlockLocker lock(m_queue_lock);
@@ -276,11 +280,9 @@ UNMAP_AFTER_INIT KeyboardDevice::KeyboardDevice()
 
 // FIXME: UNMAP_AFTER_INIT is fine for now, but for hot-pluggable devices
 // like USB keyboards, we need to remove this
-UNMAP_AFTER_INIT KeyboardDevice::~KeyboardDevice()
-{
-}
+UNMAP_AFTER_INIT KeyboardDevice::~KeyboardDevice() = default;
 
-bool KeyboardDevice::can_read(const OpenFileDescription&, u64) const
+bool KeyboardDevice::can_read(OpenFileDescription const&, u64) const
 {
     return !m_queue.is_empty();
 }

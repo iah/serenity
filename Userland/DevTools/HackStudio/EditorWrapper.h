@@ -28,24 +28,21 @@ public:
     virtual ~EditorWrapper() override = default;
 
     Editor& editor() { return *m_editor; }
-    const Editor& editor() const { return *m_editor; }
+    Editor const& editor() const { return *m_editor; }
 
     void save();
 
-    GUI::Label& filename_label() { return *m_filename_label; }
-    const GUI::Label& filename_label() const { return *m_filename_label; }
-
-    void set_editor_has_focus(Badge<Editor>, bool);
     LanguageClient& language_client();
 
     void set_mode_displayable();
     void set_mode_non_displayable();
     void set_debug_mode(bool);
-    void set_filename(const String&);
-    const String& filename() const { return m_filename; }
+    void set_filename(DeprecatedString const&);
+    DeprecatedString const& filename() const { return m_filename; }
+    DeprecatedString const& filename_title() const { return m_filename_title; }
 
-    Optional<String> const& project_root() const { return m_project_root; }
-    void set_project_root(String const& project_root);
+    Optional<DeprecatedString> const& project_root() const { return m_project_root; }
+    void set_project_root(DeprecatedString const& project_root);
 
     GitRepo const* git_repo() const { return m_git_repo; }
 
@@ -53,19 +50,20 @@ public:
     Vector<Diff::Hunk> const& hunks() const { return m_hunks; }
 
     Function<void()> on_change;
+    Function<void(EditorWrapper&)> on_tab_close_request;
 
 private:
-    static constexpr auto untitled_label = "(Untitled)";
+    static constexpr auto untitled_label = "(Untitled)"sv;
 
     EditorWrapper();
 
     void update_title();
 
-    String m_filename;
-    RefPtr<GUI::Label> m_filename_label;
+    DeprecatedString m_filename;
+    DeprecatedString m_filename_title;
     RefPtr<Editor> m_editor;
 
-    Optional<String> m_project_root;
+    Optional<DeprecatedString> m_project_root;
     RefPtr<GitRepo> m_git_repo;
     Vector<Diff::Hunk> m_hunks;
 };

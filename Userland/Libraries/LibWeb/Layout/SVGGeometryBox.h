@@ -12,6 +12,8 @@
 namespace Web::Layout {
 
 class SVGGeometryBox final : public SVGGraphicsBox {
+    JS_CELL(SVGGeometryBox, SVGGraphicsBox);
+
 public:
     SVGGeometryBox(DOM::Document&, SVG::SVGGeometryElement&, NonnullRefPtr<CSS::StyleProperties>);
     virtual ~SVGGeometryBox() override = default;
@@ -19,7 +21,10 @@ public:
     SVG::SVGGeometryElement& dom_node() { return verify_cast<SVG::SVGGeometryElement>(SVGGraphicsBox::dom_node()); }
     SVG::SVGGeometryElement const& dom_node() const { return verify_cast<SVG::SVGGeometryElement>(SVGGraphicsBox::dom_node()); }
 
-    virtual void paint(PaintContext& context, PaintPhase phase) override;
+    float viewbox_scaling() const;
+    CSSPixelPoint viewbox_origin() const;
+
+    virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
 
 private:
     virtual bool is_svg_geometry_box() const final { return true; }

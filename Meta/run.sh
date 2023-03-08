@@ -18,12 +18,13 @@ SCRIPT_DIR="$(dirname "${0}")"
 
 # FIXME: Enable for SERENITY_ARCH=aarch64 if on an aarch64 host?
 
-# Check if SERENITY_KVM_SUPPORT is unset
-if [ -z ${SERENITY_KVM_SUPPORT+x} ]; then
-    KVM_SUPPORT="0"
-    [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] && [ "$SERENITY_ARCH" != "aarch64" ] && KVM_SUPPORT="1"
+# Check if SERENITY_VIRTUALIZATION_SUPPORT is unset
+if [ -z ${SERENITY_VIRTUALIZATION_SUPPORT+x} ]; then
+    VIRTUALIZATION_SUPPORT="0"
+    [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] && [ "$SERENITY_ARCH" != "aarch64" ] && [ "$(uname -m)" != "aarch64" ] && VIRTUALIZATION_SUPPORT="1"
+    command -v wslpath >/dev/null && VIRTUALIZATION_SUPPORT="1"
 else
-    KVM_SUPPORT="$SERENITY_KVM_SUPPORT"
+    VIRTUALIZATION_SUPPORT="$SERENITY_VIRTUALIZATION_SUPPORT"
 fi
 
 [ -z "$SERENITY_BOCHS_BIN" ] && SERENITY_BOCHS_BIN="bochs"
@@ -48,10 +49,10 @@ fi
 # Prepend the toolchain qemu directory so we pick up QEMU from there
 PATH="$SCRIPT_DIR/../Toolchain/Local/qemu/bin:$PATH"
 
-# Also prepend the i686 toolchain directory because that's where most
+# Also prepend the x86_64 toolchain directory because that's where most
 # people will have their QEMU binaries if they built them before the
 # directory was changed to Toolchain/Local/qemu.
-PATH="$SCRIPT_DIR/../Toolchain/Local/i686/bin:$PATH"
+PATH="$SCRIPT_DIR/../Toolchain/Local/x86_64/bin:$PATH"
 
 SERENITY_RUN="${SERENITY_RUN:-$1}"
 
@@ -61,11 +62,10 @@ if [ -z "$SERENITY_QEMU_BIN" ]; then
         PATH=$PATH:/mnt/c/Windows/System32
         QEMU_INSTALL_DIR=$(reg.exe query 'HKLM\Software\QEMU' /v Install_Dir /t REG_SZ | grep '^    Install_Dir' | sed 's/    / /g' | cut -f4- -d' ')
         if [ -z "$QEMU_INSTALL_DIR" ]; then
-            if [ "$KVM_SUPPORT" -eq "0" ]; then
+            if [ "$VIRTUALIZATION_SUPPORT" -eq "0" ]; then
                 die "Could not determine where QEMU for Windows is installed. Please make sure QEMU is installed or set SERENITY_QEMU_BIN if it is already installed."
             fi
         else
-            KVM_SUPPORT="0"
             QEMU_BINARY_PREFIX="$(wslpath -- "${QEMU_INSTALL_DIR}" | tr -d '\r\n')/"
             QEMU_BINARY_SUFFIX=".exe"
         fi
@@ -75,11 +75,10 @@ if [ -z "$SERENITY_QEMU_BIN" ]; then
     elif [ "$SERENITY_ARCH" = "x86_64" ]; then
         SERENITY_QEMU_BIN="${QEMU_BINARY_PREFIX}qemu-system-x86_64${QEMU_BINARY_SUFFIX}"
     else
-        SERENITY_QEMU_BIN="${QEMU_BINARY_PREFIX}qemu-system-i386${QEMU_BINARY_SUFFIX}"
+        die "Please specify a valid CPU architecture."
     fi
 fi
 
-[ "$KVM_SUPPORT" -eq "1" ] && SERENITY_VIRT_TECH_ARG="-enable-kvm"
 
 # For default values, see Kernel/CommandLine.cpp
 [ -z "$SERENITY_KERNEL_CMDLINE" ] && SERENITY_KERNEL_CMDLINE="hello"
@@ -105,15 +104,19 @@ fi
     fi
 }
 
+SERENITY_QEMU_MIN_REQ_MAJOR_VERSION=6
+SERENITY_QEMU_MIN_REQ_MINOR_VERSION=2
+SERENITY_QEMU_MIN_REQ_VERSION="$SERENITY_QEMU_MIN_REQ_MAJOR_VERSION.$SERENITY_QEMU_MIN_REQ_MINOR_VERSION"
 if ! command -v "$SERENITY_QEMU_BIN" >/dev/null 2>&1 ; then
-    die "Please install QEMU version 5.0 or newer or use the Toolchain/BuildQemu.sh script."
+    die "Please install QEMU version $SERENITY_QEMU_MIN_REQ_VERSION or newer or use the Toolchain/BuildQemu.sh script."
 fi
 
-SERENITY_QEMU_MIN_REQ_VERSION=5
 installed_major_version=$("$SERENITY_QEMU_BIN" -version | head -n 1 | sed -E 's/QEMU emulator version ([1-9][0-9]*|0).*/\1/')
 installed_minor_version=$("$SERENITY_QEMU_BIN" -version | head -n 1 | sed -E 's/QEMU emulator version [0-9]+\.([1-9][0-9]*|0).*/\1/')
-if [ "$installed_major_version" -lt "$SERENITY_QEMU_MIN_REQ_VERSION" ]; then
-    echo "Required QEMU >= 5.0! Found $($SERENITY_QEMU_BIN -version | head -n 1)"
+if [ "$installed_major_version" -lt "$SERENITY_QEMU_MIN_REQ_MAJOR_VERSION" ] ||
+   { [ "$installed_major_version" -eq "$SERENITY_QEMU_MIN_REQ_MAJOR_VERSION" ] &&
+     [ "$installed_minor_version" -lt "$SERENITY_QEMU_MIN_REQ_MINOR_VERSION" ]; }; then
+    echo "Required QEMU >= $SERENITY_QEMU_MIN_REQ_VERSION! Found $($SERENITY_QEMU_BIN -version | head -n 1)"
     echo "Please install a newer version of QEMU or use the Toolchain/BuildQemu.sh script."
     die
 fi
@@ -124,11 +127,14 @@ if command -v wslpath >/dev/null; then
     case "$SERENITY_QEMU_BIN" in
         /mnt/?/*)
             if [ -z "$SERENITY_VIRT_TECH_ARG" ]; then
-                if [ "$installed_major_version" -gt 5 ]; then
-                    SERENITY_VIRT_TECH_ARG="-accel whpx,kernel-irqchip=off -accel tcg"
-                else
-                    SERENITY_VIRT_TECH_ARG="-accel whpx -accel tcg"
+                if [ "$VIRTUALIZATION_SUPPORT" -eq "1" ]; then
+                    if [ "$installed_major_version" -gt 5 ]; then
+                        SERENITY_VIRT_TECH_ARG="-accel whpx,kernel-irqchip=off"
+                    else
+                        SERENITY_VIRT_TECH_ARG="-accel whpx"
+                    fi
                 fi
+                SERENITY_VIRT_TECH_ARG="$SERENITY_VIRT_TECH_ARG -accel tcg"
             fi
             [ -z "$SERENITY_QEMU_CPU" ] && SERENITY_QEMU_CPU="max,vmx=off"
             SERENITY_KERNEL_CMDLINE="$SERENITY_KERNEL_CMDLINE disable_virtio"
@@ -136,6 +142,8 @@ if command -v wslpath >/dev/null; then
             ;;
     esac
 fi
+
+[ "$VIRTUALIZATION_SUPPORT" -eq "1" ] && [ "$NATIVE_WINDOWS_QEMU" -ne "1" ] && SERENITY_VIRT_TECH_ARG="-enable-kvm"
 
 [ -z "$SERENITY_QEMU_CPU" ] && SERENITY_QEMU_CPU="max"
 
@@ -156,7 +164,7 @@ fi
 if [ "$(uname)" = "Darwin" ]; then
     SERENITY_AUDIO_BACKEND="-audiodev coreaudio,id=snd0"
 elif [ "$NATIVE_WINDOWS_QEMU" -eq "1" ]; then
-    SERENITY_AUDIO_BACKEND="-audiodev dsound,id=snd0"
+    SERENITY_AUDIO_BACKEND="-audiodev dsound,id=snd0,timer-period=2000"
 elif "$SERENITY_QEMU_BIN" -audio-help 2>&1 | grep -- "-audiodev id=sdl" >/dev/null; then
     SERENITY_AUDIO_BACKEND="-audiodev sdl,id=snd0"
 else
@@ -183,12 +191,20 @@ elif ! command -v wslpath >/dev/null && ("${SERENITY_QEMU_BIN}" --display help |
 elif "${SERENITY_QEMU_BIN}" --display help | grep -iq cocoa; then
     # QEMU for OSX seems to only support cocoa
     SERENITY_QEMU_DISPLAY_BACKEND="${SERENITY_QEMU_DISPLAY_BACKEND:-cocoa,gl=off}"
+elif [ "$(uname -s)" = "SerenityOS" ]; then
+    SERENITY_QEMU_DISPLAY_BACKEND="${SERENITY_QEMU_DISPLAY_BACKEND:-sdl,gl=off}"
 else
     SERENITY_QEMU_DISPLAY_BACKEND="${SERENITY_QEMU_DISPLAY_BACKEND:-gtk,gl=off}"
 fi
 
+SERENITY_GL="${SERENITY_GL:-0}"
 if [ -z "$SERENITY_QEMU_DISPLAY_DEVICE" ]; then
-    if [ "$SERENITY_SCREENS" -gt 1 ]; then
+    if [ "$SERENITY_GL" = "1" ]; then
+        SERENITY_QEMU_DISPLAY_DEVICE="virtio-vga-gl "
+        if [ "$SERENITY_SCREENS" -gt 1 ]; then
+            die "SERENITY_GL and multi-monitor support cannot be setup simultaneously"
+        fi
+    elif [ "$SERENITY_SCREENS" -gt 1 ]; then
         SERENITY_QEMU_DISPLAY_DEVICE="virtio-vga,max_outputs=$SERENITY_SCREENS "
         # QEMU appears to always relay absolute mouse coordinates relative to the screen that the mouse is
         # pointed to, without any way for us to know what screen it was. So, when dealing with multiple
@@ -201,24 +217,49 @@ fi
 
 # Check if SERENITY_NVME_ENABLE is unset
 if [ -z ${SERENITY_NVME_ENABLE+x} ]; then
-    SERENITY_BOOT_DRIVE="-drive file=${SERENITY_DISK_IMAGE},format=raw,index=0,media=disk"
+    SERENITY_BOOT_DRIVE="-drive file=${SERENITY_DISK_IMAGE},format=raw,index=0,media=disk,id=disk"
 else
     if [ "$SERENITY_NVME_ENABLE" -eq 1 ]; then
         SERENITY_BOOT_DRIVE="-drive file=${SERENITY_DISK_IMAGE},format=raw,index=0,media=disk,if=none,id=disk"
         SERENITY_BOOT_DRIVE="$SERENITY_BOOT_DRIVE -device i82801b11-bridge,id=bridge4 -device sdhci-pci,bus=bridge4"
-        SERENITY_BOOT_DRIVE="$SERENITY_BOOT_DRIVE -device nvme,serial=deadbeef,drive=disk,bus=bridge4"
+        SERENITY_BOOT_DRIVE="$SERENITY_BOOT_DRIVE -device nvme,serial=deadbeef,drive=disk,bus=bridge4,logical_block_size=4096,physical_block_size=4096"
         SERENITY_KERNEL_CMDLINE="$SERENITY_KERNEL_CMDLINE root=/dev/nvme0n1"
     else
-        SERENITY_BOOT_DRIVE="-drive file=${SERENITY_DISK_IMAGE},format=raw,index=0,media=disk"
+        SERENITY_BOOT_DRIVE="-drive file=${SERENITY_DISK_IMAGE},format=raw,index=0,media=disk,id=disk"
     fi
 fi
 
+if [ -z "$SERENITY_HOST_IP" ]; then
+    SERENITY_HOST_IP="127.0.0.1"
+fi
+
+if command -v wslpath >/dev/null; then
+   SERENITY_DISABLE_GDB_SOCKET=1
+fi
+
+if [ "$(uname)" = "Darwin" ] &&
+   [ "${SERENITY_VIRT_TECH_ARG}" = "--accel hvf" ]; then
+  # HVF doesn't support gdbstub per https://wiki.qemu.org/Features/HVF
+  SERENITY_DISABLE_GDB_SOCKET=1
+fi
+
 if [ -z "$SERENITY_DISABLE_GDB_SOCKET" ]; then
-  SERENITY_EXTRA_QEMU_ARGS="$SERENITY_EXTRA_QEMU_ARGS -s"
+    SERENITY_EXTRA_QEMU_ARGS="$SERENITY_EXTRA_QEMU_ARGS -gdb tcp:${SERENITY_HOST_IP}:1234"
 fi
 
 if [ -z "$SERENITY_ETHERNET_DEVICE_TYPE" ]; then
   SERENITY_ETHERNET_DEVICE_TYPE="e1000"
+fi
+
+if [ "$SERENITY_ARCH" = "aarch64" ]; then
+    SERENITY_NETFLAGS=
+    SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE=
+else
+    SERENITY_NETFLAGS="-netdev user,id=breh,hostfwd=tcp:${SERENITY_HOST_IP}:8888-10.0.2.15:8888,hostfwd=tcp:${SERENITY_HOST_IP}:8823-10.0.2.15:23,hostfwd=tcp:${SERENITY_HOST_IP}:8000-10.0.2.15:8000,hostfwd=tcp:${SERENITY_HOST_IP}:2222-10.0.2.15:22"
+    SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE="
+    $SERENITY_NETFLAGS
+    -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=breh
+    "
 fi
 
 # add -machine vmport=off below to run the machine with ps/2 mouse
@@ -253,12 +294,23 @@ if [ "$NATIVE_WINDOWS_QEMU" -ne "1" ]; then
     -qmp unix:qmp-sock,server,nowait"
 fi
 
+if [ "$SERENITY_ARCH" = "aarch64" ]; then
+    SERENITY_KERNEL_AND_INITRD="
+    -kernel Kernel/Kernel
+    "
+else
+    SERENITY_KERNEL_AND_INITRD="
+    -kernel Kernel/Prekernel/Prekernel
+    -initrd Kernel/Kernel
+    "
+fi
 
 
 [ -z "$SERENITY_COMMON_QEMU_ARGS" ] && SERENITY_COMMON_QEMU_ARGS="
 $SERENITY_EXTRA_QEMU_ARGS
 $SERENITY_MACHINE
 -cpu $SERENITY_QEMU_CPU
+-name SerenityOS
 -d guest_errors
 -usb
 $SERENITY_SPICE_SERVER_CHARDEV
@@ -268,10 +320,41 @@ if [ "$SERENITY_ARCH" != "aarch64" ]; then
     if "${SERENITY_QEMU_BIN}" -chardev help | grep -iq spice; then
         SERENITY_COMMON_QEMU_ARGS="$SERENITY_COMMON_QEMU_ARGS
         -spice port=5930,agent-mouse=off,disable-ticketing=on
+        "
+    fi
+    if "${SERENITY_QEMU_BIN}" -chardev help | grep -iq 'spice\|vdagent'; then
+        SERENITY_COMMON_QEMU_ARGS="$SERENITY_COMMON_QEMU_ARGS
         -device virtserialport,chardev=vdagent,nr=1
         "
     fi
 fi
+
+[ -z "$SERENITY_COMMON_QEMU_ISA_PC_ARGS" ] && SERENITY_COMMON_QEMU_ISA_PC_ARGS="
+$SERENITY_EXTRA_QEMU_ARGS
+-m $SERENITY_RAM_SIZE
+-cpu pentium3
+-machine isapc
+-d guest_errors
+-device isa-vga
+-chardev stdio,id=stdout,mux=on
+-device isa-debugcon,chardev=stdout
+$SERENITY_BOOT_DRIVE
+"
+
+[ -z "$SERENITY_COMMON_QEMU_MICROVM_ARGS" ] && SERENITY_COMMON_QEMU_MICROVM_ARGS="
+$SERENITY_EXTRA_QEMU_ARGS
+-m $SERENITY_RAM_SIZE
+-machine microvm,pit=on,rtc=on,pic=on
+-cpu qemu64
+-d guest_errors
+-chardev stdio,id=stdout,mux=on
+-device isa-debugcon,chardev=stdout
+-device isa-vga
+-device isa-ide
+$SERENITY_BOOT_DRIVE
+-device i8042 
+-device ide-hd,drive=disk
+"
 
 [ -z "$SERENITY_COMMON_QEMU_Q35_ARGS" ] && SERENITY_COMMON_QEMU_Q35_ARGS="
 $SERENITY_EXTRA_QEMU_ARGS
@@ -281,7 +364,7 @@ $SERENITY_EXTRA_QEMU_ARGS
 -d guest_errors
 -smp $SERENITY_CPUS
 -vga none
--device bochs-display
+-device vmware-svga
 -device ich9-usb-ehci1,bus=pcie.0,multifunction=on,addr=0x5.0x0
 -device ich9-usb-ehci2,bus=pcie.0,addr=0x5.0x2
 -device ich9-usb-uhci1,bus=pcie.0,multifunction=on,addr=0x7.0x0
@@ -298,13 +381,12 @@ $SERENITY_EXTRA_QEMU_ARGS
 -device pcie-root-port,port=0x15,chassis=6,id=pcie.6,bus=pcie.0,addr=0x6.0x5
 -device pcie-root-port,port=0x16,chassis=7,id=pcie.7,bus=pcie.0,addr=0x6.0x6
 -device pcie-root-port,port=0x17,chassis=8,id=pcie.8,bus=pcie.0,addr=0x6.0x7
--device bochs-display,bus=pcie.6,addr=0x10.0x0
 -device ich9-intel-hda,bus=pcie.2,addr=0x03.0x0
+-device bochs-display
 -device nec-usb-xhci,bus=pcie.2,addr=0x11.0x0
 -device pci-bridge,chassis_nr=1,id=bridge1,bus=pcie.4,addr=0x3.0x0
 -device sdhci-pci,bus=bridge1,addr=0x1.0x0
 -display $SERENITY_QEMU_DISPLAY_BACKEND
--device ahci,id=ahci
 -device virtio-serial
 -chardev stdio,id=stdout,mux=on
 -device virtconsole,chardev=stdout
@@ -333,8 +415,7 @@ elif [ "$SERENITY_RUN" = "qn" ]; then
     "$SERENITY_QEMU_BIN" \
         $SERENITY_COMMON_QEMU_ARGS \
         -device $SERENITY_ETHERNET_DEVICE_TYPE \
-        -kernel Kernel/Prekernel/Prekernel \
-        -initrd Kernel/Kernel \
+        $SERENITY_KERNEL_AND_INITRD \
         -append "${SERENITY_KERNEL_CMDLINE}"
 elif [ "$SERENITY_RUN" = "qtap" ]; then
     # Meta/run.sh qtap: qemu with tap
@@ -346,8 +427,7 @@ elif [ "$SERENITY_RUN" = "qtap" ]; then
         $SERENITY_PACKET_LOGGING_ARG \
         -netdev tap,ifname=tap0,id=br0 \
         -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=br0 \
-        -kernel Kernel/Prekernel/Prekernel \
-        -initrd Kernel/Kernel \
+        $SERENITY_KERNEL_AND_INITRD \
         -append "${SERENITY_KERNEL_CMDLINE}"
     sudo ip tuntap del dev tap0 mode tap
 elif [ "$SERENITY_RUN" = "qgrub" ] || [ "$SERENITY_RUN" = "qextlinux" ]; then
@@ -356,26 +436,42 @@ elif [ "$SERENITY_RUN" = "qgrub" ] || [ "$SERENITY_RUN" = "qextlinux" ]; then
         $SERENITY_COMMON_QEMU_ARGS \
         $SERENITY_VIRT_TECH_ARG \
         $SERENITY_PACKET_LOGGING_ARG \
-        -netdev user,id=breh,hostfwd=tcp:127.0.0.1:8888-10.0.2.15:8888,hostfwd=tcp:127.0.0.1:8823-10.0.2.15:23 \
-        -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=breh
+        $SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE
 elif [ "$SERENITY_RUN" = "q35" ]; then
     # Meta/run.sh q35: qemu (q35 chipset) with SerenityOS
     echo "Starting SerenityOS with QEMU Q35 machine, Commandline: ${SERENITY_KERNEL_CMDLINE}"
     "$SERENITY_QEMU_BIN" \
         $SERENITY_COMMON_QEMU_Q35_ARGS \
         $SERENITY_VIRT_TECH_ARG \
-        -netdev user,id=breh,hostfwd=tcp:127.0.0.1:8888-10.0.2.15:8888,hostfwd=tcp:127.0.0.1:8823-10.0.2.15:23 \
-        -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=breh \
-        -kernel Kernel/Prekernel/Prekernel \
-        -initrd Kernel/Kernel \
+        $SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE \
+        $SERENITY_KERNEL_AND_INITRD \
+        -append "${SERENITY_KERNEL_CMDLINE}"
+elif [ "$SERENITY_RUN" = "isapc" ]; then
+    # Meta/run.sh q35: qemu (q35 chipset) with SerenityOS
+    echo "Starting SerenityOS with QEMU ISA-PC machine, Commandline: ${SERENITY_KERNEL_CMDLINE}"
+    "$SERENITY_QEMU_BIN" \
+        $SERENITY_COMMON_QEMU_ISA_PC_ARGS \
+        $SERENITY_VIRT_TECH_ARG \
+        $SERENITY_NETFLAGS \
+        -device ne2k_isa,netdev=breh \
+        $SERENITY_KERNEL_AND_INITRD \
+        -append "${SERENITY_KERNEL_CMDLINE}"
+elif [ "$SERENITY_RUN" = "microvm" ]; then
+    # Meta/run.sh q35: qemu (q35 chipset) with SerenityOS
+    echo "Starting SerenityOS with QEMU MicroVM machine, Commandline: ${SERENITY_KERNEL_CMDLINE}"
+    "$SERENITY_QEMU_BIN" \
+        $SERENITY_COMMON_QEMU_MICROVM_ARGS \
+        $SERENITY_VIRT_TECH_ARG \
+        $SERENITY_NETFLAGS \
+        -device ne2k_isa,netdev=breh \
+        $SERENITY_KERNEL_AND_INITRD \
         -append "${SERENITY_KERNEL_CMDLINE}"
 elif [ "$SERENITY_RUN" = "q35grub" ]; then
     # Meta/run.sh q35grub: qemu (q35 chipset) with SerenityOS, using a grub disk image
     "$SERENITY_QEMU_BIN" \
         $SERENITY_COMMON_QEMU_Q35_ARGS \
         $SERENITY_VIRT_TECH_ARG \
-        -netdev user,id=breh,hostfwd=tcp:127.0.0.1:8888-10.0.2.15:8888,hostfwd=tcp:127.0.0.1:8823-10.0.2.15:23 \
-        -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=breh
+        $SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE
 elif [ "$SERENITY_RUN" = "limine" ]; then
     "$SERENITY_QEMU_BIN" \
         $SERENITY_COMMON_QEMU_ARGS \
@@ -396,25 +492,15 @@ elif [ "$SERENITY_RUN" = "ci" ]; then
         -nographic \
         -display none \
         -debugcon file:debug.log \
-        -kernel Kernel/Prekernel/Prekernel \
-        -initrd Kernel/Kernel \
+        $SERENITY_KERNEL_AND_INITRD \
         -append "${SERENITY_KERNEL_CMDLINE}"
 else
     # Meta/run.sh: qemu with user networking
-    if [ "$SERENITY_ARCH" = "aarch64" ]; then
-        SERENITY_NETFLAGS=
-    else
-        SERENITY_NETFLAGS="
-        -netdev user,id=breh,hostfwd=tcp:127.0.0.1:8888-10.0.2.15:8888,hostfwd=tcp:127.0.0.1:8823-10.0.2.15:23,hostfwd=tcp:127.0.0.1:8000-10.0.2.15:8000,hostfwd=tcp:127.0.0.1:2222-10.0.2.15:22 \
-        -device $SERENITY_ETHERNET_DEVICE_TYPE,netdev=breh \
-        "
-    fi
     "$SERENITY_QEMU_BIN" \
         $SERENITY_COMMON_QEMU_ARGS \
         $SERENITY_VIRT_TECH_ARG \
         $SERENITY_PACKET_LOGGING_ARG \
-        $SERENITY_NETFLAGS \
-        -kernel Kernel/Prekernel/Prekernel \
-        -initrd Kernel/Kernel \
+        $SERENITY_NETFLAGS_WITH_DEFAULT_DEVICE \
+        $SERENITY_KERNEL_AND_INITRD \
         -append "${SERENITY_KERNEL_CMDLINE}"
 fi

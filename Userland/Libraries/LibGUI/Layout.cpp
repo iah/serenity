@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,9 @@ REGISTER_ABSTRACT_CORE_OBJECT(GUI, Layout)
 
 namespace GUI {
 
-Layout::Layout()
+Layout::Layout(Margins initial_margins, int spacing)
+    : m_margins(initial_margins)
+    , m_spacing(spacing)
 {
     REGISTER_INT_PROPERTY("spacing", spacing, set_spacing);
     REGISTER_MARGINS_PROPERTY("margins", margins, set_margins);
@@ -37,9 +40,7 @@ Layout::Layout()
         });
 }
 
-Layout::~Layout()
-{
-}
+Layout::~Layout() = default;
 
 void Layout::notify_adopted(Badge<Widget>, Widget& widget)
 {
@@ -141,7 +142,7 @@ void Layout::set_spacing(int spacing)
         m_owner->notify_layout_changed({});
 }
 
-void Layout::set_margins(const Margins& margins)
+void Layout::set_margins(Margins const& margins)
 {
     if (m_margins == margins)
         return;

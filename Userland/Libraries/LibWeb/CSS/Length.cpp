@@ -8,7 +8,7 @@
 
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Variant.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Rect.h>
 #include <LibWeb/CSS/Length.h>
 #include <LibWeb/CSS/Percentage.h>
@@ -28,15 +28,16 @@ Length::Length(float value, Type type)
     , m_value(value)
 {
 }
+Length::~Length() = default;
 
 Length Length::make_auto()
 {
     return Length(0, Type::Auto);
 }
 
-Length Length::make_px(float value)
+Length Length::make_px(CSSPixels value)
 {
-    return Length(value, Type::Px);
+    return Length(value.value(), Type::Px);
 }
 
 Length Length::make_calculated(NonnullRefPtr<CalculatedStyleValue> calculated_style_value)
@@ -48,6 +49,8 @@ Length Length::make_calculated(NonnullRefPtr<CalculatedStyleValue> calculated_st
 
 Length Length::percentage_of(Percentage const& percentage) const
 {
+    VERIFY(!is_calculated());
+
     if (is_auto()) {
         dbgln("Attempting to get percentage of an auto length, this seems wrong? But for now we just return the original length.");
         return *this;
@@ -62,19 +65,21 @@ Length Length::resolved(Layout::Node const& layout_node) const
         return m_calculated_style->resolve_length(layout_node).release_value();
     if (is_relative())
         return make_px(to_px(layout_node));
+    if (!isfinite(m_value))
+        return make_auto();
     return *this;
 }
 
-float Length::relative_length_to_px(Gfx::IntRect const& viewport_rect, Gfx::FontMetrics const& font_metrics, float root_font_size) const
+CSSPixels Length::relative_length_to_px(CSSPixelRect const& viewport_rect, Gfx::FontPixelMetrics const& font_metrics, CSSPixels font_size, CSSPixels root_font_size) const
 {
     switch (m_type) {
     case Type::Ex:
         return m_value * font_metrics.x_height;
     case Type::Em:
-        return m_value * font_metrics.size;
+        return m_value * font_size;
     case Type::Ch:
-        // FIXME: Use layout_node.font().glyph_height() when writing-mode is not horizontal-tb (it has to be implemented first)
-        return m_value * (font_metrics.glyph_width + font_metrics.glyph_spacing);
+        // FIXME: Use layout_node.font().pixel_size() when writing-mode is not horizontal-tb (it has to be implemented first)
+        return m_value * (font_metrics.advance_of_ascii_zero + font_metrics.glyph_spacing);
     case Type::Rem:
         return m_value * root_font_size;
     case Type::Vw:
@@ -90,21 +95,33 @@ float Length::relative_length_to_px(Gfx::IntRect const& viewport_rect, Gfx::Font
     }
 }
 
-float Length::to_px(Layout::Node const& layout_node) const
+CSSPixels Length::to_px(Layout::Node const& layout_node) const
 {
     if (is_calculated())
         return m_calculated_style->resolve_length(layout_node)->to_px(layout_node);
 
+    if (is_absolute())
+        return absolute_length_to_px();
+
     if (!layout_node.document().browsing_context())
         return 0;
-    auto viewport_rect = layout_node.document().browsing_context()->viewport_rect();
+    auto const& viewport_rect = layout_node.document().browsing_context()->viewport_rect();
     auto* root_element = layout_node.document().document_element();
     if (!root_element || !root_element->layout_node())
         return 0;
-    return to_px(viewport_rect, layout_node.font().metrics('M'), root_element->layout_node()->font().presentation_size());
+    return to_px(viewport_rect, layout_node.font().pixel_metrics(), layout_node.computed_values().font_size(), root_element->layout_node()->computed_values().font_size());
 }
 
-const char* Length::unit_name() const
+ErrorOr<String> Length::to_string() const
+{
+    if (is_calculated())
+        return m_calculated_style->to_string();
+    if (is_auto())
+        return "auto"_string;
+    return String::formatted("{}{}", m_value, unit_name());
+}
+
+char const* Length::unit_name() const
 {
     switch (m_type) {
     case Type::Cm:
@@ -143,6 +160,56 @@ const char* Length::unit_name() const
         return "calculated";
     }
     VERIFY_NOT_REACHED();
+}
+
+Optional<Length::Type> Length::unit_from_name(StringView name)
+{
+    if (name.equals_ignoring_case("px"sv)) {
+        return Length::Type::Px;
+    } else if (name.equals_ignoring_case("pt"sv)) {
+        return Length::Type::Pt;
+    } else if (name.equals_ignoring_case("pc"sv)) {
+        return Length::Type::Pc;
+    } else if (name.equals_ignoring_case("mm"sv)) {
+        return Length::Type::Mm;
+    } else if (name.equals_ignoring_case("rem"sv)) {
+        return Length::Type::Rem;
+    } else if (name.equals_ignoring_case("em"sv)) {
+        return Length::Type::Em;
+    } else if (name.equals_ignoring_case("ex"sv)) {
+        return Length::Type::Ex;
+    } else if (name.equals_ignoring_case("ch"sv)) {
+        return Length::Type::Ch;
+    } else if (name.equals_ignoring_case("vw"sv)) {
+        return Length::Type::Vw;
+    } else if (name.equals_ignoring_case("vh"sv)) {
+        return Length::Type::Vh;
+    } else if (name.equals_ignoring_case("vmax"sv)) {
+        return Length::Type::Vmax;
+    } else if (name.equals_ignoring_case("vmin"sv)) {
+        return Length::Type::Vmin;
+    } else if (name.equals_ignoring_case("cm"sv)) {
+        return Length::Type::Cm;
+    } else if (name.equals_ignoring_case("in"sv)) {
+        return Length::Type::In;
+    } else if (name.equals_ignoring_case("Q"sv)) {
+        return Length::Type::Q;
+    }
+
+    return {};
+}
+
+NonnullRefPtr<CalculatedStyleValue> Length::calculated_style_value() const
+{
+    VERIFY(!m_calculated_style.is_null());
+    return *m_calculated_style;
+}
+
+bool Length::operator==(Length const& other) const
+{
+    if (is_calculated())
+        return m_calculated_style == other.m_calculated_style;
+    return m_type == other.m_type && m_value == other.m_value;
 }
 
 }

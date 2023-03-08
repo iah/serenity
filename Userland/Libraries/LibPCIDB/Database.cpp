@@ -12,7 +12,7 @@
 
 namespace PCIDB {
 
-RefPtr<Database> Database::open(const String& filename)
+RefPtr<Database> Database::open(DeprecatedString const& filename)
 {
     auto file_or_error = Core::MappedFile::map(filename);
     if (file_or_error.is_error())
@@ -25,67 +25,67 @@ RefPtr<Database> Database::open(const String& filename)
 
 const StringView Database::get_vendor(u16 vendor_id) const
 {
-    const auto& vendor = m_vendors.get(vendor_id);
+    auto const& vendor = m_vendors.get(vendor_id);
     if (!vendor.has_value())
-        return "";
+        return ""sv;
     return vendor.value()->name;
 }
 
 const StringView Database::get_device(u16 vendor_id, u16 device_id) const
 {
-    const auto& vendor = m_vendors.get(vendor_id);
+    auto const& vendor = m_vendors.get(vendor_id);
     if (!vendor.has_value())
-        return "";
-    const auto& device = vendor.value()->devices.get(device_id);
+        return ""sv;
+    auto const& device = vendor.value()->devices.get(device_id);
     if (!device.has_value())
-        return "";
+        return ""sv;
     return device.value()->name;
 }
 
 const StringView Database::get_subsystem(u16 vendor_id, u16 device_id, u16 subvendor_id, u16 subdevice_id) const
 {
-    const auto& vendor = m_vendors.get(vendor_id);
+    auto const& vendor = m_vendors.get(vendor_id);
     if (!vendor.has_value())
-        return "";
-    const auto& device = vendor.value()->devices.get(device_id);
+        return ""sv;
+    auto const& device = vendor.value()->devices.get(device_id);
     if (!device.has_value())
-        return "";
-    const auto& subsystem = device.value()->subsystems.get((subvendor_id << 16) + subdevice_id);
+        return ""sv;
+    auto const& subsystem = device.value()->subsystems.get((subvendor_id << 16) + subdevice_id);
     if (!subsystem.has_value())
-        return "";
+        return ""sv;
     return subsystem.value()->name;
 }
 
 const StringView Database::get_class(u8 class_id) const
 {
-    const auto& xclass = m_classes.get(class_id);
+    auto const& xclass = m_classes.get(class_id);
     if (!xclass.has_value())
-        return "";
+        return ""sv;
     return xclass.value()->name;
 }
 
 const StringView Database::get_subclass(u8 class_id, u8 subclass_id) const
 {
-    const auto& xclass = m_classes.get(class_id);
+    auto const& xclass = m_classes.get(class_id);
     if (!xclass.has_value())
-        return "";
-    const auto& subclass = xclass.value()->subclasses.get(subclass_id);
+        return ""sv;
+    auto const& subclass = xclass.value()->subclasses.get(subclass_id);
     if (!subclass.has_value())
-        return "";
+        return ""sv;
     return subclass.value()->name;
 }
 
 const StringView Database::get_programming_interface(u8 class_id, u8 subclass_id, u8 programming_interface_id) const
 {
-    const auto& xclass = m_classes.get(class_id);
+    auto const& xclass = m_classes.get(class_id);
     if (!xclass.has_value())
-        return "";
-    const auto& subclass = xclass.value()->subclasses.get(subclass_id);
+        return ""sv;
+    auto const& subclass = xclass.value()->subclasses.get(subclass_id);
     if (!subclass.has_value())
-        return "";
-    const auto& programming_interface = subclass.value()->programming_interfaces.get(programming_interface_id);
+        return ""sv;
+    auto const& programming_interface = subclass.value()->programming_interfaces.get(programming_interface_id);
     if (!programming_interface.has_value())
-        return "";
+        return ""sv;
     return programming_interface.value()->name;
 }
 

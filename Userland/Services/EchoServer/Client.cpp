@@ -5,9 +5,10 @@
  */
 
 #include "Client.h"
-#include "LibCore/EventLoop.h"
+#include <LibCore/EventLoop.h>
+#include <LibCore/Socket.h>
 
-Client::Client(int id, NonnullOwnPtr<Core::Stream::TCPSocket> socket)
+Client::Client(int id, NonnullOwnPtr<Core::TCPSocket> socket)
     : m_id(id)
     , m_socket(move(socket))
 {
@@ -30,16 +31,16 @@ ErrorOr<void> Client::drain_socket()
     auto buffer = TRY(ByteBuffer::create_uninitialized(1024));
 
     while (TRY(m_socket->can_read_without_blocking())) {
-        auto nread = TRY(m_socket->read(buffer));
+        auto bytes_read = TRY(m_socket->read(buffer));
 
-        dbgln("Read {} bytes.", nread);
+        dbgln("Read {} bytes.", bytes_read.size());
 
         if (m_socket->is_eof()) {
             Core::deferred_invoke([this, strong_this = NonnullRefPtr(*this)] { quit(); });
             break;
         }
 
-        TRY(m_socket->write({ buffer.data(), nread }));
+        TRY(m_socket->write(bytes_read));
     }
 
     return {};

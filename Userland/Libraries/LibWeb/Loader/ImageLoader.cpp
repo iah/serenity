@@ -5,19 +5,25 @@
  */
 
 #include <AK/Debug.h>
-#include <LibCore/Timer.h>
 #include <LibGfx/Bitmap.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/Loader/ImageLoader.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Platform/Timer.h>
 
 namespace Web {
 
 ImageLoader::ImageLoader(DOM::Element& owner_element)
     : m_owner_element(owner_element)
-    , m_timer(Core::Timer::construct())
+    , m_timer(Platform::Timer::create())
 {
+}
+
+void ImageLoader::adopt_object_resource(Badge<HTML::HTMLObjectElement>, Resource& resource)
+{
+    auto image_resource = ImageResource::convert_from_resource(resource);
+    set_resource(image_resource);
 }
 
 void ImageLoader::load(const AK::URL& url)
@@ -70,7 +76,7 @@ void ImageLoader::resource_did_load()
     }
     m_redirects_count = 0;
 
-    if (!resource()->mime_type().starts_with("image/")) {
+    if (!resource()->mime_type().starts_with("image/"sv)) {
         m_loading_state = LoadingState::Failed;
         if (on_fail)
             on_fail();
@@ -149,7 +155,7 @@ unsigned ImageLoader::height() const
     return bitmap(0) ? bitmap(0)->height() : 0;
 }
 
-const Gfx::Bitmap* ImageLoader::bitmap(size_t frame_index) const
+Gfx::Bitmap const* ImageLoader::bitmap(size_t frame_index) const
 {
     if (!resource())
         return nullptr;

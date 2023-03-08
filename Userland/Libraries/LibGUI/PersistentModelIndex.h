@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -30,7 +31,7 @@ class PersistentHandle : public Weakable<PersistentHandle> {
 
 class PersistentModelIndex {
 public:
-    PersistentModelIndex() { }
+    PersistentModelIndex() = default;
     PersistentModelIndex(ModelIndex const&);
     PersistentModelIndex(PersistentModelIndex const&) = default;
     PersistentModelIndex(PersistentModelIndex&&) = default;
@@ -75,7 +76,7 @@ template<>
 struct Formatter<GUI::PersistentModelIndex> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, GUI::PersistentModelIndex const& value)
     {
-        return Formatter<FormatString>::format(builder, "PersistentModelIndex({},{},{})", value.row(), value.column(), value.internal_data());
+        return Formatter<FormatString>::format(builder, "PersistentModelIndex({},{},{})"sv, value.row(), value.column(), value.internal_data());
     }
 };
 
@@ -85,8 +86,7 @@ struct Traits<GUI::PersistentModelIndex> : public GenericTraits<GUI::PersistentM
     {
         if (index.has_valid_handle())
             return Traits<GUI::ModelIndex>::hash(index.m_handle->m_index);
-        else
-            return 0;
+        return 0;
     }
 };
 

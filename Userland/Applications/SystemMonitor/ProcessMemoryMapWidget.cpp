@@ -14,14 +14,18 @@
 #include <LibGUI/TableView.h>
 #include <LibGfx/Palette.h>
 
+REGISTER_WIDGET(SystemMonitor, ProcessMemoryMapWidget)
+
+namespace SystemMonitor {
+
 class PagemapPaintingDelegate final : public GUI::TableCellPaintingDelegate {
 public:
     virtual ~PagemapPaintingDelegate() override = default;
 
-    virtual void paint(GUI::Painter& painter, const Gfx::IntRect& a_rect, const Gfx::Palette&, const GUI::ModelIndex& index) override
+    virtual void paint(GUI::Painter& painter, Gfx::IntRect const& a_rect, Gfx::Palette const&, const GUI::ModelIndex& index) override
     {
         auto rect = a_rect.shrunken(2, 2);
-        auto pagemap = index.data(GUI::ModelRole::Custom).to_string();
+        auto pagemap = index.data(GUI::ModelRole::Custom).to_deprecated_string();
 
         float scale_factor = (float)pagemap.length() / (float)rect.width();
 
@@ -47,41 +51,40 @@ public:
 
 ProcessMemoryMapWidget::ProcessMemoryMapWidget()
 {
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_margins(4);
+    set_layout<GUI::VerticalBoxLayout>(4);
     m_table_view = add<GUI::TableView>();
     Vector<GUI::JsonArrayModel::FieldSpec> pid_vm_fields;
     pid_vm_fields.empend(
         "Address", Gfx::TextAlignment::CenterLeft,
-        [](auto& object) { return String::formatted("{:p}", object.get("address").to_u64()); },
-        [](auto& object) { return object.get("address").to_u64(); });
+        [](auto& object) { return DeprecatedString::formatted("{:p}", object.get_u64("address"sv).value_or(0)); },
+        [](auto& object) { return object.get_u64("address"sv).value_or(0); });
     pid_vm_fields.empend("size", "Size", Gfx::TextAlignment::CenterRight);
     pid_vm_fields.empend("amount_resident", "Resident", Gfx::TextAlignment::CenterRight);
     pid_vm_fields.empend("amount_dirty", "Dirty", Gfx::TextAlignment::CenterRight);
     pid_vm_fields.empend("Access", Gfx::TextAlignment::CenterLeft, [](auto& object) {
         StringBuilder builder;
-        if (object.get("readable").to_bool())
+        if (object.get_bool("readable"sv).value_or(false))
             builder.append('R');
-        if (object.get("writable").to_bool())
+        if (object.get_bool("writable"sv).value_or(false))
             builder.append('W');
-        if (object.get("executable").to_bool())
+        if (object.get_bool("executable"sv).value_or(false))
             builder.append('X');
-        if (object.get("shared").to_bool())
+        if (object.get_bool("shared"sv).value_or(false))
             builder.append('S');
-        if (object.get("syscall").to_bool())
+        if (object.get_bool("syscall"sv).value_or(false))
             builder.append('C');
-        if (object.get("stack").to_bool())
+        if (object.get_bool("stack"sv).value_or(false))
             builder.append('T');
-        return builder.to_string();
+        return builder.to_deprecated_string();
     });
     pid_vm_fields.empend("VMObject type", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        auto type = object.get("vmobject").to_string();
-        if (type.ends_with("VMObject"))
+        auto type = object.get_deprecated_string("vmobject"sv).value_or({});
+        if (type.ends_with("VMObject"sv))
             type = type.substring(0, type.length() - 8);
         return type;
     });
     pid_vm_fields.empend("Purgeable", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        if (object.get("volatile").to_bool())
+        if (object.get_bool("volatile"sv).value_or(false))
             return "Volatile";
         return "Non-volatile";
     });
@@ -93,8 +96,8 @@ ProcessMemoryMapWidget::ProcessMemoryMapWidget()
         [](auto&) {
             return GUI::Variant(0);
         },
-        [](const JsonObject& object) {
-            auto pagemap = object.get("pagemap").as_string_or({});
+        [](JsonObject const& object) {
+            auto pagemap = object.get_deprecated_string("pagemap"sv).value_or({});
             return pagemap;
         });
     pid_vm_fields.empend("cow_pages", "# CoW", Gfx::TextAlignment::CenterRight);
@@ -106,6 +109,7 @@ ProcessMemoryMapWidget::ProcessMemoryMapWidget()
 
     m_table_view->set_key_column_and_sort_order(0, GUI::SortOrder::Ascending);
     m_timer = add<Core::Timer>(1000, [this] { refresh(); });
+    m_timer->start();
 }
 
 void ProcessMemoryMapWidget::set_pid(pid_t pid)
@@ -113,11 +117,13 @@ void ProcessMemoryMapWidget::set_pid(pid_t pid)
     if (m_pid == pid)
         return;
     m_pid = pid;
-    m_json_model->set_json_path(String::formatted("/proc/{}/vm", pid));
+    m_json_model->set_json_path(DeprecatedString::formatted("/proc/{}/vm", pid));
 }
 
 void ProcessMemoryMapWidget::refresh()
 {
     if (m_pid != -1)
-        m_json_model->invalidate();
+        m_json_model->update();
+}
+
 }

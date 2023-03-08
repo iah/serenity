@@ -15,13 +15,13 @@ u32 Relation::hash() const
     return key().hash();
 }
 
-SchemaDef::SchemaDef(String name)
+SchemaDef::SchemaDef(DeprecatedString name)
     : Relation(move(name))
 {
 }
 
 SchemaDef::SchemaDef(Key const& key)
-    : Relation(key["schema_name"].to_string())
+    : Relation(key["schema_name"].to_deprecated_string())
 {
 }
 
@@ -47,7 +47,7 @@ NonnullRefPtr<IndexDef> SchemaDef::index_def()
     return s_index_def;
 }
 
-ColumnDef::ColumnDef(Relation* parent, size_t column_number, String name, SQLType sql_type)
+ColumnDef::ColumnDef(Relation* parent, size_t column_number, DeprecatedString name, SQLType sql_type)
     : Relation(move(name), parent)
     , m_index(column_number)
     , m_type(sql_type)
@@ -59,13 +59,13 @@ Key ColumnDef::key() const
 {
     auto key = Key(index_def());
     key["table_hash"] = parent_relation()->hash();
-    key["column_number"] = (int)column_number();
+    key["column_number"] = column_number();
     key["column_name"] = name();
-    key["column_type"] = (int)type();
+    key["column_type"] = to_underlying(type());
     return key;
 }
 
-void ColumnDef::set_default_value(const Value& default_value)
+void ColumnDef::set_default_value(Value const& default_value)
 {
     VERIFY(default_value.type() == type());
     m_default = default_value;
@@ -90,25 +90,25 @@ NonnullRefPtr<IndexDef> ColumnDef::index_def()
     return s_index_def;
 }
 
-KeyPartDef::KeyPartDef(IndexDef* index, String name, SQLType sql_type, Order sort_order)
+KeyPartDef::KeyPartDef(IndexDef* index, DeprecatedString name, SQLType sql_type, Order sort_order)
     : ColumnDef(index, index->size(), move(name), sql_type)
     , m_sort_order(sort_order)
 {
 }
 
-IndexDef::IndexDef(TableDef* table, String name, bool unique, u32 pointer)
+IndexDef::IndexDef(TableDef* table, DeprecatedString name, bool unique, u32 pointer)
     : Relation(move(name), pointer, table)
     , m_key_definition()
     , m_unique(unique)
 {
 }
 
-IndexDef::IndexDef(String name, bool unique, u32 pointer)
+IndexDef::IndexDef(DeprecatedString name, bool unique, u32 pointer)
     : IndexDef(nullptr, move(name), unique, pointer)
 {
 }
 
-void IndexDef::append_column(String name, SQLType sql_type, Order sort_order)
+void IndexDef::append_column(DeprecatedString name, SQLType sql_type, Order sort_order)
 {
     auto part = KeyPartDef::construct(this, move(name), sql_type, sort_order);
     m_key_definition.append(part);
@@ -118,7 +118,7 @@ NonnullRefPtr<TupleDescriptor> IndexDef::to_tuple_descriptor() const
 {
     NonnullRefPtr<TupleDescriptor> ret = adopt_ref(*new TupleDescriptor);
     for (auto& part : m_key_definition) {
-        ret->append({ "", "", part.name(), part.type(), part.sort_order() });
+        ret->append({ "", "", part->name(), part->type(), part->sort_order() });
     }
     return ret;
 }
@@ -150,7 +150,7 @@ NonnullRefPtr<IndexDef> IndexDef::index_def()
     return s_index_def;
 }
 
-TableDef::TableDef(SchemaDef* schema, String name)
+TableDef::TableDef(SchemaDef* schema, DeprecatedString name)
     : Relation(move(name), schema)
     , m_columns()
     , m_indexes()
@@ -161,7 +161,7 @@ NonnullRefPtr<TupleDescriptor> TableDef::to_tuple_descriptor() const
 {
     NonnullRefPtr<TupleDescriptor> ret = adopt_ref(*new TupleDescriptor);
     for (auto& part : m_columns) {
-        ret->append({ parent()->name(), name(), part.name(), part.type(), Order::Ascending });
+        ret->append({ parent()->name(), name(), part->name(), part->type(), Order::Ascending });
     }
     return ret;
 }
@@ -175,7 +175,7 @@ Key TableDef::key() const
     return key;
 }
 
-void TableDef::append_column(String name, SQLType sql_type)
+void TableDef::append_column(DeprecatedString name, SQLType sql_type)
 {
     auto column = ColumnDef::construct(this, num_columns(), move(name), sql_type);
     m_columns.append(column);
@@ -183,9 +183,10 @@ void TableDef::append_column(String name, SQLType sql_type)
 
 void TableDef::append_column(Key const& column)
 {
-    append_column(
-        (String)column["column_name"],
-        (SQLType)((int)column["column_type"]));
+    auto column_type = column["column_type"].to_int<UnderlyingType<SQLType>>();
+    VERIFY(column_type.has_value());
+
+    append_column(column["column_name"].to_deprecated_string(), static_cast<SQLType>(*column_type));
 }
 
 Key TableDef::make_key(SchemaDef const& schema_def)

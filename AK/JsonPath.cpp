@@ -13,13 +13,13 @@ namespace AK {
 JsonPathElement JsonPathElement::any_array_element { Kind::AnyIndex };
 JsonPathElement JsonPathElement::any_object_element { Kind::AnyKey };
 
-JsonValue JsonPath::resolve(const JsonValue& top_root) const
+JsonValue JsonPath::resolve(JsonValue const& top_root) const
 {
     auto root = top_root;
     for (auto const& element : *this) {
         switch (element.kind()) {
         case JsonPathElement::Kind::Key:
-            root = JsonValue { root.as_object().get(element.key()) };
+            root = JsonValue { root.as_object().get(element.key()).value() };
             break;
         case JsonPathElement::Kind::Index:
             root = JsonValue { root.as_array().at(element.index()) };
@@ -31,16 +31,16 @@ JsonValue JsonPath::resolve(const JsonValue& top_root) const
     return root;
 }
 
-String JsonPath::to_string() const
+DeprecatedString JsonPath::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("{ .");
+    builder.append("{ ."sv);
     for (auto const& el : *this) {
-        builder.append(" > ");
-        builder.append(el.to_string());
+        builder.append("sv > "sv);
+        builder.append(el.to_deprecated_string());
     }
-    builder.append(" }");
-    return builder.to_string();
+    builder.append("sv }"sv);
+    return builder.to_deprecated_string();
 }
 
 }

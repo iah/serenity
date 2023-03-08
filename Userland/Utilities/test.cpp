@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,14 +8,15 @@
 #include <AK/LexicalPath.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
-#include <LibCore/File.h>
+#include <LibCore/System.h>
+#include <LibMain/Main.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 bool g_there_was_an_error = false;
 
-[[noreturn, gnu::format(printf, 1, 2)]] static void fatal_error(const char* format, ...)
+[[noreturn, gnu::format(printf, 1, 2)]] static void fatal_error(char const* format, ...)
 {
     fputs("\033[31m", stderr);
 
@@ -30,7 +31,7 @@ bool g_there_was_an_error = false;
 
 class Condition {
 public:
-    virtual ~Condition() { }
+    virtual ~Condition() = default;
     virtual bool check() const = 0;
 };
 
@@ -142,7 +143,7 @@ private:
         }
     }
 
-    String m_path;
+    DeprecatedString m_path;
     Kind m_kind { Regular };
 };
 
@@ -177,8 +178,91 @@ private:
         }
     }
 
-    String m_path;
+    DeprecatedString m_path;
     Permission m_kind { Read };
+};
+
+class FileHasFlag : public Condition {
+public:
+    enum Flag {
+        SGID,
+        SUID,
+        SVTX,
+    };
+    FileHasFlag(StringView path, Flag kind)
+        : m_path(path)
+        , m_kind(kind)
+    {
+    }
+
+private:
+    virtual bool check() const override
+    {
+        struct stat statbuf;
+        int rc = stat(m_path.characters(), &statbuf);
+
+        if (rc < 0) {
+            if (errno != ENOENT) {
+                perror(m_path.characters());
+                g_there_was_an_error = true;
+            }
+            return false;
+        }
+
+        switch (m_kind) {
+        case SGID:
+            return statbuf.st_mode & S_ISGID;
+        case SUID:
+            return statbuf.st_mode & S_ISUID;
+        case SVTX:
+            return statbuf.st_mode & S_ISVTX;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    DeprecatedString m_path;
+    Flag m_kind { SGID };
+};
+
+class FileIsOwnedBy : public Condition {
+public:
+    enum Owner {
+        EffectiveGID,
+        EffectiveUID,
+    };
+    FileIsOwnedBy(StringView path, Owner kind)
+        : m_path(path)
+        , m_kind(kind)
+    {
+    }
+
+private:
+    virtual bool check() const override
+    {
+        struct stat statbuf;
+        int rc = stat(m_path.characters(), &statbuf);
+
+        if (rc < 0) {
+            if (errno != ENOENT) {
+                perror(m_path.characters());
+                g_there_was_an_error = true;
+            }
+            return false;
+        }
+
+        switch (m_kind) {
+        case EffectiveGID:
+            return statbuf.st_gid == getgid();
+        case EffectiveUID:
+            return statbuf.st_uid == getuid();
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    DeprecatedString m_path;
+    Owner m_kind { EffectiveGID };
 };
 
 class StringCompare : public Condition {
@@ -219,7 +303,7 @@ public:
         NotEqual,
     };
 
-    NumericCompare(String lhs, String rhs, Mode mode)
+    NumericCompare(DeprecatedString lhs, DeprecatedString rhs, Mode mode)
         : m_mode(mode)
     {
         auto lhs_option = lhs.trim_whitespace().to_int();
@@ -269,7 +353,7 @@ public:
         ModificationTimestampLess,
     };
 
-    FileCompare(String lhs, String rhs, Mode mode)
+    FileCompare(DeprecatedString lhs, DeprecatedString rhs, Mode mode)
         : m_lhs(move(lhs))
         , m_rhs(move(rhs))
         , m_mode(mode)
@@ -309,8 +393,8 @@ private:
         }
     }
 
-    String m_lhs;
-    String m_rhs;
+    DeprecatedString m_lhs;
+    DeprecatedString m_rhs;
     Mode m_mode { Same };
 };
 
@@ -323,7 +407,7 @@ static bool should_treat_expression_as_single_string(StringView arg_after)
 
 static OwnPtr<Condition> parse_simple_expression(char* argv[])
 {
-    StringView arg = argv[optind];
+    StringView arg { argv[optind], strlen(argv[optind]) };
     if (arg.is_null()) {
         return {};
     }
@@ -331,20 +415,25 @@ static OwnPtr<Condition> parse_simple_expression(char* argv[])
     if (arg == "(") {
         optind++;
         auto command = parse_complex_expression(argv);
-        if (command && argv[optind] && StringView(argv[++optind]) == ")")
-            return command;
+        if (command && argv[optind]) {
+            auto const* next_option = argv[++optind];
+            if (StringView { next_option, strlen(next_option) } == ")")
+                return command;
+        }
+
         fatal_error("Unmatched \033[1m(");
     }
 
     // Try to read a unary op.
     if (arg.starts_with('-') && arg.length() == 2) {
-        optind++;
-        if (should_treat_expression_as_single_string(argv[optind])) {
+        if (argv[++optind] == nullptr)
+            fatal_error("expected an argument");
+        if (should_treat_expression_as_single_string({ argv[optind], strlen(argv[optind]) })) {
             --optind;
-            return make<StringCompare>(move(arg), "", StringCompare::NotEqual);
+            return make<StringCompare>(move(arg), ""sv, StringCompare::NotEqual);
         }
 
-        StringView value = argv[optind];
+        StringView value { argv[optind], strlen(argv[optind]) };
         switch (arg[1]) {
         case 'b':
             return make<FileIsOfKind>(value, FileIsOfKind::BlockDevice);
@@ -369,6 +458,12 @@ static OwnPtr<Condition> parse_simple_expression(char* argv[])
             return make<UserHasPermission>(value, UserHasPermission::Execute);
         case 'e':
             return make<UserHasPermission>(value, UserHasPermission::Any);
+        case 'g':
+            return make<FileHasFlag>(value, FileHasFlag::SGID);
+        case 'k':
+            return make<FileHasFlag>(value, FileHasFlag::SVTX);
+        case 'u':
+            return make<FileHasFlag>(value, FileHasFlag::SUID);
         case 'o':
         case 'a':
             // '-a' and '-o' are boolean ops, which are part of a complex expression
@@ -376,69 +471,78 @@ static OwnPtr<Condition> parse_simple_expression(char* argv[])
             --optind;
             return {};
         case 'n':
-            return make<StringCompare>("", value, StringCompare::NotEqual);
+            return make<StringCompare>(""sv, value, StringCompare::NotEqual);
         case 'z':
-            return make<StringCompare>("", value, StringCompare::Equal);
-        case 'g':
+            return make<StringCompare>(""sv, value, StringCompare::Equal);
         case 'G':
-        case 'k':
-        case 'N':
+            return make<FileIsOwnedBy>(value, FileIsOwnedBy::EffectiveGID);
         case 'O':
+            return make<FileIsOwnedBy>(value, FileIsOwnedBy::EffectiveUID);
+        case 'N':
         case 's':
-            fatal_error("Unsupported operator \033[1m%s", argv[optind]);
+            // 'optind' has been incremented to refer to the argument after the
+            // operator, while we want to print the operator itself.
+            fatal_error("Unsupported operator \033[1m%s", argv[optind - 1]);
         default:
             --optind;
             break;
         }
     }
 
+    auto get_next_arg = [&argv]() -> StringView {
+        auto const* next_arg = argv[++optind];
+        if (next_arg == NULL)
+            return StringView {};
+        return StringView { next_arg, strlen(next_arg) };
+    };
+
     // Try to read a binary op, this is either a <string> op <string>, <integer> op <integer>, or <file> op <file>.
     auto lhs = arg;
-    arg = argv[++optind];
+    arg = get_next_arg();
 
     if (arg == "=") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<StringCompare>(lhs, rhs, StringCompare::Equal);
     } else if (arg == "!=") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<StringCompare>(lhs, rhs, StringCompare::NotEqual);
     } else if (arg == "-eq") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::Equal);
     } else if (arg == "-ge") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::GreaterOrEqual);
     } else if (arg == "-gt") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::Greater);
     } else if (arg == "-le") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::LessOrEqual);
     } else if (arg == "-lt") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::Less);
     } else if (arg == "-ne") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<NumericCompare>(lhs, rhs, NumericCompare::NotEqual);
     } else if (arg == "-ef") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<FileCompare>(lhs, rhs, FileCompare::Same);
     } else if (arg == "-nt") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<FileCompare>(lhs, rhs, FileCompare::ModificationTimestampGreater);
     } else if (arg == "-ot") {
-        StringView rhs = argv[++optind];
+        StringView rhs = get_next_arg();
         return make<FileCompare>(lhs, rhs, FileCompare::ModificationTimestampLess);
     } else if (arg == "-o" || arg == "-a") {
         // '-a' and '-o' are boolean ops, which are part of a complex expression
         // put them back and return with lhs as string compare.
         --optind;
-        return make<StringCompare>("", lhs, StringCompare::NotEqual);
+        return make<StringCompare>(""sv, lhs, StringCompare::NotEqual);
     } else {
         // Now that we know it's not a well-formed expression, see if it's actually a negation
         if (lhs == "!") {
             if (should_treat_expression_as_single_string(arg))
-                return make<StringCompare>(move(lhs), "", StringCompare::NotEqual);
+                return make<StringCompare>(move(lhs), ""sv, StringCompare::NotEqual);
 
             auto command = parse_complex_expression(argv);
             if (!command)
@@ -447,7 +551,7 @@ static OwnPtr<Condition> parse_simple_expression(char* argv[])
             return make<Not>(command.release_nonnull());
         }
         --optind;
-        return make<StringCompare>("", lhs, StringCompare::NotEqual);
+        return make<StringCompare>(""sv, lhs, StringCompare::NotEqual);
     }
 }
 
@@ -459,7 +563,8 @@ static OwnPtr<Condition> parse_complex_expression(char* argv[])
         if (!command && argv[optind])
             fatal_error("expected an expression");
 
-        StringView arg = argv[++optind];
+        auto const* arg_ptr = argv[++optind];
+        StringView arg { arg_ptr, strlen(arg_ptr) };
 
         enum {
             AndOp,
@@ -467,10 +572,12 @@ static OwnPtr<Condition> parse_complex_expression(char* argv[])
         } binary_operation { AndOp };
 
         if (arg == "-a") {
-            optind++;
+            if (argv[++optind] == nullptr)
+                fatal_error("expected an expression");
             binary_operation = AndOp;
         } else if (arg == "-o") {
-            optind++;
+            if (argv[++optind] == nullptr)
+                fatal_error("expected an expression");
             binary_operation = OrOp;
         } else {
             // Ooops, looked too far.
@@ -490,25 +597,27 @@ static OwnPtr<Condition> parse_complex_expression(char* argv[])
     return command;
 }
 
-int main(int argc, char* argv[])
+ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    if (pledge("stdio rpath", nullptr) < 0) {
-        perror("pledge");
+    auto maybe_error = Core::System::pledge("stdio rpath");
+    if (maybe_error.is_error()) {
+        warnln("{}", maybe_error.error());
         return 126;
     }
 
-    if (LexicalPath::basename(argv[0]) == "[") {
+    int argc = arguments.argc;
+    if (LexicalPath::basename(arguments.strings[0]) == "[") {
         --argc;
-        if (StringView { argv[argc] } != "]")
+        if (StringView { arguments.strings[argc] } != "]")
             fatal_error("test invoked as '[' requires a closing bracket ']'");
-        argv[argc] = nullptr;
+        arguments.strings[argc] = {};
     }
 
     // Exit false when no arguments are given.
     if (argc == 1)
         return 1;
 
-    auto condition = parse_complex_expression(argv);
+    auto condition = parse_complex_expression(arguments.argv);
     if (optind != argc - 1)
         fatal_error("Too many arguments");
     auto result = condition ? condition->check() : false;

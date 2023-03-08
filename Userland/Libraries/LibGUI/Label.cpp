@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,18 +10,20 @@
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Palette.h>
-#include <LibGfx/TextLayout.h>
 #include <LibGfx/TextWrapping.h>
 
 REGISTER_WIDGET(GUI, Label)
 
 namespace GUI {
 
-Label::Label(String text)
+Label::Label(DeprecatedString text)
     : m_text(move(text))
 {
     REGISTER_TEXT_ALIGNMENT_PROPERTY("text_alignment", text_alignment, set_text_alignment);
     REGISTER_TEXT_WRAPPING_PROPERTY("text_wrapping", text_wrapping, set_text_wrapping);
+
+    set_preferred_size({ SpecialDimension::OpportunisticGrow });
+    set_min_height(22);
 
     set_frame_thickness(0);
     set_frame_shadow(Gfx::FrameShadow::Plain);
@@ -30,23 +33,20 @@ Label::Label(String text)
 
     REGISTER_STRING_PROPERTY("text", text, set_text);
     REGISTER_BOOL_PROPERTY("autosize", is_autosize, set_autosize);
-    REGISTER_STRING_PROPERTY("icon", icon, set_icon_from_path);
+    REGISTER_WRITE_ONLY_STRING_PROPERTY("icon", set_icon_from_path);
 }
 
-Label::~Label()
+void Label::set_autosize(bool autosize, size_t padding)
 {
-}
-
-void Label::set_autosize(bool autosize)
-{
-    if (m_autosize == autosize)
+    if (m_autosize == autosize && m_autosize_padding == padding)
         return;
     m_autosize = autosize;
+    m_autosize_padding = padding;
     if (m_autosize)
         size_to_fit();
 }
 
-void Label::set_icon(const Gfx::Bitmap* icon)
+void Label::set_icon(Gfx::Bitmap const* icon)
 {
     if (m_icon == icon)
         return;
@@ -54,9 +54,9 @@ void Label::set_icon(const Gfx::Bitmap* icon)
     update();
 }
 
-void Label::set_icon_from_path(String const& path)
+void Label::set_icon_from_path(DeprecatedString const& path)
 {
-    auto maybe_bitmap = Gfx::Bitmap::try_load_from_file(path);
+    auto maybe_bitmap = Gfx::Bitmap::load_from_file(path);
     if (maybe_bitmap.is_error()) {
         dbgln("Unable to load bitmap `{}` for label icon", path);
         return;
@@ -64,7 +64,7 @@ void Label::set_icon_from_path(String const& path)
     set_icon(maybe_bitmap.release_value());
 }
 
-void Label::set_text(String text)
+void Label::set_text(DeprecatedString text)
 {
     if (text == m_text)
         return;
@@ -104,20 +104,29 @@ void Label::paint_event(PaintEvent& event)
     if (is_enabled()) {
         painter.draw_text(text_rect, text(), text_alignment(), palette().color(foreground_role()), Gfx::TextElision::Right, text_wrapping());
     } else {
-        painter.draw_text(text_rect.translated(1, 1), text(), font(), text_alignment(), Color::White, Gfx::TextElision::Right, text_wrapping());
-        painter.draw_text(text_rect, text(), font(), text_alignment(), Color::from_rgb(0x808080), Gfx::TextElision::Right, text_wrapping());
+        painter.draw_text(text_rect.translated(1, 1), text(), font(), text_alignment(), palette().disabled_text_back(), Gfx::TextElision::Right, text_wrapping());
+        painter.draw_text(text_rect, text(), font(), text_alignment(), palette().disabled_text_front(), Gfx::TextElision::Right, text_wrapping());
     }
 }
 
 void Label::size_to_fit()
 {
-    set_fixed_width(font().width(m_text));
+    set_fixed_width(text_calculated_preferred_width());
 }
 
-int Label::preferred_height() const
+int Label::text_calculated_preferred_width() const
 {
-    // FIXME: The 4 is taken from Gfx::Painter and should be available as
-    //        a constant instead.
-    return Gfx::TextLayout(&font(), Utf8View { m_text }, text_rect()).bounding_rect(Gfx::TextWrapping::Wrap, 4).height();
+    return static_cast<int>(ceilf(font().width(m_text))) + m_autosize_padding * 2;
 }
+
+int Label::text_calculated_preferred_height() const
+{
+    return static_cast<int>(ceilf(font().preferred_line_height()) * (m_text.count("\n"sv) + 1));
+}
+
+Optional<UISize> Label::calculated_preferred_size() const
+{
+    return GUI::UISize(text_calculated_preferred_width(), text_calculated_preferred_height());
+}
+
 }

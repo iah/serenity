@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <RequestServer/ClientConnection.h>
+#include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/Request.h>
 
 namespace RequestServer {
@@ -12,14 +12,10 @@ namespace RequestServer {
 // FIXME: What about rollover?
 static i32 s_next_id = 1;
 
-Request::Request(ClientConnection& client, NonnullOwnPtr<Core::Stream::File>&& output_stream)
+Request::Request(ConnectionFromClient& client, NonnullOwnPtr<Core::File>&& output_stream)
     : m_client(client)
     , m_id(s_next_id++)
     , m_output_stream(move(output_stream))
-{
-}
-
-Request::~Request()
 {
 }
 
@@ -28,13 +24,13 @@ void Request::stop()
     m_client.did_finish_request({}, *this, false);
 }
 
-void Request::set_response_headers(const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers)
+void Request::set_response_headers(HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers)
 {
     m_response_headers = response_headers;
     m_client.did_receive_headers({}, *this);
 }
 
-void Request::set_certificate(String, String)
+void Request::set_certificate(DeprecatedString, DeprecatedString)
 {
 }
 

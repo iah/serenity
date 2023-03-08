@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,7 +12,7 @@ namespace VT {
 
 class Range {
 public:
-    Range() { }
+    Range() = default;
     Range(const VT::Position& start, const VT::Position& end)
         : m_start(start)
         , m_end(end)
@@ -48,7 +48,7 @@ public:
         m_end = Position(m_end.row() + delta, m_end.column());
     }
 
-    bool operator==(const Range& other) const
+    bool operator==(Range const& other) const
     {
         return m_start == other.m_start && m_end == other.m_end;
     }

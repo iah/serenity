@@ -7,7 +7,7 @@
 
 #include <AK/Assertions.h>
 #include <AK/Types.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibTest/TestCase.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define EXPECT_ERROR_2(err, syscall, arg1, arg2)                                                                                   \
@@ -170,9 +171,9 @@ TEST_CASE(tmpfs_read_past_end)
     VERIFY(rc == 0);
 }
 
-TEST_CASE(procfs_read_past_end)
+TEST_CASE(sysfs_read_past_uptime_end)
 {
-    int fd = open("/proc/uptime", O_RDONLY);
+    int fd = open("/sys/kernel/uptime", O_RDONLY);
     VERIFY(fd >= 0);
 
     int rc = lseek(fd, 4096, SEEK_SET);
@@ -216,7 +217,10 @@ TEST_CASE(unlink_symlink)
         perror("symlink");
     }
 
-    auto target = Core::File::read_link("/tmp/linky");
+    auto target_or_error = Core::DeprecatedFile::read_link("/tmp/linky");
+    EXPECT(!target_or_error.is_error());
+
+    auto target = target_or_error.release_value();
     EXPECT_EQ(target, "/proc/2/foo");
 
     rc = unlink("/tmp/linky");
@@ -291,8 +295,7 @@ TEST_CASE(tmpfs_massive_file)
     [[maybe_unused]] auto ignored = strlcpy(buffer, "abcdefghijklmno", sizeof(buffer) - 1);
 
     rc = write(fd, buffer, sizeof(buffer));
-    EXPECT_EQ(rc, -1);
-    EXPECT_EQ(errno, ENOMEM);
+    EXPECT_EQ(rc, 16);
 
     // ok now, write something to it, and try again
     rc = lseek(fd, 0, SEEK_SET);
@@ -304,15 +307,96 @@ TEST_CASE(tmpfs_massive_file)
     rc = lseek(fd, INT32_MAX, SEEK_SET);
     EXPECT_EQ(rc, INT32_MAX);
 
-    // FIXME: Should this return EOVERFLOW? Or is a 0 read fine?
     memset(buffer, 0, sizeof(buffer));
     rc = read(fd, buffer, sizeof(buffer));
-    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(rc, 16);
     EXPECT(buffer != "abcdefghijklmno"sv);
 
     rc = close(fd);
     EXPECT_EQ(rc, 0);
     rc = unlink("/tmp/x");
+    EXPECT_EQ(rc, 0);
+}
+
+TEST_CASE(rmdir_dot)
+{
+    int rc = mkdir("/home/anon/rmdir-test-1", 0700);
+    EXPECT_EQ(rc, 0);
+
+    rc = rmdir("/home/anon/rmdir-test-1/.");
+    EXPECT_NE(rc, 0);
+    EXPECT_EQ(errno, EINVAL);
+
+    rc = chdir("/home/anon/rmdir-test-1");
+    EXPECT_EQ(rc, 0);
+
+    rc = rmdir(".");
+    VERIFY(rc != 0);
+    EXPECT_EQ(errno, EINVAL);
+
+    rc = rmdir("/home/anon/rmdir-test-1");
+    EXPECT_EQ(rc, 0);
+}
+
+TEST_CASE(rmdir_dot_dot)
+{
+    int rc = mkdir("/home/anon/rmdir-test-2", 0700);
+    EXPECT_EQ(rc, 0);
+
+    rc = mkdir("/home/anon/rmdir-test-2/foo", 0700);
+    EXPECT_EQ(rc, 0);
+
+    rc = rmdir("/home/anon/rmdir-test-2/foo/..");
+    EXPECT_NE(rc, 0);
+    EXPECT_EQ(errno, ENOTEMPTY);
+
+    rc = rmdir("/home/anon/rmdir-test-2/foo");
+    EXPECT_EQ(rc, 0);
+
+    rc = rmdir("/home/anon/rmdir-test-2");
+    EXPECT_EQ(rc, 0);
+}
+
+TEST_CASE(rmdir_someone_elses_directory_in_my_sticky_directory)
+{
+    // NOTE: This test only works when run as root, since it has to chown a directory to someone else.
+    if (getuid() != 0)
+        return;
+
+    // Create /tmp/sticky-dir a sticky directory owned by 12345:12345
+    // Then, create /tmp/sticky-dir/notmine, a normal directory owned by 23456:23456
+    // Then, fork and seteuid to 12345, and try to rmdir the "notmine" directory. This should succeed.
+    // In the parent, waitpid on the child, and finally rmdir /tmp/sticky-dir
+
+    int rc = mkdir("/tmp/sticky-dir", 01777);
+    EXPECT_EQ(rc, 0);
+
+    rc = chown("/tmp/sticky-dir", 12345, 12345);
+    EXPECT_EQ(rc, 0);
+
+    rc = mkdir("/tmp/sticky-dir/notmine", 0700);
+    EXPECT_EQ(rc, 0);
+
+    rc = chown("/tmp/sticky-dir/notmine", 23456, 23456);
+    EXPECT_EQ(rc, 0);
+
+    int pid = fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        // We are in the child.
+        rc = seteuid(12345);
+        EXPECT_EQ(rc, 0);
+
+        rc = rmdir("/tmp/sticky-dir/notmine");
+        EXPECT_EQ(rc, 0);
+        _exit(0);
+    }
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    rc = rmdir("/tmp/sticky-dir");
     EXPECT_EQ(rc, 0);
 }
 
@@ -345,9 +429,9 @@ TEST_CASE(writev)
     EXPECT(rc == 0);
 
     iovec iov[2];
-    iov[0].iov_base = const_cast<void*>((const void*)"Hello");
+    iov[0].iov_base = const_cast<void*>((void const*)"Hello");
     iov[0].iov_len = 5;
-    iov[1].iov_base = const_cast<void*>((const void*)"Friends");
+    iov[1].iov_base = const_cast<void*>((void const*)"Friends");
     iov[1].iov_len = 7;
     int nwritten = writev(pipefds[1], iov, 2);
     EXPECT_EQ(nwritten, 12);
@@ -388,7 +472,7 @@ TEST_CASE(open_silly_things)
     EXPECT_ERROR_2(EINVAL, open, "/dev/zero", (O_DIRECTORY | O_CREAT | O_RDWR));
     EXPECT_ERROR_2(EEXIST, open, "/dev/zero", (O_CREAT | O_EXCL | O_RDWR));
     EXPECT_ERROR_2(EINVAL, open, "/tmp/abcdef", (O_DIRECTORY | O_CREAT | O_RDWR));
-    EXPECT_ERROR_2(EACCES, open, "/proc/all", (O_RDWR));
+    EXPECT_ERROR_2(EACCES, open, "/sys/kernel/processes", (O_RDWR));
     EXPECT_ERROR_2(ENOENT, open, "/boof/baaf/nonexistent", (O_CREAT | O_RDWR));
     EXPECT_ERROR_2(EISDIR, open, "/tmp", (O_DIRECTORY | O_RDWR));
     EXPECT_ERROR_2(EPERM, link, "/", "/home/anon/lolroot");

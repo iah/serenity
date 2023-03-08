@@ -13,8 +13,14 @@ FileBackedFileSystem::FileBackedFileSystem(OpenFileDescription& file_description
 {
 }
 
-FileBackedFileSystem::~FileBackedFileSystem()
+FileBackedFileSystem::~FileBackedFileSystem() = default;
+
+ErrorOr<void> FileBackedFileSystem::initialize()
 {
+    MutexLocker locker(m_lock);
+    if (is_initialized_while_locked())
+        return {};
+    return initialize_while_locked();
 }
 
 }

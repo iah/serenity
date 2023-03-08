@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Format.h>
 #include <LibSQL/BTree.h>
 
 namespace SQL {
@@ -232,7 +231,7 @@ bool BTreeIterator::update(Key const& new_value)
 
     // We are friend of BTree and TreeNode. Don't know how I feel about that.
     m_current->m_entries[m_index] = new_value;
-    m_current->tree().serializer().serialize_and_write(*m_current, m_current->pointer());
+    m_current->tree().serializer().serialize_and_write(*m_current);
     return true;
 }
 

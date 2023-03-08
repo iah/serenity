@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,13 +15,13 @@ namespace WindowServer {
 
 class Cursor : public RefCounted<Cursor> {
 public:
-    static RefPtr<Cursor> create(StringView, StringView);
-    static NonnullRefPtr<Cursor> create(NonnullRefPtr<Gfx::Bitmap>&&, int);
-    static RefPtr<Cursor> create(Gfx::StandardCursor);
+    static RefPtr<Cursor const> create(StringView, StringView);
+    static NonnullRefPtr<Cursor const> create(NonnullRefPtr<Gfx::Bitmap const>&&, int);
+    static RefPtr<Cursor const> create(Gfx::StandardCursor);
     ~Cursor() = default;
 
-    const Gfx::CursorParams& params() const { return m_params; }
-    const Gfx::Bitmap& bitmap(int scale_factor) const
+    Gfx::CursorParams const& params() const { return m_params; }
+    Gfx::Bitmap const& bitmap(int scale_factor) const
     {
         auto it = m_bitmaps.find(scale_factor);
         if (it == m_bitmaps.end()) {
@@ -46,13 +46,13 @@ public:
     Gfx::IntSize size() const { return m_rect.size(); }
 
 private:
-    Cursor() { }
-    Cursor(NonnullRefPtr<Gfx::Bitmap>&&, int, const Gfx::CursorParams&);
+    Cursor() = default;
+    Cursor(NonnullRefPtr<Gfx::Bitmap const>&&, int, Gfx::CursorParams const&);
 
     bool load(StringView, StringView);
     void update_rect_if_animated();
 
-    HashMap<int, NonnullRefPtr<Gfx::Bitmap>> m_bitmaps;
+    HashMap<int, NonnullRefPtr<Gfx::Bitmap const>> m_bitmaps;
     Gfx::CursorParams m_params;
     Gfx::IntRect m_rect;
 };

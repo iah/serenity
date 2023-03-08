@@ -38,12 +38,12 @@ static USBConfigurationDescriptor uhci_root_hub_configuration_descriptor = {
         sizeof(USBConfigurationDescriptor), // 9 bytes long
         DESCRIPTOR_TYPE_CONFIGURATION,
     },
-    sizeof(USBConfigurationDescriptor) + sizeof(USBInterfaceDescriptor) + sizeof(USBEndpointDescriptor) + sizeof(USBHubDescriptor), // Combined length of configuration, interface, endpoint and hub descriptors.
-    1,                                                                                                                              // One interface descriptor
-    1,                                                                                                                              // Configuration #1
-    0,                                                                                                                              // Index of configuration string. FIXME: There is currently no support for string descriptors.
-    (1 << 7) | (1 << 6),                                                                                                            // Bit 6 is set to indicate that the root hub is self powered. Bit 7 must always be 1.
-    0,                                                                                                                              // 0 mA required from the bus (self-powered)
+    sizeof(USBConfigurationDescriptor) + sizeof(USBInterfaceDescriptor) + sizeof(USBEndpointDescriptor), // Combined length of configuration, interface and endpoint and descriptors.
+    1,                                                                                                   // One interface descriptor
+    1,                                                                                                   // Configuration #1
+    0,                                                                                                   // Index of configuration string. FIXME: There is currently no support for string descriptors.
+    (1 << 7) | (1 << 6),                                                                                 // Bit 6 is set to indicate that the root hub is self powered. Bit 7 must always be 1.
+    0,                                                                                                   // 0 mA required from the bus (self-powered)
 };
 
 static USBInterfaceDescriptor uhci_root_hub_interface_descriptor = {
@@ -83,12 +83,12 @@ static USBHubDescriptor uhci_root_hub_hub_descriptor = {
     0x0,                                  // Self-powered
 };
 
-ErrorOr<NonnullOwnPtr<UHCIRootHub>> UHCIRootHub::try_create(NonnullRefPtr<UHCIController> uhci_controller)
+ErrorOr<NonnullOwnPtr<UHCIRootHub>> UHCIRootHub::try_create(NonnullLockRefPtr<UHCIController> uhci_controller)
 {
     return adopt_nonnull_own_or_enomem(new (nothrow) UHCIRootHub(move(uhci_controller)));
 }
 
-UHCIRootHub::UHCIRootHub(NonnullRefPtr<UHCIController> uhci_controller)
+UHCIRootHub::UHCIRootHub(NonnullLockRefPtr<UHCIController> uhci_controller)
     : m_uhci_controller(move(uhci_controller))
 {
 }
@@ -153,11 +153,19 @@ ErrorOr<size_t> UHCIRootHub::handle_control_transfer(Transfer& transfer)
             VERIFY(length <= sizeof(USBDeviceDescriptor));
             memcpy(request_data, (void*)&uhci_root_hub_device_descriptor, length);
             break;
-        case DESCRIPTOR_TYPE_CONFIGURATION:
-            length = min(transfer.transfer_data_size(), sizeof(USBConfigurationDescriptor));
-            VERIFY(length <= sizeof(USBConfigurationDescriptor));
-            memcpy(request_data, (void*)&uhci_root_hub_configuration_descriptor, length);
+        case DESCRIPTOR_TYPE_CONFIGURATION: {
+            auto index = 0u;
+
+            // Send over the whole descriptor chain
+            length = uhci_root_hub_configuration_descriptor.total_length;
+            VERIFY(length <= sizeof(USBConfigurationDescriptor) + sizeof(USBInterfaceDescriptor) + sizeof(USBEndpointDescriptor));
+            memcpy(request_data, (void*)&uhci_root_hub_configuration_descriptor, sizeof(USBConfigurationDescriptor));
+            index += sizeof(uhci_root_hub_configuration_descriptor);
+            memcpy(request_data + index, (void*)&uhci_root_hub_interface_descriptor, sizeof(USBInterfaceDescriptor));
+            index += sizeof(uhci_root_hub_interface_descriptor);
+            memcpy(request_data + index, (void*)&uhci_root_hub_endpoint_descriptor, sizeof(USBEndpointDescriptor));
             break;
+        }
         case DESCRIPTOR_TYPE_INTERFACE:
             length = min(transfer.transfer_data_size(), sizeof(USBInterfaceDescriptor));
             VERIFY(length <= sizeof(USBInterfaceDescriptor));

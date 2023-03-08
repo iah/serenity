@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,13 +8,14 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/ColorPicker.h>
+#include <LibGUI/ConnectionToWindowServer.h>
 #include <LibGUI/Frame.h>
 #include <LibGUI/Label.h>
+#include <LibGUI/OpacitySlider.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/SpinBox.h>
 #include <LibGUI/TabWidget.h>
 #include <LibGUI/TextBox.h>
-#include <LibGUI/WindowServerConnection.h>
 #include <LibGfx/Palette.h>
 
 namespace GUI {
@@ -22,7 +24,7 @@ class ColorButton : public AbstractButton {
     C_OBJECT(ColorButton);
 
 public:
-    virtual ~ColorButton() override;
+    virtual ~ColorButton() override = default;
 
     void set_selected(bool selected);
     Color color() const { return m_color; }
@@ -146,7 +148,7 @@ public:
         return m_col;
     }
 
-    virtual ~ColorSelectOverlay() override { }
+    virtual ~ColorSelectOverlay() override = default;
     Function<void(Color)> on_color_changed;
 
 private:
@@ -158,7 +160,7 @@ private:
     virtual void mousedown_event(GUI::MouseEvent&) override { m_event_loop->quit(1); }
     virtual void mousemove_event(GUI::MouseEvent&) override
     {
-        auto new_col = WindowServerConnection::the().get_color_under_cursor();
+        auto new_col = ConnectionToWindowServer::the().get_color_under_cursor();
         if (!new_col.has_value())
             return;
         if (new_col == m_col)
@@ -181,20 +183,16 @@ private:
     Color m_col;
 };
 
-ColorPicker::ColorPicker(Color color, Window* parent_window, String title)
+ColorPicker::ColorPicker(Color color, Window* parent_window, DeprecatedString title)
     : Dialog(parent_window)
     , m_color(color)
 {
-    set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/color-chooser.png").release_value_but_fixme_should_propagate_errors());
+    set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/color-chooser.png"sv).release_value_but_fixme_should_propagate_errors());
     set_title(title);
     set_resizable(false);
-    resize(458, 326);
+    resize(480, 326);
 
     build_ui();
-}
-
-ColorPicker::~ColorPicker()
-{
 }
 
 void ColorPicker::set_color_has_alpha_channel(bool has_alpha)
@@ -208,45 +206,38 @@ void ColorPicker::set_color_has_alpha_channel(bool has_alpha)
 
 void ColorPicker::build_ui()
 {
-    auto& root_container = set_main_widget<Widget>();
-    root_container.set_layout<VerticalBoxLayout>();
-    root_container.layout()->set_margins(4);
-    root_container.set_fill_with_background_color(true);
+    auto root_container = set_main_widget<Widget>().release_value_but_fixme_should_propagate_errors();
+    root_container->set_layout<VerticalBoxLayout>(4);
+    root_container->set_fill_with_background_color(true);
 
-    auto& tab_widget = root_container.add<GUI::TabWidget>();
+    auto& tab_widget = root_container->add<GUI::TabWidget>();
 
     auto& tab_palette = tab_widget.add_tab<Widget>("Palette");
-    tab_palette.set_layout<VerticalBoxLayout>();
-    tab_palette.layout()->set_margins(4);
-    tab_palette.layout()->set_spacing(4);
+    tab_palette.set_layout<VerticalBoxLayout>(4, 4);
 
     build_ui_palette(tab_palette);
 
     auto& tab_custom_color = tab_widget.add_tab<Widget>("Custom Color");
-    tab_custom_color.set_layout<VerticalBoxLayout>();
-    tab_custom_color.layout()->set_margins(4);
-    tab_custom_color.layout()->set_spacing(4);
+    tab_custom_color.set_layout<VerticalBoxLayout>(4, 4);
 
     build_ui_custom(tab_custom_color);
 
-    auto& button_container = root_container.add<Widget>();
-    button_container.set_fixed_height(22);
-    button_container.set_layout<HorizontalBoxLayout>();
-    button_container.layout()->set_spacing(4);
-    button_container.layout()->add_spacer();
+    auto& button_container = root_container->add<Widget>();
+    button_container.set_preferred_height(GUI::SpecialDimension::Fit);
+    button_container.set_layout<HorizontalBoxLayout>(4);
+    button_container.add_spacer().release_value_but_fixme_should_propagate_errors();
 
-    auto& ok_button = button_container.add<Button>();
-    ok_button.set_fixed_width(80);
-    ok_button.set_text("OK");
+    auto& ok_button = button_container.add<DialogButton>();
+    ok_button.set_text("OK"_short_string);
     ok_button.on_click = [this](auto) {
-        done(ExecOK);
+        done(ExecResult::OK);
     };
+    ok_button.set_default(true);
 
-    auto& cancel_button = button_container.add<Button>();
-    cancel_button.set_fixed_width(80);
-    cancel_button.set_text("Cancel");
+    auto& cancel_button = button_container.add<DialogButton>();
+    cancel_button.set_text("Cancel"_short_string);
     cancel_button.on_click = [this](auto) {
-        done(ExecCancel);
+        done(ExecResult::Cancel);
     };
 }
 
@@ -284,25 +275,45 @@ void ColorPicker::build_ui_custom(Widget& root_container)
 
     // Left Side
     m_custom_color = horizontal_container.add<CustomColorWidget>(m_color);
-    m_custom_color->set_fixed_size(299, 260);
+    m_custom_color->set_preferred_size(299, 260);
     m_custom_color->on_pick = [this](Color color) {
+        if (m_color == color) {
+            // NOTE: This call to update() is needed so that when changing the vertical color slider with the initial Color::White
+            //       selected value (which doesn't change with that slider as in all the slider's values the new color at that position
+            //       will still be Color::White) the spinbox colors are updated.
+            update();
+            return;
+        }
+
+        m_alpha->set_base_color(color);
+        m_color = color;
+        update_color_widgets();
+    };
+
+    m_alpha = horizontal_container.add<GUI::VerticalOpacitySlider>();
+    m_alpha->set_visible(m_color_has_alpha_channel);
+    m_alpha->set_min(0);
+    m_alpha->set_max(255);
+    m_alpha->set_value(m_color.alpha());
+    m_alpha->on_change = [this](auto value) {
+        auto color = m_color;
+        color.set_alpha(value);
+
         if (m_color == color)
             return;
 
         m_color = color;
+        m_custom_color->set_color(color);
         update_color_widgets();
     };
 
     // Right Side
     auto& vertical_container = horizontal_container.add<Widget>();
-    vertical_container.set_layout<VerticalBoxLayout>();
-    vertical_container.layout()->set_margins({ 0, 0, 0, 8 });
-    vertical_container.set_fixed_width(128);
+    vertical_container.set_layout<VerticalBoxLayout>(GUI::Margins { 0, 0, 0, 8 });
+    vertical_container.set_min_width(120);
 
     auto& preview_container = vertical_container.add<Frame>();
-    preview_container.set_layout<VerticalBoxLayout>();
-    preview_container.layout()->set_margins(2);
-    preview_container.layout()->set_spacing(0);
+    preview_container.set_layout<VerticalBoxLayout>(2, 0);
     preview_container.set_fixed_height(100);
 
     // Current color
@@ -311,24 +322,24 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     // Preview selected color
     m_preview_widget = preview_container.add<ColorPreview>(m_color);
 
-    vertical_container.layout()->add_spacer();
+    vertical_container.add_spacer().release_value_but_fixme_should_propagate_errors();
 
     // HTML
     auto& html_container = vertical_container.add<GUI::Widget>();
     html_container.set_layout<GUI::HorizontalBoxLayout>();
-    html_container.set_fixed_height(22);
+    html_container.set_preferred_height(GUI::SpecialDimension::Fit);
 
     auto& html_label = html_container.add<GUI::Label>();
     html_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-    html_label.set_fixed_width(48);
+    html_label.set_preferred_width(48);
     html_label.set_text("HTML:");
 
     m_html_text = html_container.add<GUI::TextBox>();
-    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_string() : m_color.to_string_without_alpha());
+    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_deprecated_string() : m_color.to_deprecated_string_without_alpha());
     m_html_text->on_change = [this]() {
         auto color_name = m_html_text->text();
         auto optional_color = Color::from_string(color_name);
-        if (optional_color.has_value() && (!color_name.starts_with("#") || color_name.length() == ((m_color_has_alpha_channel) ? 9 : 7))) {
+        if (optional_color.has_value() && (!color_name.starts_with('#') || color_name.length() == ((m_color_has_alpha_channel) ? 9 : 7))) {
             // The color length must be 9/7 (unless it is a name like red), because:
             //    - If we allowed 5/4 character rgb color, the field would reset to 9/7 characters after you deleted 4/3 characters.
             auto color = optional_color.value();
@@ -345,14 +356,13 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     auto make_spinbox = [&](RGBComponent component, int initial_value) {
         auto& rgb_container = vertical_container.add<GUI::Widget>();
         rgb_container.set_layout<GUI::HorizontalBoxLayout>();
-        rgb_container.set_fixed_height(22);
+        rgb_container.set_preferred_height(GUI::SpecialDimension::Fit);
 
         auto& rgb_label = rgb_container.add<GUI::Label>();
         rgb_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        rgb_label.set_fixed_width(48);
+        rgb_label.set_preferred_width(48);
 
         auto& spinbox = rgb_container.add<SpinBox>();
-        spinbox.set_fixed_height(20);
         spinbox.set_min(0);
         spinbox.set_max(255);
         spinbox.set_value(initial_value);
@@ -397,7 +407,7 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     make_spinbox(Blue, m_color.blue());
     make_spinbox(Alpha, m_color.alpha());
 
-    m_selector_button = vertical_container.add<GUI::Button>("Select on screen");
+    m_selector_button = vertical_container.add<GUI::Button>("Select on screen"_string.release_value_but_fixme_should_propagate_errors());
     m_selector_button->on_click = [this](auto) {
         auto selector = ColorSelectOverlay::construct();
         auto original_color = m_color;
@@ -420,13 +430,15 @@ void ColorPicker::update_color_widgets()
 {
     m_preview_widget->set_color(m_color);
 
-    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_string() : m_color.to_string_without_alpha());
+    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_deprecated_string() : m_color.to_deprecated_string_without_alpha());
 
     m_red_spinbox->set_value(m_color.red());
     m_green_spinbox->set_value(m_color.green());
     m_blue_spinbox->set_value(m_color.blue());
     m_alpha_spinbox->set_value(m_color.alpha());
     m_alpha_spinbox->set_enabled(m_color_has_alpha_channel);
+    m_alpha->set_value(m_color.alpha());
+    m_alpha->set_visible(m_color_has_alpha_channel);
 }
 
 void ColorPicker::create_color_button(Widget& container, unsigned rgb)
@@ -458,10 +470,6 @@ ColorButton::ColorButton(ColorPicker& picker, Color color)
     m_color = color;
 }
 
-ColorButton::~ColorButton()
-{
-}
-
 void ColorButton::set_selected(bool selected)
 {
     m_selected = selected;
@@ -471,7 +479,7 @@ void ColorButton::doubleclick_event(GUI::MouseEvent&)
 {
     click();
     m_selected = true;
-    m_picker.done(Dialog::ExecOK);
+    m_picker.done(Dialog::ExecResult::OK);
 }
 
 void ColorButton::paint_event(PaintEvent& event)
@@ -522,6 +530,8 @@ void CustomColorWidget::set_color(Color color)
 {
     m_color_field->set_color(color);
     m_color_field->set_hue(color.to_hsv().hue);
+
+    m_color_slider->set_value(color.to_hsv().hue);
 }
 
 ColorField::ColorField(Color color)
@@ -533,7 +543,7 @@ ColorField::ColorField(Color color)
 
 void ColorField::create_color_bitmap()
 {
-    m_color_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, { 256, 256 }).release_value_but_fixme_should_propagate_errors();
+    m_color_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, { 256, 256 }).release_value_but_fixme_should_propagate_errors();
     auto painter = Gfx::Painter(*m_color_bitmap);
 
     Gfx::HSV hsv;
@@ -659,7 +669,7 @@ void ColorField::resize_event(ResizeEvent&)
 ColorSlider::ColorSlider(double value)
     : m_value(value)
 {
-    m_color_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, { 32, 360 }).release_value_but_fixme_should_propagate_errors();
+    m_color_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, { 32, 360 }).release_value_but_fixme_should_propagate_errors();
     auto painter = Gfx::Painter(*m_color_bitmap);
 
     for (int h = 0; h < 360; h++) {

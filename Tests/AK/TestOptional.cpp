@@ -7,8 +7,8 @@
 
 #include <LibTest/TestCase.h>
 
+#include <AK/DeprecatedString.h>
 #include <AK/Optional.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 
 TEST_CASE(basic_optional)
@@ -59,7 +59,7 @@ TEST_CASE(optional_rvalue_ref_qualified_getters)
 TEST_CASE(optional_leak_1)
 {
     struct Structure {
-        Optional<String> str;
+        Optional<DeprecatedString> str;
     };
 
     // This used to leak, it does not anymore.
@@ -71,7 +71,7 @@ TEST_CASE(optional_leak_1)
 
 TEST_CASE(short_notation)
 {
-    Optional<StringView> value = "foo";
+    Optional<StringView> value = "foo"sv;
 
     EXPECT_EQ(value->length(), 3u);
     EXPECT_EQ(*value, "foo");
@@ -81,7 +81,7 @@ TEST_CASE(comparison_without_values)
 {
     Optional<StringView> opt0;
     Optional<StringView> opt1;
-    Optional<String> opt2;
+    Optional<DeprecatedString> opt2;
     EXPECT_EQ(opt0, opt1);
     EXPECT_EQ(opt0, opt2);
 }
@@ -89,9 +89,9 @@ TEST_CASE(comparison_without_values)
 TEST_CASE(comparison_with_values)
 {
     Optional<StringView> opt0;
-    Optional<StringView> opt1 = "foo";
-    Optional<String> opt2 = "foo";
-    Optional<StringView> opt3 = "bar";
+    Optional<StringView> opt1 = "foo"sv;
+    Optional<DeprecatedString> opt2 = "foo"sv;
+    Optional<StringView> opt3 = "bar"sv;
     EXPECT_NE(opt0, opt1);
     EXPECT_EQ(opt1, opt2);
     EXPECT_NE(opt1, opt3);
@@ -99,14 +99,14 @@ TEST_CASE(comparison_with_values)
 
 TEST_CASE(comparison_to_underlying_types)
 {
-    Optional<String> opt0;
-    EXPECT_NE(opt0, String());
+    Optional<DeprecatedString> opt0;
+    EXPECT_NE(opt0, DeprecatedString());
     EXPECT_NE(opt0, "foo");
 
-    Optional<StringView> opt1 = "foo";
+    Optional<StringView> opt1 = "foo"sv;
     EXPECT_EQ(opt1, "foo");
     EXPECT_NE(opt1, "bar");
-    EXPECT_EQ(opt1, String("foo"));
+    EXPECT_EQ(opt1, DeprecatedString("foo"));
 }
 
 TEST_CASE(comparison_with_numeric_types)
@@ -159,7 +159,7 @@ TEST_CASE(test_copy_ctor_and_dtor_called)
         {
         }
 
-        CopyChecker(const CopyChecker& other)
+        CopyChecker(CopyChecker const& other)
             : m_was_copy_constructed(other.m_was_copy_constructed)
         {
             m_was_copy_constructed = true;
@@ -182,7 +182,7 @@ TEST_CASE(test_copy_ctor_and_dtor_called)
         {
         }
 
-        MoveChecker(const MoveChecker& other)
+        MoveChecker(MoveChecker const& other)
             : m_was_move_constructed(other.m_was_move_constructed)
         {
             EXPECT(false);
@@ -210,4 +210,62 @@ TEST_CASE(test_copy_ctor_and_dtor_called)
     };
     static_assert(!IsDestructible<Optional<NonDestructible>>);
 #endif
+}
+
+TEST_CASE(basic_optional_reference)
+{
+    Optional<int&> x;
+    EXPECT_EQ(x.has_value(), false);
+    int a = 3;
+    x = a;
+    EXPECT_EQ(x.has_value(), true);
+    EXPECT_EQ(x.value(), 3);
+    EXPECT_EQ(&x.value(), &a);
+
+    Optional<int const&> y;
+    EXPECT_EQ(y.has_value(), false);
+    int b = 3;
+    y = b;
+    EXPECT_EQ(y.has_value(), true);
+    EXPECT_EQ(y.value(), 3);
+    EXPECT_EQ(&y.value(), &b);
+    static_assert(IsConst<RemoveReference<decltype(y.value())>>);
+}
+
+TEST_CASE(move_optional_reference)
+{
+    Optional<int&> x;
+    EXPECT_EQ(x.has_value(), false);
+    int b = 3;
+    x = b;
+    EXPECT_EQ(x.has_value(), true);
+    EXPECT_EQ(x.value(), 3);
+
+    Optional<int&> y;
+    y = move(x);
+    EXPECT_EQ(y.has_value(), true);
+    EXPECT_EQ(y.value(), 3);
+    EXPECT_EQ(x.has_value(), false);
+}
+
+TEST_CASE(short_notation_reference)
+{
+    StringView test = "foo"sv;
+    Optional<StringView&> value = test;
+
+    EXPECT_EQ(value->length(), 3u);
+    EXPECT_EQ(*value, "foo");
+}
+
+TEST_CASE(comparison_reference)
+{
+    StringView test = "foo"sv;
+    Optional<StringView&> opt0;
+    Optional<StringView const&> opt1 = test;
+    Optional<DeprecatedString> opt2 = "foo"sv;
+    Optional<StringView> opt3 = "bar"sv;
+
+    EXPECT_NE(opt0, opt1);
+    EXPECT_EQ(opt1, opt2);
+    EXPECT_NE(opt1, opt3);
 }

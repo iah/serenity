@@ -8,6 +8,7 @@
 
 #include "Token.h"
 
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
@@ -16,12 +17,12 @@ namespace JS {
 
 class Lexer {
 public:
-    explicit Lexer(StringView source, StringView filename = "(unknown)", size_t line_number = 1, size_t line_column = 0);
+    explicit Lexer(StringView source, StringView filename = "(unknown)"sv, size_t line_number = 1, size_t line_column = 0);
 
     Token next();
 
-    StringView source() const { return m_source; };
-    StringView filename() const { return m_filename; };
+    DeprecatedString const& source() const { return m_source; };
+    String const& filename() const { return m_filename; };
 
     void disallow_html_comments() { m_allow_html_comments = false; };
 
@@ -57,13 +58,13 @@ private:
 
     TokenType consume_regex_literal();
 
-    StringView m_source;
+    DeprecatedString m_source;
     size_t m_position { 0 };
     Token m_current_token;
     char m_current_char { 0 };
     bool m_eof { false };
 
-    StringView m_filename;
+    String m_filename;
     size_t m_line_number { 1 };
     size_t m_line_column { 0 };
 
@@ -79,15 +80,15 @@ private:
 
     Optional<size_t> m_hit_invalid_unicode;
 
-    static HashMap<FlyString, TokenType> s_keywords;
-    static HashMap<String, TokenType> s_three_char_tokens;
-    static HashMap<String, TokenType> s_two_char_tokens;
+    static HashMap<DeprecatedFlyString, TokenType> s_keywords;
+    static HashMap<DeprecatedString, TokenType> s_three_char_tokens;
+    static HashMap<DeprecatedString, TokenType> s_two_char_tokens;
     static HashMap<char, TokenType> s_single_char_tokens;
 
     struct ParsedIdentifiers : public RefCounted<ParsedIdentifiers> {
         // Resolved identifiers must be kept alive for the duration of the parsing stage, otherwise
         // the only references to these strings are deleted by the Token destructor.
-        HashTable<FlyString> identifiers;
+        HashTable<DeprecatedFlyString> identifiers;
     };
 
     RefPtr<ParsedIdentifiers> m_parsed_identifiers;

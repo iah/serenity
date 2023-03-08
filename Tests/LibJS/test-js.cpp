@@ -1,10 +1,11 @@
 /*
  * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
- * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibTest/JavaScriptTestRunner.h>
 
 TEST_ROOT("Userland/Libraries/LibJS/Tests");
@@ -18,7 +19,7 @@ TESTJS_GLOBAL_FUNCTION(is_strict_mode, isStrictMode, 0)
 
 TESTJS_GLOBAL_FUNCTION(can_parse_source, canParseSource)
 {
-    auto source = TRY(vm.argument(0).to_string(global_object));
+    auto source = TRY(vm.argument(0).to_deprecated_string(vm));
     auto parser = JS::Parser(JS::Lexer(source));
     (void)parser.parse_program();
     return JS::Value(!parser.has_errors());
@@ -32,18 +33,18 @@ TESTJS_GLOBAL_FUNCTION(run_queued_promise_jobs, runQueuedPromiseJobs)
 
 TESTJS_GLOBAL_FUNCTION(get_weak_set_size, getWeakSetSize)
 {
-    auto* object = TRY(vm.argument(0).to_object(global_object));
+    auto* object = TRY(vm.argument(0).to_object(vm));
     if (!is<JS::WeakSet>(object))
-        return vm.throw_completion<JS::TypeError>(global_object, JS::ErrorType::NotAnObjectOfType, "WeakSet");
+        return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "WeakSet");
     auto* weak_set = static_cast<JS::WeakSet*>(object);
     return JS::Value(weak_set->values().size());
 }
 
 TESTJS_GLOBAL_FUNCTION(get_weak_map_size, getWeakMapSize)
 {
-    auto* object = TRY(vm.argument(0).to_object(global_object));
+    auto* object = TRY(vm.argument(0).to_object(vm));
     if (!is<JS::WeakMap>(object))
-        return vm.throw_completion<JS::TypeError>(global_object, JS::ErrorType::NotAnObjectOfType, "WeakMap");
+        return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "WeakMap");
     auto* weak_map = static_cast<JS::WeakMap*>(object);
     return JS::Value(weak_map->values().size());
 }
@@ -52,7 +53,7 @@ TESTJS_GLOBAL_FUNCTION(mark_as_garbage, markAsGarbage)
 {
     auto argument = vm.argument(0);
     if (!argument.is_string())
-        return vm.throw_completion<JS::TypeError>(global_object, JS::ErrorType::NotAString, argument.to_string_without_side_effects());
+        return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAString, TRY_OR_THROW_OOM(vm, argument.to_string_without_side_effects()));
 
     auto& variable_name = argument.as_string();
 
@@ -61,22 +62,33 @@ TESTJS_GLOBAL_FUNCTION(mark_as_garbage, markAsGarbage)
         return execution_context->lexical_environment != nullptr;
     });
     if (!outer_environment.has_value())
-        return vm.throw_completion<JS::ReferenceError>(global_object, JS::ErrorType::UnknownIdentifier, variable_name.string());
+        return vm.throw_completion<JS::ReferenceError>(JS::ErrorType::UnknownIdentifier, TRY(variable_name.deprecated_string()));
 
-    auto reference = TRY(vm.resolve_binding(variable_name.string(), outer_environment.value()->lexical_environment));
+    auto reference = TRY(vm.resolve_binding(TRY(variable_name.deprecated_string()), outer_environment.value()->lexical_environment));
 
-    auto value = TRY(reference.get_value(global_object));
+    auto value = TRY(reference.get_value(vm));
 
-    if (!value.is_object())
-        return vm.throw_completion<JS::TypeError>(global_object, JS::ErrorType::NotAnObject, String::formatted("Variable with name {}", variable_name.string()));
+    if (!can_be_held_weakly(value))
+        return vm.throw_completion<JS::TypeError>(JS::ErrorType::CannotBeHeldWeakly, DeprecatedString::formatted("Variable with name {}", TRY(variable_name.deprecated_string())));
 
-    vm.heap().uproot_cell(&value.as_object());
-    TRY(reference.delete_(global_object));
+    vm.heap().uproot_cell(&value.as_cell());
+    TRY(reference.delete_(vm));
 
     return JS::js_undefined();
 }
 
-TESTJS_RUN_FILE_FUNCTION(String const& test_file, JS::Interpreter& interpreter)
+TESTJS_GLOBAL_FUNCTION(detach_array_buffer, detachArrayBuffer)
+{
+    auto array_buffer = vm.argument(0);
+    if (!array_buffer.is_object() || !is<JS::ArrayBuffer>(array_buffer.as_object()))
+        return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "ArrayBuffer");
+
+    auto& array_buffer_object = static_cast<JS::ArrayBuffer&>(array_buffer.as_object());
+    TRY(JS::detach_array_buffer(vm, array_buffer_object, vm.argument(1)));
+    return JS::js_null();
+}
+
+TESTJS_RUN_FILE_FUNCTION(DeprecatedString const& test_file, JS::Interpreter& interpreter, JS::ExecutionContext&)
 {
     if (!test262_parser_tests)
         return Test::JS::RunFileHookResult::RunAsNormal;
@@ -92,18 +104,18 @@ TESTJS_RUN_FILE_FUNCTION(String const& test_file, JS::Interpreter& interpreter)
         ExplicitPass,
     } expectation { Pass };
 
-    if (dirname.ends_with("early"))
+    if (dirname.ends_with("early"sv))
         expectation = Early;
-    else if (dirname.ends_with("fail"))
+    else if (dirname.ends_with("fail"sv))
         expectation = Fail;
-    else if (dirname.ends_with("pass-explicit"))
+    else if (dirname.ends_with("pass-explicit"sv))
         expectation = ExplicitPass;
-    else if (dirname.ends_with("pass"))
+    else if (dirname.ends_with("pass"sv))
         expectation = Pass;
     else
         return Test::JS::RunFileHookResult::SkipFile;
 
-    auto program_type = path.basename().ends_with(".module.js") ? JS::Program::Type::Module : JS::Program::Type::Script;
+    auto program_type = path.basename().ends_with(".module.js"sv) ? JS::Program::Type::Module : JS::Program::Type::Script;
     bool parse_succeeded = false;
     if (program_type == JS::Program::Type::Module)
         parse_succeeded = !Test::JS::parse_module(test_file, interpreter.realm()).is_error();
@@ -111,8 +123,8 @@ TESTJS_RUN_FILE_FUNCTION(String const& test_file, JS::Interpreter& interpreter)
         parse_succeeded = !Test::JS::parse_script(test_file, interpreter.realm()).is_error();
 
     bool test_passed = true;
-    String message;
-    String expectation_string;
+    DeprecatedString message;
+    DeprecatedString expectation_string;
 
     switch (expectation) {
     case Early:
@@ -132,12 +144,13 @@ TESTJS_RUN_FILE_FUNCTION(String const& test_file, JS::Interpreter& interpreter)
     }
 
     auto test_result = test_passed ? Test::Result::Pass : Test::Result::Fail;
-
+    auto test_path = LexicalPath::relative_path(test_file, Test::JS::g_test_root);
+    auto duration_ms = Test::get_time_in_ms() - start_time;
     return Test::JS::JSFileResult {
-        LexicalPath::relative_path(test_file, Test::JS::g_test_root),
+        test_path,
         {},
-        Test::get_time_in_ms() - start_time,
+        duration_ms,
         test_result,
-        { Test::Suite { "Parse file", test_result, { { expectation_string, test_result, message } } } }
+        { Test::Suite { test_path, "Parse file", test_result, { { expectation_string, test_result, message, static_cast<u64>(duration_ms) * 1000u } } } }
     };
 }

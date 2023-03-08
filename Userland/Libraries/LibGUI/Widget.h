@@ -1,22 +1,25 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/EnumBits.h>
 #include <AK/JsonObject.h>
 #include <AK/NonnullRefPtr.h>
-#include <AK/String.h>
+#include <AK/Optional.h>
 #include <AK/Variant.h>
 #include <LibCore/Object.h>
+#include <LibCore/Timer.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/FocusPolicy.h>
 #include <LibGUI/Forward.h>
 #include <LibGUI/GML/AST.h>
 #include <LibGUI/Margins.h>
+#include <LibGUI/UIDimensions.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Orientation.h>
@@ -29,12 +32,12 @@ extern Core::ObjectClassRegistration registration_Widget;
 }
 }
 
-#define REGISTER_WIDGET(namespace_, class_name)                                                                                                   \
-    namespace Core {                                                                                                                              \
-    namespace Registration {                                                                                                                      \
-    Core::ObjectClassRegistration registration_##class_name(                                                                                      \
-        #namespace_ "::" #class_name, []() { return static_ptr_cast<Core::Object>(namespace_::class_name::construct()); }, &registration_Widget); \
-    }                                                                                                                                             \
+#define REGISTER_WIDGET(namespace_, class_name)                                                                                                                                                     \
+    namespace Core {                                                                                                                                                                                \
+    namespace Registration {                                                                                                                                                                        \
+    Core::ObjectClassRegistration registration_##class_name(                                                                                                                                        \
+        #namespace_ "::" #class_name##sv, []() -> ErrorOr<NonnullRefPtr<Core::Object>> { return static_ptr_cast<Core::Object>(TRY(namespace_::class_name::try_create())); }, &registration_Widget); \
+    }                                                                                                                                                                                               \
     }
 
 namespace GUI {
@@ -49,6 +52,22 @@ enum class VerticalDirection {
     Down
 };
 
+constexpr VerticalDirection operator!(VerticalDirection const& other)
+{
+    if (other == VerticalDirection::Up)
+        return VerticalDirection::Down;
+    return VerticalDirection::Up;
+}
+
+constexpr VerticalDirection key_code_to_vertical_direction(KeyCode const& key)
+{
+    if (key == Key_Up)
+        return VerticalDirection::Up;
+    if (key == Key_Down)
+        return VerticalDirection::Down;
+    VERIFY_NOT_REACHED();
+}
+
 enum class AllowCallback {
     No,
     Yes
@@ -60,59 +79,91 @@ public:
     virtual ~Widget() override;
 
     Layout* layout() { return m_layout.ptr(); }
-    const Layout* layout() const { return m_layout.ptr(); }
+    Layout const* layout() const { return m_layout.ptr(); }
     void set_layout(NonnullRefPtr<Layout>);
 
     template<class T, class... Args>
-    ErrorOr<NonnullRefPtr<T>> try_set_layout(Args&&... args)
+    ErrorOr<void> try_set_layout(Args&&... args)
     {
         auto layout = TRY(T::try_create(forward<Args>(args)...));
         set_layout(*layout);
-        return layout;
+        return {};
     }
 
     template<class T, class... Args>
-    inline T& set_layout(Args&&... args)
+    inline void set_layout(Args&&... args)
     {
         auto layout = T::construct(forward<Args>(args)...);
         set_layout(*layout);
-        return layout;
     }
 
-    Gfx::IntSize min_size() const { return m_min_size; }
-    void set_min_size(const Gfx::IntSize&);
-    void set_min_size(int width, int height) { set_min_size({ width, height }); }
+    UISize min_size() const { return m_min_size; }
+    void set_min_size(UISize const&);
+    void set_min_size(UIDimension width, UIDimension height) { set_min_size({ width, height }); }
 
-    int min_width() const { return m_min_size.width(); }
-    int min_height() const { return m_min_size.height(); }
-    void set_min_width(int width) { set_min_size(width, min_height()); }
-    void set_min_height(int height) { set_min_size(min_width(), height); }
+    UIDimension min_width() const { return m_min_size.width(); }
+    UIDimension min_height() const { return m_min_size.height(); }
+    void set_min_width(UIDimension width) { set_min_size(width, min_height()); }
+    void set_min_height(UIDimension height) { set_min_size(min_width(), height); }
 
-    Gfx::IntSize max_size() const { return m_max_size; }
-    void set_max_size(const Gfx::IntSize&);
-    void set_max_size(int width, int height) { set_max_size({ width, height }); }
+    UISize max_size() const { return m_max_size; }
+    void set_max_size(UISize const&);
+    void set_max_size(UIDimension width, UIDimension height) { set_max_size({ width, height }); }
 
-    int max_width() const { return m_max_size.width(); }
-    int max_height() const { return m_max_size.height(); }
-    void set_max_width(int width) { set_max_size(width, max_height()); }
-    void set_max_height(int height) { set_max_size(max_width(), height); }
+    UIDimension max_width() const { return m_max_size.width(); }
+    UIDimension max_height() const { return m_max_size.height(); }
+    void set_max_width(UIDimension width) { set_max_size(width, max_height()); }
+    void set_max_height(UIDimension height) { set_max_size(max_width(), height); }
 
-    void set_fixed_size(const Gfx::IntSize& size)
+    UISize preferred_size() const { return m_preferred_size; }
+    void set_preferred_size(UISize const&);
+    void set_preferred_size(UIDimension width, UIDimension height) { set_preferred_size({ width, height }); }
+
+    UIDimension preferred_width() const { return m_preferred_size.width(); }
+    UIDimension preferred_height() const { return m_preferred_size.height(); }
+    void set_preferred_width(UIDimension width) { set_preferred_size(width, preferred_height()); }
+    void set_preferred_height(UIDimension height) { set_preferred_size(preferred_width(), height); }
+
+    virtual Optional<UISize> calculated_preferred_size() const;
+    virtual Optional<UISize> calculated_min_size() const;
+
+    UISize effective_preferred_size() const
     {
+        auto effective_preferred_size = preferred_size();
+        if (effective_preferred_size.either_is(SpecialDimension::Shrink))
+            effective_preferred_size.replace_component_if_matching_with(SpecialDimension::Shrink, effective_min_size());
+        if (effective_preferred_size.either_is(SpecialDimension::Fit) && calculated_preferred_size().has_value())
+            effective_preferred_size.replace_component_if_matching_with(SpecialDimension::Fit, calculated_preferred_size().value());
+        return effective_preferred_size;
+    }
+
+    UISize effective_min_size() const
+    {
+        auto effective_min_size = min_size();
+        if (effective_min_size.either_is(SpecialDimension::Shrink) && calculated_min_size().has_value())
+            effective_min_size.replace_component_if_matching_with(SpecialDimension::Shrink, calculated_min_size().value());
+        return effective_min_size;
+    }
+
+    void set_fixed_size(UISize const& size)
+    {
+        VERIFY(size.has_only_int_values());
         set_min_size(size);
         set_max_size(size);
     }
 
-    void set_fixed_size(int width, int height) { set_fixed_size({ width, height }); }
+    void set_fixed_size(UIDimension width, UIDimension height) { set_fixed_size({ width, height }); }
 
-    void set_fixed_width(int width)
+    void set_fixed_width(UIDimension width)
     {
+        VERIFY(width.is_int());
         set_min_width(width);
         set_max_width(width);
     }
 
-    void set_fixed_height(int height)
+    void set_fixed_height(UIDimension height)
     {
+        VERIFY(height.is_int());
         set_min_height(height);
         set_max_height(height);
     }
@@ -120,8 +171,8 @@ public:
     virtual bool is_visible_for_timer_purposes() const override;
 
     bool has_tooltip() const { return !m_tooltip.is_empty(); }
-    String tooltip() const { return m_tooltip; }
-    void set_tooltip(String);
+    DeprecatedString tooltip() const { return m_tooltip; }
+    void set_tooltip(DeprecatedString);
 
     bool is_auto_focusable() const { return m_auto_focusable; }
     void set_auto_focusable(bool auto_focusable) { m_auto_focusable = auto_focusable; }
@@ -153,7 +204,7 @@ public:
 
     // Invalidate the widget (or an area thereof), causing a repaint to happen soon.
     void update();
-    void update(const Gfx::IntRect&);
+    void update(Gfx::IntRect const&);
 
     // Repaint the widget (or an area thereof) immediately.
     void repaint();
@@ -162,14 +213,20 @@ public:
     bool is_focused() const;
     void set_focus(bool, FocusSource = FocusSource::Programmatic);
 
-    Function<void(const bool, const FocusSource)> on_focus_change;
+    bool focus_preempted() const { return m_focus_preempted; }
+    void set_focus_preempted(bool b) { m_focus_preempted = b; }
+
+    Function<void(bool const, const FocusSource)> on_focus_change;
 
     // Returns true if this widget or one of its descendants is focused.
     bool has_focus_within() const;
 
     Widget* focus_proxy() { return m_focus_proxy; }
-    const Widget* focus_proxy() const { return m_focus_proxy; }
+    Widget const* focus_proxy() const { return m_focus_proxy; }
     void set_focus_proxy(Widget*);
+
+    Vector<WeakPtr<Widget>>& focus_delegators() { return m_focus_delegators; }
+    Vector<WeakPtr<Widget>> const& focus_delegators() const { return m_focus_delegators; }
 
     void set_focus_policy(FocusPolicy policy);
     FocusPolicy focus_policy() const;
@@ -182,10 +239,10 @@ public:
         WeakPtr<Widget> widget;
         Gfx::IntPoint local_position;
     };
-    HitTestResult hit_test(const Gfx::IntPoint&, ShouldRespectGreediness = ShouldRespectGreediness::Yes);
-    Widget* child_at(const Gfx::IntPoint&) const;
+    HitTestResult hit_test(Gfx::IntPoint, ShouldRespectGreediness = ShouldRespectGreediness::Yes);
+    Widget* child_at(Gfx::IntPoint) const;
 
-    void set_relative_rect(const Gfx::IntRect&);
+    void set_relative_rect(Gfx::IntRect const&);
     void set_relative_rect(int x, int y, int width, int height) { set_relative_rect({ x, y, width, height }); }
 
     void set_x(int x) { set_relative_rect(x, y(), width(), height()); }
@@ -193,13 +250,13 @@ public:
     void set_width(int width) { set_relative_rect(x(), y(), width, height()); }
     void set_height(int height) { set_relative_rect(x(), y(), width(), height); }
 
-    void move_to(const Gfx::IntPoint& point) { set_relative_rect({ point, relative_rect().size() }); }
+    void move_to(Gfx::IntPoint point) { set_relative_rect({ point, relative_rect().size() }); }
     void move_to(int x, int y) { move_to({ x, y }); }
-    void resize(const Gfx::IntSize& size) { set_relative_rect({ relative_rect().location(), size }); }
+    void resize(Gfx::IntSize size) { set_relative_rect({ relative_rect().location(), size }); }
     void resize(int width, int height) { resize({ width, height }); }
 
     void move_by(int x, int y) { move_by({ x, y }); }
-    void move_by(const Gfx::IntPoint& delta) { set_relative_rect({ relative_position().translated(delta), size() }); }
+    void move_by(Gfx::IntPoint delta) { set_relative_rect({ relative_position().translated(delta), size() }); }
 
     Gfx::ColorRole background_role() const { return m_background_role; }
     void set_background_role(Gfx::ColorRole);
@@ -216,7 +273,7 @@ public:
         return m_window;
     }
 
-    const Window* window() const
+    Window const* window() const
     {
         if (auto* pw = parent_widget())
             return pw->window();
@@ -226,17 +283,17 @@ public:
     void set_window(Window*);
 
     Widget* parent_widget();
-    const Widget* parent_widget() const;
+    Widget const* parent_widget() const;
 
     void set_fill_with_background_color(bool b) { m_fill_with_background_color = b; }
     bool fill_with_background_color() const { return m_fill_with_background_color; }
 
-    const Gfx::Font& font() const { return *m_font; }
+    Gfx::Font const& font() const { return *m_font; }
 
-    void set_font(const Gfx::Font*);
-    void set_font(const Gfx::Font& font) { set_font(&font); }
+    void set_font(Gfx::Font const*);
+    void set_font(Gfx::Font const& font) { set_font(&font); }
 
-    void set_font_family(const String&);
+    void set_font_family(DeprecatedString const&);
     void set_font_size(unsigned);
     void set_font_weight(unsigned);
     void set_font_fixed_width(bool);
@@ -258,7 +315,7 @@ public:
     bool is_frontmost() const;
     bool is_backmost() const;
 
-    Action* action_for_key_event(const KeyEvent&);
+    Action* action_for_shortcut(Shortcut const&);
 
     template<typename Callback>
     void for_each_child_widget(Callback callback)
@@ -275,34 +332,40 @@ public:
     void do_layout();
 
     Gfx::Palette palette() const;
-    void set_palette(const Gfx::Palette&);
+    void set_palette(Gfx::Palette&);
 
-    const Margins& grabbable_margins() const { return m_grabbable_margins; }
-    void set_grabbable_margins(const Margins&);
+    DeprecatedString title() const;
+    void set_title(DeprecatedString);
+
+    Margins const& grabbable_margins() const { return m_grabbable_margins; }
+    void set_grabbable_margins(Margins const&);
 
     Gfx::IntRect relative_non_grabbable_rect() const;
 
-    void set_accepts_emoji_input(bool b) { m_accepts_emoji_input = b; }
-    bool accepts_emoji_input() const { return m_accepts_emoji_input; }
+    Function<void(StringView)> on_emoji_input;
 
     void set_accepts_command_palette(bool b) { m_accepts_command_palette = b; }
     bool accepts_command_palette() const { return m_accepts_command_palette; }
 
     virtual Gfx::IntRect children_clip_rect() const;
 
-    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> override_cursor() const { return m_override_cursor; }
-    void set_override_cursor(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>>);
+    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const& override_cursor() const { return m_override_cursor; }
+    void set_override_cursor(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>>);
 
-    bool load_from_gml(StringView);
-    bool load_from_gml(StringView, RefPtr<Core::Object> (*unregistered_child_handler)(const String&));
+    using UnregisteredChildHandler = ErrorOr<NonnullRefPtr<Core::Object>>(DeprecatedString const&);
+    ErrorOr<void> load_from_gml(StringView);
+    ErrorOr<void> load_from_gml(StringView, UnregisteredChildHandler);
 
+    // FIXME: remove this when all uses of shrink_to_fit are eliminated
     void set_shrink_to_fit(bool);
-    bool is_shrink_to_fit() const { return m_shrink_to_fit; }
+    bool is_shrink_to_fit() const { return preferred_width().is_shrink() || preferred_height().is_shrink(); }
 
     bool has_pending_drop() const;
 
     // In order for others to be able to call this, it needs to be public.
-    virtual bool load_from_gml_ast(NonnullRefPtr<GUI::GML::Node> ast, RefPtr<Core::Object> (*unregistered_child_handler)(const String&));
+    virtual ErrorOr<void> load_from_gml_ast(NonnullRefPtr<GUI::GML::Node const> ast, UnregisteredChildHandler);
+
+    ErrorOr<void> add_spacer();
 
 protected:
     Widget();
@@ -312,6 +375,7 @@ protected:
     // This is called after children have been painted.
     virtual void second_paint_event(PaintEvent&);
 
+    virtual void layout_relevant_change_occurred();
     virtual void custom_layout() { }
     virtual void did_change_font() { }
     virtual void did_layout() { }
@@ -347,7 +411,12 @@ protected:
 
     void show_or_hide_tooltip();
 
+    void add_focus_delegator(Widget*);
+    void remove_focus_delegator(Widget*);
+
 private:
+    virtual bool is_widget() const final { return true; }
+
     void handle_paint_event(PaintEvent&);
     void handle_resize_event(ResizeEvent&);
     void handle_mousedown_event(MouseEvent&);
@@ -370,30 +439,32 @@ private:
     Gfx::IntRect m_relative_rect;
     Gfx::ColorRole m_background_role;
     Gfx::ColorRole m_foreground_role;
-    NonnullRefPtr<Gfx::Font> m_font;
-    String m_tooltip;
+    NonnullRefPtr<Gfx::Font const> m_font;
+    DeprecatedString m_tooltip;
 
-    Gfx::IntSize m_min_size { -1, -1 };
-    Gfx::IntSize m_max_size { -1, -1 };
+    UISize m_min_size { SpecialDimension::Shrink };
+    UISize m_max_size { SpecialDimension::Grow };
+    UISize m_preferred_size { SpecialDimension::Grow };
     Margins m_grabbable_margins;
 
     bool m_fill_with_background_color { false };
     bool m_visible { true };
     bool m_greedy_for_hits { false };
     bool m_auto_focusable { true };
+    bool m_focus_preempted { false };
     bool m_enabled { true };
     bool m_updates_enabled { true };
-    bool m_accepts_emoji_input { false };
     bool m_accepts_command_palette { true };
-    bool m_shrink_to_fit { false };
     bool m_default_font { true };
 
     NonnullRefPtr<Gfx::PaletteImpl> m_palette;
+    DeprecatedString m_title { DeprecatedString::empty() };
 
     WeakPtr<Widget> m_focus_proxy;
+    Vector<WeakPtr<Widget>> m_focus_delegators;
     FocusPolicy m_focus_policy { FocusPolicy::NoFocus };
 
-    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> m_override_cursor { Gfx::StandardCursor::None };
+    AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> m_override_cursor { Gfx::StandardCursor::None };
 };
 
 inline Widget* Widget::parent_widget()
@@ -402,13 +473,16 @@ inline Widget* Widget::parent_widget()
         return &verify_cast<Widget>(*parent());
     return nullptr;
 }
-inline const Widget* Widget::parent_widget() const
+inline Widget const* Widget::parent_widget() const
 {
     if (parent() && is<Widget>(*parent()))
-        return &verify_cast<const Widget>(*parent());
+        return &verify_cast<Widget const>(*parent());
     return nullptr;
 }
 }
+
+template<>
+inline bool Core::Object::fast_is<GUI::Widget>() const { return is_widget(); }
 
 template<>
 struct AK::Formatter<GUI::Widget> : AK::Formatter<Core::Object> {

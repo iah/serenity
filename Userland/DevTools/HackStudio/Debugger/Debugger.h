@@ -26,18 +26,20 @@ public:
     };
 
     static void initialize(
-        String source_root,
-        Function<HasControlPassedToUser(const PtraceRegisters&)> on_stop_callback,
+        DeprecatedString source_root,
+        Function<HasControlPassedToUser(PtraceRegisters const&)> on_stop_callback,
         Function<void()> on_continue_callback,
-        Function<void()> on_exit_callback);
+        Function<void()> on_exit_callback,
+        Function<void(float)> on_initialization_progress);
 
     static bool is_initialized();
 
-    void on_breakpoint_change(const String& file, size_t line, BreakpointChange change_type);
-    bool set_execution_position(const String& file, size_t line);
+    void on_breakpoint_change(DeprecatedString const& file, size_t line, BreakpointChange change_type);
+    bool set_execution_position(DeprecatedString const& file, size_t line);
 
-    void set_executable_path(const String& path) { m_executable_path = path; }
-    void set_source_root(const String& source_root) { m_source_root = source_root; }
+    void set_executable_path(DeprecatedString const& path) { m_executable_path = path; }
+    void set_source_root(DeprecatedString const& source_root) { m_source_root = source_root; }
+    void set_pid_to_attach(pid_t pid) { m_pid_to_attach = pid; }
 
     Debug::DebugSession* session() { return m_debug_session.ptr(); }
 
@@ -62,6 +64,8 @@ public:
 
     void set_child_setup_callback(Function<ErrorOr<void>()> callback) { m_child_setup_callback = move(callback); }
 
+    void stop_debuggee();
+
 private:
     class DebuggingState {
     public:
@@ -78,10 +82,10 @@ private:
         void set_stepping_out() { m_state = State::SteppingOut; }
         void set_stepping_over() { m_state = State::SteppingOver; }
 
-        bool should_stop_single_stepping(const Debug::DebugInfo::SourcePosition& current_source_position) const;
+        bool should_stop_single_stepping(Debug::DebugInfo::SourcePosition const& current_source_position) const;
         void clear_temporary_breakpoints();
         void add_temporary_breakpoint(FlatPtr address);
-        const Vector<FlatPtr>& temporary_breakpoints() const { return m_addresses_of_temporary_breakpoints; }
+        Vector<FlatPtr> const& temporary_breakpoints() const { return m_addresses_of_temporary_breakpoints; }
 
     private:
         State m_state { Normal };
@@ -90,24 +94,31 @@ private:
     };
 
     explicit Debugger(
-        String source_root,
-        Function<HasControlPassedToUser(const PtraceRegisters&)> on_stop_callback,
+        DeprecatedString source_root,
+        Function<HasControlPassedToUser(PtraceRegisters const&)> on_stop_callback,
         Function<void()> on_continue_callback,
-        Function<void()> on_exit_callback);
+        Function<void()> on_exit_callback,
+        Function<void(float)> on_initialization_progress);
 
-    Debug::DebugInfo::SourcePosition create_source_position(const String& file, size_t line);
+    Debug::DebugInfo::SourcePosition create_source_position(DeprecatedString const& file, size_t line);
 
     void start();
-    int debugger_loop();
+    int debugger_loop(Debug::DebugSession::DesiredInitialDebugeeState);
 
     void remove_temporary_breakpoints();
-    void do_step_out(const PtraceRegisters&);
-    void do_step_over(const PtraceRegisters&);
+    void do_step_out(PtraceRegisters const&);
+    void do_step_over(PtraceRegisters const&);
     void insert_temporary_breakpoint(FlatPtr address);
-    void insert_temporary_breakpoint_at_return_address(const PtraceRegisters&);
+    void insert_temporary_breakpoint_at_return_address(PtraceRegisters const&);
+
+    struct CreateDebugSessionResult {
+        NonnullOwnPtr<Debug::DebugSession> session;
+        Debug::DebugSession::DesiredInitialDebugeeState initial_state { Debug::DebugSession::Stopped };
+    };
+    CreateDebugSessionResult create_debug_session();
 
     OwnPtr<Debug::DebugSession> m_debug_session;
-    String m_source_root;
+    DeprecatedString m_source_root;
     DebuggingState m_state;
 
     pthread_mutex_t m_ui_action_mutex {};
@@ -116,12 +127,14 @@ private:
 
     Vector<Debug::DebugInfo::SourcePosition> m_breakpoints;
 
-    String m_executable_path;
+    DeprecatedString m_executable_path;
+    Optional<pid_t> m_pid_to_attach;
 
-    Function<HasControlPassedToUser(const PtraceRegisters&)> m_on_stopped_callback;
+    Function<HasControlPassedToUser(PtraceRegisters const&)> m_on_stopped_callback;
     Function<void()> m_on_continue_callback;
     Function<void()> m_on_exit_callback;
     Function<ErrorOr<void>()> m_child_setup_callback;
+    Function<void(float)> m_on_initialization_progress;
 };
 
 }

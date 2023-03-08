@@ -40,13 +40,12 @@ static ErrorOr<void> check_blocked_read(OpenFileDescription* description)
 
 ErrorOr<FlatPtr> Process::sys$readv(int fd, Userspace<const struct iovec*> iov, int iov_count)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     if (iov_count < 0)
         return EINVAL;
 
-    // Arbitrary pain threshold.
-    if (iov_count > (int)MiB)
+    if (iov_count > IOV_MAX)
         return EFAULT;
 
     u64 total_length = 0;
@@ -74,8 +73,8 @@ ErrorOr<FlatPtr> Process::sys$readv(int fd, Userspace<const struct iovec*> iov, 
 
 ErrorOr<FlatPtr> Process::sys$read(int fd, Userspace<u8*> buffer, size_t size)
 {
-    const auto start_timestamp = TimeManagement::the().uptime_ms();
-    const auto result = read_impl(fd, buffer, size);
+    auto const start_timestamp = TimeManagement::the().uptime_ms();
+    auto result = read_impl(fd, buffer, size);
 
     if (Thread::current()->is_profiling_suppressed())
         return result;
@@ -88,7 +87,7 @@ ErrorOr<FlatPtr> Process::sys$read(int fd, Userspace<u8*> buffer, size_t size)
 
 ErrorOr<FlatPtr> Process::read_impl(int fd, Userspace<u8*> buffer, size_t size)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     if (size == 0)
         return 0;
@@ -106,7 +105,7 @@ ErrorOr<FlatPtr> Process::read_impl(int fd, Userspace<u8*> buffer, size_t size)
 // hence it can't be passed by register on 32bit platforms.
 ErrorOr<FlatPtr> Process::sys$pread(int fd, Userspace<u8*> buffer, size_t size, Userspace<off_t const*> userspace_offset)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     TRY(require_promise(Pledge::stdio));
     if (size == 0)
         return 0;

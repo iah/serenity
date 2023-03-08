@@ -7,7 +7,7 @@
 #include "Command.h"
 #include <AK/Format.h>
 #include <AK/ScopeGuard.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -16,19 +16,19 @@
 namespace Core {
 
 // Only supported in serenity mode because we use `posix_spawn_file_actions_addchdir`
-#ifdef __serenity__
+#ifdef AK_OS_SERENITY
 
-ErrorOr<CommandResult> command(String const& command_string, Optional<LexicalPath> chdir)
+ErrorOr<CommandResult> command(DeprecatedString const& command_string, Optional<LexicalPath> chdir)
 {
     auto parts = command_string.split(' ');
     if (parts.is_empty())
-        return Error::from_string_literal("empty command"sv);
+        return Error::from_string_literal("empty command");
     auto program = parts[0];
     parts.remove(0);
     return command(program, parts, chdir);
 }
 
-ErrorOr<CommandResult> command(String const& program, Vector<String> const& arguments, Optional<LexicalPath> chdir)
+ErrorOr<CommandResult> command(DeprecatedString const& program, Vector<DeprecatedString> const& arguments, Optional<LexicalPath> chdir)
 {
     int stdout_pipe[2] = {};
     int stderr_pipe[2] = {};
@@ -46,13 +46,13 @@ ErrorOr<CommandResult> command(String const& program, Vector<String> const& argu
         close(stderr_pipe[0]);
     });
 
-    Vector<const char*> parts = { program.characters() };
-    for (const auto& part : arguments) {
+    Vector<char const*> parts = { program.characters() };
+    for (auto const& part : arguments) {
         parts.append(part.characters());
     }
     parts.append(nullptr);
 
-    const char** argv = parts.data();
+    char const** argv = parts.data();
 
     posix_spawn_file_actions_t action;
     posix_spawn_file_actions_init(&action);
@@ -73,15 +73,15 @@ ErrorOr<CommandResult> command(String const& program, Vector<String> const& argu
     close(stderr_pipe[1]);
 
     auto read_all_from_pipe = [](int pipe[2]) {
-        auto result_file = Core::File::construct();
-        if (!result_file->open(pipe[0], Core::OpenMode::ReadOnly, Core::File::ShouldCloseFileDescriptor::Yes)) {
+        auto result_file = Core::DeprecatedFile::construct();
+        if (!result_file->open(pipe[0], Core::OpenMode::ReadOnly, Core::DeprecatedFile::ShouldCloseFileDescriptor::Yes)) {
             perror("open");
             VERIFY_NOT_REACHED();
         }
-        return String::copy(result_file->read_all());
+        return DeprecatedString::copy(result_file->read_all());
     };
-    auto stdout = read_all_from_pipe(stdout_pipe);
-    auto stderr = read_all_from_pipe(stderr_pipe);
+    auto output = read_all_from_pipe(stdout_pipe);
+    auto error = read_all_from_pipe(stderr_pipe);
 
     int wstatus { 0 };
     waitpid(pid, &wstatus, 0);
@@ -94,7 +94,7 @@ ErrorOr<CommandResult> command(String const& program, Vector<String> const& argu
 #    endif
     }
 
-    return CommandResult { WEXITSTATUS(wstatus), stdout, stderr };
+    return CommandResult { WEXITSTATUS(wstatus), output, error };
 }
 
 #endif

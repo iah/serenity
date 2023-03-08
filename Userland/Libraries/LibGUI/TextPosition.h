@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 
 namespace GUI {
 
@@ -27,9 +27,11 @@ public:
     void set_line(size_t line) { m_line = line; }
     void set_column(size_t column) { m_column = column; }
 
-    bool operator==(const TextPosition& other) const { return m_line == other.m_line && m_column == other.m_column; }
-    bool operator!=(const TextPosition& other) const { return m_line != other.m_line || m_column != other.m_column; }
-    bool operator<(const TextPosition& other) const { return m_line < other.m_line || (m_line == other.m_line && m_column < other.m_column); }
+    bool operator==(TextPosition const& other) const { return m_line == other.m_line && m_column == other.m_column; }
+    bool operator!=(TextPosition const& other) const { return m_line != other.m_line || m_column != other.m_column; }
+    bool operator<(TextPosition const& other) const { return m_line < other.m_line || (m_line == other.m_line && m_column < other.m_column); }
+    bool operator>(TextPosition const& other) const { return *this != other && !(*this < other); }
+    bool operator>=(TextPosition const& other) const { return *this > other || (*this == other); }
 
 private:
     size_t m_line { 0xffffffff };
@@ -43,8 +45,8 @@ struct AK::Formatter<GUI::TextPosition> : AK::Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, GUI::TextPosition const& value)
     {
         if (value.is_valid())
-            return Formatter<FormatString>::format(builder, "({},{})", value.line(), value.column());
+            return Formatter<FormatString>::format(builder, "({},{})"sv, value.line(), value.column());
 
-        return Formatter<FormatString>::format(builder, "GUI::TextPosition(Invalid)");
+        return builder.put_string("GUI::TextPosition(Invalid)"sv);
     }
 };

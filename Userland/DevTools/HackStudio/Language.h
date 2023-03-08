@@ -6,12 +6,13 @@
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/LexicalPath.h>
-#include <AK/String.h>
 
 namespace HackStudio {
 enum class Language {
     Unknown,
+    CMake,
     Cpp,
     CSS,
     JavaScript,
@@ -23,8 +24,8 @@ enum class Language {
     SQL,
 };
 
-Language language_from_file(const LexicalPath&);
-Language language_from_name(const String&);
-String language_name_from_file(const LexicalPath&);
+Language language_from_file(LexicalPath const&);
+Language language_from_name(DeprecatedString const&);
+DeprecatedString language_name_from_file(LexicalPath const&);
 
 }

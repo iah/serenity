@@ -9,9 +9,9 @@
 #include <AK/FixedArray.h>
 #include <AK/IntrusiveList.h>
 #include <AK/RefPtr.h>
-#include <AK/Weakable.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Library/ListedRefCounted.h>
+#include <Kernel/Library/LockWeakable.h>
 #include <Kernel/Locking/Mutex.h>
 #include <Kernel/Memory/Region.h>
 
@@ -19,14 +19,14 @@ namespace Kernel::Memory {
 
 class VMObject
     : public ListedRefCounted<VMObject, LockType::Spinlock>
-    , public Weakable<VMObject> {
+    , public LockWeakable<VMObject> {
     friend class MemoryManager;
     friend class Region;
 
 public:
     virtual ~VMObject();
 
-    virtual ErrorOr<NonnullRefPtr<VMObject>> try_clone() = 0;
+    virtual ErrorOr<NonnullLockRefPtr<VMObject>> try_clone() = 0;
 
     virtual bool is_anonymous() const { return false; }
     virtual bool is_inode() const { return false; }
@@ -34,8 +34,9 @@ public:
     virtual bool is_private_inode() const { return false; }
 
     size_t page_count() const { return m_physical_pages.size(); }
-    Span<RefPtr<PhysicalPage> const> physical_pages() const { return m_physical_pages.span(); }
-    Span<RefPtr<PhysicalPage>> physical_pages() { return m_physical_pages.span(); }
+
+    virtual ReadonlySpan<RefPtr<PhysicalPage>> physical_pages() const { return m_physical_pages.span(); }
+    virtual Span<RefPtr<PhysicalPage>> physical_pages() { return m_physical_pages.span(); }
 
     size_t size() const { return m_physical_pages.size() * PAGE_SIZE; }
 
@@ -64,7 +65,7 @@ protected:
     IntrusiveListNode<VMObject> m_list_node;
     FixedArray<RefPtr<PhysicalPage>> m_physical_pages;
 
-    mutable RecursiveSpinlock m_lock;
+    mutable RecursiveSpinlock<LockRank::None> m_lock {};
 
 private:
     VMObject& operator=(VMObject const&) = delete;
@@ -75,7 +76,7 @@ private:
 
 public:
     using AllInstancesList = IntrusiveList<&VMObject::m_list_node>;
-    static SpinlockProtected<VMObject::AllInstancesList>& all_instances();
+    static SpinlockProtected<VMObject::AllInstancesList, LockRank::None>& all_instances();
 };
 
 template<typename Callback>
@@ -85,18 +86,6 @@ inline void VMObject::for_each_region(Callback callback)
     for (auto& region : m_regions) {
         callback(region);
     }
-}
-
-inline PhysicalPage const* Region::physical_page(size_t index) const
-{
-    VERIFY(index < page_count());
-    return vmobject().physical_pages()[first_page_index() + index];
-}
-
-inline RefPtr<PhysicalPage>& Region::physical_page_slot(size_t index)
-{
-    VERIFY(index < page_count());
-    return vmobject().physical_pages()[first_page_index() + index];
 }
 
 }

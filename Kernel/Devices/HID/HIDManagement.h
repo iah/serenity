@@ -9,13 +9,14 @@
 #include <AK/Atomic.h>
 #include <AK/CircularQueue.h>
 #include <AK/Error.h>
-#include <AK/NonnullRefPtrVector.h>
-#include <AK/RefPtr.h>
-#include <AK/Time.h>
 #include <AK/Types.h>
 #include <Kernel/API/KeyCode.h>
 #include <Kernel/API/MousePacket.h>
+#include <Kernel/Devices/HID/HIDDevice.h>
+#include <Kernel/Forward.h>
+#include <Kernel/Library/LockRefPtr.h>
 #include <Kernel/Locking/Spinlock.h>
+#include <Kernel/Locking/SpinlockProtected.h>
 #include <Kernel/UnixTypes.h>
 #include <LibKeyboard/CharacterMapData.h>
 
@@ -34,29 +35,37 @@ class HIDManagement {
 
 public:
     HIDManagement();
-    static void initialize();
+    static ErrorOr<void> initialize();
     static HIDManagement& the();
 
     ErrorOr<void> enumerate();
 
-    StringView keymap_name() const { return m_character_map_name->view(); }
-    Keyboard::CharacterMapData const& character_map() const { return m_character_map; }
+    struct KeymapData {
+        KeymapData();
+        NonnullOwnPtr<KString> character_map_name;
+        Keyboard::CharacterMapData character_map;
+    };
+
+    SpinlockProtected<KeymapData, LockRank::None>& keymap_data() { return m_keymap_data; }
+
     u32 get_char_from_character_map(KeyEvent) const;
 
-    void set_client(KeyboardClient* client) { m_client = client; }
+    void set_client(KeyboardClient* client);
     void set_maps(NonnullOwnPtr<KString> character_map_name, Keyboard::CharacterMapData const& character_map);
 
 private:
     size_t generate_minor_device_number_for_mouse();
     size_t generate_minor_device_number_for_keyboard();
 
+    SpinlockProtected<KeymapData, LockRank::None> m_keymap_data {};
     size_t m_mouse_minor_number { 0 };
     size_t m_keyboard_minor_number { 0 };
-    NonnullOwnPtr<KString> m_character_map_name;
-    Keyboard::CharacterMapData m_character_map;
     KeyboardClient* m_client { nullptr };
-    RefPtr<I8042Controller> m_i8042_controller;
-    NonnullRefPtrVector<HIDDevice> m_hid_devices;
+#if ARCH(X86_64)
+    LockRefPtr<I8042Controller> m_i8042_controller;
+#endif
+    Vector<NonnullLockRefPtr<HIDDevice>> m_hid_devices;
+    Spinlock<LockRank::None> m_client_lock {};
 };
 
 class KeyboardClient {

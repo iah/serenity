@@ -9,21 +9,23 @@
 #include <AK/ByteBuffer.h>
 #include <LibGfx/Forward.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/WebGL/WebGLRenderingContext.h>
 
 namespace Web::HTML {
 
 class HTMLCanvasElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLCanvasElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLCanvasElement, HTMLElement);
 
-    HTMLCanvasElement(DOM::Document&, QualifiedName);
+public:
+    using RenderingContext = Variant<JS::Handle<CanvasRenderingContext2D>, JS::Handle<WebGL::WebGLRenderingContext>, Empty>;
+
     virtual ~HTMLCanvasElement() override;
 
-    const Gfx::Bitmap* bitmap() const { return m_bitmap; }
+    Gfx::Bitmap const* bitmap() const { return m_bitmap; }
     Gfx::Bitmap* bitmap() { return m_bitmap; }
-    bool create_bitmap();
+    bool create_bitmap(size_t minimum_width = 0, size_t minimum_height = 0);
 
-    CanvasRenderingContext2D* get_context(String type);
+    JS::ThrowCompletionOr<RenderingContext> get_context(DeprecatedString const& type, JS::Value options);
 
     unsigned width() const;
     unsigned height() const;
@@ -31,13 +33,30 @@ public:
     void set_width(unsigned);
     void set_height(unsigned);
 
-    String to_data_url(const String& type, Optional<double> quality) const;
+    DeprecatedString to_data_url(DeprecatedString const& type, Optional<double> quality) const;
+
+    void present();
 
 private:
-    virtual RefPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
+    HTMLCanvasElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    virtual JS::GCPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
+
+    enum class HasOrCreatedContext {
+        No,
+        Yes,
+    };
+
+    HasOrCreatedContext create_2d_context();
+    JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
+    void reset_context_to_default_state();
 
     RefPtr<Gfx::Bitmap> m_bitmap;
-    RefPtr<CanvasRenderingContext2D> m_context;
+
+    Variant<JS::NonnullGCPtr<HTML::CanvasRenderingContext2D>, JS::NonnullGCPtr<WebGL::WebGLRenderingContext>, Empty> m_context;
 };
 
 }

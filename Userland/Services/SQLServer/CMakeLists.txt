@@ -8,13 +8,16 @@ compile_ipc(SQLServer.ipc SQLServerEndpoint.h)
 compile_ipc(SQLClient.ipc SQLClientEndpoint.h)
 
 set(SOURCES
-    ClientConnection.cpp
+    ConnectionFromClient.cpp
     DatabaseConnection.cpp
     main.cpp
+    SQLStatement.cpp
+)
+
+set(GENERATED_SOURCES
     SQLClientEndpoint.h
     SQLServerEndpoint.h
-    SQLStatement.cpp
-    )
+)
 
 serenity_bin(SQLServer)
-target_link_libraries(SQLServer LibCore LibIPC LibSQL LibMain)
+target_link_libraries(SQLServer PRIVATE LibCore LibIPC LibSQL LibMain)

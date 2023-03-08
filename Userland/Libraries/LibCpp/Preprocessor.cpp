@@ -12,7 +12,7 @@
 #include <ctype.h>
 
 namespace Cpp {
-Preprocessor::Preprocessor(const String& filename, StringView program)
+Preprocessor::Preprocessor(DeprecatedString const& filename, StringView program)
     : m_filename(filename)
     , m_program(program)
 {
@@ -72,21 +72,24 @@ static void consume_whitespace(GenericLexer& lexer)
                 lexer.ignore(2);
             } else {
                 lexer.ignore_until('\n');
+                lexer.ignore();
                 break;
             }
         }
     };
     for (;;) {
-        if (lexer.consume_specific("//"sv))
+        if (lexer.consume_specific("//"sv)) {
             ignore_line();
-        else if (lexer.consume_specific("/*"sv))
+        } else if (lexer.consume_specific("/*"sv)) {
             lexer.ignore_until("*/");
-        else if (lexer.next_is("\\\n"sv))
             lexer.ignore(2);
-        else if (lexer.is_eof() || !lexer.next_is(isspace))
+        } else if (lexer.next_is("\\\n"sv)) {
+            lexer.ignore(2);
+        } else if (lexer.is_eof() || !lexer.next_is(isspace)) {
             break;
-        else
+        } else {
             lexer.ignore();
+        }
     }
 }
 
@@ -277,7 +280,7 @@ Optional<Preprocessor::MacroCall> Preprocessor::parse_macro_call(Vector<Token> c
     ++token_index;
 
     Vector<MacroCall::Argument> arguments;
-    MacroCall::Argument current_argument;
+    Optional<MacroCall::Argument> current_argument;
 
     size_t paren_depth = 1;
     for (; token_index < tokens.size(); ++token_index) {
@@ -288,15 +291,19 @@ Optional<Preprocessor::MacroCall> Preprocessor::parse_macro_call(Vector<Token> c
             --paren_depth;
 
         if (paren_depth == 0) {
-            arguments.append(move(current_argument));
+            if (current_argument.has_value())
+                arguments.append(*current_argument);
             break;
         }
 
         if (paren_depth == 1 && token.type() == Token::Type::Comma) {
-            arguments.append(move(current_argument));
+            if (current_argument.has_value())
+                arguments.append(*current_argument);
             current_argument = {};
         } else {
-            current_argument.tokens.append(token);
+            if (!current_argument.has_value())
+                current_argument = MacroCall::Argument {};
+            current_argument->tokens.append(token);
         }
     }
 
@@ -358,7 +365,7 @@ Optional<Preprocessor::Definition> Preprocessor::create_definition(StringView li
     return definition;
 }
 
-String Preprocessor::remove_escaped_newlines(StringView value)
+DeprecatedString Preprocessor::remove_escaped_newlines(StringView value)
 {
     static constexpr auto escaped_newline = "\\\n"sv;
     AK::StringBuilder processed_value;
@@ -367,10 +374,10 @@ String Preprocessor::remove_escaped_newlines(StringView value)
         processed_value.append(lexer.consume_until(escaped_newline));
         lexer.ignore(escaped_newline.length());
     }
-    return processed_value.to_string();
+    return processed_value.to_deprecated_string();
 }
 
-String Preprocessor::evaluate_macro_call(MacroCall const& macro_call, Definition const& definition)
+DeprecatedString Preprocessor::evaluate_macro_call(MacroCall const& macro_call, Definition const& definition)
 {
     if (macro_call.arguments.size() != definition.parameters.size()) {
         dbgln("mismatch in # of arguments for macro call: {}", macro_call.name.text());
@@ -397,7 +404,7 @@ String Preprocessor::evaluate_macro_call(MacroCall const& macro_call, Definition
         }
     });
 
-    return processed_value.to_string();
+    return processed_value.to_deprecated_string();
 }
 
 };

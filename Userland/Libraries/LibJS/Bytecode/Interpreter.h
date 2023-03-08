@@ -22,17 +22,17 @@ struct RegisterWindow {
     MarkedVector<Value> registers;
     MarkedVector<Environment*> saved_lexical_environments;
     MarkedVector<Environment*> saved_variable_environments;
+    Vector<UnwindInfo> unwind_contexts;
 };
 
 class Interpreter {
 public:
-    Interpreter(GlobalObject&, Realm&);
+    explicit Interpreter(Realm&);
     ~Interpreter();
 
     // FIXME: Remove this thing once we don't need it anymore!
     static Interpreter* current();
 
-    GlobalObject& global_object() { return m_global_object; }
     Realm& realm() { return m_realm; }
     VM& vm() { return m_vm; }
 
@@ -46,64 +46,80 @@ public:
         ThrowCompletionOr<Value> value;
         OwnPtr<RegisterWindow> frame;
     };
-    ValueAndFrame run_and_return_frame(Bytecode::Executable const&, Bytecode::BasicBlock const* entry_point);
+    ValueAndFrame run_and_return_frame(Bytecode::Executable const&, Bytecode::BasicBlock const* entry_point, RegisterWindow* = nullptr);
 
     ALWAYS_INLINE Value& accumulator() { return reg(Register::accumulator()); }
     Value& reg(Register const& r) { return registers()[r.index()]; }
-    [[nodiscard]] RegisterWindow snapshot_frame() const { return m_register_windows.last(); }
 
-    auto& saved_lexical_environment_stack() { return m_register_windows.last().saved_lexical_environments; }
-    auto& saved_variable_environment_stack() { return m_register_windows.last().saved_variable_environments; }
-
-    void enter_frame(RegisterWindow const& frame)
-    {
-        m_manually_entered_frames.append(true);
-        m_register_windows.append(make<RegisterWindow>(frame));
-    }
-    NonnullOwnPtr<RegisterWindow> pop_frame()
-    {
-        VERIFY(!m_manually_entered_frames.is_empty());
-        VERIFY(m_manually_entered_frames.last());
-        m_manually_entered_frames.take_last();
-        return m_register_windows.take_last();
-    }
+    auto& saved_lexical_environment_stack() { return window().saved_lexical_environments; }
+    auto& saved_variable_environment_stack() { return window().saved_variable_environments; }
+    auto& unwind_contexts() { return window().unwind_contexts; }
 
     void jump(Label const& label)
     {
         m_pending_jump = &label.block();
     }
-    void do_return(Value return_value) { m_return_value = return_value; }
+    void schedule_jump(Label const& label)
+    {
+        m_scheduled_jump = &label.block();
+        VERIFY(unwind_contexts().last().finalizer);
+        jump(Label { *unwind_contexts().last().finalizer });
+    }
+    void do_return(Value return_value)
+    {
+        m_return_value = return_value;
+        m_saved_exception = {};
+    }
 
     void enter_unwind_context(Optional<Label> handler_target, Optional<Label> finalizer_target);
     void leave_unwind_context();
     ThrowCompletionOr<void> continue_pending_unwind(Label const& resume_label);
 
     Executable const& current_executable() { return *m_current_executable; }
+    BasicBlock const& current_block() const { return *m_current_block; }
+    size_t pc() const { return m_pc ? m_pc->offset() : 0; }
+    DeprecatedString debug_position()
+    {
+        return DeprecatedString::formatted("{}:{:2}:{:4x}", m_current_executable->name, m_current_block->name(), pc());
+    }
 
     enum class OptimizationLevel {
-        Default,
+        None,
+        Optimize,
         __Count,
+        Default = None,
     };
     static Bytecode::PassManager& optimization_pipeline(OptimizationLevel = OptimizationLevel::Default);
 
     VM::InterpreterExecutionScope ast_interpreter_scope();
 
 private:
-    MarkedVector<Value>& registers() { return m_register_windows.last().registers; }
+    RegisterWindow& window()
+    {
+        return m_register_windows.last().visit([](auto& x) -> RegisterWindow& { return *x; });
+    }
+
+    RegisterWindow const& window() const
+    {
+        return const_cast<Interpreter*>(this)->window();
+    }
+
+    MarkedVector<Value>& registers() { return window().registers; }
 
     static AK::Array<OwnPtr<PassManager>, static_cast<UnderlyingType<Interpreter::OptimizationLevel>>(Interpreter::OptimizationLevel::__Count)> s_optimization_pipelines;
 
     VM& m_vm;
-    GlobalObject& m_global_object;
     Realm& m_realm;
-    NonnullOwnPtrVector<RegisterWindow> m_register_windows;
-    Vector<bool> m_manually_entered_frames;
+    Vector<Variant<NonnullOwnPtr<RegisterWindow>, RegisterWindow*>> m_register_windows;
     Optional<BasicBlock const*> m_pending_jump;
+    BasicBlock const* m_scheduled_jump { nullptr };
     Value m_return_value;
+    Handle<Value> m_saved_return_value;
     Executable const* m_current_executable { nullptr };
-    Vector<UnwindInfo> m_unwind_contexts;
     Handle<Value> m_saved_exception;
     OwnPtr<JS::Interpreter> m_ast_interpreter;
+    BasicBlock const* m_current_block { nullptr };
+    InstructionStreamIterator* m_pc { nullptr };
 };
 
 extern bool g_dump_bytecode;

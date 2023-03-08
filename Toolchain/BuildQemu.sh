@@ -11,8 +11,8 @@ PREFIX="$DIR/Local/qemu"
 BUILD=$(realpath "$DIR/../Build")
 SYSROOT="$BUILD/Root"
 
-QEMU_VERSION="qemu-6.2.0"
-QEMU_MD5SUM="a077669ce58b6ee07ec355e54aad25be"
+QEMU_VERSION=${QEMU_VERSION:="qemu-7.1.0"}
+QEMU_MD5SUM=${QEMU_MD5SUM:="3be5458a9171b4ec5220c65d5d52bdcf"}
 
 echo PREFIX is "$PREFIX"
 echo SYSROOT is "$SYSROOT"
@@ -20,8 +20,9 @@ echo SYSROOT is "$SYSROOT"
 mkdir -p "$DIR/Tarballs"
 
 pushd "$DIR/Tarballs"
-    if [ ! -e "$QEMU_VERSION.tar.xz" ]; then
-        curl -O "https://download.qemu.org/$QEMU_VERSION.tar.xz"
+    md5="$(md5sum $QEMU_VERSION.tar.xz | cut -f1 -d' ')"
+    if [ ! -e "$QEMU_VERSION.tar.xz" ] || [ "$md5" != "$QEMU_MD5SUM" ]; then
+        curl -C - -O "https://download.qemu.org/$QEMU_VERSION.tar.xz"
     else
         echo "Skipped downloading $QEMU_VERSION"
     fi
@@ -40,11 +41,6 @@ pushd "$DIR/Tarballs"
     else
         echo "Skipped extracting qemu"
     fi
-
-    pushd "$QEMU_VERSION"
-        patch -p1 < "$DIR/Patches/qemu-cf-protection-none.patch" > /dev/null
-        md5sum "$DIR/Patches/qemu-cf-protection-none.patch" > .patch.applied
-    popd
 
 popd
 

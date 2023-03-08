@@ -22,54 +22,51 @@ ErrorOr<int> serenity_main(Main::Arguments)
     TRY(Core::System::unveil("/etc/passwd", "r"));
     TRY(Core::System::unveil("/etc/timezone", "r"));
     TRY(Core::System::unveil("/var/run/utmp", "r"));
-    TRY(Core::System::unveil("/proc", "r"));
+    TRY(Core::System::unveil("/sys/kernel/processes", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto file = TRY(Core::File::open("/var/run/utmp", Core::OpenMode::ReadOnly));
-    auto json = TRY(JsonValue::from_string(file->read_all()));
+    auto file = TRY(Core::File::open("/var/run/utmp"sv, Core::File::OpenMode::Read));
+    auto file_contents = TRY(file->read_until_eof());
+    auto json = TRY(JsonValue::from_string(file_contents));
     if (!json.is_object()) {
         warnln("Error: Could not parse /var/run/utmp");
         return 1;
     }
 
-    auto process_statistics = Core::ProcessStatisticsReader::get_all();
-    if (!process_statistics.has_value()) {
-        warnln("Error: Could not get process statistics");
-        return 1;
-    }
+    auto process_statistics = TRY(Core::ProcessStatisticsReader::get_all());
 
     auto now = time(nullptr);
 
     outln("\033[1m{:10} {:12} {:16} {:6} {}\033[0m", "USER", "TTY", "LOGIN@", "IDLE", "WHAT");
     json.as_object().for_each_member([&](auto& tty, auto& value) {
         const JsonObject& entry = value.as_object();
-        auto uid = entry.get("uid").to_u32();
-        [[maybe_unused]] auto pid = entry.get("pid").to_i32();
+        auto uid = entry.get_u32("uid"sv).value_or(0);
+        [[maybe_unused]] auto pid = entry.get_i32("pid"sv).value_or(0);
 
-        auto login_time = Core::DateTime::from_timestamp(entry.get("login_at").to_number<time_t>());
-        auto login_at = login_time.to_string("%b%d %H:%M:%S");
+        auto login_time = Core::DateTime::from_timestamp(entry.get_integer<time_t>("login_at"sv).value_or(0));
+        auto login_at = login_time.to_deprecated_string("%b%d %H:%M:%S"sv);
 
         auto* pw = getpwuid(uid);
-        String username;
+        DeprecatedString username;
         if (pw)
             username = pw->pw_name;
         else
-            username = String::number(uid);
+            username = DeprecatedString::number(uid);
 
         StringBuilder builder;
-        String idle_string = "n/a";
+        DeprecatedString idle_string = "n/a";
         struct stat st;
         if (stat(tty.characters(), &st) == 0) {
             auto idle_time = now - st.st_mtime;
             if (idle_time >= 0) {
                 builder.appendff("{}s", idle_time);
-                idle_string = builder.to_string();
+                idle_string = builder.to_deprecated_string();
             }
         }
 
-        String what = "n/a";
+        DeprecatedString what = "n/a";
 
-        for (auto& process : process_statistics.value().processes) {
+        for (auto& process : process_statistics.processes) {
             if (process.tty == tty && process.pid == process.pgid)
                 what = process.name;
         }

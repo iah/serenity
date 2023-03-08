@@ -3,19 +3,14 @@ describe("correct behavior", () => {
         expect(Temporal.PlainDate.prototype.since).toHaveLength(1);
     });
 
-    // FIXME: All the checks for years, months, weeks and days have to check for -0 instead of 0.
-    //        This is because CreateTemporalDuration in the spec doesn't convert -0 to 0 unlike the polyfill or what
-    //        the test262 tests expect.
-    //        Once this has been fixed in the spec, change the -0 checks for these properties to be just 0.
-
     test("basic functionality", () => {
         const dateOne = new Temporal.PlainDate(2021, 11, 14);
         const dateTwo = new Temporal.PlainDate(2022, 12, 25);
         const sinceDuration = dateTwo.since(dateOne);
 
-        expect(sinceDuration.years).toBe(-0);
-        expect(sinceDuration.months).toBe(-0);
-        expect(sinceDuration.weeks).toBe(-0);
+        expect(sinceDuration.years).toBe(0);
+        expect(sinceDuration.months).toBe(0);
+        expect(sinceDuration.weeks).toBe(0);
         expect(sinceDuration.days).toBe(406);
         expect(sinceDuration.hours).toBe(0);
         expect(sinceDuration.minutes).toBe(0);
@@ -30,10 +25,10 @@ describe("correct behavior", () => {
         const equalDateTwo = new Temporal.PlainDate(1, 1, 1);
 
         const checkResults = result => {
-            expect(result.years).toBe(-0);
-            expect(result.months).toBe(-0);
-            expect(result.weeks).toBe(-0);
-            expect(result.days).toBe(-0);
+            expect(result.years).toBe(0);
+            expect(result.months).toBe(0);
+            expect(result.weeks).toBe(0);
+            expect(result.days).toBe(0);
             expect(result.hours).toBe(0);
             expect(result.minutes).toBe(0);
             expect(result.seconds).toBe(0);
@@ -53,9 +48,9 @@ describe("correct behavior", () => {
         const dateTwo = new Temporal.PlainDate(2022, 12, 25);
         const sinceDuration = dateOne.since(dateTwo);
 
-        expect(sinceDuration.years).toBe(-0);
-        expect(sinceDuration.months).toBe(-0);
-        expect(sinceDuration.weeks).toBe(-0);
+        expect(sinceDuration.years).toBe(0);
+        expect(sinceDuration.months).toBe(0);
+        expect(sinceDuration.weeks).toBe(0);
         expect(sinceDuration.days).toBe(-406);
         expect(sinceDuration.hours).toBe(0);
         expect(sinceDuration.minutes).toBe(0);
@@ -106,9 +101,9 @@ describe("correct behavior", () => {
         const dateTwo = new Temporal.PlainDate(2022, 12, 25);
         const sinceDuration = dateTwo.since("2021-11-14");
 
-        expect(sinceDuration.years).toBe(-0);
-        expect(sinceDuration.months).toBe(-0);
-        expect(sinceDuration.weeks).toBe(-0);
+        expect(sinceDuration.years).toBe(0);
+        expect(sinceDuration.months).toBe(0);
+        expect(sinceDuration.weeks).toBe(0);
         expect(sinceDuration.days).toBe(406);
         expect(sinceDuration.hours).toBe(0);
         expect(sinceDuration.minutes).toBe(0);
@@ -175,7 +170,7 @@ describe("errors", () => {
                 dateOne.since(dateTwo, pluralSmallestUnitOptions);
             }).toThrowWithMessage(
                 RangeError,
-                `${smallestUnit} is not a valid value for option smallestUnit`
+                `${smallestUnit}s is not a valid value for option smallestUnit`
             );
         }
 
@@ -194,7 +189,7 @@ describe("errors", () => {
                 dateOne.since(dateTwo, pluralLargestUnitOptions);
             }).toThrowWithMessage(
                 RangeError,
-                `${largestUnit} is not a valid value for option largestUnit`
+                `${largestUnit}s is not a valid value for option largestUnit`
             );
         }
     });
@@ -230,7 +225,7 @@ describe("errors", () => {
                 };
                 const pluralSmallestPluralDisallowedOptions = {
                     smallestUnit: pluralSmallestUnit,
-                    largestUnit: disallowedUnit,
+                    largestUnit: pluralDisallowedUnit,
                 };
 
                 expect(() => {

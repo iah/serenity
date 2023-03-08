@@ -1,13 +1,14 @@
 /*
  * Copyright (c) 2020, Ben Wiederhake <BenWiederhake.GitHub@gmx.de>
+ * Copyright (c) 2022, David Tuin <davidot@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibTest/TestCase.h>
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
-#include <AK/String.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,10 +19,10 @@ static constexpr char TEXT_RESET[] = "\x1b[0m";
 static constexpr long long LENIENCY = 8;
 
 struct Testcase {
-    const char* test_name;
+    char const* test_name;
     int should_consume;
-    const char* hex;
-    const char* test_string;
+    char const* hex;
+    char const* test_string;
 };
 
 static Testcase TESTCASES[] = {
@@ -223,15 +224,30 @@ static Testcase TESTCASES[] = {
     { "C80", -1, "4025cccccccccccd", "10.900000000000000012345678912345678912345" },
 
     // Hexadecimal floats.
-    // Note that "0x579a" is "0xabcd << 1" with the top bit cut off, just as expected.
-    { "Fp1", -1, "7c2579a000000000", "0xab.cdpef" },
+    // Hex floats do not allow hexadecimal digits in the exponent
+    { "Fp1.1", 7, "406579a000000000", "0xab.cdpef" },
+    { "Fp1.1", 7, "406579a000000000", "0xab.cdp-ef" },
+    { "Fp1.1", 7, "406579a000000000", "0xab.cdpe-f" },
+    { "Fp1.1", 7, "406579a000000000", "0xab.cdpef-" },
+    { "Fp1.2", 11, "7c9579a000000000", "0xab.cdp963" },
+    { "Fp1.3", 12, "7c9579a000000000", "0xab.cdp+963" },
+    { "Fp1.4", 12, "7c2579a000000000", "0xab.cdp+956" },
+    { "Fp1.4", 12, "7c1579a000000000", "0xab.cdp+955" },
+    { "Fp1.5", 12, "04a579a000000000", "0xab.cdp-956" },
     // Sneaky floating point :P
-    { "Fp2", -1, "43e9400000000000", "0xCAPE" },
+    { "Fp2.1", 4, "4069400000000000", "0xCAPE" },
+    { "Fp2.1", 4, "4069400000000000", "0xCAP-E" },
+    { "Fp2.2", 6, "4069400000000000", "0xCAP0" },
+    { "Fp2.2", 7, "4069400000000000", "0xCAP+0" },
+    { "Fp2.2", 7, "4069400000000000", "0xCAP-0" },
+    { "Fp2.3", 7, "4159400000000000", "0xCAP15" },
+    { "Fp2.4", 7, "4459400000000000", "0xCAP63" },
+    { "Fp2.5", 7, "43e9400000000000", "0xCAP56" },
 };
 
 constexpr size_t NUM_TESTCASES = sizeof(TESTCASES) / sizeof(TESTCASES[0]);
 
-typedef double (*strtod_fn_t)(const char* str, char** endptr);
+typedef double (*strtod_fn_t)(char const* str, char** endptr);
 
 static long long cast_ll(double d)
 {
@@ -250,7 +266,7 @@ static long long cast_ll(double d)
     return readable.as_ll;
 }
 
-static bool is_strtod_close(strtod_fn_t strtod_fn, const char* test_string, const char* expect_hex, int expect_consume, long long expect_ll)
+static bool is_strtod_close(strtod_fn_t strtod_fn, char const* test_string, char const* expect_hex, int expect_consume, long long expect_ll)
 {
     union readable_t {
         double as_double;
@@ -277,7 +293,7 @@ static bool is_strtod_close(strtod_fn_t strtod_fn, const char* test_string, cons
     if (endptr < test_string) {
         actual_consume = 999;
     } else {
-        const char* max_endptr = test_string + strlen(test_string);
+        char const* max_endptr = test_string + strlen(test_string);
         actual_consume_possible = endptr <= max_endptr;
         actual_consume = endptr - test_string;
     }
@@ -303,7 +319,7 @@ static bool is_strtod_close(strtod_fn_t strtod_fn, const char* test_string, cons
     return !(wrong_hex || error_cns || wrong_cns);
 }
 
-static long long hex_to_ll(const char* hex)
+static long long hex_to_ll(char const* hex)
 {
     long long result = 0;
     for (int i = 0; i < 16; ++i) {
@@ -314,7 +330,7 @@ static long long hex_to_ll(const char* hex)
         } else if ('a' <= ch && ch <= 'f') {
             digit = ch - 'a' + 10;
         } else {
-            FAIL(String::formatted("\n!!! Encountered char {:02x} at {}", ch, i));
+            FAIL(DeprecatedString::formatted("\n!!! Encountered char {:02x} at {}", ch, i));
             return result;
         }
         result <<= 4;
@@ -350,8 +366,84 @@ TEST_CASE(strtod_accuracy)
     }
     outln("Out of {} tests, saw {} successes and {} fails.", NUM_TESTCASES, successes, fails);
     if (fails != 0) {
-        FAIL(String::formatted("{} strtod tests failed", fails));
+        FAIL(DeprecatedString::formatted("{} strtod tests failed", fails));
     }
 
     outln("PASS (with leniency up to {} ULP from the exact solution)", LENIENCY);
+}
+
+TEST_CASE(test_strtod_sets_errno)
+{
+#define EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO_BASE(str_value, double_value)                    \
+    do {                                                                                   \
+        errno = 0;                                                                         \
+        auto value = strtod(str_value, nullptr);                                           \
+        EXPECT_EQ(errno, 0);                                                               \
+        EXPECT_EQ(bit_cast<u64>(value), bit_cast<u64>(static_cast<double>(double_value))); \
+    } while (false)
+
+#define EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO(str_value, double_value)        \
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO_BASE(str_value, double_value);      \
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO_BASE("  " str_value, double_value); \
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO_BASE("\t" str_value, double_value); \
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO_BASE("\n" str_value, double_value)
+
+    // Leading zeros are allowed
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("00", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("000", 0.);
+
+    // FIXME: Verify we only parse up to the appropriate point
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0xT", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0xp20", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x.t", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x.pt", 0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x1.p0", 1.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x1.pa", 1.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x.1pa", 0x0.1p0);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("0x.fpa", 0x0.fp0);
+
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0xT", -0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0xp20", -0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x.t", -0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x.pt", -0.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x1.p0", -1.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x1.pa", -1.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x.1pa", -0x0.1p0);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-0x.fpa", -0x0.fp0);
+
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("1", 1.);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("10e10", 10e10);
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("10.10e10", 10.10e10);
+
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("inf", __builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("infinity", __builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("INF", __builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("INFINITY", __builtin_huge_val());
+
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("Inf", __builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("iNf", __builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("inF", __builtin_huge_val());
+
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-inf", -__builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-infinity", -__builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-INF", -__builtin_huge_val());
+    EXPECT_TO_GIVE_VALUE_WITH_0_ERRNO("-INFINITY", -__builtin_huge_val());
+
+#define EXPECT_TO_GIVE_VALUE_WITH_ERRNO(str_value, double_value, errno_value)              \
+    do {                                                                                   \
+        errno = 0;                                                                         \
+        auto value = strtod(str_value, nullptr);                                           \
+        EXPECT_EQ(errno, errno_value);                                                     \
+        EXPECT_EQ(bit_cast<u64>(value), bit_cast<u64>(static_cast<double>(double_value))); \
+    } while (false)
+
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("nan", __builtin_nan(""), ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("10e10000", __builtin_huge_val(), ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("0x1p10000", __builtin_huge_val(), ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("-10e10000", -__builtin_huge_val(), ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("-0x1p10000", -__builtin_huge_val(), ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("10e-10000", 0, ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("0x1p-10000", 0, ERANGE);
+    EXPECT_TO_GIVE_VALUE_WITH_ERRNO("-0x1p-10000", -0., ERANGE);
 }

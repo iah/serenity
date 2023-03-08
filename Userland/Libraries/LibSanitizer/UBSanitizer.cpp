@@ -17,7 +17,7 @@ Atomic<bool> AK::UBSanitizer::g_ubsan_is_deadly;
 
 extern "C" {
 
-static void print_location(const SourceLocation& location)
+static void print_location(SourceLocation const& location)
 {
     if (!location.filename()) {
         WARNLN_AND_DBGLN("UBSAN: in unknown file");
@@ -31,12 +31,13 @@ static void print_location(const SourceLocation& location)
     static bool checked_env_for_deadly = false;
     if (!checked_env_for_deadly) {
         checked_env_for_deadly = true;
-        StringView options = getenv("UBSAN_OPTIONS");
+        auto const* options_ptr = getenv("UBSAN_OPTIONS");
+        auto options = options_ptr != NULL ? StringView { options_ptr, strlen(options_ptr) } : StringView {};
         // FIXME: Parse more options and complain about invalid options
         if (!options.is_null()) {
-            if (options.contains("halt_on_error=1"))
+            if (options.contains("halt_on_error=1"sv))
                 g_ubsan_is_deadly = true;
-            else if (options.contains("halt_on_error=0"))
+            else if (options.contains("halt_on_error=0"sv))
                 g_ubsan_is_deadly = false;
         }
     }
@@ -76,8 +77,8 @@ void __ubsan_handle_nullability_arg(NonnullArgData& data)
     print_location(location);
 }
 
-void __ubsan_handle_nonnull_return_v1(const NonnullReturnData&, SourceLocation&) __attribute__((used));
-void __ubsan_handle_nonnull_return_v1(const NonnullReturnData&, SourceLocation& location)
+void __ubsan_handle_nonnull_return_v1(NonnullReturnData const&, SourceLocation&) __attribute__((used));
+void __ubsan_handle_nonnull_return_v1(NonnullReturnData const&, SourceLocation& location)
 {
     auto loc = location.permanently_clear();
     if (!loc.needs_logging())
@@ -86,8 +87,8 @@ void __ubsan_handle_nonnull_return_v1(const NonnullReturnData&, SourceLocation& 
     print_location(loc);
 }
 
-void __ubsan_handle_nullability_return_v1(const NonnullReturnData& data, SourceLocation& location) __attribute__((used));
-void __ubsan_handle_nullability_return_v1(const NonnullReturnData&, SourceLocation& location)
+void __ubsan_handle_nullability_return_v1(NonnullReturnData const& data, SourceLocation& location) __attribute__((used));
+void __ubsan_handle_nullability_return_v1(NonnullReturnData const&, SourceLocation& location)
 {
     auto loc = location.permanently_clear();
     if (!loc.needs_logging())
@@ -180,18 +181,18 @@ void __ubsan_handle_type_mismatch_v1(TypeMismatchData&, ValueHandle) __attribute
 void __ubsan_handle_type_mismatch_v1(TypeMismatchData& data, ValueHandle ptr)
 {
     constexpr StringView kinds[] = {
-        "load of",
-        "store to",
-        "reference binding to",
-        "member access within",
-        "member call on",
-        "constructor call on",
-        "downcast of",
-        "downcast of",
-        "upcast of",
-        "cast to virtual base of",
-        "_Nonnull binding to",
-        "dynamic operation on"
+        "load of"sv,
+        "store to"sv,
+        "reference binding to"sv,
+        "member access within"sv,
+        "member call on"sv,
+        "constructor call on"sv,
+        "downcast of"sv,
+        "downcast of"sv,
+        "upcast of"sv,
+        "cast to virtual base of"sv,
+        "_Nonnull binding to"sv,
+        "dynamic operation on"sv
     };
 
     auto location = data.location.permanently_clear();
@@ -258,8 +259,8 @@ void __ubsan_handle_implicit_conversion(ImplicitConversionData& data, ValueHandl
     auto location = data.location.permanently_clear();
     if (!location.needs_logging())
         return;
-    const char* src_signed = data.from_type.is_signed() ? "" : "un";
-    const char* dst_signed = data.to_type.is_signed() ? "" : "un";
+    char const* src_signed = data.from_type.is_signed() ? "" : "un";
+    char const* dst_signed = data.to_type.is_signed() ? "" : "un";
     WARNLN_AND_DBGLN("UBSAN: implicit conversion from type {} ({}-bit, {}signed) to type {} ({}-bit, {}signed)",
         data.from_type.name(), data.from_type.bit_width(), src_signed, data.to_type.name(), data.to_type.bit_width(), dst_signed);
     print_location(location);

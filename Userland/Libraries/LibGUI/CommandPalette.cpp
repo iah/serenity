@@ -1,10 +1,12 @@
 /*
  * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2022, Jakob-Niklas See <git@nwex.de>
+ * Copyright (c) 2022, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/FuzzyMatch.h>
 #include <AK/QuickSort.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/ActionGroup.h>
@@ -34,7 +36,7 @@ AK_ENUM_BITWISE_OPERATORS(IconFlags);
 
 class ActionIconDelegate final : public GUI::TableCellPaintingDelegate {
 public:
-    virtual ~ActionIconDelegate() override { }
+    virtual ~ActionIconDelegate() override = default;
 
     bool should_paint(ModelIndex const& index) override
     {
@@ -76,7 +78,7 @@ public:
     {
     }
 
-    virtual ~ActionModel() override { }
+    virtual ~ActionModel() override = default;
 
     virtual int row_count(ModelIndex const& parent_index) const override
     {
@@ -90,7 +92,7 @@ public:
         return Column::__Count;
     }
 
-    virtual String column_name(int) const override { return {}; }
+    virtual DeprecatedString column_name(int) const override { return {}; }
 
     virtual ModelIndex index(int row, int column = 0, ModelIndex const& = ModelIndex()) const override
     {
@@ -127,7 +129,7 @@ public:
         case Column::Shortcut:
             if (!action.shortcut().is_valid())
                 return "";
-            return action.shortcut().to_string();
+            return action.shortcut().to_deprecated_string();
         }
 
         VERIFY_NOT_REACHED();
@@ -135,20 +137,24 @@ public:
 
     virtual TriState data_matches(GUI::ModelIndex const& index, GUI::Variant const& term) const override
     {
-        auto search = String::formatted("{} {}", menu_name(index), action_text(index));
-        if (search.contains(term.as_string(), CaseSensitivity::CaseInsensitive))
+        auto needle = term.as_string();
+        if (needle.is_empty())
+            return TriState::True;
+
+        auto haystack = DeprecatedString::formatted("{} {}", menu_name(index), action_text(index));
+        if (fuzzy_match(needle, haystack).score > 0)
             return TriState::True;
         return TriState::False;
     }
 
-    static String action_text(ModelIndex const& index)
+    static DeprecatedString action_text(ModelIndex const& index)
     {
         auto& action = *static_cast<GUI::Action*>(index.internal_data());
 
         return Gfx::parse_ampersand_string(action.text());
     }
 
-    static String menu_name(ModelIndex const& index)
+    static DeprecatedString menu_name(ModelIndex const& index)
     {
         auto& action = *static_cast<GUI::Action*>(index.internal_data());
         if (action.menu_items().is_empty())
@@ -169,28 +175,30 @@ private:
 CommandPalette::CommandPalette(GUI::Window& parent_window, ScreenPosition screen_position)
     : GUI::Dialog(&parent_window, screen_position)
 {
-    set_frameless(true);
+    set_window_type(GUI::WindowType::Popup);
+    set_window_mode(GUI::WindowMode::Modeless);
+    set_blocks_emoji_input(true);
     resize(450, 300);
 
     collect_actions(parent_window);
 
-    auto& main_widget = set_main_widget<GUI::Frame>();
-    main_widget.set_frame_shadow(Gfx::FrameShadow::Raised);
-    main_widget.set_fill_with_background_color(true);
+    auto main_widget = set_main_widget<GUI::Frame>().release_value_but_fixme_should_propagate_errors();
+    main_widget->set_frame_shape(Gfx::FrameShape::Window);
+    main_widget->set_fill_with_background_color(true);
 
-    auto& layout = main_widget.set_layout<GUI::VerticalBoxLayout>();
-    layout.set_margins(4);
+    main_widget->set_layout<GUI::VerticalBoxLayout>(4);
 
-    m_text_box = main_widget.add<GUI::TextBox>();
-    m_table_view = main_widget.add<GUI::TableView>();
+    m_text_box = main_widget->add<GUI::TextBox>();
+    m_table_view = main_widget->add<GUI::TableView>();
     m_model = adopt_ref(*new ActionModel(m_actions));
     m_table_view->set_column_headers_visible(false);
 
     m_filter_model = MUST(GUI::FilteringProxyModel::create(*m_model));
-    m_filter_model->set_filter_term("");
+    m_filter_model->set_filter_term(""sv);
 
     m_table_view->set_column_painting_delegate(0, make<ActionIconDelegate>());
     m_table_view->set_model(*m_filter_model);
+    m_table_view->set_focus_proxy(m_text_box);
 
     m_text_box->on_change = [this] {
         m_filter_model->set_filter_term(m_text_box->text());
@@ -218,29 +226,29 @@ CommandPalette::CommandPalette(GUI::Window& parent_window, ScreenPosition screen
     m_text_box->set_focus(true);
 }
 
-CommandPalette::~CommandPalette()
-{
-}
-
 void CommandPalette::collect_actions(GUI::Window& parent_window)
 {
     OrderedHashTable<NonnullRefPtr<GUI::Action>> actions;
 
     auto collect_action_children = [&](Core::Object& action_parent) {
         action_parent.for_each_child_of_type<GUI::Action>([&](GUI::Action& action) {
-            if (action.is_enabled())
+            if (action.is_enabled() && action.is_visible())
                 actions.set(action);
             return IterationDecision::Continue;
         });
     };
 
-    Function<void(Menu&)> collect_actions_from_menu = [&](Menu& menu) {
-        for (auto menu_item : menu.items()) {
-            if (menu_item.submenu())
-                collect_actions_from_menu(*menu_item.submenu());
+    Function<bool(GUI::Action*)> should_show_action = [&](GUI::Action* action) {
+        return action && action->is_enabled() && action->is_visible() && action->shortcut() != Shortcut(Mod_Ctrl | Mod_Shift, Key_A);
+    };
 
-            auto const* action = menu_item.action();
-            if (action && action->is_enabled())
+    Function<void(Menu&)> collect_actions_from_menu = [&](Menu& menu) {
+        for (auto& menu_item : menu.items()) {
+            if (menu_item->submenu())
+                collect_actions_from_menu(*menu_item->submenu());
+
+            auto* action = menu_item->action();
+            if (should_show_action(action))
                 actions.set(*action);
         }
     };
@@ -258,7 +266,7 @@ void CommandPalette::collect_actions(GUI::Window& parent_window)
 
     if (!parent_window.is_modal()) {
         for (auto const& it : GUI::Application::the()->global_shortcut_actions({})) {
-            if (it.value->is_enabled())
+            if (should_show_action(it.value))
                 actions.set(*it.value);
         }
     }
@@ -281,7 +289,7 @@ void CommandPalette::finish_with_index(GUI::ModelIndex const& filter_index)
     auto* action = static_cast<GUI::Action*>(action_index.internal_data());
     VERIFY(action);
     m_selected_action = action;
-    done(ExecOK);
+    done(ExecResult::OK);
 }
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, the SerenityOS developers.
+ * Copyright (c) 2021-2023, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,10 +7,8 @@
 #pragma once
 
 #include <AK/Optional.h>
-#include <AK/StdLibExtras.h>
 #include <LibJS/Runtime/VM.h>
-#include <LibWeb/Bindings/DOMExceptionWrapper.h>
-#include <LibWeb/DOM/ExceptionOr.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::Bindings {
 
@@ -18,7 +16,13 @@ template<typename>
 constexpr bool IsExceptionOr = false;
 
 template<typename T>
-constexpr bool IsExceptionOr<DOM::ExceptionOr<T>> = true;
+constexpr bool IsExceptionOr<WebIDL::ExceptionOr<T>> = true;
+
+template<typename>
+constexpr bool IsThrowCompletionOr = false;
+
+template<typename T>
+constexpr bool IsThrowCompletionOr<JS::ThrowCompletionOr<T>> = true;
 
 namespace Detail {
 
@@ -28,7 +32,12 @@ struct ExtractExceptionOrValueType {
 };
 
 template<typename T>
-struct ExtractExceptionOrValueType<DOM::ExceptionOr<T>> {
+struct ExtractExceptionOrValueType<WebIDL::ExceptionOr<T>> {
+    using Type = T;
+};
+
+template<typename T>
+struct ExtractExceptionOrValueType<JS::ThrowCompletionOr<T>> {
     using Type = T;
 };
 
@@ -38,25 +47,24 @@ struct ExtractExceptionOrValueType<void> {
 };
 
 template<>
-struct ExtractExceptionOrValueType<DOM::ExceptionOr<Empty>> {
+struct ExtractExceptionOrValueType<WebIDL::ExceptionOr<Empty>> {
     using Type = JS::Value;
 };
 
 template<>
-struct ExtractExceptionOrValueType<DOM::ExceptionOr<void>> {
+struct ExtractExceptionOrValueType<WebIDL::ExceptionOr<void>> {
     using Type = JS::Value;
 };
 
-ALWAYS_INLINE JS::Completion dom_exception_to_throw_completion(auto&& global_object, auto&& exception)
+ALWAYS_INLINE JS::Completion dom_exception_to_throw_completion(JS::VM& vm, auto&& exception)
 {
-    auto& vm = global_object.vm();
-
     return exception.visit(
-        [&](DOM::SimpleException const& exception) {
+        [&](WebIDL::SimpleException const& exception) {
+            auto message = exception.message.visit([](auto const& s) -> StringView { return s; });
             switch (exception.type) {
-#define E(x)                          \
-    case DOM::SimpleExceptionType::x: \
-        return vm.template throw_completion<JS::x>(global_object, exception.message);
+#define E(x)                             \
+    case WebIDL::SimpleExceptionType::x: \
+        return vm.template throw_completion<JS::x>(message);
 
                 ENUMERATE_SIMPLE_WEBIDL_EXCEPTION_TYPES(E)
 
@@ -65,8 +73,11 @@ ALWAYS_INLINE JS::Completion dom_exception_to_throw_completion(auto&& global_obj
                 VERIFY_NOT_REACHED();
             }
         },
-        [&](NonnullRefPtr<DOM::DOMException> exception) {
-            return vm.template throw_completion<DOMExceptionWrapper>(global_object, move(exception));
+        [&](JS::NonnullGCPtr<WebIDL::DOMException> const& exception) {
+            return throw_completion(exception);
+        },
+        [&](JS::Completion const& completion) {
+            return completion;
         });
 }
 
@@ -79,14 +90,14 @@ using ExtractExceptionOrValueType = typename Detail::ExtractExceptionOrValueType
 // void or ExceptionOr<void>: JS::ThrowCompletionOr<JS::Value>, always returns JS::js_undefined()
 // ExceptionOr<T>: JS::ThrowCompletionOr<T>
 // T: JS::ThrowCompletionOr<T>
-template<typename F, typename T = decltype(declval<F>()()), typename Ret = Conditional<!IsExceptionOr<T> && !IsVoid<T>, T, ExtractExceptionOrValueType<T>>>
-JS::ThrowCompletionOr<Ret> throw_dom_exception_if_needed(auto&& global_object, F&& fn)
+template<typename F, typename T = decltype(declval<F>()()), typename Ret = Conditional<!IsExceptionOr<T> && !IsVoid<T> && !IsThrowCompletionOr<T>, T, ExtractExceptionOrValueType<T>>>
+JS::ThrowCompletionOr<Ret> throw_dom_exception_if_needed(JS::VM& vm, F&& fn)
 {
     if constexpr (IsExceptionOr<T>) {
         auto&& result = fn();
 
         if (result.is_exception())
-            return Detail::dom_exception_to_throw_completion(global_object, result.exception());
+            return Detail::dom_exception_to_throw_completion(vm, result.exception());
 
         if constexpr (requires(T v) { v.value(); })
             return result.value();

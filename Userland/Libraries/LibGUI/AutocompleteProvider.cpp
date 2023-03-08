@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -19,7 +19,7 @@ namespace GUI {
 
 class AutocompleteSuggestionModel final : public GUI::Model {
 public:
-    explicit AutocompleteSuggestionModel(Vector<AutocompleteProvider::Entry>&& suggestions)
+    explicit AutocompleteSuggestionModel(Vector<CodeComprehension::AutocompleteResultEntry>&& suggestions)
         : m_suggestions(move(suggestions))
     {
     }
@@ -50,15 +50,15 @@ public:
                     return suggestion.completion;
             }
             if (index.column() == Column::Icon) {
-                if (suggestion.language == GUI::AutocompleteProvider::Language::Cpp) {
+                if (suggestion.language == CodeComprehension::Language::Cpp) {
                     if (!s_cpp_identifier_icon) {
-                        s_cpp_identifier_icon = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/completion/cpp-identifier.png").release_value_but_fixme_should_propagate_errors();
+                        s_cpp_identifier_icon = Gfx::Bitmap::load_from_file("/res/icons/16x16/completion/cpp-identifier.png"sv).release_value_but_fixme_should_propagate_errors();
                     }
                     return *s_cpp_identifier_icon;
                 }
-                if (suggestion.language == GUI::AutocompleteProvider::Language::Unspecified) {
+                if (suggestion.language == CodeComprehension::Language::Unspecified) {
                     if (!s_unspecified_identifier_icon) {
-                        s_unspecified_identifier_icon = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/completion/unspecified-identifier.png").release_value_but_fixme_should_propagate_errors();
+                        s_unspecified_identifier_icon = Gfx::Bitmap::load_from_file("/res/icons/16x16/completion/unspecified-identifier.png"sv).release_value_but_fixme_should_propagate_errors();
                     }
                     return *s_unspecified_identifier_icon;
                 }
@@ -73,31 +73,32 @@ public:
             return suggestion.completion;
 
         if ((int)role == InternalRole::HideAutocompleteAfterApplying)
-            return suggestion.hide_autocomplete_after_applying == AutocompleteProvider::Entry::HideAutocompleteAfterApplying::Yes;
+            return suggestion.hide_autocomplete_after_applying == CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying::Yes;
 
         return {};
     }
 
-    void set_suggestions(Vector<AutocompleteProvider::Entry>&& suggestions) { m_suggestions = move(suggestions); }
+    void set_suggestions(Vector<CodeComprehension::AutocompleteResultEntry>&& suggestions) { m_suggestions = move(suggestions); }
 
 private:
-    Vector<AutocompleteProvider::Entry> m_suggestions;
+    Vector<CodeComprehension::AutocompleteResultEntry> m_suggestions;
 };
-
-AutocompleteBox::~AutocompleteBox() { }
 
 AutocompleteBox::AutocompleteBox(TextEditor& editor)
     : m_editor(editor)
 {
     m_popup_window = GUI::Window::construct(m_editor->window());
-    m_popup_window->set_window_type(GUI::WindowType::Tooltip);
+    m_popup_window->set_window_type(GUI::WindowType::Autocomplete);
+    m_popup_window->set_obey_widget_min_size(false);
     m_popup_window->set_rect(0, 0, 175, 25);
 
-    auto& main_widget = m_popup_window->set_main_widget<GUI::Widget>();
-    main_widget.set_fill_with_background_color(true);
-    main_widget.set_layout<GUI::VerticalBoxLayout>();
+    auto main_widget = m_popup_window->set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    main_widget->set_fill_with_background_color(true);
+    main_widget->set_layout<GUI::VerticalBoxLayout>();
 
-    m_suggestion_view = main_widget.add<GUI::TableView>();
+    m_suggestion_view = main_widget->add<GUI::TableView>();
+    m_suggestion_view->set_frame_shadow(Gfx::FrameShadow::Plain);
+    m_suggestion_view->set_frame_thickness(1);
     m_suggestion_view->set_column_headers_visible(false);
     m_suggestion_view->set_visible(false);
     m_suggestion_view->on_activation = [&](GUI::ModelIndex const& index) {
@@ -108,10 +109,10 @@ AutocompleteBox::AutocompleteBox(TextEditor& editor)
         apply_suggestion();
     };
 
-    m_no_suggestions_view = main_widget.add<GUI::Label>("No suggestions");
+    m_no_suggestions_view = main_widget->add<GUI::Label>("No suggestions");
 }
 
-void AutocompleteBox::update_suggestions(Vector<AutocompleteProvider::Entry>&& suggestions)
+void AutocompleteBox::update_suggestions(Vector<CodeComprehension::AutocompleteResultEntry>&& suggestions)
 {
     // FIXME: There's a potential race here if, after the user selected an autocomplete suggestion,
     // the LanguageServer sends an update and this function is executed before AutocompleteBox::apply_suggestion()
@@ -131,6 +132,7 @@ void AutocompleteBox::update_suggestions(Vector<AutocompleteProvider::Entry>&& s
         m_suggestion_view->set_cursor(m_suggestion_view->model()->index(0), GUI::AbstractView::SelectionUpdate::Set);
 
     m_suggestion_view->set_visible(has_suggestions);
+    m_suggestion_view->set_focus(has_suggestions);
     m_no_suggestions_view->set_visible(!has_suggestions);
     m_popup_window->resize(has_suggestions ? Gfx::IntSize(300, 100) : Gfx::IntSize(175, 25));
 
@@ -158,35 +160,17 @@ void AutocompleteBox::close()
 
 void AutocompleteBox::next_suggestion()
 {
-    GUI::ModelIndex new_index = m_suggestion_view->selection().first();
-    if (new_index.is_valid())
-        new_index = m_suggestion_view->model()->index(new_index.row() + 1);
-    else
-        new_index = m_suggestion_view->model()->index(0);
-
-    if (m_suggestion_view->model()->is_within_range(new_index)) {
-        m_suggestion_view->selection().set(new_index);
-        m_suggestion_view->scroll_into_view(new_index, Orientation::Vertical);
-    }
+    m_suggestion_view->move_cursor(GUI::AbstractView::CursorMovement::Down, GUI::AbstractView::SelectionUpdate::Set);
 }
 
 void AutocompleteBox::previous_suggestion()
 {
-    GUI::ModelIndex new_index = m_suggestion_view->selection().first();
-    if (new_index.is_valid())
-        new_index = m_suggestion_view->model()->index(new_index.row() - 1);
-    else
-        new_index = m_suggestion_view->model()->index(0);
-
-    if (m_suggestion_view->model()->is_within_range(new_index)) {
-        m_suggestion_view->selection().set(new_index);
-        m_suggestion_view->scroll_into_view(new_index, Orientation::Vertical);
-    }
+    m_suggestion_view->move_cursor(GUI::AbstractView::CursorMovement::Up, GUI::AbstractView::SelectionUpdate::Set);
 }
 
-AutocompleteProvider::Entry::HideAutocompleteAfterApplying AutocompleteBox::apply_suggestion()
+CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying AutocompleteBox::apply_suggestion()
 {
-    auto hide_when_done = AutocompleteProvider::Entry::HideAutocompleteAfterApplying::Yes;
+    auto hide_when_done = CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying::Yes;
 
     if (m_editor.is_null())
         return hide_when_done;
@@ -199,12 +183,12 @@ AutocompleteProvider::Entry::HideAutocompleteAfterApplying AutocompleteBox::appl
         return hide_when_done;
 
     auto suggestion_index = m_suggestion_view->model()->index(selected_index.row());
-    auto completion = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::Completion).to_string();
+    auto completion = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::Completion).to_deprecated_string();
     size_t partial_length = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::PartialInputLength).to_i64();
     auto hide_after_applying = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::HideAutocompleteAfterApplying).to_bool();
 
     if (!hide_after_applying)
-        hide_when_done = AutocompleteProvider::Entry::HideAutocompleteAfterApplying::No;
+        hide_when_done = CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying::No;
 
     VERIFY(completion.length() >= partial_length);
     if (!m_editor->has_selection()) {
@@ -219,16 +203,6 @@ AutocompleteProvider::Entry::HideAutocompleteAfterApplying AutocompleteBox::appl
     m_editor->insert_at_cursor_or_replace_selection(completion);
 
     return hide_when_done;
-}
-
-bool AutocompleteProvider::Declaration::operator==(const AutocompleteProvider::Declaration& other) const
-{
-    return name == other.name && position == other.position && type == other.type && scope == other.scope;
-}
-
-bool AutocompleteProvider::ProjectLocation::operator==(const ProjectLocation& other) const
-{
-    return file == other.file && line == other.line && column == other.column;
 }
 
 }

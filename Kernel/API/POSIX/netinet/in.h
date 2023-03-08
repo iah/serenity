@@ -20,6 +20,10 @@ typedef uint32_t in_addr_t;
 #define INADDR_LOOPBACK 0x7f000001
 #define INADDR_BROADCAST 0xffffffff
 
+#define IN_CLASSA_NET 0xff000000
+#define IN_CLASSB_NET 0xffff0000
+#define IN_CLASSC_NET 0xffffff00
+
 #define IN_LOOPBACKNET 127
 
 #define IP_TOS 1
@@ -85,20 +89,27 @@ struct ip_mreq_source {
 #define IPV6_V6ONLY 9
 #define IPV6_JOIN_GROUP 5
 #define IPV6_LEAVE_GROUP 6
+#define IPV6_RECVPKTINFO 10
+#define IPV6_PKTINFO 11
+#define IPV6_RECVHOPLIMIT 12
+#define IPV6_HOPLIMIT 13
 
 struct in6_addr {
-    uint8_t s6_addr[16];
+    union {
+        uint8_t s6_addr[16];
+        uint32_t s6_addr32[4];
+    };
 };
 
-#define IN6ADDR_ANY_INIT                               \
-    {                                                  \
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
-    }
+struct in6_pktinfo {
+    struct in6_addr ipi6_addr;
+    uint32_t ipi6_ifindex;
+};
 
-#define IN6ADDR_LOOPBACK_INIT                          \
-    {                                                  \
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 \
-    }
+/* clang-format off */
+#define IN6ADDR_ANY_INIT      { { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } } }
+#define IN6ADDR_LOOPBACK_INIT { { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } } }
+/* clang-format on */
 
 extern const struct in6_addr in6addr_any;
 extern const struct in6_addr in6addr_loopback;

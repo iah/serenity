@@ -5,16 +5,16 @@
  */
 
 #include "NumericInput.h"
-#include "ctype.h"
+#include <ctype.h>
 
 NumericInput::NumericInput()
 {
-    set_text("0");
+    set_text("0"sv);
 
     on_change = [&] {
         auto number_opt = text().to_int();
         if (number_opt.has_value()) {
-            set_current_number(number_opt.value(), false);
+            set_current_number(number_opt.value(), GUI::AllowCallback::No);
             return;
         }
 
@@ -26,17 +26,16 @@ NumericInput::NumericInput()
             first = false;
         }
 
-        auto new_number_opt = builder.to_string().to_int();
+        auto new_number_opt = builder.to_deprecated_string().to_int();
         if (!new_number_opt.has_value()) {
             m_needs_text_reset = true;
-            set_text(builder.to_string());
             return;
         } else {
             m_needs_text_reset = false;
         }
 
-        set_text(builder.to_string());
-        set_current_number(new_number_opt.value(), false);
+        set_text(builder.to_deprecated_string());
+        set_current_number(new_number_opt.value(), GUI::AllowCallback::No);
     };
 
     on_up_pressed = [&] {
@@ -71,20 +70,20 @@ void NumericInput::set_max_number(i32 number)
 void NumericInput::on_focus_lost()
 {
     if (m_needs_text_reset) {
-        set_text(String::number(m_current_number));
+        set_text(DeprecatedString::number(m_current_number));
         m_needs_text_reset = false;
     }
     if (on_number_changed)
         on_number_changed(m_current_number);
 }
 
-void NumericInput::set_current_number(i32 number, bool call_change_handler)
+void NumericInput::set_current_number(i32 number, GUI::AllowCallback allow_callback)
 {
     if (number == m_current_number)
         return;
 
     m_current_number = clamp(number, m_min_number, m_max_number);
-    set_text(String::number(m_current_number));
-    if (on_number_changed && call_change_handler)
+    set_text(DeprecatedString::number(m_current_number));
+    if (on_number_changed && allow_callback == GUI::AllowCallback::Yes)
         on_number_changed(m_current_number);
 }

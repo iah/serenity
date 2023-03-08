@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,23 +10,15 @@
 
 namespace Gemini {
 
-GeminiRequest::GeminiRequest()
-{
-}
-
-GeminiRequest::~GeminiRequest()
-{
-}
-
 ByteBuffer GeminiRequest::to_raw_request() const
 {
     StringBuilder builder;
-    builder.append(m_url.to_string());
-    builder.append("\r\n");
+    builder.append(m_url.to_deprecated_string());
+    builder.append("\r\n"sv);
     return builder.to_byte_buffer();
 }
 
-Optional<GeminiRequest> GeminiRequest::from_raw_request(const ByteBuffer& raw_request)
+Optional<GeminiRequest> GeminiRequest::from_raw_request(ByteBuffer const& raw_request)
 {
     URL url = StringView(raw_request);
     if (!url.is_valid())

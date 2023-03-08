@@ -8,8 +8,7 @@
 
 #include <AK/URL.h>
 #include <AK/Vector.h>
-#include <LibWeb/Bindings/Wrappable.h>
-#include <LibWeb/DOM/ExceptionOr.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::URL {
 
@@ -17,31 +16,29 @@ struct QueryParam {
     String name;
     String value;
 };
-String url_encode(const Vector<QueryParam>&, AK::URL::PercentEncodeSet);
-Vector<QueryParam> url_decode(StringView);
+ErrorOr<String> url_encode(Vector<QueryParam> const&, AK::URL::PercentEncodeSet);
+ErrorOr<Vector<QueryParam>> url_decode(StringView);
 
-class URLSearchParams : public Bindings::Wrappable
-    , public RefCounted<URLSearchParams> {
+class URLSearchParams : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(URLSearchParams, Bindings::PlatformObject);
+
 public:
-    using WrapperType = Bindings::URLSearchParamsWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<URLSearchParams>> create(JS::Realm&, Vector<QueryParam> list);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<URLSearchParams>> construct_impl(JS::Realm&, Variant<Vector<Vector<String>>, OrderedHashMap<String, String>, String> const& init);
 
-    static NonnullRefPtr<URLSearchParams> create(Vector<QueryParam> list)
-    {
-        return adopt_ref(*new URLSearchParams(move(list)));
-    }
+    virtual ~URLSearchParams() override;
 
-    static DOM::ExceptionOr<NonnullRefPtr<URLSearchParams>> create_with_global_object(Bindings::WindowObject&, Variant<Vector<Vector<String>>, OrderedHashMap<String, String>, String> const& init);
-
-    void append(String const& name, String const& value);
-    void delete_(String const& name);
-    String get(String const& name);
-    Vector<String> get_all(String const& name);
+    size_t size() const;
+    WebIDL::ExceptionOr<void> append(String const& name, String const& value);
+    WebIDL::ExceptionOr<void> delete_(String const& name);
+    Optional<String> get(String const& name);
+    WebIDL::ExceptionOr<Vector<String>> get_all(String const& name);
     bool has(String const& name);
-    void set(String const& name, String const& value);
+    WebIDL::ExceptionOr<void> set(String const& name, String const& value);
 
-    void sort();
+    WebIDL::ExceptionOr<void> sort();
 
-    String to_string();
+    WebIDL::ExceptionOr<String> to_string() const;
 
     using ForEachCallback = Function<JS::ThrowCompletionOr<void>(String const&, String const&)>;
     JS::ThrowCompletionOr<void> for_each(ForEachCallback);
@@ -50,19 +47,15 @@ private:
     friend class URL;
     friend class URLSearchParamsIterator;
 
-    explicit URLSearchParams(Vector<QueryParam> list)
-        : m_list(move(list)) {};
+    URLSearchParams(JS::Realm&, Vector<QueryParam> list);
 
-    void update();
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    WebIDL::ExceptionOr<void> update();
 
     Vector<QueryParam> m_list;
-    WeakPtr<URL> m_url;
+    JS::GCPtr<URL> m_url;
 };
-
-}
-
-namespace Web::Bindings {
-
-URLSearchParamsWrapper* wrap(JS::GlobalObject&, URL::URLSearchParams&);
 
 }

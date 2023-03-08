@@ -32,11 +32,23 @@ private:
         ALWAYS_INLINE U const* operator->() const { return &m_value; }
         ALWAYS_INLINE U const& operator*() const { return m_value; }
 
-        ALWAYS_INLINE U* operator->() requires(!IsConst<U>) { return &m_value; }
-        ALWAYS_INLINE U& operator*() requires(!IsConst<U>) { return m_value; }
+        ALWAYS_INLINE U* operator->()
+        requires(!IsConst<U>)
+        {
+            return &m_value;
+        }
+        ALWAYS_INLINE U& operator*()
+        requires(!IsConst<U>)
+        {
+            return m_value;
+        }
 
         ALWAYS_INLINE U const& get() const { return &m_value; }
-        ALWAYS_INLINE U& get() requires(!IsConst<U>) { return &m_value; }
+        ALWAYS_INLINE U& get()
+        requires(!IsConst<U>)
+        {
+            return &m_value;
+        }
 
     private:
         U& m_value;
@@ -66,7 +78,7 @@ public:
     template<typename Callback>
     void for_each_shared(Callback callback, LockLocation const& location = LockLocation::current()) const
     {
-        with_shared([&](const auto& value) {
+        with_shared([&](auto const& value) {
             for (auto& item : value)
                 callback(item);
         },

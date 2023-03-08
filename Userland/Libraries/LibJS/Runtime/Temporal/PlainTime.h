@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -19,7 +19,6 @@ class PlainTime final : public Object {
     JS_OBJECT(PlainDateTime, Object);
 
 public:
-    PlainTime(u8 iso_hour, u8 iso_minute, u8 iso_second, u16 iso_millisecond, u16 iso_microsecond, u16 iso_nanosecond, Calendar& calendar, Object& prototype);
     virtual ~PlainTime() override = default;
 
     [[nodiscard]] u8 iso_hour() const { return m_iso_hour; }
@@ -32,6 +31,8 @@ public:
     [[nodiscard]] Calendar& calendar() { return m_calendar; }
 
 private:
+    PlainTime(u8 iso_hour, u8 iso_minute, u8 iso_second, u16 iso_millisecond, u16 iso_microsecond, u16 iso_nanosecond, Calendar& calendar, Object& prototype);
+
     virtual void visit_edges(Visitor&) override;
 
     // 4.4 Properties of Temporal.PlainTime Instances, https://tc39.es/proposal-temporal/#sec-properties-of-temporal-plaintime-instances
@@ -54,16 +55,7 @@ struct DaysAndTime {
     u16 nanosecond;
 };
 
-struct UnregulatedTemporalTime {
-    double hour;
-    double minute;
-    double second;
-    double millisecond;
-    double microsecond;
-    double nanosecond;
-};
-
-struct PartialUnregulatedTemporalTime {
+struct TemporalTimeLikeRecord {
     Optional<double> hour;
     Optional<double> minute;
     Optional<double> second;
@@ -72,39 +64,32 @@ struct PartialUnregulatedTemporalTime {
     Optional<double> nanosecond;
 };
 
-// Table 3: Properties of a TemporalTimeLike, https://tc39.es/proposal-temporal/#table-temporal-temporaltimelike-properties
+// Table 4: TemporalTimeLike Record Fields, https://tc39.es/proposal-temporal/#table-temporal-temporaltimelike-properties
 
 template<typename StructT, typename ValueT>
-struct TemporalTimeLikeProperty {
-    ValueT StructT::*internal_slot { nullptr };
-    PropertyKey property;
+struct TemporalTimeLikeRecordField {
+    ValueT StructT::*field_name { nullptr };
+    PropertyKey property_name;
 };
 
-template<typename StructT, typename ValueT>
-auto temporal_time_like_properties = [](VM& vm) {
-    using PropertyT = TemporalTimeLikeProperty<StructT, ValueT>;
-    return AK::Array {
-        PropertyT { &StructT::hour, vm.names.hour },
-        PropertyT { &StructT::microsecond, vm.names.microsecond },
-        PropertyT { &StructT::millisecond, vm.names.millisecond },
-        PropertyT { &StructT::minute, vm.names.minute },
-        PropertyT { &StructT::nanosecond, vm.names.nanosecond },
-        PropertyT { &StructT::second, vm.names.second },
-    };
+enum class ToTemporalTimeRecordCompleteness {
+    Partial,
+    Complete,
 };
 
-BalancedDuration difference_time(u8 hour1, u8 minute1, u8 second1, u16 millisecond1, u16 microsecond1, u16 nanosecond1, u8 hour2, u8 minute2, u8 second2, u16 millisecond2, u16 microsecond2, u16 nanosecond2);
-ThrowCompletionOr<PlainTime*> to_temporal_time(GlobalObject&, Value item, Optional<StringView> overflow = {});
-ThrowCompletionOr<PartialUnregulatedTemporalTime> to_partial_time(GlobalObject&, Object& temporal_time_like);
-ThrowCompletionOr<TemporalTime> regulate_time(GlobalObject&, double hour, double minute, double second, double millisecond, double microsecond, double nanosecond, StringView overflow);
+TimeDurationRecord difference_time(VM&, u8 hour1, u8 minute1, u8 second1, u16 millisecond1, u16 microsecond1, u16 nanosecond1, u8 hour2, u8 minute2, u8 second2, u16 millisecond2, u16 microsecond2, u16 nanosecond2);
+ThrowCompletionOr<PlainTime*> to_temporal_time(VM&, Value item, Optional<StringView> overflow = {});
+ThrowCompletionOr<TemporalTime> regulate_time(VM&, double hour, double minute, double second, double millisecond, double microsecond, double nanosecond, StringView overflow);
 bool is_valid_time(double hour, double minute, double second, double millisecond, double microsecond, double nanosecond);
 DaysAndTime balance_time(double hour, double minute, double second, double millisecond, double microsecond, double nanosecond);
 TemporalTime constrain_time(double hour, double minute, double second, double millisecond, double microsecond, double nanosecond);
-ThrowCompletionOr<PlainTime*> create_temporal_time(GlobalObject&, u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, FunctionObject const* new_target = nullptr);
-ThrowCompletionOr<UnregulatedTemporalTime> to_temporal_time_record(GlobalObject&, Object const& temporal_time_like);
-String temporal_time_to_string(u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, Variant<StringView, u8> const& precision);
+ThrowCompletionOr<PlainTime*> create_temporal_time(VM&, u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, FunctionObject const* new_target = nullptr);
+ThrowCompletionOr<TemporalTimeLikeRecord> to_temporal_time_record(VM&, Object const& temporal_time_like, ToTemporalTimeRecordCompleteness = ToTemporalTimeRecordCompleteness::Complete);
+ThrowCompletionOr<String> temporal_time_to_string(VM&, u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, Variant<StringView, u8> const& precision);
 i8 compare_temporal_time(u8 hour1, u8 minute1, u8 second1, u16 millisecond1, u16 microsecond1, u16 nanosecond1, u8 hour2, u8 minute2, u8 second2, u16 millisecond2, u16 microsecond2, u16 nanosecond2);
 DaysAndTime add_time(u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, double hours, double minutes, double seconds, double milliseconds, double microseconds, double nanoseconds);
 DaysAndTime round_time(u8 hour, u8 minute, u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, u64 increment, StringView unit, StringView rounding_mode, Optional<double> day_length_ns = {});
+ThrowCompletionOr<Duration*> difference_temporal_plain_time(VM&, DifferenceOperation, PlainTime const&, Value other, Value options);
+ThrowCompletionOr<PlainTime*> add_duration_to_or_subtract_duration_from_plain_time(VM&, ArithmeticOperation, PlainTime const&, Value temporal_duration_like);
 
 }

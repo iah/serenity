@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,38 +14,37 @@
 #include <LibGUI/ListView.h>
 #include <LibGUI/SpinBox.h>
 #include <LibGUI/Widget.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 
 namespace GUI {
 
-FontPicker::FontPicker(Window* parent_window, const Gfx::Font* current_font, bool fixed_width_only)
+FontPicker::FontPicker(Window* parent_window, Gfx::Font const* current_font, bool fixed_width_only)
     : Dialog(parent_window)
     , m_fixed_width_only(fixed_width_only)
 {
     set_title("Font picker");
     resize(430, 280);
-    set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-font-editor.png").release_value_but_fixme_should_propagate_errors());
+    set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-font-editor.png"sv).release_value_but_fixme_should_propagate_errors());
 
-    auto& widget = set_main_widget<GUI::Widget>();
-    if (!widget.load_from_gml(font_picker_dialog_gml))
-        VERIFY_NOT_REACHED();
+    auto widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    widget->load_from_gml(font_picker_dialog_gml).release_value_but_fixme_should_propagate_errors();
 
-    m_family_list_view = *widget.find_descendant_of_type_named<ListView>("family_list_view");
-    m_family_list_view->set_model(ItemListModel<String>::create(m_families));
+    m_family_list_view = *widget->find_descendant_of_type_named<ListView>("family_list_view");
+    m_family_list_view->set_model(ItemListModel<DeprecatedString>::create(m_families));
     m_family_list_view->horizontal_scrollbar().set_visible(false);
 
-    m_variant_list_view = *widget.find_descendant_of_type_named<ListView>("variant_list_view");
-    m_variant_list_view->set_model(ItemListModel<String>::create(m_variants));
+    m_variant_list_view = *widget->find_descendant_of_type_named<ListView>("variant_list_view");
+    m_variant_list_view->set_model(ItemListModel<DeprecatedString>::create(m_variants));
     m_variant_list_view->horizontal_scrollbar().set_visible(false);
 
-    m_size_spin_box = *widget.find_descendant_of_type_named<SpinBox>("size_spin_box");
+    m_size_spin_box = *widget->find_descendant_of_type_named<SpinBox>("size_spin_box");
     m_size_spin_box->set_range(1, 255);
 
-    m_size_list_view = *widget.find_descendant_of_type_named<ListView>("size_list_view");
+    m_size_list_view = *widget->find_descendant_of_type_named<ListView>("size_list_view");
     m_size_list_view->set_model(ItemListModel<int>::create(m_sizes));
     m_size_list_view->horizontal_scrollbar().set_visible(false);
 
-    m_sample_text_label = *widget.find_descendant_of_type_named<Label>("sample_text_label");
+    m_sample_text_label = *widget->find_descendant_of_type_named<Label>("sample_text_label");
 
     m_families.clear();
     Gfx::FontDatabase::the().for_each_typeface([&](auto& typeface) {
@@ -57,7 +57,7 @@ FontPicker::FontPicker(Window* parent_window, const Gfx::Font* current_font, boo
 
     m_family_list_view->on_selection_change = [this] {
         const auto& index = m_family_list_view->selection().first();
-        m_family = index.data().to_string();
+        m_family = index.data().to_deprecated_string();
         m_variants.clear();
         Gfx::FontDatabase::the().for_each_typeface([&](auto& typeface) {
             if (m_fixed_width_only && !typeface.is_fixed_width())
@@ -78,7 +78,7 @@ FontPicker::FontPicker(Window* parent_window, const Gfx::Font* current_font, boo
     m_variant_list_view->on_selection_change = [this] {
         const auto& index = m_variant_list_view->selection().first();
         bool font_is_fixed_size = false;
-        m_variant = index.data().to_string();
+        m_variant = index.data().to_deprecated_string();
         m_sizes.clear();
         Gfx::FontDatabase::the().for_each_typeface([&](auto& typeface) {
             if (m_fixed_width_only && !typeface.is_fixed_width())
@@ -95,7 +95,9 @@ FontPicker::FontPicker(Window* parent_window, const Gfx::Font* current_font, boo
                     m_size_spin_box->set_visible(true);
 
                     m_sizes.append(8);
+                    m_sizes.append(9);
                     m_sizes.append(10);
+                    m_sizes.append(11);
                     m_sizes.append(12);
                     m_sizes.append(14);
                     m_sizes.append(16);
@@ -156,24 +158,21 @@ FontPicker::FontPicker(Window* parent_window, const Gfx::Font* current_font, boo
         update_font();
     };
 
-    auto& ok_button = *widget.find_descendant_of_type_named<GUI::Button>("ok_button");
+    auto& ok_button = *widget->find_descendant_of_type_named<GUI::Button>("ok_button");
     ok_button.on_click = [this](auto) {
-        done(ExecOK);
+        done(ExecResult::OK);
     };
+    ok_button.set_default(true);
 
-    auto& cancel_button = *widget.find_descendant_of_type_named<GUI::Button>("cancel_button");
+    auto& cancel_button = *widget->find_descendant_of_type_named<GUI::Button>("cancel_button");
     cancel_button.on_click = [this](auto) {
-        done(ExecCancel);
+        done(ExecResult::Cancel);
     };
 
     set_font(current_font);
 }
 
-FontPicker::~FontPicker()
-{
-}
-
-void FontPicker::set_font(const Gfx::Font* font)
+void FontPicker::set_font(Gfx::Font const* font)
 {
     if (m_font == font)
         return;

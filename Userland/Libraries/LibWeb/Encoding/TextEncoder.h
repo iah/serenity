@@ -10,35 +10,29 @@
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefCounted.h>
 #include <LibJS/Forward.h>
-#include <LibWeb/Bindings/Wrappable.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::Encoding {
 
 // https://encoding.spec.whatwg.org/#textencoder
-class TextEncoder
-    : public RefCounted<TextEncoder>
-    , public Bindings::Wrappable {
+class TextEncoder final : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(TextEncoder, Bindings::PlatformObject);
+
 public:
-    using WrapperType = Bindings::TextEncoderWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<TextEncoder>> construct_impl(JS::Realm&);
 
-    static NonnullRefPtr<TextEncoder> create()
-    {
-        return adopt_ref(*new TextEncoder());
-    }
+    virtual ~TextEncoder() override;
 
-    static NonnullRefPtr<TextEncoder> create_with_global_object(Bindings::WindowObject&)
-    {
-        return TextEncoder::create();
-    }
+    JS::Uint8Array* encode(DeprecatedString const& input) const;
 
-    JS::Uint8Array* encode(String const& input) const;
-
-    static FlyString const& encoding();
+    static DeprecatedFlyString const& encoding();
 
 protected:
     // https://encoding.spec.whatwg.org/#dom-textencoder
-    TextEncoder() = default;
+    explicit TextEncoder(JS::Realm&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

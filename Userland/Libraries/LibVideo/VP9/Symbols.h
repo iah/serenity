@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2022, Gregory Bertilson<zaggy1024@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,6 +8,12 @@
 #pragma once
 
 namespace Video::VP9 {
+
+// FIXME: These should be placed in logical groupings based on the
+//        context they are used in, and perhaps split into multiple
+//        files. While doing so, as many of these as possible should be
+//        renamed to be more human-readable, and most if not all should
+//        be constexpr variables rather than preprocessor definitions.
 
 #define REFS_PER_FRAME 3
 #define MV_FR_SIZE 4
@@ -19,7 +26,8 @@ namespace Video::VP9 {
 #define MIN_TILE_WIDTH_B64 4
 #define MAX_TILE_WIDTH_B64 64
 #define MAX_MV_REF_CANDIDATES 2
-#define NUM_REF_FRAMES 8
+#define LOG2_OF_NUM_REF_FRAMES 3
+#define NUM_REF_FRAMES 1 << LOG2_OF_NUM_REF_FRAMES
 #define MAX_REF_FRAMES 4
 #define IS_INTER_CONTEXTS 4
 #define COMP_MODE_CONTEXTS 5
@@ -42,10 +50,6 @@ namespace Video::VP9 {
 #define PARTITION_TYPES 4
 #define TX_SIZES 4
 #define TX_MODES 5
-#define DCT_DCT 0
-#define ADST_DCT 1
-#define DCT_ADST 2
-#define ADST_ADST 3
 #define MB_MODE_COUNT 14
 #define INTRA_MODES 10
 #define INTER_MODES 4
@@ -59,11 +63,14 @@ namespace Video::VP9 {
 #define COMPANDED_MVREF_THRESH 8
 #define MAX_LOOP_FILTER 63
 #define REF_SCALE_SHIFT 14
+// Number of bits of precision when performing inter prediction.
 #define SUBPEL_BITS 4
 #define SUBPEL_SHIFTS 16
-#define SUBPEL_MASH 15
+#define SUBPEL_MASK 15
 #define MV_BORDER 128
+// Value used when clipping motion vectors.
 #define INTERP_EXTEND 4
+// Value used when clipping motion vectors.
 #define BORDERINPIXELS 160
 #define MAX_UPDATE_FACTOR 128
 #define COUNT_SAT 20

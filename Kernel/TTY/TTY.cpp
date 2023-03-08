@@ -7,16 +7,16 @@
 
 #include <AK/ScopeGuard.h>
 #include <AK/StringView.h>
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/API/POSIX/errno.h>
-#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/API/POSIX/signal_numbers.h>
+#include <Kernel/API/ttydefaults.h>
+#include <Kernel/API/ttydefaultschars.h>
 #include <Kernel/Debug.h>
+#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Process.h>
 #include <Kernel/TTY/TTY.h>
-#include <LibC/signal_numbers.h>
-#include <LibC/sys/ioctl_numbers.h>
-#define TTYDEFCHARS
-#include <LibC/sys/ttydefaults.h>
-#undef TTYDEFCHARS
+#include <Kernel/UnixTypes.h>
 
 namespace Kernel {
 
@@ -26,9 +26,7 @@ TTY::TTY(MajorNumber major, MinorNumber minor)
     set_default_termios();
 }
 
-TTY::~TTY()
-{
-}
+TTY::~TTY() = default;
 
 void TTY::set_default_termios()
 {
@@ -81,7 +79,7 @@ ErrorOr<size_t> TTY::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer,
     return result;
 }
 
-ErrorOr<size_t> TTY::write(OpenFileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
+ErrorOr<size_t> TTY::write(OpenFileDescription&, u64, UserOrKernelBuffer const& buffer, size_t size)
 {
     if (m_termios.c_lflag & TOSTOP && Process::current().pgid() != pgid()) {
         [[maybe_unused]] auto rc = Process::current().send_signal(SIGTTOU, nullptr);
@@ -140,7 +138,7 @@ void TTY::process_output(u8 ch, Functor put_char)
     }
 }
 
-bool TTY::can_read(const OpenFileDescription&, u64) const
+bool TTY::can_read(OpenFileDescription const&, u64) const
 {
     if (in_canonical_mode()) {
         return m_available_lines > 0;
@@ -148,7 +146,7 @@ bool TTY::can_read(const OpenFileDescription&, u64) const
     return !m_input_buffer.is_empty();
 }
 
-bool TTY::can_write(const OpenFileDescription&, u64) const
+bool TTY::can_write(OpenFileDescription const&, u64) const
 {
     return true;
 }
@@ -185,22 +183,18 @@ void TTY::emit(u8 ch, bool do_evaluate_block_conditions)
 
     if (should_generate_signals()) {
         if (ch == m_termios.c_cc[VINFO]) {
-            dbgln("{}: VINFO pressed!", tty_name());
             generate_signal(SIGINFO);
             return;
         }
         if (ch == m_termios.c_cc[VINTR]) {
-            dbgln("{}: VINTR pressed!", tty_name());
             generate_signal(SIGINT);
             return;
         }
         if (ch == m_termios.c_cc[VQUIT]) {
-            dbgln("{}: VQUIT pressed!", tty_name());
             generate_signal(SIGQUIT);
             return;
         }
         if (ch == m_termios.c_cc[VSUSP]) {
-            dbgln("{}: VSUSP pressed!", tty_name());
             generate_signal(SIGTSTP);
             if (auto original_process_parent = m_original_process_parent.strong_ref()) {
                 [[maybe_unused]] auto rc = original_process_parent->send_signal(SIGCHLD, nullptr);
@@ -319,8 +313,8 @@ void TTY::do_backspace()
 
 void TTY::erase_word()
 {
-    //Note: if we have leading whitespace before the word
-    //we want to delete we have to also delete that.
+    // Note: if we have leading whitespace before the word
+    // we want to delete we have to also delete that.
     bool first_char = false;
     bool did_dequeue = false;
     while (can_do_backspace()) {
@@ -363,13 +357,14 @@ void TTY::generate_signal(int signal)
         return;
     if (should_flush_on_signal())
         flush_input();
-    dbgln_if(TTY_DEBUG, "{}: Send signal {} to everyone in pgrp {}", tty_name(), signal, pgid().value());
+    dbgln_if(TTY_DEBUG, "Send signal {} to everyone in pgrp {}", signal, pgid().value());
     InterruptDisabler disabler; // FIXME: Iterate over a set of process handles instead?
-    Process::for_each_in_pgrp(pgid(), [&](auto& process) {
-        dbgln_if(TTY_DEBUG, "{}: Send signal {} to {}", tty_name(), signal, process);
+    MUST(Process::current().for_each_in_pgrp_in_same_jail(pgid(), [&](auto& process) -> ErrorOr<void> {
+        dbgln_if(TTY_DEBUG, "Send signal {} to {}", signal, process);
         // FIXME: Should this error be propagated somehow?
         [[maybe_unused]] auto rc = process.send_signal(signal, nullptr);
-    });
+        return {};
+    }));
 }
 
 void TTY::flush_input()
@@ -379,13 +374,12 @@ void TTY::flush_input()
     evaluate_block_conditions();
 }
 
-ErrorOr<void> TTY::set_termios(const termios& t)
+ErrorOr<void> TTY::set_termios(termios const& t)
 {
     ErrorOr<void> rc;
     m_termios = t;
 
-    dbgln_if(TTY_DEBUG, "{} set_termios: ECHO={}, ISIG={}, ICANON={}, ECHOE={}, ECHOK={}, ECHONL={}, ISTRIP={}, ICRNL={}, INLCR={}, IGNCR={}, OPOST={}, ONLCR={}",
-        tty_name(),
+    dbgln_if(TTY_DEBUG, "set_termios: ECHO={}, ISIG={}, ICANON={}, ECHOE={}, ECHOK={}, ECHONL={}, ISTRIP={}, ICRNL={}, INLCR={}, IGNCR={}, OPOST={}, ONLCR={}",
         should_echo_input(),
         should_generate_signals(),
         in_canonical_mode(),
@@ -405,18 +399,18 @@ ErrorOr<void> TTY::set_termios(const termios& t)
     };
 
     constexpr FlagDescription unimplemented_iflags[] = {
-        { IGNBRK, "IGNBRK" },
-        { BRKINT, "BRKINT" },
-        { IGNPAR, "IGNPAR" },
-        { PARMRK, "PARMRK" },
-        { INPCK, "INPCK" },
-        { IGNCR, "IGNCR" },
-        { IUCLC, "IUCLC" },
-        { IXON, "IXON" },
-        { IXANY, "IXANY" },
-        { IXOFF, "IXOFF" },
-        { IMAXBEL, "IMAXBEL" },
-        { IUTF8, "IUTF8" }
+        { IGNBRK, "IGNBRK"sv },
+        { BRKINT, "BRKINT"sv },
+        { IGNPAR, "IGNPAR"sv },
+        { PARMRK, "PARMRK"sv },
+        { INPCK, "INPCK"sv },
+        { IGNCR, "IGNCR"sv },
+        { IUCLC, "IUCLC"sv },
+        { IXON, "IXON"sv },
+        { IXANY, "IXANY"sv },
+        { IXOFF, "IXOFF"sv },
+        { IMAXBEL, "IMAXBEL"sv },
+        { IUTF8, "IUTF8"sv }
     };
     for (auto flag : unimplemented_iflags) {
         if (m_termios.c_iflag & flag.value) {
@@ -426,11 +420,11 @@ ErrorOr<void> TTY::set_termios(const termios& t)
     }
 
     constexpr FlagDescription unimplemented_oflags[] = {
-        { OLCUC, "OLCUC" },
-        { ONOCR, "ONOCR" },
-        { ONLRET, "ONLRET" },
-        { OFILL, "OFILL" },
-        { OFDEL, "OFDEL" }
+        { OLCUC, "OLCUC"sv },
+        { ONOCR, "ONOCR"sv },
+        { ONLRET, "ONLRET"sv },
+        { OFILL, "OFILL"sv },
+        { OFDEL, "OFDEL"sv }
     };
     for (auto flag : unimplemented_oflags) {
         if (m_termios.c_oflag & flag.value) {
@@ -445,12 +439,12 @@ ErrorOr<void> TTY::set_termios(const termios& t)
     }
 
     constexpr FlagDescription unimplemented_cflags[] = {
-        { CSTOPB, "CSTOPB" },
-        { CREAD, "CREAD" },
-        { PARENB, "PARENB" },
-        { PARODD, "PARODD" },
-        { HUPCL, "HUPCL" },
-        { CLOCAL, "CLOCAL" }
+        { CSTOPB, "CSTOPB"sv },
+        { CREAD, "CREAD"sv },
+        { PARENB, "PARENB"sv },
+        { PARODD, "PARODD"sv },
+        { HUPCL, "HUPCL"sv },
+        { CLOCAL, "CLOCAL"sv }
     };
     for (auto flag : unimplemented_cflags) {
         if (m_termios.c_cflag & flag.value) {
@@ -460,8 +454,8 @@ ErrorOr<void> TTY::set_termios(const termios& t)
     }
 
     constexpr FlagDescription unimplemented_lflags[] = {
-        { TOSTOP, "TOSTOP" },
-        { IEXTEN, "IEXTEN" }
+        { TOSTOP, "TOSTOP"sv },
+        { IEXTEN, "IEXTEN"sv }
     };
     for (auto flag : unimplemented_lflags) {
         if (m_termios.c_lflag & flag.value) {
@@ -500,7 +494,7 @@ ErrorOr<void> TTY::ioctl(OpenFileDescription&, unsigned request, Userspace<void*
         if (!process_group)
             return EINVAL;
 
-        auto process = Process::from_pid(ProcessID(pgid.value()));
+        auto process = Process::from_pid_in_same_jail(ProcessID(pgid.value()));
         SessionID new_sid = process ? process->sid() : Process::get_sid_from_pgid(pgid);
         if (!new_sid || new_sid != current_process.sid())
             return EPERM;
@@ -509,7 +503,7 @@ ErrorOr<void> TTY::ioctl(OpenFileDescription&, unsigned request, Userspace<void*
         m_pg = process_group;
 
         if (process) {
-            if (auto parent = Process::from_pid(process->ppid())) {
+            if (auto parent = Process::from_pid_ignoring_jails(process->ppid())) {
                 m_original_process_parent = *parent;
                 return {};
             }
@@ -569,13 +563,21 @@ ErrorOr<void> TTY::ioctl(OpenFileDescription&, unsigned request, Userspace<void*
     case TIOCNOTTY:
         current_process.set_tty(nullptr);
         return {};
+    case KDSETMODE: {
+        auto mode = static_cast<unsigned int>(arg.ptr());
+        if (mode != KD_TEXT && mode != KD_GRAPHICS)
+            return EINVAL;
+
+        set_graphical(mode == KD_GRAPHICS);
+        return {};
+    }
+    case KDGETMODE: {
+        auto mode_ptr = static_ptr_cast<int*>(arg);
+        int mode = (is_graphical()) ? KD_GRAPHICS : KD_TEXT;
+        return copy_to_user(mode_ptr, &mode);
+    }
     }
     return EINVAL;
-}
-
-ErrorOr<NonnullOwnPtr<KString>> TTY::pseudo_path(const OpenFileDescription&) const
-{
-    return tty_name().try_clone();
 }
 
 void TTY::set_size(unsigned short columns, unsigned short rows)

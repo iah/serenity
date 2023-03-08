@@ -8,7 +8,6 @@
 
 #include <AK/ByteBuffer.h>
 #include <AK/Span.h>
-#include <AK/StdLibExtras.h>
 #include <LibCrypto/Cipher/Cipher.h>
 
 namespace Crypto {
@@ -24,7 +23,7 @@ public:
 
     virtual size_t IV_length() const = 0;
 
-    const T& cipher() const { return m_cipher; }
+    T const& cipher() const { return m_cipher; }
 
     ErrorOr<ByteBuffer> create_aligned_buffer(size_t input_size) const
     {
@@ -36,7 +35,7 @@ public:
     }
 
 #ifndef KERNEL
-    virtual String class_name() const = 0;
+    virtual DeprecatedString class_name() const = 0;
 #endif
 
     T& cipher()

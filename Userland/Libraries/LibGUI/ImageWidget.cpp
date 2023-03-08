@@ -1,10 +1,12 @@
 /*
  * Copyright (c) 2020, Hüseyin Aslıtürk <asliturk@hotmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibCore/MappedFile.h>
+#include <LibCore/MimeData.h>
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
@@ -15,7 +17,7 @@ REGISTER_WIDGET(GUI, ImageWidget)
 namespace GUI {
 
 ImageWidget::ImageWidget(StringView)
-    : m_timer(Core::Timer::construct())
+    : m_timer(Core::Timer::try_create().release_value_but_fixme_should_propagate_errors())
 
 {
     set_frame_thickness(0);
@@ -25,13 +27,10 @@ ImageWidget::ImageWidget(StringView)
 
     REGISTER_BOOL_PROPERTY("auto_resize", auto_resize, set_auto_resize);
     REGISTER_BOOL_PROPERTY("should_stretch", should_stretch, set_should_stretch);
+    REGISTER_WRITE_ONLY_STRING_PROPERTY("bitmap", load_from_file);
 }
 
-ImageWidget::~ImageWidget()
-{
-}
-
-void ImageWidget::set_bitmap(const Gfx::Bitmap* bitmap)
+void ImageWidget::set_bitmap(Gfx::Bitmap const* bitmap)
 {
     if (m_bitmap == bitmap)
         return;
@@ -78,7 +77,8 @@ void ImageWidget::load_from_file(StringView path)
         return;
 
     auto& mapped_file = *file_or_error.value();
-    m_image_decoder = Gfx::ImageDecoder::try_create(mapped_file.bytes());
+    auto mime_type = Core::guess_mime_type_based_on_filename(path);
+    m_image_decoder = Gfx::ImageDecoder::try_create_for_raw_bytes(mapped_file.bytes(), mime_type);
     VERIFY(m_image_decoder);
 
     auto frame = m_image_decoder->frame(0).release_value_but_fixme_should_propagate_errors();

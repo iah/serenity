@@ -7,16 +7,17 @@
 
 #pragma once
 
-#include <AK/Platform.h>
-
+#include <AK/Array.h>
 #include <AK/NonnullOwnPtr.h>
-#include <Kernel/Arch/x86/IO.h>
+#include <AK/Platform.h>
 #include <Kernel/Bus/PCI/Device.h>
 #include <Kernel/Bus/USB/UHCI/UHCIDescriptorPool.h>
 #include <Kernel/Bus/USB/UHCI/UHCIDescriptorTypes.h>
 #include <Kernel/Bus/USB/UHCI/UHCIRootHub.h>
 #include <Kernel/Bus/USB/USBController.h>
+#include <Kernel/IOWindow.h>
 #include <Kernel/Interrupts/IRQHandler.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Process.h>
 #include <Kernel/Time/TimeManagement.h>
@@ -33,48 +34,60 @@ class UHCIController final
 
 public:
     static constexpr u8 NUMBER_OF_ROOT_PORTS = 2;
-    static ErrorOr<NonnullRefPtr<UHCIController>> try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier);
+    static ErrorOr<NonnullLockRefPtr<UHCIController>> try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier);
     virtual ~UHCIController() override;
 
     virtual StringView purpose() const override { return "UHCI"sv; }
+    virtual StringView device_name() const override { return purpose(); }
 
     virtual ErrorOr<void> initialize() override;
     virtual ErrorOr<void> reset() override;
     virtual ErrorOr<void> stop() override;
     virtual ErrorOr<void> start() override;
+    ErrorOr<void> spawn_async_poll_process();
     ErrorOr<void> spawn_port_process();
 
+    ErrorOr<QueueHead*> create_transfer_queue(Transfer& transfer);
+    ErrorOr<void> submit_async_transfer(NonnullOwnPtr<AsyncTransferHandle> async_handle, QueueHead* anchor, QueueHead* transfer_queue);
+
+    virtual void cancel_async_transfer(NonnullLockRefPtr<Transfer> transfer) override;
     virtual ErrorOr<size_t> submit_control_transfer(Transfer& transfer) override;
+    virtual ErrorOr<size_t> submit_bulk_transfer(Transfer& transfer) override;
+    virtual ErrorOr<void> submit_async_interrupt_transfer(NonnullLockRefPtr<Transfer> transfer, u16 ms_interval) override;
 
     void get_port_status(Badge<UHCIRootHub>, u8, HubStatus&);
     ErrorOr<void> set_port_feature(Badge<UHCIRootHub>, u8, HubFeatureSelector);
     ErrorOr<void> clear_port_feature(Badge<UHCIRootHub>, u8, HubFeatureSelector);
 
 private:
-    explicit UHCIController(PCI::DeviceIdentifier const& pci_device_identifier);
+    UHCIController(PCI::DeviceIdentifier const& pci_device_identifier, NonnullOwnPtr<IOWindow> registers_io_window);
 
-    u16 read_usbcmd() { return m_io_base.offset(0).in<u16>(); }
-    u16 read_usbsts() { return m_io_base.offset(0x2).in<u16>(); }
-    u16 read_usbintr() { return m_io_base.offset(0x4).in<u16>(); }
-    u16 read_frnum() { return m_io_base.offset(0x6).in<u16>(); }
-    u32 read_flbaseadd() { return m_io_base.offset(0x8).in<u32>(); }
-    u8 read_sofmod() { return m_io_base.offset(0xc).in<u8>(); }
-    u16 read_portsc1() { return m_io_base.offset(0x10).in<u16>(); }
-    u16 read_portsc2() { return m_io_base.offset(0x12).in<u16>(); }
+    u16 read_usbcmd() { return m_registers_io_window->read16(0); }
+    u16 read_usbsts() { return m_registers_io_window->read16(0x2); }
+    u16 read_usbintr() { return m_registers_io_window->read16(0x4); }
+    u16 read_frnum() { return m_registers_io_window->read16(0x6); }
+    u32 read_flbaseadd() { return m_registers_io_window->read32(0x8); }
+    u8 read_sofmod() { return m_registers_io_window->read8(0xc); }
+    u16 read_portsc1() { return m_registers_io_window->read16(0x10); }
+    u16 read_portsc2() { return m_registers_io_window->read16(0x12); }
 
-    void write_usbcmd(u16 value) { m_io_base.offset(0).out(value); }
-    void write_usbsts(u16 value) { m_io_base.offset(0x2).out(value); }
-    void write_usbintr(u16 value) { m_io_base.offset(0x4).out(value); }
-    void write_frnum(u16 value) { m_io_base.offset(0x6).out(value); }
-    void write_flbaseadd(u32 value) { m_io_base.offset(0x8).out(value); }
-    void write_sofmod(u8 value) { m_io_base.offset(0xc).out(value); }
-    void write_portsc1(u16 value) { m_io_base.offset(0x10).out(value); }
-    void write_portsc2(u16 value) { m_io_base.offset(0x12).out(value); }
+    void write_usbcmd(u16 value) { m_registers_io_window->write16(0, value); }
+    void write_usbsts(u16 value) { m_registers_io_window->write16(0x2, value); }
+    void write_usbintr(u16 value) { m_registers_io_window->write16(0x4, value); }
+    void write_frnum(u16 value) { m_registers_io_window->write16(0x6, value); }
+    void write_flbaseadd(u32 value) { m_registers_io_window->write32(0x8, value); }
+    void write_sofmod(u8 value) { m_registers_io_window->write8(0xc, value); }
+    void write_portsc1(u16 value) { m_registers_io_window->write16(0x10, value); }
+    void write_portsc2(u16 value) { m_registers_io_window->write16(0x12, value); }
 
-    virtual bool handle_irq(const RegisterState&) override;
+    virtual bool handle_irq(RegisterState const&) override;
 
     ErrorOr<void> create_structures();
     void setup_schedule();
+
+    void enqueue_qh(QueueHead* transfer_queue, QueueHead* anchor);
+    void dequeue_qh(QueueHead* transfer_queue);
+
     size_t poll_transfer_queue(QueueHead& transfer_queue);
 
     TransferDescriptor* create_transfer_descriptor(Pipe& pipe, PacketID direction, size_t data_len);
@@ -86,18 +99,24 @@ private:
 
     void reset_port(u8);
 
-    IOAddress m_io_base;
+    NonnullOwnPtr<IOWindow> m_registers_io_window;
+
+    Spinlock<LockRank::None> m_async_lock {};
+    Spinlock<LockRank::None> m_schedule_lock {};
 
     OwnPtr<UHCIRootHub> m_root_hub;
     OwnPtr<UHCIDescriptorPool<QueueHead>> m_queue_head_pool;
     OwnPtr<UHCIDescriptorPool<TransferDescriptor>> m_transfer_descriptor_pool;
     Vector<TransferDescriptor*> m_iso_td_list;
+    Array<OwnPtr<AsyncTransferHandle>, MAXIMUM_NUMBER_OF_QHS> m_active_async_transfers;
 
-    QueueHead* m_interrupt_transfer_queue;
-    QueueHead* m_lowspeed_control_qh;
-    QueueHead* m_fullspeed_control_qh;
-    QueueHead* m_bulk_qh;
-    QueueHead* m_dummy_qh; // Needed for PIIX4 hack
+    QueueHead* m_schedule_begin_anchor;
+    QueueHead* m_interrupt_qh_anchor;
+    QueueHead* m_ls_control_qh_anchor;
+    QueueHead* m_fs_control_qh_anchor;
+    // Always final queue in the schedule, may loop back to previous QH for bandwidth
+    // reclamation instead of actually terminating
+    QueueHead* m_bulk_qh_anchor;
 
     OwnPtr<Memory::Region> m_framelist;
     OwnPtr<Memory::Region> m_isochronous_transfer_pool;

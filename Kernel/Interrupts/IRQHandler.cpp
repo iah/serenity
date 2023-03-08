@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/Arch/InterruptManagement.h>
 #include <Kernel/Debug.h>
+#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Interrupts/IRQHandler.h>
-#include <Kernel/Interrupts/InterruptManagement.h>
 
 namespace Kernel {
 
@@ -19,15 +19,12 @@ IRQHandler::IRQHandler(u8 irq)
         disable_irq();
 }
 
-IRQHandler::~IRQHandler()
-{
-}
+IRQHandler::~IRQHandler() = default;
 
 bool IRQHandler::eoi()
 {
     dbgln_if(IRQ_DEBUG, "EOI IRQ {}", interrupt_number());
     if (!m_shared_with_others) {
-        VERIFY(!m_responsible_irq_controller.is_null());
         m_responsible_irq_controller->eoi(*this);
         return true;
     }

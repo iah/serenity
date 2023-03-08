@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
-#include <stdio.h>
+#include <LibMain/Main.h>
 #include <unistd.h>
 
 #define ENUMERATE_TARGETS(T) \
@@ -17,7 +17,7 @@
     T(GIFLoader)             \
     T(HttpRequest)           \
     T(ICOLoader)             \
-    T(JPGLoader)             \
+    T(JPEGLoader)            \
     T(Js)                    \
     T(Markdown)              \
     T(PBMLoader)             \
@@ -25,6 +25,7 @@
     T(PNGLoader)             \
     T(PPMLoader)             \
     T(QOILoader)             \
+    T(TGALoader)             \
     T(RegexECMA262)          \
     T(RegexPosixExtended)    \
     T(Shell)                 \
@@ -32,7 +33,7 @@
     T(URL)
 
 #undef __ENUMERATE_TARGET
-#define __ENUMERATE_TARGET(x) extern "C" int Test##x(const uint8_t*, size_t);
+#define __ENUMERATE_TARGET(x) extern "C" int Test##x(uint8_t const*, size_t);
 ENUMERATE_TARGETS(__ENUMERATE_TARGET)
 #undef __ENUMERATE_TARGET
 
@@ -60,8 +61,8 @@ ENUMERATE_TARGETS(__ENUMERATE_TARGET)
 #include <Meta/Lagom/Fuzzers/FuzzICOLoader.cpp>
 #undef LLVMFuzzerTestOneInput
 
-#define LLVMFuzzerTestOneInput TestJPGLoader
-#include <Meta/Lagom/Fuzzers/FuzzJPGLoader.cpp>
+#define LLVMFuzzerTestOneInput TestJPEGLoader
+#include <Meta/Lagom/Fuzzers/FuzzJPEGLoader.cpp>
 #undef LLVMFuzzerTestOneInput
 
 #define LLVMFuzzerTestOneInput TestJs
@@ -92,6 +93,10 @@ ENUMERATE_TARGETS(__ENUMERATE_TARGET)
 #include <Meta/Lagom/Fuzzers/FuzzQOILoader.cpp>
 #undef LLVMFuzzerTestOneInput
 
+#define LLVMFuzzerTestOneInput TestTGALoader
+#include <Meta/Lagom/Fuzzers/FuzzTGALoader.cpp>
+#undef LLVMFuzzerTestOneInput
+
 #define LLVMFuzzerTestOneInput TestRegexECMA262
 #include <Meta/Lagom/Fuzzers/FuzzRegexECMA262.cpp>
 #undef LLVMFuzzerTestOneInput
@@ -112,9 +117,9 @@ ENUMERATE_TARGETS(__ENUMERATE_TARGET)
 #include <Meta/Lagom/Fuzzers/FuzzURL.cpp>
 #undef LLVMFuzzerTestOneInput
 
-static auto parse_target_name(const String& name)
+static auto parse_target_name(StringView name)
 {
-    if (name == "list") {
+    if (name == "list"sv) {
         outln("The following targets are included:");
 #undef __ENUMERATE_TARGET
 #define __ENUMERATE_TARGET(x) outln(#x);
@@ -134,25 +139,25 @@ static auto parse_target_name(const String& name)
     exit(1);
 }
 
-int main(int argc, char** argv)
+ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    const char* type;
-    const char* filename;
+    StringView type;
+    StringView filename;
 
     Core::ArgsParser args_parser;
     args_parser.add_positional_argument(type, "Type of fuzzing target to run (use \"list\" to list all existing)", "target-kind");
-    args_parser.add_positional_argument(filename, "Input file", "filename");
-    args_parser.parse(argc, argv);
+    args_parser.add_positional_argument(filename, "Input file", "filename", Core::ArgsParser::Required::No);
+    args_parser.parse(arguments);
+
+    if (arguments.strings.size() <= 2 && arguments.strings[1] != "list"sv) {
+        args_parser.print_usage_terminal(stderr, arguments.strings[0]);
+        return 0;
+    }
 
     auto fn = parse_target_name(type);
 
-    auto file = Core::File::open(filename, Core::OpenMode::ReadOnly);
-    if (file.is_error()) {
-        warnln("Cannot read from file: {}", file.error());
-        exit(1);
-    }
-
-    auto input = file.value()->read_all();
+    auto file = TRY(Core::File::open(filename, Core::File::OpenMode::Read));
+    auto input = TRY(file->read_until_eof());
 
     return fn(input.data(), input.size());
 }

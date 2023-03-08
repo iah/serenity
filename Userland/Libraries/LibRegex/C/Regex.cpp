@@ -4,20 +4,18 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
+#include <AK/Variant.h>
 #include <LibRegex/Regex.h>
 #include <ctype.h>
+#include <regex.h>
 #include <stdio.h>
 #include <string.h>
 
-#ifdef __serenity__
-#    include <regex.h>
-#else
-#    include <LibC/regex.h>
+#ifndef AK_OS_SERENITY
+#    error "This file is intended for use on Serenity only to implement POSIX regex.h"
 #endif
-
-#include <AK/Variant.h>
 
 struct internal_regex_t {
     u8 cflags;
@@ -25,7 +23,7 @@ struct internal_regex_t {
     Optional<Variant<NonnullOwnPtr<Regex<PosixExtended>>, NonnullOwnPtr<Regex<PosixBasic>>>> re;
     size_t re_pat_errpos;
     ReError re_pat_err;
-    String re_pat;
+    DeprecatedString re_pat;
 };
 
 static internal_regex_t* impl_from(regex_t* re)
@@ -36,14 +34,14 @@ static internal_regex_t* impl_from(regex_t* re)
     return reinterpret_cast<internal_regex_t*>(re->__data);
 }
 
-static const internal_regex_t* impl_from(const regex_t* re)
+static internal_regex_t const* impl_from(regex_t const* re)
 {
     return impl_from(const_cast<regex_t*>(re));
 }
 
 extern "C" {
 
-int regcomp(regex_t* reg, const char* pattern, int cflags)
+int regcomp(regex_t* reg, char const* pattern, int cflags)
 {
     if (!reg)
         return REG_ESPACE;
@@ -57,7 +55,7 @@ int regcomp(regex_t* reg, const char* pattern, int cflags)
 
     preg->cflags = cflags;
 
-    String pattern_str(pattern);
+    DeprecatedString pattern_str(pattern);
     if (is_extended)
         preg->re = make<Regex<PosixExtended>>(pattern_str, PosixOptions {} | (PosixFlags)cflags | PosixFlags::SkipTrimEmptyMatches);
     else
@@ -80,7 +78,7 @@ int regcomp(regex_t* reg, const char* pattern, int cflags)
     return REG_NOERR;
 }
 
-int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pmatch[], int eflags)
+int regexec(regex_t const* reg, char const* string, size_t nmatch, regmatch_t pmatch[], int eflags)
 {
     auto const* preg = impl_from(reg);
 
@@ -91,10 +89,11 @@ int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pm
     }
 
     RegexResult result;
+    StringView string_view { string, strlen(string) };
     if (eflags & REG_SEARCH)
-        result = preg->re->visit([&](auto& re) { return re->search(string, PosixOptions {} | (PosixFlags)eflags); });
+        result = preg->re->visit([&](auto& re) { return re->search(string_view, PosixOptions {} | (PosixFlags)eflags); });
     else
-        result = preg->re->visit([&](auto& re) { return re->match(string, PosixOptions {} | (PosixFlags)eflags); });
+        result = preg->re->visit([&](auto& re) { return re->match(string_view, PosixOptions {} | (PosixFlags)eflags); });
 
     if (result.success) {
         auto capture_groups_count = preg->re->visit([](auto& re) { return re->parser_result.capture_groups_count; });
@@ -153,66 +152,48 @@ int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pm
     return REG_NOMATCH;
 }
 
-inline static String get_error(ReError errcode)
+static StringView get_error(ReError errcode)
 {
-    String error;
-    switch ((ReError)errcode) {
+    switch (errcode) {
     case REG_NOERR:
-        error = "No error";
-        break;
+        return "No error"sv;
     case REG_NOMATCH:
-        error = "regexec() failed to match.";
-        break;
+        return "regexec() failed to match."sv;
     case REG_BADPAT:
-        error = "Invalid regular expression.";
-        break;
+        return "Invalid regular expression."sv;
     case REG_ECOLLATE:
-        error = "Invalid collating element referenced.";
-        break;
+        return "Invalid collating element referenced."sv;
     case REG_ECTYPE:
-        error = "Invalid character class type referenced.";
-        break;
+        return "Invalid character class type referenced."sv;
     case REG_EESCAPE:
-        error = "Trailing \\ in pattern.";
-        break;
+        return "Trailing \\ in pattern."sv;
     case REG_ESUBREG:
-        error = "Number in \\digit invalid or in error.";
-        break;
+        return "Number in \\digit invalid or in error."sv;
     case REG_EBRACK:
-        error = "[ ] imbalance.";
-        break;
+        return "[ ] imbalance."sv;
     case REG_EPAREN:
-        error = "\\( \\) or ( ) imbalance.";
-        break;
+        return "\\( \\) or ( ) imbalance."sv;
     case REG_EBRACE:
-        error = "\\{ \\} imbalance.";
-        break;
+        return "\\{ \\} imbalance."sv;
     case REG_BADBR:
-        error = "Content of \\{ \\} invalid: not a number, number too large, more than two numbers, first larger than second.";
-        break;
+        return "Content of \\{ \\} invalid: not a number, number too large, more than two numbers, first larger than second."sv;
     case REG_ERANGE:
-        error = "Invalid endpoint in range expression.";
-        break;
+        return "Invalid endpoint in range expression."sv;
     case REG_ESPACE:
-        error = "Out of memory.";
-        break;
+        return "Out of memory."sv;
     case REG_BADRPT:
-        error = "?, * or + not preceded by valid regular expression.";
-        break;
+        return "?, * or + not preceded by valid regular expression."sv;
     case REG_ENOSYS:
-        error = "The implementation does not support the function.";
-        break;
+        return "The implementation does not support the function."sv;
     case REG_EMPTY_EXPR:
-        error = "Empty expression provided";
-        break;
+        return "Empty expression provided"sv;
     }
-
-    return error;
+    return {};
 }
 
-size_t regerror(int errcode, const regex_t* reg, char* errbuf, size_t errbuf_size)
+size_t regerror(int errcode, regex_t const* reg, char* errbuf, size_t errbuf_size)
 {
-    String error;
+    DeprecatedString error;
     auto const* preg = impl_from(reg);
 
     if (!preg)

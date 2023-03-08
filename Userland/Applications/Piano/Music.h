@@ -24,19 +24,12 @@ struct Sample {
 };
 
 // HACK: needs to increase with device sample rate, but all of the sample_count stuff is static for now
-constexpr int sample_count = 1 << 12;
-
-constexpr int buffer_size = sample_count * sizeof(Sample);
+constexpr int sample_count = 1 << 10;
 
 constexpr double sample_rate = 44100;
 
 // Headroom for the synth
-constexpr double volume_factor = 0.1;
-
-enum Switch {
-    Off,
-    On,
-};
+constexpr double volume_factor = 0.8;
 
 enum Direction {
     Down,
@@ -160,19 +153,19 @@ constexpr int beats_per_bar = 4;
 constexpr int notes_per_beat = 4;
 constexpr int roll_length = (sample_rate / (beats_per_minute / 60)) * beats_per_bar;
 
-constexpr const char* note_names[] = {
-    "C",
-    "C#",
-    "D",
-    "D#",
-    "E",
-    "F",
-    "F#",
-    "G",
-    "G#",
-    "A",
-    "A#",
-    "B",
+constexpr StringView note_names[] = {
+    "C"sv,
+    "C#"sv,
+    "D"sv,
+    "D#"sv,
+    "E"sv,
+    "F"sv,
+    "F#"sv,
+    "G"sv,
+    "G#"sv,
+    "A"sv,
+    "A#"sv,
+    "B"sv,
 };
 
 // Equal temperament, A = 440Hz

@@ -1,212 +1,141 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
 #include <LibWeb/CSS/Parser/Token.h>
 #include <LibWeb/CSS/Serialize.h>
 
-namespace Web::CSS {
+namespace Web::CSS::Parser {
 
-String Token::to_string() const
+ErrorOr<String> Token::to_string() const
 {
     StringBuilder builder;
 
     switch (m_type) {
     case Type::EndOfFile:
-        return "";
+        return String {};
     case Type::Ident:
         return serialize_an_identifier(ident());
     case Type::Function:
-        return String::formatted("{}(", serialize_an_identifier(function()));
+        return String::formatted("{}(", TRY(serialize_an_identifier(function())));
     case Type::AtKeyword:
-        return String::formatted("@{}", serialize_an_identifier(at_keyword()));
-    case Type::Hash:
-        return String::formatted("#{}", serialize_an_identifier(hash_value()));
+        return String::formatted("@{}", TRY(serialize_an_identifier(at_keyword())));
+    case Type::Hash: {
+        switch (m_hash_type) {
+        case HashType::Id:
+            return String::formatted("#{}", TRY(serialize_an_identifier(hash_value())));
+        case HashType::Unrestricted:
+            return String::formatted("#{}", hash_value());
+        }
+        VERIFY_NOT_REACHED();
+    }
     case Type::String:
         return serialize_a_string(string());
     case Type::BadString:
-        return "";
+        return String {};
     case Type::Url:
         return serialize_a_url(url());
     case Type::BadUrl:
-        return "url()";
+        return "url()"_string;
     case Type::Delim:
-        return m_value;
+        return String { m_value };
     case Type::Number:
-        return String::number(m_number_value);
+        return String::number(m_number_value.value());
     case Type::Percentage:
-        return String::formatted("{}%", m_number_value);
+        return String::formatted("{}%", m_number_value.value());
     case Type::Dimension:
-        return String::formatted("{}{}", m_number_value, m_unit);
+        return String::formatted("{}{}", m_number_value.value(), dimension_unit());
     case Type::Whitespace:
-        return " ";
+        return " "_short_string;
     case Type::CDO:
-        return "<!--";
+        return "<!--"_string;
     case Type::CDC:
-        return "-->";
+        return "-->"_short_string;
     case Type::Colon:
-        return ":";
+        return ":"_short_string;
     case Type::Semicolon:
-        return ";";
+        return ";"_short_string;
     case Type::Comma:
-        return ",";
+        return ","_short_string;
     case Type::OpenSquare:
-        return "[";
+        return "["_short_string;
     case Type::CloseSquare:
-        return "]";
+        return "]"_short_string;
     case Type::OpenParen:
-        return "(";
+        return "("_short_string;
     case Type::CloseParen:
-        return ")";
+        return ")"_short_string;
     case Type::OpenCurly:
-        return "{";
+        return "{"_short_string;
     case Type::CloseCurly:
-        return "}";
+        return "}"_short_string;
     case Type::Invalid:
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-String Token::to_debug_string() const
+ErrorOr<String> Token::to_debug_string() const
 {
-    StringBuilder builder;
-
     switch (m_type) {
     case Type::Invalid:
         VERIFY_NOT_REACHED();
 
     case Type::EndOfFile:
-        builder.append("__EOF__");
-        break;
+        return "__EOF__"_string;
     case Type::Ident:
-        builder.append("Identifier: ");
-        builder.append(m_value);
-        return builder.to_string();
+        return String::formatted("Ident: {}", ident());
     case Type::Function:
-        builder.append("Function");
-        break;
+        return String::formatted("Function: {}", function());
     case Type::AtKeyword:
-        builder.append("@");
-        break;
+        return String::formatted("AtKeyword: {}", at_keyword());
     case Type::Hash:
-        builder.append("Hash: ");
-        builder.append(m_value);
-        return builder.to_string();
+        return String::formatted("Hash: {} (hash_type: {})", hash_value(), m_hash_type == HashType::Unrestricted ? "Unrestricted" : "Id");
     case Type::String:
-        builder.append("String: ");
-        builder.append(m_value);
-        return builder.to_string();
+        return String::formatted("String: {}", string());
     case Type::BadString:
-        builder.append("Invalid String");
-        break;
+        return "BadString"_string;
     case Type::Url:
-        builder.append("Url");
-        break;
+        return String::formatted("Url: {}", url());
     case Type::BadUrl:
-        builder.append("Invalid Url");
-        break;
+        return "BadUrl"_string;
     case Type::Delim:
-        builder.append("Delimiter: ");
-        builder.append(m_value);
-        return builder.to_string();
+        return String::formatted("Delim: {}", m_value);
     case Type::Number:
-        builder.append("Number: ");
-        builder.append(m_value);
-        builder.append(m_number_type == NumberType::Integer ? " (int)" : " (float)");
-        return builder.to_string();
+        return String::formatted("Number: {}{} (number_type: {})", m_number_value.value() > 0 && m_number_value.is_integer_with_explicit_sign() ? "+" : "", m_number_value.value(), m_number_value.is_integer() ? "Integer" : "Number");
     case Type::Percentage:
-        builder.append("Percentage: ");
-        builder.append(m_value);
-        builder.append('%');
-        return builder.to_string();
+        return String::formatted("Percentage: {}% (number_type: {})", percentage(), m_number_value.is_integer() ? "Integer" : "Number");
     case Type::Dimension:
-        builder.append("Dimension: ");
-        builder.append(m_value);
-        builder.append(m_unit);
-        return builder.to_string();
+        return String::formatted("Dimension: {}{} (number_type: {})", dimension_value(), dimension_unit(), m_number_value.is_integer() ? "Integer" : "Number");
     case Type::Whitespace:
-        builder.append("Whitespace");
-        break;
+        return "Whitespace"_string;
     case Type::CDO:
-        builder.append("CDO");
-        break;
+        return "CDO"_string;
     case Type::CDC:
-        builder.append("CDC");
-        break;
+        return "CDC"_string;
     case Type::Colon:
-        builder.append(":");
-        break;
+        return "Colon"_string;
     case Type::Semicolon:
-        builder.append(";");
-        break;
+        return "Semicolon"_string;
     case Type::Comma:
-        builder.append(",");
-        break;
+        return "Comma"_string;
     case Type::OpenSquare:
-        builder.append("[");
-        break;
+        return "OpenSquare"_string;
     case Type::CloseSquare:
-        builder.append("]");
-        break;
+        return "CloseSquare"_string;
     case Type::OpenParen:
-        builder.append("(");
-        break;
+        return "OpenParen"_string;
     case Type::CloseParen:
-        builder.append(")");
-        break;
+        return "CloseParen"_string;
     case Type::OpenCurly:
-        builder.append("{");
-        break;
+        return "OpenCurly"_string;
     case Type::CloseCurly:
-        builder.append("}");
-        break;
+        return "CloseCurly"_string;
     }
-
-    if (m_value.is_empty()) {
-        return builder.to_string();
-    }
-
-    builder.append(" ");
-
-    builder.append(" { value: '");
-    builder.append(m_value);
-
-    if (m_type == Token::Type::Hash) {
-        builder.append("', hash_type: '");
-        if (m_hash_type == Token::HashType::Unrestricted) {
-            builder.append("Unrestricted");
-        } else {
-            builder.append("Id");
-        }
-    }
-
-    if (m_type == Token::Type::Number) {
-        builder.append("', number_type: '");
-        if (m_number_type == Token::NumberType::Integer) {
-            builder.append("Integer");
-        } else {
-            builder.append("Number");
-        }
-    }
-
-    if (m_type == Token::Type::Dimension) {
-        builder.append("', number_type: '");
-        if (m_number_type == Token::NumberType::Integer) {
-            builder.append("Integer");
-        } else {
-            builder.append("Number");
-        }
-
-        builder.append("', unit: '");
-        builder.append(m_unit);
-    }
-
-    builder.append("' }");
-    return builder.to_string();
+    VERIFY_NOT_REACHED();
 }
 
 Token::Type Token::mirror_variant() const
@@ -226,62 +155,62 @@ Token::Type Token::mirror_variant() const
     return Type::Invalid;
 }
 
-String Token::bracket_string() const
+StringView Token::bracket_string() const
 {
     if (is(Token::Type::OpenCurly)) {
-        return "{";
+        return "{"sv;
     }
 
     if (is(Token::Type::CloseCurly)) {
-        return "}";
+        return "}"sv;
     }
 
     if (is(Token::Type::OpenSquare)) {
-        return "[";
+        return "["sv;
     }
 
     if (is(Token::Type::CloseSquare)) {
-        return "]";
+        return "]"sv;
     }
 
     if (is(Token::Type::OpenParen)) {
-        return "(";
+        return "("sv;
     }
 
     if (is(Token::Type::CloseParen)) {
-        return ")";
+        return ")"sv;
     }
 
-    return "";
+    return ""sv;
 }
 
-String Token::bracket_mirror_string() const
+StringView Token::bracket_mirror_string() const
 {
     if (is(Token::Type::OpenCurly)) {
-        return "}";
+        return "}"sv;
     }
 
     if (is(Token::Type::CloseCurly)) {
-        return "{";
+        return "{"sv;
     }
 
     if (is(Token::Type::OpenSquare)) {
-        return "]";
+        return "]"sv;
     }
 
     if (is(Token::Type::CloseSquare)) {
-        return "[";
+        return "["sv;
     }
 
     if (is(Token::Type::OpenParen)) {
-        return ")";
+        return ")"sv;
     }
 
     if (is(Token::Type::CloseParen)) {
-        return "(";
+        return "("sv;
     }
 
-    return "";
+    return ""sv;
 }
 
 }

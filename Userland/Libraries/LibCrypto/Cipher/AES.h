@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,7 @@
 #include <LibCrypto/Cipher/Mode/GCM.h>
 
 #ifndef KERNEL
-#    include <AK/String.h>
+#    include <AK/DeprecatedString.h>
 #endif
 
 namespace Crypto {
@@ -27,7 +28,7 @@ public:
         : CipherBlock(mode)
     {
     }
-    AESCipherBlock(const u8* data, size_t length, PaddingMode mode = PaddingMode::CMS)
+    AESCipherBlock(u8 const* data, size_t length, PaddingMode mode = PaddingMode::CMS)
         : AESCipherBlock(mode)
     {
         CipherBlock::overwrite(data, length);
@@ -39,7 +40,7 @@ public:
     virtual Bytes bytes() override { return Bytes { m_data, sizeof(m_data) }; }
 
     virtual void overwrite(ReadonlyBytes) override;
-    virtual void overwrite(const u8* data, size_t size) override { overwrite({ data, size }); }
+    virtual void overwrite(u8 const* data, size_t size) override { overwrite({ data, size }); }
 
     virtual void apply_initialization_vector(ReadonlyBytes ivec) override
     {
@@ -48,7 +49,7 @@ public:
     }
 
 #ifndef KERNEL
-    String to_string() const;
+    DeprecatedString to_deprecated_string() const;
 #endif
 
 private:
@@ -64,12 +65,12 @@ struct AESCipherKey : public CipherKey {
     static bool is_valid_key_size(size_t bits) { return bits == 128 || bits == 192 || bits == 256; };
 
 #ifndef KERNEL
-    String to_string() const;
+    DeprecatedString to_deprecated_string() const;
 #endif
 
-    const u32* round_keys() const
+    u32 const* round_keys() const
     {
-        return (const u32*)m_rd_keys;
+        return (u32 const*)m_rd_keys;
     }
 
     AESCipherKey(ReadonlyBytes user_key, size_t key_bits, Intent intent)
@@ -81,7 +82,7 @@ struct AESCipherKey : public CipherKey {
             expand_decrypt_key(user_key, key_bits);
     }
 
-    virtual ~AESCipherKey() override { }
+    virtual ~AESCipherKey() override = default;
 
     size_t rounds() const { return m_rounds; }
     size_t length() const { return m_bits / 8; }
@@ -113,14 +114,14 @@ public:
     {
     }
 
-    virtual const AESCipherKey& key() const override { return m_key; };
+    virtual AESCipherKey const& key() const override { return m_key; };
     virtual AESCipherKey& key() override { return m_key; };
 
-    virtual void encrypt_block(const BlockType& in, BlockType& out) override;
-    virtual void decrypt_block(const BlockType& in, BlockType& out) override;
+    virtual void encrypt_block(BlockType const& in, BlockType& out) override;
+    virtual void decrypt_block(BlockType const& in, BlockType& out) override;
 
 #ifndef KERNEL
-    virtual String class_name() const override
+    virtual DeprecatedString class_name() const override
     {
         return "AES";
     }

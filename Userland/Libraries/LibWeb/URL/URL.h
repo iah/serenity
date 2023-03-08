@@ -7,72 +7,72 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/URL.h>
-#include <LibWeb/Bindings/Wrappable.h>
-#include <LibWeb/DOM/ExceptionOr.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/URL/URLSearchParams.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::URL {
 
-class URL : public Bindings::Wrappable
-    , public RefCounted<URL>
-    , public Weakable<URL> {
+class URL : public Bindings::PlatformObject {
+    WEB_PLATFORM_OBJECT(URL, Bindings::PlatformObject);
+
 public:
-    using WrapperType = Bindings::URLWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<URL>> create(JS::Realm&, AK::URL url, JS::NonnullGCPtr<URLSearchParams> query);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<URL>> construct_impl(JS::Realm&, String const& url, Optional<String> const& base = {});
 
-    static NonnullRefPtr<URL> create(AK::URL url, NonnullRefPtr<URLSearchParams> query)
-    {
-        return adopt_ref(*new URL(move(url), move(query)));
-    }
+    virtual ~URL() override;
 
-    static DOM::ExceptionOr<NonnullRefPtr<URL>> create_with_global_object(Bindings::WindowObject&, const String& url, const String& base);
+    WebIDL::ExceptionOr<String> href() const;
+    WebIDL::ExceptionOr<void> set_href(String const&);
 
-    String href() const;
-    DOM::ExceptionOr<void> set_href(String const&);
+    WebIDL::ExceptionOr<String> origin() const;
 
-    String origin() const;
+    WebIDL::ExceptionOr<String> protocol() const;
+    WebIDL::ExceptionOr<void> set_protocol(String const&);
 
-    String protocol() const;
-    void set_protocol(String const&);
-
-    String username() const;
+    WebIDL::ExceptionOr<String> username() const;
     void set_username(String const&);
 
-    String password() const;
+    WebIDL::ExceptionOr<String> password() const;
     void set_password(String const&);
 
-    String host() const;
+    WebIDL::ExceptionOr<String> host() const;
     void set_host(String const&);
 
-    String hostname() const;
+    WebIDL::ExceptionOr<String> hostname() const;
     void set_hostname(String const&);
 
-    String port() const;
+    WebIDL::ExceptionOr<String> port() const;
     void set_port(String const&);
 
-    String pathname() const;
+    WebIDL::ExceptionOr<String> pathname() const;
     void set_pathname(String const&);
 
-    String search() const;
-    void set_search(String const&);
+    WebIDL::ExceptionOr<String> search() const;
+    WebIDL::ExceptionOr<void> set_search(String const&);
 
     URLSearchParams const* search_params() const;
 
-    String hash() const;
+    WebIDL::ExceptionOr<String> hash() const;
     void set_hash(String const&);
 
-    String to_json() const;
+    WebIDL::ExceptionOr<String> to_json() const;
 
-    void set_query(Badge<URLSearchParams>, String query) { m_url.set_query(move(query)); }
+    void set_query(Badge<URLSearchParams>, String query) { m_url.set_query(query.to_deprecated_string()); }
 
 private:
-    explicit URL(AK::URL url, NonnullRefPtr<URLSearchParams> query)
-        : m_url(move(url))
-        , m_query(move(query)) {};
+    URL(JS::Realm&, AK::URL, JS::NonnullGCPtr<URLSearchParams> query);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
     AK::URL m_url;
-    NonnullRefPtr<URLSearchParams> m_query;
+    JS::NonnullGCPtr<URLSearchParams> m_query;
 };
+
+HTML::Origin url_origin(AK::URL const&);
+bool host_is_domain(StringView host);
 
 }

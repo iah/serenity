@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,22 +10,20 @@
 
 namespace GUI {
 
-Menubar::Menubar()
+ErrorOr<void> Menubar::try_add_menu(Badge<Window>, NonnullRefPtr<Menu> menu)
 {
+    TRY(m_menus.try_append(menu));
+    return {};
 }
 
-Menubar::~Menubar()
-{
-}
-
-ErrorOr<NonnullRefPtr<Menu>> Menubar::try_add_menu(Badge<Window>, String name)
+ErrorOr<NonnullRefPtr<Menu>> Menubar::try_add_menu(Badge<Window>, DeprecatedString name)
 {
     auto menu = TRY(try_add<Menu>(move(name)));
     TRY(m_menus.try_append(menu));
     return menu;
 }
 
-Menu& Menubar::add_menu(Badge<Window>, String name)
+Menu& Menubar::add_menu(Badge<Window>, DeprecatedString name)
 {
     auto& menu = add<Menu>(move(name));
     m_menus.append(menu);

@@ -15,12 +15,12 @@ class NotificationWindow final : public GUI::Window {
     C_OBJECT(NotificationWindow);
 
 public:
-    virtual ~NotificationWindow() override;
+    virtual ~NotificationWindow() override = default;
     void set_original_rect(Gfx::IntRect original_rect) { m_original_rect = original_rect; };
 
-    void set_text(const String&);
-    void set_title(const String&);
-    void set_image(const Gfx::ShareableBitmap&);
+    void set_text(DeprecatedString const&);
+    void set_title(DeprecatedString const&);
+    void set_image(Gfx::ShareableBitmap const&);
 
     static RefPtr<NotificationWindow> get_window_by_id(i32 id);
 
@@ -29,7 +29,7 @@ protected:
     virtual void leave_event(Core::Event&) override;
 
 private:
-    NotificationWindow(i32 client_id, const String& text, const String& title, const Gfx::ShareableBitmap&);
+    NotificationWindow(i32 client_id, DeprecatedString const& text, DeprecatedString const& title, Gfx::ShareableBitmap const&);
 
     virtual void screen_rects_change_event(GUI::ScreenRectsChangeEvent&) override;
 

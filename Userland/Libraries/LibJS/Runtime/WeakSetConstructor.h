@@ -14,14 +14,15 @@ class WeakSetConstructor final : public NativeFunction {
     JS_OBJECT(WeakSetConstructor, NativeFunction);
 
 public:
-    explicit WeakSetConstructor(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
-    virtual ~WeakSetConstructor() override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual ~WeakSetConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
-    virtual ThrowCompletionOr<Object*> construct(FunctionObject&) override;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> construct(FunctionObject&) override;
 
 private:
+    explicit WeakSetConstructor(Realm&);
+
     virtual bool has_constructor() const override { return true; }
 };
 

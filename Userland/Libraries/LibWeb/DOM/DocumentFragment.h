@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/NonElementParentNode.h>
 #include <LibWeb/DOM/ParentNode.h>
@@ -16,23 +16,32 @@ namespace Web::DOM {
 class DocumentFragment
     : public ParentNode
     , public NonElementParentNode<DocumentFragment> {
+    WEB_PLATFORM_OBJECT(DocumentFragment, ParentNode);
+
 public:
-    using WrapperType = Bindings::DocumentFragmentWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> construct_impl(JS::Realm& realm);
 
-    static NonnullRefPtr<DocumentFragment> create_with_global_object(Bindings::WindowObject& window);
+    virtual ~DocumentFragment() override = default;
 
+    virtual DeprecatedFlyString node_name() const override { return "#document-fragment"; }
+
+    Element* host() { return m_host.ptr(); }
+    Element const* host() const { return m_host.ptr(); }
+
+    void set_host(Element*);
+
+protected:
     explicit DocumentFragment(Document& document);
-    virtual ~DocumentFragment() override;
 
-    virtual FlyString node_name() const override { return "#document-fragment"; }
-
-    RefPtr<Element> host() { return m_host; }
-    const RefPtr<Element> host() const { return m_host; }
-
-    void set_host(Element& host) { m_host = host; }
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
 private:
-    RefPtr<Element> m_host;
+    // https://dom.spec.whatwg.org/#concept-documentfragment-host
+    JS::GCPtr<Element> m_host;
 };
+
+template<>
+inline bool Node::fast_is<DocumentFragment>() const { return is_document_fragment(); }
 
 }

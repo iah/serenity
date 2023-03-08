@@ -4,11 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Arch/InterruptManagement.h>
 #include <Kernel/Assertions.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Interrupts/IRQHandler.h>
-#include <Kernel/Interrupts/InterruptManagement.h>
-#include <Kernel/Interrupts/PIC.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Sections.h>
 
@@ -62,7 +61,7 @@ SharedIRQHandler::~SharedIRQHandler()
     disable_interrupt_vector();
 }
 
-bool SharedIRQHandler::handle_interrupt(const RegisterState& regs)
+bool SharedIRQHandler::handle_interrupt(RegisterState const& regs)
 {
     VERIFY_INTERRUPTS_DISABLED();
 
@@ -75,7 +74,7 @@ bool SharedIRQHandler::handle_interrupt(const RegisterState& regs)
     for (auto& handler : m_handlers) {
         dbgln_if(INTERRUPT_DEBUG, "Going for Interrupt Handling @ {}, Shared Interrupt {}", i, interrupt_number());
         if (handler.handle_interrupt(regs)) {
-            handler.increment_invoking_counter();
+            handler.increment_call_count();
             was_handled = true;
         }
         dbgln_if(INTERRUPT_DEBUG, "Going for Interrupt Handling @ {}, Shared Interrupt {} - End", i, interrupt_number());

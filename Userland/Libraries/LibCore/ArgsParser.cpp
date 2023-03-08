@@ -6,42 +6,37 @@
  */
 
 #include <AK/Format.h>
-#include <AK/StringBuilder.h>
+#include <AK/JsonObject.h>
+#include <AK/OptionParser.h>
+#include <AK/String.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/Version.h>
-#include <getopt.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-static Optional<double> convert_to_double(const char* s)
-{
-    char* p;
-    double v = strtod(s, &p);
-    if (isnan(v) || p == s)
-        return {};
-    return v;
-}
-
 namespace Core {
 
 ArgsParser::ArgsParser()
 {
-    add_option(m_show_help, "Display help message and exit", "help", 0);
-    add_option(m_show_version, "Print version", "version", 0);
+    add_option(m_show_help, "Display help message and exit", "help", 0, OptionHideMode::Markdown);
+    add_option(m_show_version, "Print version", "version", 0, OptionHideMode::Markdown);
+    add_option(m_perform_autocomplete, "Perform autocompletion", "complete", 0, OptionHideMode::CommandLineAndMarkdown);
 }
 
-bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_behavior)
+bool ArgsParser::parse(Span<StringView> arguments, FailureBehavior failure_behavior)
 {
-    auto fail = [this, argv, failure_behavior] {
+    auto fail = [this, name = arguments[0], failure_behavior] {
         if (failure_behavior == FailureBehavior::PrintUsage || failure_behavior == FailureBehavior::PrintUsageAndExit)
-            print_usage(stderr, argv[0]);
+            print_usage(stderr, name);
         if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
             exit(1);
     };
 
-    Vector<option> long_options;
+    OptionParser parser;
+
+    Vector<OptionParser::Option> long_options;
     StringBuilder short_options_builder;
 
     if (m_stop_on_first_non_option)
@@ -49,16 +44,16 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
 
     int index_of_found_long_option = -1;
 
-    // Tell getopt() to reset its internal state, and start scanning from optind = 1.
-    // We could also set optreset = 1, but the host platform may not support that.
-    optind = 0;
-
     for (size_t i = 0; i < m_options.size(); i++) {
         auto& opt = m_options[i];
         if (opt.long_name) {
-            option long_opt {
-                opt.long_name,
-                opt.requires_argument ? required_argument : no_argument,
+            OptionParser::Option long_opt {
+                { opt.long_name, strlen(opt.long_name) },
+                opt.argument_mode == OptionArgumentMode::Required
+                    ? OptionParser::ArgumentRequirement::HasRequiredArgument
+                    : opt.argument_mode == OptionArgumentMode::Optional
+                    ? OptionParser::ArgumentRequirement::HasOptionalArgument
+                    : OptionParser::ArgumentRequirement::NoArgument,
                 &index_of_found_long_option,
                 static_cast<int>(i)
             };
@@ -66,20 +61,27 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
         }
         if (opt.short_name) {
             short_options_builder.append(opt.short_name);
-            if (opt.requires_argument)
+            if (opt.argument_mode != OptionArgumentMode::None)
+                short_options_builder.append(':');
+            // Note: This is a GNU extension.
+            if (opt.argument_mode == OptionArgumentMode::Optional)
                 short_options_builder.append(':');
         }
     }
-    long_options.append({ 0, 0, 0, 0 });
 
-    String short_options = short_options_builder.build();
-
+    auto short_options = short_options_builder.to_deprecated_string();
+    size_t option_index = 1;
     while (true) {
-        int c = getopt_long(argc, argv, short_options.characters(), long_options.data(), nullptr);
+        auto result = parser.getopt(arguments.slice(1), short_options, long_options, {});
+        option_index += result.consumed_args;
+
+        auto c = result.result;
         if (c == -1) {
             // We have reached the end.
             break;
-        } else if (c == '?') {
+        }
+
+        if (c == '?') {
             // There was an error, and getopt() has already
             // printed its error message.
             fail();
@@ -101,7 +103,7 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
         }
         VERIFY(found_option);
 
-        const char* arg = found_option->requires_argument ? optarg : nullptr;
+        StringView arg = found_option->argument_mode != OptionArgumentMode::None ? result.optarg_value.value_or({}) : StringView {};
         if (!found_option->accept_value(arg)) {
             warnln("\033[31mInvalid value for option \033[1m{}\033[22m\033[0m", found_option->name_for_display());
             fail();
@@ -110,7 +112,7 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
     }
 
     // We're done processing options.
-    // Now let's show version or help if requested.
+    // Now let's show version or help if requested, or perform autocompletion if needed.
 
     if (m_show_version) {
         print_version(stdout);
@@ -118,8 +120,16 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
             exit(0);
         return false;
     }
+
     if (m_show_help) {
-        print_usage(stdout, argv[0]);
+        print_usage(stdout, arguments[0]);
+        if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
+            exit(0);
+        return false;
+    }
+
+    if (m_perform_autocomplete) {
+        autocomplete(stdout, arguments[0], arguments.slice(option_index));
         if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
             exit(0);
         return false;
@@ -127,7 +137,7 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
 
     // Now let's parse positional arguments.
 
-    int values_left = argc - optind;
+    int values_left = arguments.size() - option_index;
     Vector<int, 16> num_values_for_arg;
     num_values_for_arg.resize(m_positional_args.size(), true);
     int total_values_required = 0;
@@ -161,7 +171,7 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
     for (size_t i = 0; i < m_positional_args.size(); i++) {
         auto& arg = m_positional_args[i];
         for (int j = 0; j < num_values_for_arg[i]; j++) {
-            const char* value = argv[optind++];
+            StringView value = arguments[option_index++];
             if (!arg.accept_value(value)) {
                 warnln("Invalid value for argument {}", arg.name);
                 fail();
@@ -173,7 +183,7 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
     return true;
 }
 
-void ArgsParser::print_usage(FILE* file, const char* argv0)
+void ArgsParser::print_usage(FILE* file, StringView argv0)
 {
     char const* env_preference = getenv("ARGSPARSER_EMIT_MARKDOWN");
     if (env_preference != nullptr && env_preference[0] == '1' && env_preference[1] == 0) {
@@ -183,15 +193,17 @@ void ArgsParser::print_usage(FILE* file, const char* argv0)
     }
 }
 
-void ArgsParser::print_usage_terminal(FILE* file, const char* argv0)
+void ArgsParser::print_usage_terminal(FILE* file, StringView argv0)
 {
     out(file, "Usage:\n\t\033[1m{}\033[0m", argv0);
 
     for (auto& opt : m_options) {
-        if (opt.long_name && !strcmp(opt.long_name, "help"))
+        if (opt.hide_mode != OptionHideMode::None)
             continue;
-        if (opt.requires_argument)
+        if (opt.argument_mode == OptionArgumentMode::Required)
             out(file, " [{} {}]", opt.name_for_display(), opt.value_name);
+        else if (opt.argument_mode == OptionArgumentMode::Optional)
+            out(file, " [{}[{}{}]]", opt.name_for_display(), opt.long_name ? "="sv : ""sv, opt.value_name);
         else
             out(file, " [{}]", opt.name_for_display());
     }
@@ -218,24 +230,27 @@ void ArgsParser::print_usage_terminal(FILE* file, const char* argv0)
     if (!m_options.is_empty())
         outln(file, "\nOptions:");
     for (auto& opt : m_options) {
-        auto print_argument = [&]() {
+        if (opt.hide_mode == OptionHideMode::CommandLineAndMarkdown)
+            continue;
+
+        auto print_argument = [&](StringView value_delimiter) {
             if (opt.value_name) {
-                if (opt.requires_argument)
+                if (opt.argument_mode == OptionArgumentMode::Required)
                     out(file, " {}", opt.value_name);
-                else
-                    out(file, " [{}]", opt.value_name);
+                if (opt.argument_mode == OptionArgumentMode::Optional)
+                    out(file, "[{}{}]", value_delimiter, opt.value_name);
             }
         };
         out(file, "\t");
         if (opt.short_name) {
             out(file, "\033[1m-{}\033[0m", opt.short_name);
-            print_argument();
+            print_argument(""sv);
         }
         if (opt.short_name && opt.long_name)
             out(file, ", ");
         if (opt.long_name) {
             out(file, "\033[1m--{}\033[0m", opt.long_name);
-            print_argument();
+            print_argument("="sv);
         }
 
         if (opt.help_string)
@@ -254,16 +269,22 @@ void ArgsParser::print_usage_terminal(FILE* file, const char* argv0)
     }
 }
 
-void ArgsParser::print_usage_markdown(FILE* file, const char* argv0)
+void ArgsParser::print_usage_markdown(FILE* file, StringView argv0)
 {
     outln(file, "## Name\n\n{}", argv0);
 
     out(file, "\n## Synopsis\n\n```sh\n$ {}", argv0);
     for (auto& opt : m_options) {
-        if (opt.long_name != nullptr && (!strcmp(opt.long_name, "help") || !strcmp(opt.long_name, "version")))
+        if (opt.hide_mode != OptionHideMode::None)
             continue;
-        if (opt.requires_argument)
-            out(file, " [{} {}]", opt.name_for_display(), opt.value_name);
+
+        // FIXME: We allow opt.value_name to be empty even if the option
+        //        requires an argument. This should be disallowed as it will
+        //        currently display a blank name after the option.
+        if (opt.argument_mode == OptionArgumentMode::Required)
+            out(file, " [{} {}]", opt.name_for_display(), opt.value_name ?: "");
+        else if (opt.argument_mode == OptionArgumentMode::Optional)
+            out(file, " [{}[{}{}]]", opt.name_for_display(), opt.long_name ? "="sv : ""sv, opt.value_name);
         else
             out(file, " [{}]", opt.name_for_display());
     }
@@ -286,28 +307,42 @@ void ArgsParser::print_usage_markdown(FILE* file, const char* argv0)
         outln(file, "\n## Description\n\n{}", m_general_help);
     }
 
-    if (!m_options.is_empty())
+    auto should_display_option = [](Option& opt) {
+        return !(opt.hide_mode == OptionHideMode::Markdown || opt.hide_mode == OptionHideMode::CommandLineAndMarkdown);
+    };
+
+    size_t options_to_display = 0;
+    for (auto& opt : m_options) {
+        if (!should_display_option(opt))
+            continue;
+        options_to_display++;
+    }
+
+    if (options_to_display > 0)
         outln(file, "\n## Options:\n");
     for (auto& opt : m_options) {
-        auto print_argument = [&]() {
+        if (!should_display_option(opt))
+            continue;
+
+        auto print_argument = [&](StringView value_delimiter) {
             if (opt.value_name != nullptr) {
-                if (opt.requires_argument)
+                if (opt.argument_mode == OptionArgumentMode::Required)
                     out(file, " {}", opt.value_name);
-                else
-                    out(file, " [{}]", opt.value_name);
+                if (opt.argument_mode == OptionArgumentMode::Optional)
+                    out(file, "[{}{}]", value_delimiter, opt.value_name);
             }
         };
         out(file, "* ");
         if (opt.short_name != '\0') {
             out(file, "`-{}", opt.short_name);
-            print_argument();
+            print_argument(""sv);
             out(file, "`");
         }
         if (opt.short_name != '\0' && opt.long_name != nullptr)
             out(file, ", ");
         if (opt.long_name != nullptr) {
             out(file, "`--{}", opt.long_name);
-            print_argument();
+            print_argument("="sv);
             out(file, "`");
         }
 
@@ -329,7 +364,7 @@ void ArgsParser::print_usage_markdown(FILE* file, const char* argv0)
 
 void ArgsParser::print_version(FILE* file)
 {
-    outln(file, Core::Version::SERENITY_VERSION);
+    outln(file, Core::Version::read_long_version_string().release_value_but_fixme_should_propagate_errors());
 }
 
 void ArgsParser::add_option(Option&& option)
@@ -337,166 +372,197 @@ void ArgsParser::add_option(Option&& option)
     m_options.append(move(option));
 }
 
-void ArgsParser::add_ignored(const char* long_name, char short_name)
+void ArgsParser::add_ignored(char const* long_name, char short_name, OptionHideMode hide_mode)
 {
     Option option {
-        false,
+        OptionArgumentMode::None,
         "Ignored",
         long_name,
         short_name,
         nullptr,
-        [](const char*) {
+        [](StringView) {
             return true;
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(bool& value, const char* help_string, const char* long_name, char short_name)
+void ArgsParser::add_option(bool& value, char const* help_string, char const* long_name, char short_name, OptionHideMode hide_mode)
 {
     Option option {
-        false,
+        OptionArgumentMode::None,
         help_string,
         long_name,
         short_name,
         nullptr,
-        [&value](const char* s) {
-            VERIFY(s == nullptr);
+        [&value](StringView s) {
+            VERIFY(s.is_empty());
             value = true;
             return true;
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(const char*& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
+void ArgsParser::add_option(DeprecatedString& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
+        [&value](StringView s) {
             value = s;
             return true;
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(String& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
+void ArgsParser::add_option(StringView& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
+        [&value](StringView s) {
             value = s;
             return true;
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(StringView& value, char const* help_string, char const* long_name, char short_name, char const* value_name)
+template<Integral I>
+void ArgsParser::add_option(I& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
-            value = s;
-            return true;
-        }
-    };
-    add_option(move(option));
-}
-
-void ArgsParser::add_option(int& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
-{
-    Option option {
-        true,
-        help_string,
-        long_name,
-        short_name,
-        value_name,
-        [&value](const char* s) {
-            auto opt = StringView(s).to_int();
+        [&value](StringView view) {
+            Optional<I> opt;
+            if constexpr (IsSigned<I>)
+                opt = view.to_int<I>();
+            else
+                opt = view.to_uint<I>();
             value = opt.value_or(0);
             return opt.has_value();
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(unsigned& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
-{
-    Option option {
-        true,
-        help_string,
-        long_name,
-        short_name,
-        value_name,
-        [&value](const char* s) {
-            auto opt = StringView(s).to_uint();
-            value = opt.value_or(0);
-            return opt.has_value();
-        }
-    };
-    add_option(move(option));
-}
+template void ArgsParser::add_option(int&, char const*, char const*, char, char const*, OptionHideMode);
+template void ArgsParser::add_option(long&, char const*, char const*, char, char const*, OptionHideMode);
+template void ArgsParser::add_option(long long&, char const*, char const*, char, char const*, OptionHideMode);
+template void ArgsParser::add_option(unsigned&, char const*, char const*, char, char const*, OptionHideMode);
+template void ArgsParser::add_option(unsigned long&, char const*, char const*, char, char const*, OptionHideMode);
+template void ArgsParser::add_option(unsigned long long&, char const*, char const*, char, char const*, OptionHideMode);
 
-void ArgsParser::add_option(double& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
+void ArgsParser::add_option(double& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
-            auto opt = convert_to_double(s);
+        [&value](StringView s) {
+            auto opt = s.to_double();
             value = opt.value_or(0.0);
             return opt.has_value();
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(Optional<double>& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
+void ArgsParser::add_option(Optional<double>& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
-            value = convert_to_double(s);
+        [&value](StringView s) {
+            value = s.to_double();
             return value.has_value();
-        }
+        },
+        hide_mode,
     };
     add_option(move(option));
 }
 
-void ArgsParser::add_option(Optional<size_t>& value, const char* help_string, const char* long_name, char short_name, const char* value_name)
+void ArgsParser::add_option(Optional<size_t>& value, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
 {
     Option option {
-        true,
+        OptionArgumentMode::Required,
         help_string,
         long_name,
         short_name,
         value_name,
-        [&value](const char* s) {
+        [&value](StringView s) {
             value = AK::StringUtils::convert_to_uint<size_t>(s);
             return value.has_value();
-        }
+        },
+        hide_mode,
     };
+    add_option(move(option));
+}
+
+void ArgsParser::add_option(Vector<size_t>& values, char const* help_string, char const* long_name, char short_name, char const* value_name, char separator, OptionHideMode hide_mode)
+{
+    Option option {
+        OptionArgumentMode::Required,
+        help_string,
+        long_name,
+        short_name,
+        value_name,
+        [&values, separator](StringView s) {
+            bool parsed_all_values = true;
+
+            s.for_each_split_view(separator, SplitBehavior::Nothing, [&](auto value) {
+                if (auto maybe_value = AK::StringUtils::convert_to_uint<size_t>(value); maybe_value.has_value())
+                    values.append(*maybe_value);
+                else
+                    parsed_all_values = false;
+            });
+
+            return parsed_all_values;
+        },
+        hide_mode
+    };
+
+    add_option(move(option));
+}
+
+void ArgsParser::add_option(Vector<DeprecatedString>& values, char const* help_string, char const* long_name, char short_name, char const* value_name, OptionHideMode hide_mode)
+{
+    Option option {
+        OptionArgumentMode::Optional,
+        help_string,
+        long_name,
+        short_name,
+        value_name,
+        [&values](StringView s) {
+            values.append(s);
+            return true;
+        },
+        hide_mode
+    };
+
     add_option(move(option));
 }
 
@@ -505,29 +571,14 @@ void ArgsParser::add_positional_argument(Arg&& arg)
     m_positional_args.append(move(arg));
 }
 
-void ArgsParser::add_positional_argument(const char*& value, const char* help_string, const char* name, Required required)
+void ArgsParser::add_positional_argument(DeprecatedString& value, char const* help_string, char const* name, Required required)
 {
     Arg arg {
         help_string,
         name,
         required == Required::Yes ? 1 : 0,
         1,
-        [&value](const char* s) {
-            value = s;
-            return true;
-        }
-    };
-    add_positional_argument(move(arg));
-}
-
-void ArgsParser::add_positional_argument(String& value, const char* help_string, const char* name, Required required)
-{
-    Arg arg {
-        help_string,
-        name,
-        required == Required::Yes ? 1 : 0,
-        1,
-        [&value](const char* s) {
+        [&value](StringView s) {
             value = s;
             return true;
         }
@@ -542,7 +593,7 @@ void ArgsParser::add_positional_argument(StringView& value, char const* help_str
         name,
         required == Required::Yes ? 1 : 0,
         1,
-        [&value](const char* s) {
+        [&value](StringView s) {
             value = s;
             return true;
         }
@@ -550,15 +601,15 @@ void ArgsParser::add_positional_argument(StringView& value, char const* help_str
     add_positional_argument(move(arg));
 }
 
-void ArgsParser::add_positional_argument(int& value, const char* help_string, const char* name, Required required)
+void ArgsParser::add_positional_argument(int& value, char const* help_string, char const* name, Required required)
 {
     Arg arg {
         help_string,
         name,
         required == Required::Yes ? 1 : 0,
         1,
-        [&value](const char* s) {
-            auto opt = StringView(s).to_int();
+        [&value](StringView s) {
+            auto opt = s.to_int();
             value = opt.value_or(0);
             return opt.has_value();
         }
@@ -566,15 +617,15 @@ void ArgsParser::add_positional_argument(int& value, const char* help_string, co
     add_positional_argument(move(arg));
 }
 
-void ArgsParser::add_positional_argument(unsigned& value, const char* help_string, const char* name, Required required)
+void ArgsParser::add_positional_argument(unsigned& value, char const* help_string, char const* name, Required required)
 {
     Arg arg {
         help_string,
         name,
         required == Required::Yes ? 1 : 0,
         1,
-        [&value](const char* s) {
-            auto opt = StringView(s).to_uint();
+        [&value](StringView s) {
+            auto opt = s.to_uint();
             value = opt.value_or(0);
             return opt.has_value();
         }
@@ -582,15 +633,15 @@ void ArgsParser::add_positional_argument(unsigned& value, const char* help_strin
     add_positional_argument(move(arg));
 }
 
-void ArgsParser::add_positional_argument(double& value, const char* help_string, const char* name, Required required)
+void ArgsParser::add_positional_argument(double& value, char const* help_string, char const* name, Required required)
 {
     Arg arg {
         help_string,
         name,
         required == Required::Yes ? 1 : 0,
         1,
-        [&value](const char* s) {
-            auto opt = convert_to_double(s);
+        [&value](StringView s) {
+            auto opt = s.to_double();
             value = opt.value_or(0.0);
             return opt.has_value();
         }
@@ -598,14 +649,14 @@ void ArgsParser::add_positional_argument(double& value, const char* help_string,
     add_positional_argument(move(arg));
 }
 
-void ArgsParser::add_positional_argument(Vector<const char*>& values, const char* help_string, const char* name, Required required)
+void ArgsParser::add_positional_argument(Vector<DeprecatedString>& values, char const* help_string, char const* name, Required required)
 {
     Arg arg {
         help_string,
         name,
         required == Required::Yes ? 1 : 0,
         INT_MAX,
-        [&values](const char* s) {
+        [&values](StringView s) {
             values.append(s);
             return true;
         }
@@ -620,12 +671,124 @@ void ArgsParser::add_positional_argument(Vector<StringView>& values, char const*
         name,
         required == Required::Yes ? 1 : 0,
         INT_MAX,
-        [&values](char const* s) {
+        [&values](StringView s) {
             values.append(s);
             return true;
         }
     };
     add_positional_argument(move(arg));
+}
+
+void ArgsParser::autocomplete(FILE* file, StringView program_name, ReadonlySpan<StringView> remaining_arguments)
+{
+    // We expect the full invocation of the program to be available as positional args,
+    // e.g. `foo --bar arg -b` (program invoked as `foo --complete -- foo --bar arg -b`)
+    auto first = true;
+    auto seen_all_options = false;
+    auto skip_next = false;
+
+    StringView argument_to_complete;
+    StringView option_to_complete;
+    auto completing_option = false;
+
+    for (auto& argument : remaining_arguments) {
+        completing_option = false;
+        if (skip_next) {
+            argument_to_complete = argument;
+            skip_next = false;
+            continue;
+        }
+
+        // Skip over the program name.
+        if (first && program_name == argument) {
+            first = false;
+            continue;
+        }
+
+        if (seen_all_options) {
+            argument_to_complete = argument;
+            continue;
+        }
+
+        if (argument.starts_with("--"sv)) {
+            option_to_complete = argument;
+            completing_option = true;
+
+            if (argument == "--") {
+                seen_all_options = true;
+                continue;
+            }
+
+            // Look for a long option
+            auto option_pattern = argument.substring_view(2);
+            auto it = m_options.find_if([&](auto& option) { return option.hide_mode != OptionHideMode::None && StringView { option.long_name, strlen(option.long_name) } == option_pattern; });
+            if (it.is_end())
+                continue;
+
+            if (it->argument_mode == OptionArgumentMode::Required)
+                skip_next = true;
+            continue;
+        }
+
+        if (argument.starts_with('-')) {
+            option_to_complete = argument;
+            completing_option = true;
+
+            if (argument == "-") {
+                option_to_complete = argument;
+                continue;
+            }
+
+            // Look for a short option
+            auto option_pattern = argument[argument.length() - 1];
+            auto it = m_options.find_if([&](auto& option) { return option.hide_mode != OptionHideMode::None && option.short_name == option_pattern; });
+
+            if (it.is_end())
+                continue;
+
+            if (it->argument_mode == OptionArgumentMode::Required)
+                skip_next = true;
+            continue;
+        }
+    }
+
+    // We don't know how to complete arguments quite yet.
+    if (!completing_option)
+        return;
+
+    auto write_completion = [&](auto format, auto& option, auto has_invariant, auto... args) {
+        JsonObject object;
+        object.set("completion", DeprecatedString::formatted(StringView { format, strlen(format) }, args...));
+        object.set("static_offset", 0);
+        object.set("invariant_offset", has_invariant ? option_to_complete.length() : 0u);
+        object.set("display_trivia", option.help_string);
+        object.set("trailing_trivia", option.argument_mode == OptionArgumentMode::Required ? " " : "");
+        outln(file, "{}", object.to_deprecated_string());
+    };
+
+    if (option_to_complete.starts_with("--"sv)) {
+        // Complete a long option.
+        auto option_pattern = option_to_complete.substring_view(2);
+        for (auto& option : m_options) {
+            if (option.hide_mode != OptionHideMode::None)
+                continue;
+            StringView option_string { option.long_name, strlen(option.long_name) };
+            if (option_string.starts_with(option_pattern)) {
+                write_completion("--{}", option, true, option_string);
+            }
+        }
+    } else {
+        // Complete a short option, note that we're not going to attempt to 'match' anything here.
+        for (auto& option : m_options) {
+            if (option.hide_mode != OptionHideMode::None)
+                continue;
+            if (option.short_name == 0)
+                continue;
+
+            auto has_invariant = option_to_complete == "-";
+            write_completion("{}{}", option, has_invariant, has_invariant ? "-" : "", option.short_name);
+        }
+    }
 }
 
 }

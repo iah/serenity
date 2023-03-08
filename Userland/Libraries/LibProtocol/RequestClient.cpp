@@ -4,14 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/FileStream.h>
 #include <LibProtocol/Request.h>
 #include <LibProtocol/RequestClient.h>
 
 namespace Protocol {
 
-RequestClient::RequestClient(NonnullOwnPtr<Core::Stream::LocalSocket> socket)
-    : IPC::ServerConnection<RequestClientEndpoint, RequestServerEndpoint>(*this, move(socket))
+RequestClient::RequestClient(NonnullOwnPtr<Core::LocalSocket> socket)
+    : IPC::ConnectionToServer<RequestClientEndpoint, RequestServerEndpoint>(*this, move(socket))
 {
 }
 
@@ -21,7 +20,7 @@ void RequestClient::ensure_connection(URL const& url, ::RequestServer::CacheLeve
 }
 
 template<typename RequestHashMapTraits>
-RefPtr<Request> RequestClient::start_request(String const& method, URL const& url, HashMap<String, String, RequestHashMapTraits> const& request_headers, ReadonlyBytes request_body)
+RefPtr<Request> RequestClient::start_request(DeprecatedString const& method, URL const& url, HashMap<DeprecatedString, DeprecatedString, RequestHashMapTraits> const& request_headers, ReadonlyBytes request_body, Core::ProxyData const& proxy_data)
 {
     IPC::Dictionary header_dictionary;
     for (auto& it : request_headers)
@@ -31,7 +30,7 @@ RefPtr<Request> RequestClient::start_request(String const& method, URL const& ur
     if (body_result.is_error())
         return nullptr;
 
-    auto response = IPCProxy::start_request(method, url, header_dictionary, body_result.release_value());
+    auto response = IPCProxy::start_request(method, url, header_dictionary, body_result.release_value(), proxy_data);
     auto request_id = response.request_id();
     if (request_id < 0 || !response.response_fd().has_value())
         return nullptr;
@@ -40,7 +39,6 @@ RefPtr<Request> RequestClient::start_request(String const& method, URL const& ur
     request->set_request_fd({}, response_fd);
     m_requests.set(request_id, request);
     return request;
-    return nullptr;
 }
 
 bool RequestClient::stop_request(Badge<Request>, Request& request)
@@ -50,7 +48,7 @@ bool RequestClient::stop_request(Badge<Request>, Request& request)
     return IPCProxy::stop_request(request.id());
 }
 
-bool RequestClient::set_certificate(Badge<Request>, Request& request, String certificate, String key)
+bool RequestClient::set_certificate(Badge<Request>, Request& request, DeprecatedString certificate, DeprecatedString key)
 {
     if (!m_requests.contains(request.id()))
         return false;
@@ -76,7 +74,7 @@ void RequestClient::request_progress(i32 request_id, Optional<u32> const& total_
 void RequestClient::headers_became_available(i32 request_id, IPC::Dictionary const& response_headers, Optional<u32> const& status_code)
 {
     if (auto request = const_cast<Request*>(m_requests.get(request_id).value_or(nullptr))) {
-        HashMap<String, String, CaseInsensitiveStringTraits> headers;
+        HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> headers;
         response_headers.for_each_entry([&](auto& name, auto& value) { headers.set(name, value); });
         request->did_receive_headers({}, headers, status_code);
     }
@@ -91,5 +89,5 @@ void RequestClient::certificate_requested(i32 request_id)
 
 }
 
-template RefPtr<Protocol::Request> Protocol::RequestClient::start_request(String const& method, URL const&, HashMap<String, String> const& request_headers, ReadonlyBytes request_body);
-template RefPtr<Protocol::Request> Protocol::RequestClient::start_request(String const& method, URL const&, HashMap<String, String, CaseInsensitiveStringTraits> const& request_headers, ReadonlyBytes request_body);
+template RefPtr<Protocol::Request> Protocol::RequestClient::start_request(DeprecatedString const& method, URL const&, HashMap<DeprecatedString, DeprecatedString> const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&);
+template RefPtr<Protocol::Request> Protocol::RequestClient::start_request(DeprecatedString const& method, URL const&, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&);

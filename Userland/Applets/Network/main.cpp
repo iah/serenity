@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,12 +13,10 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Notification.h>
+#include <LibGUI/Process.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Bitmap.h>
 #include <LibMain/Main.h>
-#include <serenity.h>
-#include <spawn.h>
-#include <stdio.h>
 
 class NetworkWidget final : public GUI::ImageWidget {
     C_OBJECT_ABSTRACT(NetworkWidget)
@@ -25,8 +24,8 @@ class NetworkWidget final : public GUI::ImageWidget {
 public:
     static ErrorOr<NonnullRefPtr<NetworkWidget>> try_create(bool notifications)
     {
-        NonnullRefPtr<Gfx::Bitmap> connected_icon = TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/network.png"));
-        NonnullRefPtr<Gfx::Bitmap> disconnected_icon = TRY(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/network-disconnected.png"));
+        NonnullRefPtr<Gfx::Bitmap> connected_icon = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/network.png"sv));
+        NonnullRefPtr<Gfx::Bitmap> disconnected_icon = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/network-disconnected.png"sv));
         return adopt_nonnull_ref_or_enomem(new (nothrow) NetworkWidget(notifications, move(connected_icon), move(disconnected_icon)));
     }
 
@@ -49,20 +48,10 @@ private:
     {
         if (event.button() != GUI::MouseButton::Primary)
             return;
-
-        pid_t child_pid;
-        const char* argv[] = { "SystemMonitor", "-t", "network", nullptr };
-
-        if ((errno = posix_spawn(&child_pid, "/bin/SystemMonitor", nullptr, nullptr, const_cast<char**>(argv), environ))) {
-            perror("posix_spawn");
-            return;
-        }
-
-        if (disown(child_pid) < 0)
-            perror("disown");
+        GUI::Process::spawn_or_show_error(window(), "/bin/SystemMonitor"sv, Array { "-t", "network" });
     }
 
-    virtual void update_widget()
+    void update_widget()
     {
         auto adapter_info = get_adapter_info();
 
@@ -83,7 +72,7 @@ private:
         update();
     }
 
-    virtual void notify_on_connect()
+    void notify_on_connect()
     {
         if (!m_notifications)
             return;
@@ -94,7 +83,7 @@ private:
         notification->show();
     }
 
-    virtual void notify_on_disconnect()
+    void notify_on_disconnect()
     {
         if (!m_notifications)
             return;
@@ -105,7 +94,7 @@ private:
         notification->show();
     }
 
-    virtual void set_connected(bool connected)
+    void set_connected(bool connected)
     {
         if (m_connected != connected) {
             connected ? notify_on_connect() : notify_on_disconnect();
@@ -114,33 +103,38 @@ private:
         m_connected = connected;
     }
 
-    virtual String get_adapter_info(bool include_loopback = false)
+    DeprecatedString get_adapter_info()
     {
         StringBuilder adapter_info;
 
-        auto file = Core::File::construct("/proc/net/adapters");
-        if (!file->open(Core::OpenMode::ReadOnly)) {
-            dbgln("Error: Could not open {}: {}", file->name(), file->error_string());
-            return adapter_info.to_string();
+        auto file_or_error = Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read);
+        if (file_or_error.is_error()) {
+            dbgln("Error: Could not open /sys/kernel/net/adapters: {}", file_or_error.error());
+            return "";
         }
 
-        auto file_contents = file->read_all();
-        auto json = JsonValue::from_string(file_contents);
+        auto file_contents_or_error = file_or_error.value()->read_until_eof();
+        if (file_contents_or_error.is_error()) {
+            dbgln("Error: Could not read /sys/kernel/net/adapters: {}", file_contents_or_error.error());
+            return "";
+        }
+
+        auto json = JsonValue::from_string(file_contents_or_error.value());
 
         if (json.is_error())
-            return adapter_info.to_string();
+            return adapter_info.to_deprecated_string();
 
         int connected_adapters = 0;
-        json.value().as_array().for_each([&adapter_info, include_loopback, &connected_adapters](auto& value) {
+        json.value().as_array().for_each([&adapter_info, &connected_adapters](auto& value) {
             auto& if_object = value.as_object();
-            auto ip_address = if_object.get("ipv4_address").as_string_or("no IP");
-            auto ifname = if_object.get("name").to_string();
-            auto link_up = if_object.get("link_up").as_bool();
-            auto link_speed = if_object.get("link_speed").to_i32();
+            auto ip_address = if_object.get_deprecated_string("ipv4_address"sv).value_or("no IP");
+            auto ifname = if_object.get_deprecated_string("name"sv).value();
+            auto link_up = if_object.get_bool("link_up"sv).value();
+            auto link_speed = if_object.get_i32("link_speed"sv).value();
 
-            if (!include_loopback)
-                if (ifname == "loop")
-                    return;
+            if (ifname == "loop")
+                return;
+
             if (ip_address != "null")
                 connected_adapters++;
 
@@ -157,10 +151,10 @@ private:
         // show connected icon so long as at least one adapter is connected
         connected_adapters ? set_connected(true) : set_connected(false);
 
-        return adapter_info.to_string();
+        return adapter_info.to_deprecated_string();
     }
 
-    String m_adapter_info;
+    DeprecatedString m_adapter_info;
     bool m_connected = false;
     bool m_notifications = true;
     NonnullRefPtr<Gfx::Bitmap> m_connected_icon;
@@ -172,29 +166,29 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::pledge("stdio recvfd sendfd rpath unix proc exec"));
     auto app = TRY(GUI::Application::try_create(arguments));
 
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/notify", "rw"));
     TRY(Core::System::unveil("/res", "r"));
-    TRY(Core::System::unveil("/tmp/portal/notify", "rw"));
-    TRY(Core::System::unveil("/proc/net/adapters", "r"));
+    TRY(Core::System::unveil("/sys/kernel/net/adapters", "r"));
     TRY(Core::System::unveil("/bin/SystemMonitor", "x"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
     bool display_notifications = false;
-    const char* name = nullptr;
+    StringView name;
     Core::ArgsParser args_parser;
     args_parser.add_option(display_notifications, "Display notifications", "display-notifications", 'd');
     args_parser.add_option(name, "Applet name used by WindowServer.ini to set the applet order", "name", 'n', "name");
     args_parser.parse(arguments);
 
-    if (name == nullptr)
-        name = "Network";
+    if (name.is_empty())
+        name = "Network"sv;
 
     auto window = TRY(GUI::Window::try_create());
     window->set_title(name);
     window->set_window_type(GUI::WindowType::Applet);
     window->set_has_alpha_channel(true);
     window->resize(16, 16);
-    auto icon = TRY(window->try_set_main_widget<NetworkWidget>(display_notifications));
-    icon->load_from_file("/res/icons/16x16/network.png");
+    auto icon = TRY(window->set_main_widget<NetworkWidget>(display_notifications));
+    icon->load_from_file("/res/icons/16x16/network.png"sv);
     window->resize(16, 16);
     window->show();
 

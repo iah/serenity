@@ -13,7 +13,7 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/TextBox.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibJS/MarkupGenerator.h>
 #include <LibJS/SyntaxHighlighter.h>
 
@@ -24,8 +24,8 @@ ConsoleWidget::ConsoleWidget()
     set_layout<GUI::VerticalBoxLayout>();
     set_fill_with_background_color(true);
 
-    m_output_view = add<Web::OutOfProcessWebView>();
-    m_output_view->load("data:text/html,<html></html>");
+    m_output_view = add<WebView::OutOfProcessWebView>();
+    m_output_view->load("data:text/html,<html></html>"sv);
     // Wait until our output WebView is loaded, and then request any messages that occurred before we existed
     m_output_view->on_load_finish = [this](auto&) {
         if (on_request_messages)
@@ -45,8 +45,7 @@ ConsoleWidget::ConsoleWidget()
     m_input->on_return_pressed = [this] {
         auto js_source = m_input->text();
 
-        // FIXME: An is_blank check to check if there is only whitespace would probably be preferable.
-        if (js_source.is_empty())
+        if (js_source.is_whitespace())
             return;
 
         m_input->add_current_text_to_history();
@@ -93,7 +92,7 @@ void ConsoleWidget::notify_about_new_console_message(i32 message_index)
         request_console_messages();
 }
 
-void ConsoleWidget::handle_console_messages(i32 start_index, const Vector<String>& message_types, const Vector<String>& messages)
+void ConsoleWidget::handle_console_messages(i32 start_index, Vector<DeprecatedString> const& message_types, Vector<DeprecatedString> const& messages)
 {
     i32 end_index = start_index + message_types.size() - 1;
     if (end_index <= m_highest_received_message_index) {
@@ -130,11 +129,11 @@ void ConsoleWidget::handle_console_messages(i32 start_index, const Vector<String
 void ConsoleWidget::print_source_line(StringView source)
 {
     StringBuilder html;
-    html.append("<span class=\"repl-indicator\">");
-    html.append("&gt; ");
-    html.append("</span>");
+    html.append("<span class=\"repl-indicator\">"sv);
+    html.append("&gt; "sv);
+    html.append("</span>"sv);
 
-    html.append(JS::MarkupGenerator::html_from_source(source));
+    html.append(JS::MarkupGenerator::html_from_source(source).release_value_but_fixme_should_propagate_errors());
 
     print_html(html.string_view());
 }
@@ -147,7 +146,7 @@ void ConsoleWidget::print_html(StringView line)
     if (parent_id == 0) {
         builder.append(R"~~~(
         var parentGroup = document.body;
-)~~~");
+)~~~"sv);
     } else {
         builder.appendff(R"~~~(
         var parentGroup = document.getElementById("group_{}");
@@ -157,11 +156,11 @@ void ConsoleWidget::print_html(StringView line)
 
     builder.append(R"~~~(
         var p = document.createElement("p");
-        p.innerHTML = ")~~~");
+        p.innerHTML = ")~~~"sv);
     builder.append_escaped_for_json(line);
     builder.append(R"~~~("
         parentGroup.appendChild(p);
-)~~~");
+)~~~"sv);
     m_output_view->run_javascript(builder.string_view());
     // FIXME: Make it scroll to the bottom, using `window.scrollTo()` in the JS above.
     //        We used to call `m_output_view->scroll_to_bottom();` here, but that does not work because
@@ -174,7 +173,7 @@ void ConsoleWidget::clear_output()
     m_group_stack.clear();
     m_output_view->run_javascript(R"~~~(
         document.body.innerHTML = "";
-    )~~~");
+    )~~~"sv);
 }
 
 void ConsoleWidget::begin_group(StringView label, bool start_expanded)
@@ -184,7 +183,7 @@ void ConsoleWidget::begin_group(StringView label, bool start_expanded)
     if (parent_id == 0) {
         builder.append(R"~~~(
         var parentGroup = document.body;
-)~~~");
+)~~~"sv);
     } else {
         builder.appendff(R"~~~(
         var parentGroup = document.getElementById("group_{}");
@@ -200,16 +199,16 @@ void ConsoleWidget::begin_group(StringView label, bool start_expanded)
         var group = document.createElement("details");
         group.id = "group_{}";
         var label = document.createElement("summary");
-        label.innerText = ")~~~",
+        label.innerHTML = ")~~~",
         group.id);
     builder.append_escaped_for_json(label);
     builder.append(R"~~~(";
         group.appendChild(label);
         parentGroup.appendChild(group);
-)~~~");
+)~~~"sv);
 
     if (start_expanded)
-        builder.append("group.open = true;");
+        builder.append("group.open = true;"sv);
 
     m_output_view->run_javascript(builder.string_view());
     // FIXME: Scroll console to bottom - see note in print_html()

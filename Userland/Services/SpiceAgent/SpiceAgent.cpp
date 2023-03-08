@@ -5,18 +5,18 @@
  */
 
 #include "SpiceAgent.h"
-#include "ClipboardServerConnection.h"
-#include <AK/String.h>
-#include <LibC/memory.h>
-#include <LibC/unistd.h>
+#include "ConnectionToClipboardServer.h"
+#include <AK/DeprecatedString.h>
 #include <LibGfx/BMPLoader.h>
 #include <LibGfx/BMPWriter.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/JPGLoader.h>
+#include <LibGfx/JPEGLoader.h>
 #include <LibGfx/PNGLoader.h>
 #include <LibGfx/PNGWriter.h>
+#include <memory.h>
+#include <unistd.h>
 
-SpiceAgent::SpiceAgent(int fd, ClipboardServerConnection& connection)
+SpiceAgent::SpiceAgent(int fd, ConnectionToClipboardServer& connection)
     : m_fd(fd)
     , m_clipboard_connection(connection)
 {
@@ -41,12 +41,12 @@ SpiceAgent::SpiceAgent(int fd, ClipboardServerConnection& connection)
     send_message(buffer);
 }
 
-Optional<SpiceAgent::ClipboardType> SpiceAgent::mime_type_to_clipboard_type(const String& mime)
+Optional<SpiceAgent::ClipboardType> SpiceAgent::mime_type_to_clipboard_type(DeprecatedString const& mime)
 {
     if (mime == "text/plain")
         return ClipboardType::Text;
     else if (mime == "image/jpeg")
-        return ClipboardType::JPG;
+        return ClipboardType::JPEG;
     else if (mime == "image/bmp")
         return ClipboardType::BMP;
     else if (mime == "image/png" || mime == "image/x-serenityos")
@@ -79,7 +79,7 @@ void SpiceAgent::on_message_received()
         ReadonlyBytes bytes;
         if (mime == "image/x-serenityos") {
             auto bitmap = m_clipboard_connection.get_bitmap();
-            backing_byte_buffer = Gfx::PNGWriter::encode(*bitmap);
+            backing_byte_buffer = MUST(Gfx::PNGWriter::encode(*bitmap));
             bytes = backing_byte_buffer;
         } else {
             auto data = clipboard.data();
@@ -100,7 +100,7 @@ void SpiceAgent::on_message_received()
                 switch (type) {
                 case ClipboardType::PNG:
                 case ClipboardType::BMP:
-                case ClipboardType::JPG:
+                case ClipboardType::JPEG:
                     found_type = type;
                     break;
                 default:
@@ -120,7 +120,7 @@ void SpiceAgent::on_message_received()
         auto type = (ClipboardType)clipboard_message->type;
         auto data_buffer = ByteBuffer::create_uninitialized(message->size - sizeof(u32)).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
 
-        const auto total_bytes = message->size - sizeof(Clipboard);
+        auto const total_bytes = message->size - sizeof(Clipboard);
         auto bytes_copied = header.size - sizeof(Message) - sizeof(Clipboard);
         memcpy(data_buffer.data(), clipboard_message->data, bytes_copied);
 
@@ -142,11 +142,23 @@ void SpiceAgent::on_message_received()
         } else {
             ErrorOr<Gfx::ImageFrameDescriptor> frame_or_error = Gfx::ImageFrameDescriptor {};
             if (type == ClipboardType::PNG) {
-                frame_or_error = Gfx::PNGImageDecoderPlugin(data_buffer.data(), data_buffer.size()).frame(0);
+                if (Gfx::PNGImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
+                    auto png_decoder = Gfx::PNGImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
+                    if (png_decoder->initialize())
+                        frame_or_error = png_decoder->frame(0);
+                }
             } else if (type == ClipboardType::BMP) {
-                frame_or_error = Gfx::BMPImageDecoderPlugin(data_buffer.data(), data_buffer.size()).frame(0);
-            } else if (type == ClipboardType::JPG) {
-                frame_or_error = Gfx::JPGImageDecoderPlugin(data_buffer.data(), data_buffer.size()).frame(0);
+                if (Gfx::BMPImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
+                    auto bmp_decoder = Gfx::BMPImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
+                    if (bmp_decoder->initialize())
+                        frame_or_error = bmp_decoder->frame(0);
+                }
+            } else if (type == ClipboardType::JPEG) {
+                if (Gfx::JPEGImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
+                    auto jpeg_decoder = Gfx::JPEGImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
+                    if (jpeg_decoder->initialize())
+                        frame_or_error = jpeg_decoder->frame(0);
+                }
             } else {
                 dbgln("Unknown clipboard type: {}", (u32)type);
                 return;
@@ -206,7 +218,7 @@ SpiceAgent::Message* SpiceAgent::initialize_headers(u8* data, size_t additional_
     return message;
 }
 
-ByteBuffer SpiceAgent::AnnounceCapabilities::make_buffer(bool request, const Vector<Capability>& capabilities)
+ByteBuffer SpiceAgent::AnnounceCapabilities::make_buffer(bool request, Vector<Capability> const& capabilities)
 {
     size_t required_size = sizeof(ChunkHeader) + sizeof(Message) + sizeof(AnnounceCapabilities);
     auto buffer = ByteBuffer::create_uninitialized(required_size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
@@ -226,7 +238,7 @@ ByteBuffer SpiceAgent::AnnounceCapabilities::make_buffer(bool request, const Vec
     return buffer;
 }
 
-ByteBuffer SpiceAgent::ClipboardGrab::make_buffer(const Vector<ClipboardType>& types)
+ByteBuffer SpiceAgent::ClipboardGrab::make_buffer(Vector<ClipboardType> const& types)
 {
     VERIFY(types.size() > 0);
     size_t variable_data_size = sizeof(u32) * types.size();

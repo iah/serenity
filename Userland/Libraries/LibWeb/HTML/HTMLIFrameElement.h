@@ -11,19 +11,38 @@
 namespace Web::HTML {
 
 class HTMLIFrameElement final : public BrowsingContextContainer {
-public:
-    using WrapperType = Bindings::HTMLIFrameElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLIFrameElement, BrowsingContextContainer);
 
-    HTMLIFrameElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLIFrameElement() override;
 
-    virtual RefPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
+    virtual JS::GCPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
+
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#will-lazy-load-element-steps
+    bool will_lazy_load_element() const;
+
+    void set_current_navigation_was_lazy_loaded(bool value) { m_current_navigation_was_lazy_loaded = value; }
+
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 
 private:
-    virtual void inserted() override;
-    virtual void parse_attribute(const FlyString& name, const String& value) override;
+    HTMLIFrameElement(DOM::Document&, DOM::QualifiedName);
 
-    void load_src(const String&);
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
+    // ^DOM::Element
+    virtual void inserted() override;
+    virtual void removed_from(Node*) override;
+    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual i32 default_tab_index_value() const override;
+
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
+    void process_the_iframe_attributes(bool initial_insertion = false);
+
+    void load_src(DeprecatedString const&);
+
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#current-navigation-was-lazy-loaded
+    bool m_current_navigation_was_lazy_loaded { false };
 };
 
 void run_iframe_load_event_steps(HTML::HTMLIFrameElement&);

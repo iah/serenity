@@ -1,12 +1,13 @@
 /*
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/Painter.h>
 #include <LibGUI/Tray.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
@@ -21,13 +22,9 @@ Tray::Tray()
     set_focus_policy(GUI::FocusPolicy::TabFocus);
 }
 
-Tray::~Tray()
-{
-}
-
 Gfx::IntRect Tray::Item::rect(Tray const& tray) const
 {
-    static constexpr int item_height = 22;
+    int item_height = tray.font().pixel_size_rounded_up() + 12;
     return Gfx::IntRect {
         tray.frame_thickness(),
         tray.frame_thickness() + static_cast<int>(index) * item_height,
@@ -36,7 +33,7 @@ Gfx::IntRect Tray::Item::rect(Tray const& tray) const
     };
 }
 
-size_t Tray::add_item(String text, RefPtr<Gfx::Bitmap> bitmap, String custom_data)
+size_t Tray::add_item(DeprecatedString text, RefPtr<Gfx::Bitmap const> bitmap, DeprecatedString custom_data)
 {
     auto new_index = m_items.size();
 
@@ -97,11 +94,15 @@ void Tray::paint_event(GUI::PaintEvent& event)
             text_rect.translate_by(1, 1);
         }
 
-        if (item.bitmap)
-            painter.blit(icon_rect.location(), *item.bitmap, item.bitmap->rect());
+        if (item.bitmap) {
+            if (is_hovered)
+                painter.blit_brightened(icon_rect.location(), *item.bitmap, item.bitmap->rect());
+            else
+                painter.blit(icon_rect.location(), *item.bitmap, item.bitmap->rect());
+        }
 
         auto const& font = is_checked ? this->font().bold_variant() : this->font();
-        painter.draw_text(text_rect, item.text, font, Gfx::TextAlignment::CenterLeft, palette().color(Gfx::ColorRole::TrayText));
+        painter.draw_text(text_rect, item.text, font, Gfx::TextAlignment::CenterLeft, palette().tray_text());
     }
 }
 
@@ -154,7 +155,7 @@ void Tray::leave_event(Core::Event&)
     update();
 }
 
-Tray::Item* Tray::item_at(Gfx::IntPoint const& position)
+Tray::Item* Tray::item_at(Gfx::IntPoint position)
 {
     for (auto& item : m_items) {
         if (item.rect(*this).contains(position))

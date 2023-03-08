@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,8 +10,8 @@
 #include <AK/NumberFormat.h>
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/DirIterator.h>
-#include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
 #include <LibGUI/AbstractView.h>
 #include <LibGUI/FileIconProvider.h>
@@ -32,13 +33,13 @@ ModelIndex FileSystemModel::Node::index(int column) const
     if (!m_parent)
         return {};
     for (size_t row = 0; row < m_parent->m_children.size(); ++row) {
-        if (&m_parent->m_children[row] == this)
+        if (m_parent->m_children[row] == this)
             return m_model.create_index(row, column, const_cast<Node*>(this));
     }
     VERIFY_NOT_REACHED();
 }
 
-bool FileSystemModel::Node::fetch_data(String const& full_path, bool is_root)
+bool FileSystemModel::Node::fetch_data(DeprecatedString const& full_path, bool is_root)
 {
     struct stat st;
     int rc;
@@ -60,9 +61,14 @@ bool FileSystemModel::Node::fetch_data(String const& full_path, bool is_root)
     mtime = st.st_mtime;
 
     if (S_ISLNK(mode)) {
-        symlink_target = Core::File::read_link(full_path);
-        if (symlink_target.is_null())
+        auto sym_link_target_or_error = Core::DeprecatedFile::read_link(full_path);
+        if (sym_link_target_or_error.is_error())
             perror("readlink");
+        else {
+            symlink_target = sym_link_target_or_error.release_value();
+            if (symlink_target.is_null())
+                perror("readlink");
+        }
     }
 
     if (S_ISDIR(mode)) {
@@ -93,19 +99,20 @@ void FileSystemModel::Node::traverse_if_needed()
     auto full_path = this->full_path();
     Core::DirIterator di(full_path, m_model.should_show_dotfiles() ? Core::DirIterator::SkipParentAndBaseDir : Core::DirIterator::SkipDots);
     if (di.has_error()) {
-        m_error = di.error();
-        warnln("DirIterator: {}", di.error_string());
+        auto error = di.error();
+        m_error = error.code();
+        warnln("DirIterator: {}", error);
         return;
     }
 
-    Vector<String> child_names;
+    Vector<DeprecatedString> child_names;
     while (di.has_next()) {
         child_names.append(di.next_path());
     }
     quick_sort(child_names);
 
-    NonnullOwnPtrVector<Node> directory_children;
-    NonnullOwnPtrVector<Node> file_children;
+    Vector<NonnullOwnPtr<Node>> directory_children;
+    Vector<NonnullOwnPtr<Node>> file_children;
 
     for (auto& child_name : child_names) {
         auto maybe_child = create_child(child_name);
@@ -114,10 +121,21 @@ void FileSystemModel::Node::traverse_if_needed()
 
         auto child = maybe_child.release_nonnull();
         total_size += child->size;
-        if (S_ISDIR(child->mode))
+        if (S_ISDIR(child->mode)) {
             directory_children.append(move(child));
-        else
-            file_children.append(move(child));
+        } else {
+            if (!m_model.m_allowed_file_extensions.has_value()) {
+                file_children.append(move(child));
+                continue;
+            }
+
+            for (auto& extension : *m_model.m_allowed_file_extensions) {
+                if (child_name.ends_with(DeprecatedString::formatted(".{}", extension))) {
+                    file_children.append(move(child));
+                    break;
+                }
+            }
+        }
     }
 
     m_children.extend(move(directory_children));
@@ -139,9 +157,9 @@ void FileSystemModel::Node::traverse_if_needed()
     }
 }
 
-OwnPtr<FileSystemModel::Node> FileSystemModel::Node::create_child(String const& child_name)
+OwnPtr<FileSystemModel::Node> FileSystemModel::Node::create_child(DeprecatedString const& child_name)
 {
-    String child_path = LexicalPath::join(full_path(), child_name).string();
+    DeprecatedString child_path = LexicalPath::join(full_path(), child_name).string();
     auto child = adopt_own(*new Node(m_model));
 
     bool ok = child->fetch_data(child_path, false);
@@ -174,9 +192,9 @@ bool FileSystemModel::Node::is_symlink_to_directory() const
     return S_ISDIR(st.st_mode);
 }
 
-String FileSystemModel::Node::full_path() const
+DeprecatedString FileSystemModel::Node::full_path() const
 {
-    Vector<String, 32> lineage;
+    Vector<DeprecatedString, 32> lineage;
     for (auto* ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
         lineage.append(ancestor->name);
     }
@@ -188,22 +206,21 @@ String FileSystemModel::Node::full_path() const
     }
     builder.append('/');
     builder.append(name);
-    return LexicalPath::canonicalized_path(builder.to_string());
+    return LexicalPath::canonicalized_path(builder.to_deprecated_string());
 }
 
-ModelIndex FileSystemModel::index(String path, int column) const
+ModelIndex FileSystemModel::index(DeprecatedString path, int column) const
 {
-    Node const* node = node_for_path(move(path));
-    if (node != nullptr) {
+    auto node = node_for_path(move(path));
+    if (node.has_value())
         return node->index(column);
-    }
 
     return {};
 }
 
-FileSystemModel::Node const* FileSystemModel::node_for_path(String const& path) const
+Optional<FileSystemModel::Node const&> FileSystemModel::node_for_path(DeprecatedString const& path) const
 {
-    String resolved_path;
+    DeprecatedString resolved_path;
     if (path == m_root_path)
         resolved_path = "/";
     else if (!m_root_path.is_empty() && path.starts_with(m_root_path))
@@ -212,38 +229,38 @@ FileSystemModel::Node const* FileSystemModel::node_for_path(String const& path) 
         resolved_path = path;
     LexicalPath lexical_path(resolved_path);
 
-    Node const* node = m_root->m_parent_of_root ? &m_root->m_children.first() : m_root;
+    Node const* node = m_root->m_parent_of_root ? m_root->m_children.first() : m_root.ptr();
     if (lexical_path.string() == "/")
-        return node;
+        return *node;
 
     auto& parts = lexical_path.parts_view();
     for (size_t i = 0; i < parts.size(); ++i) {
         auto& part = parts[i];
         bool found = false;
         for (auto& child : node->m_children) {
-            if (child.name == part) {
-                const_cast<Node&>(child).reify_if_needed();
-                node = &child;
+            if (child->name == part) {
+                const_cast<Node&>(*child).reify_if_needed();
+                node = child;
                 found = true;
                 if (i == parts.size() - 1)
-                    return node;
+                    return *node;
                 break;
             }
         }
         if (!found)
-            return nullptr;
+            return {};
     }
-    return nullptr;
+    return {};
 }
 
-String FileSystemModel::full_path(ModelIndex const& index) const
+DeprecatedString FileSystemModel::full_path(ModelIndex const& index) const
 {
     auto& node = this->node(index);
     const_cast<Node&>(node).reify_if_needed();
     return node.full_path();
 }
 
-FileSystemModel::FileSystemModel(String root_path, Mode mode)
+FileSystemModel::FileSystemModel(DeprecatedString root_path, Mode mode)
     : m_root_path(LexicalPath::canonicalized_path(move(root_path)))
     , m_mode(mode)
 {
@@ -271,45 +288,41 @@ FileSystemModel::FileSystemModel(String root_path, Mode mode)
     invalidate();
 }
 
-FileSystemModel::~FileSystemModel()
-{
-}
-
-String FileSystemModel::name_for_uid(uid_t uid) const
+DeprecatedString FileSystemModel::name_for_uid(uid_t uid) const
 {
     auto it = m_user_names.find(uid);
     if (it == m_user_names.end())
-        return String::number(uid);
+        return DeprecatedString::number(uid);
     return (*it).value;
 }
 
-String FileSystemModel::name_for_gid(gid_t gid) const
+DeprecatedString FileSystemModel::name_for_gid(gid_t gid) const
 {
     auto it = m_group_names.find(gid);
     if (it == m_group_names.end())
-        return String::number(gid);
+        return DeprecatedString::number(gid);
     return (*it).value;
 }
 
-static String permission_string(mode_t mode)
+static DeprecatedString permission_string(mode_t mode)
 {
     StringBuilder builder;
     if (S_ISDIR(mode))
-        builder.append("d");
+        builder.append('d');
     else if (S_ISLNK(mode))
-        builder.append("l");
+        builder.append('l');
     else if (S_ISBLK(mode))
-        builder.append("b");
+        builder.append('b');
     else if (S_ISCHR(mode))
-        builder.append("c");
+        builder.append('c');
     else if (S_ISFIFO(mode))
-        builder.append("f");
+        builder.append('f');
     else if (S_ISSOCK(mode))
-        builder.append("s");
+        builder.append('s');
     else if (S_ISREG(mode))
-        builder.append("-");
+        builder.append('-');
     else
-        builder.append("?");
+        builder.append('?');
 
     builder.append(mode & S_IRUSR ? 'r' : '-');
     builder.append(mode & S_IWUSR ? 'w' : '-');
@@ -324,7 +337,7 @@ static String permission_string(mode_t mode)
         builder.append('t');
     else
         builder.append(mode & S_IXOTH ? 'x' : '-');
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
 void FileSystemModel::Node::set_selected(bool selected)
@@ -340,7 +353,7 @@ void FileSystemModel::update_node_on_selection(ModelIndex const& index, bool con
     node.set_selected(selected);
 }
 
-void FileSystemModel::set_root_path(String root_path)
+void FileSystemModel::set_root_path(DeprecatedString root_path)
 {
     if (root_path.is_null())
         m_root_path = {};
@@ -371,10 +384,10 @@ void FileSystemModel::invalidate()
 void FileSystemModel::handle_file_event(Core::FileWatcherEvent const& event)
 {
     if (event.type == Core::FileWatcherEvent::Type::ChildCreated) {
-        if (node_for_path(event.event_path) != nullptr)
+        if (node_for_path(event.event_path).has_value())
             return;
     } else {
-        if (node_for_path(event.event_path) == nullptr)
+        if (!node_for_path(event.event_path).has_value())
             return;
     }
 
@@ -383,34 +396,44 @@ void FileSystemModel::handle_file_event(Core::FileWatcherEvent const& event)
         LexicalPath path { event.event_path };
         auto& parts = path.parts_view();
         StringView child_name = parts.last();
+        if (!m_should_show_dotfiles && child_name.starts_with('.'))
+            break;
 
         auto parent_name = path.parent().string();
-        Node* parent = const_cast<Node*>(node_for_path(parent_name));
-        if (parent == nullptr) {
+        auto parent = node_for_path(parent_name);
+        if (!parent.has_value()) {
             dbgln("Got a ChildCreated on '{}' but that path does not exist?!", parent_name);
             break;
         }
 
         int child_count = parent->m_children.size();
 
-        auto maybe_child = parent->create_child(child_name);
+        auto& mutable_parent = const_cast<Node&>(*parent);
+        auto maybe_child = mutable_parent.create_child(child_name);
         if (!maybe_child)
             break;
 
         begin_insert_rows(parent->index(0), child_count, child_count);
 
         auto child = maybe_child.release_nonnull();
-        parent->total_size += child->size;
-        parent->m_children.append(move(child));
+        mutable_parent.total_size += child->size;
+        mutable_parent.m_children.append(move(child));
 
         end_insert_rows();
         break;
     }
     case Core::FileWatcherEvent::Type::Deleted:
     case Core::FileWatcherEvent::Type::ChildDeleted: {
-        Node* child = const_cast<Node*>(node_for_path(event.event_path));
-        if (child == nullptr) {
+        auto child = node_for_path(event.event_path);
+        if (!child.has_value()) {
             dbgln("Got a ChildDeleted/Deleted on '{}' but the child does not exist?! (already gone?)", event.event_path);
+            break;
+        }
+
+        if (&child.value() == m_root) {
+            // Root directory of the filesystem model has been removed. All items became invalid.
+            invalidate();
+            on_root_path_removed();
             break;
         }
 
@@ -471,7 +494,7 @@ ModelIndex FileSystemModel::index(int row, int column, ModelIndex const& parent)
     const_cast<Node&>(node).reify_if_needed();
     if (static_cast<size_t>(row) >= node.m_children.size())
         return {};
-    return create_index(row, column, &node.m_children[row]);
+    return create_index(row, column, node.m_children[row].ptr());
 }
 
 ModelIndex FileSystemModel::parent_index(ModelIndex const& index) const
@@ -604,6 +627,11 @@ Icon FileSystemModel::icon_for(Node const& node) const
                 return FileIconProvider::home_directory_open_icon();
             return FileIconProvider::home_directory_icon();
         }
+        if (node.full_path().ends_with(".git"sv)) {
+            if (node.is_selected())
+                return FileIconProvider::git_directory_open_icon();
+            return FileIconProvider::git_directory_icon();
+        }
         if (node.full_path() == Core::StandardPaths::desktop_directory())
             return FileIconProvider::desktop_directory_icon();
         if (node.is_selected() && node.is_accessible_directory)
@@ -613,12 +641,12 @@ Icon FileSystemModel::icon_for(Node const& node) const
     return FileIconProvider::icon_for_path(node.full_path(), node.mode);
 }
 
-static HashMap<String, RefPtr<Gfx::Bitmap>> s_thumbnail_cache;
+static HashMap<DeprecatedString, RefPtr<Gfx::Bitmap>> s_thumbnail_cache;
 
 static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> render_thumbnail(StringView path)
 {
-    auto bitmap = TRY(Gfx::Bitmap::try_load_from_file(path));
-    auto thumbnail = TRY(Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, { 32, 32 }));
+    auto bitmap = TRY(Gfx::Bitmap::load_from_file(path));
+    auto thumbnail = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, { 32, 32 }));
 
     double scale = min(32 / (double)bitmap->width(), 32 / (double)bitmap->height());
     auto destination = Gfx::IntRect(0, 0, (int)(bitmap->width() * scale), (int)(bitmap->height() * scale)).centered_within(thumbnail->rect());
@@ -654,7 +682,7 @@ bool FileSystemModel::fetch_thumbnail_for(Node const& node)
             return render_thumbnail(path);
         },
 
-        [this, path, weak_this](auto thumbnail_or_error) {
+        [this, path, weak_this](auto thumbnail_or_error) -> ErrorOr<void> {
             if (thumbnail_or_error.is_error()) {
                 s_thumbnail_cache.set(path, nullptr);
                 dbgln("Failed to load thumbnail for {}: {}", path, thumbnail_or_error.error());
@@ -665,7 +693,7 @@ bool FileSystemModel::fetch_thumbnail_for(Node const& node)
             // The model was destroyed, no need to update
             // progress or call any event handlers.
             if (weak_this.is_null())
-                return;
+                return {};
 
             m_thumbnail_progress++;
             if (on_thumbnail_progress)
@@ -676,6 +704,7 @@ bool FileSystemModel::fetch_thumbnail_for(Node const& node)
             }
 
             did_update(UpdateFlag::DontInvalidateIndices);
+            return {};
         });
 
     return false;
@@ -686,7 +715,7 @@ int FileSystemModel::column_count(ModelIndex const&) const
     return Column::__Count;
 }
 
-String FileSystemModel::column_name(int column) const
+DeprecatedString FileSystemModel::column_name(int column) const
 {
     switch (column) {
     case Column::Icon:
@@ -711,7 +740,7 @@ String FileSystemModel::column_name(int column) const
     VERIFY_NOT_REACHED();
 }
 
-bool FileSystemModel::accepts_drag(ModelIndex const& index, Vector<String> const& mime_types) const
+bool FileSystemModel::accepts_drag(ModelIndex const& index, Vector<DeprecatedString> const& mime_types) const
 {
     if (!mime_types.contains_slow("text/uri-list"))
         return false;
@@ -733,6 +762,15 @@ void FileSystemModel::set_should_show_dotfiles(bool show)
     invalidate();
 }
 
+void FileSystemModel::set_allowed_file_extensions(Optional<Vector<DeprecatedString>> const& allowed_file_extensions)
+{
+    if (m_allowed_file_extensions == allowed_file_extensions)
+        return;
+    m_allowed_file_extensions = allowed_file_extensions;
+
+    invalidate();
+}
+
 bool FileSystemModel::is_editable(ModelIndex const& index) const
 {
     if (!index.is_valid())
@@ -745,7 +783,7 @@ void FileSystemModel::set_data(ModelIndex const& index, Variant const& data)
     VERIFY(is_editable(index));
     Node& node = const_cast<Node&>(this->node(index));
     auto dirname = LexicalPath::dirname(node.full_path());
-    auto new_full_path = String::formatted("{}/{}", dirname, data.to_string());
+    auto new_full_path = DeprecatedString::formatted("{}/{}", dirname, data.to_deprecated_string());
     int rc = rename(node.full_path().characters(), new_full_path.characters());
     if (rc < 0) {
         if (on_rename_error)
@@ -763,9 +801,9 @@ Vector<ModelIndex> FileSystemModel::matches(StringView searching, unsigned flags
     node.reify_if_needed();
     Vector<ModelIndex> found_indices;
     for (auto& child : node.m_children) {
-        if (string_matches(child.name, searching, flags)) {
-            const_cast<Node&>(child).reify_if_needed();
-            found_indices.append(child.index(Column::Name));
+        if (string_matches(child->name, searching, flags)) {
+            const_cast<Node&>(*child).reify_if_needed();
+            found_indices.append(child->index(Column::Name));
             if (flags & FirstMatchOnly)
                 break;
         }

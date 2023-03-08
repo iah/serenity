@@ -4,33 +4,34 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Base64.h>
 #include <LibCore/ConfigFile.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
-#include <LibCore/File.h>
 #include <LibCrypto/ASN1/ASN1.h>
 #include <LibTLS/TLSv12.h>
 #include <LibTest/TestCase.h>
 
-static const char* ca_certs_file = "./ca_certs.ini";
+static StringView ca_certs_file = "./ca_certs.ini"sv;
 static int port = 443;
 
-constexpr const char* DEFAULT_SERVER { "www.google.com" };
+constexpr auto DEFAULT_SERVER = "www.google.com"sv;
 
-static ByteBuffer operator""_b(const char* string, size_t length)
+static ByteBuffer operator""_b(char const* string, size_t length)
 {
     return ByteBuffer::copy(string, length).release_value();
 }
 
 Vector<Certificate> load_certificates();
-String locate_ca_certs_file();
+DeprecatedString locate_ca_certs_file();
 
-String locate_ca_certs_file()
+DeprecatedString locate_ca_certs_file()
 {
-    if (Core::File::exists(ca_certs_file)) {
+    if (Core::DeprecatedFile::exists(ca_certs_file)) {
         return ca_certs_file;
     }
-    auto on_target_path = String("/etc/ca_certs.ini");
-    if (Core::File::exists(on_target_path)) {
+    auto on_target_path = DeprecatedString("/etc/ca_certs.ini");
+    if (Core::DeprecatedFile::exists(on_target_path)) {
         return on_target_path;
     }
     return "";
@@ -46,17 +47,25 @@ Vector<Certificate> load_certificates()
     }
 
     auto config = Core::ConfigFile::open(ca_certs_filepath).release_value_but_fixme_should_propagate_errors();
-    auto now = Core::DateTime::now();
-    auto last_year = Core::DateTime::create(now.year() - 1);
-    auto next_year = Core::DateTime::create(now.year() + 1);
     for (auto& entity : config->groups()) {
-        Certificate cert;
-        cert.subject.subject = entity;
-        cert.issuer.subject = config->read_entry(entity, "issuer_subject", entity);
-        cert.subject.country = config->read_entry(entity, "country");
-        cert.not_before = Crypto::ASN1::parse_generalized_time(config->read_entry(entity, "not_before", "")).value_or(last_year);
-        cert.not_after = Crypto::ASN1::parse_generalized_time(config->read_entry(entity, "not_after", "")).value_or(next_year);
-        certificates.append(move(cert));
+        for (auto& subject : config->keys(entity)) {
+            auto certificate_base64 = config->read_entry(entity, subject);
+            auto certificate_data_result = decode_base64(certificate_base64);
+            if (certificate_data_result.is_error()) {
+                dbgln("Skipping CA Certificate {} {}: out of memory", entity, subject);
+                continue;
+            }
+            auto certificate_data = certificate_data_result.release_value();
+            auto certificate_result = Certificate::parse_asn1(certificate_data.bytes());
+            // If the certificate does not parse it is likely using elliptic curve keys/signatures, which are not
+            // supported right now. Currently, ca_certs.ini should only contain certificates with RSA keys/signatures.
+            if (!certificate_result.has_value()) {
+                dbgln("Skipping CA Certificate {} {}: unable to parse", entity, subject);
+                continue;
+            }
+            auto certificate = certificate_result.release_value();
+            certificates.append(move(certificate));
+        }
     }
     return certificates;
 }
@@ -79,25 +88,25 @@ TEST_CASE(test_TLS_hello_handshake)
     auto tls = MUST(TLS::TLSv12::connect(DEFAULT_SERVER, port, move(options)));
     ByteBuffer contents;
     tls->on_ready_to_read = [&] {
-        auto nread = MUST(tls->read(contents.must_get_bytes_for_writing(4 * KiB)));
-        if (nread == 0) {
+        auto read_bytes = MUST(tls->read(contents.must_get_bytes_for_writing(4 * KiB)));
+        if (read_bytes.is_empty()) {
             FAIL("No data received");
             loop.quit(1);
         }
         loop.quit(0);
     };
 
-    if (!tls->write_or_error("GET / HTTP/1.1\r\nHost: "_b)) {
+    if (tls->write_entire_buffer("GET / HTTP/1.1\r\nHost: "_b).is_error()) {
         FAIL("write(0) failed");
         return;
     }
 
-    auto* the_server = DEFAULT_SERVER;
-    if (!tls->write_or_error(StringView(the_server).bytes())) {
+    auto the_server = DEFAULT_SERVER;
+    if (tls->write_entire_buffer(the_server.bytes()).is_error()) {
         FAIL("write(1) failed");
         return;
     }
-    if (!tls->write_or_error("\r\nConnection : close\r\n\r\n"_b)) {
+    if (tls->write_entire_buffer("\r\nConnection : close\r\n\r\n"_b).is_error()) {
         FAIL("write(2) failed");
         return;
     }

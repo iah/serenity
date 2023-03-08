@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/QuickSort.h>
-#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ProcessStatisticsReader.h>
@@ -47,8 +47,8 @@ struct ThreadData {
     gid_t gid;
     pid_t ppid;
     unsigned nfds;
-    String name;
-    String tty;
+    DeprecatedString name;
+    DeprecatedString tty;
     size_t amount_virtual;
     size_t amount_resident;
     size_t amount_shared;
@@ -63,12 +63,12 @@ struct ThreadData {
     unsigned cpu_percent_decimal { 0 };
 
     u32 priority;
-    String username;
-    String state;
+    DeprecatedString username;
+    DeprecatedString state;
 };
 
 struct PidAndTid {
-    bool operator==(const PidAndTid& other) const
+    bool operator==(PidAndTid const& other) const
     {
         return pid == other.pid && tid == other.tid;
     }
@@ -79,7 +79,7 @@ struct PidAndTid {
 namespace AK {
 template<>
 struct Traits<PidAndTid> : public GenericTraits<PidAndTid> {
-    static unsigned hash(const PidAndTid& value) { return pair_int_hash(value.pid, value.tid); }
+    static unsigned hash(PidAndTid const& value) { return pair_int_hash(value.pid, value.tid); }
 };
 }
 
@@ -89,14 +89,12 @@ struct Snapshot {
     u64 total_time_scheduled_kernel { 0 };
 };
 
-static Snapshot get_snapshot()
+static ErrorOr<Snapshot> get_snapshot()
 {
-    auto all_processes = Core::ProcessStatisticsReader::get_all();
-    if (!all_processes.has_value())
-        return {};
+    auto all_processes = TRY(Core::ProcessStatisticsReader::get_all());
 
     Snapshot snapshot;
-    for (auto& process : all_processes.value().processes) {
+    for (auto& process : all_processes.processes) {
         for (auto& thread : process.threads) {
             ThreadData thread_data;
             thread_data.tid = thread.tid;
@@ -126,8 +124,8 @@ static Snapshot get_snapshot()
         }
     }
 
-    snapshot.total_time_scheduled = all_processes->total_time_scheduled;
-    snapshot.total_time_scheduled_kernel = all_processes->total_time_scheduled_kernel;
+    snapshot.total_time_scheduled = all_processes.total_time_scheduled;
+    snapshot.total_time_scheduled_kernel = all_processes.total_time_scheduled_kernel;
 
     return snapshot;
 }
@@ -138,13 +136,12 @@ static struct winsize g_window_size;
 static void parse_args(Main::Arguments arguments, TopOption& top_option)
 {
     Core::ArgsParser::Option sort_by_option {
-        true,
+        Core::ArgsParser::OptionArgumentMode::Required,
         "Sort by field [pid, tid, pri, user, state, virt, phys, cpu, name]",
         "sort-by",
         's',
         nullptr,
-        [&top_option](const char* s) {
-            StringView sort_by_option { s };
+        [&top_option](StringView sort_by_option) {
             if (sort_by_option == "pid"sv)
                 top_option.sort_by = TopOption::SortBy::Pid;
             else if (sort_by_option == "tid"sv)
@@ -177,23 +174,49 @@ static void parse_args(Main::Arguments arguments, TopOption& top_option)
     args_parser.parse(arguments);
 }
 
+static bool check_quit()
+{
+    char c = '\0';
+    read(STDIN_FILENO, &c, sizeof(c));
+    return c == 'q' || c == 'Q';
+}
+
+static int g_old_stdin;
+
+static void restore_stdin()
+{
+    fcntl(STDIN_FILENO, F_SETFL, g_old_stdin);
+}
+
+static void enable_nonblocking_stdin()
+{
+    g_old_stdin = fcntl(STDIN_FILENO, F_GETFL);
+    fcntl(STDIN_FILENO, F_SETFL, g_old_stdin | O_NONBLOCK);
+    atexit(restore_stdin);
+}
+
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath tty sigaction"));
-    TRY(Core::System::unveil("/proc/all", "r"));
+    TRY(Core::System::unveil("/sys/kernel/processes", "r"));
     TRY(Core::System::unveil("/etc/passwd", "r"));
     unveil(nullptr, nullptr);
 
-    signal(SIGWINCH, [](int) {
+    TRY(Core::System::signal(SIGWINCH, [](int) {
         g_window_size_changed = true;
-    });
-
+    }));
+    TRY(Core::System::signal(SIGINT, [](int) {
+        exit(0);
+    }));
     TRY(Core::System::pledge("stdio rpath tty"));
+
     TopOption top_option;
     parse_args(arguments, top_option);
 
+    enable_nonblocking_stdin();
+
     Vector<ThreadData*> threads;
-    auto prev = get_snapshot();
+    auto prev = TRY(get_snapshot());
     usleep(10000);
     for (;;) {
         if (g_window_size_changed) {
@@ -201,7 +224,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             g_window_size_changed = false;
         }
 
-        auto current = get_snapshot();
+        auto current = TRY(get_snapshot());
         auto total_scheduled_diff = current.total_time_scheduled - prev.total_time_scheduled;
 
         printf("\033[3J\033[H\033[2J");
@@ -277,6 +300,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
         threads.clear_with_capacity();
         prev = move(current);
-        sleep(top_option.delay_time);
+
+        for (int sleep_slice = 0; sleep_slice < top_option.delay_time * 1000; sleep_slice += 100) {
+            if (check_quit())
+                exit(0);
+            usleep(100 * 1000);
+        }
     }
 }

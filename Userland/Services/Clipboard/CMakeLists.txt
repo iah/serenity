@@ -8,12 +8,15 @@ compile_ipc(ClipboardServer.ipc ClipboardServerEndpoint.h)
 compile_ipc(ClipboardClient.ipc ClipboardClientEndpoint.h)
 
 set(SOURCES
-    ClientConnection.cpp
-    ClipboardClientEndpoint.h
-    ClipboardServerEndpoint.h
+    ConnectionFromClient.cpp
     Storage.cpp
     main.cpp
 )
 
+set(GENERATED_SOURCES
+    ClipboardClientEndpoint.h
+    ClipboardServerEndpoint.h
+)
+
 serenity_bin(Clipboard)
-target_link_libraries(Clipboard LibCore LibIPC LibMain)
+target_link_libraries(Clipboard PRIVATE LibCore LibIPC LibMain)

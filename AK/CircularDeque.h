@@ -17,7 +17,7 @@ public:
     template<typename U = T>
     void enqueue_begin(U&& value)
     {
-        const auto new_head = (this->m_head - 1 + Capacity) % Capacity;
+        auto const new_head = (this->m_head - 1 + Capacity) % Capacity;
         auto& slot = this->elements()[new_head];
         if (this->m_size == Capacity)
             slot.~T();
@@ -41,4 +41,6 @@ public:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::CircularDeque;
+#endif

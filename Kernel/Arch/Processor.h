@@ -10,8 +10,21 @@
 #include <AK/Function.h>
 #include <Kernel/Arch/DeferredCallEntry.h>
 
-#if ARCH(X86_64) || ARCH(I386)
-#    include <Kernel/Arch/x86/Processor.h>
+namespace Kernel {
+
+// FIXME: Move the InterruptsState enum and related functions inside the Processor class.
+enum class InterruptsState {
+    Enabled,
+    Disabled
+};
+
+InterruptsState processor_interrupts_state();
+void restore_processor_interrupts_state(InterruptsState);
+
+}
+
+#if ARCH(X86_64)
+#    include <Kernel/Arch/x86_64/Processor.h>
 #elif ARCH(AARCH64)
 #    include <Kernel/Arch/aarch64/Processor.h>
 #else
@@ -44,7 +57,7 @@ struct ProcessorMessage {
         } flush_tlb;
     };
 
-    volatile bool async;
+    bool volatile async;
 
     ProcessorMessageEntry* per_proc_entries;
 

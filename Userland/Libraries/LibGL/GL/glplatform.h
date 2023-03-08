@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Jelle Raaijmakers <jelle@gmta.nl>
+ * Copyright (c) 2021-2022, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -21,18 +21,20 @@
 // Defines types used by all OpenGL applications
 // https://www.khronos.org/opengl/wiki/OpenGL_Type
 typedef char GLchar;
-typedef char GLbyte;
+typedef signed char GLbyte;
 typedef unsigned char GLuchar;
 typedef unsigned char GLubyte;
 typedef unsigned char GLboolean;
 typedef short GLshort;
 typedef unsigned short GLushort;
 typedef int GLint;
+typedef long GLint64;
+typedef long GLintptr;
 typedef unsigned int GLuint;
+typedef unsigned long GLuint64;
 typedef int GLfixed;
-typedef long long GLint64;
-typedef unsigned long long GLuint64;
 typedef int GLsizei;
+typedef long GLsizeiptr;
 typedef void GLvoid;
 typedef float GLfloat;
 typedef double GLclampd;

@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
-#include <AK/String.h>
 #include <LibCore/File.h>
 #include <LibMarkdown/Document.h>
 #include <LibTest/TestCase.h>
@@ -15,26 +15,28 @@
 
 TEST_SETUP
 {
-    auto file = Core::File::construct("/home/anon/commonmark.spec.json");
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        file = Core::File::construct("./commonmark.spec.json");
-        VERIFY(file->open(Core::OpenMode::ReadOnly));
-    }
-
-    String test_data(file->read_all(), AK::ShouldChomp::NoChomp);
+    auto file_or_error = Core::File::open("/home/anon/Tests/commonmark.spec.json"sv, Core::File::OpenMode::Read);
+    if (file_or_error.is_error())
+        file_or_error = Core::File::open("./commonmark.spec.json"sv, Core::File::OpenMode::Read);
+    VERIFY(!file_or_error.is_error());
+    auto file = file_or_error.release_value();
+    auto file_size = MUST(file->size());
+    auto content = MUST(ByteBuffer::create_uninitialized(file_size));
+    MUST(file->read_entire_buffer(content.bytes()));
+    DeprecatedString test_data { content.bytes() };
 
     auto tests = JsonParser(test_data).parse().value().as_array();
     for (size_t i = 0; i < tests.size(); ++i) {
         auto testcase = tests[i].as_object();
 
-        auto name = String::formatted("{}_ex{}_{}..{}",
-            testcase.get("section"),
-            testcase.get("example"),
-            testcase.get("start_line"),
-            testcase.get("end_line"));
+        auto name = DeprecatedString::formatted("{}_ex{}_{}..{}",
+            testcase.get("section"sv).value(),
+            testcase.get("example"sv).value(),
+            testcase.get("start_line"sv).value(),
+            testcase.get("end_line"sv).value());
 
-        String markdown = testcase.get("markdown").as_string();
-        String html = testcase.get("html").as_string();
+        DeprecatedString markdown = testcase.get_deprecated_string("markdown"sv).value();
+        DeprecatedString html = testcase.get_deprecated_string("html"sv).value();
 
         Test::TestSuite::the().add_case(adopt_ref(*new Test::TestCase(
             name, [markdown, html]() {

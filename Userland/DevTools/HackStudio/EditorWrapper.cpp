@@ -10,9 +10,10 @@
 #include "HackStudio.h"
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
+#include <LibGUI/FilePicker.h>
 #include <LibGUI/Label.h>
-#include <LibGfx/Font.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/Font.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Palette.h>
 
 namespace HackStudio {
@@ -20,19 +21,12 @@ namespace HackStudio {
 EditorWrapper::EditorWrapper()
 {
     set_layout<GUI::VerticalBoxLayout>();
-
-    auto& label_wrapper = add<GUI::Widget>();
-    label_wrapper.set_fixed_height(14);
-    label_wrapper.set_fill_with_background_color(true);
-    label_wrapper.set_layout<GUI::HorizontalBoxLayout>();
-    label_wrapper.layout()->set_margins({ 0, 2 });
-
-    m_filename_label = label_wrapper.add<GUI::Label>(untitled_label);
-    m_filename_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-    m_filename_label->set_fixed_height(14);
+    m_filename_title = untitled_label;
 
     // FIXME: Propagate errors instead of giving up
-    m_editor = MUST(try_add<Editor>());
+    m_editor = MUST(Editor::try_create());
+
+    add_child(*m_editor);
     m_editor->set_ruler_visible(true);
     m_editor->set_automatic_indentation_enabled(true);
 
@@ -40,19 +34,14 @@ EditorWrapper::EditorWrapper()
         set_current_editor_wrapper(this);
     };
 
-    m_editor->on_open = [](String const& path) {
+    m_editor->on_open = [](DeprecatedString const& path) {
         open_file(path);
     };
 
     m_editor->on_modified_change = [this](bool) {
         update_title();
+        update_editor_window_title();
     };
-}
-
-void EditorWrapper::set_editor_has_focus(Badge<Editor>, bool focus)
-{
-    auto& font = Gfx::FontDatabase::default_font();
-    m_filename_label->set_font(focus ? font.bold_variant() : font);
 }
 
 LanguageClient& EditorWrapper::language_client() { return m_editor->language_client(); }
@@ -61,7 +50,8 @@ void EditorWrapper::set_mode_displayable()
 {
     editor().set_mode(GUI::TextEditor::Editable);
     editor().set_background_role(Gfx::ColorRole::Base);
-    editor().set_palette(GUI::Application::the()->palette());
+    auto palette = GUI::Application::the()->palette();
+    editor().set_palette(palette);
 }
 
 void EditorWrapper::set_mode_non_displayable()
@@ -71,10 +61,10 @@ void EditorWrapper::set_mode_non_displayable()
     auto palette = editor().palette();
     palette.set_color(Gfx::ColorRole::BaseText, Color::from_rgb(0xffffff));
     editor().set_palette(palette);
-    editor().document().set_text("The contents of this file could not be displayed. Is it a binary file?");
+    editor().document().set_text("The contents of this file could not be displayed. Is it a binary file?"sv);
 }
 
-void EditorWrapper::set_filename(const String& filename)
+void EditorWrapper::set_filename(DeprecatedString const& filename)
 {
     m_filename = filename;
     update_title();
@@ -83,7 +73,14 @@ void EditorWrapper::set_filename(const String& filename)
 
 void EditorWrapper::save()
 {
-    editor().write_to_file(filename());
+    if (filename().is_empty()) {
+        auto file_picker_action = GUI::CommonActions::make_save_as_action([&](auto&) {
+            Optional<DeprecatedString> save_path = GUI::FilePicker::get_save_filepath(window(), "file"sv, "txt"sv, project_root().value());
+            set_filename(save_path.value());
+        });
+        file_picker_action->activate();
+    }
+    editor().write_to_file(filename()).release_value_but_fixme_should_propagate_errors();
     update_diff();
     editor().update();
 }
@@ -94,7 +91,7 @@ void EditorWrapper::update_diff()
         m_hunks = Diff::parse_hunks(m_git_repo->unstaged_diff(filename()).value());
 }
 
-void EditorWrapper::set_project_root(String const& project_root)
+void EditorWrapper::set_project_root(DeprecatedString const& project_root)
 {
     m_project_root = project_root;
     auto result = GitRepo::try_to_create(*m_project_root);
@@ -120,8 +117,8 @@ void EditorWrapper::update_title()
         title.append(m_filename);
 
     if (editor().document().is_modified())
-        title.append(" (*)");
-    m_filename_label->set_text(title.to_string());
+        title.append(" (*)"sv);
+    m_filename_title = title.to_deprecated_string();
 }
 
 void EditorWrapper::set_debug_mode(bool enabled)

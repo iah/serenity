@@ -6,7 +6,7 @@
 
 #include <LibTest/TestCase.h>
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 
 TEST_CASE(construct_empty)
@@ -19,8 +19,8 @@ TEST_CASE(construct_empty)
 
 TEST_CASE(view_literal)
 {
-    const char* truth = "cats rule dogs drool";
-    StringView view(truth);
+    char const* truth = "cats rule dogs drool";
+    StringView view { truth, strlen(truth) };
     EXPECT_EQ(view.is_null(), false);
     EXPECT_EQ(view.characters_without_null_termination(), truth);
     EXPECT_EQ(view, view);
@@ -29,8 +29,8 @@ TEST_CASE(view_literal)
 
 TEST_CASE(compare_views)
 {
-    String foo1 = "foo";
-    String foo2 = "foo";
+    DeprecatedString foo1 = "foo";
+    DeprecatedString foo2 = "foo";
     auto view1 = foo1.view();
     auto view2 = foo2.view();
 
@@ -43,7 +43,7 @@ TEST_CASE(compare_views)
 TEST_CASE(string_view_literal_operator)
 {
     StringView literal_view = "foo"sv;
-    String test_string = "foo";
+    DeprecatedString test_string = "foo";
 
     EXPECT_EQ(literal_view.length(), test_string.length());
     EXPECT_EQ(literal_view, test_string);
@@ -51,50 +51,50 @@ TEST_CASE(string_view_literal_operator)
 
 TEST_CASE(starts_with)
 {
-    String test_string = "ABCDEF";
+    DeprecatedString test_string = "ABCDEF";
     StringView test_string_view = test_string.view();
     EXPECT(test_string_view.starts_with('A'));
     EXPECT(!test_string_view.starts_with('B'));
-    EXPECT(test_string_view.starts_with("AB"));
-    EXPECT(test_string_view.starts_with("ABCDEF"));
-    EXPECT(!test_string_view.starts_with("DEF"));
-    EXPECT(test_string_view.starts_with("abc", CaseSensitivity::CaseInsensitive));
-    EXPECT(!test_string_view.starts_with("abc", CaseSensitivity::CaseSensitive));
+    EXPECT(test_string_view.starts_with("AB"sv));
+    EXPECT(test_string_view.starts_with("ABCDEF"sv));
+    EXPECT(!test_string_view.starts_with("DEF"sv));
+    EXPECT(test_string_view.starts_with("abc"sv, CaseSensitivity::CaseInsensitive));
+    EXPECT(!test_string_view.starts_with("abc"sv, CaseSensitivity::CaseSensitive));
 }
 
 TEST_CASE(ends_with)
 {
-    String test_string = "ABCDEF";
+    DeprecatedString test_string = "ABCDEF";
     StringView test_string_view = test_string.view();
-    EXPECT(test_string_view.ends_with("DEF"));
+    EXPECT(test_string_view.ends_with("DEF"sv));
     EXPECT(test_string_view.ends_with('F'));
     EXPECT(!test_string_view.ends_with('E'));
-    EXPECT(test_string_view.ends_with("ABCDEF"));
-    EXPECT(!test_string_view.ends_with("ABCDE"));
-    EXPECT(!test_string_view.ends_with("ABCDEFG"));
-    EXPECT(test_string_view.ends_with("def", CaseSensitivity::CaseInsensitive));
-    EXPECT(!test_string_view.ends_with("def", CaseSensitivity::CaseSensitive));
+    EXPECT(test_string_view.ends_with("ABCDEF"sv));
+    EXPECT(!test_string_view.ends_with("ABCDE"sv));
+    EXPECT(!test_string_view.ends_with("ABCDEFG"sv));
+    EXPECT(test_string_view.ends_with("def"sv, CaseSensitivity::CaseInsensitive));
+    EXPECT(!test_string_view.ends_with("def"sv, CaseSensitivity::CaseSensitive));
 }
 
 TEST_CASE(lines)
 {
-    String test_string = "a\rb\nc\r\nd";
+    DeprecatedString test_string = "a\rb\nc\r\nd";
     StringView test_string_view = test_string.view();
     Vector<StringView> test_string_vector = test_string_view.lines();
     EXPECT_EQ(test_string_vector.size(), 4u);
-    EXPECT(test_string_vector.at(0) == String("a"));
-    EXPECT(test_string_vector.at(1) == String("b"));
-    EXPECT(test_string_vector.at(2) == String("c"));
-    EXPECT(test_string_vector.at(3) == String("d"));
+    EXPECT(test_string_vector.at(0) == DeprecatedString("a"));
+    EXPECT(test_string_vector.at(1) == DeprecatedString("b"));
+    EXPECT(test_string_vector.at(2) == DeprecatedString("c"));
+    EXPECT(test_string_vector.at(3) == DeprecatedString("d"));
 
     test_string = "```\nHello there\r\nHello there\n```";
     test_string_view = test_string.view();
     test_string_vector = test_string_view.lines();
     EXPECT_EQ(test_string_vector.size(), 4u);
-    EXPECT(test_string_vector.at(0) == String("```"));
-    EXPECT(test_string_vector.at(1) == String("Hello there"));
-    EXPECT(test_string_vector.at(2) == String("Hello there"));
-    EXPECT(test_string_vector.at(3) == String("```"));
+    EXPECT(test_string_vector.at(0) == DeprecatedString("```"));
+    EXPECT(test_string_vector.at(1) == DeprecatedString("Hello there"));
+    EXPECT(test_string_vector.at(2) == DeprecatedString("Hello there"));
+    EXPECT(test_string_vector.at(3) == DeprecatedString("```"));
 
     test_string = "\n\n\n";
     test_string_view = test_string.view();
@@ -127,42 +127,47 @@ TEST_CASE(find_last)
 TEST_CASE(find_any_of)
 {
     auto test_string_view = "aabbcc_xy_ccbbaa"sv;
-    EXPECT_EQ(test_string_view.find_any_of("bc", StringView::SearchDirection::Forward), 2U);
-    EXPECT_EQ(test_string_view.find_any_of("yx", StringView::SearchDirection::Forward), 7U);
-    EXPECT_EQ(test_string_view.find_any_of("defg", StringView::SearchDirection::Forward).has_value(), false);
-    EXPECT_EQ(test_string_view.find_any_of("bc", StringView::SearchDirection::Backward), 13U);
-    EXPECT_EQ(test_string_view.find_any_of("yx", StringView::SearchDirection::Backward), 8U);
-    EXPECT_EQ(test_string_view.find_any_of("fghi", StringView::SearchDirection::Backward).has_value(), false);
+    EXPECT_EQ(test_string_view.find_any_of("bc"sv, StringView::SearchDirection::Forward), 2U);
+    EXPECT_EQ(test_string_view.find_any_of("yx"sv, StringView::SearchDirection::Forward), 7U);
+    EXPECT_EQ(test_string_view.find_any_of("defg"sv, StringView::SearchDirection::Forward).has_value(), false);
+    EXPECT_EQ(test_string_view.find_any_of("bc"sv, StringView::SearchDirection::Backward), 13U);
+    EXPECT_EQ(test_string_view.find_any_of("yx"sv, StringView::SearchDirection::Backward), 8U);
+    EXPECT_EQ(test_string_view.find_any_of("fghi"sv, StringView::SearchDirection::Backward).has_value(), false);
 
     test_string_view = "/"sv;
-    EXPECT_EQ(test_string_view.find_any_of("/", StringView::SearchDirection::Forward), 0U);
-    EXPECT_EQ(test_string_view.find_any_of("/", StringView::SearchDirection::Backward), 0U);
+    EXPECT_EQ(test_string_view.find_any_of("/"sv, StringView::SearchDirection::Forward), 0U);
+    EXPECT_EQ(test_string_view.find_any_of("/"sv, StringView::SearchDirection::Backward), 0U);
 }
 
 TEST_CASE(split_view)
 {
-    StringView test_string_view = "axxbxcxd";
-    EXPECT_EQ(test_string_view.split_view('x'), Vector<StringView>({ "a", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view('x', true), Vector<StringView>({ "a", "", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view("x"), Vector<StringView>({ "a", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view("x", true), Vector<StringView>({ "a", "", "b", "c", "d" }));
+    StringView test_string_view = "axxbxcxd"sv;
+    EXPECT_EQ(test_string_view.split_view('x'), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view('x', SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view("x"sv), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view("x"sv, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
 
-    test_string_view = "axxbx";
-    EXPECT_EQ(test_string_view.split_view('x'), Vector<StringView>({ "a", "b" }));
-    EXPECT_EQ(test_string_view.split_view('x', true), Vector<StringView>({ "a", "", "b", "" }));
-    EXPECT_EQ(test_string_view.split_view("x"), Vector<StringView>({ "a", "b" }));
-    EXPECT_EQ(test_string_view.split_view("x", true), Vector<StringView>({ "a", "", "b", "" }));
+    test_string_view = "axxbx"sv;
+    EXPECT_EQ(test_string_view.split_view('x'), Vector({ "a"sv, "b"sv }));
+    EXPECT_EQ(test_string_view.split_view('x', SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, ""sv }));
+    EXPECT_EQ(test_string_view.split_view("x"sv), Vector({ "a"sv, "b"sv }));
+    EXPECT_EQ(test_string_view.split_view("x"sv, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, ""sv }));
 
-    test_string_view = "axxbcxxdxx";
-    EXPECT_EQ(test_string_view.split_view("xx"), Vector<StringView>({ "a", "bc", "d" }));
-    EXPECT_EQ(test_string_view.split_view("xx", true), Vector<StringView>({ "a", "bc", "d", "" }));
+    test_string_view = "axxbcxxdxx"sv;
+    EXPECT_EQ(test_string_view.split_view("xx"sv), Vector({ "a"sv, "bc"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view("xx"sv, SplitBehavior::KeepEmpty), Vector({ "a"sv, "bc"sv, "d"sv, ""sv }));
 
-    test_string_view = "ax_b_cxd";
+    test_string_view = "ax_b_cxd"sv;
     Function<bool(char)> predicate = [](char ch) { return ch == 'x' || ch == '_'; };
-    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector<StringView>({ "a", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate, true), Vector<StringView>({ "a", "", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector<StringView>({ "a", "b", "c", "d" }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate, true), Vector<StringView>({ "a", "", "b", "c", "d" }));
+    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
+    EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
+
+    test_string_view = "a,,,b"sv;
+    EXPECT_EQ(test_string_view.split_view(","sv, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, ""sv, "b"sv }));
+    EXPECT_EQ(test_string_view.split_view(","sv, SplitBehavior::KeepTrailingSeparator), Vector({ "a,"sv, "b"sv }));
+    EXPECT_EQ(test_string_view.split_view(","sv, SplitBehavior::KeepTrailingSeparator | SplitBehavior::KeepEmpty), Vector({ "a,"sv, ","sv, ","sv, "b"sv }));
 }
 
 TEST_CASE(constexpr_stuff)
@@ -179,12 +184,6 @@ TEST_CASE(constexpr_stuff)
     {
         // Can initialize from ""sv.
         constexpr StringView test_constexpr { "foo"sv };
-        do_test();
-    }
-
-    {
-        // Can initialize from char const*.
-        constexpr StringView test_constexpr { "foo" };
         do_test();
     }
 #undef do_test

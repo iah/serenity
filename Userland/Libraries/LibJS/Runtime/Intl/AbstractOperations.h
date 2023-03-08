@@ -6,19 +6,20 @@
 
 #pragma once
 
-#include <AK/Array.h>
 #include <AK/Span.h>
 #include <AK/String.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Intl/DisplayNames.h>
+#include <LibJS/Runtime/Intl/SingleUnitIdentifiers.h>
+#include <LibJS/Runtime/Temporal/AbstractOperations.h>
+#include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
-#include <LibUnicode/Forward.h>
+#include <LibLocale/Forward.h>
 
 namespace JS::Intl {
-
-using Fallback = Variant<Empty, bool, StringView>;
 
 struct LocaleOptions {
     Value locale_matcher;
@@ -54,32 +55,56 @@ struct PatternPartition {
     String value;
 };
 
-constexpr auto sanctioned_simple_unit_identifiers()
-{
-    return AK::Array { "acre"sv, "bit"sv, "byte"sv, "celsius"sv, "centimeter"sv, "day"sv, "degree"sv, "fahrenheit"sv, "fluid-ounce"sv, "foot"sv, "gallon"sv, "gigabit"sv, "gigabyte"sv, "gram"sv, "hectare"sv, "hour"sv, "inch"sv, "kilobit"sv, "kilobyte"sv, "kilogram"sv, "kilometer"sv, "liter"sv, "megabit"sv, "megabyte"sv, "meter"sv, "mile"sv, "mile-scandinavian"sv, "milliliter"sv, "millimeter"sv, "millisecond"sv, "minute"sv, "month"sv, "ounce"sv, "percent"sv, "petabyte"sv, "pound"sv, "second"sv, "stone"sv, "terabit"sv, "terabyte"sv, "week"sv, "yard"sv, "year"sv };
-}
+struct PatternPartitionWithSource : public PatternPartition {
+    static ThrowCompletionOr<Vector<PatternPartitionWithSource>> create_from_parent_list(VM& vm, Vector<PatternPartition> partitions)
+    {
+        Vector<PatternPartitionWithSource> result;
+        TRY_OR_THROW_OOM(vm, result.try_ensure_capacity(partitions.size()));
 
-Optional<Unicode::LocaleID> is_structurally_valid_language_tag(StringView locale);
-String canonicalize_unicode_locale_id(Unicode::LocaleID& locale);
+        for (auto& partition : partitions) {
+            PatternPartitionWithSource partition_with_source {};
+            partition_with_source.type = partition.type;
+            partition_with_source.value = move(partition.value);
+            result.unchecked_append(move(partition_with_source));
+        }
+
+        return result;
+    }
+
+    bool operator==(PatternPartitionWithSource const& other) const
+    {
+        return (type == other.type) && (value == other.value) && (source == other.source);
+    }
+
+    StringView source;
+};
+
+using StringOrBoolean = Variant<StringView, bool>;
+
+ThrowCompletionOr<Optional<::Locale::LocaleID>> is_structurally_valid_language_tag(VM&, StringView locale);
+ThrowCompletionOr<String> canonicalize_unicode_locale_id(VM&, ::Locale::LocaleID& locale);
 bool is_well_formed_currency_code(StringView currency);
 bool is_well_formed_unit_identifier(StringView unit_identifier);
-ThrowCompletionOr<Vector<String>> canonicalize_locale_list(GlobalObject&, Value locales);
-Optional<String> best_available_locale(StringView locale);
-String insert_unicode_extension_and_canonicalize(Unicode::LocaleID locale_id, Unicode::LocaleExtension extension);
-LocaleResult resolve_locale(Vector<String> const& requested_locales, LocaleOptions const& options, Span<StringView const> relevant_extension_keys);
-Vector<String> lookup_supported_locales(Vector<String> const& requested_locales);
-Vector<String> best_fit_supported_locales(Vector<String> const& requested_locales);
-ThrowCompletionOr<Array*> supported_locales(GlobalObject&, Vector<String> const& requested_locales, Value options);
-ThrowCompletionOr<Object*> coerce_options_to_object(GlobalObject& global_object, Value options);
-ThrowCompletionOr<Value> get_option(GlobalObject& global_object, Object const& options, PropertyKey const& property, Value::Type type, Span<StringView const> values, Fallback fallback);
-ThrowCompletionOr<Optional<int>> default_number_option(GlobalObject& global_object, Value value, int minimum, int maximum, Optional<int> fallback);
-ThrowCompletionOr<Optional<int>> get_number_option(GlobalObject& global_object, Object const& options, PropertyKey const& property, int minimum, int maximum, Optional<int> fallback);
-Vector<PatternPartition> partition_pattern(StringView pattern);
+ThrowCompletionOr<Vector<String>> canonicalize_locale_list(VM&, Value locales);
+Optional<StringView> best_available_locale(StringView locale);
+ThrowCompletionOr<String> insert_unicode_extension_and_canonicalize(VM&, ::Locale::LocaleID locale_id, ::Locale::LocaleExtension extension);
+ThrowCompletionOr<LocaleResult> resolve_locale(VM&, Vector<String> const& requested_locales, LocaleOptions const& options, ReadonlySpan<StringView> relevant_extension_keys);
+ThrowCompletionOr<Array*> supported_locales(VM&, Vector<String> const& requested_locales, Value options);
+ThrowCompletionOr<Object*> coerce_options_to_object(VM&, Value options);
+ThrowCompletionOr<StringOrBoolean> get_boolean_or_string_number_format_option(VM& vm, Object const& options, PropertyKey const& property, ReadonlySpan<StringView> string_values, StringOrBoolean fallback);
+ThrowCompletionOr<Optional<int>> default_number_option(VM&, Value value, int minimum, int maximum, Optional<int> fallback);
+ThrowCompletionOr<Optional<int>> get_number_option(VM&, Object const& options, PropertyKey const& property, int minimum, int maximum, Optional<int> fallback);
+ThrowCompletionOr<Vector<PatternPartition>> partition_pattern(VM&, StringView pattern);
 
 template<size_t Size>
-ThrowCompletionOr<Value> get_option(GlobalObject& global_object, Object const& options, PropertyKey const& property, Value::Type type, StringView const (&values)[Size], Fallback fallback)
+ThrowCompletionOr<StringOrBoolean> get_boolean_or_string_number_format_option(VM& vm, Object const& options, PropertyKey const& property, StringView const (&string_values)[Size], StringOrBoolean fallback)
 {
-    return get_option(global_object, options, property, type, Span<StringView const> { values }, fallback);
+    return get_boolean_or_string_number_format_option(vm, options, property, ReadonlySpan<StringView> { string_values }, move(fallback));
 }
+
+// NOTE: ECMA-402's GetOption is being removed in favor of a shared ECMA-262 GetOption in the Temporal proposal.
+// Until Temporal is merged into ECMA-262, our implementation lives in the Temporal-specific AO file & namespace.
+using Temporal::get_option;
+using Temporal::OptionType;
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, the SerenityOS developers.
+ * Copyright (c) 2021-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,20 +12,16 @@
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
-    const char* path = nullptr;
+    StringView path;
     bool tokens_mode = false;
     args_parser.add_option(tokens_mode, "Print Tokens", "tokens", 'T');
     args_parser.add_positional_argument(path, "Cpp File", "cpp-file", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
-    if (!path)
-        path = "Source/little/main.cpp";
-    auto file = Core::File::construct(path);
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        warnln("Failed to open {}: {}", path, file->error_string());
-        exit(1);
-    }
-    auto content = file->read_all();
+    if (path.is_empty())
+        path = "Source/little/main.cpp"sv;
+    auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
+    auto content = TRY(file->read_until_eof());
     StringView content_view(content);
 
     ::Cpp::Preprocessor processor(path, content_view);

@@ -6,16 +6,24 @@
 
 #pragma once
 
+#include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/HTML/HTMLElement.h>
 
 namespace Web::HTML {
 
 class HTMLDialogElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLDialogElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLDialogElement, HTMLElement);
 
-    HTMLDialogElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLDialogElement() override;
+
+    // https://www.w3.org/TR/html-aria/#el-dialog
+    virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::dialog; }
+
+private:
+    HTMLDialogElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

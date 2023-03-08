@@ -26,19 +26,14 @@ public:
     void* internal_data() const { return m_internal_data; }
 
     ModelIndex parent() const;
-    bool is_parent_of(const ModelIndex&) const;
+    bool is_parent_of(ModelIndex const&) const;
 
-    bool operator==(const ModelIndex& other) const
+    bool operator==(ModelIndex const& other) const
     {
         return m_model == other.m_model && m_row == other.m_row && m_column == other.m_column && m_internal_data == other.m_internal_data;
     }
 
-    bool operator!=(const ModelIndex& other) const
-    {
-        return !(*this == other);
-    }
-
-    const Model* model() const { return m_model; }
+    Model const* model() const { return m_model; }
 
     Variant data(ModelRole = ModelRole::Display) const;
 
@@ -46,7 +41,7 @@ public:
     ModelIndex sibling_at_column(int column) const;
 
 private:
-    ModelIndex(const Model& model, int row, int column, void* internal_data)
+    ModelIndex(Model const& model, int row, int column, void* internal_data)
         : m_model(&model)
         , m_row(row)
         , m_column(column)
@@ -54,7 +49,7 @@ private:
     {
     }
 
-    const Model* m_model { nullptr };
+    Model const* m_model { nullptr };
     int m_row { -1 };
     int m_column { -1 };
     void* m_internal_data { nullptr };
@@ -69,8 +64,8 @@ struct Formatter<GUI::ModelIndex> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, GUI::ModelIndex const& value)
     {
         if (value.internal_data())
-            return Formatter<FormatString>::format(builder, "ModelIndex({},{},{})", value.row(), value.column(), value.internal_data());
-        return Formatter<FormatString>::format(builder, "ModelIndex({},{})", value.row(), value.column());
+            return Formatter<FormatString>::format(builder, "ModelIndex({},{},{})"sv, value.row(), value.column(), value.internal_data());
+        return Formatter<FormatString>::format(builder, "ModelIndex({},{})"sv, value.row(), value.column());
     }
 };
 

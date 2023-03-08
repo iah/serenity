@@ -10,11 +10,14 @@
 
 namespace Web::DOM {
 
-DOMEventListener::DOMEventListener()
+DOMEventListener::DOMEventListener() = default;
+DOMEventListener::~DOMEventListener() = default;
+
+void DOMEventListener::visit_edges(Cell::Visitor& visitor)
 {
-}
-DOMEventListener::~DOMEventListener()
-{
+    Cell::visit_edges(visitor);
+    visitor.visit(callback.ptr());
+    visitor.visit(signal.ptr());
 }
 
 }

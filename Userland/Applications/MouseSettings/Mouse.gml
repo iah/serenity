@@ -1,12 +1,11 @@
 @GUI::Frame {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
-        margins: [10]
-        spacing: 5
+        margins: [8]
     }
 
     @GUI::GroupBox {
-        title: "Cursor speed"
+        title: "Cursor Speed"
         fixed_height: 106
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -54,7 +53,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Scroll wheel step size"
+        title: "Scroll Wheel"
         fixed_height: 106
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -80,7 +79,7 @@
 
         @GUI::Widget {
             layout: @GUI::HorizontalBoxLayout {
-                margins: [8]
+                margins: [4, 0, 2, 8]
                 spacing: 8
             }
 
@@ -98,15 +97,24 @@
                 min: 0
                 max: 100
                 value: 50
-                fixed_width: 100
+                preferred_width: "opportunistic_grow"
             }
 
-            @GUI::Widget {}
+            @GUI::Widget {
+                fixed_width: 16
+            }
+
+            @GUI::CheckBox {
+                name: "natural_scroll_checkbox"
+                text: "Natural scrolling"
+                tooltip: "Content follows motion instead of the viewport,\nalso commonly referred to as \"reverse scrolling\"."
+                preferred_width: 110
+            }
         }
     }
 
     @GUI::GroupBox {
-        title: "Double-click speed"
+        title: "Double-click Speed"
         fixed_height: 106
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -155,7 +163,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Button configuration"
+        title: "Button Configuration"
         fixed_height: 68
         layout: @GUI::VerticalBoxLayout {
             margins: [16, 8, 8]
@@ -170,11 +178,11 @@
             @GUI::Label {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/graphics/switch-mouse-buttons.png"
+                name: "switch_buttons_image_label"
             }
 
             @GUI::CheckBox {
-                name: "switch_buttons_input"
+                name: "switch_buttons_checkbox"
                 text: "Switch primary and secondary buttons"
             }
         }

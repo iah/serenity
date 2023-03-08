@@ -25,14 +25,14 @@ public:
     ~Button();
 
     Gfx::IntRect relative_rect() const { return m_relative_rect; }
-    void set_relative_rect(const Gfx::IntRect& rect) { m_relative_rect = rect; }
+    void set_relative_rect(Gfx::IntRect const& rect) { m_relative_rect = rect; }
 
     Gfx::IntRect rect() const { return { {}, m_relative_rect.size() }; }
     Gfx::IntRect screen_rect() const;
 
     void paint(Screen&, Gfx::Painter&);
 
-    void on_mouse_event(const MouseEvent&);
+    void on_mouse_event(MouseEvent const&);
 
     Function<void(Button&)> on_click;
     Function<void(Button&)> on_secondary_click;
@@ -40,15 +40,28 @@ public:
 
     bool is_visible() const { return m_visible; }
 
-    void set_icon(const RefPtr<MultiScaleBitmaps>& icon) { m_icon = icon; }
+    struct Icon {
+        RefPtr<MultiScaleBitmaps> bitmap { nullptr };
+        RefPtr<MultiScaleBitmaps> hover_bitmap { nullptr };
+    };
+
+    void set_icon(Icon const& icon) { m_icon = icon; }
+
+    enum class Style {
+        Normal,
+        IconOnly
+    };
+
+    void set_style(Style style) { m_style = style; }
 
 private:
     WindowFrame& m_frame;
     Gfx::IntRect m_relative_rect;
-    RefPtr<MultiScaleBitmaps> m_icon;
+    Icon m_icon;
     bool m_pressed { false };
     bool m_visible { true };
     bool m_hovered { false };
+    Style m_style { Style::Normal };
 };
 
 }

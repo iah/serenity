@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Memory.h>
 #include <Kernel/API/POSIX/errno.h>
 #include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/FullDevice.h>
@@ -12,7 +11,7 @@
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullRefPtr<FullDevice> FullDevice::must_create()
+UNMAP_AFTER_INIT NonnullLockRefPtr<FullDevice> FullDevice::must_create()
 {
     auto full_device_or_error = DeviceManagement::try_create_device<FullDevice>();
     // FIXME: Find a way to propagate errors
@@ -25,11 +24,9 @@ UNMAP_AFTER_INIT FullDevice::FullDevice()
 {
 }
 
-UNMAP_AFTER_INIT FullDevice::~FullDevice()
-{
-}
+UNMAP_AFTER_INIT FullDevice::~FullDevice() = default;
 
-bool FullDevice::can_read(const OpenFileDescription&, u64) const
+bool FullDevice::can_read(OpenFileDescription const&, u64) const
 {
     return true;
 }
@@ -40,7 +37,7 @@ ErrorOr<size_t> FullDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& 
     return size;
 }
 
-ErrorOr<size_t> FullDevice::write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t size)
+ErrorOr<size_t> FullDevice::write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t size)
 {
     if (size == 0)
         return 0;

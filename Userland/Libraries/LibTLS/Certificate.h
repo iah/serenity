@@ -11,6 +11,7 @@
 #include <AK/Optional.h>
 #include <AK/Singleton.h>
 #include <AK/Types.h>
+#include <LibCore/ConfigFile.h>
 #include <LibCore/DateTime.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 #include <LibCrypto/PK/RSA.h>
@@ -37,33 +38,101 @@ public:
     Crypto::PK::RSAPublicKey<Crypto::UnsignedBigInteger> public_key {};
     Crypto::PK::RSAPrivateKey<Crypto::UnsignedBigInteger> private_key {};
     struct Name {
-        String country;
-        String state;
-        String location;
-        String entity;
-        String subject;
-        String unit;
+        DeprecatedString country;
+        DeprecatedString state;
+        DeprecatedString location;
+        DeprecatedString entity;
+        DeprecatedString subject;
+        DeprecatedString unit;
     } issuer, subject;
     Core::DateTime not_before;
     Core::DateTime not_after;
-    Vector<String> SAN;
+    Vector<DeprecatedString> SAN;
     u8* ocsp { nullptr };
     Crypto::UnsignedBigInteger serial_number;
     ByteBuffer sign_key {};
     ByteBuffer fingerprint {};
     ByteBuffer der {};
     ByteBuffer data {};
+    CertificateKeyAlgorithm signature_algorithm { CertificateKeyAlgorithm::Unsupported };
+    ByteBuffer signature_value {};
+    ByteBuffer original_asn1 {};
+    bool is_allowed_to_sign_certificate { false };
+    bool is_certificate_authority { false };
+    Optional<size_t> path_length_constraint {};
 
     static Optional<Certificate> parse_asn1(ReadonlyBytes, bool client_cert = false);
 
     bool is_valid() const;
+
+    DeprecatedString subject_identifier_string() const
+    {
+        StringBuilder cert_name;
+        if (!subject.country.is_empty()) {
+            cert_name.append("/C="sv);
+            cert_name.append(subject.country);
+        }
+        if (!subject.state.is_empty()) {
+            cert_name.append("/ST="sv);
+            cert_name.append(subject.state);
+        }
+        if (!subject.location.is_empty()) {
+            cert_name.append("/L="sv);
+            cert_name.append(subject.location);
+        }
+        if (!subject.entity.is_empty()) {
+            cert_name.append("/O="sv);
+            cert_name.append(subject.entity);
+        }
+        if (!subject.unit.is_empty()) {
+            cert_name.append("/OU="sv);
+            cert_name.append(subject.unit);
+        }
+        if (!subject.subject.is_empty()) {
+            cert_name.append("/CN="sv);
+            cert_name.append(subject.subject);
+        }
+        return cert_name.to_deprecated_string();
+    }
+
+    DeprecatedString issuer_identifier_string() const
+    {
+        StringBuilder cert_name;
+        if (!issuer.country.is_empty()) {
+            cert_name.append("/C="sv);
+            cert_name.append(issuer.country);
+        }
+        if (!issuer.state.is_empty()) {
+            cert_name.append("/ST="sv);
+            cert_name.append(issuer.state);
+        }
+        if (!issuer.location.is_empty()) {
+            cert_name.append("/L="sv);
+            cert_name.append(issuer.location);
+        }
+        if (!issuer.entity.is_empty()) {
+            cert_name.append("/O="sv);
+            cert_name.append(issuer.entity);
+        }
+        if (!issuer.unit.is_empty()) {
+            cert_name.append("/OU="sv);
+            cert_name.append(issuer.unit);
+        }
+        if (!issuer.subject.is_empty()) {
+            cert_name.append("/CN="sv);
+            cert_name.append(issuer.subject);
+        }
+        return cert_name.to_deprecated_string();
+    }
 };
 
 class DefaultRootCACertificates {
 public:
     DefaultRootCACertificates();
 
-    const Vector<Certificate>& certificates() const { return m_ca_certificates; }
+    Vector<Certificate> const& certificates() const { return m_ca_certificates; }
+
+    void reload_certificates(Core::ConfigFile&);
 
     static DefaultRootCACertificates& the() { return s_the; }
 

@@ -6,34 +6,49 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
-#include <AK/String.h>
+#include <AK/DeprecatedFlyString.h>
+#include <AK/DeprecatedString.h>
 #include <LibWeb/DOM/CharacterData.h>
 
 namespace Web::DOM {
 
-class Text final : public CharacterData {
+class Text : public CharacterData {
+    WEB_PLATFORM_OBJECT(Text, CharacterData);
+
 public:
-    using WrapperType = Bindings::TextWrapper;
+    virtual ~Text() override = default;
 
-    explicit Text(Document&, const String&);
-    virtual ~Text() override;
-
-    static NonnullRefPtr<Text> create_with_global_object(Bindings::WindowObject& window, String const& data);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Text>> construct_impl(JS::Realm& realm, DeprecatedString const& data);
 
     // ^Node
-    virtual FlyString node_name() const override { return "#text"; }
+    virtual DeprecatedFlyString node_name() const override { return "#text"; }
     virtual bool is_editable() const override { return m_always_editable || CharacterData::is_editable(); }
 
     void set_always_editable(bool b) { m_always_editable = b; }
 
     void set_owner_input_element(Badge<HTML::HTMLInputElement>, HTML::HTMLInputElement&);
-    HTML::HTMLInputElement* owner_input_element() { return m_owner_input_element; }
+    HTML::HTMLInputElement* owner_input_element() { return m_owner_input_element.ptr(); }
+
+    WebIDL::ExceptionOr<JS::NonnullGCPtr<Text>> split_text(size_t offset);
+
+    bool is_password_input() const { return m_is_password_input; }
+    void set_is_password_input(Badge<HTML::HTMLInputElement>, bool b) { m_is_password_input = b; }
+
+protected:
+    Text(Document&, DeprecatedString const&);
+    Text(Document&, NodeType, DeprecatedString const&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
 private:
-    WeakPtr<HTML::HTMLInputElement> m_owner_input_element;
+    JS::GCPtr<HTML::HTMLInputElement> m_owner_input_element;
 
     bool m_always_editable { false };
+    bool m_is_password_input { false };
 };
+
+template<>
+inline bool Node::fast_is<Text>() const { return is_text(); }
 
 }

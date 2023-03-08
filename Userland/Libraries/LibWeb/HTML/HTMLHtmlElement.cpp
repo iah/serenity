@@ -4,17 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 
 namespace Web::HTML {
 
-HTMLHtmlElement::HTMLHtmlElement(DOM::Document& document, QualifiedName qualified_name)
+HTMLHtmlElement::HTMLHtmlElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-HTMLHtmlElement::~HTMLHtmlElement()
+HTMLHtmlElement::~HTMLHtmlElement() = default;
+
+JS::ThrowCompletionOr<void> HTMLHtmlElement::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLHtmlElementPrototype>(realm, "HTMLHtmlElement"));
+
+    return {};
 }
 
 bool HTMLHtmlElement::should_use_body_background_properties() const
@@ -23,7 +30,7 @@ bool HTMLHtmlElement::should_use_body_background_properties() const
     auto const& background_layers = layout_node()->background_layers();
 
     for (auto& layer : background_layers) {
-        if (layer.image)
+        if (layer.background_image)
             return false;
     }
 

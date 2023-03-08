@@ -16,7 +16,7 @@ public:
     Display() = default;
     ~Display() = default;
 
-    String to_string() const;
+    ErrorOr<String> to_string() const;
 
     bool operator==(Display const& other) const
     {
@@ -34,8 +34,6 @@ public:
         }
         VERIFY_NOT_REACHED();
     }
-
-    bool operator!=(Display const& other) const { return !(*this == other); }
 
     enum class Outside {
         Block,
@@ -98,30 +96,31 @@ public:
 
     Type type() const { return m_type; }
 
-    bool it_outside_and_inside() const { return m_type == Type::OutsideAndInside; }
+    bool is_outside_and_inside() const { return m_type == Type::OutsideAndInside; }
 
     Outside outside() const
     {
-        VERIFY(it_outside_and_inside());
+        VERIFY(is_outside_and_inside());
         return m_value.outside_inside.outside;
     }
 
-    bool is_block_outside() const { return it_outside_and_inside() && outside() == Outside::Block; }
-    bool is_inline_outside() const { return it_outside_and_inside() && outside() == Outside::Inline; }
-    bool is_list_item() const { return it_outside_and_inside() && m_value.outside_inside.list_item == ListItem::Yes; }
+    bool is_block_outside() const { return is_outside_and_inside() && outside() == Outside::Block; }
+    bool is_inline_outside() const { return is_outside_and_inside() && outside() == Outside::Inline; }
+    bool is_inline_block() const { return is_inline_outside() && is_flow_root_inside(); }
+    bool is_list_item() const { return is_outside_and_inside() && m_value.outside_inside.list_item == ListItem::Yes; }
 
     Inside inside() const
     {
-        VERIFY(it_outside_and_inside());
+        VERIFY(is_outside_and_inside());
         return m_value.outside_inside.inside;
     }
 
-    bool is_flow_inside() const { return it_outside_and_inside() && inside() == Inside::Flow; }
-    bool is_flow_root_inside() const { return it_outside_and_inside() && inside() == Inside::FlowRoot; }
-    bool is_table_inside() const { return it_outside_and_inside() && inside() == Inside::Table; }
-    bool is_flex_inside() const { return it_outside_and_inside() && inside() == Inside::Flex; }
-    bool is_grid_inside() const { return it_outside_and_inside() && inside() == Inside::Grid; }
-    bool is_ruby_inside() const { return it_outside_and_inside() && inside() == Inside::Ruby; }
+    bool is_flow_inside() const { return is_outside_and_inside() && inside() == Inside::Flow; }
+    bool is_flow_root_inside() const { return is_outside_and_inside() && inside() == Inside::FlowRoot; }
+    bool is_table_inside() const { return is_outside_and_inside() && inside() == Inside::Table; }
+    bool is_flex_inside() const { return is_outside_and_inside() && inside() == Inside::Flex; }
+    bool is_grid_inside() const { return is_outside_and_inside() && inside() == Inside::Grid; }
+    bool is_ruby_inside() const { return is_outside_and_inside() && inside() == Inside::Ruby; }
 
     enum class Short {
         None,

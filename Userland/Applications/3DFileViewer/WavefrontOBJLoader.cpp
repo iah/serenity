@@ -7,121 +7,114 @@
  */
 
 #include "WavefrontOBJLoader.h"
+#include <AK/FixedArray.h>
+#include <AK/String.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/File.h>
 #include <stdlib.h>
 
-RefPtr<Mesh> WavefrontOBJLoader::load(Core::File& file)
+static inline GLuint get_index_value(StringView& representation)
 {
+    return representation.to_uint().value_or(1) - 1;
+}
+
+ErrorOr<NonnullRefPtr<Mesh>> WavefrontOBJLoader::load(String const& filename, NonnullOwnPtr<Core::File> file)
+{
+    auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+
     Vector<Vertex> vertices;
     Vector<Vertex> normals;
     Vector<TexCoord> tex_coords;
     Vector<Triangle> triangles;
 
-    dbgln("Wavefront: Loading {}...", file.name());
+    dbgln("Wavefront: Loading {}...", filename);
 
     // Start reading file line by line
-    for (auto object_line : file.lines()) {
+    auto buffer = TRY(ByteBuffer::create_uninitialized(PAGE_SIZE));
+    while (TRY(buffered_file->can_read_line())) {
+        auto object_line = TRY(buffered_file->read_line(buffer));
+
         // Ignore file comments
-        if (object_line.starts_with("#"))
+        if (object_line.starts_with('#'))
             continue;
 
-        if (object_line.starts_with("vt")) {
+        if (object_line.starts_with("vt"sv)) {
             auto tex_coord_line = object_line.split_view(' ');
             if (tex_coord_line.size() != 3) {
-                dbgln("Wavefront: Malformed TexCoord line. Aborting.");
-                dbgln("{}", object_line);
-                return nullptr;
+                return Error::from_string_literal("Wavefront: Malformed TexCoord line.");
             }
 
-            tex_coords.append({ static_cast<GLfloat>(atof(String(tex_coord_line.at(1)).characters())),
-                static_cast<GLfloat>(atof(String(tex_coord_line.at(2)).characters())) });
+            tex_coords.append({ static_cast<GLfloat>(atof(DeprecatedString(tex_coord_line.at(1)).characters())),
+                static_cast<GLfloat>(atof(DeprecatedString(tex_coord_line.at(2)).characters())) });
 
             continue;
         }
 
-        if (object_line.starts_with("vn")) {
+        if (object_line.starts_with("vn"sv)) {
             auto normal_line = object_line.split_view(' ');
             if (normal_line.size() != 4) {
-                dbgln("Wavefront: Malformed vertex normal line. Aborting.");
-                return nullptr;
+                return Error::from_string_literal("Wavefront: Malformed vertex normal line.");
             }
 
-            normals.append({ static_cast<GLfloat>(atof(String(normal_line.at(1)).characters())),
-                static_cast<GLfloat>(atof(String(normal_line.at(2)).characters())),
-                static_cast<GLfloat>(atof(String(normal_line.at(3)).characters())) });
+            normals.append({ static_cast<GLfloat>(atof(DeprecatedString(normal_line.at(1)).characters())),
+                static_cast<GLfloat>(atof(DeprecatedString(normal_line.at(2)).characters())),
+                static_cast<GLfloat>(atof(DeprecatedString(normal_line.at(3)).characters())) });
 
             continue;
         }
 
         // This line describes a vertex (a position in 3D space)
-        if (object_line.starts_with("v")) {
+        if (object_line.starts_with('v')) {
             auto vertex_line = object_line.split_view(' ');
             if (vertex_line.size() != 4) {
-                dbgln("Wavefront: Malformed vertex line. Aborting.");
-                return nullptr;
+                return Error::from_string_literal("Wavefront: Malformed vertex line.");
             }
 
-            vertices.append({ static_cast<GLfloat>(atof(String(vertex_line.at(1)).characters())),
-                static_cast<GLfloat>(atof(String(vertex_line.at(2)).characters())),
-                static_cast<GLfloat>(atof(String(vertex_line.at(3)).characters())) });
+            vertices.append({ static_cast<GLfloat>(atof(DeprecatedString(vertex_line.at(1)).characters())),
+                static_cast<GLfloat>(atof(DeprecatedString(vertex_line.at(2)).characters())),
+                static_cast<GLfloat>(atof(DeprecatedString(vertex_line.at(3)).characters())) });
 
             continue;
         }
 
-        // This line describes a face (a collection of 3 vertices, aka a triangle)
-        if (object_line.starts_with("f")) {
-            auto face_line = object_line.split_view(' ');
-            if (face_line.size() != 4) {
-                dbgln("Wavefront: Malformed face line. Aborting.");
-                return nullptr;
+        // This line describes a face (a collection of 3+ vertices, aka a triangle or polygon)
+        if (object_line.starts_with('f')) {
+            auto face_line = object_line.substring_view(2).split_view(' ');
+            auto number_of_vertices = face_line.size();
+            if (number_of_vertices < 3) {
+                return Error::from_string_literal("Wavefront: Malformed face line.");
             }
 
-            GLuint vert_index[3];
-            GLuint tex_coord_index[3];
-            GLuint normal_index[3];
-            if (object_line.contains("/")) {
-                for (int i = 1; i <= 3; ++i) {
-                    auto vertex_data = face_line.at(i).split_view("/", true);
+            auto vertex_indices = TRY(FixedArray<GLuint>::create(number_of_vertices));
+            auto tex_coord_indices = TRY(FixedArray<GLuint>::create(number_of_vertices));
+            auto normal_indices = TRY(FixedArray<GLuint>::create(number_of_vertices));
 
-                    vert_index[i - 1] = vertex_data.at(0).to_uint().value_or(1);
-                    tex_coord_index[i - 1] = vertex_data.at(1).to_uint().value_or(1);
-
-                    if (vertex_data.size() == 3)
-                        normal_index[i - 1] = vertex_data.at(2).to_uint().value_or(1);
-                    else
-                        normal_index[i - 1] = 1;
-                }
-            } else {
-                vert_index[0] = (face_line.at(1).to_uint().value_or(1));
-                vert_index[1] = (face_line.at(2).to_uint().value_or(1));
-                vert_index[2] = (face_line.at(3).to_uint().value_or(1));
-                tex_coord_index[0] = 0;
-                tex_coord_index[1] = 0;
-                tex_coord_index[2] = 0;
-                normal_index[0] = 0;
-                normal_index[1] = 0;
-                normal_index[2] = 0;
+            for (size_t i = 0; i < number_of_vertices; ++i) {
+                auto vertex_parts = face_line.at(i).split_view('/', SplitBehavior::KeepEmpty);
+                vertex_indices[i] = get_index_value(vertex_parts[0]);
+                tex_coord_indices[i] = (vertex_parts.size() >= 2) ? get_index_value(vertex_parts[1]) : 0;
+                normal_indices[i] = (vertex_parts.size() >= 3) ? get_index_value(vertex_parts[2]) : 0;
             }
 
-            // Create a new triangle
-            triangles.append(
-                {
-                    vert_index[0] - 1,
-                    vert_index[1] - 1,
-                    vert_index[2] - 1,
-                    tex_coord_index[0] - 1,
-                    tex_coord_index[1] - 1,
-                    tex_coord_index[2] - 1,
-                    normal_index[0] - 1,
-                    normal_index[1] - 1,
-                    normal_index[2] - 1,
+            // Create a triangle for each part of the polygon
+            for (size_t i = 0; i < number_of_vertices - 2; ++i) {
+                triangles.append({
+                    vertex_indices[0],
+                    vertex_indices[i + 1],
+                    vertex_indices[i + 2],
+                    tex_coord_indices[0],
+                    tex_coord_indices[i + 1],
+                    tex_coord_indices[i + 2],
+                    normal_indices[0],
+                    normal_indices[i + 1],
+                    normal_indices[i + 2],
                 });
+            }
         }
     }
 
     if (vertices.is_empty()) {
-        dbgln("Wavefront: Failed to read any data from 3D file: {}", file.name());
-        return nullptr;
+        return Error::from_string_literal("Wavefront: Failed to read any data from 3D file");
     }
 
     dbgln("Wavefront: Done.");

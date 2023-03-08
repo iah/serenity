@@ -5,11 +5,10 @@
     @Spider::Game {
         name: "game"
         fill_with_background_color: true
-        background_color: "green"
     }
 
     @GUI::Statusbar {
         name: "statusbar"
-        label_count: 3
+        segment_count: 3
     }
 }

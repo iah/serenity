@@ -6,13 +6,13 @@
 
 #pragma once
 
-#include "HitTestResult.h"
 #include <AK/Forward.h>
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/RefPtr.h>
 #include <LibCore/Forward.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/WindowTheme.h>
+#include <WindowServer/HitTestResult.h>
+#include <WindowServer/ResizeDirection.h>
 
 namespace WindowServer {
 
@@ -29,9 +29,9 @@ public:
         friend class WindowFrame;
 
     public:
-        void paint(WindowFrame&, Gfx::Painter&, const Gfx::IntRect&);
+        void paint(WindowFrame&, Gfx::Painter&, Gfx::IntRect const&);
         void render(WindowFrame&, Screen&);
-        Optional<HitTestResult> hit_test(WindowFrame&, Gfx::IntPoint const&, Gfx::IntPoint const&);
+        Optional<HitTestResult> hit_test(WindowFrame&, Gfx::IntPoint, Gfx::IntPoint);
 
     private:
         RefPtr<Gfx::Bitmap> m_top_bottom;
@@ -51,15 +51,15 @@ public:
     void window_was_constructed(Badge<Window>);
 
     Window& window() { return m_window; }
-    const Window& window() const { return m_window; }
+    Window const& window() const { return m_window; }
 
     Gfx::IntRect rect() const;
     Gfx::IntRect render_rect() const;
     Gfx::IntRect unconstrained_render_rect() const;
-    Gfx::DisjointRectSet opaque_render_rects() const;
-    Gfx::DisjointRectSet transparent_render_rects() const;
+    Gfx::DisjointIntRectSet opaque_render_rects() const;
+    Gfx::DisjointIntRectSet transparent_render_rects() const;
 
-    void paint(Screen&, Gfx::Painter&, const Gfx::IntRect&);
+    void paint(Screen&, Gfx::Painter&, Gfx::IntRect const&);
     void render(Screen&, Gfx::Painter&);
     PerScaleRenderedCache* render_to_cache(Screen&);
 
@@ -68,7 +68,7 @@ public:
     bool handle_titlebar_icon_mouse_event(MouseEvent const&);
     void handle_border_mouse_event(MouseEvent const&);
 
-    void window_rect_changed(const Gfx::IntRect& old_rect, const Gfx::IntRect& new_rect);
+    void window_rect_changed(Gfx::IntRect const& old_rect, Gfx::IntRect const& new_rect);
     void invalidate_titlebar();
     void invalidate_menubar();
     void invalidate(Gfx::IntRect relative_rect);
@@ -115,29 +115,29 @@ public:
 
     void theme_changed();
 
-    Optional<HitTestResult> hit_test(Gfx::IntPoint const&);
+    Optional<HitTestResult> hit_test(Gfx::IntPoint);
 
     void open_menubar_menu(Menu&);
 
 private:
     void paint_notification_frame(Gfx::Painter&);
     void paint_normal_frame(Gfx::Painter&);
-    void paint_tool_window_frame(Gfx::Painter&);
     void paint_menubar(Gfx::Painter&);
     MultiScaleBitmaps const* shadow_bitmap() const;
-    Gfx::IntRect inflated_for_shadow(const Gfx::IntRect&) const;
+    Gfx::IntRect inflated_for_shadow(Gfx::IntRect const&) const;
+    void latch_window_to_screen_edge(ResizeDirection);
 
-    void handle_menubar_mouse_event(const MouseEvent&);
-    void handle_menu_mouse_event(Menu&, const MouseEvent&);
+    void handle_menubar_mouse_event(MouseEvent const&);
+    void handle_menu_mouse_event(Menu&, MouseEvent const&);
 
     Gfx::WindowTheme::WindowState window_state_for_theme() const;
-    String computed_title() const;
+    DeprecatedString computed_title() const;
 
-    Gfx::IntRect constrained_render_rect_to_screen(const Gfx::IntRect&) const;
+    Gfx::IntRect constrained_render_rect_to_screen(Gfx::IntRect const&) const;
     Gfx::IntRect leftmost_titlebar_button_rect() const;
 
     Window& m_window;
-    NonnullOwnPtrVector<Button> m_buttons;
+    Vector<NonnullOwnPtr<Button>> m_buttons;
     Button* m_close_button { nullptr };
     Button* m_maximize_button { nullptr };
     Button* m_minimize_button { nullptr };

@@ -46,7 +46,7 @@ int ClassViewModel::row_count(const GUI::ModelIndex& index) const
 
 GUI::Variant ClassViewModel::data(const GUI::ModelIndex& index, GUI::ModelRole role) const
 {
-    auto* node = static_cast<const ClassViewNode*>(index.internal_data());
+    auto* node = static_cast<ClassViewNode const*>(index.internal_data());
     switch (role) {
     case GUI::ModelRole::Display: {
         return node->name;
@@ -68,20 +68,20 @@ GUI::ModelIndex ClassViewModel::parent_index(const GUI::ModelIndex& index) const
 {
     if (!index.is_valid())
         return {};
-    auto* child = static_cast<const ClassViewNode*>(index.internal_data());
+    auto* child = static_cast<ClassViewNode const*>(index.internal_data());
     auto* parent = child->parent;
     if (parent == nullptr)
         return {};
 
     if (parent->parent == nullptr) {
         for (size_t row = 0; row < m_root_scope.size(); row++) {
-            if (m_root_scope.ptr_at(row).ptr() == parent)
+            if (m_root_scope[row].ptr() == parent)
                 return create_index(row, 0, parent);
         }
         VERIFY_NOT_REACHED();
     }
     for (size_t row = 0; row < parent->parent->children.size(); row++) {
-        ClassViewNode* child_at_row = parent->parent->children.ptr_at(row).ptr();
+        ClassViewNode* child_at_row = parent->parent->children[row].ptr();
         if (child_at_row == parent)
             return create_index(row, 0, parent);
     }
@@ -92,7 +92,7 @@ GUI::ModelIndex ClassViewModel::index(int row, int column, const GUI::ModelIndex
 {
     if (!parent_index.is_valid())
         return create_index(row, column, &m_root_scope[row]);
-    auto* parent = static_cast<const ClassViewNode*>(parent_index.internal_data());
+    auto* parent = static_cast<ClassViewNode const*>(parent_index.internal_data());
     auto* child = &parent->children[row];
     return create_index(row, column, child);
 }
@@ -101,16 +101,16 @@ ClassViewModel::ClassViewModel()
 {
     m_root_scope.clear();
     ProjectDeclarations::the().for_each_declared_symbol([this](auto& decl) {
-        if (decl.type == GUI::AutocompleteProvider::DeclarationType::Class
-            || decl.type == GUI::AutocompleteProvider::DeclarationType::Struct
-            || decl.type == GUI::AutocompleteProvider::DeclarationType::Member
-            || decl.type == GUI::AutocompleteProvider::DeclarationType::Namespace) {
+        if (decl.type == CodeComprehension::DeclarationType::Class
+            || decl.type == CodeComprehension::DeclarationType::Struct
+            || decl.type == CodeComprehension::DeclarationType::Member
+            || decl.type == CodeComprehension::DeclarationType::Namespace) {
             add_declaration(decl);
         }
     });
 }
 
-static ClassViewNode& add_child_node(NonnullOwnPtrVector<ClassViewNode>& children, NonnullOwnPtr<ClassViewNode>&& node_ptr, ClassViewNode* parent, const GUI::AutocompleteProvider::Declaration* declaration)
+static ClassViewNode& add_child_node(Vector<NonnullOwnPtr<ClassViewNode>>& children, NonnullOwnPtr<ClassViewNode>&& node_ptr, ClassViewNode* parent, CodeComprehension::Declaration const* declaration)
 {
     node_ptr->parent = parent;
     node_ptr->declaration = declaration;
@@ -124,32 +124,32 @@ static ClassViewNode& add_child_node(NonnullOwnPtrVector<ClassViewNode>& childre
         },
         0, &inserted_index);
 
-    return children.at(inserted_index);
+    return *children.at(inserted_index);
 }
 
-void ClassViewModel::add_declaration(const GUI::AutocompleteProvider::Declaration& decl)
+void ClassViewModel::add_declaration(CodeComprehension::Declaration const& decl)
 {
     ClassViewNode* parent = nullptr;
-    auto scope_parts = decl.scope.view().split_view("::");
+    auto scope_parts = decl.scope.view().split_view("::"sv);
 
     if (!scope_parts.is_empty()) {
         // Traverse declarations tree to the parent of 'decl'
         for (auto& node : m_root_scope) {
-            if (node.name == scope_parts.first())
-                parent = &node;
+            if (node->name == scope_parts.first())
+                parent = node;
         }
 
         if (parent == nullptr) {
             m_root_scope.append(make<ClassViewNode>(scope_parts.first()));
-            parent = &m_root_scope.last();
+            parent = m_root_scope.last();
         }
 
         for (size_t i = 1; i < scope_parts.size(); ++i) {
             auto& scope = scope_parts[i];
             ClassViewNode* next { nullptr };
             for (auto& child : parent->children) {
-                if (child.name == scope) {
-                    next = &child;
+                if (child->name == scope) {
+                    next = child;
                     break;
                 }
             }
@@ -163,7 +163,7 @@ void ClassViewModel::add_declaration(const GUI::AutocompleteProvider::Declaratio
         }
     }
 
-    NonnullOwnPtrVector<ClassViewNode>* children_of_parent = nullptr;
+    Vector<NonnullOwnPtr<ClassViewNode>>* children_of_parent = nullptr;
     if (parent) {
         children_of_parent = &parent->children;
     } else {
@@ -172,10 +172,10 @@ void ClassViewModel::add_declaration(const GUI::AutocompleteProvider::Declaratio
 
     bool already_exists = false;
     for (auto& child : *children_of_parent) {
-        if (child.name == decl.name) {
+        if (child->name == decl.name) {
             already_exists = true;
-            if (!child.declaration) {
-                child.declaration = &decl;
+            if (!child->declaration) {
+                child->declaration = &decl;
             }
             break;
         }

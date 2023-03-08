@@ -1,11 +1,14 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
 #include <AK/Function.h>
+#include <AK/StringFloatingPointConversions.h>
 #include <AK/TypeCasts.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Completion.h>
@@ -19,7 +22,7 @@
 
 namespace JS {
 
-static const u8 max_precision_for_radix[37] = {
+static constexpr AK::Array<u8, 37> max_precision_for_radix = {
     // clang-format off
     0,  0,  52, 32, 26, 22, 20, 18, 17, 16,
     15, 15, 14, 14, 13, 13, 13, 12, 12, 12,
@@ -28,79 +31,34 @@ static const u8 max_precision_for_radix[37] = {
     // clang-format on
 };
 
-static char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+static constexpr AK::Array<char, 36> digits = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'
+};
 
-static String decimal_digits_to_string(double number)
-{
-    StringBuilder builder;
-
-    double integral_part = 0;
-    (void)modf(number, &integral_part);
-
-    while (integral_part > 0) {
-        auto index = static_cast<size_t>(fmod(integral_part, 10));
-        builder.append(digits[index]);
-
-        integral_part = floor(integral_part / 10.0);
-    }
-
-    return builder.build().reverse();
-}
-
-static size_t compute_fraction_digits(double number, int exponent)
-{
-    double integral_part = 0;
-    double fraction_part = modf(number, &integral_part);
-
-    auto fraction = String::number(fraction_part);
-    size_t fraction_digits = 0;
-
-    if (integral_part != 0)
-        fraction_digits = exponent;
-
-    if (auto decimal_index = fraction.find('.'); decimal_index.has_value()) {
-        fraction_digits += fraction.length() - *decimal_index - 1;
-
-        if (integral_part == 0) {
-            --fraction_digits;
-
-            for (size_t i = *decimal_index + 1; (i < fraction.length()) && (fraction[i] == '0'); ++i)
-                --fraction_digits;
-        }
-    } else if (integral_part != 0) {
-        auto integral = decimal_digits_to_string(integral_part);
-
-        for (size_t i = integral.length(); (i > 0) && (integral[i - 1] == '0'); --i)
-            --fraction_digits;
-    }
-
-    return fraction_digits;
-}
-
-NumberPrototype::NumberPrototype(GlobalObject& global_object)
-    : NumberObject(0, *global_object.object_prototype())
+NumberPrototype::NumberPrototype(Realm& realm)
+    : NumberObject(0, *realm.intrinsics().object_prototype())
 {
 }
 
-void NumberPrototype::initialize(GlobalObject& object)
+ThrowCompletionOr<void> NumberPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    Object::initialize(object);
+    MUST_OR_THROW_OOM(Base::initialize(realm));
     u8 attr = Attribute::Configurable | Attribute::Writable;
-    define_native_function(vm.names.toExponential, to_exponential, 1, attr);
-    define_native_function(vm.names.toFixed, to_fixed, 1, attr);
-    define_native_function(vm.names.toLocaleString, to_locale_string, 0, attr);
-    define_native_function(vm.names.toPrecision, to_precision, 1, attr);
-    define_native_function(vm.names.toString, to_string, 1, attr);
-    define_native_function(vm.names.valueOf, value_of, 0, attr);
-}
+    define_native_function(realm, vm.names.toExponential, to_exponential, 1, attr);
+    define_native_function(realm, vm.names.toFixed, to_fixed, 1, attr);
+    define_native_function(realm, vm.names.toLocaleString, to_locale_string, 0, attr);
+    define_native_function(realm, vm.names.toPrecision, to_precision, 1, attr);
+    define_native_function(realm, vm.names.toString, to_string, 1, attr);
+    define_native_function(realm, vm.names.valueOf, value_of, 0, attr);
 
-NumberPrototype::~NumberPrototype()
-{
+    return {};
 }
 
 // thisNumberValue ( value ), https://tc39.es/ecma262/#thisnumbervalue
-static ThrowCompletionOr<Value> this_number_value(GlobalObject& global_object, Value value)
+static ThrowCompletionOr<Value> this_number_value(VM& vm, Value value)
 {
     // 1. If Type(value) is Number, return value.
     if (value.is_number())
@@ -114,10 +72,8 @@ static ThrowCompletionOr<Value> this_number_value(GlobalObject& global_object, V
         return Value(static_cast<NumberObject&>(value.as_object()).number());
     }
 
-    auto& vm = global_object.vm();
-
     // 3. Throw a TypeError exception.
-    return vm.throw_completion<TypeError>(global_object, ErrorType::NotAnObjectOfType, "Number");
+    return vm.throw_completion<TypeError>(ErrorType::NotAnObjectOfType, "Number");
 }
 
 // 21.1.3.2 Number.prototype.toExponential ( fractionDigits ), https://tc39.es/ecma262/#sec-number.prototype.toexponential
@@ -126,21 +82,21 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
     auto fraction_digits_value = vm.argument(0);
 
     // 1. Let x be ? thisNumberValue(this value).
-    auto number_value = TRY(this_number_value(global_object, vm.this_value(global_object)));
+    auto number_value = TRY(this_number_value(vm, vm.this_value()));
 
     // 2. Let f be ? ToIntegerOrInfinity(fractionDigits).
-    auto fraction_digits = TRY(fraction_digits_value.to_integer_or_infinity(global_object));
+    auto fraction_digits = TRY(fraction_digits_value.to_integer_or_infinity(vm));
 
     // 3. Assert: If fractionDigits is undefined, then f is 0.
     VERIFY(!fraction_digits_value.is_undefined() || (fraction_digits == 0));
 
-    // 4. If x is not finite, return ! Number::toString(x).
+    // 4. If x is not finite, return Number::toString(x).
     if (!number_value.is_finite_number())
-        return js_string(vm, MUST(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, MUST(number_value.to_deprecated_string(vm)));
 
     // 5. If f < 0 or f > 100, throw a RangeError exception.
     if (fraction_digits < 0 || fraction_digits > 100)
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidFractionDigits);
+        return vm.throw_completion<RangeError>(ErrorType::InvalidFractionDigits);
 
     // 6. Set x to ℝ(x).
     auto number = number_value.as_double();
@@ -148,7 +104,7 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
     // 7. Let s be the empty String.
     auto sign = ""sv;
 
-    String number_string;
+    DeprecatedString number_string;
     int exponent = 0;
 
     // 8. If x < 0, then
@@ -163,17 +119,13 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
     // 9. If x = 0, then
     if (number == 0) {
         // a. Let m be the String value consisting of f + 1 occurrences of the code unit 0x0030 (DIGIT ZERO).
-        number_string = String::repeated('0', fraction_digits + 1);
+        number_string = DeprecatedString::repeated('0', fraction_digits + 1);
 
         // b. Let e be 0.
         exponent = 0;
     }
     // 10. Else,
     else {
-        // FIXME: The computations below fall apart for large values of 'f'. A double typically has 52 mantissa bits, which gives us
-        //        up to 2^52 before loss of precision. However, the largest value of 'f' may be 100, resulting in numbers on the order
-        //        of 10^100, thus we lose precision in these computations.
-
         // a. If fractionDigits is not undefined, then
         //     i. Let e and n be integers such that 10^f ≤ n < 10^(f+1) and for which n × 10^(e-f) - x is as close to zero as possible.
         //        If there are two such sets of e and n, pick the e and n for which n × 10^(e-f) is larger.
@@ -182,13 +134,20 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
         //        Note that the decimal representation of n has f + 1 digits, n is not divisible by 10, and the least significant digit of n is not necessarily uniquely determined by these criteria.
         exponent = static_cast<int>(floor(log10(number)));
 
-        if (fraction_digits_value.is_undefined())
-            fraction_digits = compute_fraction_digits(number, exponent);
+        if (fraction_digits_value.is_undefined()) {
+            auto mantissa = convert_floating_point_to_decimal_exponential_form(number).fraction;
+
+            auto mantissa_length = 0;
+            for (; mantissa; mantissa /= 10)
+                ++mantissa_length;
+
+            fraction_digits = mantissa_length - 1;
+        }
 
         number = round(number / pow(10, exponent - fraction_digits));
 
         // c. Let m be the String value consisting of the digits of the decimal representation of n (in order, with no leading zeroes).
-        number_string = decimal_digits_to_string(number);
+        number_string = number_to_deprecated_string(number, NumberToStringMode::WithoutExponent);
     }
 
     // 11. If f ≠ 0, then
@@ -200,11 +159,11 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
         auto second = number_string.substring_view(1);
 
         // c. Set m to the string-concatenation of a, ".", and b.
-        number_string = String::formatted("{}.{}", first, second);
+        number_string = DeprecatedString::formatted("{}.{}", first, second);
     }
 
     char exponent_sign = 0;
-    String exponent_string;
+    DeprecatedString exponent_string;
 
     // 12. If e = 0, then
     if (exponent == 0) {
@@ -233,35 +192,35 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_exponential)
         }
 
         // c. Let d be the String value consisting of the digits of the decimal representation of e (in order, with no leading zeroes).
-        exponent_string = String::number(exponent);
+        exponent_string = DeprecatedString::number(exponent);
     }
 
     // 14. Set m to the string-concatenation of m, "e", c, and d.
     // 15. Return the string-concatenation of s and m.
-    return js_string(vm, String::formatted("{}{}e{}{}", sign, number_string, exponent_sign, exponent_string));
+    return PrimitiveString::create(vm, DeprecatedString::formatted("{}{}e{}{}", sign, number_string, exponent_sign, exponent_string));
 }
 
 // 21.1.3.3 Number.prototype.toFixed ( fractionDigits ), https://tc39.es/ecma262/#sec-number.prototype.tofixed
 JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_fixed)
 {
     // 1. Let x be ? thisNumberValue(this value).
-    auto number_value = TRY(this_number_value(global_object, vm.this_value(global_object)));
+    auto number_value = TRY(this_number_value(vm, vm.this_value()));
 
     // 2. Let f be ? ToIntegerOrInfinity(fractionDigits).
     // 3. Assert: If fractionDigits is undefined, then f is 0.
-    auto fraction_digits = TRY(vm.argument(0).to_integer_or_infinity(global_object));
+    auto fraction_digits = TRY(vm.argument(0).to_integer_or_infinity(vm));
 
     // 4. If f is not finite, throw a RangeError exception.
     if (!Value(fraction_digits).is_finite_number())
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidFractionDigits);
+        return vm.throw_completion<RangeError>(ErrorType::InvalidFractionDigits);
 
     // 5. If f < 0 or f > 100, throw a RangeError exception.
     if (fraction_digits < 0 || fraction_digits > 100)
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidFractionDigits);
+        return vm.throw_completion<RangeError>(ErrorType::InvalidFractionDigits);
 
-    // 6. If x is not finite, return ! Number::toString(x).
+    // 6. If x is not finite, return Number::toString(x).
     if (!number_value.is_finite_number())
-        return js_string(vm, TRY(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, TRY(number_value.to_deprecated_string(vm)));
 
     // 7. Set x to ℝ(x).
     auto number = number_value.as_double();
@@ -269,34 +228,69 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_fixed)
     // 8. Let s be the empty String.
     // 9. If x < 0, then
     //    a. Set s to "-".
+    auto s = (number < 0 ? "-" : "");
     //    b. Set x to -x.
+    if (number < 0)
+        number = -number;
 
     // 10. If x ≥ 10^21, then
     if (fabs(number) >= 1e+21)
-        return js_string(vm, MUST(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, MUST(number_value.to_deprecated_string(vm)));
 
     // 11. Else,
-    //    a-c. NOTE: The number to string formatting algorithm is handled by String::formatted().
+    // a. Let n be an integer for which n / (10^f) - x is as close to zero as possible. If there are two such n, pick the larger n.
+    // FIXME: This breaks down with values of `fraction_digits` > 23
+    auto n = round(pow(10.0f, fraction_digits) * number);
+
+    // b. If n = 0, let m be the String "0". Otherwise, let m be the String value consisting of the digits of the decimal representation of n (in order, with no leading zeroes).
+    auto m = (n == 0 ? "0" : DeprecatedString::formatted("{}", n));
+
+    // c. If f ≠ 0, then
+    if (fraction_digits != 0) {
+        // i. Let k be the length of m.
+        auto k = static_cast<size_t>(m.length());
+
+        // ii. If k ≤ f, then
+        if (k <= fraction_digits) {
+            // 1. Let z be the String value consisting of f + 1 - k occurrences of the code unit 0x0030 (DIGIT ZERO).
+            auto z = DeprecatedString::repeated('0', fraction_digits + 1 - k);
+
+            // 2. Set m to the string-concatenation of z and m.
+            m = DeprecatedString::formatted("{}{}", z, m);
+
+            // 3. Set k to f + 1.
+            k = fraction_digits + 1;
+        }
+
+        // iii. Let a be the first k - f code units of m.
+        // iv. Let b be the other f code units of m.
+        // v. Set m to the string-concatenation of a, ".", and b.
+        m = DeprecatedString::formatted("{}.{}",
+            m.substring_view(0, k - fraction_digits),
+            m.substring_view(k - fraction_digits, fraction_digits));
+    }
+
     // 12. Return the string-concatenation of s and m.
-    return js_string(vm, String::formatted("{:0.{1}}", number, static_cast<size_t>(fraction_digits)));
+    return PrimitiveString::create(vm, DeprecatedString::formatted("{}{}", s, m));
 }
 
 // 19.2.1 Number.prototype.toLocaleString ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sup-number.prototype.tolocalestring
 JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_locale_string)
 {
+    auto& realm = *vm.current_realm();
+
     auto locales = vm.argument(0);
     auto options = vm.argument(1);
 
     // 1. Let x be ? thisNumberValue(this value).
-    auto number_value = TRY(this_number_value(global_object, vm.this_value(global_object)));
+    auto number_value = TRY(this_number_value(vm, vm.this_value()));
 
     // 2. Let numberFormat be ? Construct(%NumberFormat%, « locales, options »).
-    auto* number_format = static_cast<Intl::NumberFormat*>(TRY(construct(global_object, *global_object.intl_number_format_constructor(), locales, options)));
+    auto* number_format = static_cast<Intl::NumberFormat*>(TRY(construct(vm, *realm.intrinsics().intl_number_format_constructor(), locales, options)).ptr());
 
     // 3. Return ? FormatNumeric(numberFormat, x).
-    // Note: Our implementation of FormatNumeric does not throw.
-    auto formatted = Intl::format_numeric(global_object, *number_format, number_value);
-    return js_string(vm, move(formatted));
+    auto formatted = TRY(Intl::format_numeric(vm, *number_format, number_value));
+    return PrimitiveString::create(vm, move(formatted));
 }
 
 // 21.1.3.5 Number.prototype.toPrecision ( precision ), https://tc39.es/ecma262/#sec-number.prototype.toprecision
@@ -305,22 +299,22 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
     auto precision_value = vm.argument(0);
 
     // 1. Let x be ? thisNumberValue(this value).
-    auto number_value = TRY(this_number_value(global_object, vm.this_value(global_object)));
+    auto number_value = TRY(this_number_value(vm, vm.this_value()));
 
     // 2. If precision is undefined, return ! ToString(x).
     if (precision_value.is_undefined())
-        return js_string(vm, MUST(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, MUST(number_value.to_deprecated_string(vm)));
 
     // 3. Let p be ? ToIntegerOrInfinity(precision).
-    auto precision = TRY(precision_value.to_integer_or_infinity(global_object));
+    auto precision = TRY(precision_value.to_integer_or_infinity(vm));
 
-    // 4. If x is not finite, return ! Number::toString(x).
+    // 4. If x is not finite, return Number::toString(x).
     if (!number_value.is_finite_number())
-        return js_string(vm, MUST(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, MUST(number_value.to_deprecated_string(vm)));
 
     // 5. If p < 1 or p > 100, throw a RangeError exception.
     if ((precision < 1) || (precision > 100))
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidPrecision);
+        return vm.throw_completion<RangeError>(ErrorType::InvalidPrecision);
 
     // 6. Set x to ℝ(x).
     auto number = number_value.as_double();
@@ -328,7 +322,7 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
     // 7. Let s be the empty String.
     auto sign = ""sv;
 
-    String number_string;
+    DeprecatedString number_string;
     int exponent = 0;
 
     // 8. If x < 0, then
@@ -343,24 +337,20 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
     // 9. If x = 0, then
     if (number == 0) {
         // a. Let m be the String value consisting of p occurrences of the code unit 0x0030 (DIGIT ZERO).
-        number_string = String::repeated('0', precision);
+        number_string = DeprecatedString::repeated('0', precision);
 
         // b. Let e be 0.
         exponent = 0;
     }
     // 10. Else,
     else {
-        // FIXME: The computations below fall apart for large values of 'p'. A double typically has 52 mantissa bits, which gives us
-        //        up to 2^52 before loss of precision. However, the largest value of 'p' may be 100, resulting in numbers on the order
-        //        of 10^100, thus we lose precision in these computations.
-
         // a. Let e and n be integers such that 10^(p-1) ≤ n < 10^p and for which n × 10^(e-p+1) - x is as close to zero as possible.
         //    If there are two such sets of e and n, pick the e and n for which n × 10^(e-p+1) is larger.
         exponent = static_cast<int>(floor(log10(number)));
         number = round(number / pow(10, exponent - precision + 1));
 
         // b. Let m be the String value consisting of the digits of the decimal representation of n (in order, with no leading zeroes).
-        number_string = decimal_digits_to_string(number);
+        number_string = number_to_deprecated_string(number, NumberToStringMode::WithoutExponent);
 
         // c. If e < -6 or e ≥ p, then
         if ((exponent < -6) || (exponent >= precision)) {
@@ -376,7 +366,7 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
                 auto second = number_string.substring_view(1);
 
                 // 3. Set m to the string-concatenation of a, ".", and b.
-                number_string = String::formatted("{}.{}", first, second);
+                number_string = DeprecatedString::formatted("{}.{}", first, second);
             }
 
             char exponent_sign = 0;
@@ -399,21 +389,21 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
             }
 
             // v. Let d be the String value consisting of the digits of the decimal representation of e (in order, with no leading zeroes).
-            auto exponent_string = String::number(exponent);
+            auto exponent_string = DeprecatedString::number(exponent);
 
             // vi. Return the string-concatenation of s, m, the code unit 0x0065 (LATIN SMALL LETTER E), c, and d.
-            return js_string(vm, String::formatted("{}{}e{}{}", sign, number_string, exponent_sign, exponent_string));
+            return PrimitiveString::create(vm, DeprecatedString::formatted("{}{}e{}{}", sign, number_string, exponent_sign, exponent_string));
         }
     }
 
     // 11. If e = p - 1, return the string-concatenation of s and m.
     if (exponent == precision - 1)
-        return js_string(vm, String::formatted("{}{}", sign, number_string));
+        return PrimitiveString::create(vm, DeprecatedString::formatted("{}{}", sign, number_string));
 
     // 12. If e ≥ 0, then
     if (exponent >= 0) {
         // a. Set m to the string-concatenation of the first e + 1 code units of m, the code unit 0x002E (FULL STOP), and the remaining p - (e + 1) code units of m.
-        number_string = String::formatted(
+        number_string = DeprecatedString::formatted(
             "{}.{}",
             number_string.substring_view(0, exponent + 1),
             number_string.substring_view(exponent + 1));
@@ -421,21 +411,21 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_precision)
     // 13. Else,
     else {
         // a. Set m to the string-concatenation of the code unit 0x0030 (DIGIT ZERO), the code unit 0x002E (FULL STOP), -(e + 1) occurrences of the code unit 0x0030 (DIGIT ZERO), and the String m.
-        number_string = String::formatted(
+        number_string = DeprecatedString::formatted(
             "0.{}{}",
-            String::repeated('0', -1 * (exponent + 1)),
+            DeprecatedString::repeated('0', -1 * (exponent + 1)),
             number_string);
     }
 
     // 14. Return the string-concatenation of s and m.
-    return js_string(vm, String::formatted("{}{}", sign, number_string));
+    return PrimitiveString::create(vm, DeprecatedString::formatted("{}{}", sign, number_string));
 }
 
 // 21.1.3.6 Number.prototype.toString ( [ radix ] ), https://tc39.es/ecma262/#sec-number.prototype.tostring
 JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_string)
 {
     // 1. Let x be ? thisNumberValue(this value).
-    auto number_value = TRY(this_number_value(global_object, vm.this_value(global_object)));
+    auto number_value = TRY(this_number_value(vm, vm.this_value()));
 
     double radix_mv;
 
@@ -444,32 +434,32 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_string)
         radix_mv = 10;
     // 3. Else, let radixMV be ? ToIntegerOrInfinity(radix).
     else
-        radix_mv = TRY(vm.argument(0).to_integer_or_infinity(global_object));
+        radix_mv = TRY(vm.argument(0).to_integer_or_infinity(vm));
 
     // 4. If radixMV < 2 or radixMV > 36, throw a RangeError exception.
     if (radix_mv < 2 || radix_mv > 36)
-        return vm.throw_completion<RangeError>(global_object, ErrorType::InvalidRadix);
+        return vm.throw_completion<RangeError>(ErrorType::InvalidRadix);
 
     // 5. If radixMV = 10, return ! ToString(x).
     if (radix_mv == 10)
-        return js_string(vm, MUST(number_value.to_string(global_object)));
+        return PrimitiveString::create(vm, MUST(number_value.to_deprecated_string(vm)));
 
     // 6. Return the String representation of this Number value using the radix specified by radixMV. Letters a-z are used for digits with values 10 through 35. The precise algorithm is implementation-defined, however the algorithm should be a generalization of that specified in 6.1.6.1.20.
     if (number_value.is_positive_infinity())
-        return js_string(vm, "Infinity");
+        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Infinity"sv));
     if (number_value.is_negative_infinity())
-        return js_string(vm, "-Infinity");
+        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "-Infinity"sv));
     if (number_value.is_nan())
-        return js_string(vm, "NaN");
+        return PrimitiveString::create(vm, "NaN"_short_string);
     if (number_value.is_positive_zero() || number_value.is_negative_zero())
-        return js_string(vm, "0");
+        return PrimitiveString::create(vm, "0"_short_string);
 
     double number = number_value.as_double();
     bool negative = number < 0;
     if (negative)
         number *= -1;
 
-    u64 int_part = floor(number);
+    double int_part = floor(number);
     double decimal_part = number - int_part;
 
     int radix = (int)radix_mv;
@@ -479,8 +469,9 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_string)
         backwards_characters.append('0');
     } else {
         while (int_part > 0) {
-            backwards_characters.append(digits[int_part % radix]);
+            backwards_characters.append(digits[floor(fmod(int_part, radix))]);
             int_part /= radix;
+            int_part = floor(int_part);
         }
     }
 
@@ -510,14 +501,14 @@ JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::to_string)
             characters.take_last();
     }
 
-    return js_string(vm, String(characters.data(), characters.size()));
+    return PrimitiveString::create(vm, DeprecatedString(characters.data(), characters.size()));
 }
 
 // 21.1.3.7 Number.prototype.valueOf ( ), https://tc39.es/ecma262/#sec-number.prototype.valueof
 JS_DEFINE_NATIVE_FUNCTION(NumberPrototype::value_of)
 {
     // 1. Return ? thisNumberValue(this value).
-    return this_number_value(global_object, vm.this_value(global_object));
+    return this_number_value(vm, vm.this_value());
 }
 
 }

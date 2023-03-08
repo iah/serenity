@@ -113,7 +113,8 @@ struct AK::Traits<DHCPOption> : public GenericTraits<DHCPOption> {
 
 struct ParsedDHCPv4Options {
     template<typename T>
-    Optional<const T> get(DHCPOption option_name) const requires(IsTriviallyCopyable<T>)
+    Optional<T const> get(DHCPOption option_name) const
+    requires(IsTriviallyCopyable<T>)
     {
         auto option = options.get(option_name);
         if (!option.has_value()) {
@@ -150,24 +151,24 @@ struct ParsedDHCPv4Options {
         return values;
     }
 
-    String to_string() const
+    DeprecatedString to_deprecated_string() const
     {
         StringBuilder builder;
-        builder.append("DHCP Options (");
+        builder.append("DHCP Options ("sv);
         builder.appendff("{}", options.size());
-        builder.append(" entries)\n");
+        builder.append(" entries)\n"sv);
         for (auto& opt : options) {
             builder.appendff("\toption {} ({} bytes):", (u8)opt.key, (u8)opt.value.length);
             for (auto i = 0; i < opt.value.length; ++i)
-                builder.appendff(" {} ", ((const u8*)opt.value.value)[i]);
+                builder.appendff(" {} ", ((u8 const*)opt.value.value)[i]);
             builder.append('\n');
         }
-        return builder.build();
+        return builder.to_deprecated_string();
     }
 
     struct DHCPOptionValue {
         u8 length;
-        const void* value;
+        void const* value;
     };
 
     HashMap<DHCPOption, DHCPOptionValue> options;
@@ -198,10 +199,10 @@ public:
     u16 flags() const { return m_flags; }
     void set_flags(DHCPv4Flags flags) { m_flags = (u16)flags; }
 
-    const IPv4Address& ciaddr() const { return m_ciaddr; }
-    const IPv4Address& yiaddr() const { return m_yiaddr; }
-    const IPv4Address& siaddr() const { return m_siaddr; }
-    const IPv4Address& giaddr() const { return m_giaddr; }
+    IPv4Address const& ciaddr() const { return m_ciaddr; }
+    IPv4Address const& yiaddr() const { return m_yiaddr; }
+    IPv4Address const& siaddr() const { return m_siaddr; }
+    IPv4Address const& giaddr() const { return m_giaddr; }
 
     IPv4Address& ciaddr() { return m_ciaddr; }
     IPv4Address& yiaddr() { return m_yiaddr; }
@@ -211,11 +212,20 @@ public:
     u8* options() { return m_options; }
     ParsedDHCPv4Options parse_options() const;
 
-    const MACAddress& chaddr() const { return *(const MACAddress*)&m_chaddr[0]; }
-    void set_chaddr(const MACAddress& mac) { *(MACAddress*)&m_chaddr[0] = mac; }
+    MACAddress const& chaddr() const { return *(MACAddress const*)&m_chaddr[0]; }
+    void set_chaddr(MACAddress const& mac) { *(MACAddress*)&m_chaddr[0] = mac; }
 
-    StringView sname() const { return { (const char*)&m_sname[0] }; }
-    StringView file() const { return { (const char*)&m_file[0] }; }
+    StringView sname() const
+    {
+        char const* sname_ptr = reinterpret_cast<char const*>(&m_sname[0]);
+        return { sname_ptr, strlen(sname_ptr) };
+    }
+
+    StringView file() const
+    {
+        char const* file_ptr = reinterpret_cast<char const*>(&m_file[0]);
+        return { file_ptr, strlen(file_ptr) };
+    }
 
 private:
     NetworkOrdered<u8> m_op;
@@ -247,7 +257,7 @@ public:
         options[3] = 99;
     }
 
-    void add_option(DHCPOption option, u8 length, const void* data)
+    void add_option(DHCPOption option, u8 length, void const* data)
     {
         VERIFY(m_can_add);
         // we need enough space to fit the option value, its length, and its data

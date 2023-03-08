@@ -7,10 +7,10 @@
  */
 
 #include <AK/StringView.h>
+#include <Kernel/Arch/x86_64/Interrupts/IOAPIC.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Firmware/BIOS.h>
 #include <Kernel/Firmware/MultiProcessor/Parser.h>
-#include <Kernel/Interrupts/IOAPIC.h>
 #include <Kernel/Memory/TypedMapping.h>
 #include <Kernel/Sections.h>
 #include <Kernel/StdLib.h>
@@ -56,14 +56,14 @@ UNMAP_AFTER_INIT void MultiProcessorParser::parse_configuration_table()
             entry = (MultiProcessor::EntryHeader*)(FlatPtr)entry + sizeof(MultiProcessor::ProcessorEntry);
             break;
         case ((u8)MultiProcessor::ConfigurationTableEntryType::Bus):
-            MUST(m_bus_entries.try_append(*(const MultiProcessor::BusEntry*)entry));
+            MUST(m_bus_entries.try_append(*(MultiProcessor::BusEntry const*)entry));
             entry = (MultiProcessor::EntryHeader*)(FlatPtr)entry + sizeof(MultiProcessor::BusEntry);
             break;
         case ((u8)MultiProcessor::ConfigurationTableEntryType::IOAPIC):
             entry = (MultiProcessor::EntryHeader*)(FlatPtr)entry + sizeof(MultiProcessor::IOAPICEntry);
             break;
         case ((u8)MultiProcessor::ConfigurationTableEntryType::IO_Interrupt_Assignment):
-            MUST(m_io_interrupt_assignment_entries.try_append(*(const MultiProcessor::IOInterruptAssignmentEntry*)entry));
+            MUST(m_io_interrupt_assignment_entries.try_append(*(MultiProcessor::IOInterruptAssignmentEntry const*)entry));
             entry = (MultiProcessor::EntryHeader*)(FlatPtr)entry + sizeof(MultiProcessor::IOInterruptAssignmentEntry);
             break;
         case ((u8)MultiProcessor::ConfigurationTableEntryType::Local_Interrupt_Assignment):

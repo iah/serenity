@@ -5,12 +5,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "AlbumCoverVisualizationWidget.h"
 #include "BarsVisualizationWidget.h"
-#include "NoVisualizationWidget.h"
 #include "Player.h"
 #include "SampleWidget.h"
 #include "SoundPlayerWidgetAdvancedView.h"
-#include <LibAudio/ClientConnection.h>
+#include <LibAudio/ConnectionToServer.h>
+#include <LibAudio/FlacLoader.h>
+#include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/ActionGroup.h>
@@ -20,36 +22,43 @@
 #include <LibGUI/Menubar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/CharacterBitmap.h>
+#include <LibImageDecoderClient/Client.h>
 #include <LibMain/Main.h>
-#include <stdio.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath thread unix"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath thread unix proc"));
+
+    StringView file_path;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_positional_argument(file_path, "Path to audio file to play", "file", Core::ArgsParser::Required::No);
+    args_parser.parse(arguments);
 
     auto app = TRY(GUI::Application::try_create(arguments));
-    auto audio_client = TRY(Audio::ClientConnection::try_create());
+    auto audio_client = TRY(Audio::ConnectionToServer::try_create());
+    auto decoder_client = TRY(ImageDecoderClient::Client::try_create());
 
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath thread"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath thread proc"));
 
-    auto app_icon = GUI::Icon::default_icon("app-sound-player");
+    auto app_icon = GUI::Icon::default_icon("app-sound-player"sv);
 
     auto window = TRY(GUI::Window::try_create());
     window->set_title("Sound Player");
     window->set_icon(app_icon.bitmap_for_size(16));
 
     // start in advanced view by default
-    Player* player = TRY(window->try_set_main_widget<SoundPlayerWidgetAdvancedView>(window, audio_client));
-    if (arguments.argc > 1) {
-        StringView path = arguments.strings[1];
-        player->play_file_path(path);
-        if (player->is_playlist(path))
+    Player* player = TRY(window->set_main_widget<SoundPlayerWidgetAdvancedView>(window, audio_client));
+
+    if (!file_path.is_empty()) {
+        player->play_file_path(file_path);
+        if (player->is_playlist(file_path))
             player->set_loop_mode(Player::LoopMode::Playlist);
     }
 
     auto file_menu = TRY(window->try_add_menu("&File"));
     TRY(file_menu->try_add_action(GUI::CommonActions::make_open_action([&](auto&) {
-        Optional<String> path = GUI::FilePicker::get_open_filepath(window, "Open sound file...");
+        Optional<DeprecatedString> path = GUI::FilePicker::get_open_filepath(window, "Open sound file...");
         if (path.has_value()) {
             player->play_file_path(path.value());
         }
@@ -124,13 +133,30 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(visualization_menu->try_add_action(samples));
     visualization_actions.add_action(samples);
 
-    auto none = GUI::Action::create_checkable("&None", [&](auto&) {
-        static_cast<SoundPlayerWidgetAdvancedView*>(player)->set_visualization<NoVisualizationWidget>();
+    auto album_cover_visualization = GUI::Action::create_checkable("&Album Cover", [&](auto&) {
+        auto get_image_from_music_file = [&player, &decoder_client]() -> RefPtr<Gfx::Bitmap> {
+            auto const& pictures = player->pictures();
+
+            if (pictures.is_empty())
+                return {};
+
+            // FIXME: We randomly select the first picture available for the track,
+            //        We might want to hardcode or let the user set a preference.
+            auto decoded_image_or_error = decoder_client->decode_image(pictures[0].data);
+            if (!decoded_image_or_error.has_value())
+                return {};
+
+            auto const decoded_image = decoded_image_or_error.release_value();
+            return decoded_image.frames[0].bitmap;
+        };
+
+        static_cast<SoundPlayerWidgetAdvancedView*>(player)->set_visualization<AlbumCoverVisualizationWidget>(get_image_from_music_file);
     });
-    TRY(visualization_menu->try_add_action(none));
-    visualization_actions.add_action(none);
+    TRY(visualization_menu->try_add_action(album_cover_visualization));
+    visualization_actions.add_action(album_cover_visualization);
 
     auto help_menu = TRY(window->try_add_menu("&Help"));
+    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
     TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Sound Player", app_icon, window)));
 
     window->show();

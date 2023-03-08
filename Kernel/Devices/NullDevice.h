@@ -16,15 +16,19 @@ class NullDevice final : public CharacterDevice {
 public:
     virtual ~NullDevice() override;
 
-    static NonnullRefPtr<NullDevice> must_initialize();
+    static NonnullLockRefPtr<NullDevice> must_initialize();
 
 private:
     NullDevice();
+
+    // ^Device
+    virtual bool is_openable_by_jailed_processes() const override { return true; }
+
     // ^CharacterDevice
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
-    virtual bool can_write(const OpenFileDescription&, u64) const override { return true; }
-    virtual bool can_read(const OpenFileDescription&, u64) const override;
+    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override;
+    virtual bool can_write(OpenFileDescription const&, u64) const override { return true; }
+    virtual bool can_read(OpenFileDescription const&, u64) const override;
     virtual StringView class_name() const override { return "NullDevice"sv; }
     virtual bool is_seekable() const override { return true; }
 };

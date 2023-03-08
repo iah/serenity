@@ -15,6 +15,7 @@ class TrackManager;
 class PlayerWidget final : public GUI::Toolbar {
     C_OBJECT(PlayerWidget)
 public:
+    static ErrorOr<NonnullRefPtr<PlayerWidget>> create(TrackManager&, AudioPlayerLoop&);
     virtual ~PlayerWidget() override = default;
 
     void add_track();
@@ -24,9 +25,11 @@ public:
 private:
     explicit PlayerWidget(TrackManager&, AudioPlayerLoop&);
 
+    ErrorOr<void> initialize();
+
     TrackManager& m_track_manager;
     AudioPlayerLoop& m_audio_loop;
-    Vector<String> m_track_number_choices;
+    Vector<DeprecatedString> m_track_number_choices;
 
     RefPtr<Gfx::Bitmap> m_play_icon;
     RefPtr<Gfx::Bitmap> m_pause_icon;

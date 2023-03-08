@@ -1,20 +1,24 @@
 /*
  * Copyright (c) 2019-2020, Ryan Grieb <ryan.m.grieb@gmail.com>
- * Copyright (c) 2020-2021, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
+ * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
+#include <LibConfig/Listener.h>
 #include <LibCore/DateTime.h>
 #include <LibGUI/Frame.h>
 #include <LibGUI/Widget.h>
 
 namespace GUI {
 
-class Calendar final : public GUI::Frame {
+class Calendar final
+    : public GUI::Frame
+    , public Config::Listener {
     C_OBJECT(Calendar)
 
 public:
@@ -41,7 +45,7 @@ public:
     unsigned view_year() const { return m_view_year; }
     unsigned view_month() const { return m_view_month; }
 
-    String formatted_date(Format format = LongMonthYear);
+    ErrorOr<String> formatted_date(Format format = LongMonthYear);
 
     Mode mode() const { return m_mode; }
     void toggle_mode();
@@ -67,13 +71,18 @@ public:
         m_unadjusted_tile_size.set_height(height);
     }
 
+    virtual void config_string_did_change(DeprecatedString const&, DeprecatedString const&, DeprecatedString const&, DeprecatedString const&) override;
+    virtual void config_i32_did_change(DeprecatedString const&, DeprecatedString const&, DeprecatedString const&, i32 value) override;
+
     Function<void()> on_tile_click;
     Function<void()> on_tile_doubleclick;
     Function<void()> on_month_click;
 
 private:
     Calendar(Core::DateTime date_time = Core::DateTime::now(), Mode mode = Month);
-    virtual ~Calendar() override;
+    virtual ~Calendar() override = default;
+
+    static size_t day_of_week_index(DeprecatedString const&);
 
     virtual void resize_event(GUI::ResizeEvent&) override;
     virtual void paint_event(GUI::PaintEvent&) override;
@@ -83,15 +92,27 @@ private:
     virtual void doubleclick_event(MouseEvent&) override;
     virtual void leave_event(Core::Event&) override;
 
+    enum class DayOfWeek {
+        Sunday,
+        Monday,
+        Tuesday,
+        Wednesday,
+        Thursday,
+        Friday,
+        Saturday
+    };
+
+    bool is_day_in_weekend(DayOfWeek);
+
     struct Day {
-        String name;
+        DeprecatedString name;
         int width { 0 };
         int height { 16 };
     };
     Vector<Day> m_days;
 
     struct MonthTile {
-        String name;
+        DeprecatedString name;
         Gfx::IntRect rect;
         int width { 0 };
         int height { 0 };
@@ -101,7 +122,9 @@ private:
     Vector<MonthTile> m_months;
 
     struct Tile {
-        Core::DateTime date_time;
+        unsigned year;
+        unsigned month;
+        unsigned day;
         Gfx::IntRect rect;
         int width { 0 };
         int height { 0 };
@@ -126,6 +149,10 @@ private:
     Gfx::IntSize m_event_size;
     Gfx::IntSize m_month_size[12];
     Mode m_mode { Month };
+
+    DayOfWeek m_first_day_of_week { DayOfWeek::Sunday };
+    DayOfWeek m_first_day_of_weekend { DayOfWeek::Saturday };
+    int m_weekend_length { 2 };
 };
 
 }

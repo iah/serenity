@@ -9,19 +9,18 @@
 #include <AK/Types.h>
 #include <LibCrypto/Hash/SHA1.h>
 
-namespace Crypto {
-namespace Hash {
+namespace Crypto::Hash {
 
 static constexpr auto ROTATE_LEFT(u32 value, size_t bits)
 {
     return (value << bits) | (value >> (32 - bits));
 }
 
-inline void SHA1::transform(const u8* data)
+inline void SHA1::transform(u8 const* data)
 {
     u32 blocks[80];
     for (size_t i = 0; i < 16; ++i)
-        blocks[i] = AK::convert_between_host_and_network_endian(((const u32*)data)[i]);
+        blocks[i] = AK::convert_between_host_and_network_endian(((u32 const*)data)[i]);
 
     // w[i] = (w[i-3] xor w[i-8] xor w[i-14] xor w[i-16]) leftrotate 1
     for (size_t i = 16; i < Rounds; ++i)
@@ -67,7 +66,7 @@ inline void SHA1::transform(const u8* data)
     secure_zero(blocks, 16 * sizeof(u32));
 }
 
-void SHA1::update(const u8* message, size_t length)
+void SHA1::update(u8 const* message, size_t length)
 {
     for (size_t i = 0; i < length; ++i) {
         if (m_data_length == BlockSize) {
@@ -146,5 +145,4 @@ SHA1::DigestType SHA1::peek()
     return digest;
 }
 
-}
 }

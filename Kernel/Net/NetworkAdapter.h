@@ -6,15 +6,16 @@
 
 #pragma once
 
+#include <AK/AtomicRefCounted.h>
 #include <AK/ByteBuffer.h>
 #include <AK/Function.h>
 #include <AK/IntrusiveList.h>
 #include <AK/MACAddress.h>
 #include <AK/Types.h>
-#include <AK/WeakPtr.h>
-#include <AK/Weakable.h>
 #include <Kernel/Bus/PCI/Definitions.h>
 #include <Kernel/KBuffer.h>
+#include <Kernel/Library/LockWeakPtr.h>
+#include <Kernel/Library/LockWeakable.h>
 #include <Kernel/Net/ARP.h>
 #include <Kernel/Net/EthernetFrameHeader.h>
 #include <Kernel/Net/ICMP.h>
@@ -27,7 +28,7 @@ class NetworkAdapter;
 
 using NetworkByteBuffer = AK::Detail::ByteBuffer<1500>;
 
-struct PacketWithTimestamp : public RefCounted<PacketWithTimestamp> {
+struct PacketWithTimestamp final : public AtomicRefCounted<PacketWithTimestamp> {
     PacketWithTimestamp(NonnullOwnPtr<KBuffer> buffer, Time timestamp)
         : buffer(move(buffer))
         , timestamp(timestamp)
@@ -38,24 +39,32 @@ struct PacketWithTimestamp : public RefCounted<PacketWithTimestamp> {
 
     NonnullOwnPtr<KBuffer> buffer;
     Time timestamp;
-    IntrusiveListNode<PacketWithTimestamp, RefPtr<PacketWithTimestamp>> packet_node;
+    IntrusiveListNode<PacketWithTimestamp, LockRefPtr<PacketWithTimestamp>> packet_node;
 };
 
-class NetworkAdapter : public RefCounted<NetworkAdapter>
-    , public Weakable<NetworkAdapter> {
+class NetworkingManagement;
+class NetworkAdapter
+    : public AtomicRefCounted<NetworkAdapter>
+    , public LockWeakable<NetworkAdapter> {
 public:
+    enum class Type {
+        Loopback,
+        Ethernet
+    };
+
     static constexpr i32 LINKSPEED_INVALID = -1;
 
     virtual ~NetworkAdapter();
 
     virtual StringView class_name() const = 0;
+    virtual Type adapter_type() const = 0;
+    virtual ErrorOr<void> initialize(Badge<NetworkingManagement>) = 0;
 
     StringView name() const { return m_name->view(); }
     MACAddress mac_address() { return m_mac_address; }
     IPv4Address ipv4_address() const { return m_ipv4_address; }
     IPv4Address ipv4_netmask() const { return m_ipv4_netmask; }
     IPv4Address ipv4_broadcast() const { return IPv4Address { (m_ipv4_address.to_u32() & m_ipv4_netmask.to_u32()) | ~m_ipv4_netmask.to_u32() }; }
-    IPv4Address ipv4_gateway() const { return m_ipv4_gateway; }
     virtual bool link_up() { return false; }
     virtual i32 link_speed()
     {
@@ -64,11 +73,10 @@ public:
     }
     virtual bool link_full_duplex() { return false; }
 
-    void set_ipv4_address(const IPv4Address&);
-    void set_ipv4_netmask(const IPv4Address&);
-    void set_ipv4_gateway(const IPv4Address&);
+    void set_ipv4_address(IPv4Address const&);
+    void set_ipv4_netmask(IPv4Address const&);
 
-    void send(const MACAddress&, const ARPPacket&);
+    void send(MACAddress const&, ARPPacket const&);
     void fill_in_ipv4_header(PacketWithTimestamp&, IPv4Address const&, MACAddress const&, IPv4Address const&, IPv4Protocol, size_t, u8 type_of_service, u8 ttl);
 
     size_t dequeue_packet(u8* buffer, size_t buffer_size, Time& packet_timestamp);
@@ -83,7 +91,7 @@ public:
     u32 packets_out() const { return m_packets_out; }
     u32 bytes_out() const { return m_bytes_out; }
 
-    RefPtr<PacketWithTimestamp> acquire_packet_buffer(size_t);
+    LockRefPtr<PacketWithTimestamp> acquire_packet_buffer(size_t);
     void release_packet_buffer(PacketWithTimestamp&);
 
     constexpr size_t layer3_payload_offset() const { return sizeof(EthernetFrameHeader); }
@@ -95,7 +103,7 @@ public:
 
 protected:
     NetworkAdapter(NonnullOwnPtr<KString>);
-    void set_mac_address(const MACAddress& mac_address) { m_mac_address = mac_address; }
+    void set_mac_address(MACAddress const& mac_address) { m_mac_address = mac_address; }
     void did_receive(ReadonlyBytes);
     virtual void send_raw(ReadonlyBytes) = 0;
 
@@ -103,7 +111,6 @@ private:
     MACAddress m_mac_address;
     IPv4Address m_ipv4_address;
     IPv4Address m_ipv4_netmask;
-    IPv4Address m_ipv4_gateway;
 
     // FIXME: Make this configurable
     static constexpr size_t max_packet_buffers = 1024;
@@ -112,7 +119,7 @@ private:
 
     PacketList m_packet_queue;
     size_t m_packet_queue_size { 0 };
-    PacketList m_unused_packets;
+    SpinlockProtected<PacketList, LockRank::None> m_unused_packets {};
     NonnullOwnPtr<KString> m_name;
     u32 m_packets_in { 0 };
     u32 m_bytes_in { 0 };

@@ -10,11 +10,15 @@
 #include <LibGUI/JsonArrayModel.h>
 #include <LibGUI/SortingProxyModel.h>
 #include <LibGUI/TableView.h>
+#include <LibGUI/Widget.h>
+
+REGISTER_WIDGET(SystemMonitor, ProcessUnveiledPathsWidget)
+
+namespace SystemMonitor {
 
 ProcessUnveiledPathsWidget::ProcessUnveiledPathsWidget()
 {
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_margins(4);
+    set_layout<GUI::VerticalBoxLayout>(4);
     m_table_view = add<GUI::TableView>();
 
     Vector<GUI::JsonArrayModel::FieldSpec> pid_unveil_fields;
@@ -30,5 +34,7 @@ void ProcessUnveiledPathsWidget::set_pid(pid_t pid)
     if (m_pid == pid)
         return;
     m_pid = pid;
-    m_model->set_json_path(String::formatted("/proc/{}/unveil", m_pid));
+    m_model->set_json_path(DeprecatedString::formatted("/proc/{}/unveil", m_pid));
+}
+
 }

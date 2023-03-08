@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2022, Luke Wilde <lukew@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -22,26 +22,20 @@ namespace JS {
 
 NonnullOwnPtr<Interpreter> Interpreter::create_with_existing_realm(Realm& realm)
 {
-    auto& global_object = realm.global_object();
-    DeferGC defer_gc(global_object.heap());
-    auto interpreter = adopt_own(*new Interpreter(global_object.vm()));
-    interpreter->m_global_object = make_handle(&global_object);
+    auto& vm = realm.vm();
+    DeferGC defer_gc(vm.heap());
+    auto interpreter = adopt_own(*new Interpreter(vm));
     interpreter->m_realm = make_handle(&realm);
     return interpreter;
 }
 
 Interpreter::Interpreter(VM& vm)
     : m_vm(vm)
-    , m_global_execution_context(vm.heap())
-{
-}
-
-Interpreter::~Interpreter()
 {
 }
 
 // 16.1.6 ScriptEvaluation ( scriptRecord ), https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation
-ThrowCompletionOr<Value> Interpreter::run(Script& script_record)
+ThrowCompletionOr<Value> Interpreter::run(Script& script_record, JS::GCPtr<Environment> lexical_environment_override)
 {
     auto& vm = this->vm();
 
@@ -50,25 +44,27 @@ ThrowCompletionOr<Value> Interpreter::run(Script& script_record)
     // 1. Let globalEnv be scriptRecord.[[Realm]].[[GlobalEnv]].
     auto& global_environment = script_record.realm().global_environment();
 
-    // NOTE: This isn't in the spec but we require it.
-    auto& global_object = script_record.realm().global_object();
-
     // 2. Let scriptContext be a new ECMAScript code execution context.
     ExecutionContext script_context(vm.heap());
 
-    // 3. Set the Function of scriptContext to null. (This was done in the construction of script_context)
+    // 3. Set the Function of scriptContext to null.
+    // NOTE: This was done during execution context construction.
 
     // 4. Set the Realm of scriptContext to scriptRecord.[[Realm]].
     script_context.realm = &script_record.realm();
 
     // 5. Set the ScriptOrModule of scriptContext to scriptRecord.
-    script_context.script_or_module = script_record.make_weak_ptr();
+    script_context.script_or_module = NonnullGCPtr<Script>(script_record);
 
     // 6. Set the VariableEnvironment of scriptContext to globalEnv.
     script_context.variable_environment = &global_environment;
 
     // 7. Set the LexicalEnvironment of scriptContext to globalEnv.
     script_context.lexical_environment = &global_environment;
+
+    // Non-standard: Override the lexical environment if requested.
+    if (lexical_environment_override)
+        script_context.lexical_environment = lexical_environment_override;
 
     // 8. Set the PrivateEnvironment of scriptContext to null.
 
@@ -78,19 +74,19 @@ ThrowCompletionOr<Value> Interpreter::run(Script& script_record)
     // FIXME: 9. Suspend the currently running execution context.
 
     // 10. Push scriptContext onto the execution context stack; scriptContext is now the running execution context.
-    vm.push_execution_context(script_context, global_object);
+    TRY(vm.push_execution_context(script_context, {}));
 
-    // 11. Let scriptBody be scriptRecord.[[ECMAScriptCode]].
-    auto& script_body = script_record.parse_node();
+    // 11. Let script be scriptRecord.[[ECMAScriptCode]].
+    auto& script = script_record.parse_node();
 
-    // 12. Let result be GlobalDeclarationInstantiation(scriptBody, globalEnv).
-    auto instantiation_result = script_body.global_declaration_instantiation(*this, global_object, global_environment);
+    // 12. Let result be Completion(GlobalDeclarationInstantiation(script, globalEnv)).
+    auto instantiation_result = script.global_declaration_instantiation(*this, global_environment);
     Completion result = instantiation_result.is_throw_completion() ? instantiation_result.throw_completion() : normal_completion({});
 
     // 13. If result.[[Type]] is normal, then
     if (result.type() == Completion::Type::Normal) {
-        // a. Set result to the result of evaluating scriptBody.
-        result = script_body.execute(*this, global_object);
+        // a. Set result to the result of evaluating script.
+        result = script.execute(*this);
     }
 
     // 14. If result.[[Type]] is normal and result.[[Value]] is empty, then
@@ -119,7 +115,7 @@ ThrowCompletionOr<Value> Interpreter::run(Script& script_record)
 
     vm.finish_execution_generation();
 
-    // 18. Return Completion(result).
+    // 18. Return ? result.
     if (result.is_abrupt()) {
         VERIFY(result.type() == Completion::Type::Throw);
         return result.release_error();
@@ -147,24 +143,14 @@ ThrowCompletionOr<Value> Interpreter::run(SourceTextModule& module)
     return js_undefined();
 }
 
-GlobalObject& Interpreter::global_object()
-{
-    return static_cast<GlobalObject&>(*m_global_object.cell());
-}
-
-const GlobalObject& Interpreter::global_object() const
-{
-    return static_cast<const GlobalObject&>(*m_global_object.cell());
-}
-
 Realm& Interpreter::realm()
 {
     return static_cast<Realm&>(*m_realm.cell());
 }
 
-const Realm& Interpreter::realm() const
+Realm const& Interpreter::realm() const
 {
-    return static_cast<const Realm&>(*m_realm.cell());
+    return static_cast<Realm const&>(*m_realm.cell());
 }
 
 }

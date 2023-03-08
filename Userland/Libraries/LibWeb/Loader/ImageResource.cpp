@@ -4,20 +4,29 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Function.h>
 #include <LibGfx/Bitmap.h>
-#include <LibWeb/ImageDecoding.h>
 #include <LibWeb/Loader/ImageResource.h>
+#include <LibWeb/Platform/ImageCodecPlugin.h>
 
 namespace Web {
 
-ImageResource::ImageResource(const LoadRequest& request)
+NonnullRefPtr<ImageResource> ImageResource::convert_from_resource(Resource& resource)
+{
+    return adopt_ref(*new ImageResource(resource));
+}
+
+ImageResource::ImageResource(LoadRequest const& request)
     : Resource(Type::Image, request)
 {
 }
 
-ImageResource::~ImageResource()
+ImageResource::ImageResource(Resource& resource)
+    : Resource(Type::Image, resource)
 {
 }
+
+ImageResource::~ImageResource() = default;
 
 int ImageResource::frame_duration(size_t frame_index) const
 {
@@ -38,24 +47,25 @@ void ImageResource::decode_if_needed() const
     if (!m_decoded_frames.is_empty())
         return;
 
-    NonnullRefPtr decoder = image_decoder_client();
-    auto image = decoder->decode_image(encoded_data());
+    auto image = Platform::ImageCodecPlugin::the().decode_image(encoded_data());
+    m_has_attempted_decode = true;
 
-    if (image.has_value()) {
-        m_loop_count = image.value().loop_count;
-        m_animated = image.value().is_animated;
-        m_decoded_frames.resize(image.value().frames.size());
-        for (size_t i = 0; i < m_decoded_frames.size(); ++i) {
-            auto& frame = m_decoded_frames[i];
-            frame.bitmap = image.value().frames[i].bitmap;
-            frame.duration = image.value().frames[i].duration;
-        }
+    if (!image.has_value()) {
+        dbgln("Could not decode image resource {}", url());
+        return;
     }
 
-    m_has_attempted_decode = true;
+    m_loop_count = image.value().loop_count;
+    m_animated = image.value().is_animated;
+    m_decoded_frames.resize(image.value().frames.size());
+    for (size_t i = 0; i < m_decoded_frames.size(); ++i) {
+        auto& frame = m_decoded_frames[i];
+        frame.bitmap = image.value().frames[i].bitmap;
+        frame.duration = image.value().frames[i].duration;
+    }
 }
 
-const Gfx::Bitmap* ImageResource::bitmap(size_t frame_index) const
+Gfx::Bitmap const* ImageResource::bitmap(size_t frame_index) const
 {
     decode_if_needed();
     if (frame_index >= m_decoded_frames.size())
@@ -97,8 +107,6 @@ void ImageResource::update_volatility()
     m_has_attempted_decode = false;
 }
 
-ImageResourceClient::~ImageResourceClient()
-{
-}
+ImageResourceClient::~ImageResourceClient() = default;
 
 }

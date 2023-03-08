@@ -5,8 +5,8 @@
  */
 
 #include "Format.h"
+#include <AK/DeprecatedString.h>
 #include <AK/PrintfImplementation.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 
 namespace Spreadsheet {
@@ -21,29 +21,29 @@ struct SingleEntryListNext {
 
 template<typename PutChFunc, typename ArgumentListRefT, template<typename T, typename U = ArgumentListRefT> typename NextArgument, typename CharType>
 struct PrintfImpl : public PrintfImplementation::PrintfImpl<PutChFunc, ArgumentListRefT, NextArgument, CharType> {
-    ALWAYS_INLINE PrintfImpl(PutChFunc& putch, char*& bufptr, const int& nwritten)
+    ALWAYS_INLINE PrintfImpl(PutChFunc& putch, char*& bufptr, int const& nwritten)
         : PrintfImplementation::PrintfImpl<PutChFunc, ArgumentListRefT, NextArgument>(putch, bufptr, nwritten)
     {
     }
 
     // Disallow pointer formats.
-    ALWAYS_INLINE int format_n(const PrintfImplementation::ModifierState&, ArgumentListRefT&) const
+    ALWAYS_INLINE int format_n(PrintfImplementation::ModifierState const&, ArgumentListRefT&) const
     {
         return 0;
     }
-    ALWAYS_INLINE int format_s(const PrintfImplementation::ModifierState&, ArgumentListRefT&) const
+    ALWAYS_INLINE int format_s(PrintfImplementation::ModifierState const&, ArgumentListRefT&) const
     {
         return 0;
     }
 };
 
-String format_double(const char* format, double value)
+DeprecatedString format_double(char const* format, double value)
 {
     StringBuilder builder;
     auto putch = [&](auto, auto ch) { builder.append(ch); };
     printf_internal<decltype(putch), PrintfImpl, double, SingleEntryListNext>(putch, nullptr, format, value);
 
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 }

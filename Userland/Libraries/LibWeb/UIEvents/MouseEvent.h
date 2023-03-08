@@ -7,19 +7,30 @@
 #pragma once
 
 #include <AK/TypeCasts.h>
+#include <LibWeb/PixelUnits.h>
 #include <LibWeb/UIEvents/EventModifier.h>
 #include <LibWeb/UIEvents/UIEvent.h>
 
 namespace Web::UIEvents {
 
-class MouseEvent final : public UIEvent {
-public:
-    using WrapperType = Bindings::MouseEventWrapper;
+struct MouseEventInit : public EventModifierInit {
+    double offset_x = 0;
+    double offset_y = 0;
+    double client_x = 0;
+    double client_y = 0;
+    double page_x = 0;
+    double page_y = 0;
 
-    static NonnullRefPtr<MouseEvent> create(const FlyString& event_name, double offset_x, double offset_y, double client_x, double client_y)
-    {
-        return adopt_ref(*new MouseEvent(event_name, offset_x, offset_y, client_x, client_y));
-    }
+    i16 button = 0;
+    u16 buttons = 0;
+};
+
+class MouseEvent : public UIEvent {
+    WEB_PLATFORM_OBJECT(MouseEvent, UIEvent);
+
+public:
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<MouseEvent>> create(JS::Realm&, DeprecatedFlyString const& event_name, MouseEventInit const& event_init = {});
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<MouseEvent>> create_from_platform_event(JS::Realm&, DeprecatedFlyString const& event_name, CSSPixelPoint offset, CSSPixelPoint client_offset, CSSPixelPoint page_offset, unsigned buttons, unsigned mouse_button = 1);
 
     virtual ~MouseEvent() override;
 
@@ -29,11 +40,25 @@ public:
     double client_x() const { return m_client_x; }
     double client_y() const { return m_client_y; }
 
+    // FIXME: Make these actually different from clientX and clientY.
+    double screen_x() const { return m_client_x; }
+    double screen_y() const { return m_client_y; }
+
+    double page_x() const { return m_page_x; }
+    double page_y() const { return m_page_y; }
+
     double x() const { return client_x(); }
     double y() const { return client_y(); }
 
+    i16 button() const { return m_button; }
+    u16 buttons() const { return m_buttons; }
+
+    virtual u32 which() const override { return m_button + 1; }
+
 protected:
-    MouseEvent(const FlyString& event_name, double offset_x, double offset_y, double client_x, double client_y);
+    MouseEvent(JS::Realm&, DeprecatedFlyString const& event_name, MouseEventInit const& event_init);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 
 private:
     void set_event_characteristics();
@@ -42,6 +67,10 @@ private:
     double m_offset_y { 0 };
     double m_client_x { 0 };
     double m_client_y { 0 };
+    double m_page_x { 0 };
+    double m_page_y { 0 };
+    i16 m_button { 0 };
+    u16 m_buttons { 0 };
 };
 
 }

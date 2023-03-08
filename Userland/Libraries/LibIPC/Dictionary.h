@@ -1,21 +1,23 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Concepts.h>
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
-#include <AK/String.h>
 
 namespace IPC {
 
 class Dictionary {
 public:
-    Dictionary() { }
+    Dictionary() = default;
 
-    Dictionary(const HashMap<String, String>& initial_entries)
+    Dictionary(HashMap<DeprecatedString, DeprecatedString> const& initial_entries)
         : m_entries(initial_entries)
     {
     }
@@ -23,7 +25,7 @@ public:
     bool is_empty() const { return m_entries.is_empty(); }
     size_t size() const { return m_entries.size(); }
 
-    void add(String key, String value)
+    void add(DeprecatedString key, DeprecatedString value)
     {
         m_entries.set(move(key), move(value));
     }
@@ -36,10 +38,18 @@ public:
         }
     }
 
-    const HashMap<String, String>& entries() const { return m_entries; }
+    template<FallibleFunction<DeprecatedString const&, DeprecatedString const&> Callback>
+    ErrorOr<void> try_for_each_entry(Callback&& callback) const
+    {
+        for (auto const& it : m_entries)
+            TRY(callback(it.key, it.value));
+        return {};
+    }
+
+    HashMap<DeprecatedString, DeprecatedString> const& entries() const { return m_entries; }
 
 private:
-    HashMap<String, String> m_entries;
+    HashMap<DeprecatedString, DeprecatedString> m_entries;
 };
 
 }

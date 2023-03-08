@@ -7,27 +7,20 @@
 #pragma once
 
 #include <AK/Error.h>
-#include <AK/NonnullRefPtrVector.h>
-#include <AK/RefCounted.h>
-#include <AK/RefPtr.h>
 #include <AK/Time.h>
 #include <Kernel/FileSystem/File.h>
+#include <Kernel/Library/LockRefPtr.h>
 #include <Kernel/Locking/Mutex.h>
 #include <Kernel/Net/NetworkAdapter.h>
 #include <Kernel/UnixTypes.h>
 
 namespace Kernel {
 
-enum class ShouldBlock {
-    No = 0,
-    Yes = 1
-};
-
 class OpenFileDescription;
 
 class Socket : public File {
 public:
-    static ErrorOr<NonnullRefPtr<Socket>> create(int domain, int type, int protocol);
+    static ErrorOr<NonnullLockRefPtr<Socket>> create(int domain, int type, int protocol);
     virtual ~Socket() override;
 
     int domain() const { return m_domain; }
@@ -68,27 +61,27 @@ public:
     SetupState setup_state() const { return m_setup_state; }
     void set_setup_state(SetupState setup_state);
 
-    virtual Role role(const OpenFileDescription&) const { return m_role; }
+    virtual Role role(OpenFileDescription const&) const { return m_role; }
 
     bool is_connected() const { return m_connected; }
     void set_connected(bool);
 
     bool can_accept() const { return !m_pending.is_empty(); }
-    RefPtr<Socket> accept();
+    LockRefPtr<Socket> accept();
 
     ErrorOr<void> shutdown(int how);
 
-    virtual ErrorOr<void> bind(Userspace<const sockaddr*>, socklen_t) = 0;
-    virtual ErrorOr<void> connect(OpenFileDescription&, Userspace<const sockaddr*>, socklen_t, ShouldBlock) = 0;
+    virtual ErrorOr<void> bind(Credentials const&, Userspace<sockaddr const*>, socklen_t) = 0;
+    virtual ErrorOr<void> connect(Credentials const&, OpenFileDescription&, Userspace<sockaddr const*>, socklen_t) = 0;
     virtual ErrorOr<void> listen(size_t) = 0;
     virtual void get_local_address(sockaddr*, socklen_t*) = 0;
     virtual void get_peer_address(sockaddr*, socklen_t*) = 0;
     virtual bool is_local() const { return false; }
     virtual bool is_ipv4() const { return false; }
-    virtual ErrorOr<size_t> sendto(OpenFileDescription&, const UserOrKernelBuffer&, size_t, int flags, Userspace<const sockaddr*>, socklen_t) = 0;
-    virtual ErrorOr<size_t> recvfrom(OpenFileDescription&, UserOrKernelBuffer&, size_t, int flags, Userspace<sockaddr*>, Userspace<socklen_t*>, Time&) = 0;
+    virtual ErrorOr<size_t> sendto(OpenFileDescription&, UserOrKernelBuffer const&, size_t, int flags, Userspace<sockaddr const*>, socklen_t) = 0;
+    virtual ErrorOr<size_t> recvfrom(OpenFileDescription&, UserOrKernelBuffer&, size_t, int flags, Userspace<sockaddr*>, Userspace<socklen_t*>, Time&, bool blocking) = 0;
 
-    virtual ErrorOr<void> setsockopt(int level, int option, Userspace<const void*>, socklen_t);
+    virtual ErrorOr<void> setsockopt(int level, int option, Userspace<void const*>, socklen_t);
     virtual ErrorOr<void> getsockopt(OpenFileDescription&, int level, int option, Userspace<void*>, Userspace<socklen_t*>);
 
     ProcessID origin_pid() const { return m_origin.pid; }
@@ -97,28 +90,28 @@ public:
     ProcessID acceptor_pid() const { return m_acceptor.pid; }
     UserID acceptor_uid() const { return m_acceptor.uid; }
     GroupID acceptor_gid() const { return m_acceptor.gid; }
-    const RefPtr<NetworkAdapter> bound_interface() const { return m_bound_interface; }
+    LockRefPtr<NetworkAdapter> const bound_interface() const { return m_bound_interface; }
 
     Mutex& mutex() { return m_mutex; }
 
     // ^File
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override final;
-    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override final;
+    virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override final;
     virtual ErrorOr<struct stat> stat() const override;
-    virtual ErrorOr<NonnullOwnPtr<KString>> pseudo_path(const OpenFileDescription&) const override = 0;
+    virtual ErrorOr<NonnullOwnPtr<KString>> pseudo_path(OpenFileDescription const&) const override = 0;
 
     bool has_receive_timeout() const { return m_receive_timeout != Time::zero(); }
-    const Time& receive_timeout() const { return m_receive_timeout; }
+    Time const& receive_timeout() const { return m_receive_timeout; }
 
     bool has_send_timeout() const { return m_send_timeout != Time::zero(); }
-    const Time& send_timeout() const { return m_send_timeout; }
+    Time const& send_timeout() const { return m_send_timeout; }
 
     bool wants_timestamp() const { return m_timestamp; }
 
 protected:
     Socket(int domain, int type, int protocol);
 
-    ErrorOr<void> queue_connection_from(NonnullRefPtr<Socket>);
+    ErrorOr<void> queue_connection_from(NonnullLockRefPtr<Socket>);
 
     size_t backlog() const { return m_backlog; }
     void set_backlog(size_t backlog) { m_backlog = backlog; }
@@ -130,7 +123,7 @@ protected:
 
     Role m_role { Role::None };
 
-    ErrorOr<void> so_error() const
+    Optional<ErrnoCode> const& so_error() const
     {
         VERIFY(m_mutex.is_exclusively_locked_by_current_thread());
         return m_so_error;
@@ -139,14 +132,16 @@ protected:
     Error set_so_error(ErrnoCode error_code)
     {
         MutexLocker locker(mutex());
-        auto error = Error::from_errno(error_code);
-        m_so_error = error;
-        return error;
+        m_so_error = error_code;
+
+        return Error::from_errno(error_code);
     }
+
     Error set_so_error(Error error)
     {
         MutexLocker locker(mutex());
-        m_so_error = error;
+        m_so_error = static_cast<ErrnoCode>(error.code());
+
         return error;
     }
 
@@ -178,24 +173,26 @@ private:
     bool m_shut_down_for_reading { false };
     bool m_shut_down_for_writing { false };
 
-    RefPtr<NetworkAdapter> m_bound_interface { nullptr };
+    LockRefPtr<NetworkAdapter> m_bound_interface { nullptr };
 
     Time m_receive_timeout {};
     Time m_send_timeout {};
     int m_timestamp { 0 };
 
-    ErrorOr<void> m_so_error;
+    Optional<ErrnoCode> m_so_error;
 
-    NonnullRefPtrVector<Socket> m_pending;
+    Vector<NonnullLockRefPtr<Socket>> m_pending;
 };
 
 // This is a special variant of TRY() that also updates the socket's SO_ERROR field on error.
-#define SOCKET_TRY(expression)                           \
-    ({                                                   \
-        auto result = (expression);                      \
-        if (result.is_error())                           \
-            return set_so_error(result.release_error()); \
-        result.release_value();                          \
+#define SOCKET_TRY(expression)                                                            \
+    ({                                                                                    \
+        auto&& result = (expression);                                                     \
+        if (result.is_error())                                                            \
+            return set_so_error(result.release_error());                                  \
+        static_assert(!::AK::Detail::IsLvalueReference<decltype(result.release_value())>, \
+            "Do not return a reference from a fallible expression");                      \
+        result.release_value();                                                           \
     })
 
 }

@@ -6,7 +6,7 @@
 
 #include "Token.h"
 #include <AK/Assertions.h>
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <stdlib.h>
 
 namespace SQL::AST {
@@ -16,7 +16,7 @@ StringView Token::name(TokenType type)
     switch (type) {
 #define __ENUMERATE_SQL_TOKEN(value, type, category) \
     case TokenType::type:                            \
-        return #type;
+        return #type##sv;
         ENUMERATE_SQL_TOKENS
 #undef __ENUMERATE_SQL_TOKEN
     default:
@@ -40,7 +40,7 @@ TokenCategory Token::category(TokenType type)
 double Token::double_value() const
 {
     VERIFY(type() == TokenType::NumericLiteral);
-    String value(m_value);
+    DeprecatedString value(m_value);
 
     if (value[0] == '0' && value.length() >= 2) {
         if (value[1] == 'x' || value[1] == 'X')

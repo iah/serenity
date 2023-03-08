@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/x86/Interrupts.h>
+#include <Kernel/Arch/InterruptManagement.h>
+#include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Assertions.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
-#include <Kernel/Interrupts/InterruptManagement.h>
 
 namespace Kernel {
 GenericInterruptHandler& GenericInterruptHandler::from(u8 interrupt_number)
@@ -65,6 +65,16 @@ void GenericInterruptHandler::change_interrupt_number(u8 number)
     }
     m_interrupt_number = number;
     register_generic_interrupt_handler(InterruptManagement::acquire_mapped_interrupt_number(interrupt_number()), *this);
+}
+
+ReadonlySpan<u32> GenericInterruptHandler::per_cpu_call_counts() const
+{
+    return m_per_cpu_call_counts.span().slice(0, Processor::count());
+}
+
+void GenericInterruptHandler::increment_call_count()
+{
+    ++m_per_cpu_call_counts[Processor::current_id()];
 }
 
 }

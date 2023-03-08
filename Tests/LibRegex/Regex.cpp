@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "LibRegex/RegexMatcher.h"
 #include <LibTest/TestCase.h> // import first, to prevent warning of VERIFY* redefinition
 
+#include <AK/Debug.h>
 #include <AK/StringBuilder.h>
 #include <AK/Tuple.h>
 #include <LibRegex/Regex.h>
 #include <LibRegex/RegexDebug.h>
+#include <LibRegex/RegexMatcher.h>
 #include <stdio.h>
 
 static ECMAScriptOptions match_test_api_options(const ECMAScriptOptions options)
@@ -24,7 +25,8 @@ static PosixOptions match_test_api_options(const PosixOptions options)
 }
 
 template<typename... Flags>
-static constexpr ECMAScriptFlags combine_flags(Flags&&... flags) requires((IsSame<Flags, ECMAScriptFlags> && ...))
+static constexpr ECMAScriptFlags combine_flags(Flags&&... flags)
+requires((IsSame<Flags, ECMAScriptFlags> && ...))
 {
     return static_cast<ECMAScriptFlags>((static_cast<regex::FlagsUnderlyingType>(flags) | ...));
 }
@@ -34,33 +36,33 @@ TEST_CASE(regex_options_ecmascript)
     ECMAScriptOptions eo;
     eo |= ECMAScriptFlags::Global;
 
-    EXPECT(eo & ECMAScriptFlags::Global);
-    EXPECT(!(eo & ECMAScriptFlags::Insensitive));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Global));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Insensitive));
 
     eo = match_test_api_options(ECMAScriptFlags::Global | ECMAScriptFlags::Insensitive | ECMAScriptFlags::Sticky);
-    EXPECT(eo & ECMAScriptFlags::Global);
-    EXPECT(eo & ECMAScriptFlags::Insensitive);
-    EXPECT(eo & ECMAScriptFlags::Sticky);
-    EXPECT(!(eo & ECMAScriptFlags::Unicode));
-    EXPECT(!(eo & ECMAScriptFlags::Multiline));
-    EXPECT(!(eo & ECMAScriptFlags::SingleLine));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Global));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Insensitive));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Sticky));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Unicode));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Multiline));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::SingleLine));
 
     eo &= ECMAScriptFlags::Insensitive;
-    EXPECT(!(eo & ECMAScriptFlags::Global));
-    EXPECT(eo & ECMAScriptFlags::Insensitive);
-    EXPECT(!(eo & ECMAScriptFlags::Multiline));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Global));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Insensitive));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Multiline));
 
     eo &= ECMAScriptFlags::Sticky;
-    EXPECT(!(eo & ECMAScriptFlags::Global));
-    EXPECT(!(eo & ECMAScriptFlags::Insensitive));
-    EXPECT(!(eo & ECMAScriptFlags::Multiline));
-    EXPECT(!(eo & ECMAScriptFlags::Sticky));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Global));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Insensitive));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Multiline));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Sticky));
 
     eo = ~ECMAScriptFlags::Insensitive;
-    EXPECT(eo & ECMAScriptFlags::Global);
-    EXPECT(!(eo & ECMAScriptFlags::Insensitive));
-    EXPECT(eo & ECMAScriptFlags::Multiline);
-    EXPECT(eo & ECMAScriptFlags::Sticky);
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Global));
+    EXPECT(!eo.has_flag_set(ECMAScriptFlags::Insensitive));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Multiline));
+    EXPECT(eo.has_flag_set(ECMAScriptFlags::Sticky));
 }
 
 TEST_CASE(regex_options_posix)
@@ -68,35 +70,35 @@ TEST_CASE(regex_options_posix)
     PosixOptions eo;
     eo |= PosixFlags::Global;
 
-    EXPECT(eo & PosixFlags::Global);
-    EXPECT(!(eo & PosixFlags::Insensitive));
+    EXPECT(eo.has_flag_set(PosixFlags::Global));
+    EXPECT(!eo.has_flag_set(PosixFlags::Insensitive));
 
     eo = match_test_api_options(PosixFlags::Global | PosixFlags::Insensitive | PosixFlags::MatchNotBeginOfLine);
-    EXPECT(eo & PosixFlags::Global);
-    EXPECT(eo & PosixFlags::Insensitive);
-    EXPECT(eo & PosixFlags::MatchNotBeginOfLine);
-    EXPECT(!(eo & PosixFlags::Unicode));
-    EXPECT(!(eo & PosixFlags::Multiline));
+    EXPECT(eo.has_flag_set(PosixFlags::Global));
+    EXPECT(eo.has_flag_set(PosixFlags::Insensitive));
+    EXPECT(eo.has_flag_set(PosixFlags::MatchNotBeginOfLine));
+    EXPECT(!eo.has_flag_set(PosixFlags::Unicode));
+    EXPECT(!eo.has_flag_set(PosixFlags::Multiline));
 
     eo &= PosixFlags::Insensitive;
-    EXPECT(!(eo & PosixFlags::Global));
-    EXPECT(eo & PosixFlags::Insensitive);
-    EXPECT(!(eo & PosixFlags::Multiline));
+    EXPECT(!eo.has_flag_set(PosixFlags::Global));
+    EXPECT(eo.has_flag_set(PosixFlags::Insensitive));
+    EXPECT(!eo.has_flag_set(PosixFlags::Multiline));
 
     eo &= PosixFlags::MatchNotBeginOfLine;
-    EXPECT(!(eo & PosixFlags::Global));
-    EXPECT(!(eo & PosixFlags::Insensitive));
-    EXPECT(!(eo & PosixFlags::Multiline));
+    EXPECT(!eo.has_flag_set(PosixFlags::Global));
+    EXPECT(!eo.has_flag_set(PosixFlags::Insensitive));
+    EXPECT(!eo.has_flag_set(PosixFlags::Multiline));
 
     eo = ~PosixFlags::Insensitive;
-    EXPECT(eo & PosixFlags::Global);
-    EXPECT(!(eo & PosixFlags::Insensitive));
-    EXPECT(eo & PosixFlags::Multiline);
+    EXPECT(eo.has_flag_set(PosixFlags::Global));
+    EXPECT(!eo.has_flag_set(PosixFlags::Insensitive));
+    EXPECT(eo.has_flag_set(PosixFlags::Multiline));
 }
 
 TEST_CASE(regex_lexer)
 {
-    Lexer l("/[.*+?^${}()|[\\]\\\\]/g");
+    Lexer l("/[.*+?^${}()|[\\]\\\\]/g"sv);
     EXPECT(l.next().type() == regex::TokenType::Slash);
     EXPECT(l.next().type() == regex::TokenType::LeftBracket);
     EXPECT(l.next().type() == regex::TokenType::Period);
@@ -120,7 +122,7 @@ TEST_CASE(regex_lexer)
 
 TEST_CASE(parser_error_parens)
 {
-    String pattern = "test()test";
+    DeprecatedString pattern = "test()test";
     Lexer l(pattern);
     PosixExtendedParser p(l);
     p.parse();
@@ -130,7 +132,7 @@ TEST_CASE(parser_error_parens)
 
 TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 {
-    String pattern;
+    DeprecatedString pattern;
     Vector<char, 5> chars = { '*', '+', '?', '{' };
     StringBuilder b;
 
@@ -141,7 +143,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         // First in ere
         b.clear();
         b.append(ch);
-        pattern = b.build();
+        pattern = b.to_deprecated_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -149,9 +151,9 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 
         // After vertical line
         b.clear();
-        b.append("a|");
+        b.append("a|"sv);
         b.append(ch);
-        pattern = b.build();
+        pattern = b.to_deprecated_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -159,9 +161,9 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 
         // After circumflex
         b.clear();
-        b.append("^");
+        b.append('^');
         b.append(ch);
-        pattern = b.build();
+        pattern = b.to_deprecated_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -169,9 +171,9 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 
         // After dollar
         b.clear();
-        b.append("$");
+        b.append('$');
         b.append(ch);
-        pattern = b.build();
+        pattern = b.to_deprecated_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -179,10 +181,10 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 
         // After left parens
         b.clear();
-        b.append("(");
+        b.append('(');
         b.append(ch);
-        b.append(")");
-        pattern = b.build();
+        b.append(')');
+        pattern = b.to_deprecated_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -196,25 +198,25 @@ TEST_CASE(parser_error_vertical_line_used_at_wrong_place)
     PosixExtended p(l);
 
     // First in ere
-    l.set_source("|asdf");
+    l.set_source("|asdf"sv);
     p.parse();
     EXPECT(p.has_error());
     EXPECT(p.error() == regex::Error::EmptySubExpression);
 
     // Last in ere
-    l.set_source("asdf|");
+    l.set_source("asdf|"sv);
     p.parse();
     EXPECT(p.has_error());
     EXPECT(p.error() == regex::Error::EmptySubExpression);
 
     // After left parens
-    l.set_source("(|asdf)");
+    l.set_source("(|asdf)"sv);
     p.parse();
     EXPECT(p.has_error());
     EXPECT(p.error() == regex::Error::EmptySubExpression);
 
     // Proceed right parens
-    l.set_source("(asdf)|");
+    l.set_source("(asdf)|"sv);
     p.parse();
     EXPECT(p.has_error());
     EXPECT(p.error() == regex::Error::EmptySubExpression);
@@ -224,21 +226,21 @@ TEST_CASE(catch_all_first)
 {
     Regex<PosixExtended> re("^.*$");
     RegexResult m;
-    re.match("Hello World", m);
+    re.match("Hello World"sv, m);
     EXPECT(m.count == 1);
-    EXPECT(re.match("Hello World", m));
+    EXPECT(re.match("Hello World"sv, m));
 }
 
 TEST_CASE(catch_all)
 {
     Regex<PosixExtended> re("^.*$", PosixFlags::Global);
 
-    EXPECT(re.has_match("Hello World"));
-    EXPECT(re.match("Hello World").success);
-    EXPECT(re.match("Hello World").count == 1);
+    EXPECT(re.has_match("Hello World"sv));
+    EXPECT(re.match("Hello World"sv).success);
+    EXPECT(re.match("Hello World"sv).count == 1);
 
-    EXPECT(has_match("Hello World", re));
-    auto res = match("Hello World", re);
+    EXPECT(has_match("Hello World"sv, re));
+    auto res = match("Hello World"sv, re);
     EXPECT(res.success);
     EXPECT(res.count == 1);
     EXPECT(res.matches.size() == 1);
@@ -248,7 +250,7 @@ TEST_CASE(catch_all)
 TEST_CASE(catch_all_again)
 {
     Regex<PosixExtended> re("^.*$", PosixFlags::Extra);
-    EXPECT_EQ(has_match("Hello World", re), true);
+    EXPECT_EQ(has_match("Hello World"sv, re), true);
 }
 
 TEST_CASE(char_utf8)
@@ -265,7 +267,7 @@ TEST_CASE(catch_all_newline)
     Regex<PosixExtended> re("^.*$", PosixFlags::Multiline | PosixFlags::StringCopyMatches);
     RegexResult result;
     auto lambda = [&result, &re]() {
-        String aaa = "Hello World\nTest\n1234\n";
+        DeprecatedString aaa = "Hello World\nTest\n1234\n";
         result = match(aaa, re);
         EXPECT_EQ(result.success, true);
     };
@@ -281,11 +283,11 @@ TEST_CASE(catch_all_newline_view)
     Regex<PosixExtended> re("^.*$", PosixFlags::Multiline);
     RegexResult result;
 
-    String aaa = "Hello World\nTest\n1234\n";
+    DeprecatedString aaa = "Hello World\nTest\n1234\n";
     result = match(aaa, re);
     EXPECT_EQ(result.success, true);
     EXPECT_EQ(result.count, 3u);
-    String str = "Hello World";
+    DeprecatedString str = "Hello World";
     EXPECT_EQ(result.matches.at(0).view, str.view());
     EXPECT_EQ(result.matches.at(1).view, "Test");
     EXPECT_EQ(result.matches.at(2).view, "1234");
@@ -295,14 +297,14 @@ TEST_CASE(catch_all_newline_2)
 {
     Regex<PosixExtended> re("^.*$");
     RegexResult result;
-    result = match("Hello World\nTest\n1234\n", re, PosixFlags::Multiline | PosixFlags::StringCopyMatches);
+    result = match("Hello World\nTest\n1234\n"sv, re, PosixFlags::Multiline | PosixFlags::StringCopyMatches);
     EXPECT_EQ(result.success, true);
     EXPECT_EQ(result.count, 3u);
     EXPECT_EQ(result.matches.at(0).view, "Hello World");
     EXPECT_EQ(result.matches.at(1).view, "Test");
     EXPECT_EQ(result.matches.at(2).view, "1234");
 
-    result = match("Hello World\nTest\n1234\n", re);
+    result = match("Hello World\nTest\n1234\n"sv, re);
     EXPECT_EQ(result.success, true);
     EXPECT_EQ(result.count, 1u);
     EXPECT_EQ(result.matches.at(0).view, "Hello World\nTest\n1234\n");
@@ -311,7 +313,7 @@ TEST_CASE(catch_all_newline_2)
 TEST_CASE(match_all_character_class)
 {
     Regex<PosixExtended> re("[[:alpha:]]");
-    String str = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    DeprecatedString str = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     RegexResult result = match(str, re, PosixFlags::Global | PosixFlags::StringCopyMatches);
 
     EXPECT_EQ(result.success, true);
@@ -324,7 +326,7 @@ TEST_CASE(match_all_character_class)
 TEST_CASE(match_character_class_with_assertion)
 {
     Regex<PosixExtended> re("[[:alpha:]]+$");
-    String str = "abcdef";
+    DeprecatedString str = "abcdef";
     RegexResult result = match(str, re);
 
     EXPECT_EQ(result.success, true);
@@ -334,16 +336,16 @@ TEST_CASE(match_character_class_with_assertion)
 TEST_CASE(example_for_git_commit)
 {
     Regex<PosixExtended> re("^.*$");
-    auto result = re.match("Well, hello friends!\nHello World!");
+    auto result = re.match("Well, hello friends!\nHello World!"sv);
 
     EXPECT(result.success);
     EXPECT(result.count == 1);
-    EXPECT(result.matches.at(0).view.starts_with("Well"));
+    EXPECT(result.matches.at(0).view.starts_with("Well"sv));
     EXPECT(result.matches.at(0).view.length() == 33);
 
-    EXPECT(re.has_match("Well,...."));
+    EXPECT(re.has_match("Well,...."sv));
 
-    result = re.match("Well, hello friends!\nHello World!", PosixFlags::Multiline);
+    result = re.match("Well, hello friends!\nHello World!"sv, PosixFlags::Multiline);
 
     EXPECT(result.success);
     EXPECT(result.count == 2);
@@ -354,8 +356,8 @@ TEST_CASE(example_for_git_commit)
 TEST_CASE(email_address)
 {
     Regex<PosixExtended> re("^[A-Z0-9a-z._%+-]{1,64}@([A-Za-z0-9-]{1,63}\\.){1,125}[A-Za-z]{2,63}$");
-    EXPECT(re.has_match("hello.world@domain.tld"));
-    EXPECT(re.has_match("this.is.a.very_long_email_address@world.wide.web"));
+    EXPECT(re.has_match("hello.world@domain.tld"sv));
+    EXPECT(re.has_match("this.is.a.very_long_email_address@world.wide.web"sv));
 }
 
 TEST_CASE(ini_file_entries)
@@ -370,13 +372,13 @@ TEST_CASE(ini_file_entries)
         regex_dbg.print_bytecode(re);
     }
 
-    String haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack.view(), result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 3u);
 
     if constexpr (REGEX_DEBUG) {
         for (auto& v : result.matches)
-            fprintf(stderr, "%s\n", v.view.to_string().characters());
+            fprintf(stderr, "%s\n", v.view.to_deprecated_string().characters());
     }
 
     EXPECT_EQ(result.matches.at(0).view, "[Window]");
@@ -398,7 +400,7 @@ TEST_CASE(ini_file_entries2)
     Regex<PosixExtended> re("[[:alpha:]]*=([[:digit:]]*)");
     RegexResult result;
 
-    String haystack = "ViewMode=Icon";
+    DeprecatedString haystack = "ViewMode=Icon";
 
     EXPECT_EQ(re.match(haystack.view(), result), false);
     EXPECT_EQ(result.count, 0u);
@@ -419,7 +421,7 @@ TEST_CASE(named_capture_group)
         regex_dbg.print_bytecode(re);
     }
 
-    String haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack, result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 2u);
     EXPECT_EQ(result.matches.at(0).view, "Opacity=255");
@@ -442,7 +444,7 @@ TEST_CASE(ecma262_named_capture_group_with_dollar_sign)
         regex_dbg.print_bytecode(re);
     }
 
-    String haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack, result, ECMAScriptFlags::Multiline), true);
     EXPECT_EQ(result.count, 2u);
     EXPECT_EQ(result.matches.at(0).view, "Opacity=255");
@@ -465,7 +467,7 @@ TEST_CASE(a_star)
         regex_dbg.print_bytecode(re);
     }
 
-    String haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack.view(), result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 32u);
     if (result.count == 32u) {
@@ -480,16 +482,16 @@ TEST_CASE(simple_period_end_benchmark)
 {
     Regex<PosixExtended> re("hello.$");
     RegexResult m;
-    EXPECT_EQ(re.search("Hello1", m), false);
-    EXPECT_EQ(re.search("hello1hello1", m), true);
-    EXPECT_EQ(re.search("hello2hell", m), false);
-    EXPECT_EQ(re.search("hello?", m), true);
+    EXPECT_EQ(re.search("Hello1"sv, m), false);
+    EXPECT_EQ(re.search("hello1hello1"sv, m), true);
+    EXPECT_EQ(re.search("hello2hell"sv, m), false);
+    EXPECT_EQ(re.search("hello?"sv, m), true);
 }
 
 TEST_CASE(posix_extended_nested_capture_group)
 {
     Regex<PosixExtended> re("(h(e(?<llo>llo)))"); // group 0 -> "hello", group 1 -> "ello", group 2/"llo" -> "llo"
-    auto result = re.match("hello");
+    auto result = re.match("hello"sv);
     EXPECT(result.success);
     EXPECT_EQ(result.capture_group_matches.size(), 1u);
     EXPECT_EQ(result.capture_group_matches[0].size(), 3u);
@@ -497,6 +499,8 @@ TEST_CASE(posix_extended_nested_capture_group)
     EXPECT_EQ(result.capture_group_matches[0][1].view, "ello"sv);
     EXPECT_EQ(result.capture_group_matches[0][2].view, "llo"sv);
 }
+
+auto parse_test_case_long_disjunction_chain = DeprecatedString::repeated("a|"sv, 100000);
 
 TEST_CASE(ECMA262_parse)
 {
@@ -506,7 +510,7 @@ TEST_CASE(ECMA262_parse)
         regex::ECMAScriptFlags flags {};
     };
 
-    constexpr _test tests[] {
+    _test const tests[] {
         { "^hello.$"sv },
         { "^(hello.)$"sv },
         { "^h{0,1}ello.$"sv },
@@ -599,6 +603,9 @@ TEST_CASE(ECMA262_parse)
         { "(?<$$_$$>a)"sv },
         { "(?<ÿ>a)"sv },
         { "(?<𝓑𝓻𝓸𝔀𝓷>a)"sv },
+        { "((?=lg)?[vl]k\\-?\\d{3}) bui| 3\\.[-\\w; ]{10}lg?-([06cv9]{3,4})"sv, regex::Error::NoError, ECMAScriptFlags::BrowserExtended }, // #12373, quantifiable assertions.
+        { parse_test_case_long_disjunction_chain.view() },                                                                                 // A whole lot of disjunctions, should not overflow the stack.
+        { "(\"|')(?:(?!\\2)[^\\\\\\r\\n]|\\\\.)*\\2"sv, regex::Error::NoError, ECMAScriptFlags::BrowserExtended },                         // LegacyOctalEscapeSequence should not consume too many chars (and should not crash)
     };
 
     for (auto& test : tests) {
@@ -657,7 +664,7 @@ TEST_CASE(ECMA262_match)
         { "(a{3}){2}"sv, "aaaabaa"sv, false },
         { "(a{4}){2}"sv, "aaaaaaaa"sv },
         { "(a{4}){2}"sv, "aaaaaabaa"sv, false },
-        { "\\u{4}"sv, "uuuu" },
+        { "\\u{4}"sv, "uuuu"sv },
         { "(?<=.{3})f"sv, "abcdef"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
         { "(?<=.{3})f"sv, "abc😀ef"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
         // ECMA262, B.1.4. Regular Expression Pattern extensions for browsers
@@ -686,6 +693,11 @@ TEST_CASE(ECMA262_match)
         { "a|$"sv, "x"sv, true, (ECMAScriptFlags)regex::AllFlags::Global }, // #11940, Global (not the 'g' flag) regexps should attempt to match the zero-length end of the string too.
         { "foo\nbar"sv, "foo\nbar"sv, true }, // #12126, ECMA262 regexp should match literal newlines without the 's' flag.
         { "foo[^]bar"sv, "foo\nbar"sv, true }, // #12126, ECMA262 regexp should match newline with [^].
+        { "^[_A-Z]+$"sv, "_aA"sv, true, ECMAScriptFlags::Insensitive }, // Insensitive lookup table: characters in a range do not necessarily lie in the same range after being converted to lowercase.
+        { "^[a-sy-z]$"sv, "b"sv, true, ECMAScriptFlags::Insensitive },
+        { "^[a-sy-z]$"sv, "y"sv, true, ECMAScriptFlags::Insensitive },
+        { "^[a-sy-z]$"sv, "u"sv, false, ECMAScriptFlags::Insensitive },
+        { "."sv, "\n\r\u2028\u2029"sv, false }, // Dot should not match any of CR/LF/LS/PS in ECMA262 mode without DotAll.
     };
     // clang-format on
 
@@ -711,7 +723,7 @@ TEST_CASE(ECMA262_unicode_match)
     StringBuilder builder;
     for (u32 code_point : space_and_line_terminator_code_points)
         builder.append_code_point(code_point);
-    auto space_and_line_terminators = builder.build();
+    auto space_and_line_terminators = builder.to_deprecated_string();
 
     struct _test {
         StringView pattern;
@@ -743,7 +755,7 @@ TEST_CASE(ECMA262_unicode_match)
     for (auto& test : tests) {
         Regex<ECMA262> re(test.pattern, (ECMAScriptFlags)regex::AllFlags::Global | test.options);
 
-        auto subject = AK::utf8_to_utf16(test.subject);
+        auto subject = MUST(AK::utf8_to_utf16(test.subject));
         Utf16View view { subject };
 
         if constexpr (REGEX_DEBUG) {
@@ -757,6 +769,45 @@ TEST_CASE(ECMA262_unicode_match)
 
         EXPECT_EQ(re.parser_result.error, regex::Error::NoError);
         EXPECT_EQ(re.match(view).success, test.matches);
+    }
+}
+
+TEST_CASE(ECMA262_unicode_sets_match)
+{
+    struct _test {
+        StringView pattern;
+        StringView subject;
+        bool matches { true };
+        ECMAScriptFlags options {};
+    };
+
+    constexpr _test tests[] {
+        { "[\\w--x]"sv, "x"sv, false },
+        { "[\\w&&x]"sv, "y"sv, false },
+        { "[\\w--x]"sv, "y"sv, true },
+        { "[\\w&&x]"sv, "x"sv, true },
+        { "[[0-9\\w]--x--6]"sv, "6"sv, false },
+        { "[[0-9\\w]--x--6]"sv, "x"sv, false },
+        { "[[0-9\\w]--x--6]"sv, "y"sv, true },
+        { "[[0-9\\w]--x--6]"sv, "9"sv, true },
+        { "[\\w&&\\d]"sv, "a"sv, false },
+        { "[\\w&&\\d]"sv, "4"sv, true },
+    };
+
+    for (auto& test : tests) {
+        Regex<ECMA262> re(test.pattern, (ECMAScriptFlags)regex::AllFlags::UnicodeSets | test.options);
+        if constexpr (REGEX_DEBUG) {
+            dbgln("\n");
+            RegexDebug regex_dbg(stderr);
+            regex_dbg.print_raw_bytecode(re);
+            regex_dbg.print_header();
+            regex_dbg.print_bytecode(re);
+            dbgln("\n");
+        }
+
+        EXPECT_EQ(re.parser_result.error, regex::Error::NoError);
+        auto result = re.match(test.subject).success;
+        EXPECT_EQ(result, test.matches);
     }
 }
 
@@ -818,7 +869,7 @@ TEST_CASE(ECMA262_property_match)
     for (auto& test : tests) {
         Regex<ECMA262> re(test.pattern, (ECMAScriptFlags)regex::AllFlags::Global | regex::ECMAScriptFlags::BrowserExtended | test.options);
 
-        auto subject = AK::utf8_to_utf16(test.subject);
+        auto subject = MUST(AK::utf8_to_utf16(test.subject));
         Utf16View view { subject };
 
         if constexpr (REGEX_DEBUG) {
@@ -871,7 +922,7 @@ TEST_CASE(replace)
 TEST_CASE(case_insensitive_match)
 {
     Regex<PosixExtended> re("cd", PosixFlags::Insensitive | PosixFlags::Global);
-    auto result = re.match("AEKFCD");
+    auto result = re.match("AEKFCD"sv);
 
     EXPECT_EQ(result.success, true);
     if (result.success) {
@@ -882,7 +933,7 @@ TEST_CASE(case_insensitive_match)
 TEST_CASE(extremely_long_fork_chain)
 {
     Regex<ECMA262> re("(?:aa)*");
-    auto result = re.match(String::repeated('a', 1000));
+    auto result = re.match(DeprecatedString::repeated('a', 1000));
     EXPECT_EQ(result.success, true);
 }
 
@@ -896,12 +947,12 @@ TEST_CASE(theoretically_infinite_loop)
     };
     for (auto& pattern : patterns) {
         Regex<ECMA262> re(pattern);
-        auto result = re.match("");
+        auto result = re.match(""sv);
         EXPECT_EQ(result.success, true);
     }
 }
 
-static auto g_lots_of_a_s = String::repeated('a', 10'000'000);
+static auto g_lots_of_a_s = DeprecatedString::repeated('a', 10'000'000);
 
 BENCHMARK_CASE(fork_performance)
 {
@@ -917,6 +968,8 @@ TEST_CASE(optimizer_atomic_groups)
         Tuple { "a*b"sv, "aaaaa"sv, false },
         Tuple { "a+b"sv, "aaaaa"sv, false },
         Tuple { "\\\\(\\d+)"sv, "\\\\"sv, false }, // Rewrite bug turning a+ to a*, see #10952.
+        Tuple { "[a-z.]+\\."sv, "..."sv, true },   // Rewrite bug, incorrect interpretation of Compare.
+        Tuple { "[.-]+\\."sv, ".-."sv, true },
         // Alternative fuse
         Tuple { "(abcfoo|abcbar|abcbaz).*x"sv, "abcbarx"sv, true },
         Tuple { "(a|a)"sv, "a"sv, true },
@@ -931,6 +984,10 @@ TEST_CASE(optimizer_atomic_groups)
         Tuple { "(1+)0"sv, "10"sv, true },
         // Rewrite should not skip over first required iteration of <x>+.
         Tuple { "a+"sv, ""sv, false },
+        // 'y' and [^x] have an overlap ('y'), the loop should not be rewritten here.
+        Tuple { "[^x]+y"sv, "ay"sv, true },
+        // .+ should not be rewritten here, as it's followed by something that would be matched by `.`.
+        Tuple { ".+(a|b|c)"sv, "xxa"sv, true },
     };
 
     for (auto& test : tests) {
@@ -978,10 +1035,10 @@ TEST_CASE(posix_basic_dollar_is_end_anchor)
     // Ensure that a dollar sign at the end only matches the end of the line.
     {
         Regex<PosixBasic> re("abc$");
-        EXPECT_EQ(re.match("123abcdef", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc", PosixFlags::Global).success, true);
-        EXPECT_EQ(re.match("123abc$def", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc$", PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abcdef"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc"sv, PosixFlags::Global).success, true);
+        EXPECT_EQ(re.match("123abc$def"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc$"sv, PosixFlags::Global).success, false);
     }
 }
 
@@ -990,19 +1047,19 @@ TEST_CASE(posix_basic_dollar_is_literal)
     // Ensure that a dollar sign in the middle is treated as a literal.
     {
         Regex<PosixBasic> re("abc$d");
-        EXPECT_EQ(re.match("123abcdef", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc$def", PosixFlags::Global).success, true);
-        EXPECT_EQ(re.match("123abc$", PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abcdef"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc$def"sv, PosixFlags::Global).success, true);
+        EXPECT_EQ(re.match("123abc$"sv, PosixFlags::Global).success, false);
     }
 
     // Ensure that a dollar sign is always treated as a literal if escaped, even if at the end of the pattern.
     {
         Regex<PosixBasic> re("abc\\$");
-        EXPECT_EQ(re.match("123abcdef", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc", PosixFlags::Global).success, false);
-        EXPECT_EQ(re.match("123abc$def", PosixFlags::Global).success, true);
-        EXPECT_EQ(re.match("123abc$", PosixFlags::Global).success, true);
+        EXPECT_EQ(re.match("123abcdef"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc"sv, PosixFlags::Global).success, false);
+        EXPECT_EQ(re.match("123abc$def"sv, PosixFlags::Global).success, true);
+        EXPECT_EQ(re.match("123abc$"sv, PosixFlags::Global).success, true);
     }
 }
 
@@ -1013,9 +1070,15 @@ TEST_CASE(negative_lookahead)
         auto options = ECMAScriptOptions { ECMAScriptFlags::Global };
         options.reset_flag((ECMAScriptFlags)regex::AllFlags::Internal_Stateful);
         Regex<ECMA262> re(":(?!\\^\\)|1)", options);
-        EXPECT_EQ(re.match(":^)").success, false);
-        EXPECT_EQ(re.match(":1").success, false);
-        EXPECT_EQ(re.match(":foobar").success, true);
+        EXPECT_EQ(re.match(":^)"sv).success, false);
+        EXPECT_EQ(re.match(":1"sv).success, false);
+        EXPECT_EQ(re.match(":foobar"sv).success, true);
+    }
+    {
+        // Correctly count forks with nested groups and optimised loops
+        Regex<ECMA262> re("^((?:[^\\n]|\\n(?! *\\n))+)(?:\\n *)+\\n");
+        EXPECT_EQ(re.match("foo\n\n"sv).success, true);
+        EXPECT_EQ(re.match("foo\n"sv).success, false);
     }
 }
 
@@ -1024,9 +1087,44 @@ TEST_CASE(single_match_flag)
     {
         // Ensure that only a single match is produced and nothing past that.
         Regex<ECMA262> re("[\\u0008-\\uffff]"sv, ECMAScriptFlags::Global | (ECMAScriptFlags)regex::AllFlags::SingleMatch);
-        auto result = re.match("ABC");
+        auto result = re.match("ABC"sv);
         EXPECT_EQ(result.success, true);
         EXPECT_EQ(result.matches.size(), 1u);
-        EXPECT_EQ(result.matches.first().view.to_string(), "A"sv);
+        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "A"sv);
+    }
+}
+
+TEST_CASE(empty_string_wildcard_match)
+{
+    {
+        // Ensure that the wildcard ".*" matches the empty string exactly once
+        Regex<ECMA262> re(".*"sv, ECMAScriptFlags::Global);
+        auto result = re.match(""sv);
+        EXPECT_EQ(result.success, true);
+        EXPECT_EQ(result.matches.size(), 1u);
+        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), ""sv);
+    }
+}
+
+TEST_CASE(inversion_state_in_char_class)
+{
+    {
+        // #13755, /[\S\s]/.exec("hello") should be [ "h" ], not null.
+        Regex<ECMA262> re("[\\S\\s]", ECMAScriptFlags::Global | (ECMAScriptFlags)regex::AllFlags::SingleMatch);
+
+        auto result = re.match("hello"sv);
+        EXPECT_EQ(result.success, true);
+        EXPECT_EQ(result.matches.size(), 1u);
+        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "h"sv);
+    }
+    {
+        Regex<ECMA262> re("^(?:([^\\s!\"#%-,\\./;->@\\[-\\^`\\{-~]+(?=([=~}\\s/.)|]))))"sv, ECMAScriptFlags::Global);
+
+        auto result = re.match("slideNumbers}}"sv);
+        EXPECT_EQ(result.success, true);
+        EXPECT_EQ(result.matches.size(), 1u);
+        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "slideNumbers"sv);
+        EXPECT_EQ(result.capture_group_matches.first()[0].view.to_deprecated_string(), "slideNumbers"sv);
+        EXPECT_EQ(result.capture_group_matches.first()[1].view.to_deprecated_string(), "}"sv);
     }
 }

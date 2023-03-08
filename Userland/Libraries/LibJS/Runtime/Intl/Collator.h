@@ -9,6 +9,7 @@
 #include <AK/Array.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
+#include <LibJS/Runtime/Intl/CollatorCompareFunction.h>
 #include <LibJS/Runtime/Object.h>
 
 namespace JS::Intl {
@@ -37,12 +38,11 @@ public:
 
     static constexpr auto relevant_extension_keys()
     {
-        // 10.2.3 Internal Slots, https://tc39.es/ecma402/#sec-intl-collator-internal-slots
+        // 10.2.3 Internal slots, https://tc39.es/ecma402/#sec-intl-collator-internal-slots
         // The value of the [[RelevantExtensionKeys]] internal slot is a List that must include the element "co", may include any or all of the elements "kf" and "kn", and must not include any other elements.
         return AK::Array { "co"sv, "kf"sv, "kn"sv };
     }
 
-    explicit Collator(Object& prototype);
     virtual ~Collator() override = default;
 
     String const& locale() const { return m_locale; }
@@ -69,14 +69,22 @@ public:
     bool numeric() const { return m_numeric; }
     void set_numeric(bool numeric) { m_numeric = numeric; }
 
+    CollatorCompareFunction* bound_compare() const { return m_bound_compare; }
+    void set_bound_compare(CollatorCompareFunction* bound_compare) { m_bound_compare = bound_compare; }
+
 private:
-    String m_locale;                                    // [[Locale]]
-    Usage m_usage { Usage::Sort };                      // [[Usage]]
-    Sensitivity m_sensitivity { Sensitivity::Variant }; // [[Sensitivity]]
-    CaseFirst m_case_first { CaseFirst::False };        // [[CaseFirst]]
-    String m_collation;                                 // [[Collation]]
-    bool m_ignore_punctuation { false };                // [[IgnorePunctuation]]
-    bool m_numeric { false };                           // [[Numeric]]
+    explicit Collator(Object& prototype);
+
+    virtual void visit_edges(Visitor&) override;
+
+    String m_locale;                                      // [[Locale]]
+    Usage m_usage { Usage::Sort };                        // [[Usage]]
+    Sensitivity m_sensitivity { Sensitivity::Variant };   // [[Sensitivity]]
+    CaseFirst m_case_first { CaseFirst::False };          // [[CaseFirst]]
+    String m_collation;                                   // [[Collation]]
+    bool m_ignore_punctuation { false };                  // [[IgnorePunctuation]]
+    bool m_numeric { false };                             // [[Numeric]]
+    CollatorCompareFunction* m_bound_compare { nullptr }; // [[BoundCompare]]
 };
 
 }

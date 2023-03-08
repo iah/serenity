@@ -12,7 +12,7 @@
 #include <LibCrypto/Hash/HashFunction.h>
 
 #ifndef KERNEL
-#    include <AK/String.h>
+#    include <AK/DeprecatedString.h>
 #endif
 
 namespace Crypto {
@@ -24,7 +24,7 @@ struct GHashDigest {
     constexpr static size_t Size = 16;
     u8 data[Size];
 
-    const u8* immutable_data() const { return data; }
+    u8 const* immutable_data() const { return data; }
     size_t data_length() { return Size; }
 };
 
@@ -33,7 +33,7 @@ public:
     using TagType = GHashDigest;
 
     template<size_t N>
-    explicit GHash(const char (&key)[N])
+    explicit GHash(char const (&key)[N])
         : GHash({ key, N })
     {
     }
@@ -49,7 +49,7 @@ public:
     constexpr static size_t digest_size() { return TagType::Size; }
 
 #ifndef KERNEL
-    String class_name() const
+    DeprecatedString class_name() const
     {
         return "GHash";
     }
@@ -58,8 +58,6 @@ public:
     TagType process(ReadonlyBytes aad, ReadonlyBytes cipher);
 
 private:
-    inline void transform(ReadonlyBytes, ReadonlyBytes);
-
     u32 m_key[4];
 };
 

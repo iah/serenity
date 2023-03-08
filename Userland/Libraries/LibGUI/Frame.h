@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,7 +15,7 @@ namespace GUI {
 class Frame : public Widget {
     C_OBJECT(Frame)
 public:
-    virtual ~Frame() override;
+    virtual ~Frame() override = default;
 
     int frame_thickness() const { return m_thickness; }
     void set_frame_thickness(int thickness);
@@ -27,7 +28,7 @@ public:
     Gfx::FrameShape frame_shape() const { return m_shape; }
     void set_frame_shape(Gfx::FrameShape shape) { m_shape = shape; }
 
-    Gfx::IntRect frame_inner_rect_for_size(const Gfx::IntSize& size) const { return { m_thickness, m_thickness, size.width() - m_thickness * 2, size.height() - m_thickness * 2 }; }
+    Gfx::IntRect frame_inner_rect_for_size(Gfx::IntSize size) const { return { m_thickness, m_thickness, size.width() - m_thickness * 2, size.height() - m_thickness * 2 }; }
     Gfx::IntRect frame_inner_rect() const { return frame_inner_rect_for_size(size()); }
 
     virtual Gfx::IntRect children_clip_rect() const override;

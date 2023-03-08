@@ -29,12 +29,12 @@ public:
 
     Type type() const { return m_type; }
 
-    const Action* action() const { return m_action.ptr(); }
+    Action const* action() const { return m_action.ptr(); }
     Action* action() { return m_action.ptr(); }
     unsigned identifier() const { return m_identifier; }
 
     Menu* submenu() { return m_submenu.ptr(); }
-    const Menu* submenu() const { return m_submenu.ptr(); }
+    Menu const* submenu() const { return m_submenu.ptr(); }
 
     bool is_checkable() const { return m_checkable; }
     void set_checkable(bool checkable) { m_checkable = checkable; }
@@ -44,6 +44,9 @@ public:
 
     bool is_enabled() const { return m_enabled; }
     void set_enabled(bool);
+
+    bool is_visible() const { return m_visible; }
+    void set_visible(bool);
 
     bool is_default() const { return m_default; }
     void set_default(bool);
@@ -61,6 +64,7 @@ private:
     int m_menu_id { -1 };
     unsigned m_identifier { 0 };
     bool m_enabled { true };
+    bool m_visible { true };
     bool m_checkable { false };
     bool m_checked { false };
     bool m_default { false };

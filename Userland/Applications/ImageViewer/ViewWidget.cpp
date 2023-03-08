@@ -11,10 +11,12 @@
 #include "ViewWidget.h"
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
-#include <LibCore/DirIterator.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
+#include <LibCore/Directory.h>
 #include <LibCore/MappedFile.h>
+#include <LibCore/MimeData.h>
 #include <LibCore/Timer.h>
+#include <LibGUI/Application.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Orientation.h>
@@ -24,7 +26,7 @@
 namespace ImageViewer {
 
 ViewWidget::ViewWidget()
-    : m_timer(Core::Timer::construct())
+    : m_timer(Core::Timer::try_create().release_value_but_fixme_should_propagate_errors())
 {
     set_fill_with_background_color(false);
 }
@@ -75,22 +77,22 @@ bool ViewWidget::is_previous_available() const
     return false;
 }
 
-Vector<String> ViewWidget::load_files_from_directory(const String& path) const
+Vector<DeprecatedString> ViewWidget::load_files_from_directory(DeprecatedString const& path) const
 {
-    Vector<String> files_in_directory;
+    Vector<DeprecatedString> files_in_directory;
 
     auto current_dir = LexicalPath(path).parent().string();
-    Core::DirIterator iterator(current_dir, Core::DirIterator::Flags::SkipDots);
-    while (iterator.has_next()) {
-        String file = iterator.next_full_path();
-        if (!Gfx::Bitmap::is_path_a_supported_image_format(file))
-            continue;
-        files_in_directory.append(file);
-    }
+    // FIXME: Propagate errors
+    (void)Core::Directory::for_each_entry(current_dir, Core::DirIterator::Flags::SkipDots, [&](auto const& entry, auto const& directory) -> ErrorOr<IterationDecision> {
+        auto full_path = LexicalPath::join(directory.path().string(), entry.name).string();
+        if (Gfx::Bitmap::is_path_a_supported_image_format(full_path))
+            files_in_directory.append(full_path);
+        return IterationDecision::Continue;
+    });
     return files_in_directory;
 }
 
-void ViewWidget::set_path(const String& path)
+void ViewWidget::set_path(DeprecatedString const& path)
 {
     m_path = path;
     m_files_in_same_dir = load_files_from_directory(path);
@@ -151,10 +153,10 @@ void ViewWidget::mouseup_event(GUI::MouseEvent& event)
     GUI::AbstractZoomPanWidget::mouseup_event(event);
 }
 
-void ViewWidget::load_from_file(const String& path)
+void ViewWidget::load_from_file(DeprecatedString const& path)
 {
     auto show_error = [&] {
-        GUI::MessageBox::show(window(), String::formatted("Failed to open {}", path), "Cannot open image", GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(window(), DeprecatedString::formatted("Failed to open {}", path), "Cannot open image"sv, GUI::MessageBox::Type::Error);
     };
 
     auto file_or_error = Core::MappedFile::map(path);
@@ -167,8 +169,8 @@ void ViewWidget::load_from_file(const String& path)
 
     // Spawn a new ImageDecoder service process and connect to it.
     auto client = ImageDecoderClient::Client::try_create().release_value_but_fixme_should_propagate_errors();
-
-    auto decoded_image_or_error = client->decode_image(mapped_file.bytes());
+    auto mime_type = Core::guess_mime_type_based_on_filename(path);
+    auto decoded_image_or_error = client->decode_image(mapped_file.bytes(), mime_type);
     if (!decoded_image_or_error.has_value()) {
         show_error();
         return;
@@ -176,12 +178,17 @@ void ViewWidget::load_from_file(const String& path)
 
     m_decoded_image = decoded_image_or_error.release_value();
     m_bitmap = m_decoded_image->frames[0].bitmap;
+    if (m_bitmap.is_null()) {
+        show_error();
+        return;
+    }
+
     set_original_rect(m_bitmap->rect());
     if (on_image_change)
         on_image_change(m_bitmap);
 
     if (m_decoded_image->is_animated && m_decoded_image->frames.size() > 1) {
-        const auto& first_frame = m_decoded_image->frames[0];
+        auto const& first_frame = m_decoded_image->frames[0];
         m_timer->set_interval(first_frame.duration);
         m_timer->on_timeout = [this] { animate(); };
         m_timer->start();
@@ -189,8 +196,16 @@ void ViewWidget::load_from_file(const String& path)
         m_timer->stop();
     }
 
-    m_path = Core::File::real_path_for(path);
+    m_path = Core::DeprecatedFile::real_path_for(path);
+    GUI::Application::the()->set_most_recently_open_file(String::from_utf8(path).release_value_but_fixme_should_propagate_errors());
     reset_view();
+}
+
+void ViewWidget::drag_enter_event(GUI::DragEvent& event)
+{
+    auto const& mime_types = event.mime_types();
+    if (mime_types.contains_slow("text/uri-list"))
+        event.accept();
 }
 
 void ViewWidget::drop_event(GUI::DropEvent& event)
@@ -224,7 +239,7 @@ void ViewWidget::resize_window()
     window()->resize(new_size);
 }
 
-void ViewWidget::set_bitmap(const Gfx::Bitmap* bitmap)
+void ViewWidget::set_bitmap(Gfx::Bitmap const* bitmap)
 {
     if (m_bitmap == bitmap)
         return;
@@ -241,7 +256,7 @@ void ViewWidget::animate()
 
     m_current_frame_index = (m_current_frame_index + 1) % m_decoded_image->frames.size();
 
-    const auto& current_frame = m_decoded_image->frames[m_current_frame_index];
+    auto const& current_frame = m_decoded_image->frames[m_current_frame_index];
     set_bitmap(current_frame.bitmap);
 
     if ((int)current_frame.duration != m_timer->interval()) {

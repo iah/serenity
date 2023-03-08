@@ -9,10 +9,10 @@
 #include <AK/Vector.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/CheckBox.h>
+#include <LibGUI/ConnectionToWindowManagerServer.h>
 #include <LibGUI/ListView.h>
 #include <LibGUI/SettingsWindow.h>
 #include <LibGUI/TextEditor.h>
-#include <LibGUI/WindowManagerServerConnection.h>
 
 class KeyboardSettingsWidget final : public GUI::SettingsWindow::Tab {
     C_OBJECT(KeyboardSettingsWidget)
@@ -26,16 +26,20 @@ public:
 private:
     KeyboardSettingsWidget();
 
-    void set_keymaps(Vector<String> const& keymaps);
+    void set_keymaps(Vector<DeprecatedString> const& keymaps, DeprecatedString const& active_keymap);
 
-    Vector<String> m_initial_keymap_list;
+    Vector<DeprecatedString> m_initial_keymap_list;
 
-    String m_current_applied_keymap;
+    DeprecatedString m_initial_active_keymap;
 
     RefPtr<GUI::ListView> m_selected_keymaps_listview;
+    RefPtr<GUI::Label> m_active_keymap_label;
     RefPtr<GUI::CheckBox> m_num_lock_checkbox;
+    RefPtr<GUI::Button> m_activate_keymap_button;
     RefPtr<GUI::Button> m_add_keymap_button;
     RefPtr<GUI::Button> m_remove_keymap_button;
     RefPtr<GUI::TextEditor> m_test_typing_area;
     RefPtr<GUI::Button> m_clear_test_typing_area_button;
+
+    Function<void()> m_activate_keymap_event;
 };

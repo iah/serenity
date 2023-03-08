@@ -1,19 +1,21 @@
 /*
- * Copyright (c) 2021, kleines Filmröllchen <filmroellchen@serenityos.org>
+ * Copyright (c) 2021-2022, kleines Filmröllchen <filmroellchen@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Concepts.h>
 #include <AK/FixedPoint.h>
 #include <AK/Format.h>
 #include <AK/Forward.h>
+#include <AK/Function.h>
+#include <AK/String.h>
 #include <AK/Types.h>
-#include <LibCore/Object.h>
 #include <LibDSP/Music.h>
 
-namespace LibDSP {
+namespace DSP {
 
 using ParameterFixedPoint = FixedPoint<8, i64>;
 
@@ -26,20 +28,26 @@ enum class ParameterType : u8 {
     Boolean,
 };
 
+enum class Logarithmic : bool {
+    No,
+    Yes
+};
+
 // Processors have modifiable parameters that should be presented to the UI in a uniform way without requiring the processor itself to implement custom interfaces.
 class ProcessorParameter {
 public:
-    ProcessorParameter(String name, ParameterType type)
-        : m_name(move(name))
-        , m_type(type)
+    ProcessorParameter(ErrorOr<String> name, ParameterType type)
+        : m_type(type)
     {
+        if (!name.is_error())
+            m_name = name.release_value();
     }
 
     String const& name() const { return m_name; }
     ParameterType type() const { return m_type; }
 
 private:
-    String const m_name;
+    String m_name {};
     ParameterType const m_type;
 };
 
@@ -53,7 +61,7 @@ template<typename ParameterT>
 class ProcessorParameterSingleValue : public ProcessorParameter {
 
 public:
-    ProcessorParameterSingleValue(String name, ParameterType type, ParameterT initial_value)
+    ProcessorParameterSingleValue(ErrorOr<String> name, ParameterType type, ParameterT initial_value)
         : ProcessorParameter(move(name), type)
         , m_value(move(initial_value))
     {
@@ -64,7 +72,8 @@ public:
         return value();
     }
 
-    operator double() const requires(IsSame<ParameterT, ParameterFixedPoint>)
+    operator double() const
+    requires(IsSame<ParameterT, ParameterFixedPoint>)
     {
         return static_cast<double>(value());
     }
@@ -72,8 +81,8 @@ public:
     ParameterT value() const { return m_value; };
     void set_value(ParameterT value)
     {
-        set_value_sneaky(value, LibDSP::Detail::ProcessorParameterSetValueTag {});
-        if (did_change_value)
+        set_value_sneaky(value, DSP::Detail::ProcessorParameterSetValueTag {});
+        for (auto const& did_change_value : m_change_value_listeners)
             did_change_value(value);
     }
 
@@ -84,10 +93,15 @@ public:
             m_value = value;
     }
 
-    Function<void(ParameterT const&)> did_change_value;
+    // FIXME: Devise a good API for unregistering listeners.
+    void register_change_listener(Function<void(ParameterT const&)> listener)
+    {
+        m_change_value_listeners.append(move(listener));
+    }
 
 protected:
     ParameterT m_value;
+    Vector<Function<void(ParameterT const&)>> m_change_value_listeners;
 };
 }
 
@@ -101,39 +115,42 @@ public:
 
 class ProcessorRangeParameter final : public Detail::ProcessorParameterSingleValue<ParameterFixedPoint> {
 public:
-    ProcessorRangeParameter(String name, ParameterFixedPoint min_value, ParameterFixedPoint max_value, ParameterFixedPoint initial_value)
+    ProcessorRangeParameter(ErrorOr<String> name, ParameterFixedPoint min_value, ParameterFixedPoint max_value, ParameterFixedPoint initial_value, Logarithmic logarithmic)
         : Detail::ProcessorParameterSingleValue<ParameterFixedPoint>(move(name), ParameterType::Range, move(initial_value))
         , m_min_value(move(min_value))
         , m_max_value(move(max_value))
         , m_default_value(move(initial_value))
+        , m_logarithmic(logarithmic)
     {
         VERIFY(initial_value <= max_value && initial_value >= min_value);
     }
 
     ProcessorRangeParameter(ProcessorRangeParameter const& to_copy)
-        : ProcessorRangeParameter(to_copy.name(), to_copy.min_value(), to_copy.max_value(), to_copy.value())
+        : ProcessorRangeParameter(to_copy.name(), to_copy.min_value(), to_copy.max_value(), to_copy.value(), to_copy.is_logarithmic())
     {
     }
 
     ParameterFixedPoint min_value() const { return m_min_value; }
     ParameterFixedPoint max_value() const { return m_max_value; }
+    ParameterFixedPoint range() const { return m_max_value - m_min_value; }
+    constexpr Logarithmic is_logarithmic() const { return m_logarithmic; }
     ParameterFixedPoint default_value() const { return m_default_value; }
     void set_value(ParameterFixedPoint value)
     {
-        VERIFY(value <= m_max_value && value >= m_min_value);
-        Detail::ProcessorParameterSingleValue<ParameterFixedPoint>::set_value(value);
+        Detail::ProcessorParameterSingleValue<ParameterFixedPoint>::set_value(value.clamp(min_value(), max_value()));
     }
 
 private:
     double const m_min_value;
     double const m_max_value;
     double const m_default_value;
+    Logarithmic const m_logarithmic;
 };
 
-template<typename EnumT>
-requires(IsEnum<EnumT>) class ProcessorEnumParameter final : public Detail::ProcessorParameterSingleValue<EnumT> {
+template<Enum EnumT>
+class ProcessorEnumParameter final : public Detail::ProcessorParameterSingleValue<EnumT> {
 public:
-    ProcessorEnumParameter(String name, EnumT initial_value)
+    ProcessorEnumParameter(ErrorOr<String> name, EnumT initial_value)
         : Detail::ProcessorParameterSingleValue<EnumT>(move(name), ParameterType::Enum, initial_value)
     {
     }
@@ -141,14 +158,14 @@ public:
 
 }
 template<>
-struct AK::Formatter<LibDSP::ProcessorRangeParameter> : AK::StandardFormatter {
+struct AK::Formatter<DSP::ProcessorRangeParameter> : AK::StandardFormatter {
 
     Formatter() = default;
     explicit Formatter(StandardFormatter formatter)
         : StandardFormatter(formatter)
     {
     }
-    ErrorOr<void> format(FormatBuilder& builder, LibDSP::ProcessorRangeParameter value)
+    ErrorOr<void> format(FormatBuilder& builder, DSP::ProcessorRangeParameter value)
     {
         if (m_mode == Mode::Pointer) {
             Formatter<FlatPtr> formatter { *this };
@@ -169,7 +186,7 @@ struct AK::Formatter<LibDSP::ProcessorRangeParameter> : AK::StandardFormatter {
         m_width = m_width.value_or(0);
         m_precision = m_precision.value_or(NumericLimits<size_t>::max());
 
-        TRY(builder.put_literal(String::formatted("[{} - {}]: {}", value.min_value(), value.max_value(), value.value())));
+        TRY(builder.put_literal(TRY(String::formatted("[{} - {}]: {}", value.min_value(), value.max_value(), value.value())).bytes_as_string_view()));
         return {};
     }
 };

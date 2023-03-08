@@ -7,9 +7,9 @@
 #pragma once
 
 #include "Region.h"
+#include "Report.h"
 #include "ValueWithShadow.h"
 #include <AK/HashMap.h>
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
 #include <LibX86/Instruction.h>
@@ -28,6 +28,40 @@ public:
     ValueWithShadow<u64> read64(X86::LogicalAddress);
     ValueWithShadow<u128> read128(X86::LogicalAddress);
     ValueWithShadow<u256> read256(X86::LogicalAddress);
+
+    void dump_backtrace();
+
+    template<typename T>
+    ValueWithShadow<T> read(X86::LogicalAddress address)
+    requires(IsTriviallyConstructible<T>)
+    {
+        auto* region = find_region(address);
+        if (!region) {
+            reportln("SoftMMU::read256: No region for @ {:p}"sv, address.offset());
+            dump_backtrace();
+            TODO();
+        }
+
+        if (!region->is_readable()) {
+            reportln("SoftMMU::read256: Non-readable region @ {:p}"sv, address.offset());
+            dump_backtrace();
+            TODO();
+        }
+
+        alignas(alignof(T)) u8 data[sizeof(T)];
+        Array<u8, sizeof(T)> shadow;
+
+        for (auto i = 0u; i < sizeof(T); ++i) {
+            auto result = region->read8(address.offset() - region->base() + i);
+            data[i] = result.value();
+            shadow[i] = result.shadow()[0];
+        }
+
+        return {
+            *bit_cast<T*>(&data[0]),
+            shadow,
+        };
+    }
 
     void write8(X86::LogicalAddress, ValueWithShadow<u8>);
     void write16(X86::LogicalAddress, ValueWithShadow<u16>);
@@ -54,7 +88,7 @@ public:
     bool fast_fill_memory8(X86::LogicalAddress, size_t size, ValueWithShadow<u8>);
     bool fast_fill_memory32(X86::LogicalAddress, size_t size, ValueWithShadow<u32>);
 
-    void copy_to_vm(FlatPtr destination, const void* source, size_t);
+    void copy_to_vm(FlatPtr destination, void const* source, size_t);
     void copy_from_vm(void* destination, const FlatPtr source, size_t);
     ByteBuffer copy_buffer_from_vm(const FlatPtr source, size_t);
 
@@ -109,7 +143,7 @@ private:
     Region* m_page_to_region_map[786432] = { nullptr };
 
     OwnPtr<Region> m_tls_region;
-    NonnullOwnPtrVector<Region> m_regions;
+    Vector<NonnullOwnPtr<Region>> m_regions;
 };
 
 }

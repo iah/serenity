@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Jakob-Niklas See <git@nwex.de>
+ * Copyright (c) 2021, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,25 +14,30 @@ namespace GUI {
 
 enum class InputType {
     Text,
+    NonemptyText,
     Password
 };
 
 class InputBox : public Dialog {
     C_OBJECT(InputBox)
 public:
-    virtual ~InputBox() override;
+    virtual ~InputBox() override = default;
 
-    static int show(Window* parent_window, String& text_value, StringView prompt, StringView title, StringView placeholder = {}, InputType input_type = InputType::Text);
+    static ExecResult show(Window* parent_window, DeprecatedString& text_value, StringView prompt, StringView title, InputType input_type = InputType::Text, StringView placeholder = {});
+
+    DeprecatedString const& text_value() const { return m_text_value; }
+    void set_text_value(DeprecatedString text_value);
 
 private:
-    explicit InputBox(Window* parent_window, String& text_value, StringView prompt, StringView title, StringView placeholder, InputType input_type);
+    explicit InputBox(Window* parent_window, DeprecatedString text_value, StringView prompt, StringView title, InputType input_type, StringView placeholder);
 
-    String text_value() const { return m_text_value; }
+    virtual void on_done(ExecResult) override;
+    void build();
 
-    void build(InputType input_type);
-    String m_text_value;
-    String m_prompt;
-    String m_placeholder;
+    DeprecatedString m_text_value;
+    DeprecatedString m_prompt;
+    InputType m_input_type;
+    DeprecatedString m_placeholder;
 
     RefPtr<Button> m_ok_button;
     RefPtr<Button> m_cancel_button;

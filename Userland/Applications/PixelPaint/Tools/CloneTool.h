@@ -15,20 +15,24 @@ public:
     CloneTool() = default;
     virtual ~CloneTool() override = default;
 
-    virtual GUI::Widget* get_properties_widget() override;
-    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap>> cursor() override;
+    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() override;
+
+    virtual bool is_overriding_alt() override { return true; }
 
 protected:
-    virtual void draw_point(Gfx::Bitmap& bitmap, Gfx::Color const& color, Gfx::IntPoint const& point) override;
-    virtual void draw_line(Gfx::Bitmap& bitmap, Gfx::Color const& color, Gfx::IntPoint const& start, Gfx::IntPoint const& end) override;
+    virtual void draw_point(Gfx::Bitmap& bitmap, Gfx::Color color, Gfx::IntPoint point) override;
+    virtual void draw_line(Gfx::Bitmap& bitmap, Gfx::Color color, Gfx::IntPoint start, Gfx::IntPoint end) override;
 
     virtual void on_mousedown(Layer*, MouseEvent&) override;
     virtual void on_mousemove(Layer*, MouseEvent&) override;
     virtual void on_second_paint(Layer const*, GUI::PaintEvent&) override;
-    virtual void on_keydown(GUI::KeyEvent&) override;
+    virtual bool on_keydown(GUI::KeyEvent&) override;
     virtual void on_keyup(GUI::KeyEvent&) override;
 
 private:
+    virtual StringView tool_name() const override { return "Clone Tool"sv; }
+
     RefPtr<GUI::Widget> m_properties_widget;
 
     Optional<Gfx::IntPoint> m_sample_location;

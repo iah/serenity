@@ -5,18 +5,39 @@
  */
 
 #include <AK/CharacterTypes.h>
+#include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/HTML/DOMStringMap.h>
 
 namespace Web::HTML {
 
-DOMStringMap::DOMStringMap(DOM::Element& associated_element)
-    : m_associated_element(associated_element)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMStringMap>> DOMStringMap::create(DOM::Element& element)
+{
+    auto& realm = element.realm();
+    return MUST_OR_THROW_OOM(realm.heap().allocate<DOMStringMap>(realm, element));
+}
+
+DOMStringMap::DOMStringMap(DOM::Element& element)
+    : LegacyPlatformObject(element.realm())
+    , m_associated_element(element)
 {
 }
 
-DOMStringMap::~DOMStringMap()
+DOMStringMap::~DOMStringMap() = default;
+
+JS::ThrowCompletionOr<void> DOMStringMap::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::DOMStringMapPrototype>(realm, "DOMStringMap"));
+
+    return {};
+}
+
+void DOMStringMap::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_associated_element.ptr());
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#concept-domstringmap-pairs
@@ -29,7 +50,7 @@ Vector<DOMStringMap::NameValuePair> DOMStringMap::get_name_value_pairs() const
     //    in the order that those attributes are listed in the element's attribute list, add a name-value pair to list whose name is the attribute's name with the first five characters removed and whose value
     //    is the attribute's value.
     m_associated_element->for_each_attribute([&](auto& name, auto& value) {
-        if (!name.starts_with("data-"))
+        if (!name.starts_with("data-"sv))
             return;
 
         auto name_after_starting_data = name.view().substring_view(5);
@@ -54,14 +75,14 @@ Vector<DOMStringMap::NameValuePair> DOMStringMap::get_name_value_pairs() const
                     // Skip the next character
                     ++character_index;
 
-                    return;
+                    continue;
                 }
             }
 
             builder.append(current_character);
         }
 
-        list.append({ builder.to_string(), value });
+        list.append({ builder.to_deprecated_string(), value });
     });
 
     // 4. Return list.
@@ -70,10 +91,10 @@ Vector<DOMStringMap::NameValuePair> DOMStringMap::get_name_value_pairs() const
 
 // https://html.spec.whatwg.org/multipage/dom.html#concept-domstringmap-pairs
 // NOTE: There isn't a direct link to this, so the link is to one of the algorithms above it.
-Vector<String> DOMStringMap::supported_property_names() const
+Vector<DeprecatedString> DOMStringMap::supported_property_names() const
 {
     // The supported property names on a DOMStringMap object at any instant are the names of each pair returned from getting the DOMStringMap's name-value pairs at that instant, in the order returned.
-    Vector<String> names;
+    Vector<DeprecatedString> names;
     auto name_value_pairs = get_name_value_pairs();
     for (auto& name_value_pair : name_value_pairs) {
         names.append(name_value_pair.name);
@@ -82,7 +103,7 @@ Vector<String> DOMStringMap::supported_property_names() const
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-nameditem
-String DOMStringMap::determine_value_of_named_property(String const& name) const
+DeprecatedString DOMStringMap::determine_value_of_named_property(DeprecatedString const& name) const
 {
     // To determine the value of a named property name for a DOMStringMap, return the value component of the name-value pair whose name component is name in the list returned from getting the
     // DOMStringMap's name-value pairs.
@@ -98,13 +119,17 @@ String DOMStringMap::determine_value_of_named_property(String const& name) const
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-setitem
-DOM::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(String const& name, String const& value)
+WebIDL::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(DeprecatedString const& name, JS::Value unconverted_value)
 {
+    // NOTE: Since LegacyPlatformObject does not know the type of value, we must convert it ourselves.
+    //       The type of `value` is `DOMString`.
+    auto value = TRY(unconverted_value.to_deprecated_string(vm()));
+
     AK::StringBuilder builder;
 
     // 3. Insert the string data- at the front of name.
     // NOTE: This is done out of order because StringBuilder doesn't have prepend.
-    builder.append("data-");
+    builder.append("data-"sv);
 
     for (size_t character_index = 0; character_index < name.length(); ++character_index) {
         // 1. If name contains a U+002D HYPHEN-MINUS character (-) followed by an ASCII lower alpha, then throw a "SyntaxError" DOMException.
@@ -113,7 +138,7 @@ DOM::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(String cons
         if (current_character == '-' && character_index + 1 < name.length()) {
             auto next_character = name[character_index + 1];
             if (is_ascii_lower_alpha(next_character))
-                return DOM::SyntaxError::create("Name cannot contain a '-' followed by a lowercase character.");
+                return WebIDL::SyntaxError::create(realm(), "Name cannot contain a '-' followed by a lowercase character.");
         }
 
         // 2. For each ASCII upper alpha in name, insert a U+002D HYPHEN-MINUS character (-) before the character and replace the character with the same character converted to ASCII lowercase.
@@ -126,30 +151,30 @@ DOM::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(String cons
         builder.append(current_character);
     }
 
-    auto data_name = builder.to_string();
+    auto data_name = builder.to_deprecated_string();
 
     // FIXME: 4. If name does not match the XML Name production, throw an "InvalidCharacterError" DOMException.
 
     // 5. Set an attribute value for the DOMStringMap's associated element using name and value.
-    m_associated_element->set_attribute(data_name, value);
+    MUST(m_associated_element->set_attribute(data_name, value));
 
     return {};
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-setitem
-DOM::ExceptionOr<void> DOMStringMap::set_value_of_existing_named_property(String const& name, String const& value)
+WebIDL::ExceptionOr<void> DOMStringMap::set_value_of_existing_named_property(DeprecatedString const& name, JS::Value value)
 {
     return set_value_of_new_named_property(name, value);
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-removeitem
-bool DOMStringMap::delete_existing_named_property(String const& name)
+WebIDL::ExceptionOr<Bindings::LegacyPlatformObject::DidDeletionFail> DOMStringMap::delete_value(DeprecatedString const& name)
 {
     AK::StringBuilder builder;
 
     // 2. Insert the string data- at the front of name.
     // NOTE: This is done out of order because StringBuilder doesn't have prepend.
-    builder.append("data-");
+    builder.append("data-"sv);
 
     for (auto character : name) {
         // 1. For each ASCII upper alpha in name, insert a U+002D HYPHEN-MINUS character (-) before the character and replace the character with the same character converted to ASCII lowercase.
@@ -163,11 +188,16 @@ bool DOMStringMap::delete_existing_named_property(String const& name)
     }
 
     // Remove an attribute by name given name and the DOMStringMap's associated element.
-    auto data_name = builder.to_string();
+    auto data_name = builder.to_deprecated_string();
     m_associated_element->remove_attribute(data_name);
 
     // The spec doesn't have the step. This indicates that the deletion was successful.
-    return true;
+    return DidDeletionFail::No;
+}
+
+WebIDL::ExceptionOr<JS::Value> DOMStringMap::named_item_value(DeprecatedFlyString const& name) const
+{
+    return JS::PrimitiveString::create(vm(), determine_value_of_named_property(name));
 }
 
 }

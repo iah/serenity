@@ -5,16 +5,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Memory.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeWatcher.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<InodeWatcher>> InodeWatcher::try_create()
+ErrorOr<NonnullLockRefPtr<InodeWatcher>> InodeWatcher::try_create()
 {
-    return adopt_nonnull_ref_or_enomem(new (nothrow) InodeWatcher);
+    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) InodeWatcher);
 }
 
 InodeWatcher::~InodeWatcher()
@@ -22,7 +21,7 @@ InodeWatcher::~InodeWatcher()
     (void)close();
 }
 
-bool InodeWatcher::can_read(const OpenFileDescription&, u64) const
+bool InodeWatcher::can_read(OpenFileDescription const&, u64) const
 {
     MutexLocker locker(m_lock);
     return !m_queue.is_empty();
@@ -81,7 +80,7 @@ ErrorOr<void> InodeWatcher::close()
     return {};
 }
 
-ErrorOr<NonnullOwnPtr<KString>> InodeWatcher::pseudo_path(const OpenFileDescription&) const
+ErrorOr<NonnullOwnPtr<KString>> InodeWatcher::pseudo_path(OpenFileDescription const&) const
 {
     return KString::formatted("InodeWatcher:({})", m_wd_to_watches.size());
 }

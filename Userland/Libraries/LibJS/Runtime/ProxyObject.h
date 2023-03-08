@@ -16,16 +16,15 @@ class ProxyObject final : public FunctionObject {
     JS_OBJECT(ProxyObject, FunctionObject);
 
 public:
-    static ProxyObject* create(GlobalObject&, Object& target, Object& handler);
+    static NonnullGCPtr<ProxyObject> create(Realm&, Object& target, Object& handler);
 
-    ProxyObject(Object& target, Object& handler, Object& prototype);
-    virtual ~ProxyObject() override;
+    virtual ~ProxyObject() override = default;
 
-    virtual const FlyString& name() const override;
+    virtual DeprecatedFlyString const& name() const override;
     virtual bool has_constructor() const override;
 
-    const Object& target() const { return m_target; }
-    const Object& handler() const { return m_handler; }
+    Object const& target() const { return m_target; }
+    Object const& handler() const { return m_handler; }
 
     bool is_revoked() const { return m_is_revoked; }
     void revoke() { m_is_revoked = true; }
@@ -44,9 +43,11 @@ public:
     virtual ThrowCompletionOr<bool> internal_delete(PropertyKey const&) override;
     virtual ThrowCompletionOr<MarkedVector<Value>> internal_own_property_keys() const override;
     virtual ThrowCompletionOr<Value> internal_call(Value this_argument, MarkedVector<Value> arguments_list) override;
-    virtual ThrowCompletionOr<Object*> internal_construct(MarkedVector<Value> arguments_list, FunctionObject& new_target) override;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct(MarkedVector<Value> arguments_list, FunctionObject& new_target) override;
 
 private:
+    ProxyObject(Object& target, Object& handler, Object& prototype);
+
     virtual void visit_edges(Visitor&) override;
 
     virtual bool is_function() const override { return m_target.is_function(); }

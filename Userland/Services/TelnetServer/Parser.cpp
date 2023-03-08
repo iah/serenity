@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Types.h>
 
 #include "Parser.h"
@@ -22,7 +22,11 @@ void Parser::write(StringView data)
                 break;
             case '\r':
                 if (on_data)
-                    on_data("\n");
+                    on_data("\n"sv);
+                break;
+            case '\0':
+            case '\n':
+                // Ignore.
                 break;
             default:
                 if (on_data)
@@ -35,7 +39,7 @@ void Parser::write(StringView data)
             case IAC: {
                 m_state = State::Free;
                 if (on_data)
-                    on_data("\xff");
+                    on_data("\xff"sv);
                 break;
             }
             case CMD_WILL:

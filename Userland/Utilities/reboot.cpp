@@ -5,21 +5,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <fcntl.h>
-#include <stdio.h>
-#include <unistd.h>
+#include <AK/DeprecatedString.h>
+#include <LibCore/File.h>
+#include <LibMain/Main.h>
 
-int main(int, char**)
+ErrorOr<int> serenity_main(Main::Arguments)
 {
-    int power_state_switch_node = open("/sys/firmware/power_state", O_WRONLY);
-    if (power_state_switch_node < 0) {
-        perror("open");
-        return 1;
-    }
-    const char* value = "1";
-    if (write(power_state_switch_node, value, 1) < 0) {
-        perror("write");
-        return 1;
-    }
+    auto file = TRY(Core::File::open("/sys/kernel/power_state"sv, Core::File::OpenMode::Write));
+
+    const DeprecatedString file_contents = "1";
+    TRY(file->write(file_contents.bytes()));
+    file->close();
+
     return 0;
 }

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
 #include <AK/Types.h>
 #include <Kernel/Bus/USB/USBDevice.h>
 
@@ -80,8 +79,8 @@ static constexpr u16 PORT_STATUS_RESET_CHANGED = (1 << 4);
 
 class Hub : public Device {
 public:
-    static ErrorOr<NonnullRefPtr<Hub>> try_create_root_hub(NonnullRefPtr<USBController>, DeviceSpeed);
-    static ErrorOr<NonnullRefPtr<Hub>> try_create_from_device(Device const&);
+    static ErrorOr<NonnullLockRefPtr<Hub>> try_create_root_hub(NonnullLockRefPtr<USBController>, DeviceSpeed);
+    static ErrorOr<NonnullLockRefPtr<Hub>> try_create_from_device(Device const&);
 
     virtual ~Hub() override = default;
 
@@ -91,15 +90,13 @@ public:
     ErrorOr<void> clear_port_feature(u8, HubFeatureSelector);
     ErrorOr<void> set_port_feature(u8, HubFeatureSelector);
 
-    ErrorOr<void> reset_port(u8);
-
     void check_for_port_updates();
 
 private:
     // Root Hub constructor
-    Hub(NonnullRefPtr<USBController>, DeviceSpeed, NonnullOwnPtr<Pipe> default_pipe);
+    Hub(NonnullLockRefPtr<USBController>, DeviceSpeed, NonnullOwnPtr<ControlPipe> default_pipe);
 
-    Hub(Device const&, NonnullOwnPtr<Pipe> default_pipe);
+    Hub(Device const&, NonnullOwnPtr<ControlPipe> default_pipe);
 
     USBHubDescriptor m_hub_descriptor {};
 

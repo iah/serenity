@@ -5,13 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Vector.h>
 #include <errno.h>
 #include <shadow.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -21,8 +20,8 @@ static FILE* s_stream = nullptr;
 static unsigned s_line_number = 0;
 static struct spwd s_shadow_entry;
 
-static String s_name;
-static String s_pwdp;
+static DeprecatedString s_name;
+static DeprecatedString s_pwdp;
 
 void setspent()
 {
@@ -51,7 +50,7 @@ void endspent()
     s_pwdp = {};
 }
 
-struct spwd* getspnam(const char* name)
+struct spwd* getspnam(char const* name)
 {
     setspent();
     while (auto* sp = getspent()) {
@@ -62,9 +61,9 @@ struct spwd* getspnam(const char* name)
     return nullptr;
 }
 
-static bool parse_shadow_entry(const String& line)
+static bool parse_shadow_entry(DeprecatedString const& line)
 {
-    auto parts = line.split_view(':', true);
+    auto parts = line.split_view(':', SplitBehavior::KeepEmpty);
     if (parts.size() != 9) {
         dbgln("getspent(): Malformed entry on line {}", s_line_number);
         return false;
@@ -87,7 +86,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (min_string.is_empty())
-        min_string = "-1";
+        min_string = "-1"sv;
     auto min_value = min_string.to_int();
     if (!min_value.has_value()) {
         dbgln("getspent(): Malformed min value on line {}", s_line_number);
@@ -95,7 +94,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (max_string.is_empty())
-        max_string = "-1";
+        max_string = "-1"sv;
     auto max_value = max_string.to_int();
     if (!max_value.has_value()) {
         dbgln("getspent(): Malformed max value on line {}", s_line_number);
@@ -103,7 +102,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (warn_string.is_empty())
-        warn_string = "-1";
+        warn_string = "-1"sv;
     auto warn = warn_string.to_int();
     if (!warn.has_value()) {
         dbgln("getspent(): Malformed warn on line {}", s_line_number);
@@ -111,7 +110,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (inact_string.is_empty())
-        inact_string = "-1";
+        inact_string = "-1"sv;
     auto inact = inact_string.to_int();
     if (!inact.has_value()) {
         dbgln("getspent(): Malformed inact on line {}", s_line_number);
@@ -119,7 +118,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (expire_string.is_empty())
-        expire_string = "-1";
+        expire_string = "-1"sv;
     auto expire = expire_string.to_int();
     if (!expire.has_value()) {
         dbgln("getspent(): Malformed expire on line {}", s_line_number);
@@ -127,7 +126,7 @@ static bool parse_shadow_entry(const String& line)
     }
 
     if (flag_string.is_empty())
-        flag_string = "0";
+        flag_string = "0"sv;
     auto flag = flag_string.to_int();
     if (!flag.has_value()) {
         dbgln("getspent(): Malformed flag on line {}", s_line_number);
@@ -169,7 +168,7 @@ struct spwd* getspent()
         if ((!s || !s[0]) && feof(s_stream))
             return nullptr;
 
-        String line(s, Chomp);
+        DeprecatedString line(s, Chomp);
         if (parse_shadow_entry(line))
             return &s_shadow_entry;
         // Otherwise, proceed to the next line.
@@ -192,7 +191,7 @@ static void construct_spwd(struct spwd* sp, char* buf, struct spwd** result)
     sp->sp_pwdp = buf_pwdp;
 }
 
-int getspnam_r(const char* name, struct spwd* sp, char* buf, size_t buflen, struct spwd** result)
+int getspnam_r(char const* name, struct spwd* sp, char* buf, size_t buflen, struct spwd** result)
 {
     // FIXME: This is a HACK!
     TemporaryChange name_change { s_name, {} };
@@ -212,7 +211,7 @@ int getspnam_r(const char* name, struct spwd* sp, char* buf, size_t buflen, stru
         return 0;
     }
 
-    const auto total_buffer_length = s_name.length() + s_pwdp.length() + 8;
+    auto const total_buffer_length = s_name.length() + s_pwdp.length() + 8;
     if (buflen < total_buffer_length)
         return ERANGE;
 
@@ -227,7 +226,7 @@ int putspent(struct spwd* p, FILE* stream)
         return -1;
     }
 
-    auto is_valid_field = [](const char* str) {
+    auto is_valid_field = [](char const* str) {
         return str && !strpbrk(str, ":\n");
     };
 

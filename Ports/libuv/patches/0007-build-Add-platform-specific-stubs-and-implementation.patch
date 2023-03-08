@@ -1,19 +1,19 @@
-From 5c53f32b401baffb4c6dc896ca07beff2add2a42 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Ali Mohammad Pur <ali.mpfard@gmail.com>
 Date: Fri, 9 Jul 2021 05:32:00 +0430
-Subject: [PATCH 7/7] build: Add platform-specific stubs and implementations
+Subject: [PATCH] build: Add platform-specific stubs and implementations
 
 ---
  CMakeLists.txt           |   2 +
- src/unix/serenity-core.c | 137 +++++++++++++++++++++++++++++++++++++++
- 2 files changed, 139 insertions(+)
+ src/unix/serenity-core.c | 112 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 114 insertions(+)
  create mode 100644 src/unix/serenity-core.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index f30ec26..6f0bf0c 100644
+index d285ed9..10fbd7f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -365,9 +365,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "SerenityOS")
+@@ -387,9 +387,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "SerenityOS")
      src/unix/posix-poll.c
      src/unix/no-fsevents.c
      src/unix/no-proctitle.c
@@ -27,10 +27,10 @@ index f30ec26..6f0bf0c 100644
  
 diff --git a/src/unix/serenity-core.c b/src/unix/serenity-core.c
 new file mode 100644
-index 0000000..821cf37
+index 0000000..5c34b75
 --- /dev/null
 +++ b/src/unix/serenity-core.c
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,112 @@
 +#include "uv.h"
 +#include "internal.h"
 +
@@ -62,38 +62,13 @@ index 0000000..821cf37
 +  uv__free(addresses);
 +}
 +
-+static int uv__slurp(const char* filename, char* buf, size_t len) {
-+  ssize_t n;
-+  int fd;
-+
-+  assert(len > 0);
-+
-+  fd = uv__open_cloexec(filename, O_RDONLY);
-+  if (fd < 0)
-+    return fd;
-+
-+  do
-+    n = read(fd, buf, len - 1);
-+  while (n == -1 && errno == EINTR);
-+
-+  if (uv__close_nocheckstdio(fd))
-+    abort();
-+
-+  if (n < 0)
-+    return UV__ERR(errno);
-+
-+  buf[n] = '\0';
-+
-+  return 0;
-+}
-+
 +
 +static uint64_t uv__read_proc_memstat(const char* what) {
 +  uint64_t rc;
 +  char* p;
-+  char buf[4096];  /* Large enough to hold all of /proc/memstat. */
++  char buf[4096];  /* Large enough to hold all of /sys/kernel/memstat. */
 +
-+  if (uv__slurp("/proc/memstat", buf, sizeof(buf)))
++  if (uv__slurp("/sys/kernel/memstat", buf, sizeof(buf)))
 +    return 0;
 +
 +  p = strstr(buf, what);
@@ -110,12 +85,12 @@ index 0000000..821cf37
 +}
 +
 +uint64_t uv_get_free_memory(void) {
-+  return uv__read_proc_memstat("user_physical_available\":") * PAGE_SIZE;
++  return uv__read_proc_memstat("physical_available\":") * PAGE_SIZE;
 +}
 +
 +
 +uint64_t uv_get_total_memory(void) {
-+  return (uv__read_proc_memstat("user_physical_allocated\":") + uv__read_proc_memstat("user_physical_available\":")) * PAGE_SIZE;
++  return (uv__read_proc_memstat("physical_allocated\":") + uv__read_proc_memstat("physical_available\":")) * PAGE_SIZE;
 +}
 +
 +void uv_loadavg(double avg[3]) {
@@ -129,9 +104,9 @@ index 0000000..821cf37
 +  struct timespec now;
 +  int r;
 +
-+  /* Try /proc/uptime first, then fallback to clock_gettime(). */
++  /* Try /sys/kernel/uptime first, then fallback to clock_gettime(). */
 +  
-+  if (0 == uv__slurp("/proc/uptime", buf, sizeof(buf)))
++  if (0 == uv__slurp("/sys/kernel/uptime", buf, sizeof(buf)))
 +    if (1 == sscanf(buf, "%lf", uptime))
 +      return 0;
 +
@@ -168,6 +143,3 @@ index 0000000..821cf37
 +  *rss = 0;
 +  return 0;
 +}
--- 
-2.32.0
-

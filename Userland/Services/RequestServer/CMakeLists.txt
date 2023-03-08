@@ -7,11 +7,9 @@ compile_ipc(RequestServer.ipc RequestServerEndpoint.h)
 compile_ipc(RequestClient.ipc RequestClientEndpoint.h)
 
 set(SOURCES
-    ClientConnection.cpp
+    ConnectionFromClient.cpp
     ConnectionCache.cpp
     Request.cpp
-    RequestClientEndpoint.h
-    RequestServerEndpoint.h
     GeminiRequest.cpp
     GeminiProtocol.cpp
     HttpRequest.cpp
@@ -22,5 +20,10 @@ set(SOURCES
     Protocol.cpp
 )
 
+set(GENERATED_SOURCES
+    RequestClientEndpoint.h
+    RequestServerEndpoint.h
+)
+
 serenity_bin(RequestServer)
-target_link_libraries(RequestServer LibCore LibIPC LibGemini LibHTTP LibMain)
+target_link_libraries(RequestServer PRIVATE LibCore LibCrypto LibIPC LibGemini LibHTTP LibMain LibTLS)

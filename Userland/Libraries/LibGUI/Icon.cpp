@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Julius Heijmen <julius.heijmen@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <LibGUI/Icon.h>
 #include <LibGfx/Bitmap.h>
 
@@ -16,17 +16,17 @@ Icon::Icon()
 {
 }
 
-Icon::Icon(const IconImpl& impl)
+Icon::Icon(IconImpl const& impl)
     : m_impl(const_cast<IconImpl&>(impl))
 {
 }
 
-Icon::Icon(const Icon& other)
+Icon::Icon(Icon const& other)
     : m_impl(other.m_impl)
 {
 }
 
-Icon::Icon(RefPtr<Gfx::Bitmap>&& bitmap)
+Icon::Icon(RefPtr<Gfx::Bitmap const>&& bitmap)
     : Icon()
 {
     if (bitmap) {
@@ -36,7 +36,7 @@ Icon::Icon(RefPtr<Gfx::Bitmap>&& bitmap)
     }
 }
 
-Icon::Icon(RefPtr<Gfx::Bitmap>&& bitmap1, RefPtr<Gfx::Bitmap>&& bitmap2)
+Icon::Icon(RefPtr<Gfx::Bitmap const>&& bitmap1, RefPtr<Gfx::Bitmap const>&& bitmap2)
     : Icon(move(bitmap1))
 {
     if (bitmap2) {
@@ -46,14 +46,14 @@ Icon::Icon(RefPtr<Gfx::Bitmap>&& bitmap1, RefPtr<Gfx::Bitmap>&& bitmap2)
     }
 }
 
-const Gfx::Bitmap* IconImpl::bitmap_for_size(int size) const
+Gfx::Bitmap const* IconImpl::bitmap_for_size(int size) const
 {
     auto it = m_bitmaps.find(size);
     if (it != m_bitmaps.end())
         return it->value.ptr();
 
     int best_diff_so_far = INT32_MAX;
-    const Gfx::Bitmap* best_fit = nullptr;
+    Gfx::Bitmap const* best_fit = nullptr;
     for (auto& it : m_bitmaps) {
         int abs_diff = abs(it.key - size);
         if (abs_diff < best_diff_so_far) {
@@ -64,7 +64,7 @@ const Gfx::Bitmap* IconImpl::bitmap_for_size(int size) const
     return best_fit;
 }
 
-void IconImpl::set_bitmap_for_size(int size, RefPtr<Gfx::Bitmap>&& bitmap)
+void IconImpl::set_bitmap_for_size(int size, RefPtr<Gfx::Bitmap const>&& bitmap)
 {
     if (!bitmap) {
         m_bitmaps.remove(size);
@@ -82,13 +82,15 @@ ErrorOr<Icon> Icon::try_create_default_icon(StringView name)
 {
     RefPtr<Gfx::Bitmap> bitmap16;
     RefPtr<Gfx::Bitmap> bitmap32;
-    if (auto bitmap_or_error = Gfx::Bitmap::try_load_from_file(String::formatted("/res/icons/16x16/{}.png", name)); !bitmap_or_error.is_error())
+    if (auto bitmap_or_error = Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/16x16/{}.png", name)); !bitmap_or_error.is_error())
         bitmap16 = bitmap_or_error.release_value();
-    if (auto bitmap_or_error = Gfx::Bitmap::try_load_from_file(String::formatted("/res/icons/32x32/{}.png", name)); !bitmap_or_error.is_error())
+    if (auto bitmap_or_error = Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/32x32/{}.png", name)); !bitmap_or_error.is_error())
         bitmap32 = bitmap_or_error.release_value();
 
-    if (!bitmap16 && !bitmap32)
-        return Error::from_string_literal("Default icon not found"sv);
+    if (!bitmap16 && !bitmap32) {
+        dbgln("Default icon not found: {}", name);
+        return Error::from_string_literal("Default icon not found");
+    }
 
     return Icon(move(bitmap16), move(bitmap32));
 }

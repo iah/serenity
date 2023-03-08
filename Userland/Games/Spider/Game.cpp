@@ -20,74 +20,96 @@ static constexpr uint8_t new_game_animation_delay = 2;
 static constexpr uint8_t draw_animation_delay = 2;
 static constexpr int s_timer_interval_ms = 1000 / 60;
 
-Game::Game()
+ErrorOr<NonnullRefPtr<Game>> Game::try_create()
 {
-    m_stacks.append(adopt_ref(*new CardStack({ 10, Game::height - Card::height - 10 }, CardStack::Type::Waste)));
-    m_stacks.append(adopt_ref(*new CardStack({ Game::width - Card::width - 10, Game::height - Card::height - 10 }, CardStack::Type::Stock)));
+    auto game = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Game()));
+
+    TRY(game->add_stack(Gfx::IntPoint { 10, Game::height - Card::height - 10 }, CardStack::Type::Waste));
+    TRY(game->add_stack(Gfx::IntPoint { Game::width - Card::width - 10, Game::height - Card::height - 10 }, CardStack::Type::Stock));
 
     for (int i = 0; i < 10; i++) {
-        m_stacks.append(adopt_ref(*new CardStack({ 10 + i * (Card::width + 10), 10 }, CardStack::Type::Normal)));
+        TRY(game->add_stack(Gfx::IntPoint { 10 + i * (Card::width + 10), 10 }, CardStack::Type::Normal));
     }
+
+    return game;
 }
+
+Game::Game() = default;
 
 void Game::setup(Mode mode)
 {
-    if (m_new_game_animation)
+    if (m_state == State::NewGameAnimation)
         stop_timer();
 
     m_mode = mode;
 
+    if (on_undo_availability_change)
+        on_undo_availability_change(false);
+
     if (on_game_end)
         on_game_end(GameOverReason::NewGame, m_score);
 
-    for (auto& stack : m_stacks)
-        stack.clear();
+    for (auto& stack : stacks())
+        stack->clear();
 
     m_new_game_animation_pile = 0;
 
     m_score = 500;
     update_score(0);
 
-    NonnullRefPtrVector<Card> deck;
-    deck.ensure_capacity(Card::card_count * 2);
+    unsigned heart_suits = 0;
+    unsigned spade_suits = 0;
 
-    for (int i = 0; i < Card::card_count; ++i) {
-        switch (m_mode) {
-        case Mode::SingleSuit:
-            for (int j = 0; j < 8; j++) {
-                deck.append(Card::construct(Card::Type::Spades, i));
-            }
-            break;
-        case Mode::TwoSuit:
-            for (int j = 0; j < 4; j++) {
-                deck.append(Card::construct(Card::Type::Spades, i));
-                deck.append(Card::construct(Card::Type::Hearts, i));
-            }
-            break;
-        default:
-            VERIFY_NOT_REACHED();
-            break;
-        }
+    switch (m_mode) {
+    case Mode::SingleSuit:
+        spade_suits = 8;
+        heart_suits = 0;
+        break;
+    case Mode::TwoSuit:
+        spade_suits = 4;
+        heart_suits = 4;
+        break;
+    default:
+        VERIFY_NOT_REACHED();
+        break;
     }
 
-    m_new_deck.clear_with_capacity();
-    m_new_deck.ensure_capacity(deck.size());
-    while (!deck.is_empty())
-        m_new_deck.append(deck.take(get_random_uniform(deck.size())));
+    m_new_deck = Cards::create_deck(0, 0, heart_suits, spade_suits, Cards::Shuffle::Yes).release_value_but_fixme_should_propagate_errors();
 
-    m_focused_stack = nullptr;
-    m_focused_cards.clear();
+    clear_moving_cards();
 
-    m_new_game_animation = true;
+    m_state = State::NewGameAnimation;
     start_timer(s_timer_interval_ms);
     update();
 }
 
+void Game::perform_undo()
+{
+    if (m_last_move.type == LastMove::Type::Invalid)
+        return;
+
+    if (!m_last_move.was_visible)
+        m_last_move.from->peek().set_upside_down(true);
+
+    Vector<NonnullRefPtr<Card>> cards;
+    for (size_t i = 0; i < m_last_move.card_count; i++)
+        cards.append(m_last_move.to->pop());
+    for (ssize_t i = m_last_move.card_count - 1; i >= 0; i--)
+        m_last_move.from->push(cards[i]).release_value_but_fixme_should_propagate_errors();
+
+    update_score(-1);
+
+    m_last_move = {};
+    if (on_undo_availability_change)
+        on_undo_availability_change(false);
+    invalidate_layout();
+}
+
 void Game::start_timer_if_necessary()
 {
-    if (on_game_start && m_waiting_for_new_game) {
+    if (on_game_start && m_state == State::WaitingForNewGame) {
         on_game_start();
-        m_waiting_for_new_game = false;
+        m_state = State::GameInProgress;
     }
 }
 
@@ -102,79 +124,60 @@ void Game::update_score(int delta)
 void Game::draw_cards()
 {
     // draw a single card from the stock for each pile
-    auto& stock_pile = stack(Stock);
+    auto& stock_pile = stack_at_location(Stock);
     if (stock_pile.is_empty())
         return;
 
     update_score(-1);
 
-    m_draw_animation = true;
+    m_state = State::DrawAnimation;
     m_original_stock_rect = stock_pile.bounding_box();
     start_timer(s_timer_interval_ms);
 }
 
-void Game::mark_intersecting_stacks_dirty(Card& intersecting_card)
-{
-    for (auto& stack : m_stacks) {
-        if (intersecting_card.rect().intersects(stack.bounding_box()))
-            update(stack.bounding_box());
-    }
-
-    update(intersecting_card.rect());
-}
-
-void Game::ensure_top_card_is_visible(NonnullRefPtr<CardStack> stack)
-{
-    if (stack->is_empty())
-        return;
-
-    auto& top_card = stack->peek();
-    if (top_card.is_upside_down()) {
-        top_card.set_upside_down(false);
-        update(top_card.rect());
-    }
-}
-
 void Game::detect_full_stacks()
 {
-    auto& completed_stack = stack(Completed);
+    auto& completed_stack = stack_at_location(Completed);
     for (auto pile : piles) {
-        auto& current_pile = stack(pile);
+        auto& current_pile = stack_at_location(pile);
 
         bool started = false;
         uint8_t last_value;
         Color color;
         for (size_t i = current_pile.stack().size(); i > 0; i--) {
             auto& card = current_pile.stack().at(i - 1);
-            if (card.is_upside_down())
+            if (card->is_upside_down())
                 break;
 
             if (!started) {
-                if (card.value() != 0) {
+                if (card->rank() != Cards::Rank::Ace)
                     break;
-                }
 
                 started = true;
-                color = card.color();
-            } else if (card.value() != last_value + 1 || card.color() != color) {
+                color = card->color();
+            } else if (to_underlying(card->rank()) != last_value + 1 || card->color() != color) {
                 break;
-            } else if (card.value() == Card::card_count - 1) {
+            } else if (card->rank() == Cards::Rank::King) {
                 // we have a full set
                 auto original_current_rect = current_pile.bounding_box();
 
                 for (size_t j = 0; j < Card::card_count; j++) {
-                    completed_stack.push(current_pile.pop());
+                    completed_stack.push(current_pile.pop()).release_value_but_fixme_should_propagate_errors();
                 }
 
                 update(original_current_rect);
                 update(completed_stack.bounding_box());
 
-                ensure_top_card_is_visible(current_pile);
+                if (current_pile.make_top_card_visible())
+                    update(current_pile.peek().rect());
 
                 update_score(101);
+
+                if (on_undo_availability_change)
+                    on_undo_availability_change(false);
             }
 
-            last_value = card.value();
+            last_value = to_underlying(card->rank());
         }
     }
 
@@ -184,11 +187,14 @@ void Game::detect_full_stacks()
 void Game::detect_victory()
 {
     for (auto pile : piles) {
-        auto& current_pile = stack(pile);
+        auto& current_pile = stack_at_location(pile);
 
         if (!current_pile.is_empty())
             return;
     }
+
+    if (on_undo_availability_change)
+        on_undo_availability_change(false);
 
     if (on_game_end)
         on_game_end(GameOverReason::Victory, m_score);
@@ -196,7 +202,7 @@ void Game::detect_victory()
 
 void Game::paint_event(GUI::PaintEvent& event)
 {
-    static Gfx::Color s_background_color = palette().color(background_role());
+    Gfx::Color background_color = this->background_color();
 
     GUI::Frame::paint_event(event);
 
@@ -204,54 +210,60 @@ void Game::paint_event(GUI::PaintEvent& event)
     painter.add_clip_rect(frame_inner_rect());
     painter.add_clip_rect(event.rect());
 
-    if (!m_focused_cards.is_empty()) {
-        for (auto& focused_card : m_focused_cards)
-            focused_card.clear(painter, s_background_color);
+    if (is_moving_cards()) {
+        for (auto& card : moving_cards())
+            card->clear(painter, background_color);
     }
 
-    for (auto& stack : m_stacks) {
-        stack.draw(painter, s_background_color);
+    for (auto& stack : stacks()) {
+        stack->paint(painter, background_color);
     }
 
-    if (!m_focused_cards.is_empty()) {
-        for (auto& focused_card : m_focused_cards) {
-            focused_card.draw(painter);
-            focused_card.save_old_position();
+    if (is_moving_cards()) {
+        for (auto& card : moving_cards()) {
+            card->paint(painter);
+            card->save_old_position();
         }
     }
 
     if (!m_mouse_down) {
-        if (!m_focused_cards.is_empty()) {
-            for (auto& card : m_focused_cards)
-                card.set_moving(false);
-            m_focused_cards.clear();
+        if (is_moving_cards()) {
+            for (auto& card : moving_cards())
+                card->set_moving(false);
         }
-
-        if (m_focused_stack) {
-            m_focused_stack->set_focused(false);
-            m_focused_stack = nullptr;
-        }
+        clear_moving_cards();
     }
+}
+
+void Game::remember_move_for_undo(CardStack& from, CardStack& to, size_t card_count, bool was_visible)
+{
+    m_last_move.type = LastMove::Type::MoveCards;
+    m_last_move.from = &from;
+    m_last_move.card_count = card_count;
+    m_last_move.to = &to;
+    m_last_move.was_visible = was_visible;
+    if (on_undo_availability_change)
+        on_undo_availability_change(true);
 }
 
 void Game::mousedown_event(GUI::MouseEvent& event)
 {
     GUI::Frame::mousedown_event(event);
 
-    if (m_new_game_animation || m_draw_animation)
+    if (m_state == State::NewGameAnimation || m_state == State::DrawAnimation)
         return;
 
     auto click_location = event.position();
-    for (auto& to_check : m_stacks) {
-        if (to_check.type() == CardStack::Type::Waste)
+    for (auto& to_check : stacks()) {
+        if (to_check->type() == CardStack::Type::Waste)
             continue;
 
-        if (to_check.bounding_box().contains(click_location)) {
-            if (to_check.type() == CardStack::Type::Stock) {
+        if (to_check->bounding_box().contains(click_location)) {
+            if (to_check->type() == CardStack::Type::Stock) {
                 start_timer_if_necessary();
                 draw_cards();
-            } else if (!to_check.is_empty()) {
-                auto& top_card = to_check.peek();
+            } else if (!to_check->is_empty()) {
+                auto& top_card = to_check->peek();
 
                 if (top_card.is_upside_down()) {
                     if (top_card.rect().contains(click_location)) {
@@ -259,13 +271,9 @@ void Game::mousedown_event(GUI::MouseEvent& event)
                         start_timer_if_necessary();
                         update(top_card.rect());
                     }
-                } else if (m_focused_cards.is_empty()) {
-                    to_check.add_all_grabbed_cards(click_location, m_focused_cards, Cards::CardStack::Same);
+                } else if (!is_moving_cards()) {
+                    pick_up_cards_from_stack(to_check, click_location, Cards::CardStack::MovementRule::Same).release_value_but_fixme_should_propagate_errors();
                     m_mouse_down_location = click_location;
-                    if (m_focused_stack)
-                        m_focused_stack->set_focused(false);
-                    to_check.set_focused(true);
-                    m_focused_stack = &to_check;
                     // When the user wants to automatically move cards, do not go into the drag mode.
                     if (event.button() != GUI::MouseButton::Secondary)
                         m_mouse_down = true;
@@ -279,68 +287,50 @@ void Game::mousedown_event(GUI::MouseEvent& event)
 
 void Game::move_focused_cards(CardStack& stack)
 {
-    for (auto& to_intersect : m_focused_cards) {
-        mark_intersecting_stacks_dirty(to_intersect);
-        stack.push(to_intersect);
-        (void)m_focused_stack->pop();
-    }
-
+    auto card_count = moving_cards().size();
+    drop_cards_on_stack(stack, Cards::CardStack::MovementRule::Any).release_value_but_fixme_should_propagate_errors();
+    bool was_visible = moving_cards_source_stack()->is_empty() || !moving_cards_source_stack()->peek().is_upside_down();
+    remember_move_for_undo(*moving_cards_source_stack(), stack, card_count, was_visible);
     update_score(-1);
-
-    update(m_focused_stack->bounding_box());
-    update(stack.bounding_box());
-
+    moving_cards_source_stack()->make_top_card_visible();
     detect_full_stacks();
-
-    ensure_top_card_is_visible(*m_focused_stack);
 }
 
 void Game::mouseup_event(GUI::MouseEvent& event)
 {
     GUI::Frame::mouseup_event(event);
+    clear_hovered_stack();
 
-    if (!m_focused_stack || m_focused_cards.is_empty() || m_new_game_animation || m_draw_animation)
+    if (!is_moving_cards() || m_state == State::NewGameAnimation || m_state == State::DrawAnimation)
         return;
 
     bool rebound = true;
     if (event.button() == GUI::MouseButton::Secondary) {
         // This enables the game to move the focused cards to the first possible stack excluding empty stacks.
-        // NOTE: This ignores empty stacks, as the game has no undo button, and a card, which has been moved to an empty stack without any other possibilities is not reversable.
-        for (auto& stack : m_stacks) {
-            if (stack.is_focused())
+        // NOTE: This ignores empty stacks, as the game has no undo button, and a card, which has been moved to an empty stack without any other possibilities is not reversible.
+        for (auto& stack : stacks()) {
+            if (stack == moving_cards_source_stack())
                 continue;
 
-            if (stack.is_allowed_to_push(m_focused_cards.at(0), m_focused_cards.size(), Cards::CardStack::Any) && !stack.is_empty()) {
+            if (stack->is_allowed_to_push(moving_cards().at(0), moving_cards().size(), Cards::CardStack::MovementRule::Any) && !stack->is_empty()) {
                 move_focused_cards(stack);
 
                 rebound = false;
                 break;
             }
         }
-    } else {
-        for (auto& stack : m_stacks) {
-            if (stack.is_focused())
-                continue;
-
-            for (auto& focused_card : m_focused_cards) {
-                if (stack.bounding_box().intersects(focused_card.rect())) {
-                    if (stack.is_allowed_to_push(m_focused_cards.at(0), m_focused_cards.size(), Cards::CardStack::Any)) {
-                        move_focused_cards(stack);
-
-                        rebound = false;
-                        break;
-                    }
-                }
-            }
-        }
+    } else if (auto target_stack = find_stack_to_drop_on(Cards::CardStack::MovementRule::Any); !target_stack.is_null()) {
+        auto& stack = *target_stack;
+        move_focused_cards(stack);
+        rebound = false;
     }
 
     if (rebound) {
-        for (auto& to_intersect : m_focused_cards)
+        for (auto& to_intersect : moving_cards())
             mark_intersecting_stacks_dirty(to_intersect);
 
-        m_focused_stack->rebound_cards();
-        update(m_focused_stack->bounding_box());
+        moving_cards_source_stack()->rebound_cards();
+        update(moving_cards_source_stack()->bounding_box());
     }
 
     m_mouse_down = false;
@@ -350,69 +340,96 @@ void Game::mousemove_event(GUI::MouseEvent& event)
 {
     GUI::Frame::mousemove_event(event);
 
-    if (!m_mouse_down || m_new_game_animation || m_draw_animation)
+    if (!m_mouse_down || m_state == State::NewGameAnimation || m_state == State::DrawAnimation)
         return;
 
     auto click_location = event.position();
     int dx = click_location.dx_relative_to(m_mouse_down_location);
     int dy = click_location.dy_relative_to(m_mouse_down_location);
 
-    for (auto& to_intersect : m_focused_cards) {
+    if (auto target_stack = find_stack_to_drop_on(Cards::CardStack::MovementRule::Any)) {
+        if (target_stack != m_hovered_stack) {
+            clear_hovered_stack();
+
+            m_hovered_stack = move(target_stack);
+            m_hovered_stack->set_highlighted(true);
+            update(m_hovered_stack->bounding_box());
+        }
+    } else {
+        clear_hovered_stack();
+    }
+
+    for (auto& to_intersect : moving_cards()) {
         mark_intersecting_stacks_dirty(to_intersect);
-        to_intersect.rect().translate_by(dx, dy);
-        update(to_intersect.rect());
+        to_intersect->rect().translate_by(dx, dy);
+        update(to_intersect->rect());
     }
 
     m_mouse_down_location = click_location;
 }
 
+void Game::doubleclick_event(GUI::MouseEvent& event)
+{
+    GUI::Frame::doubleclick_event(event);
+
+    if (m_state == State::NewGameAnimation) {
+        while (m_state == State::NewGameAnimation)
+            deal_next_card();
+        return;
+    }
+}
+
+void Game::deal_next_card()
+{
+    auto& current_pile = stack_at_location(piles.at(m_new_game_animation_pile));
+
+    // for first 4 piles, draw 6 cards
+    // for last 6 piles, draw 5 cards
+    size_t cards_to_draw = m_new_game_animation_pile < 4 ? 6 : 5;
+
+    if (current_pile.count() < (cards_to_draw - 1)) {
+        auto card = m_new_deck.take_last();
+        card->set_upside_down(true);
+        current_pile.push(card).release_value_but_fixme_should_propagate_errors();
+    } else {
+        current_pile.push(m_new_deck.take_last()).release_value_but_fixme_should_propagate_errors();
+        ++m_new_game_animation_pile;
+    }
+
+    update(current_pile.bounding_box());
+
+    if (m_new_game_animation_pile == piles.size()) {
+        VERIFY(m_new_deck.size() == 50);
+
+        auto& stock_pile = stack_at_location(Stock);
+        while (!m_new_deck.is_empty())
+            stock_pile.push(m_new_deck.take_last()).release_value_but_fixme_should_propagate_errors();
+
+        update(stock_pile.bounding_box());
+
+        m_state = State::WaitingForNewGame;
+        stop_timer();
+    }
+}
+
 void Game::timer_event(Core::TimerEvent&)
 {
-    if (m_new_game_animation) {
+    if (m_state == State::NewGameAnimation) {
         if (m_new_game_animation_delay < new_game_animation_delay) {
             ++m_new_game_animation_delay;
         } else {
             m_new_game_animation_delay = 0;
-            auto& current_pile = stack(piles.at(m_new_game_animation_pile));
-
-            // for first 4 piles, draw 6 cards
-            // for last 6 piles, draw 5 cards
-            size_t cards_to_draw = m_new_game_animation_pile < 4 ? 6 : 5;
-
-            if (current_pile.count() < (cards_to_draw - 1)) {
-                auto card = m_new_deck.take_last();
-                card->set_upside_down(true);
-                current_pile.push(card);
-            } else {
-                current_pile.push(m_new_deck.take_last());
-                ++m_new_game_animation_pile;
-            }
-
-            update(current_pile.bounding_box());
-
-            if (m_new_game_animation_pile == piles.size()) {
-                VERIFY(m_new_deck.size() == 50);
-
-                auto& stock_pile = stack(Stock);
-                while (!m_new_deck.is_empty())
-                    stock_pile.push(m_new_deck.take_last());
-
-                update(stock_pile.bounding_box());
-
-                m_new_game_animation = false;
-                m_waiting_for_new_game = true;
-                stop_timer();
-            }
+            deal_next_card();
         }
-    } else if (m_draw_animation) {
+    } else if (m_state == State::DrawAnimation) {
         if (m_draw_animation_delay < draw_animation_delay) {
             ++m_draw_animation_delay;
         } else {
-            auto& stock_pile = stack(Stock);
-            auto& current_pile = stack(piles.at(m_draw_animation_pile));
+            auto& stock_pile = stack_at_location(Stock);
+            auto& current_pile = stack_at_location(piles.at(m_draw_animation_pile));
             auto card = stock_pile.pop();
             card->set_upside_down(false);
-            current_pile.push(card);
+            current_pile.push(card).release_value_but_fixme_should_propagate_errors();
             update(current_pile.bounding_box());
             ++m_draw_animation_pile;
 
@@ -420,7 +437,7 @@ void Game::timer_event(Core::TimerEvent&)
                 update(m_original_stock_rect);
                 detect_full_stacks();
 
-                m_draw_animation = false;
+                m_state = State::GameInProgress;
                 m_draw_animation_delay = 0;
                 m_draw_animation_pile = 0;
                 stop_timer();
@@ -428,4 +445,15 @@ void Game::timer_event(Core::TimerEvent&)
         }
     }
 }
+
+void Game::clear_hovered_stack()
+{
+    if (!m_hovered_stack)
+        return;
+
+    m_hovered_stack->set_highlighted(false);
+    update(m_hovered_stack->bounding_box());
+    m_hovered_stack = nullptr;
+}
+
 }

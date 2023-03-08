@@ -11,10 +11,13 @@
 #include <LibGUI/SortingProxyModel.h>
 #include <LibGUI/TableView.h>
 
+REGISTER_WIDGET(SystemMonitor, ProcessFileDescriptorMapWidget)
+
+namespace SystemMonitor {
+
 ProcessFileDescriptorMapWidget::ProcessFileDescriptorMapWidget()
 {
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_margins(4);
+    set_layout<GUI::VerticalBoxLayout>(4);
     m_table_view = add<GUI::TableView>();
 
     Vector<GUI::JsonArrayModel::FieldSpec> pid_fds_fields;
@@ -23,19 +26,19 @@ ProcessFileDescriptorMapWidget::ProcessFileDescriptorMapWidget()
     pid_fds_fields.empend("offset", "Offset", Gfx::TextAlignment::CenterRight);
     pid_fds_fields.empend("absolute_path", "Path", Gfx::TextAlignment::CenterLeft);
     pid_fds_fields.empend("Access", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        return object.get("seekable").to_bool() ? "Seekable" : "Sequential";
+        return object.get_bool("seekable"sv).value_or(false) ? "Seekable" : "Sequential";
     });
     pid_fds_fields.empend("Blocking", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        return object.get("blocking").to_bool() ? "Blocking" : "Nonblocking";
+        return object.get_bool("blocking"sv).value_or(false) ? "Blocking" : "Nonblocking";
     });
     pid_fds_fields.empend("On exec", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        return object.get("cloexec").to_bool() ? "Close" : "Keep";
+        return object.get_bool("cloexec"sv).value_or(false) ? "Close" : "Keep";
     });
     pid_fds_fields.empend("Can read", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        return object.get("can_read").to_bool() ? "Yes" : "No";
+        return object.get_bool("can_read"sv).value_or(false) ? "Yes" : "No";
     });
     pid_fds_fields.empend("Can write", Gfx::TextAlignment::CenterLeft, [](auto& object) {
-        return object.get("can_write").to_bool() ? "Yes" : "No";
+        return object.get_bool("can_write"sv).value_or(false) ? "Yes" : "No";
     });
 
     m_model = GUI::JsonArrayModel::create({}, move(pid_fds_fields));
@@ -47,5 +50,7 @@ void ProcessFileDescriptorMapWidget::set_pid(pid_t pid)
     if (m_pid == pid)
         return;
     m_pid = pid;
-    m_model->set_json_path(String::formatted("/proc/{}/fds", m_pid));
+    m_model->set_json_path(DeprecatedString::formatted("/proc/{}/fds", m_pid));
+}
+
 }

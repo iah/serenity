@@ -8,6 +8,7 @@
 
 #include <Kernel/API/POSIX/netinet/in.h>
 #include <endian.h>
+#include <sys/cdefs.h>
 
 __BEGIN_DECLS
 
@@ -41,6 +42,8 @@ static inline uint32_t ntohl(uint32_t value)
     return htonl(value);
 }
 
+#define IN_MULTICAST(x) (((x)&0xf0000000) == 0xe0000000)
+
 // NOTE: The IPv6 Addressing Scheme that we detect are documented in RFC# 2373.
 //       See: https://datatracker.ietf.org/doc/html/rfc2373
 
@@ -55,5 +58,9 @@ static inline uint32_t ntohl(uint32_t value)
 // RFC# 2373 - 2.5.8 Local-Use IPv6 Unicast Addresses
 #define IN6_IS_ADDR_LINKLOCAL(addr) \
     (((addr)->s6_addr[0] == 0xfe) && (((addr)->s6_addr[1] & 0xc0) == 0x80))
+
+// RFC# 2373 - 2.7 Multicast Addresses
+#define IN6_IS_ADDR_MULTICAST(addr) \
+    ((addr)->s6_addr[0] == 0xff)
 
 __END_DECLS

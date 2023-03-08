@@ -1,14 +1,14 @@
 /*
- * Copyright (c) 2021, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2021-2022, Matthew Olsson <mattco@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/RefPtr.h>
-#include <AK/String.h>
 #include <AK/Variant.h>
 #include <LibPDF/Forward.h>
 #include <LibPDF/Object.h>
@@ -16,7 +16,7 @@
 
 namespace PDF {
 
-class Value : public Variant<Empty, std::nullptr_t, bool, int, float, Reference, NonnullRefPtr<Object>> {
+class Value : public Variant<Empty, nullptr_t, bool, int, float, Reference, NonnullRefPtr<Object>> {
 public:
     using Variant::Variant;
 
@@ -28,7 +28,15 @@ public:
             set<NonnullRefPtr<Object>>(*refptr);
     }
 
-    [[nodiscard]] String to_string(int indent = 0) const;
+    template<IsObject T>
+    Value(NonnullRefPtr<T> const& refptr)
+    requires(!IsSame<Object, T>)
+        : Variant(nullptr)
+    {
+        set<NonnullRefPtr<Object>>(*refptr);
+    }
+
+    [[nodiscard]] DeprecatedString to_deprecated_string(int indent = 0) const;
 
     [[nodiscard]] ALWAYS_INLINE bool has_number() const { return has<int>() || has<float>(); }
 
@@ -87,7 +95,7 @@ template<>
 struct Formatter<PDF::Value> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, PDF::Value const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_string());
+        return Formatter<StringView>::format(builder, value.to_deprecated_string());
     }
 };
 

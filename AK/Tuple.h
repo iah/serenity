@@ -17,12 +17,13 @@ struct Tuple {
 
 template<typename T>
 struct Tuple<T> {
-    Tuple(T&& value) requires(!IsSame<T&&, const T&>)
+    Tuple(T&& value)
+    requires(!IsSame < T &&, T const& >)
         : value(forward<T>(value))
     {
     }
 
-    Tuple(const T& value)
+    Tuple(T const& value)
         : value(value)
     {
     }
@@ -35,7 +36,7 @@ struct Tuple<T> {
     }
 
     template<typename U>
-    const U& get() const
+    U const& get() const
     {
         return const_cast<Tuple<T>&>(*this).get<U>();
     }
@@ -48,7 +49,7 @@ struct Tuple<T> {
     }
 
     template<typename U, unsigned index>
-    const U& get_with_index() const
+    U const& get_with_index() const
     {
         return const_cast<Tuple<T>&>(*this).get_with_index<U, index>();
     }
@@ -83,7 +84,7 @@ struct Tuple<T, TRest...> : Tuple<TRest...> {
     }
 
     template<typename U>
-    const U& get() const
+    U const& get() const
     {
         return const_cast<Tuple<T, TRest...>&>(*this).get<U>();
     }
@@ -98,7 +99,7 @@ struct Tuple<T, TRest...> : Tuple<TRest...> {
     }
 
     template<typename U, unsigned index>
-    const U& get_with_index() const
+    U const& get_with_index() const
     {
         return const_cast<Tuple<T, TRest...>&>(*this).get_with_index<U, index>();
     }
@@ -122,7 +123,7 @@ struct Tuple : Detail::Tuple<Ts...> {
     {
     }
 
-    Tuple(const Tuple& other)
+    Tuple(Tuple const& other)
         : Tuple(other, Indices())
     {
     }
@@ -133,7 +134,7 @@ struct Tuple : Detail::Tuple<Ts...> {
         return *this;
     }
 
-    Tuple& operator=(const Tuple& other)
+    Tuple& operator=(Tuple const& other)
     {
         set(other, Indices());
         return *this;
@@ -185,7 +186,7 @@ private:
     }
 
     template<unsigned... Is>
-    Tuple(const Tuple& other, IndexSequence<Is...>)
+    Tuple(Tuple const& other, IndexSequence<Is...>)
         : Detail::Tuple<Ts...>(other.get<Is>()...)
     {
     }
@@ -197,7 +198,7 @@ private:
     }
 
     template<unsigned... Is>
-    void set(const Tuple& other, IndexSequence<Is...>)
+    void set(Tuple const& other, IndexSequence<Is...>)
     {
         ((get<Is>() = other.get<Is>()), ...);
     }
@@ -220,4 +221,6 @@ Tuple(Args... args) -> Tuple<Args...>;
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::Tuple;
+#endif

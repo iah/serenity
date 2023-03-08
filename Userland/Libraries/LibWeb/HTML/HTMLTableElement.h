@@ -6,45 +6,55 @@
 
 #pragma once
 
-#include <LibWeb/DOM/ExceptionOr.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/HTMLTableCaptionElement.h>
 #include <LibWeb/HTML/HTMLTableRowElement.h>
 #include <LibWeb/HTML/HTMLTableSectionElement.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::HTML {
 
 class HTMLTableElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLTableElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLTableElement, HTMLElement);
 
-    HTMLTableElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLTableElement() override;
 
-    RefPtr<HTMLTableCaptionElement> caption();
+    JS::GCPtr<HTMLTableCaptionElement> caption();
     void set_caption(HTMLTableCaptionElement*);
-    NonnullRefPtr<HTMLTableCaptionElement> create_caption();
+    JS::NonnullGCPtr<HTMLTableCaptionElement> create_caption();
     void delete_caption();
 
-    RefPtr<HTMLTableSectionElement> t_head();
-    DOM::ExceptionOr<void> set_t_head(HTMLTableSectionElement* thead);
-    NonnullRefPtr<HTMLTableSectionElement> create_t_head();
+    JS::GCPtr<HTMLTableSectionElement> t_head();
+    WebIDL::ExceptionOr<void> set_t_head(HTMLTableSectionElement* thead);
+    JS::NonnullGCPtr<HTMLTableSectionElement> create_t_head();
     void delete_t_head();
 
-    RefPtr<HTMLTableSectionElement> t_foot();
-    DOM::ExceptionOr<void> set_t_foot(HTMLTableSectionElement* tfoot);
-    NonnullRefPtr<HTMLTableSectionElement> create_t_foot();
+    JS::GCPtr<HTMLTableSectionElement> t_foot();
+    WebIDL::ExceptionOr<void> set_t_foot(HTMLTableSectionElement* tfoot);
+    JS::NonnullGCPtr<HTMLTableSectionElement> create_t_foot();
     void delete_t_foot();
 
-    NonnullRefPtr<DOM::HTMLCollection> t_bodies();
-    NonnullRefPtr<HTMLTableSectionElement> create_t_body();
+    JS::NonnullGCPtr<DOM::HTMLCollection> t_bodies();
+    JS::NonnullGCPtr<HTMLTableSectionElement> create_t_body();
 
-    NonnullRefPtr<DOM::HTMLCollection> rows();
-    DOM::ExceptionOr<NonnullRefPtr<HTMLTableRowElement>> insert_row(long index);
-    DOM::ExceptionOr<void> delete_row(long index);
+    JS::NonnullGCPtr<DOM::HTMLCollection> rows();
+    WebIDL::ExceptionOr<JS::NonnullGCPtr<HTMLTableRowElement>> insert_row(long index);
+    WebIDL::ExceptionOr<void> delete_row(long index);
+
+    // https://www.w3.org/TR/html-aria/#el-table
+    virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::table; }
 
 private:
+    HTMLTableElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
     virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
+
+    JS::GCPtr<DOM::HTMLCollection> mutable m_rows;
+    JS::GCPtr<DOM::HTMLCollection> mutable m_t_bodies;
 };
 
 }

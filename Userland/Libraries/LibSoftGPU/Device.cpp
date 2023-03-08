@@ -1,71 +1,89 @@
 /*
  * Copyright (c) 2021, Stephan Unverwerth <s.unverwerth@serenityos.org>
  * Copyright (c) 2021, Jesse Buhagiar <jooster669@gmail.com>
- * Copyright (c) 2022, Jelle Raaijmakers <jelle@gmta.nl>
+ * Copyright (c) 2022-2023, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Function.h>
+#include <AK/AnyOf.h>
+#include <AK/Error.h>
 #include <AK/Math.h>
 #include <AK/NumericLimits.h>
 #include <AK/SIMDExtras.h>
 #include <AK/SIMDMath.h>
+#include <AK/String.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/Vector2.h>
 #include <LibGfx/Vector3.h>
 #include <LibSoftGPU/Config.h>
 #include <LibSoftGPU/Device.h>
+#include <LibSoftGPU/Image.h>
+#include <LibSoftGPU/PixelConverter.h>
 #include <LibSoftGPU/PixelQuad.h>
 #include <LibSoftGPU/SIMD.h>
+#include <LibSoftGPU/Shader.h>
+#include <LibSoftGPU/ShaderCompiler.h>
+#include <math.h>
 
 namespace SoftGPU {
 
-static long long g_num_rasterized_triangles;
-static long long g_num_pixels;
-static long long g_num_pixels_shaded;
-static long long g_num_pixels_blended;
-static long long g_num_sampler_calls;
-static long long g_num_stencil_writes;
-static long long g_num_quads;
+static i64 g_num_rasterized_triangles;
+static i64 g_num_pixels;
+static i64 g_num_pixels_shaded;
+static i64 g_num_pixels_blended;
+static i64 g_num_sampler_calls;
+static i64 g_num_stencil_writes;
+static i64 g_num_quads;
 
-using IntVector2 = Gfx::Vector2<int>;
-using IntVector3 = Gfx::Vector3<int>;
-
+using AK::abs;
 using AK::SIMD::any;
-using AK::SIMD::exp;
+using AK::SIMD::exp_approximate;
 using AK::SIMD::expand4;
 using AK::SIMD::f32x4;
 using AK::SIMD::i32x4;
 using AK::SIMD::load4_masked;
 using AK::SIMD::maskbits;
 using AK::SIMD::maskcount;
-using AK::SIMD::none;
 using AK::SIMD::store4_masked;
 using AK::SIMD::to_f32x4;
 using AK::SIMD::to_u32x4;
 using AK::SIMD::u32x4;
 
-constexpr static int edge_function(const IntVector2& a, const IntVector2& b, const IntVector2& c)
+static constexpr int subpixel_factor = 1 << SUBPIXEL_BITS;
+
+// Returns positive values for counter-clockwise rotation of vertices. Note that it returns the
+// area of a parallelogram with sides {a, b} and {b, c}, so _double_ the area of the triangle {a, b, c}.
+constexpr static i32 edge_function(IntVector2 const& a, IntVector2 const& b, IntVector2 const& c)
 {
-    return ((c.x() - a.x()) * (b.y() - a.y()) - (c.y() - a.y()) * (b.x() - a.x()));
+    return (c.y() - a.y()) * (b.x() - a.x()) - (c.x() - a.x()) * (b.y() - a.y());
 }
 
-constexpr static i32x4 edge_function4(const IntVector2& a, const IntVector2& b, const Vector2<i32x4>& c)
+constexpr static i32x4 edge_function4(IntVector2 const& a, IntVector2 const& b, Vector2<i32x4> const& c)
 {
-    return ((c.x() - a.x()) * (b.y() - a.y()) - (c.y() - a.y()) * (b.x() - a.x()));
+    return (c.y() - a.y()) * (b.x() - a.x()) - (c.x() - a.x()) * (b.y() - a.y());
 }
 
 template<typename T, typename U>
-constexpr static auto interpolate(const T& v0, const T& v1, const T& v2, const Vector3<U>& barycentric_coords)
+constexpr static auto interpolate(T const& v0, T const& v1, T const& v2, Vector3<U> const& barycentric_coords)
 {
     return v0 * barycentric_coords.x() + v1 * barycentric_coords.y() + v2 * barycentric_coords.z();
 }
 
-ALWAYS_INLINE static u32x4 to_rgba32(const Vector4<f32x4>& v)
+static GPU::ColorType to_argb32(FloatVector4 const& color)
 {
-    auto clamped = v.clamped(expand4(0.0f), expand4(1.0f));
+    auto clamped = color.clamped(0.0f, 1.0f);
+    auto r = static_cast<u8>(clamped.x() * 255);
+    auto g = static_cast<u8>(clamped.y() * 255);
+    auto b = static_cast<u8>(clamped.z() * 255);
+    auto a = static_cast<u8>(clamped.w() * 255);
+    return a << 24 | r << 16 | g << 8 | b;
+}
+
+ALWAYS_INLINE static u32x4 to_argb32(Vector4<f32x4> const& color)
+{
+    auto clamped = color.clamped(expand4(0.0f), expand4(1.0f));
     auto r = to_u32x4(clamped.x() * 255);
     auto g = to_u32x4(clamped.y() * 255);
     auto b = to_u32x4(clamped.z() * 255);
@@ -74,220 +92,128 @@ ALWAYS_INLINE static u32x4 to_rgba32(const Vector4<f32x4>& v)
     return a << 24 | r << 16 | g << 8 | b;
 }
 
-static Vector4<f32x4> to_vec4(u32x4 rgba)
+static Vector4<f32x4> to_vec4(u32x4 bgra)
 {
     auto constexpr one_over_255 = expand4(1.0f / 255);
     return {
-        to_f32x4((rgba >> 16) & 0xff) * one_over_255,
-        to_f32x4((rgba >> 8) & 0xff) * one_over_255,
-        to_f32x4(rgba & 0xff) * one_over_255,
-        to_f32x4((rgba >> 24) & 0xff) * one_over_255,
+        to_f32x4((bgra >> 16) & 0xff) * one_over_255,
+        to_f32x4((bgra >> 8) & 0xff) * one_over_255,
+        to_f32x4(bgra & 0xff) * one_over_255,
+        to_f32x4((bgra >> 24) & 0xff) * one_over_255,
     };
 }
 
-Gfx::IntRect Device::window_coordinates_to_target_coordinates(Gfx::IntRect const& window_rect)
+ALWAYS_INLINE static void test_alpha(PixelQuad& quad, GPU::AlphaTestFunction alpha_test_function, f32x4 const& reference_value)
 {
-    return {
-        window_rect.x(),
-        m_render_target->rect().height() - window_rect.height() - window_rect.y(),
-        window_rect.width(),
-        window_rect.height(),
-    };
-}
+    auto const alpha = quad.get_output_float(SHADER_OUTPUT_FIRST_COLOR + 3);
 
-void Device::setup_blend_factors()
-{
-    m_alpha_blend_factors = {};
-
-    switch (m_options.blend_source_factor) {
-    case BlendFactor::Zero:
+    switch (alpha_test_function) {
+    case GPU::AlphaTestFunction::Always:
+        quad.mask &= expand4(~0);
         break;
-    case BlendFactor::One:
-        m_alpha_blend_factors.src_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
+    case GPU::AlphaTestFunction::Equal:
+        quad.mask &= alpha == reference_value;
         break;
-    case BlendFactor::SrcColor:
-        m_alpha_blend_factors.src_factor_src_color = 1;
+    case GPU::AlphaTestFunction::Greater:
+        quad.mask &= alpha > reference_value;
         break;
-    case BlendFactor::OneMinusSrcColor:
-        m_alpha_blend_factors.src_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.src_factor_src_color = -1;
+    case GPU::AlphaTestFunction::GreaterOrEqual:
+        quad.mask &= alpha >= reference_value;
         break;
-    case BlendFactor::SrcAlpha:
-        m_alpha_blend_factors.src_factor_src_alpha = 1;
+    case GPU::AlphaTestFunction::Less:
+        quad.mask &= alpha < reference_value;
         break;
-    case BlendFactor::OneMinusSrcAlpha:
-        m_alpha_blend_factors.src_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.src_factor_src_alpha = -1;
+    case GPU::AlphaTestFunction::LessOrEqual:
+        quad.mask &= alpha <= reference_value;
         break;
-    case BlendFactor::DstAlpha:
-        m_alpha_blend_factors.src_factor_dst_alpha = 1;
+    case GPU::AlphaTestFunction::NotEqual:
+        quad.mask &= alpha != reference_value;
         break;
-    case BlendFactor::OneMinusDstAlpha:
-        m_alpha_blend_factors.src_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.src_factor_dst_alpha = -1;
-        break;
-    case BlendFactor::DstColor:
-        m_alpha_blend_factors.src_factor_dst_color = 1;
-        break;
-    case BlendFactor::OneMinusDstColor:
-        m_alpha_blend_factors.src_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.src_factor_dst_color = -1;
-        break;
-    case BlendFactor::SrcAlphaSaturate:
-    default:
-        VERIFY_NOT_REACHED();
-    }
-
-    switch (m_options.blend_destination_factor) {
-    case BlendFactor::Zero:
-        break;
-    case BlendFactor::One:
-        m_alpha_blend_factors.dst_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        break;
-    case BlendFactor::SrcColor:
-        m_alpha_blend_factors.dst_factor_src_color = 1;
-        break;
-    case BlendFactor::OneMinusSrcColor:
-        m_alpha_blend_factors.dst_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.dst_factor_src_color = -1;
-        break;
-    case BlendFactor::SrcAlpha:
-        m_alpha_blend_factors.dst_factor_src_alpha = 1;
-        break;
-    case BlendFactor::OneMinusSrcAlpha:
-        m_alpha_blend_factors.dst_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.dst_factor_src_alpha = -1;
-        break;
-    case BlendFactor::DstAlpha:
-        m_alpha_blend_factors.dst_factor_dst_alpha = 1;
-        break;
-    case BlendFactor::OneMinusDstAlpha:
-        m_alpha_blend_factors.dst_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.dst_factor_dst_alpha = -1;
-        break;
-    case BlendFactor::DstColor:
-        m_alpha_blend_factors.dst_factor_dst_color = 1;
-        break;
-    case BlendFactor::OneMinusDstColor:
-        m_alpha_blend_factors.dst_constant = { 1.0f, 1.0f, 1.0f, 1.0f };
-        m_alpha_blend_factors.dst_factor_dst_color = -1;
-        break;
-    case BlendFactor::SrcAlphaSaturate:
+    case GPU::AlphaTestFunction::Never:
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-void Device::rasterize_triangle(const Triangle& triangle)
+ALWAYS_INLINE static bool is_blend_factor_constant(GPU::BlendFactor blend_factor)
 {
-    INCREASE_STATISTICS_COUNTER(g_num_rasterized_triangles, 1);
+    return (blend_factor == GPU::BlendFactor::One || blend_factor == GPU::BlendFactor::Zero);
+}
 
+// OpenGL 1.5 § 4.1.8, table 4.1
+ALWAYS_INLINE static Vector4<f32x4> get_blend_factor(GPU::BlendFactor blend_factor, Vector4<f32x4> const& source_color, Vector4<f32x4> const& destination_color)
+{
+    switch (blend_factor) {
+    case GPU::BlendFactor::DstAlpha:
+        return to_vec4(destination_color.w());
+    case GPU::BlendFactor::DstColor:
+        return destination_color;
+    case GPU::BlendFactor::One:
+        return to_vec4(expand4(1.f));
+    case GPU::BlendFactor::OneMinusDstAlpha:
+        return to_vec4(1.f - destination_color.w());
+    case GPU::BlendFactor::OneMinusDstColor:
+        return to_vec4(expand4(1.f)) - destination_color;
+    case GPU::BlendFactor::OneMinusSrcAlpha:
+        return to_vec4(1.f - source_color.w());
+    case GPU::BlendFactor::OneMinusSrcColor:
+        return to_vec4(expand4(1.f)) - source_color;
+    case GPU::BlendFactor::SrcAlpha:
+        return to_vec4(source_color.w());
+    case GPU::BlendFactor::SrcAlphaSaturate: {
+        auto saturated = min(source_color.w(), 1.f - destination_color.w());
+        return { saturated, saturated, saturated, expand4(1.f) };
+    }
+    case GPU::BlendFactor::SrcColor:
+        return source_color;
+    case GPU::BlendFactor::Zero:
+        return to_vec4(expand4(0.f));
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+template<typename CB1, typename CB2, typename CB3>
+ALWAYS_INLINE void Device::rasterize(Gfx::IntRect& render_bounds, CB1 set_coverage_mask, CB2 set_quad_depth, CB3 set_quad_attributes)
+{
     // Return if alpha testing is a no-op
-    if (m_options.enable_alpha_test && m_options.alpha_test_func == AlphaTestFunction::Never)
+    if (m_options.enable_alpha_test && m_options.alpha_test_func == GPU::AlphaTestFunction::Never)
         return;
+    auto const alpha_test_ref_value = expand4(m_options.alpha_test_ref_value);
 
-    // Vertices
-    Vertex const vertex0 = triangle.vertices[0];
-    Vertex const vertex1 = triangle.vertices[1];
-    Vertex const vertex2 = triangle.vertices[2];
-
-    constexpr int subpixel_factor = 1 << SUBPIXEL_BITS;
-
-    // Calculate area of the triangle for later tests
-    IntVector2 const v0 { static_cast<int>(vertex0.window_coordinates.x() * subpixel_factor), static_cast<int>(vertex0.window_coordinates.y() * subpixel_factor) };
-    IntVector2 const v1 { static_cast<int>(vertex1.window_coordinates.x() * subpixel_factor), static_cast<int>(vertex1.window_coordinates.y() * subpixel_factor) };
-    IntVector2 const v2 { static_cast<int>(vertex2.window_coordinates.x() * subpixel_factor), static_cast<int>(vertex2.window_coordinates.y() * subpixel_factor) };
-
-    int area = edge_function(v0, v1, v2);
-    if (area == 0)
-        return;
-
-    auto const one_over_area = 1.0f / area;
-
-    auto render_bounds = m_render_target->rect();
-    if (m_options.scissor_enabled)
-        render_bounds.intersect(window_coordinates_to_target_coordinates(m_options.scissor_box));
-
-    // Obey top-left rule:
-    // This sets up "zero" for later pixel coverage tests.
-    // Depending on where on the triangle the edge is located
-    // it is either tested against 0 or 1, effectively
-    // turning "< 0" into "<= 0"
-    IntVector3 zero { 1, 1, 1 };
-    if (v1.y() > v0.y() || (v1.y() == v0.y() && v1.x() < v0.x()))
-        zero.set_z(0);
-    if (v2.y() > v1.y() || (v2.y() == v1.y() && v2.x() < v1.x()))
-        zero.set_x(0);
-    if (v0.y() > v2.y() || (v0.y() == v2.y() && v0.x() < v2.x()))
-        zero.set_y(0);
-
-    // This function calculates the 3 edge values for the pixel relative to the triangle.
-    auto calculate_edge_values4 = [v0, v1, v2](Vector2<i32x4> const& p) -> Vector3<i32x4> {
-        return {
-            edge_function4(v1, v2, p),
-            edge_function4(v2, v0, p),
-            edge_function4(v0, v1, p),
-        };
-    };
-
-    // This function tests whether a point as identified by its 3 edge values lies within the triangle
-    auto test_point4 = [zero](Vector3<i32x4> const& edges) -> i32x4 {
-        return edges.x() >= zero.x()
-            && edges.y() >= zero.y()
-            && edges.z() >= zero.z();
-    };
-
-    // Calculate block-based bounds
-    // clang-format off
-    int const bx0 =  max(render_bounds.left(),   min(min(v0.x(), v1.x()), v2.x()) / subpixel_factor) & ~1;
-    int const bx1 = (min(render_bounds.right(),  max(max(v0.x(), v1.x()), v2.x()) / subpixel_factor) & ~1) + 2;
-    int const by0 =  max(render_bounds.top(),    min(min(v0.y(), v1.y()), v2.y()) / subpixel_factor) & ~1;
-    int const by1 = (min(render_bounds.bottom(), max(max(v0.y(), v1.y()), v2.y()) / subpixel_factor) & ~1) + 2;
-    // clang-format on
-
-    // Fog depths
-    float const vertex0_eye_absz = fabs(vertex0.eye_coordinates.z());
-    float const vertex1_eye_absz = fabs(vertex1.eye_coordinates.z());
-    float const vertex2_eye_absz = fabs(vertex2.eye_coordinates.z());
-
-    int const render_bounds_left = render_bounds.x();
-    int const render_bounds_right = render_bounds.x() + render_bounds.width();
-    int const render_bounds_top = render_bounds.y();
-    int const render_bounds_bottom = render_bounds.y() + render_bounds.height();
-
-    auto const half_pixel_offset = Vector2<i32x4> {
-        expand4(subpixel_factor / 2),
-        expand4(subpixel_factor / 2),
-    };
+    // Buffers
+    auto color_buffer = m_frame_buffer->color_buffer();
+    auto depth_buffer = m_frame_buffer->depth_buffer();
+    auto stencil_buffer = m_frame_buffer->stencil_buffer();
 
     // Stencil configuration and writing
-    auto const stencil_configuration = m_stencil_configuration[Face::Front];
+    auto const& stencil_configuration = m_stencil_configuration[GPU::Face::Front];
     auto const stencil_reference_value = stencil_configuration.reference_value & stencil_configuration.test_mask;
 
-    auto write_to_stencil = [](u8* stencil_ptrs[4], i32x4 stencil_value, StencilOperation op, u8 reference_value, u8 write_mask, i32x4 pixel_mask) {
-        if (write_mask == 0 || op == StencilOperation::Keep)
+    auto write_to_stencil = [](GPU::StencilType* stencil_ptrs[4], i32x4 stencil_value, GPU::StencilOperation op, GPU::StencilType reference_value, GPU::StencilType write_mask, i32x4 pixel_mask) {
+        if (write_mask == 0 || op == GPU::StencilOperation::Keep)
             return;
 
         switch (op) {
-        case StencilOperation::Decrement:
+        case GPU::StencilOperation::Decrement:
             stencil_value = (stencil_value & ~write_mask) | (max(stencil_value - 1, expand4(0)) & write_mask);
             break;
-        case StencilOperation::DecrementWrap:
+        case GPU::StencilOperation::DecrementWrap:
             stencil_value = (stencil_value & ~write_mask) | (((stencil_value - 1) & 0xFF) & write_mask);
             break;
-        case StencilOperation::Increment:
+        case GPU::StencilOperation::Increment:
             stencil_value = (stencil_value & ~write_mask) | (min(stencil_value + 1, expand4(0xFF)) & write_mask);
             break;
-        case StencilOperation::IncrementWrap:
+        case GPU::StencilOperation::IncrementWrap:
             stencil_value = (stencil_value & ~write_mask) | (((stencil_value + 1) & 0xFF) & write_mask);
             break;
-        case StencilOperation::Invert:
+        case GPU::StencilOperation::Invert:
             stencil_value ^= write_mask;
             break;
-        case StencilOperation::Replace:
+        case GPU::StencilOperation::Replace:
             stencil_value = (stencil_value & ~write_mask) | (reference_value & write_mask);
             break;
-        case StencilOperation::Zero:
+        case GPU::StencilOperation::Zero:
             stencil_value &= ~write_mask;
             break;
         default:
@@ -298,78 +224,92 @@ void Device::rasterize_triangle(const Triangle& triangle)
         store4_masked(stencil_value, stencil_ptrs[0], stencil_ptrs[1], stencil_ptrs[2], stencil_ptrs[3], pixel_mask);
     };
 
-    // Iterate over all blocks within the bounds of the triangle
-    for (int by = by0; by < by1; by += 2) {
-        for (int bx = bx0; bx < bx1; bx += 2) {
-            PixelQuad quad;
+    // Limit rendering to framebuffer and scissor rects
+    render_bounds.intersect(m_frame_buffer->rect());
+    if (m_options.scissor_enabled)
+        render_bounds.intersect(m_options.scissor_box);
 
+    // Quad bounds
+    auto const render_bounds_left = render_bounds.left();
+    auto const render_bounds_right = render_bounds.right();
+    auto const render_bounds_top = render_bounds.top();
+    auto const render_bounds_bottom = render_bounds.bottom();
+    auto const qx0 = render_bounds_left & ~1;
+    auto const qx1 = render_bounds_right & ~1;
+    auto const qy0 = render_bounds_top & ~1;
+    auto const qy1 = render_bounds_bottom & ~1;
+
+    // Blend factors
+    Vector4<f32x4> src_factor;
+    Vector4<f32x4> dst_factor;
+    auto const src_factor_is_constant = is_blend_factor_constant(m_options.blend_source_factor);
+    auto const dst_factor_is_constant = is_blend_factor_constant(m_options.blend_destination_factor);
+    if (m_options.enable_blending) {
+        if (src_factor_is_constant)
+            src_factor = get_blend_factor(m_options.blend_source_factor, {}, {});
+        if (dst_factor_is_constant)
+            dst_factor = get_blend_factor(m_options.blend_destination_factor, {}, {});
+    }
+
+    // Rasterize all quads
+    // FIXME: this could be embarrassingly parallel
+    for (int qy = qy0; qy <= qy1; qy += 2) {
+        for (int qx = qx0; qx <= qx1; qx += 2) {
+            PixelQuad quad;
             quad.screen_coordinates = {
-                i32x4 { bx, bx + 1, bx, bx + 1 },
-                i32x4 { by, by, by + 1, by + 1 },
+                i32x4 { qx, qx + 1, qx, qx + 1 },
+                i32x4 { qy, qy, qy + 1, qy + 1 },
             };
 
-            auto edge_values = calculate_edge_values4(quad.screen_coordinates * subpixel_factor + half_pixel_offset);
-
-            // Generate triangle coverage mask
-            quad.mask = test_point4(edge_values);
-
-            // Test quad against intersection of render target size and scissor rect
+            // Set coverage mask and test against render bounds
+            set_coverage_mask(quad);
             quad.mask &= quad.screen_coordinates.x() >= render_bounds_left
-                && quad.screen_coordinates.x() < render_bounds_right
+                && quad.screen_coordinates.x() <= render_bounds_right
                 && quad.screen_coordinates.y() >= render_bounds_top
-                && quad.screen_coordinates.y() < render_bounds_bottom;
-
-            if (none(quad.mask))
+                && quad.screen_coordinates.y() <= render_bounds_bottom;
+            auto coverage_bits = maskbits(quad.mask);
+            if (coverage_bits == 0)
                 continue;
 
             INCREASE_STATISTICS_COUNTER(g_num_quads, 1);
             INCREASE_STATISTICS_COUNTER(g_num_pixels, maskcount(quad.mask));
 
-            // Calculate barycentric coordinates from previously calculated edge values
-            quad.barycentrics = Vector3<f32x4> {
-                to_f32x4(edge_values.x()),
-                to_f32x4(edge_values.y()),
-                to_f32x4(edge_values.z()),
-            } * one_over_area;
-
-            int coverage_bits = maskbits(quad.mask);
-
             // Stencil testing
-            u8* stencil_ptrs[4];
+            GPU::StencilType* stencil_ptrs[4];
             i32x4 stencil_value;
             if (m_options.enable_stencil_test) {
-                stencil_ptrs[0] = coverage_bits & 1 ? &m_stencil_buffer->scanline(by)[bx] : nullptr;
-                stencil_ptrs[1] = coverage_bits & 2 ? &m_stencil_buffer->scanline(by)[bx + 1] : nullptr;
-                stencil_ptrs[2] = coverage_bits & 4 ? &m_stencil_buffer->scanline(by + 1)[bx] : nullptr;
-                stencil_ptrs[3] = coverage_bits & 8 ? &m_stencil_buffer->scanline(by + 1)[bx + 1] : nullptr;
+                stencil_ptrs[0] = coverage_bits & 1 ? &stencil_buffer->scanline(qy)[qx] : nullptr;
+                stencil_ptrs[1] = coverage_bits & 2 ? &stencil_buffer->scanline(qy)[qx + 1] : nullptr;
+                stencil_ptrs[2] = coverage_bits & 4 ? &stencil_buffer->scanline(qy + 1)[qx] : nullptr;
+                stencil_ptrs[3] = coverage_bits & 8 ? &stencil_buffer->scanline(qy + 1)[qx + 1] : nullptr;
 
                 stencil_value = load4_masked(stencil_ptrs[0], stencil_ptrs[1], stencil_ptrs[2], stencil_ptrs[3], quad.mask);
                 stencil_value &= stencil_configuration.test_mask;
 
                 i32x4 stencil_test_passed;
                 switch (stencil_configuration.test_function) {
-                case StencilTestFunction::Always:
+                case GPU::StencilTestFunction::Always:
                     stencil_test_passed = expand4(~0);
                     break;
-                case StencilTestFunction::Equal:
+                case GPU::StencilTestFunction::Equal:
                     stencil_test_passed = stencil_value == stencil_reference_value;
                     break;
-                case StencilTestFunction::Greater:
+                case GPU::StencilTestFunction::Greater:
                     stencil_test_passed = stencil_value > stencil_reference_value;
                     break;
-                case StencilTestFunction::GreaterOrEqual:
+                case GPU::StencilTestFunction::GreaterOrEqual:
                     stencil_test_passed = stencil_value >= stencil_reference_value;
                     break;
-                case StencilTestFunction::Less:
+                case GPU::StencilTestFunction::Less:
                     stencil_test_passed = stencil_value < stencil_reference_value;
                     break;
-                case StencilTestFunction::LessOrEqual:
+                case GPU::StencilTestFunction::LessOrEqual:
                     stencil_test_passed = stencil_value <= stencil_reference_value;
                     break;
-                case StencilTestFunction::Never:
+                case GPU::StencilTestFunction::Never:
                     stencil_test_passed = expand4(0);
                     break;
-                case StencilTestFunction::NotEqual:
+                case GPU::StencilTestFunction::NotEqual:
                     stencil_test_passed = stencil_value != stencil_reference_value;
                     break;
                 default:
@@ -387,78 +327,46 @@ void Device::rasterize_triangle(const Triangle& triangle)
 
                 // Update coverage mask + early quad rejection
                 quad.mask &= stencil_test_passed;
-                if (none(quad.mask))
+                coverage_bits = maskbits(quad.mask);
+                if (coverage_bits == 0)
                     continue;
             }
 
             // Depth testing
-            float* depth_ptrs[4] = {
-                coverage_bits & 1 ? &m_depth_buffer->scanline(by)[bx] : nullptr,
-                coverage_bits & 2 ? &m_depth_buffer->scanline(by)[bx + 1] : nullptr,
-                coverage_bits & 4 ? &m_depth_buffer->scanline(by + 1)[bx] : nullptr,
-                coverage_bits & 8 ? &m_depth_buffer->scanline(by + 1)[bx + 1] : nullptr,
+            GPU::DepthType* depth_ptrs[4] = {
+                coverage_bits & 1 ? &depth_buffer->scanline(qy)[qx] : nullptr,
+                coverage_bits & 2 ? &depth_buffer->scanline(qy)[qx + 1] : nullptr,
+                coverage_bits & 4 ? &depth_buffer->scanline(qy + 1)[qx] : nullptr,
+                coverage_bits & 8 ? &depth_buffer->scanline(qy + 1)[qx + 1] : nullptr,
             };
             if (m_options.enable_depth_test) {
+                set_quad_depth(quad);
+
                 auto depth = load4_masked(depth_ptrs[0], depth_ptrs[1], depth_ptrs[2], depth_ptrs[3], quad.mask);
-
-                quad.depth = interpolate(vertex0.window_coordinates.z(), vertex1.window_coordinates.z(), vertex2.window_coordinates.z(), quad.barycentrics);
-                // FIXME: Also apply depth_offset_factor which depends on the depth gradient
-                if (m_options.depth_offset_enabled)
-                    quad.depth += m_options.depth_offset_constant * NumericLimits<float>::epsilon();
-
                 i32x4 depth_test_passed;
                 switch (m_options.depth_func) {
-                case DepthTestFunction::Always:
+                case GPU::DepthTestFunction::Always:
                     depth_test_passed = expand4(~0);
                     break;
-                case DepthTestFunction::Never:
+                case GPU::DepthTestFunction::Never:
                     depth_test_passed = expand4(0);
                     break;
-                case DepthTestFunction::Greater:
+                case GPU::DepthTestFunction::Greater:
                     depth_test_passed = quad.depth > depth;
                     break;
-                case DepthTestFunction::GreaterOrEqual:
+                case GPU::DepthTestFunction::GreaterOrEqual:
                     depth_test_passed = quad.depth >= depth;
                     break;
-                case DepthTestFunction::NotEqual:
-#ifdef __SSE__
+                case GPU::DepthTestFunction::NotEqual:
                     depth_test_passed = quad.depth != depth;
-#else
-                    depth_test_passed = i32x4 {
-                        bit_cast<u32>(quad.depth[0]) != bit_cast<u32>(depth[0]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[1]) != bit_cast<u32>(depth[1]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[2]) != bit_cast<u32>(depth[2]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[3]) != bit_cast<u32>(depth[3]) ? -1 : 0,
-                    };
-#endif
                     break;
-                case DepthTestFunction::Equal:
-#ifdef __SSE__
+                case GPU::DepthTestFunction::Equal:
                     depth_test_passed = quad.depth == depth;
-#else
-                    //
-                    // This is an interesting quirk that occurs due to us using the x87 FPU when Serenity is
-                    // compiled for the i386 target. When we calculate our depth value to be stored in the buffer,
-                    // it is an 80-bit x87 floating point number, however, when stored into the DepthBuffer, this is
-                    // truncated to 32 bits. This 38 bit loss of precision means that when x87 `FCOMP` is eventually
-                    // used here the comparison fails.
-                    // This could be solved by using a `long double` for the depth buffer, however this would take
-                    // up significantly more space and is completely overkill for a depth buffer. As such, comparing
-                    // the first 32-bits of this depth value is "good enough" that if we get a hit on it being
-                    // equal, we can pretty much guarantee that it's actually equal.
-                    //
-                    depth_test_passed = i32x4 {
-                        bit_cast<u32>(quad.depth[0]) == bit_cast<u32>(depth[0]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[1]) == bit_cast<u32>(depth[1]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[2]) == bit_cast<u32>(depth[2]) ? -1 : 0,
-                        bit_cast<u32>(quad.depth[3]) == bit_cast<u32>(depth[3]) ? -1 : 0,
-                    };
-#endif
                     break;
-                case DepthTestFunction::LessOrEqual:
+                case GPU::DepthTestFunction::LessOrEqual:
                     depth_test_passed = quad.depth <= depth;
                     break;
-                case DepthTestFunction::Less:
+                case GPU::DepthTestFunction::Less:
                     depth_test_passed = quad.depth < depth;
                     break;
                 default:
@@ -478,7 +386,8 @@ void Device::rasterize_triangle(const Triangle& triangle)
 
                 // Update coverage mask + early quad rejection
                 quad.mask &= depth_test_passed;
-                if (none(quad.mask))
+                coverage_bits = maskbits(quad.mask);
+                if (coverage_bits == 0)
                     continue;
             }
 
@@ -495,40 +404,15 @@ void Device::rasterize_triangle(const Triangle& triangle)
 
             INCREASE_STATISTICS_COUNTER(g_num_pixels_shaded, maskcount(quad.mask));
 
-            // Draw the pixels according to the previously generated mask
-            auto const w_coordinates = Vector3<f32x4> {
-                expand4(vertex0.window_coordinates.w()),
-                expand4(vertex1.window_coordinates.w()),
-                expand4(vertex2.window_coordinates.w()),
-            };
-
-            auto const interpolated_reciprocal_w = interpolate(w_coordinates.x(), w_coordinates.y(), w_coordinates.z(), quad.barycentrics);
-            auto const interpolated_w = 1.0f / interpolated_reciprocal_w;
-            quad.barycentrics = quad.barycentrics * w_coordinates * interpolated_w;
-
-            // FIXME: make this more generic. We want to interpolate more than just color and uv
-            if (m_options.shade_smooth) {
-                quad.vertex_color = interpolate(expand4(vertex0.color), expand4(vertex1.color), expand4(vertex2.color), quad.barycentrics);
-            } else {
-                quad.vertex_color = expand4(vertex0.color);
-            }
-
-            for (size_t i = 0; i < NUM_SAMPLERS; ++i)
-                quad.texture_coordinates[i] = interpolate(expand4(vertex0.tex_coords[i]), expand4(vertex1.tex_coords[i]), expand4(vertex2.tex_coords[i]), quad.barycentrics);
-
-            if (m_options.fog_enabled) {
-                // Calculate depth of fragment for fog
-                //
-                // OpenGL 1.5 spec chapter 3.10: "An implementation may choose to approximate the
-                // eye-coordinate distance from the eye to each fragment center by |Ze|."
-
-                quad.fog_depth = interpolate(expand4(vertex0_eye_absz), expand4(vertex1_eye_absz), expand4(vertex2_eye_absz), quad.barycentrics);
-            }
-
+            set_quad_attributes(quad);
             shade_fragments(quad);
 
-            if (m_options.enable_alpha_test && m_options.alpha_test_func != AlphaTestFunction::Always && !test_alpha(quad)) {
-                continue;
+            // Alpha testing
+            if (m_options.enable_alpha_test) {
+                test_alpha(quad, m_options.alpha_test_func, alpha_test_ref_value);
+                coverage_bits = maskbits(quad.mask);
+                if (coverage_bits == 0)
+                    continue;
             }
 
             // Write to depth buffer
@@ -536,143 +420,539 @@ void Device::rasterize_triangle(const Triangle& triangle)
                 store4_masked(quad.depth, depth_ptrs[0], depth_ptrs[1], depth_ptrs[2], depth_ptrs[3], quad.mask);
 
             // We will not update the color buffer at all
-            if (!m_options.color_mask || !m_options.enable_color_write)
+            if ((m_options.color_mask == 0) || !m_options.enable_color_write)
                 continue;
 
-            Gfx::RGBA32* color_ptrs[4] = {
-                coverage_bits & 1 ? &m_render_target->scanline(by)[bx] : nullptr,
-                coverage_bits & 2 ? &m_render_target->scanline(by)[bx + 1] : nullptr,
-                coverage_bits & 4 ? &m_render_target->scanline(by + 1)[bx] : nullptr,
-                coverage_bits & 8 ? &m_render_target->scanline(by + 1)[bx + 1] : nullptr,
+            GPU::ColorType* color_ptrs[4] = {
+                coverage_bits & 1 ? &color_buffer->scanline(qy)[qx] : nullptr,
+                coverage_bits & 2 ? &color_buffer->scanline(qy)[qx + 1] : nullptr,
+                coverage_bits & 4 ? &color_buffer->scanline(qy + 1)[qx] : nullptr,
+                coverage_bits & 8 ? &color_buffer->scanline(qy + 1)[qx + 1] : nullptr,
             };
 
             u32x4 dst_u32;
             if (m_options.enable_blending || m_options.color_mask != 0xffffffff)
                 dst_u32 = load4_masked(color_ptrs[0], color_ptrs[1], color_ptrs[2], color_ptrs[3], quad.mask);
 
+            auto out_color = quad.get_output_vector4(SHADER_OUTPUT_FIRST_COLOR);
+
             if (m_options.enable_blending) {
                 INCREASE_STATISTICS_COUNTER(g_num_pixels_blended, maskcount(quad.mask));
 
-                // Blend color values from pixel_staging into m_render_target
-                Vector4<f32x4> const& src = quad.out_color;
-                auto dst = to_vec4(dst_u32);
+                // Blend color values from pixel_staging into color_buffer
+                auto const& src = out_color;
+                auto const dst = to_vec4(dst_u32);
 
-                auto src_factor = expand4(m_alpha_blend_factors.src_constant)
-                    + src * m_alpha_blend_factors.src_factor_src_color
-                    + Vector4<f32x4> { src.w(), src.w(), src.w(), src.w() } * m_alpha_blend_factors.src_factor_src_alpha
-                    + dst * m_alpha_blend_factors.src_factor_dst_color
-                    + Vector4<f32x4> { dst.w(), dst.w(), dst.w(), dst.w() } * m_alpha_blend_factors.src_factor_dst_alpha;
+                if (!src_factor_is_constant)
+                    src_factor = get_blend_factor(m_options.blend_source_factor, src, dst);
+                if (!dst_factor_is_constant)
+                    dst_factor = get_blend_factor(m_options.blend_destination_factor, src, dst);
 
-                auto dst_factor = expand4(m_alpha_blend_factors.dst_constant)
-                    + src * m_alpha_blend_factors.dst_factor_src_color
-                    + Vector4<f32x4> { src.w(), src.w(), src.w(), src.w() } * m_alpha_blend_factors.dst_factor_src_alpha
-                    + dst * m_alpha_blend_factors.dst_factor_dst_color
-                    + Vector4<f32x4> { dst.w(), dst.w(), dst.w(), dst.w() } * m_alpha_blend_factors.dst_factor_dst_alpha;
-
-                quad.out_color = src * src_factor + dst * dst_factor;
+                out_color = src * src_factor + dst * dst_factor;
             }
 
+            auto const argb32_color = to_argb32(out_color);
             if (m_options.color_mask == 0xffffffff)
-                store4_masked(to_rgba32(quad.out_color), color_ptrs[0], color_ptrs[1], color_ptrs[2], color_ptrs[3], quad.mask);
+                store4_masked(argb32_color, color_ptrs[0], color_ptrs[1], color_ptrs[2], color_ptrs[3], quad.mask);
             else
-                store4_masked((to_rgba32(quad.out_color) & m_options.color_mask) | (dst_u32 & ~m_options.color_mask), color_ptrs[0], color_ptrs[1], color_ptrs[2], color_ptrs[3], quad.mask);
+                store4_masked((argb32_color & m_options.color_mask) | (dst_u32 & ~m_options.color_mask), color_ptrs[0], color_ptrs[1], color_ptrs[2], color_ptrs[3], quad.mask);
         }
     }
 }
 
-Device::Device(const Gfx::IntSize& size)
-    : m_render_target(Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, size).release_value_but_fixme_should_propagate_errors())
-    , m_depth_buffer(make<DepthBuffer>(size))
-    , m_stencil_buffer(MUST(StencilBuffer::try_create(size)))
+void Device::rasterize_line_aliased(GPU::Vertex& from, GPU::Vertex& to)
 {
-    m_options.scissor_box = m_render_target->rect();
-    m_options.viewport = m_render_target->rect();
+    // FIXME: implement aliased lines; for now we fall back to anti-aliased logic
+    rasterize_line_antialiased(from, to);
 }
 
-DeviceInfo Device::info() const
+void Device::rasterize_line_antialiased(GPU::Vertex& from, GPU::Vertex& to)
+{
+    auto const from_coords = from.window_coordinates.xy();
+    auto const to_coords = to.window_coordinates.xy();
+    auto const line_width = ceilf(m_options.line_width);
+    auto const line_radius = line_width / 2;
+
+    auto render_bounds = Gfx::IntRect {
+        min(from_coords.x(), to_coords.x()),
+        min(from_coords.y(), to_coords.y()),
+        abs(from_coords.x() - to_coords.x()) + 1,
+        abs(from_coords.y() - to_coords.y()) + 1,
+    };
+    render_bounds.inflate(line_width, line_width);
+
+    auto const from_coords4 = expand4(from_coords);
+    auto const line_vector = to_coords - from_coords;
+    auto const line_vector4 = expand4(line_vector);
+    auto const line_dot4 = expand4(line_vector.dot(line_vector));
+
+    auto const from_depth4 = expand4(from.window_coordinates.z());
+    auto const to_depth4 = expand4(to.window_coordinates.z());
+
+    auto const from_color4 = expand4(from.color);
+    auto const from_fog_depth4 = expand4(abs(from.eye_coordinates.z()));
+
+    // Rasterize using a 2D signed distance field for a line segment
+    // FIXME: performance-wise, this might be the absolute worst way to draw an anti-aliased line
+    f32x4 distance_along_line;
+    rasterize(
+        render_bounds,
+        [&from_coords4, &distance_along_line, &line_vector4, &line_dot4, &line_radius](auto& quad) {
+            auto const screen_coordinates4 = to_vec2_f32x4(quad.screen_coordinates);
+            auto const pixel_vector = screen_coordinates4 - from_coords4;
+            distance_along_line = AK::SIMD::clamp(pixel_vector.dot(line_vector4) / line_dot4, 0.f, 1.f);
+            auto distance_to_line = length(pixel_vector - line_vector4 * distance_along_line) - line_radius;
+
+            // Add .5f to the distance so coverage transitions half a pixel before the actual border
+            quad.coverage = 1.f - AK::SIMD::clamp(distance_to_line + 0.5f, 0.f, 1.f);
+            quad.mask = quad.coverage > 0.f;
+        },
+        [&from_depth4, &to_depth4, &distance_along_line](auto& quad) {
+            quad.depth = mix(from_depth4, to_depth4, distance_along_line);
+        },
+        [&from_color4, &from, &from_fog_depth4](auto& quad) {
+            // FIXME: interpolate color, tex coords and fog depth along the distance of the line
+            //        in clip space (i.e. NOT distance_from_line)
+            quad.set_input(SHADER_INPUT_VERTEX_COLOR, from_color4);
+            for (size_t i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i)
+                quad.set_input(SHADER_INPUT_FIRST_TEXCOORD + i * 4, expand4(from.tex_coords[i]));
+
+            quad.fog_depth = from_fog_depth4;
+        });
+}
+
+void Device::rasterize_line(GPU::Vertex& from, GPU::Vertex& to)
+{
+    if (m_options.line_smooth)
+        rasterize_line_antialiased(from, to);
+    else
+        rasterize_line_aliased(from, to);
+}
+
+void Device::rasterize_point_aliased(GPU::Vertex& point)
+{
+    // Determine aliased point width
+    constexpr size_t maximum_aliased_point_size = 64;
+    auto point_width = clamp(round_to<int>(m_options.point_size), 1, maximum_aliased_point_size);
+
+    // Determine aliased center coordinates
+    IntVector2 point_center;
+    if (point_width % 2 == 1)
+        point_center = point.window_coordinates.xy().to_type<int>();
+    else
+        point_center = (point.window_coordinates.xy() + FloatVector2 { .5f, .5f }).to_type<int>();
+
+    // Aliased points are rects; calculate boundaries around center
+    auto point_rect = Gfx::IntRect {
+        point_center.x() - point_width / 2,
+        point_center.y() - point_width / 2,
+        point_width,
+        point_width,
+    };
+
+    // Rasterize the point as a rect
+    rasterize(
+        point_rect,
+        [](auto& quad) {
+            // We already passed in point_rect, so this doesn't matter
+            quad.mask = expand4(~0);
+        },
+        [&point](auto& quad) {
+            quad.depth = expand4(point.window_coordinates.z());
+        },
+        [&point](auto& quad) {
+            quad.set_input(SHADER_INPUT_VERTEX_COLOR, expand4(point.color));
+            for (size_t i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i)
+                quad.set_input(SHADER_INPUT_FIRST_TEXCOORD + i * 4, expand4(point.tex_coords[i]));
+
+            quad.fog_depth = expand4(abs(point.eye_coordinates.z()));
+        });
+}
+
+void Device::rasterize_point_antialiased(GPU::Vertex& point)
+{
+    auto const center = point.window_coordinates.xy();
+    auto const center4 = expand4(center);
+    auto const radius = m_options.point_size / 2;
+
+    auto render_bounds = Gfx::IntRect {
+        center.x() - radius,
+        center.y() - radius,
+        radius * 2 + 1,
+        radius * 2 + 1,
+    };
+
+    // Rasterize using a 2D signed distance field for a circle
+    rasterize(
+        render_bounds,
+        [&center4, &radius](auto& quad) {
+            auto screen_coords = to_vec2_f32x4(quad.screen_coordinates);
+            auto distance_to_point = length(center4 - screen_coords) - radius;
+
+            // Add .5f to the distance so coverage transitions half a pixel before the actual border
+            quad.coverage = 1.f - AK::SIMD::clamp(distance_to_point + .5f, 0.f, 1.f);
+            quad.mask = quad.coverage > 0.f;
+        },
+        [&point](auto& quad) {
+            quad.depth = expand4(point.window_coordinates.z());
+        },
+        [&point](auto& quad) {
+            quad.set_input(SHADER_INPUT_VERTEX_COLOR, expand4(point.color));
+            for (size_t i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i)
+                quad.set_input(SHADER_INPUT_FIRST_TEXCOORD + i * 4, expand4(point.tex_coords[i]));
+
+            quad.fog_depth = expand4(abs(point.eye_coordinates.z()));
+        });
+}
+
+void Device::rasterize_point(GPU::Vertex& point)
+{
+    if (m_options.point_smooth)
+        rasterize_point_antialiased(point);
+    else
+        rasterize_point_aliased(point);
+}
+
+void Device::rasterize_triangle(Triangle& triangle)
+{
+    INCREASE_STATISTICS_COUNTER(g_num_rasterized_triangles, 1);
+
+    auto v0 = (triangle.vertices[0].window_coordinates.xy() * subpixel_factor).to_rounded<int>();
+    auto v1 = (triangle.vertices[1].window_coordinates.xy() * subpixel_factor).to_rounded<int>();
+    auto v2 = (triangle.vertices[2].window_coordinates.xy() * subpixel_factor).to_rounded<int>();
+
+    auto triangle_area = edge_function(v0, v1, v2);
+    if (triangle_area == 0)
+        return;
+
+    // Perform face culling
+    if (m_options.enable_culling) {
+        bool is_front = (m_options.front_face == GPU::WindingOrder::CounterClockwise ? triangle_area > 0 : triangle_area < 0);
+
+        if (!is_front && m_options.cull_back)
+            return;
+
+        if (is_front && m_options.cull_front)
+            return;
+    }
+
+    // Force counter-clockwise ordering of vertices
+    if (triangle_area < 0) {
+        swap(triangle.vertices[0], triangle.vertices[1]);
+        swap(v0, v1);
+        triangle_area *= -1;
+    }
+
+    auto const& vertex0 = triangle.vertices[0];
+    auto const& vertex1 = triangle.vertices[1];
+    auto const& vertex2 = triangle.vertices[2];
+
+    auto const one_over_area = 1.0f / triangle_area;
+
+    // This function calculates the 3 edge values for the pixel relative to the triangle.
+    auto calculate_edge_values4 = [v0, v1, v2](Vector2<i32x4> const& p) -> Vector3<i32x4> {
+        return {
+            edge_function4(v1, v2, p),
+            edge_function4(v2, v0, p),
+            edge_function4(v0, v1, p),
+        };
+    };
+
+    // Zero is used in testing against edge values below, applying the "top-left rule". If a pixel
+    // lies exactly on an edge shared by two triangles, we only render that pixel if the edge in
+    // question is a "top" or "left" edge. By setting either a 1 or 0, we effectively change the
+    // comparisons against the edge values below from "> 0" into ">= 0".
+    IntVector3 const zero {
+        (v2.y() < v1.y() || (v2.y() == v1.y() && v2.x() < v1.x())) ? 0 : 1,
+        (v0.y() < v2.y() || (v0.y() == v2.y() && v0.x() < v2.x())) ? 0 : 1,
+        (v1.y() < v0.y() || (v1.y() == v0.y() && v1.x() < v0.x())) ? 0 : 1,
+    };
+
+    // This function tests whether a point as identified by its 3 edge values lies within the triangle
+    auto test_point4 = [zero](Vector3<i32x4> const& edges) -> i32x4 {
+        return edges.x() >= zero.x()
+            && edges.y() >= zero.y()
+            && edges.z() >= zero.z();
+    };
+
+    // Calculate render bounds based on the triangle's vertices
+    Gfx::IntRect render_bounds;
+    render_bounds.set_left(min(min(v0.x(), v1.x()), v2.x()) / subpixel_factor);
+    render_bounds.set_right(max(max(v0.x(), v1.x()), v2.x()) / subpixel_factor);
+    render_bounds.set_top(min(min(v0.y(), v1.y()), v2.y()) / subpixel_factor);
+    render_bounds.set_bottom(max(max(v0.y(), v1.y()), v2.y()) / subpixel_factor);
+
+    // Calculate depth of fragment for fog;
+    // OpenGL 1.5 chapter 3.10: "An implementation may choose to approximate the
+    // eye-coordinate distance from the eye to each fragment center by |Ze|."
+    Vector3<f32x4> fog_depth;
+    if (m_options.fog_enabled) {
+        fog_depth = {
+            expand4(abs(vertex0.eye_coordinates.z())),
+            expand4(abs(vertex1.eye_coordinates.z())),
+            expand4(abs(vertex2.eye_coordinates.z())),
+        };
+    }
+
+    auto const half_pixel_offset = Vector2<i32x4> { expand4(subpixel_factor / 2), expand4(subpixel_factor / 2) };
+
+    auto const window_w_coordinates = Vector3<f32x4> {
+        expand4(vertex0.window_coordinates.w()),
+        expand4(vertex1.window_coordinates.w()),
+        expand4(vertex2.window_coordinates.w()),
+    };
+
+    // Calculate depth offset to apply
+    float depth_offset = 0.f;
+    if (m_options.depth_offset_enabled) {
+        // OpenGL 2.0 § 3.5.5 allows us to approximate the maximum slope
+        auto delta_z = max(
+            max(
+                abs(vertex0.window_coordinates.z() - vertex1.window_coordinates.z()),
+                abs(vertex1.window_coordinates.z() - vertex2.window_coordinates.z())),
+            abs(vertex2.window_coordinates.z() - vertex0.window_coordinates.z()));
+        auto depth_max_slope = max(delta_z / render_bounds.width(), delta_z / render_bounds.height());
+
+        // Calculate total depth offset
+        depth_offset = depth_max_slope * m_options.depth_offset_factor + NumericLimits<float>::epsilon() * m_options.depth_offset_constant;
+    }
+
+    auto const window_z_coordinates = Vector3<f32x4> {
+        expand4(vertex0.window_coordinates.z() + depth_offset),
+        expand4(vertex1.window_coordinates.z() + depth_offset),
+        expand4(vertex2.window_coordinates.z() + depth_offset),
+    };
+
+    rasterize(
+        render_bounds,
+        [&](auto& quad) {
+            auto edge_values = calculate_edge_values4(quad.screen_coordinates * subpixel_factor + half_pixel_offset);
+            quad.mask = test_point4(edge_values);
+
+            quad.barycentrics = {
+                to_f32x4(edge_values.x()),
+                to_f32x4(edge_values.y()),
+                to_f32x4(edge_values.z()),
+            };
+        },
+        [&](auto& quad) {
+            // Determine each edge's ratio to the total area
+            quad.barycentrics = quad.barycentrics * one_over_area;
+
+            // Because the Z coordinates were divided by W, we can interpolate between them
+            quad.depth = AK::SIMD::clamp(window_z_coordinates.dot(quad.barycentrics), 0.f, 1.f);
+        },
+        [&](auto& quad) {
+            auto const interpolated_reciprocal_w = window_w_coordinates.dot(quad.barycentrics);
+            quad.barycentrics = quad.barycentrics * window_w_coordinates / interpolated_reciprocal_w;
+
+            // FIXME: make this more generic. We want to interpolate more than just color and uv
+            if (m_options.shade_smooth)
+                quad.set_input(SHADER_INPUT_VERTEX_COLOR, interpolate(expand4(vertex0.color), expand4(vertex1.color), expand4(vertex2.color), quad.barycentrics));
+            else
+                quad.set_input(SHADER_INPUT_VERTEX_COLOR, expand4(vertex0.color));
+
+            for (GPU::TextureUnitIndex i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i)
+                quad.set_input(SHADER_INPUT_FIRST_TEXCOORD + i * 4, interpolate(expand4(vertex0.tex_coords[i]), expand4(vertex1.tex_coords[i]), expand4(vertex2.tex_coords[i]), quad.barycentrics));
+
+            if (m_options.fog_enabled)
+                quad.fog_depth = fog_depth.dot(quad.barycentrics);
+        });
+}
+
+Device::Device(Gfx::IntSize size)
+    : m_frame_buffer(FrameBuffer<GPU::ColorType, GPU::DepthType, GPU::StencilType>::try_create(size).release_value_but_fixme_should_propagate_errors())
+    , m_shader_processor(m_samplers)
+{
+    m_options.scissor_box = m_frame_buffer->rect();
+    m_options.viewport = m_frame_buffer->rect();
+}
+
+GPU::DeviceInfo Device::info() const
 {
     return {
         .vendor_name = "SerenityOS",
         .device_name = "SoftGPU",
-        .num_texture_units = NUM_SAMPLERS,
+        .num_texture_units = GPU::NUM_TEXTURE_UNITS,
         .num_lights = NUM_LIGHTS,
-        .stencil_bits = sizeof(u8) * 8,
+        .max_clip_planes = MAX_CLIP_PLANES,
+        .max_texture_size = MAX_TEXTURE_SIZE,
+        .max_texture_lod_bias = MAX_TEXTURE_LOD_BIAS,
+        .stencil_bits = sizeof(GPU::StencilType) * 8,
         .supports_npot_textures = true,
+        .supports_texture_clamp_to_edge = true,
+        .supports_texture_env_add = true,
     };
 }
 
-static void generate_texture_coordinates(Vertex& vertex, RasterizerOptions const& options)
+static void generate_texture_coordinates(GPU::Vertex const& vertex, FloatVector4& tex_coord, GPU::TextureUnitConfiguration const& texture_unit_configuration)
 {
-    auto generate_coordinate = [&](size_t texcoord_index, size_t config_index) -> float {
-        auto mode = options.texcoord_generation_config[texcoord_index][config_index].mode;
-
-        switch (mode) {
-        case TexCoordGenerationMode::ObjectLinear: {
-            auto coefficients = options.texcoord_generation_config[texcoord_index][config_index].coefficients;
+    auto generate_coordinate = [&](size_t config_index) -> float {
+        auto const& tex_coord_generation = texture_unit_configuration.tex_coord_generation[config_index];
+        switch (tex_coord_generation.mode) {
+        case GPU::TexCoordGenerationMode::ObjectLinear: {
+            auto coefficients = tex_coord_generation.coefficients;
             return coefficients.dot(vertex.position);
         }
-        case TexCoordGenerationMode::EyeLinear: {
-            auto coefficients = options.texcoord_generation_config[texcoord_index][config_index].coefficients;
+        case GPU::TexCoordGenerationMode::EyeLinear: {
+            auto coefficients = tex_coord_generation.coefficients;
             return coefficients.dot(vertex.eye_coordinates);
         }
-        case TexCoordGenerationMode::SphereMap: {
+        case GPU::TexCoordGenerationMode::SphereMap: {
             auto const eye_unit = vertex.eye_coordinates.normalized();
-            FloatVector3 const eye_unit_xyz = { eye_unit.x(), eye_unit.y(), eye_unit.z() };
+            FloatVector3 const eye_unit_xyz = eye_unit.xyz();
             auto const normal = vertex.normal;
             auto reflection = eye_unit_xyz - normal * 2 * normal.dot(eye_unit_xyz);
             reflection.set_z(reflection.z() + 1);
-            auto const reflection_value = (config_index == 0) ? reflection.x() : reflection.y();
+            auto const reflection_value = reflection[config_index];
             return reflection_value / (2 * reflection.length()) + 0.5f;
         }
-        case TexCoordGenerationMode::ReflectionMap: {
+        case GPU::TexCoordGenerationMode::ReflectionMap: {
             auto const eye_unit = vertex.eye_coordinates.normalized();
-            FloatVector3 const eye_unit_xyz = { eye_unit.x(), eye_unit.y(), eye_unit.z() };
+            FloatVector3 const eye_unit_xyz = eye_unit.xyz();
             auto const normal = vertex.normal;
             auto reflection = eye_unit_xyz - normal * 2 * normal.dot(eye_unit_xyz);
-            switch (config_index) {
-            case 0:
-                return reflection.x();
-            case 1:
-                return reflection.y();
-            case 2:
-                return reflection.z();
-            default:
-                VERIFY_NOT_REACHED();
-            }
+            return reflection[config_index];
         }
-        case TexCoordGenerationMode::NormalMap: {
-            auto const normal = vertex.normal;
-            switch (config_index) {
-            case 0:
-                return normal.x();
-            case 1:
-                return normal.y();
-            case 2:
-                return normal.z();
-            default:
-                VERIFY_NOT_REACHED();
-            }
+        case GPU::TexCoordGenerationMode::NormalMap: {
+            return vertex.normal[config_index];
         }
-        default:
-            VERIFY_NOT_REACHED();
         }
+        VERIFY_NOT_REACHED();
     };
 
-    for (size_t i = 0; i < vertex.tex_coords.size(); ++i) {
-        auto& tex_coord = vertex.tex_coords[i];
-        auto const enabled_coords = options.texcoord_generation_enabled_coordinates[i];
-        tex_coord = {
-            ((enabled_coords & TexCoordGenerationCoordinate::S) > 0) ? generate_coordinate(i, 0) : tex_coord.x(),
-            ((enabled_coords & TexCoordGenerationCoordinate::T) > 0) ? generate_coordinate(i, 1) : tex_coord.y(),
-            ((enabled_coords & TexCoordGenerationCoordinate::R) > 0) ? generate_coordinate(i, 2) : tex_coord.z(),
-            ((enabled_coords & TexCoordGenerationCoordinate::Q) > 0) ? generate_coordinate(i, 3) : tex_coord.w(),
-        };
-    }
+    auto const enabled_coords = texture_unit_configuration.tex_coord_generation_enabled;
+    if (enabled_coords == GPU::TexCoordGenerationCoordinate::None)
+        return;
+
+    tex_coord = {
+        ((enabled_coords & GPU::TexCoordGenerationCoordinate::S) > 0) ? generate_coordinate(0) : tex_coord.x(),
+        ((enabled_coords & GPU::TexCoordGenerationCoordinate::T) > 0) ? generate_coordinate(1) : tex_coord.y(),
+        ((enabled_coords & GPU::TexCoordGenerationCoordinate::R) > 0) ? generate_coordinate(2) : tex_coord.z(),
+        ((enabled_coords & GPU::TexCoordGenerationCoordinate::Q) > 0) ? generate_coordinate(3) : tex_coord.w(),
+    };
 }
 
-void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const& model_view_transform, FloatMatrix3x3 const& normal_transform,
-    FloatMatrix4x4 const& projection_transform, FloatMatrix4x4 const& texture_transform, Vector<Vertex> const& vertices,
-    Vector<size_t> const& enabled_texture_units)
+void Device::calculate_vertex_lighting(GPU::Vertex& vertex) const
+{
+    if (!m_options.lighting_enabled)
+        return;
+
+    auto const& material = m_materials.at(0);
+    auto ambient = material.ambient;
+    auto diffuse = material.diffuse;
+    auto emissive = material.emissive;
+    auto specular = material.specular;
+
+    if (m_options.color_material_enabled
+        && (m_options.color_material_face == GPU::ColorMaterialFace::Front || m_options.color_material_face == GPU::ColorMaterialFace::FrontAndBack)) {
+        switch (m_options.color_material_mode) {
+        case GPU::ColorMaterialMode::Ambient:
+            ambient = vertex.color;
+            break;
+        case GPU::ColorMaterialMode::AmbientAndDiffuse:
+            ambient = vertex.color;
+            diffuse = vertex.color;
+            break;
+        case GPU::ColorMaterialMode::Diffuse:
+            diffuse = vertex.color;
+            break;
+        case GPU::ColorMaterialMode::Emissive:
+            emissive = vertex.color;
+            break;
+        case GPU::ColorMaterialMode::Specular:
+            specular = vertex.color;
+            break;
+        }
+    }
+
+    FloatVector4 result_color = emissive + ambient * m_lighting_model.scene_ambient_color;
+
+    for (auto const& light : m_lights) {
+        if (!light.is_enabled)
+            continue;
+
+        // We need to save the length here because the attenuation factor requires a non-normalized vector!
+        auto sgi_arrow_operator = [](FloatVector4 const& p1, FloatVector4 const& p2, float& output_length) {
+            FloatVector3 light_vector;
+            if ((p1.w() != 0.f) && (p2.w() == 0.f))
+                light_vector = p2.xyz();
+            else if ((p1.w() == 0.f) && (p2.w() != 0.f))
+                light_vector = -p1.xyz();
+            else
+                light_vector = p2.xyz() - p1.xyz();
+
+            output_length = light_vector.length();
+            if (output_length == 0.f)
+                return light_vector;
+            return light_vector / output_length;
+        };
+
+        auto sgi_dot_operator = [](FloatVector3 const& d1, FloatVector3 const& d2) {
+            return AK::max(d1.dot(d2), 0.0f);
+        };
+
+        float vertex_to_light_length = 0.f;
+        FloatVector3 vertex_to_light = sgi_arrow_operator(vertex.eye_coordinates, light.position, vertex_to_light_length);
+
+        // Light attenuation value.
+        float light_attenuation_factor = 1.0f;
+        if (light.position.w() != 0.0f)
+            light_attenuation_factor = 1.0f / (light.constant_attenuation + (light.linear_attenuation * vertex_to_light_length) + (light.quadratic_attenuation * vertex_to_light_length * vertex_to_light_length));
+
+        // Spotlight factor
+        float spotlight_factor = 1.0f;
+        if (light.spotlight_cutoff_angle != 180.0f) {
+            auto const vertex_to_light_dot_spotlight_direction = sgi_dot_operator(vertex_to_light, light.spotlight_direction.normalized());
+            auto const cos_spotlight_cutoff = AK::cos<float>(light.spotlight_cutoff_angle * AK::Pi<float> / 180.f);
+
+            if (vertex_to_light_dot_spotlight_direction >= cos_spotlight_cutoff)
+                spotlight_factor = AK::pow<float>(vertex_to_light_dot_spotlight_direction, light.spotlight_exponent);
+            else
+                spotlight_factor = 0.0f;
+        }
+
+        // FIXME: The spec allows for splitting the colors calculated here into multiple different colors (primary/secondary color). Investigate what this means.
+        (void)m_lighting_model.color_control;
+
+        // FIXME: Two sided lighting should be implemented eventually (I believe this is where the normals are -ve and then lighting is calculated with the BACK material)
+        (void)m_lighting_model.two_sided_lighting;
+
+        // Ambient
+        auto const ambient_component = ambient * light.ambient_intensity;
+
+        // Diffuse
+        auto const normal_dot_vertex_to_light = sgi_dot_operator(vertex.normal, vertex_to_light);
+        auto const diffuse_component = diffuse * light.diffuse_intensity * normal_dot_vertex_to_light;
+
+        // Specular
+        FloatVector4 specular_component = { 0.0f, 0.0f, 0.0f, 0.0f };
+        if (normal_dot_vertex_to_light > 0.0f) {
+            FloatVector3 half_vector_normalized;
+            if (!m_lighting_model.viewer_at_infinity) {
+                half_vector_normalized = vertex_to_light + FloatVector3(0.0f, 0.0f, 1.0f);
+            } else {
+                auto const vertex_to_eye_point = sgi_arrow_operator(vertex.eye_coordinates, { 0.f, 0.f, 0.f, 1.f }, vertex_to_light_length);
+                half_vector_normalized = vertex_to_light + vertex_to_eye_point;
+            }
+            half_vector_normalized.normalize();
+
+            auto const normal_dot_half_vector = sgi_dot_operator(vertex.normal, half_vector_normalized);
+            auto const specular_coefficient = AK::pow(normal_dot_half_vector, material.shininess);
+            specular_component = specular * light.specular_intensity * specular_coefficient;
+        }
+
+        auto color = ambient_component + diffuse_component + specular_component;
+        color = color * light_attenuation_factor * spotlight_factor;
+        result_color += color;
+    }
+
+    vertex.color = result_color;
+    vertex.color.set_w(diffuse.w()); // OpenGL 1.5 spec, page 59: "The A produced by lighting is the alpha value associated with diffuse color material"
+    vertex.color.clamp(0.0f, 1.0f);
+}
+
+void Device::draw_primitives(GPU::PrimitiveType primitive_type, FloatMatrix4x4 const& model_view_transform, FloatMatrix4x4 const& projection_transform, Vector<GPU::Vertex>& vertices)
 {
     // At this point, the user has effectively specified that they are done with defining the geometry
     // of what they want to draw. We now need to do a few things (https://www.khronos.org/opengl/wiki/Rendering_Pipeline_Overview):
@@ -681,16 +961,102 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
     // 2.   Transform all of the vertices from eye space into clip space by multiplying by the projection matrix
     // 3.   If culling is enabled, we cull the desired faces (https://learnopengl.com/Advanced-OpenGL/Face-culling)
     // 4.   Each element of the vertex is then divided by w to bring the positions into NDC (Normalized Device Coordinates)
-    // 5.   The vertices are sorted (for the rasterizer, how are we doing this? 3Dfx did this top to bottom in terms of vertex y coordinates)
-    // 6.   The vertices are then sent off to the rasterizer and drawn to the screen
+    // 5.   The triangle's vertices are sorted in a counter-clockwise orientation
+    // 6.   The triangles are then sent off to the rasterizer and drawn to the screen
 
-    m_enabled_texture_units = enabled_texture_units;
+    if (vertices.is_empty())
+        return;
 
-    m_triangle_list.clear_with_capacity();
-    m_processed_triangles.clear_with_capacity();
+    // Set up normals transform by taking the upper left 3x3 elements from the model view matrix
+    // See section 2.11.3 of the OpenGL 1.5 spec
+    auto const normal_transform = model_view_transform.submatrix_from_topleft<3>().transpose().inverse();
+
+    // First, transform all vertices
+    for (auto& vertex : vertices) {
+        vertex.eye_coordinates = model_view_transform * vertex.position;
+
+        vertex.normal = normal_transform * vertex.normal;
+        if (m_options.normalization_enabled)
+            vertex.normal.normalize();
+
+        calculate_vertex_lighting(vertex);
+
+        vertex.clip_coordinates = projection_transform * vertex.eye_coordinates;
+
+        for (GPU::TextureUnitIndex i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i) {
+            auto const& texture_unit_configuration = m_texture_unit_configuration[i];
+            if (!texture_unit_configuration.enabled)
+                continue;
+            generate_texture_coordinates(vertex, vertex.tex_coords[i], texture_unit_configuration);
+            vertex.tex_coords[i] = texture_unit_configuration.transformation_matrix * vertex.tex_coords[i];
+        }
+    }
+
+    // Window coordinate calculation
+    auto const viewport = m_options.viewport;
+    auto const viewport_half_width = viewport.width() / 2.f;
+    auto const viewport_half_height = viewport.height() / 2.f;
+    auto const viewport_center_x = viewport.x() + viewport_half_width;
+    auto const viewport_center_y = viewport.y() + viewport_half_height;
+    auto const depth_half_range = (m_options.depth_max - m_options.depth_min) / 2;
+    auto const depth_halfway = (m_options.depth_min + m_options.depth_max) / 2;
+
+    auto calculate_vertex_window_coordinates = [&](GPU::Vertex& vertex) {
+        auto const one_over_w = 1 / vertex.clip_coordinates.w();
+        auto const ndc_coordinates = vertex.clip_coordinates.xyz() * one_over_w;
+
+        vertex.window_coordinates = {
+            viewport_center_x + ndc_coordinates.x() * viewport_half_width,
+            viewport_center_y + ndc_coordinates.y() * viewport_half_height,
+            depth_halfway + ndc_coordinates.z() * depth_half_range,
+            one_over_w,
+        };
+    };
+
+    // Process points
+    if (primitive_type == GPU::PrimitiveType::Points) {
+        m_clipper.clip_points_against_frustum(vertices);
+        for (auto& vertex : vertices) {
+            calculate_vertex_window_coordinates(vertex);
+            rasterize_point(vertex);
+        }
+        return;
+    }
+
+    // Process lines, line loop and line strips
+    auto rasterize_line_segment = [&](GPU::Vertex& from, GPU::Vertex& to) {
+        if (!m_clipper.clip_line_against_frustum(from, to))
+            return;
+
+        calculate_vertex_window_coordinates(from);
+        calculate_vertex_window_coordinates(to);
+
+        rasterize_line(from, to);
+    };
+    if (primitive_type == GPU::PrimitiveType::Lines) {
+        if (vertices.size() < 2)
+            return;
+        for (size_t i = 0; i < vertices.size() - 1; i += 2)
+            rasterize_line_segment(vertices[i], vertices[i + 1]);
+        return;
+    } else if (primitive_type == GPU::PrimitiveType::LineLoop) {
+        if (vertices.size() < 2)
+            return;
+        for (size_t i = 0; i < vertices.size(); ++i)
+            rasterize_line_segment(vertices[i], vertices[(i + 1) % vertices.size()]);
+        return;
+    } else if (primitive_type == GPU::PrimitiveType::LineStrip) {
+        if (vertices.size() < 2)
+            return;
+        for (size_t i = 0; i < vertices.size() - 1; ++i)
+            rasterize_line_segment(vertices[i], vertices[i + 1]);
+        return;
+    }
 
     // Let's construct some triangles
-    if (primitive_type == PrimitiveType::Triangles) {
+    m_triangle_list.clear_with_capacity();
+    m_processed_triangles.clear_with_capacity();
+    if (primitive_type == GPU::PrimitiveType::Triangles) {
         Triangle triangle;
         if (vertices.size() < 3)
             return;
@@ -701,7 +1067,7 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
 
             m_triangle_list.append(triangle);
         }
-    } else if (primitive_type == PrimitiveType::Quads) {
+    } else if (primitive_type == GPU::PrimitiveType::Quads) {
         // We need to construct two triangles to form the quad
         Triangle triangle;
         if (vertices.size() < 4)
@@ -719,7 +1085,7 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
             triangle.vertices[2] = vertices.at(i);
             m_triangle_list.append(triangle);
         }
-    } else if (primitive_type == PrimitiveType::TriangleFan) {
+    } else if (primitive_type == GPU::PrimitiveType::TriangleFan) {
         Triangle triangle;
         triangle.vertices[0] = vertices.at(0); // Root vertex is always the vertex defined first
 
@@ -729,7 +1095,7 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
             triangle.vertices[2] = vertices.at(i + 1);
             m_triangle_list.append(triangle);
         }
-    } else if (primitive_type == PrimitiveType::TriangleStrip) {
+    } else if (primitive_type == GPU::PrimitiveType::TriangleStrip) {
         Triangle triangle;
         if (vertices.size() < 3)
             return;
@@ -747,195 +1113,22 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
         }
     }
 
-    // Now let's transform each triangle and send that to the GPU
-    auto const viewport = window_coordinates_to_target_coordinates(m_options.viewport);
-    auto const viewport_half_width = viewport.width() / 2.0f;
-    auto const viewport_half_height = viewport.height() / 2.0f;
-    auto const viewport_center_x = viewport.x() + viewport_half_width;
-    auto const viewport_center_y = viewport.y() + viewport_half_height;
-    auto const depth_half_range = (m_options.depth_max - m_options.depth_min) / 2;
-    auto const depth_halfway = (m_options.depth_min + m_options.depth_max) / 2;
+    // Clip triangles
     for (auto& triangle : m_triangle_list) {
-        // Transform vertices into eye coordinates using the model-view transform
-        triangle.vertices[0].eye_coordinates = model_view_transform * triangle.vertices[0].position;
-        triangle.vertices[1].eye_coordinates = model_view_transform * triangle.vertices[1].position;
-        triangle.vertices[2].eye_coordinates = model_view_transform * triangle.vertices[2].position;
-
-        // Transform the vertex normals into eye-space
-        triangle.vertices[0].normal = transform_direction(model_view_transform, triangle.vertices[0].normal);
-        triangle.vertices[1].normal = transform_direction(model_view_transform, triangle.vertices[1].normal);
-        triangle.vertices[2].normal = transform_direction(model_view_transform, triangle.vertices[2].normal);
-
-        // Calculate per-vertex lighting
-        if (m_options.lighting_enabled) {
-            auto const& material = m_materials.at(0);
-            for (auto& vertex : triangle.vertices) {
-                auto ambient = material.ambient;
-                auto diffuse = material.diffuse;
-                auto emissive = material.emissive;
-                auto specular = material.specular;
-
-                if (m_options.color_material_enabled
-                    && (m_options.color_material_face == ColorMaterialFace::Front || m_options.color_material_face == ColorMaterialFace::FrontAndBack)) {
-                    switch (m_options.color_material_mode) {
-                    case ColorMaterialMode::Ambient:
-                        ambient = vertex.color;
-                        break;
-                    case ColorMaterialMode::AmbientAndDiffuse:
-                        ambient = vertex.color;
-                        diffuse = vertex.color;
-                        break;
-                    case ColorMaterialMode::Diffuse:
-                        diffuse = vertex.color;
-                        break;
-                    case ColorMaterialMode::Emissive:
-                        emissive = vertex.color;
-                        break;
-                    case ColorMaterialMode::Specular:
-                        specular = vertex.color;
-                        break;
-                    }
-                }
-
-                FloatVector4 result_color = emissive + (ambient * m_lighting_model.scene_ambient_color);
-
-                for (auto const& light : m_lights) {
-                    if (!light.is_enabled)
-                        continue;
-
-                    // We need to save the length here because the attenuation factor requires a non
-                    // normalized vector!
-                    auto sgi_arrow_operator = [](FloatVector4 const& p1, FloatVector4 const& p2, float& saved_length) {
-                        if ((p1.w() != 0.0f) && (p2.w() == 0.0f)) {
-                            saved_length = p2.length();
-                            return (p2 / saved_length).xyz();
-                        } else if ((p1.w() == 0.0f) && (p2.w() != 0.0f)) {
-                            saved_length = p2.length();
-                            return -(p1 / saved_length).xyz();
-                        } else {
-                            // FIXME: The OpenGL 1.5 spec says nothing about the case where P1 and P2 BOTH have a w value of 1, which would
-                            // then mean the light position has an implicit value of (0, 0, 0, 0). This doesn't make any logical sense, and it most likely
-                            // a typographical error. Most other GL implementations seem to just fix it to the distance from the vertex to the light, which
-                            // seems to work just fine.
-                            // If somebody with more insight about this could clarify this eventually, that'd be great.
-                            auto distance = (p2 - p1);
-                            saved_length = distance.length();
-                            return (distance / saved_length).xyz();
-                        }
-                    };
-
-                    auto sgi_dot_operator = [](FloatVector3 const& d1, FloatVector3 const& d2) {
-                        return AK::max(d1.dot(d2), 0.0f);
-                    };
-
-                    float vector_length = 0.0f;
-                    FloatVector3 vertex_to_light = sgi_arrow_operator(vertex.eye_coordinates, light.position, vector_length);
-
-                    // Light attenuation value.
-                    float light_attenuation_factor = 1.0f;
-                    if (light.position.w() != 0.0f) {
-                        auto const vertex_to_light_length = vertex_to_light.length();
-                        auto const vertex_to_light_length_squared = vertex_to_light_length * vertex_to_light_length;
-
-                        light_attenuation_factor = 1.0f / (light.constant_attenuation + (light.linear_attenuation * vertex_to_light_length) + (light.quadratic_attenuation * vertex_to_light_length_squared));
-                    }
-
-                    // Spotlight factor
-                    float spotlight_factor = 1.0f;
-                    if (light.spotlight_cutoff_angle != 180.0f) {
-                        auto const vertex_to_light_dot_spotlight_direction = sgi_dot_operator(vertex_to_light, light.spotlight_direction.normalized());
-                        auto const cos_spotlight_cutoff = AK::cos<float>(light.spotlight_cutoff_angle * AK::Pi<float> / 180.f);
-
-                        if (vertex_to_light_dot_spotlight_direction >= cos_spotlight_cutoff)
-                            spotlight_factor = AK::pow<float>(vertex_to_light_dot_spotlight_direction, light.spotlight_exponent);
-                        else
-                            spotlight_factor = 0.0f;
-                    }
-
-                    // FIXME: The spec allows for splitting the colors calculated here into multiple different colors (primary/secondary color). Investigate what this means.
-                    (void)m_lighting_model.single_color;
-
-                    // FIXME: Two sided lighting should be implemented eventually (I believe this is where the normals are -ve and then lighting is calculated with the BACK material)
-                    (void)m_lighting_model.two_sided_lighting;
-
-                    // Ambient
-                    auto const ambient_component = ambient * light.ambient_intensity;
-
-                    // Diffuse
-                    auto const normal_dot_vertex_to_light = sgi_dot_operator(vertex.normal, vertex_to_light);
-                    auto const diffuse_component = ((diffuse * light.diffuse_intensity) * normal_dot_vertex_to_light);
-
-                    // Specular
-                    FloatVector4 specular_component = { 0.0f, 0.0f, 0.0f, 0.0f };
-                    if (normal_dot_vertex_to_light > 0.0f) {
-                        FloatVector3 half_vector_normalized;
-                        if (!m_lighting_model.viewer_at_infinity) {
-                            half_vector_normalized = (vertex_to_light + FloatVector3(0.0f, 0.0f, 1.0f)).normalized();
-                        } else {
-                            auto const vertex_to_eye_point = sgi_arrow_operator(vertex.eye_coordinates.normalized(), FloatVector4(0.0f, 0.0f, 0.0f, 1.0f), vector_length);
-                            half_vector_normalized = vertex_to_light + vertex_to_eye_point;
-                        }
-
-                        auto const normal_dot_half_vector = sgi_dot_operator(vertex.normal.normalized(), half_vector_normalized);
-                        auto const specular_coefficient = AK::pow(normal_dot_half_vector, material.shininess);
-                        specular_component = (specular * light.specular_intensity) * specular_coefficient;
-                    }
-
-                    FloatVector4 color = ambient_component;
-                    color += diffuse_component;
-                    color += specular_component;
-                    color = color * light_attenuation_factor * spotlight_factor;
-                    result_color += color;
-                }
-
-                vertex.color = result_color;
-                vertex.color.set_w(diffuse.w()); // OpenGL 1.5 spec, page 59: "The A produced by lighting is the alpha value associated with diffuse color material"
-                vertex.color.clamp(0.0f, 1.0f);
-            }
-        }
-
-        // Transform eye coordinates into clip coordinates using the projection transform
-        triangle.vertices[0].clip_coordinates = projection_transform * triangle.vertices[0].eye_coordinates;
-        triangle.vertices[1].clip_coordinates = projection_transform * triangle.vertices[1].eye_coordinates;
-        triangle.vertices[2].clip_coordinates = projection_transform * triangle.vertices[2].eye_coordinates;
-
-        // At this point, we're in clip space
-        // Here's where we do the clipping. This is a really crude implementation of the
-        // https://learnopengl.com/Getting-started/Coordinate-Systems
-        // "Note that if only a part of a primitive e.g. a triangle is outside the clipping volume OpenGL
-        // will reconstruct the triangle as one or more triangles to fit inside the clipping range. "
-        //
-        // ALL VERTICES ARE DEFINED IN A CLOCKWISE ORDER
-
-        // Okay, let's do some face culling first
-
         m_clipped_vertices.clear_with_capacity();
         m_clipped_vertices.append(triangle.vertices[0]);
         m_clipped_vertices.append(triangle.vertices[1]);
         m_clipped_vertices.append(triangle.vertices[2]);
         m_clipper.clip_triangle_against_frustum(m_clipped_vertices);
 
+        if (m_clip_planes.size() > 0)
+            m_clipper.clip_triangle_against_user_defined(m_clipped_vertices, m_clip_planes);
+
         if (m_clipped_vertices.size() < 3)
             continue;
 
-        for (auto& vec : m_clipped_vertices) {
-            // To normalized device coordinates (NDC)
-            auto const one_over_w = 1 / vec.clip_coordinates.w();
-            auto const ndc_coordinates = FloatVector4 {
-                vec.clip_coordinates.x() * one_over_w,
-                vec.clip_coordinates.y() * one_over_w,
-                vec.clip_coordinates.z() * one_over_w,
-                one_over_w,
-            };
-
-            // To window coordinates - note that we flip the Y coordinate into target space
-            vec.window_coordinates = {
-                viewport_center_x + ndc_coordinates.x() * viewport_half_width,
-                viewport_center_y - ndc_coordinates.y() * viewport_half_height,
-                depth_halfway + ndc_coordinates.z() * depth_half_range,
-                ndc_coordinates.w(),
-            };
-        }
+        for (auto& vertex : m_clipped_vertices)
+            calculate_vertex_window_coordinates(vertex);
 
         Triangle tri;
         tri.vertices[0] = m_clipped_vertices[0];
@@ -946,116 +1139,158 @@ void Device::draw_primitives(PrimitiveType primitive_type, FloatMatrix4x4 const&
         }
     }
 
-    // Generate texture coordinates if at least one coordinate is enabled
-    bool texture_coordinate_generation_enabled = false;
-    for (auto const coordinates_enabled : m_options.texcoord_generation_enabled_coordinates) {
-        if (coordinates_enabled != TexCoordGenerationCoordinate::None) {
-            texture_coordinate_generation_enabled = true;
-            break;
-        }
-    }
-
-    for (auto& triangle : m_processed_triangles) {
-        // Let's calculate the (signed) area of the triangle
-        // https://cp-algorithms.com/geometry/oriented-triangle-area.html
-        float dxAB = triangle.vertices[0].window_coordinates.x() - triangle.vertices[1].window_coordinates.x(); // A.x - B.x
-        float dxBC = triangle.vertices[1].window_coordinates.x() - triangle.vertices[2].window_coordinates.x(); // B.X - C.x
-        float dyAB = triangle.vertices[0].window_coordinates.y() - triangle.vertices[1].window_coordinates.y();
-        float dyBC = triangle.vertices[1].window_coordinates.y() - triangle.vertices[2].window_coordinates.y();
-        float area = (dxAB * dyBC) - (dxBC * dyAB);
-
-        if (area == 0.0f)
-            continue;
-
-        if (m_options.enable_culling) {
-            bool is_front = (m_options.front_face == WindingOrder::CounterClockwise ? area < 0 : area > 0);
-
-            if (!is_front && m_options.cull_back)
-                continue;
-
-            if (is_front && m_options.cull_front)
-                continue;
-        }
-
-        if (area > 0)
-            swap(triangle.vertices[0], triangle.vertices[1]);
-
-        // Transform normals
-        triangle.vertices[0].normal = normal_transform * triangle.vertices[0].normal;
-        triangle.vertices[1].normal = normal_transform * triangle.vertices[1].normal;
-        triangle.vertices[2].normal = normal_transform * triangle.vertices[2].normal;
-        if (m_options.normalization_enabled) {
-            triangle.vertices[0].normal.normalize();
-            triangle.vertices[1].normal.normalize();
-            triangle.vertices[2].normal.normalize();
-        }
-
-        if (texture_coordinate_generation_enabled) {
-            generate_texture_coordinates(triangle.vertices[0], m_options);
-            generate_texture_coordinates(triangle.vertices[1], m_options);
-            generate_texture_coordinates(triangle.vertices[2], m_options);
-        }
-
-        // Apply texture transformation
-        for (size_t i = 0; i < NUM_SAMPLERS; ++i) {
-            triangle.vertices[0].tex_coords[i] = texture_transform * triangle.vertices[0].tex_coords[i];
-            triangle.vertices[1].tex_coords[i] = texture_transform * triangle.vertices[1].tex_coords[i];
-            triangle.vertices[2].tex_coords[i] = texture_transform * triangle.vertices[2].tex_coords[i];
-        }
-
+    for (auto& triangle : m_processed_triangles)
         rasterize_triangle(triangle);
-    }
 }
 
 ALWAYS_INLINE void Device::shade_fragments(PixelQuad& quad)
 {
-    quad.out_color = quad.vertex_color;
+    if (m_current_fragment_shader) {
+        m_shader_processor.execute(quad, *m_current_fragment_shader);
+        return;
+    }
 
-    for (size_t i : m_enabled_texture_units) {
-        // FIXME: implement GL_TEXTURE_1D, GL_TEXTURE_3D and GL_TEXTURE_CUBE_MAP
+    Array<Vector4<f32x4>, GPU::NUM_TEXTURE_UNITS> texture_stage_texel;
+
+    auto current_color = quad.get_input_vector4(SHADER_INPUT_VERTEX_COLOR);
+
+    for (GPU::TextureUnitIndex i = 0; i < GPU::NUM_TEXTURE_UNITS; ++i) {
+        if (!m_texture_unit_configuration[i].enabled)
+            continue;
         auto const& sampler = m_samplers[i];
 
-        auto texel = sampler.sample_2d({ quad.texture_coordinates[i].x(), quad.texture_coordinates[i].y() });
+        // OpenGL 2.0 ¶ 3.5.1 states (in a roundabout way) that texture coordinates must be divided by Q
+        auto homogeneous_texture_coordinate = quad.get_input_vector4(SHADER_INPUT_FIRST_TEXCOORD + i * 4);
+        auto texel = sampler.sample_2d(homogeneous_texture_coordinate.xy() / homogeneous_texture_coordinate.w());
         INCREASE_STATISTICS_COUNTER(g_num_sampler_calls, 1);
+        if (m_samplers_need_texture_staging)
+            texture_stage_texel[i] = texel;
 
-        // FIXME: Implement more blend modes
-        switch (sampler.config().fixed_function_texture_env_mode) {
-        case TextureEnvMode::Modulate:
-            quad.out_color = quad.out_color * texel;
+        // FIXME: implement support for GL_ALPHA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_INTENSITY and GL_RGB internal formats
+        auto& fixed_function_env = sampler.config().fixed_function_texture_environment;
+        switch (fixed_function_env.env_mode) {
+        case GPU::TextureEnvMode::Add:
+            current_color.set_x(current_color.x() + texel.x());
+            current_color.set_y(current_color.y() + texel.y());
+            current_color.set_z(current_color.z() + texel.z());
+            current_color.set_w(current_color.w() * texel.w());
             break;
-        case TextureEnvMode::Replace:
-            quad.out_color = texel;
-            break;
-        case TextureEnvMode::Decal: {
-            auto src_alpha = quad.out_color.w();
-            quad.out_color.set_x(mix(quad.out_color.x(), texel.x(), src_alpha));
-            quad.out_color.set_y(mix(quad.out_color.y(), texel.y(), src_alpha));
-            quad.out_color.set_z(mix(quad.out_color.z(), texel.z(), src_alpha));
+        case GPU::TextureEnvMode::Blend: {
+            auto blend_color = expand4(fixed_function_env.color);
+            current_color.set_x(mix(current_color.x(), blend_color.x(), texel.x()));
+            current_color.set_y(mix(current_color.y(), blend_color.y(), texel.y()));
+            current_color.set_z(mix(current_color.z(), blend_color.z(), texel.z()));
+            current_color.set_w(current_color.w() * texel.w());
             break;
         }
-        default:
-            VERIFY_NOT_REACHED();
+        case GPU::TextureEnvMode::Combine: {
+            auto get_source_color = [&](GPU::TextureSource source, u8 texture_stage) {
+                switch (source) {
+                case GPU::TextureSource::Constant:
+                    return expand4(fixed_function_env.color);
+                case GPU::TextureSource::Previous:
+                    return current_color;
+                case GPU::TextureSource::PrimaryColor:
+                    return quad.get_input_vector4(SHADER_INPUT_VERTEX_COLOR);
+                case GPU::TextureSource::Texture:
+                    return texel;
+                case GPU::TextureSource::TextureStage:
+                    return texture_stage_texel[texture_stage];
+                }
+                VERIFY_NOT_REACHED();
+            };
+            auto get_argument_value = [](GPU::TextureOperand operand, auto value) {
+                switch (operand) {
+                case GPU::TextureOperand::OneMinusSourceAlpha:
+                case GPU::TextureOperand::OneMinusSourceColor:
+                    return expand4(FloatVector4 { 1.f, 1.f, 1.f, 1.f }) - value;
+                case GPU::TextureOperand::SourceAlpha:
+                case GPU::TextureOperand::SourceColor:
+                    return value;
+                }
+                VERIFY_NOT_REACHED();
+            };
+            auto calculate_combinator = [](GPU::TextureCombinator combinator, auto arg0, auto arg1, auto arg2) {
+                switch (combinator) {
+                case GPU::TextureCombinator::Add:
+                    return arg0 + arg1;
+                case GPU::TextureCombinator::AddSigned:
+                    return arg0 + arg1 - expand4(FloatVector4 { .5f, .5f, .5f, .5f });
+                case GPU::TextureCombinator::Dot3RGB:
+                case GPU::TextureCombinator::Dot3RGBA: {
+                    auto scalar = 4.f * ((arg0.x() - .5f) * (arg1.x() - .5f) + (arg0.y() - 0.5f) * (arg1.y() - 0.5f) + (arg0.z() - 0.5f) * (arg1.z() - 0.5f));
+                    return Vector4<f32x4> { scalar, scalar, scalar, scalar };
+                }
+                case GPU::TextureCombinator::Interpolate:
+                    return mix(arg0, arg1, arg2);
+                case GPU::TextureCombinator::Modulate:
+                    return arg0 * arg1;
+                case GPU::TextureCombinator::Replace:
+                    return arg0;
+                case GPU::TextureCombinator::Subtract:
+                    return arg0 - arg1;
+                }
+                VERIFY_NOT_REACHED();
+            };
+            auto calculate_color = [&](GPU::TextureCombinator combinator, auto& operands, auto& sources, u8 texture_stage) {
+                auto arg0 = get_argument_value(operands[0], get_source_color(sources[0], texture_stage));
+                auto arg1 = get_argument_value(operands[1], get_source_color(sources[1], texture_stage));
+                auto arg2 = get_argument_value(operands[2], get_source_color(sources[2], texture_stage));
+                return calculate_combinator(combinator, arg0, arg1, arg2);
+            };
+
+            auto rgb_color = calculate_color(
+                fixed_function_env.rgb_combinator,
+                fixed_function_env.rgb_operand,
+                fixed_function_env.rgb_source,
+                fixed_function_env.rgb_source_texture_stage);
+            auto alpha_color = calculate_color(
+                fixed_function_env.alpha_combinator,
+                fixed_function_env.alpha_operand,
+                fixed_function_env.alpha_source,
+                fixed_function_env.alpha_source_texture_stage);
+
+            current_color.set_x(rgb_color.x() * fixed_function_env.rgb_scale);
+            current_color.set_y(rgb_color.y() * fixed_function_env.rgb_scale);
+            current_color.set_z(rgb_color.z() * fixed_function_env.rgb_scale);
+            current_color.set_w(alpha_color.w() * fixed_function_env.alpha_scale);
+
+            current_color.clamp(expand4(0.f), expand4(1.f));
+            break;
+        }
+        case GPU::TextureEnvMode::Decal: {
+            auto dst_alpha = texel.w();
+            current_color.set_x(mix(current_color.x(), texel.x(), dst_alpha));
+            current_color.set_y(mix(current_color.y(), texel.y(), dst_alpha));
+            current_color.set_z(mix(current_color.z(), texel.z(), dst_alpha));
+            break;
+        }
+        case GPU::TextureEnvMode::Modulate:
+            current_color = current_color * texel;
+            break;
+        case GPU::TextureEnvMode::Replace:
+            current_color = texel;
+            break;
         }
     }
 
     // Calculate fog
     // Math from here: https://opengl-notes.readthedocs.io/en/latest/topics/texturing/aliasing.html
 
-    // FIXME: exponential fog is not vectorized, we should add a SIMD exp function that calculates an approximation.
     if (m_options.fog_enabled) {
-        auto factor = expand4(0.0f);
+        f32x4 factor;
         switch (m_options.fog_mode) {
-        case FogMode::Linear:
-            factor = (m_options.fog_end - quad.fog_depth) / (m_options.fog_end - m_options.fog_start);
+        case GPU::FogMode::Linear:
+            factor = (m_options.fog_end - quad.fog_depth) * m_one_over_fog_depth;
             break;
-        case FogMode::Exp: {
+        case GPU::FogMode::Exp: {
             auto argument = -m_options.fog_density * quad.fog_depth;
-            factor = exp(argument);
+            factor = exp_approximate(argument);
         } break;
-        case FogMode::Exp2: {
+        case GPU::FogMode::Exp2: {
             auto argument = m_options.fog_density * quad.fog_depth;
             argument *= -argument;
-            factor = exp(argument);
+            factor = exp_approximate(argument);
         } break;
         default:
             VERIFY_NOT_REACHED();
@@ -1063,140 +1298,201 @@ ALWAYS_INLINE void Device::shade_fragments(PixelQuad& quad)
 
         // Mix texel's RGB with fog's RBG - leave alpha alone
         auto fog_color = expand4(m_options.fog_color);
-        quad.out_color.set_x(mix(fog_color.x(), quad.out_color.x(), factor));
-        quad.out_color.set_y(mix(fog_color.y(), quad.out_color.y(), factor));
-        quad.out_color.set_z(mix(fog_color.z(), quad.out_color.z(), factor));
-    }
-}
-
-ALWAYS_INLINE bool Device::test_alpha(PixelQuad& quad)
-{
-    auto const alpha = quad.out_color.w();
-    auto const ref_value = expand4(m_options.alpha_test_ref_value);
-
-    switch (m_options.alpha_test_func) {
-    case AlphaTestFunction::Less:
-        quad.mask &= alpha < ref_value;
-        break;
-    case AlphaTestFunction::Equal:
-        quad.mask &= alpha == ref_value;
-        break;
-    case AlphaTestFunction::LessOrEqual:
-        quad.mask &= alpha <= ref_value;
-        break;
-    case AlphaTestFunction::Greater:
-        quad.mask &= alpha > ref_value;
-        break;
-    case AlphaTestFunction::NotEqual:
-        quad.mask &= alpha != ref_value;
-        break;
-    case AlphaTestFunction::GreaterOrEqual:
-        quad.mask &= alpha >= ref_value;
-        break;
-    case AlphaTestFunction::Never:
-    case AlphaTestFunction::Always:
-    default:
-        VERIFY_NOT_REACHED();
+        current_color.set_x(mix(fog_color.x(), current_color.x(), factor));
+        current_color.set_y(mix(fog_color.y(), current_color.y(), factor));
+        current_color.set_z(mix(fog_color.z(), current_color.z(), factor));
     }
 
-    return any(quad.mask);
+    quad.set_output(SHADER_OUTPUT_FIRST_COLOR, current_color.x());
+    quad.set_output(SHADER_OUTPUT_FIRST_COLOR + 1, current_color.y());
+    quad.set_output(SHADER_OUTPUT_FIRST_COLOR + 2, current_color.z());
+    // Multiply coverage with the fragment's alpha to obtain the final alpha value
+    quad.set_output(SHADER_OUTPUT_FIRST_COLOR + 3, current_color.w() * quad.coverage);
 }
 
-void Device::resize(const Gfx::IntSize& size)
+void Device::resize(Gfx::IntSize size)
 {
-    wait_for_all_threads();
-
-    m_render_target = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRA8888, size).release_value_but_fixme_should_propagate_errors();
-    m_depth_buffer = adopt_own(*new DepthBuffer(size));
+    auto frame_buffer_or_error = FrameBuffer<GPU::ColorType, GPU::DepthType, GPU::StencilType>::try_create(size);
+    m_frame_buffer = MUST(frame_buffer_or_error);
 }
 
-void Device::clear_color(const FloatVector4& color)
+void Device::clear_color(FloatVector4 const& color)
 {
-    wait_for_all_threads();
+    auto const fill_color = to_argb32(color);
 
-    uint8_t r = static_cast<uint8_t>(clamp(color.x(), 0.0f, 1.0f) * 255);
-    uint8_t g = static_cast<uint8_t>(clamp(color.y(), 0.0f, 1.0f) * 255);
-    uint8_t b = static_cast<uint8_t>(clamp(color.z(), 0.0f, 1.0f) * 255);
-    uint8_t a = static_cast<uint8_t>(clamp(color.w(), 0.0f, 1.0f) * 255);
-    auto const fill_color = Gfx::Color(r, g, b, a);
-
-    if (m_options.scissor_enabled) {
-        auto fill_rect = m_render_target->rect();
-        fill_rect.intersect(window_coordinates_to_target_coordinates(m_options.scissor_box));
-        Gfx::Painter painter { *m_render_target };
-        painter.fill_rect(fill_rect, fill_color);
-        return;
-    }
-
-    m_render_target->fill(fill_color);
-}
-
-void Device::clear_depth(float depth)
-{
-    wait_for_all_threads();
-
-    if (m_options.scissor_enabled) {
-        m_depth_buffer->clear(window_coordinates_to_target_coordinates(m_options.scissor_box), depth);
-        return;
-    }
-
-    m_depth_buffer->clear(depth);
-}
-
-void Device::clear_stencil(u8 value)
-{
-    Gfx::IntRect clear_rect = m_stencil_buffer->rect();
-
+    auto clear_rect = m_frame_buffer->rect();
     if (m_options.scissor_enabled)
-        clear_rect.intersect(window_coordinates_to_target_coordinates(m_options.scissor_box));
+        clear_rect.intersect(m_options.scissor_box);
 
-    m_stencil_buffer->clear(clear_rect, value);
+    m_frame_buffer->color_buffer()->fill(fill_color, clear_rect);
 }
 
-void Device::blit_to_color_buffer_at_raster_position(Gfx::Bitmap const& source)
+void Device::clear_depth(GPU::DepthType depth)
 {
-    if (!m_raster_position.valid)
-        return;
+    auto clear_rect = m_frame_buffer->rect();
+    if (m_options.scissor_enabled)
+        clear_rect.intersect(m_options.scissor_box);
 
-    wait_for_all_threads();
-
-    INCREASE_STATISTICS_COUNTER(g_num_pixels, source.width() * source.height());
-    INCREASE_STATISTICS_COUNTER(g_num_pixels_shaded, source.width() * source.height());
-
-    Gfx::Painter painter { *m_render_target };
-    auto const blit_rect = raster_rect_in_target_coordinates(source.size());
-    painter.blit({ blit_rect.x(), blit_rect.y() }, source, source.rect(), 1.0f, true);
+    m_frame_buffer->depth_buffer()->fill(depth, clear_rect);
 }
 
-void Device::blit_to_depth_buffer_at_raster_position(Vector<float> const& depth_values, size_t width, size_t height)
+void Device::clear_stencil(GPU::StencilType value)
 {
-    if (!m_raster_position.valid)
-        return;
+    auto clear_rect = m_frame_buffer->rect();
+    if (m_options.scissor_enabled)
+        clear_rect.intersect(m_options.scissor_box);
 
-    auto const raster_rect = raster_rect_in_target_coordinates({ width, height });
-    auto const y1 = raster_rect.y();
-    auto const y2 = y1 + height;
-    auto const x1 = raster_rect.x();
-    int const x2 = x1 + width;
-
-    auto index = 0;
-    for (int y = y2 - 1; y >= y1; --y) {
-        auto depth_line = m_depth_buffer->scanline(y);
-        for (int x = x1; x < x2; ++x) {
-            depth_line[x] = depth_values.at(index++);
-        }
-    }
+    m_frame_buffer->stencil_buffer()->fill(value, clear_rect);
 }
 
-void Device::blit_to(Gfx::Bitmap& target)
+GPU::ImageDataLayout Device::color_buffer_data_layout(Vector2<u32> size, Vector2<i32> offset)
 {
-    wait_for_all_threads();
+    return {
+        .pixel_type = {
+            .format = GPU::PixelFormat::BGRA,
+            .bits = GPU::PixelComponentBits::B8_8_8_8,
+            .data_type = GPU::PixelDataType::UnsignedInt,
+            .components_order = GPU::ComponentsOrder::Reversed,
+        },
+        .dimensions = {
+            .width = static_cast<u32>(m_frame_buffer->rect().width()),
+            .height = static_cast<u32>(m_frame_buffer->rect().height()),
+            .depth = 1,
+        },
+        .selection = {
+            .offset_x = offset.x(),
+            .offset_y = offset.y(),
+            .offset_z = 0,
+            .width = size.x(),
+            .height = size.y(),
+            .depth = 1,
+        },
+    };
+}
 
-    Gfx::Painter painter { target };
-    painter.blit({ 0, 0 }, *m_render_target, m_render_target->rect(), 1.0f, false);
+GPU::ImageDataLayout Device::depth_buffer_data_layout(Vector2<u32> size, Vector2<i32> offset)
+{
+    return {
+        .pixel_type = {
+            .format = GPU::PixelFormat::DepthComponent,
+            .bits = GPU::PixelComponentBits::AllBits,
+            .data_type = GPU::PixelDataType::Float,
+        },
+        .dimensions = {
+            .width = static_cast<u32>(m_frame_buffer->rect().width()),
+            .height = static_cast<u32>(m_frame_buffer->rect().height()),
+            .depth = 1,
+        },
+        .selection = {
+            .offset_x = offset.x(),
+            .offset_y = offset.y(),
+            .offset_z = 0,
+            .width = size.x(),
+            .height = size.y(),
+            .depth = 1,
+        },
+    };
+}
+
+void Device::blit_from_color_buffer(Gfx::Bitmap& target)
+{
+    m_frame_buffer->color_buffer()->blit_flipped_to_bitmap(target, m_frame_buffer->rect());
 
     if constexpr (ENABLE_STATISTICS_OVERLAY)
         draw_statistics_overlay(target);
+}
+
+void Device::blit_from_color_buffer(NonnullRefPtr<GPU::Image> image, u32 level, Vector2<u32> input_size, Vector2<i32> input_offset, Vector3<i32> output_offset)
+{
+    auto input_layout = color_buffer_data_layout(input_size, input_offset);
+    auto const* input_data = m_frame_buffer->color_buffer()->scanline(0);
+
+    auto const& softgpu_image = reinterpret_cast<Image*>(image.ptr());
+    auto output_layout = softgpu_image->image_data_layout(level, output_offset);
+    auto* output_data = softgpu_image->texel_pointer(level, 0, 0, 0);
+
+    PixelConverter converter { input_layout, output_layout };
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
+}
+
+void Device::blit_from_color_buffer(void* output_data, Vector2<i32> input_offset, GPU::ImageDataLayout const& output_layout)
+{
+    auto const& output_selection = output_layout.selection;
+    auto input_layout = color_buffer_data_layout({ output_selection.width, output_selection.height }, input_offset);
+
+    PixelConverter converter { input_layout, output_layout };
+    auto const* input_data = m_frame_buffer->color_buffer()->scanline(0);
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
+}
+
+void Device::blit_from_depth_buffer(void* output_data, Vector2<i32> input_offset, GPU::ImageDataLayout const& output_layout)
+{
+    auto const& output_selection = output_layout.selection;
+    auto input_layout = depth_buffer_data_layout({ output_selection.width, output_selection.height }, input_offset);
+
+    PixelConverter converter { input_layout, output_layout };
+    auto const* input_data = m_frame_buffer->depth_buffer()->scanline(0);
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
+}
+
+void Device::blit_from_depth_buffer(NonnullRefPtr<GPU::Image> image, u32 level, Vector2<u32> input_size, Vector2<i32> input_offset, Vector3<i32> output_offset)
+{
+    auto input_layout = depth_buffer_data_layout(input_size, input_offset);
+    auto const* input_data = m_frame_buffer->depth_buffer()->scanline(0);
+
+    auto const& softgpu_image = reinterpret_cast<Image*>(image.ptr());
+    auto output_layout = softgpu_image->image_data_layout(level, output_offset);
+    auto* output_data = softgpu_image->texel_pointer(level, 0, 0, 0);
+
+    PixelConverter converter { input_layout, output_layout };
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
+}
+
+void Device::blit_to_color_buffer_at_raster_position(void const* input_data, GPU::ImageDataLayout const& input_layout)
+{
+    if (!m_raster_position.valid)
+        return;
+
+    auto input_selection = input_layout.selection;
+    INCREASE_STATISTICS_COUNTER(g_num_pixels, input_selection.width * input_selection.height);
+    INCREASE_STATISTICS_COUNTER(g_num_pixels_shaded, input_selection.width * input_selection.height);
+
+    auto const rasterization_rect = get_rasterization_rect_of_size({ input_selection.width, input_selection.height });
+    auto output_layout = color_buffer_data_layout(
+        { static_cast<u32>(rasterization_rect.width()), static_cast<u32>(rasterization_rect.height()) },
+        { rasterization_rect.x(), rasterization_rect.y() });
+
+    PixelConverter converter { input_layout, output_layout };
+    auto* output_data = m_frame_buffer->color_buffer()->scanline(0);
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
+}
+
+void Device::blit_to_depth_buffer_at_raster_position(void const* input_data, GPU::ImageDataLayout const& input_layout)
+{
+    if (!m_raster_position.valid)
+        return;
+
+    auto input_selection = input_layout.selection;
+    auto const rasterization_rect = get_rasterization_rect_of_size({ input_selection.width, input_selection.height });
+    auto output_layout = depth_buffer_data_layout(
+        { static_cast<u32>(rasterization_rect.width()), static_cast<u32>(rasterization_rect.height()) },
+        { rasterization_rect.x(), rasterization_rect.y() });
+
+    PixelConverter converter { input_layout, output_layout };
+    auto* output_data = m_frame_buffer->depth_buffer()->scanline(0);
+    auto conversion_result = converter.convert(input_data, output_data, {});
+    if (conversion_result.is_error())
+        dbgln("Pixel conversion failed: {}", conversion_result.error().string_literal());
 }
 
 void Device::draw_statistics_overlay(Gfx::Bitmap& target)
@@ -1206,7 +1502,7 @@ void Device::draw_statistics_overlay(Gfx::Bitmap& target)
     static int frame_counter;
 
     frame_counter++;
-    int milliseconds = 0;
+    i64 milliseconds = 0;
     if (timer.is_valid())
         milliseconds = timer.elapsed();
     else
@@ -1216,23 +1512,23 @@ void Device::draw_statistics_overlay(Gfx::Bitmap& target)
 
     if (milliseconds > MILLISECONDS_PER_STATISTICS_PERIOD) {
 
-        int num_rendertarget_pixels = m_render_target->width() * m_render_target->height();
+        int num_rendertarget_pixels = m_frame_buffer->rect().size().area();
 
         StringBuilder builder;
-        builder.append(String::formatted("Timings      : {:.1}ms {:.1}FPS\n",
+        builder.appendff("Timings      : {:.1}ms {:.1}FPS\n",
             static_cast<double>(milliseconds) / frame_counter,
-            (milliseconds > 0) ? 1000.0 * frame_counter / milliseconds : 9999.0));
-        builder.append(String::formatted("Triangles    : {}\n", g_num_rasterized_triangles));
-        builder.append(String::formatted("SIMD usage   : {}%\n", g_num_quads > 0 ? g_num_pixels_shaded * 25 / g_num_quads : 0));
-        builder.append(String::formatted("Pixels       : {}, Stencil: {}%, Shaded: {}%, Blended: {}%, Overdraw: {}%\n",
+            (milliseconds > 0) ? 1000.0 * frame_counter / milliseconds : 9999.0);
+        builder.appendff("Triangles    : {}\n", g_num_rasterized_triangles);
+        builder.appendff("SIMD usage   : {}%\n", g_num_quads > 0 ? g_num_pixels_shaded * 25 / g_num_quads : 0);
+        builder.appendff("Pixels       : {}, Stencil: {}%, Shaded: {}%, Blended: {}%, Overdraw: {}%\n",
             g_num_pixels,
             g_num_pixels > 0 ? g_num_stencil_writes * 100 / g_num_pixels : 0,
             g_num_pixels > 0 ? g_num_pixels_shaded * 100 / g_num_pixels : 0,
             g_num_pixels_shaded > 0 ? g_num_pixels_blended * 100 / g_num_pixels_shaded : 0,
-            num_rendertarget_pixels > 0 ? g_num_pixels_shaded * 100 / num_rendertarget_pixels - 100 : 0));
-        builder.append(String::formatted("Sampler calls: {}\n", g_num_sampler_calls));
+            num_rendertarget_pixels > 0 ? g_num_pixels_shaded * 100 / num_rendertarget_pixels - 100 : 0);
+        builder.appendff("Sampler calls: {}\n", g_num_sampler_calls);
 
-        debug_string = builder.to_string();
+        debug_string = builder.to_string().release_value_but_fixme_should_propagate_errors();
 
         frame_counter = 0;
         timer.start();
@@ -1256,84 +1552,78 @@ void Device::draw_statistics_overlay(Gfx::Bitmap& target)
     painter.draw_text(target.rect().translated(2, 2), debug_string, font, Gfx::TextAlignment::TopLeft, Gfx::Color::White);
 }
 
-void Device::wait_for_all_threads() const
+void Device::set_options(GPU::RasterizerOptions const& options)
 {
-    // FIXME: Wait for all render threads to finish when multithreading is being implemented
-}
-
-void Device::set_options(const RasterizerOptions& options)
-{
-    wait_for_all_threads();
-
     m_options = options;
-
-    if (m_options.enable_blending)
-        setup_blend_factors();
-
-    // FIXME: Recreate or reinitialize render threads here when multithreading is being implemented
+    if (m_options.fog_enabled)
+        m_one_over_fog_depth = 1.f / (m_options.fog_end - m_options.fog_start);
 }
 
-void Device::set_light_model_params(const LightModelParameters& lighting_model)
+void Device::set_light_model_params(GPU::LightModelParameters const& lighting_model)
 {
-    wait_for_all_threads();
-
     m_lighting_model = lighting_model;
-
-    // FIXME: Recreate or reinitialize render threads here when multithreading is being implemented
 }
 
-Gfx::RGBA32 Device::get_backbuffer_pixel(int x, int y)
-{
-    // FIXME: Reading individual pixels is very slow, rewrite this to transfer whole blocks
-    if (x < 0 || y < 0 || x >= m_render_target->width() || y >= m_render_target->height())
-        return 0;
-
-    return m_render_target->scanline(y)[x];
-}
-
-float Device::get_depthbuffer_value(int x, int y)
-{
-    // FIXME: Reading individual pixels is very slow, rewrite this to transfer whole blocks
-    if (x < 0 || y < 0 || x >= m_render_target->width() || y >= m_render_target->height())
-        return 1.0f;
-
-    return m_depth_buffer->scanline(y)[x];
-}
-
-NonnullRefPtr<Image> Device::create_image(ImageFormat format, unsigned width, unsigned height, unsigned depth, unsigned levels, unsigned layers)
+NonnullRefPtr<GPU::Image> Device::create_image(GPU::PixelFormat const& pixel_format, u32 width, u32 height, u32 depth, u32 max_levels)
 {
     VERIFY(width > 0);
     VERIFY(height > 0);
     VERIFY(depth > 0);
-    VERIFY(levels > 0);
-    VERIFY(layers > 0);
+    VERIFY(max_levels > 0);
 
-    return adopt_ref(*new Image(format, width, height, depth, levels, layers));
+    return adopt_ref(*new Image(this, pixel_format, width, height, depth, max_levels));
 }
 
-void Device::set_sampler_config(unsigned sampler, SamplerConfig const& config)
+ErrorOr<NonnullRefPtr<GPU::Shader>> Device::create_shader(GPU::IR::Shader const& intermediate_representation)
 {
-    m_samplers[sampler].set_config(config);
+    ShaderCompiler compiler;
+    auto shader = TRY(compiler.compile(this, intermediate_representation));
+    return shader;
 }
 
-void Device::set_light_state(unsigned int light_id, Light const& light)
+void Device::set_sampler_config(unsigned sampler, GPU::SamplerConfig const& config)
+{
+    VERIFY(config.bound_image.is_null() || config.bound_image->ownership_token() == this);
+
+    m_samplers[sampler].set_config(config);
+
+    m_samplers_need_texture_staging = any_of(m_samplers, [](auto const& sampler) {
+        auto const& fixed_function_env = sampler.config().fixed_function_texture_environment;
+        if (fixed_function_env.env_mode != GPU::TextureEnvMode::Combine)
+            return false;
+        return any_of(fixed_function_env.alpha_source, [](auto texture_source) { return texture_source == GPU::TextureSource::TextureStage; })
+            || any_of(fixed_function_env.rgb_source, [](auto texture_source) { return texture_source == GPU::TextureSource::TextureStage; });
+    });
+}
+
+void Device::set_light_state(unsigned int light_id, GPU::Light const& light)
 {
     m_lights.at(light_id) = light;
 }
 
-void Device::set_material_state(Face face, Material const& material)
+void Device::set_material_state(GPU::Face face, GPU::Material const& material)
 {
     m_materials[face] = material;
 }
 
-void Device::set_stencil_configuration(Face face, StencilConfiguration const& stencil_configuration)
+void Device::set_stencil_configuration(GPU::Face face, GPU::StencilConfiguration const& stencil_configuration)
 {
     m_stencil_configuration[face] = stencil_configuration;
 }
 
-void Device::set_raster_position(RasterPosition const& raster_position)
+void Device::set_texture_unit_configuration(GPU::TextureUnitIndex index, GPU::TextureUnitConfiguration const& configuration)
+{
+    m_texture_unit_configuration[index] = configuration;
+}
+
+void Device::set_raster_position(GPU::RasterPosition const& raster_position)
 {
     m_raster_position = raster_position;
+}
+
+void Device::set_clip_planes(Vector<FloatVector4> const& clip_planes)
+{
+    m_clip_planes = clip_planes;
 }
 
 void Device::set_raster_position(FloatVector4 const& position, FloatMatrix4x4 const& model_view_transform, FloatMatrix4x4 const& projection_transform)
@@ -1367,15 +1657,38 @@ void Device::set_raster_position(FloatVector4 const& position, FloatMatrix4x4 co
     m_raster_position.eye_coordinate_distance = eye_coordinates.length();
 }
 
-Gfx::IntRect Device::raster_rect_in_target_coordinates(Gfx::IntSize size)
+void Device::bind_fragment_shader(RefPtr<GPU::Shader> shader)
 {
-    auto const raster_rect = Gfx::IntRect {
-        static_cast<int>(m_raster_position.window_coordinates.x()),
-        static_cast<int>(m_raster_position.window_coordinates.y()),
+    VERIFY(shader.is_null() || shader->ownership_token() == this);
+
+    if (shader.is_null()) {
+        m_current_fragment_shader = nullptr;
+        return;
+    }
+
+    auto softgpu_shader = static_ptr_cast<Shader>(shader);
+    m_current_fragment_shader = softgpu_shader;
+}
+
+Gfx::IntRect Device::get_rasterization_rect_of_size(Gfx::IntSize size) const
+{
+    // Round the X and Y floating point coordinates to the nearest integer; OpenGL 1.5 spec:
+    // "Any fragments whose centers lie inside of this rectangle (or on its bottom or left
+    // boundaries) are produced in correspondence with this particular group of elements."
+    return {
+        round_to<int>(m_raster_position.window_coordinates.x()),
+        round_to<int>(m_raster_position.window_coordinates.y()),
         size.width(),
         size.height(),
     };
-    return window_coordinates_to_target_coordinates(raster_rect);
 }
 
+}
+
+extern "C" {
+
+GPU::Device* serenity_gpu_create_device(Gfx::IntSize size)
+{
+    return make<SoftGPU::Device>(size).leak_ptr();
+}
 }

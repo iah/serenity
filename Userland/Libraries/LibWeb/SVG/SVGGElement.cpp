@@ -11,14 +11,14 @@
 
 namespace Web::SVG {
 
-SVGGElement::SVGGElement(DOM::Document& document, QualifiedName qualified_name)
+SVGGElement::SVGGElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGGraphicsElement(document, move(qualified_name))
 {
 }
 
-RefPtr<Layout::Node> SVGGElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
+JS::GCPtr<Layout::Node> SVGGElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
 {
-    return adopt_ref(*new Layout::SVGGraphicsBox(document(), *this, move(style)));
+    return heap().allocate_without_realm<Layout::SVGGraphicsBox>(document(), *this, move(style));
 }
 
 }

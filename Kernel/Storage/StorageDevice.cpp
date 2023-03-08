@@ -4,22 +4,61 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Memory.h>
 #include <AK/StringView.h>
+#include <Kernel/API/Ioctl.h>
 #include <Kernel/Debug.h>
+#include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/DeviceIdentifiers/BlockDevicesDirectory.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/DeviceIdentifiers/SymbolicLinkDeviceComponent.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/Devices/Storage/DeviceDirectory.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/Devices/Storage/Directory.h>
 #include <Kernel/Storage/StorageDevice.h>
 #include <Kernel/Storage/StorageManagement.h>
-#include <LibC/sys/ioctl_numbers.h>
 
 namespace Kernel {
 
-StorageDevice::StorageDevice(MajorNumber major, MinorNumber minor, size_t sector_size, u64 max_addressable_block, NonnullOwnPtr<KString> device_name)
-    : BlockDevice(major, minor, sector_size)
-    , m_early_storage_device_name(move(device_name))
+StorageDevice::StorageDevice(LUNAddress logical_unit_number_address, u32 hardware_relative_controller_id, size_t sector_size, u64 max_addressable_block)
+    : BlockDevice(StorageManagement::storage_type_major_number(), StorageManagement::generate_storage_minor_number(), sector_size)
+    , m_logical_unit_number_address(logical_unit_number_address)
+    , m_hardware_relative_controller_id(hardware_relative_controller_id)
     , m_max_addressable_block(max_addressable_block)
     , m_blocks_per_page(PAGE_SIZE / block_size())
 {
+}
+
+StorageDevice::StorageDevice(Badge<RamdiskDevice>, LUNAddress logical_unit_number_address, u32 hardware_relative_controller_id, MajorNumber major, MinorNumber minor, size_t sector_size, u64 max_addressable_block)
+    : BlockDevice(major, minor, sector_size)
+    , m_logical_unit_number_address(logical_unit_number_address)
+    , m_hardware_relative_controller_id(hardware_relative_controller_id)
+    , m_max_addressable_block(max_addressable_block)
+    , m_blocks_per_page(PAGE_SIZE / block_size())
+{
+}
+
+ErrorOr<void> StorageDevice::after_inserting()
+{
+    after_inserting_add_to_device_management();
+    auto sysfs_storage_device_directory = StorageDeviceSysFSDirectory::create(SysFSStorageDirectory::the(), *this);
+    m_sysfs_device_directory = sysfs_storage_device_directory;
+    SysFSStorageDirectory::the().plug({}, *sysfs_storage_device_directory);
+    VERIFY(!m_symlink_sysfs_component);
+    auto sys_fs_component = TRY(SysFSSymbolicLinkDeviceComponent::try_create(SysFSBlockDevicesDirectory::the(), *this, *m_sysfs_device_directory));
+    m_symlink_sysfs_component = sys_fs_component;
+    after_inserting_add_symlink_to_device_identifier_directory();
+    return {};
+}
+
+void StorageDevice::will_be_destroyed()
+{
+    // NOTE: We check if m_symlink_sysfs_component is not null, because if we failed
+    // in StorageDevice::after_inserting(), then that method will not set m_symlink_sysfs_component.
+    if (m_symlink_sysfs_component) {
+        before_will_be_destroyed_remove_symlink_from_device_identifier_directory();
+        m_symlink_sysfs_component.clear();
+    }
+    SysFSStorageDirectory::the().unplug({}, *m_sysfs_device_directory);
+    before_will_be_destroyed_remove_from_device_management();
 }
 
 StringView StorageDevice::class_name() const
@@ -27,9 +66,27 @@ StringView StorageDevice::class_name() const
     return "StorageDevice"sv;
 }
 
+StringView StorageDevice::command_set_to_string_view() const
+{
+    switch (command_set()) {
+    case CommandSet::PlainMemory:
+        return "memory"sv;
+    case CommandSet::SCSI:
+        return "scsi"sv;
+    case CommandSet::ATA:
+        return "ata"sv;
+    case CommandSet::NVMe:
+        return "nvme"sv;
+    default:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
 ErrorOr<size_t> StorageDevice::read(OpenFileDescription&, u64 offset, UserOrKernelBuffer& outbuf, size_t len)
 {
     u64 index = offset >> block_size_log();
+    off_t offset_within_block = 0;
     size_t whole_blocks = len >> block_size_log();
     size_t remaining = len - (whole_blocks << block_size_log());
 
@@ -39,6 +96,9 @@ ErrorOr<size_t> StorageDevice::read(OpenFileDescription&, u64 offset, UserOrKern
         whole_blocks = m_blocks_per_page;
         remaining = 0;
     }
+
+    if (len < block_size())
+        offset_within_block = offset - (index << block_size_log());
 
     dbgln_if(STORAGE_DEVICE_DEBUG, "StorageDevice::read() index={}, whole_blocks={}, remaining={}", index, whole_blocks, remaining);
 
@@ -78,20 +138,21 @@ ErrorOr<size_t> StorageDevice::read(OpenFileDescription&, u64 offset, UserOrKern
         default:
             break;
         }
-        TRY(outbuf.write(data.data(), pos, remaining));
+        TRY(outbuf.write(data.offset_pointer(offset_within_block), pos, remaining));
     }
 
     return pos + remaining;
 }
 
-bool StorageDevice::can_read(const OpenFileDescription&, u64 offset) const
+bool StorageDevice::can_read(OpenFileDescription const&, u64 offset) const
 {
     return offset < (max_addressable_block() * block_size());
 }
 
-ErrorOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, const UserOrKernelBuffer& inbuf, size_t len)
+ErrorOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, UserOrKernelBuffer const& inbuf, size_t len)
 {
     u64 index = offset >> block_size_log();
+    off_t offset_within_block = 0;
     size_t whole_blocks = len >> block_size_log();
     size_t remaining = len - (whole_blocks << block_size_log());
 
@@ -101,6 +162,9 @@ ErrorOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, const Use
         whole_blocks = m_blocks_per_page;
         remaining = 0;
     }
+
+    if (len < block_size())
+        offset_within_block = offset - (index << block_size_log());
 
     // We try to allocate the temporary block buffer for partial writes *before* we start any full block writes,
     // to try and prevent partial writes
@@ -151,7 +215,7 @@ ErrorOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, const Use
             }
         }
 
-        TRY(inbuf.read(partial_write_block->data(), pos, remaining));
+        TRY(inbuf.read(partial_write_block->offset_pointer(offset_within_block), pos, remaining));
 
         {
             auto write_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index + whole_blocks, 1, data_buffer, block_size()));
@@ -175,12 +239,7 @@ ErrorOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, const Use
     return pos + remaining;
 }
 
-StringView StorageDevice::early_storage_name() const
-{
-    return m_early_storage_device_name->view();
-}
-
-bool StorageDevice::can_write(const OpenFileDescription&, u64 offset) const
+bool StorageDevice::can_write(OpenFileDescription const&, u64 offset) const
 {
     return offset < (max_addressable_block() * block_size());
 }

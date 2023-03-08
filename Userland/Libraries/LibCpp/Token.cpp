@@ -5,33 +5,33 @@
  */
 
 #include "Token.h"
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 
 namespace Cpp {
 
-bool Position::operator<(const Position& other) const
+bool Position::operator<(Position const& other) const
 {
     return line < other.line || (line == other.line && column < other.column);
 }
-bool Position::operator>(const Position& other) const
+bool Position::operator>(Position const& other) const
 {
     return !(*this < other) && !(*this == other);
 }
-bool Position::operator==(const Position& other) const
+bool Position::operator==(Position const& other) const
 {
     return line == other.line && column == other.column;
 }
-bool Position::operator<=(const Position& other) const
+bool Position::operator<=(Position const& other) const
 {
     return !(*this > other);
 }
 
-String Token::to_string() const
+DeprecatedString Token::to_deprecated_string() const
 {
-    return String::formatted("{}  {}:{}-{}:{} ({})", type_to_string(m_type), start().line, start().column, end().line, end().column, text());
+    return DeprecatedString::formatted("{}  {}:{}-{}:{} ({})", type_to_string(m_type), start().line, start().column, end().line, end().column, text());
 }
 
-String Token::type_as_string() const
+DeprecatedString Token::type_as_deprecated_string() const
 {
     return type_to_string(m_type);
 }

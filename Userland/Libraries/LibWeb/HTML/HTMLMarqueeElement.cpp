@@ -4,17 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLMarqueeElement.h>
 
 namespace Web::HTML {
 
-HTMLMarqueeElement::HTMLMarqueeElement(DOM::Document& document, QualifiedName qualified_name)
+HTMLMarqueeElement::HTMLMarqueeElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-HTMLMarqueeElement::~HTMLMarqueeElement()
+HTMLMarqueeElement::~HTMLMarqueeElement() = default;
+
+JS::ThrowCompletionOr<void> HTMLMarqueeElement::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLMarqueeElementPrototype>(realm, "HTMLMarqueeElement"));
+
+    return {};
 }
 
 void HTMLMarqueeElement::apply_presentational_hints(CSS::StyleProperties& style) const

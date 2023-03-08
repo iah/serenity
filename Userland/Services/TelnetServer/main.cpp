@@ -5,11 +5,13 @@
  */
 
 #include "Client.h"
+#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/Socket.h>
 #include <LibCore/TCPServer.h>
 #include <LibMain/Main.h>
 #include <fcntl.h>
@@ -18,7 +20,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-static void run_command(int ptm_fd, String command)
+static void run_command(int ptm_fd, DeprecatedString command)
 {
     pid_t pid = fork();
     if (pid == 0) {
@@ -71,7 +73,7 @@ static void run_command(int ptm_fd, String command)
             args[1] = "-c";
             args[2] = command.characters();
         }
-        char const* envs[] = { "TERM=xterm", "PATH=/usr/local/bin:/usr/bin:/bin", nullptr };
+        char const* envs[] = { "TERM=xterm", "PATH=" DEFAULT_PATH, nullptr };
         rc = execve("/bin/Shell", const_cast<char**>(args), const_cast<char**>(envs));
         if (rc < 0) {
             perror("execve");
@@ -84,7 +86,7 @@ static void run_command(int ptm_fd, String command)
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     int port = 23;
-    char const* command = "";
+    StringView command = ""sv;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(port, "Port to listen on", nullptr, 'p', "port");

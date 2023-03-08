@@ -6,18 +6,18 @@
 
 #pragma once
 
+#include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/HTML/HTMLElement.h>
 
 namespace Web::HTML {
 
 class HTMLProgressElement final : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLProgressElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLProgressElement, HTMLElement);
 
-    HTMLProgressElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLProgressElement() override;
 
-    virtual RefPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
+    virtual JS::GCPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
 
     double value() const;
     void set_value(double);
@@ -27,7 +27,22 @@ public:
 
     double position() const;
 
+    // ^HTMLElement
+    // https://html.spec.whatwg.org/multipage/forms.html#category-label
+    virtual bool is_labelable() const override { return true; }
+
+    bool using_system_appearance() const;
+
+    // https://www.w3.org/TR/html-aria/#el-progress
+    virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::progressbar; }
+
 private:
+    HTMLProgressElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+
+    void progress_position_updated();
+
     bool is_determinate() const { return has_attribute(HTML::AttributeNames::value); }
 };
 

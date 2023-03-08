@@ -6,29 +6,30 @@
 
 #include "NotificationWindow.h"
 #include <AK/HashMap.h>
+#include <AK/Optional.h>
 #include <AK/Vector.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Desktop.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Widget.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/FontDatabase.h>
+#include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/ShareableBitmap.h>
 
 namespace NotificationServer {
 
 static HashMap<u32, RefPtr<NotificationWindow>> s_windows;
 
-static void update_notification_window_locations(const Gfx::IntRect& screen_rect)
+static void update_notification_window_locations(Gfx::IntRect const& screen_rect)
 {
-    Gfx::IntRect last_window_rect;
+    Optional<Gfx::IntRect> last_window_rect;
     for (auto& window_entry : s_windows) {
         auto& window = window_entry.value;
         Gfx::IntPoint new_window_location;
-        if (last_window_rect.is_null())
-            new_window_location = screen_rect.top_right().translated(-window->rect().width() - 24, 7);
+        if (last_window_rect.has_value())
+            new_window_location = last_window_rect.value().bottom_left().translated(0, 10);
         else
-            new_window_location = last_window_rect.bottom_left().translated(0, 10);
+            new_window_location = screen_rect.top_right().translated(-window->rect().width() - 24, 7);
         if (window->rect().location() != new_window_location) {
             window->move_to(new_window_location);
             window->set_original_rect(window->rect());
@@ -37,7 +38,7 @@ static void update_notification_window_locations(const Gfx::IntRect& screen_rect
     }
 }
 
-NotificationWindow::NotificationWindow(i32 client_id, const String& text, const String& title, const Gfx::ShareableBitmap& icon)
+NotificationWindow::NotificationWindow(i32 client_id, DeprecatedString const& text, DeprecatedString const& title, Gfx::ShareableBitmap const& icon)
 {
     m_id = client_id;
     s_windows.set(m_id, this);
@@ -46,10 +47,11 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     set_resizable(false);
     set_minimizable(false);
 
-    Gfx::IntRect lowest_notification_rect_on_screen;
+    Optional<Gfx::IntRect> lowest_notification_rect_on_screen;
     for (auto& window_entry : s_windows) {
         auto& window = window_entry.value;
-        if (window->m_original_rect.y() > lowest_notification_rect_on_screen.y())
+        if (!lowest_notification_rect_on_screen.has_value()
+            || (window->m_original_rect.y() > lowest_notification_rect_on_screen.value().y()))
             lowest_notification_rect_on_screen = window->m_original_rect;
     }
 
@@ -58,27 +60,25 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     rect.set_height(40);
     rect.set_location(GUI::Desktop::the().rect().top_right().translated(-rect.width() - 24, 7));
 
-    if (!lowest_notification_rect_on_screen.is_null())
-        rect.set_location(lowest_notification_rect_on_screen.bottom_left().translated(0, 10));
+    if (lowest_notification_rect_on_screen.has_value())
+        rect.set_location(lowest_notification_rect_on_screen.value().bottom_left().translated(0, 10));
 
     set_rect(rect);
 
     m_original_rect = rect;
 
-    auto& widget = set_main_widget<GUI::Widget>();
+    auto widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
 
-    widget.set_fill_with_background_color(true);
-    widget.set_layout<GUI::HorizontalBoxLayout>();
-    widget.layout()->set_margins(8);
-    widget.layout()->set_spacing(6);
+    widget->set_fill_with_background_color(true);
+    widget->set_layout<GUI::HorizontalBoxLayout>(8, 6);
 
-    m_image = &widget.add<GUI::ImageWidget>();
+    m_image = &widget->add<GUI::ImageWidget>();
     m_image->set_visible(icon.is_valid());
     if (icon.is_valid()) {
         m_image->set_bitmap(icon.bitmap());
     }
 
-    auto& left_container = widget.add<GUI::Widget>();
+    auto& left_container = widget->add<GUI::Widget>();
     left_container.set_layout<GUI::VerticalBoxLayout>();
 
     m_title_label = &left_container.add<GUI::Label>(title);
@@ -98,10 +98,6 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     };
 }
 
-NotificationWindow::~NotificationWindow()
-{
-}
-
 RefPtr<NotificationWindow> NotificationWindow::get_window_by_id(i32 id)
 {
     auto window = s_windows.get(id);
@@ -110,8 +106,8 @@ RefPtr<NotificationWindow> NotificationWindow::get_window_by_id(i32 id)
 
 void NotificationWindow::resize_to_fit_text()
 {
-    auto line_height = m_text_label->font().glyph_height();
-    auto total_height = m_text_label->preferred_height();
+    auto line_height = m_text_label->font().pixel_size_rounded_up();
+    auto total_height = m_text_label->text_calculated_preferred_height();
 
     m_text_label->set_fixed_height(total_height);
     set_height(40 - line_height + total_height);
@@ -122,23 +118,25 @@ void NotificationWindow::enter_event(Core::Event&)
     m_hovering = true;
     resize_to_fit_text();
     move_to_front();
+    update_notification_window_locations(GUI::Desktop::the().rect());
 }
 
 void NotificationWindow::leave_event(Core::Event&)
 {
     m_hovering = false;
-    m_text_label->set_fixed_height(-1);
+    m_text_label->set_preferred_height(GUI::SpecialDimension::Grow);
     set_height(40);
+    update_notification_window_locations(GUI::Desktop::the().rect());
 }
 
-void NotificationWindow::set_text(String const& value)
+void NotificationWindow::set_text(DeprecatedString const& value)
 {
     m_text_label->set_text(value);
     if (m_hovering)
         resize_to_fit_text();
 }
 
-void NotificationWindow::set_title(String const& value)
+void NotificationWindow::set_title(DeprecatedString const& value)
 {
     m_title_label->set_text(value);
 }

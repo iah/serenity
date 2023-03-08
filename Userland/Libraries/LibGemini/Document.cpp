@@ -4,28 +4,29 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
+#include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibGemini/Document.h>
 
 namespace Gemini {
 
-String Document::render_to_html() const
+DeprecatedString Document::render_to_html() const
 {
     StringBuilder html_builder;
-    html_builder.append("<!DOCTYPE html>\n<html>\n");
-    html_builder.append("<head>\n<title>");
+    html_builder.append("<!DOCTYPE html>\n<html>\n"sv);
+    html_builder.append("<head>\n<title>"sv);
     html_builder.append(m_url.path());
-    html_builder.append("</title>\n</head>\n");
-    html_builder.append("<body>\n");
+    html_builder.append("</title>\n</head>\n"sv);
+    html_builder.append("<body>\n"sv);
     for (auto& line : m_lines) {
-        html_builder.append(line.render_to_html());
+        html_builder.append(line->render_to_html());
     }
-    html_builder.append("</body>");
-    html_builder.append("</html>");
-    return html_builder.build();
+    html_builder.append("</body>"sv);
+    html_builder.append("</html>"sv);
+    return html_builder.to_deprecated_string();
 }
 
 NonnullRefPtr<Document> Document::parse(StringView lines, const URL& url)
@@ -45,7 +46,7 @@ void Document::read_lines(StringView source)
     };
 
     for (auto& line : source.lines()) {
-        if (line.starts_with("```")) {
+        if (line.starts_with("```"sv)) {
             close_list_if_needed();
 
             m_inside_preformatted_block = !m_inside_preformatted_block;
@@ -62,7 +63,7 @@ void Document::read_lines(StringView source)
             continue;
         }
 
-        if (line.starts_with("*")) {
+        if (line.starts_with('*')) {
             if (!m_inside_unordered_list)
                 m_lines.append(make<Control>(Control::UnorderedListStart));
             m_lines.append(make<UnorderedList>(move(line)));
@@ -72,12 +73,12 @@ void Document::read_lines(StringView source)
 
         close_list_if_needed();
 
-        if (line.starts_with("=>")) {
+        if (line.starts_with("=>"sv)) {
             m_lines.append(make<Link>(move(line), *this));
             continue;
         }
 
-        if (line.starts_with("#")) {
+        if (line.starts_with('#')) {
             size_t level = 0;
             while (line.length() > level && line[level] == '#')
                 ++level;

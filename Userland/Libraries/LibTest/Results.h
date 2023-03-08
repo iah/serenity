@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 
 namespace Test {
@@ -21,13 +21,15 @@ enum class Result {
 };
 
 struct Case {
-    String name;
+    DeprecatedString name;
     Result result;
-    String details;
+    DeprecatedString details;
+    u64 duration_us;
 };
 
 struct Suite {
-    String name;
+    DeprecatedString path;
+    DeprecatedString name;
     // A failed test takes precedence over a skipped test, which both have
     // precedence over a passed test
     Result most_severe_test_result { Result::Pass };

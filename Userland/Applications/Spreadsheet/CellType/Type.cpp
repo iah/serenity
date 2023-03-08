@@ -12,7 +12,7 @@
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
 
-static HashMap<String, Spreadsheet::CellType*> s_cell_types;
+static HashMap<DeprecatedString, Spreadsheet::CellType*> s_cell_types;
 static Spreadsheet::StringCell s_string_cell;
 static Spreadsheet::NumericCell s_numeric_cell;
 static Spreadsheet::IdentityCell s_identity_cell;
@@ -20,7 +20,7 @@ static Spreadsheet::DateCell s_date_cell;
 
 namespace Spreadsheet {
 
-const CellType* CellType::get_by_name(StringView name)
+CellType const* CellType::get_by_name(StringView name)
 {
     return s_cell_types.get(name).value_or(nullptr);
 }

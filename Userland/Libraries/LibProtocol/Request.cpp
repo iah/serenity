@@ -20,12 +20,11 @@ bool Request::stop()
     return m_client->stop_request({}, *this);
 }
 
-template<typename T>
-void Request::stream_into_impl(T& stream)
+void Request::stream_into(Stream& stream)
 {
     VERIFY(!m_internal_stream_data);
 
-    m_internal_stream_data = make<InternalStreamData>(MUST(Core::Stream::File::adopt_fd(fd(), Core::Stream::OpenMode::Read)));
+    m_internal_stream_data = make<InternalStreamData>(MUST(Core::File::adopt_fd(fd(), Core::File::OpenMode::Read)));
     m_internal_stream_data->read_notifier = Core::Notifier::construct(fd(), Core::Notifier::Read);
 
     auto user_on_finish = move(on_finish);
@@ -43,7 +42,7 @@ void Request::stream_into_impl(T& stream)
         }
     };
     m_internal_stream_data->read_notifier->on_ready_to_read = [this, &stream] {
-        constexpr size_t buffer_size = 16 * KiB;
+        constexpr size_t buffer_size = 256 * KiB;
         static char buf[buffer_size];
         do {
             auto result = m_internal_stream_data->read_stream->read({ buf, buffer_size });
@@ -51,13 +50,12 @@ void Request::stream_into_impl(T& stream)
                 break;
             if (result.is_error())
                 continue;
-            auto nread = result.value();
-            if (nread == 0)
+            auto read_bytes = result.release_value();
+            if (read_bytes.is_empty())
                 break;
-            if (!stream.write_or_error({ buf, nread })) {
-                // FIXME: What do we do here?
-                TODO();
-            }
+            // FIXME: What do we do if this fails?
+            stream.write_entire_buffer(read_bytes).release_value_but_fixme_should_propagate_errors();
+            break;
         } while (true);
 
         if (m_internal_stream_data->read_stream->is_eof())
@@ -66,16 +64,6 @@ void Request::stream_into_impl(T& stream)
         if (m_internal_stream_data->request_done)
             m_internal_stream_data->on_finish();
     };
-}
-
-void Request::stream_into(Core::Stream::Stream& stream)
-{
-    stream_into_impl(stream);
-}
-
-void Request::stream_into(OutputStream& stream)
-{
-    stream_into_impl(stream);
 }
 
 void Request::set_should_buffer_all_input(bool value)
@@ -101,7 +89,8 @@ void Request::set_should_buffer_all_input(bool value)
     };
 
     on_finish = [this](auto success, u32 total_size) {
-        auto output_buffer = m_internal_buffered_data->payload_stream.copy_into_contiguous_buffer();
+        auto output_buffer = ByteBuffer::create_uninitialized(m_internal_buffered_data->payload_stream.used_buffer_size()).release_value_but_fixme_should_propagate_errors();
+        m_internal_buffered_data->payload_stream.read_entire_buffer(output_buffer).release_value_but_fixme_should_propagate_errors();
         on_buffered_request_finish(
             success,
             total_size,
@@ -127,7 +116,7 @@ void Request::did_progress(Badge<RequestClient>, Optional<u32> total_size, u32 d
         on_progress(total_size, downloaded_size);
 }
 
-void Request::did_receive_headers(Badge<RequestClient>, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers, Optional<u32> response_code)
+void Request::did_receive_headers(Badge<RequestClient>, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> response_code)
 {
     if (on_headers_received)
         on_headers_received(response_headers, response_code);

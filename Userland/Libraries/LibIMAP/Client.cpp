@@ -4,13 +4,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "AK/OwnPtr.h"
-#include <LibCore/Stream.h>
+#include <AK/OwnPtr.h>
 #include <LibIMAP/Client.h>
 
 namespace IMAP {
 
-Client::Client(StringView host, u16 port, NonnullOwnPtr<Core::Stream::Socket> socket)
+Client::Client(StringView host, u16 port, NonnullOwnPtr<Core::Socket> socket)
     : m_host(host)
     , m_port(port)
     , m_socket(move(socket))
@@ -49,7 +48,7 @@ ErrorOr<NonnullOwnPtr<Client>> Client::connect_tls(StringView host, u16 port)
 
 ErrorOr<NonnullOwnPtr<Client>> Client::connect_plaintext(StringView host, u16 port)
 {
-    auto socket = TRY(Core::Stream::TCPSocket::connect(host, port));
+    auto socket = TRY(Core::TCPSocket::connect(host, port));
     dbgln("Connected to {}:{}", host, port);
     return adopt_nonnull_own_or_enomem(new (nothrow) Client(host, port, move(socket)));
 }
@@ -185,16 +184,16 @@ RefPtr<Promise<Optional<SolidResponse>>> Client::login(StringView username, Stri
 RefPtr<Promise<Optional<SolidResponse>>> Client::list(StringView reference_name, StringView mailbox)
 {
     auto command = Command { CommandType::List, m_current_command,
-        { String::formatted("\"{}\"", reference_name),
-            String::formatted("\"{}\"", mailbox) } };
+        { DeprecatedString::formatted("\"{}\"", reference_name),
+            DeprecatedString::formatted("\"{}\"", mailbox) } };
     return cast_promise<SolidResponse>(send_command(move(command)));
 }
 
 RefPtr<Promise<Optional<SolidResponse>>> Client::lsub(StringView reference_name, StringView mailbox)
 {
     auto command = Command { CommandType::ListSub, m_current_command,
-        { String::formatted("\"{}\"", reference_name),
-            String::formatted("\"{}\"", mailbox) } };
+        { DeprecatedString::formatted("\"{}\"", reference_name),
+            DeprecatedString::formatted("\"{}\"", mailbox) } };
     return cast_promise<SolidResponse>(send_command(move(command)));
 }
 
@@ -250,7 +249,7 @@ ErrorOr<void> Client::send_next_command()
 {
     auto command = m_command_queue.take_first();
     ByteBuffer buffer;
-    auto tag = AK::String::formatted("A{} ", m_current_command);
+    auto tag = AK::DeprecatedString::formatted("A{} ", m_current_command);
     buffer += tag.to_byte_buffer();
     auto command_type = command_byte_buffer(command.type);
     buffer.append(command_type.data(), command_type.size());
@@ -283,40 +282,40 @@ RefPtr<Promise<Optional<SolidResponse>>> Client::delete_mailbox(StringView name)
     return cast_promise<SolidResponse>(send_command(move(command)));
 }
 
-RefPtr<Promise<Optional<SolidResponse>>> Client::store(StoreMethod method, Sequence sequence_set, bool silent, Vector<String> const& flags, bool uid)
+RefPtr<Promise<Optional<SolidResponse>>> Client::store(StoreMethod method, Sequence sequence_set, bool silent, Vector<DeprecatedString> const& flags, bool uid)
 {
     StringBuilder data_item_name;
     switch (method) {
     case StoreMethod::Replace:
-        data_item_name.append("FLAGS");
+        data_item_name.append("FLAGS"sv);
         break;
     case StoreMethod::Add:
-        data_item_name.append("+FLAGS");
+        data_item_name.append("+FLAGS"sv);
         break;
     case StoreMethod::Remove:
-        data_item_name.append("-FLAGS");
+        data_item_name.append("-FLAGS"sv);
         break;
     }
     if (silent) {
-        data_item_name.append(".SILENT");
+        data_item_name.append(".SILENT"sv);
     }
 
     StringBuilder flags_builder;
     flags_builder.append('(');
-    flags_builder.join(" ", flags);
+    flags_builder.join(' ', flags);
     flags_builder.append(')');
 
-    auto command = Command { uid ? CommandType::UIDStore : CommandType::Store, m_current_command, { sequence_set.serialize(), data_item_name.build(), flags_builder.build() } };
+    auto command = Command { uid ? CommandType::UIDStore : CommandType::Store, m_current_command, { sequence_set.serialize(), data_item_name.to_deprecated_string(), flags_builder.to_deprecated_string() } };
     return cast_promise<SolidResponse>(send_command(move(command)));
 }
-RefPtr<Promise<Optional<SolidResponse>>> Client::search(Optional<String> charset, Vector<SearchKey>&& keys, bool uid)
+RefPtr<Promise<Optional<SolidResponse>>> Client::search(Optional<DeprecatedString> charset, Vector<SearchKey>&& keys, bool uid)
 {
-    Vector<String> args;
+    Vector<DeprecatedString> args;
     if (charset.has_value()) {
-        args.append("CHARSET ");
+        args.append("CHARSET "sv);
         args.append(charset.value());
     }
-    for (const auto& item : keys) {
+    for (auto const& item : keys) {
         args.append(item.serialize());
     }
     auto command = Command { uid ? CommandType::UIDSearch : CommandType::Search, m_current_command, args };
@@ -332,55 +331,55 @@ RefPtr<Promise<Optional<SolidResponse>>> Client::finish_idle()
 {
     auto promise = Promise<Optional<Response>>::construct();
     m_pending_promises.append(promise);
-    MUST(send_raw("DONE"));
+    MUST(send_raw("DONE"sv));
     m_expecting_response = true;
     return cast_promise<SolidResponse>(promise);
 }
 
 RefPtr<Promise<Optional<SolidResponse>>> Client::status(StringView mailbox, Vector<StatusItemType> const& types)
 {
-    Vector<String> args;
+    Vector<DeprecatedString> args;
     for (auto type : types) {
         switch (type) {
         case StatusItemType::Recent:
-            args.append("RECENT");
+            args.append("RECENT"sv);
             break;
         case StatusItemType::UIDNext:
-            args.append("UIDNEXT");
+            args.append("UIDNEXT"sv);
             break;
         case StatusItemType::UIDValidity:
-            args.append("UIDVALIDITY");
+            args.append("UIDVALIDITY"sv);
             break;
         case StatusItemType::Unseen:
-            args.append("UNSEEN");
+            args.append("UNSEEN"sv);
             break;
         case StatusItemType::Messages:
-            args.append("MESSAGES");
+            args.append("MESSAGES"sv);
             break;
         }
     }
     StringBuilder types_list;
     types_list.append('(');
-    types_list.join(" ", args);
+    types_list.join(' ', args);
     types_list.append(')');
-    auto command = Command { CommandType::Status, m_current_command, { mailbox, types_list.build() } };
+    auto command = Command { CommandType::Status, m_current_command, { mailbox, types_list.to_deprecated_string() } };
     return cast_promise<SolidResponse>(send_command(move(command)));
 }
 
-RefPtr<Promise<Optional<SolidResponse>>> Client::append(StringView mailbox, Message&& message, Optional<Vector<String>> flags, Optional<Core::DateTime> date_time)
+RefPtr<Promise<Optional<SolidResponse>>> Client::append(StringView mailbox, Message&& message, Optional<Vector<DeprecatedString>> flags, Optional<Core::DateTime> date_time)
 {
-    Vector<String> args = { mailbox };
+    Vector<DeprecatedString> args = { mailbox };
     if (flags.has_value()) {
         StringBuilder flags_sb;
         flags_sb.append('(');
-        flags_sb.join(" ", flags.value());
+        flags_sb.join(' ', flags.value());
         flags_sb.append(')');
-        args.append(flags_sb.build());
+        args.append(flags_sb.to_deprecated_string());
     }
     if (date_time.has_value())
-        args.append(date_time.value().to_string("\"%d-%b-%Y %H:%M:%S +0000\""));
+        args.append(date_time.value().to_deprecated_string("\"%d-%b-%Y %H:%M:%S +0000\""sv));
 
-    args.append(String::formatted("{{{}}}", message.data.length()));
+    args.append(DeprecatedString::formatted("{{{}}}", message.data.length()));
 
     auto continue_req = send_command(Command { CommandType::Append, m_current_command, args });
 

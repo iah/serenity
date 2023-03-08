@@ -121,7 +121,7 @@ namespace Web::HTML {
     if (current_input_character.has_value() && is_ascii_hex_digit(current_input_character.value()))
 
 #define ON_WHITESPACE \
-    if (current_input_character.has_value() && is_ascii(current_input_character.value()) && "\t\n\f "sv.contains(current_input_character.value()))
+    if (current_input_character.has_value() && is_ascii(*current_input_character) && first_is_one_of(static_cast<char>(*current_input_character), '\t', '\n', '\f', ' '))
 
 #define ANYTHING_ELSE if (1)
 
@@ -187,22 +187,41 @@ Optional<u32> HTMLTokenizer::next_code_point()
 {
     if (m_utf8_iterator == m_utf8_view.end())
         return {};
-    skip(1);
-    dbgln_if(TOKENIZER_TRACE_DEBUG, "(Tokenizer) Next code_point: {}", (char)*m_prev_utf8_iterator);
-    return *m_prev_utf8_iterator;
+
+    u32 code_point;
+    // https://html.spec.whatwg.org/multipage/parsing.html#preprocessing-the-input-stream:tokenization
+    // https://infra.spec.whatwg.org/#normalize-newlines
+    if (peek_code_point(0).value_or(0) == '\r' && peek_code_point(1).value_or(0) == '\n') {
+        // replace every U+000D CR U+000A LF code point pair with a single U+000A LF code point,
+        skip(2);
+        code_point = '\n';
+    } else if (peek_code_point(0).value_or(0) == '\r') {
+        // replace every remaining U+000D CR code point with a U+000A LF code point.
+        skip(1);
+        code_point = '\n';
+    } else {
+        skip(1);
+        code_point = *m_prev_utf8_iterator;
+    }
+
+    dbgln_if(TOKENIZER_TRACE_DEBUG, "(Tokenizer) Next code_point: {}", code_point);
+    return code_point;
 }
 
 void HTMLTokenizer::skip(size_t count)
 {
-    m_source_positions.append(m_source_positions.last());
+    if (!m_source_positions.is_empty())
+        m_source_positions.append(m_source_positions.last());
     for (size_t i = 0; i < count; ++i) {
         m_prev_utf8_iterator = m_utf8_iterator;
         auto code_point = *m_utf8_iterator;
-        if (code_point == '\n') {
-            m_source_positions.last().column = 0;
-            m_source_positions.last().line++;
-        } else {
-            m_source_positions.last().column++;
+        if (!m_source_positions.is_empty()) {
+            if (code_point == '\n') {
+                m_source_positions.last().column = 0;
+                m_source_positions.last().line++;
+            } else {
+                m_source_positions.last().column++;
+            }
         }
         ++m_utf8_iterator;
     }
@@ -229,14 +248,17 @@ HTMLToken::Position HTMLTokenizer::nth_last_position(size_t n)
 
 Optional<HTMLToken> HTMLTokenizer::next_token()
 {
-    {
+    if (!m_source_positions.is_empty()) {
         auto last_position = m_source_positions.last();
-        m_source_positions.clear();
+        m_source_positions.clear_with_capacity();
         m_source_positions.append(move(last_position));
     }
 _StartOfFunction:
     if (!m_queued_tokens.is_empty())
         return m_queued_tokens.dequeue();
+
+    if (m_aborted)
+        return {};
 
     for (;;) {
         auto current_input_character = next_code_point();
@@ -388,22 +410,22 @@ _StartOfFunction:
             BEGIN_STATE(MarkupDeclarationOpen)
             {
                 DONT_CONSUME_NEXT_INPUT_CHARACTER;
-                if (consume_next_if_match("--")) {
+                if (consume_next_if_match("--"sv)) {
                     create_new_token(HTMLToken::Type::Comment);
                     m_current_token.set_start_position({}, nth_last_position(3));
                     SWITCH_TO(CommentStart);
                 }
-                if (consume_next_if_match("DOCTYPE", CaseSensitivity::CaseInsensitive)) {
+                if (consume_next_if_match("DOCTYPE"sv, CaseSensitivity::CaseInsensitive)) {
                     SWITCH_TO(DOCTYPE);
                 }
-                if (consume_next_if_match("[CDATA[")) {
+                if (consume_next_if_match("[CDATA["sv)) {
                     // We keep the parser optional so that syntax highlighting can be lexer-only.
                     // The parser registers itself with the lexer it creates.
                     if (m_parser != nullptr && m_parser->adjusted_current_node().namespace_() != Namespace::HTML) {
                         SWITCH_TO(CDATASection);
                     } else {
                         create_new_token(HTMLToken::Type::Comment);
-                        m_current_builder.append("[CDATA[");
+                        m_current_builder.append("[CDATA["sv);
                         SWITCH_TO_WITH_UNCLEAN_BUILDER(BogusComment);
                     }
                 }
@@ -576,10 +598,10 @@ _StartOfFunction:
                 }
                 ANYTHING_ELSE
                 {
-                    if (to_ascii_uppercase(current_input_character.value()) == 'P' && consume_next_if_match("UBLIC", CaseSensitivity::CaseInsensitive)) {
+                    if (to_ascii_uppercase(current_input_character.value()) == 'P' && consume_next_if_match("UBLIC"sv, CaseSensitivity::CaseInsensitive)) {
                         SWITCH_TO(AfterDOCTYPEPublicKeyword);
                     }
-                    if (to_ascii_uppercase(current_input_character.value()) == 'S' && consume_next_if_match("YSTEM", CaseSensitivity::CaseInsensitive)) {
+                    if (to_ascii_uppercase(current_input_character.value()) == 'S' && consume_next_if_match("YSTEM"sv, CaseSensitivity::CaseInsensitive)) {
                         SWITCH_TO(AfterDOCTYPESystemKeyword);
                     }
                     log_parse_error();
@@ -828,7 +850,7 @@ _StartOfFunction:
             {
                 ON('"')
                 {
-                    m_current_token.ensure_doctype_data().public_identifier = consume_current_builder();
+                    m_current_token.ensure_doctype_data().system_identifier = consume_current_builder();
                     SWITCH_TO(AfterDOCTYPESystemIdentifier);
                 }
                 ON(0)
@@ -840,7 +862,7 @@ _StartOfFunction:
                 ON('>')
                 {
                     log_parse_error();
-                    m_current_token.ensure_doctype_data().public_identifier = consume_current_builder();
+                    m_current_token.ensure_doctype_data().system_identifier = consume_current_builder();
                     m_current_token.ensure_doctype_data().force_quirks = true;
                     SWITCH_TO_AND_EMIT_CURRENT_TOKEN(Data);
                 }
@@ -1174,7 +1196,8 @@ _StartOfFunction:
                 ANYTHING_ELSE
                 {
                     m_current_token.add_attribute({});
-                    m_current_token.last_attribute().name_start_position = m_source_positions.last();
+                    if (!m_source_positions.is_empty())
+                        m_current_token.last_attribute().name_start_position = m_source_positions.last();
                     RECONSUME_IN(AttributeName);
                 }
             }
@@ -1467,7 +1490,7 @@ _StartOfFunction:
                 }
                 ANYTHING_ELSE
                 {
-                    m_current_builder.append('-');
+                    m_current_builder.append("--"sv);
                     RECONSUME_IN(Comment);
                 }
             }
@@ -1478,7 +1501,7 @@ _StartOfFunction:
             {
                 ON('-')
                 {
-                    m_current_builder.append("--!");
+                    m_current_builder.append("--!"sv);
                     SWITCH_TO_WITH_UNCLEAN_BUILDER(CommentEndDash);
                 }
                 ON('>')
@@ -1495,7 +1518,7 @@ _StartOfFunction:
                 }
                 ANYTHING_ELSE
                 {
-                    m_current_builder.append("--!");
+                    m_current_builder.append("--!"sv);
                     RECONSUME_IN(Comment);
                 }
             }
@@ -1617,7 +1640,7 @@ _StartOfFunction:
             {
                 size_t byte_offset = m_utf8_view.byte_offset_of(m_prev_utf8_iterator);
 
-                auto match = HTML::code_points_from_entity(m_decoded_input.substring_view(byte_offset, m_decoded_input.length() - byte_offset - 1));
+                auto match = HTML::code_points_from_entity(m_decoded_input.substring_view(byte_offset, m_decoded_input.length() - byte_offset));
 
                 if (match.has_value()) {
                     skip(match->entity.length() - 1);
@@ -2764,14 +2787,51 @@ void HTMLTokenizer::create_new_token(HTMLToken::Type type)
     m_current_token.set_start_position({}, nth_last_position(offset));
 }
 
-HTMLTokenizer::HTMLTokenizer(StringView input, String const& encoding)
+HTMLTokenizer::HTMLTokenizer()
 {
-    auto* decoder = TextCodec::decoder_for(encoding);
-    VERIFY(decoder);
-    m_decoded_input = decoder->to_utf8(input);
+    m_decoded_input = "";
     m_utf8_view = Utf8View(m_decoded_input);
     m_utf8_iterator = m_utf8_view.begin();
+    m_prev_utf8_iterator = m_utf8_view.begin();
     m_source_positions.empend(0u, 0u);
+}
+
+HTMLTokenizer::HTMLTokenizer(StringView input, DeprecatedString const& encoding)
+{
+    auto decoder = TextCodec::decoder_for(encoding);
+    VERIFY(decoder.has_value());
+    m_decoded_input = decoder->to_utf8(input).release_value_but_fixme_should_propagate_errors().to_deprecated_string();
+    m_utf8_view = Utf8View(m_decoded_input);
+    m_utf8_iterator = m_utf8_view.begin();
+    m_prev_utf8_iterator = m_utf8_view.begin();
+    m_source_positions.empend(0u, 0u);
+}
+
+void HTMLTokenizer::insert_input_at_insertion_point(DeprecatedString const& input)
+{
+    auto utf8_iterator_byte_offset = m_utf8_view.byte_offset_of(m_utf8_iterator);
+
+    // FIXME: Implement a InputStream to handle insertion_point and iterators.
+    StringBuilder builder {};
+    builder.append(m_decoded_input.substring(0, m_insertion_point.position));
+    builder.append(input);
+    builder.append(m_decoded_input.substring(m_insertion_point.position));
+    m_decoded_input = builder.to_deprecated_string();
+
+    m_utf8_view = Utf8View(m_decoded_input);
+    m_utf8_iterator = m_utf8_view.iterator_at_byte_offset(utf8_iterator_byte_offset);
+
+    m_insertion_point.position += input.length();
+}
+
+void HTMLTokenizer::insert_eof()
+{
+    m_explicit_eof_inserted = true;
+}
+
+bool HTMLTokenizer::is_eof_inserted()
+{
+    return m_explicit_eof_inserted;
 }
 
 void HTMLTokenizer::will_switch_to([[maybe_unused]] State new_state)
@@ -2814,8 +2874,10 @@ void HTMLTokenizer::restore_to(Utf8CodePointIterator const& new_iterator)
 {
     auto diff = m_utf8_iterator - new_iterator;
     if (diff > 0) {
-        for (ssize_t i = 0; i < diff; ++i)
-            m_source_positions.take_last();
+        for (ssize_t i = 0; i < diff; ++i) {
+            if (!m_source_positions.is_empty())
+                m_source_positions.take_last();
+        }
     } else {
         // Going forwards...?
         TODO();
@@ -2823,9 +2885,9 @@ void HTMLTokenizer::restore_to(Utf8CodePointIterator const& new_iterator)
     m_utf8_iterator = new_iterator;
 }
 
-String HTMLTokenizer::consume_current_builder()
+DeprecatedString HTMLTokenizer::consume_current_builder()
 {
-    auto string = m_current_builder.to_string();
+    auto string = m_current_builder.to_deprecated_string();
     m_current_builder.clear();
     return string;
 }

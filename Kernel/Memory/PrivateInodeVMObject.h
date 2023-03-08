@@ -17,8 +17,9 @@ class PrivateInodeVMObject final : public InodeVMObject {
 public:
     virtual ~PrivateInodeVMObject() override;
 
-    static ErrorOr<NonnullRefPtr<PrivateInodeVMObject>> try_create_with_inode(Inode&);
-    virtual ErrorOr<NonnullRefPtr<VMObject>> try_clone() override;
+    static ErrorOr<NonnullLockRefPtr<PrivateInodeVMObject>> try_create_with_inode(Inode&);
+    static ErrorOr<NonnullLockRefPtr<PrivateInodeVMObject>> try_create_with_inode_and_range(Inode&, u64 offset, size_t range_size);
+    virtual ErrorOr<NonnullLockRefPtr<VMObject>> try_clone() override;
 
 private:
     virtual bool is_private_inode() const override { return true; }

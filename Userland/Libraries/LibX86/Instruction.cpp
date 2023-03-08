@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,19 +9,18 @@
 #include <LibX86/Instruction.h>
 #include <LibX86/Interpreter.h>
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(AK_COMPILER_GCC)
 #    pragma GCC optimize("O3")
 #endif
 
 namespace X86 {
 
-InstructionDescriptor s_table16[256];
-InstructionDescriptor s_table32[256];
-InstructionDescriptor s_0f_table16[256];
-InstructionDescriptor s_0f_table32[256];
+InstructionDescriptor s_table[3][256];
+InstructionDescriptor s_0f_table[3][256];
 InstructionDescriptor s_sse_table_np[256];
 InstructionDescriptor s_sse_table_66[256];
 InstructionDescriptor s_sse_table_f3[256];
+InstructionDescriptor s_sse_table_f2[256];
 
 static bool opcode_has_register_index(u8 op)
 {
@@ -33,7 +33,7 @@ static bool opcode_has_register_index(u8 op)
     return false;
 }
 
-static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler handler, IsLockPrefixAllowed lock_prefix_allowed)
+static void build_in_table(InstructionDescriptor* table, u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler handler, IsLockPrefixAllowed lock_prefix_allowed)
 {
     InstructionDescriptor& d = table[op];
 
@@ -68,6 +68,7 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     case OP_mm1_mm2m64_imm8:
     case OP_reg_mm1_imm8:
     case OP_mm1_r32m16_imm8:
+    case OP_xmm1_imm8:
     case OP_xmm1_xmm2m32_imm8:
     case OP_xmm1_xmm2m128_imm8:
     case OP_reg_xmm1_imm8:
@@ -90,6 +91,9 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     case OP_relimm32:
         d.imm1_bytes = 4;
         break;
+    case OP_regW_immW:
+        d.imm1_bytes = CurrentOperandSize;
+        break;
     case OP_imm16_imm8:
         d.imm1_bytes = 2;
         d.imm2_bytes = 1;
@@ -111,7 +115,7 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     case OP_NEAR_imm:
         d.imm1_bytes = CurrentAddressSize;
         break;
-    //default:
+    // default:
     case InvalidFormat:
     case MultibyteWithSlash:
     case InstructionPrefix:
@@ -151,6 +155,8 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     case OP_CR_reg32:
     case OP_reg16_RM8:
     case OP_reg32_RM8:
+    case OP_reg:
+    case OP_m64:
     case OP_mm1_rm32:
     case OP_rm32_mm2:
     case OP_mm1_mm2m64:
@@ -169,9 +175,14 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     case OP_xmm1_m64:
     case OP_m64_xmm2:
     case OP_rm8_xmm2m32:
+    case OP_r32_xmm2m64:
+    case OP_rm32_xmm2:
     case OP_xmm1_mm2m64:
+    case OP_xmm_mm:
+    case OP_mm_xmm:
     case OP_mm1m64_xmm2:
     case OP_mm1_xmm2m64:
+    case OP_mm1_xmm2m128:
     case OP_r32_xmm2m32:
     case __EndFormatsWithRMByte:
     case OP_CS:
@@ -202,7 +213,7 @@ static void build(InstructionDescriptor* table, u8 op, const char* mnemonic, Ins
     }
 }
 
-static void build_slash(InstructionDescriptor* table, u8 op, u8 slash, const char* mnemonic, InstructionFormat format, InstructionHandler handler, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+static void build_slash(InstructionDescriptor* table, u8 op, u8 slash, char const* mnemonic, InstructionFormat format, InstructionHandler handler, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
     InstructionDescriptor& d = table[op];
     VERIFY(d.handler == nullptr);
@@ -211,10 +222,10 @@ static void build_slash(InstructionDescriptor* table, u8 op, u8 slash, const cha
     if (!d.slashes)
         d.slashes = new InstructionDescriptor[8];
 
-    build(d.slashes, slash, mnemonic, format, handler, lock_prefix_allowed);
+    build_in_table(d.slashes, slash, mnemonic, format, handler, lock_prefix_allowed);
 }
 
-static void build_slash_rm(InstructionDescriptor* table, u8 op, u8 slash, u8 rm, const char* mnemonic, InstructionFormat format, InstructionHandler handler)
+static void build_slash_rm(InstructionDescriptor* table, u8 op, u8 slash, u8 rm, char const* mnemonic, InstructionFormat format, InstructionHandler handler)
 {
     VERIFY((rm & 0xc0) == 0xc0);
     VERIFY(((rm >> 3) & 7) == slash);
@@ -232,109 +243,141 @@ static void build_slash_rm(InstructionDescriptor* table, u8 op, u8 slash, u8 rm,
         }
     }
 
-    build(d.slashes, rm & 7, mnemonic, format, handler, LockPrefixNotAllowed);
+    build_in_table(d.slashes, rm & 7, mnemonic, format, handler, LockPrefixNotAllowed);
 }
 
-static void build_0f(u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<auto table>
+static void build_base(u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    build(s_0f_table16, op, mnemonic, format, impl, lock_prefix_allowed);
-    build(s_0f_table32, op, mnemonic, format, impl, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size16)], op, mnemonic, format, impl, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size32)], op, mnemonic, format, impl, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size64)], op, mnemonic, format, impl, lock_prefix_allowed);
 }
 
-static void build(u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<auto table>
+static void build_base(u8 op, char const* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    build(s_table16, op, mnemonic, format, impl, lock_prefix_allowed);
-    build(s_table32, op, mnemonic, format, impl, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size16)], op, mnemonic, format16, impl16, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size32)], op, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size64)], op, mnemonic, format32, impl32, lock_prefix_allowed);
 }
 
-static void build(u8 op, const char* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<auto table>
+static void build_base(u8 op, char const* mnemonic16, InstructionFormat format16, InstructionHandler impl16, char const* mnemonic32, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    build(s_table16, op, mnemonic, format16, impl16, lock_prefix_allowed);
-    build(s_table32, op, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size16)], op, mnemonic16, format16, impl16, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size32)], op, mnemonic32, format32, impl32, lock_prefix_allowed);
+    build_in_table(table[to_underlying(OperandSize::Size64)], op, mnemonic32, format32, impl32, lock_prefix_allowed);
 }
 
-static void build_0f(u8 op, const char* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<auto table>
+static void build_slash_base(u8 op, u8 slash, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    build(s_0f_table16, op, mnemonic, format16, impl16, lock_prefix_allowed);
-    build(s_0f_table32, op, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size16)], op, slash, mnemonic, format, impl, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size32)], op, slash, mnemonic, format, impl, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size64)], op, slash, mnemonic, format, impl, lock_prefix_allowed);
 }
 
-static void build(u8 op, const char* mnemonic16, InstructionFormat format16, InstructionHandler impl16, const char* mnemonic32, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<auto table>
+static void build_slash_base(u8 op, u8 slash, char const* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    build(s_table16, op, mnemonic16, format16, impl16, lock_prefix_allowed);
-    build(s_table32, op, mnemonic32, format32, impl32, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size16)], op, slash, mnemonic, format16, impl16, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size32)], op, slash, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_slash(table[to_underlying(OperandSize::Size64)], op, slash, mnemonic, format32, impl32, lock_prefix_allowed);
 }
 
-static void build_0f(u8 op, const char* mnemonic16, InstructionFormat format16, InstructionHandler impl16, const char* mnemonic32, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<typename... Args>
+static void build(Args... args)
 {
-    build(s_0f_table16, op, mnemonic16, format16, impl16, lock_prefix_allowed);
-    build(s_0f_table32, op, mnemonic32, format32, impl32, lock_prefix_allowed);
+    build_base<s_table>(args...);
 }
 
-static void build_slash(u8 op, u8 slash, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<typename... Args>
+static void build_0f(Args... args)
 {
-    build_slash(s_table16, op, slash, mnemonic, format, impl, lock_prefix_allowed);
-    build_slash(s_table32, op, slash, mnemonic, format, impl, lock_prefix_allowed);
+    build_base<s_0f_table>(args...);
 }
 
-static void build_slash(u8 op, u8 slash, const char* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<typename... Args>
+static void build_slash(Args... args)
 {
-    build_slash(s_table16, op, slash, mnemonic, format16, impl16, lock_prefix_allowed);
-    build_slash(s_table32, op, slash, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_slash_base<s_table>(args...);
 }
 
-static void build_0f_slash(u8 op, u8 slash, const char* mnemonic, InstructionFormat format16, InstructionHandler impl16, InstructionFormat format32, InstructionHandler impl32, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+template<typename... Args>
+static void build_0f_slash(Args... args)
 {
-    build_slash(s_0f_table16, op, slash, mnemonic, format16, impl16, lock_prefix_allowed);
-    build_slash(s_0f_table32, op, slash, mnemonic, format32, impl32, lock_prefix_allowed);
+    build_slash_base<s_0f_table>(args...);
 }
 
-static void build_0f_slash(u8 op, u8 slash, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+static void build_slash_rm(u8 op, u8 slash, u8 rm, char const* mnemonic, InstructionFormat format, InstructionHandler impl)
 {
-    build_slash(s_0f_table16, op, slash, mnemonic, format, impl, lock_prefix_allowed);
-    build_slash(s_0f_table32, op, slash, mnemonic, format, impl, lock_prefix_allowed);
+    build_slash_rm(s_table[to_underlying(OperandSize::Size16)], op, slash, rm, mnemonic, format, impl);
+    build_slash_rm(s_table[to_underlying(OperandSize::Size32)], op, slash, rm, mnemonic, format, impl);
+    build_slash_rm(s_table[to_underlying(OperandSize::Size64)], op, slash, rm, mnemonic, format, impl);
 }
 
-static void build_slash_rm(u8 op, u8 slash, u8 rm, const char* mnemonic, InstructionFormat format, InstructionHandler impl)
-{
-    build_slash_rm(s_table16, op, slash, rm, mnemonic, format, impl);
-    build_slash_rm(s_table32, op, slash, rm, mnemonic, format, impl);
-}
-
-static void build_slash_reg(u8 op, u8 slash, const char* mnemonic, InstructionFormat format, InstructionHandler impl)
+static void build_slash_reg(u8 op, u8 slash, char const* mnemonic, InstructionFormat format, InstructionHandler impl)
 {
     for (int i = 0; i < 8; ++i)
         build_slash_rm(op, slash, 0xc0 | (slash << 3) | i, mnemonic, format, impl);
 }
 
-static void build_sse_np(u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+static void build_sse_np(u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    if (s_0f_table32[op].format == InvalidFormat) {
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format == InvalidFormat) {
         build_0f(op, mnemonic, format, impl, lock_prefix_allowed);
-        build(s_sse_table_np, op, mnemonic, format, impl, lock_prefix_allowed);
+        build_in_table(s_sse_table_np, op, mnemonic, format, impl, lock_prefix_allowed);
         return;
     }
-    if (s_0f_table32[op].format != __SSE)
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
         build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
 
-    VERIFY(s_0f_table32[op].format == __SSE);
-    build(s_sse_table_np, op, mnemonic, format, impl, lock_prefix_allowed);
+    VERIFY(s_0f_table[to_underlying(OperandSize::Size32)][op].format == __SSE);
+    build_in_table(s_sse_table_np, op, mnemonic, format, impl, lock_prefix_allowed);
 }
 
-static void build_sse_66(u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+static void build_sse_66(u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    if (s_0f_table32[op].format != __SSE)
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
         build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
-    VERIFY(s_0f_table32[op].format == __SSE);
-    build(s_sse_table_66, op, mnemonic, format, impl, lock_prefix_allowed);
+    VERIFY(s_0f_table[to_underlying(AddressSize::Size32)][op].format == __SSE);
+    build_in_table(s_sse_table_66, op, mnemonic, format, impl, lock_prefix_allowed);
 }
 
-static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+static void build_sse_f3(u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
 {
-    if (s_0f_table32[op].format != __SSE)
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
         build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
-    VERIFY(s_0f_table32[op].format == __SSE);
-    build(s_sse_table_f3, op, mnemonic, format, impl, lock_prefix_allowed);
+    VERIFY(s_0f_table[to_underlying(OperandSize::Size32)][op].format == __SSE);
+    build_in_table(s_sse_table_f3, op, mnemonic, format, impl, lock_prefix_allowed);
+}
+
+static void build_sse_f2(u8 op, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+{
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
+        build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
+    VERIFY(s_0f_table[to_underlying(OperandSize::Size32)][op].format == __SSE);
+    VERIFY(s_sse_table_f2[op].format == InvalidFormat);
+
+    build_in_table(s_sse_table_f2, op, mnemonic, format, impl, lock_prefix_allowed);
+}
+
+static void build_sse_np_slash(u8 op, u8 slash, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+{
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
+        build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
+
+    VERIFY(s_0f_table[to_underlying(OperandSize::Size32)][op].format == __SSE);
+    build_slash(s_sse_table_np, op, slash, mnemonic, format, impl, lock_prefix_allowed);
+}
+
+static void build_sse_66_slash(u8 op, u8 slash, char const* mnemonic, InstructionFormat format, InstructionHandler impl, IsLockPrefixAllowed lock_prefix_allowed = LockPrefixNotAllowed)
+{
+    if (s_0f_table[to_underlying(OperandSize::Size32)][op].format != __SSE)
+        build_0f(op, "__SSE_temp", __SSE, nullptr, lock_prefix_allowed);
+    VERIFY(s_0f_table[to_underlying(OperandSize::Size32)][op].format == __SSE);
+    build_slash(s_sse_table_66, op, slash, mnemonic, format, impl, lock_prefix_allowed);
 }
 
 [[gnu::constructor]] static void build_opcode_tables()
@@ -828,6 +871,8 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f_slash(0x18, 2, "PREFETCHT1", OP_RM8, &Interpreter::PREFETCHT1);
     build_0f_slash(0x18, 3, "PREFETCHT2", OP_RM8, &Interpreter::PREFETCHT2);
 
+    build_0f_slash(0x1f, 0, "NOP", OP_RM32, &Interpreter::NOP);
+
     // FIXME: Technically NoPrefix (sse_np_slash?)
     build_0f_slash(0xAE, 2, "LDMXCSR", OP_RM32, &Interpreter::LDMXCSR);
     build_0f_slash(0xAE, 3, "STMXCSR", OP_RM32, &Interpreter::STMXCSR);
@@ -845,14 +890,23 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0x0B, "UD2", OP, &Interpreter::UD2);
 
     build_sse_np(0x10, "MOVUPS", OP_xmm1_xmm2m128, &Interpreter::MOVUPS_xmm1_xmm2m128);
+    build_sse_66(0x10, "MOVUPD", OP_xmm1_xmm2m128, &Interpreter::MOVUPD_xmm1_xmm2m128);
     build_sse_f3(0x10, "MOVSS", OP_xmm1_xmm2m32, &Interpreter::MOVSS_xmm1_xmm2m32);
+    build_sse_f2(0x10, "MOVSD", OP_xmm1_xmm2m32, &Interpreter::MOVSD_xmm1_xmm2m32);
     build_sse_np(0x11, "MOVUPS", OP_xmm1m128_xmm2, &Interpreter::MOVUPS_xmm1m128_xmm2);
+    build_sse_66(0x11, "MOVUPD", OP_xmm1m128_xmm2, &Interpreter::MOVUPD_xmm1m128_xmm2);
     build_sse_f3(0x11, "MOVSS", OP_xmm1m32_xmm2, &Interpreter::MOVSS_xmm1m32_xmm2);
+    build_sse_f2(0x11, "MOVSD", OP_xmm1m32_xmm2, &Interpreter::MOVSD_xmm1m32_xmm2);
     build_sse_np(0x12, "MOVLPS", OP_xmm1_xmm2m64, &Interpreter::MOVLPS_xmm1_xmm2m64); // FIXME: This mnemonic is MOVHLPS when providing xmm2
+    build_sse_66(0x12, "MOVLPD", OP_xmm1_m64, &Interpreter::MOVLPD_xmm1_m64);
     build_sse_np(0x13, "MOVLPS", OP_m64_xmm2, &Interpreter::MOVLPS_m64_xmm2);
-    build_sse_np(0x15, "UNPCKLS", OP_xmm1_xmm2m128, &Interpreter::UNPCKLPS_xmm1_xmm2m128);
-    build_sse_np(0x15, "UNPCKHS", OP_xmm1_xmm2m128, &Interpreter::UNPCKHPS_xmm1_xmm2m128);
+    build_sse_66(0x13, "MOVLPD", OP_m64_xmm2, &Interpreter::MOVLPD_m64_xmm2);
+    build_sse_np(0x14, "UNPCKLPS", OP_xmm1_xmm2m128, &Interpreter::UNPCKLPS_xmm1_xmm2m128);
+    build_sse_66(0x14, "UNPCKLPD", OP_xmm1_xmm2m128, &Interpreter::UNPCKLPD_xmm1_xmm2m128);
+    build_sse_np(0x15, "UNPCKHPS", OP_xmm1_xmm2m128, &Interpreter::UNPCKHPS_xmm1_xmm2m128);
+    build_sse_66(0x15, "UNPCKHPD", OP_xmm1_xmm2m128, &Interpreter::UNPCKHPD_xmm1_xmm2m128);
     build_sse_np(0x16, "MOVHPS", OP_xmm1_xmm2m64, &Interpreter::MOVHPS_xmm1_xmm2m64); // FIXME: This mnemonic is MOVLHPS when providing xmm2
+    build_sse_66(0x16, "MOVHPD", OP_xmm1_xmm2m64, &Interpreter::MOVHPD_xmm1_xmm2m64); // FIXME: This mnemonic is MOVLHPS when providing xmm2
     build_sse_np(0x17, "MOVHPS", OP_m64_xmm2, &Interpreter::MOVHPS_m64_xmm2);
 
     build_0f(0x20, "MOV", OP_reg32_CR, &Interpreter::MOV_reg32_CR);
@@ -861,17 +915,27 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0x23, "MOV", OP_DR_reg32, &Interpreter::MOV_DR_reg32);
 
     build_sse_np(0x28, "MOVAPS", OP_xmm1_xmm2m128, &Interpreter::MOVAPS_xmm1_xmm2m128);
+    build_sse_66(0x28, "MOVAPD", OP_xmm1_xmm2m128, &Interpreter::MOVAPD_xmm1_xmm2m128);
     build_sse_np(0x29, "MOVAPS", OP_xmm1m128_xmm2, &Interpreter::MOVAPS_xmm1m128_xmm2);
+    build_sse_66(0x29, "MOVAPD", OP_xmm1m128_xmm2, &Interpreter::MOVAPD_xmm1m128_xmm2);
 
     build_sse_np(0x2A, "CVTPI2PS", OP_xmm1_mm2m64, &Interpreter::CVTPI2PS_xmm1_mm2m64);
+    build_sse_66(0x2A, "CVTPI2PD", OP_xmm1_mm2m64, &Interpreter::CVTPI2PD_xmm1_mm2m64);
     build_sse_f3(0x2A, "CVTSI2SS", OP_xmm1_rm32, &Interpreter::CVTSI2SS_xmm1_rm32);
+    build_sse_f2(0x2A, "CVTSI2SD", OP_xmm1_rm32, &Interpreter::CVTSI2SD_xmm1_rm32);
     build_sse_np(0x2B, "MOVNTPS", OP_xmm1m128_xmm2, &Interpreter::MOVNTPS_xmm1m128_xmm2);
     build_sse_np(0x2C, "CVTTPS2PI", OP_mm1_xmm2m64, &Interpreter::CVTTPS2PI_mm1_xmm2m64);
-    build_sse_f3(0x2C, "CVTTSS2SI", OP_r32_xmm2m32, &Interpreter::CVTTPS2PI_r32_xmm2m32);
+    build_sse_66(0x2C, "CVTTPD2PI", OP_mm1_xmm2m128, &Interpreter::CVTTPD2PI_mm1_xmm2m128);
+    build_sse_f3(0x2C, "CVTTSS2SI", OP_r32_xmm2m32, &Interpreter::CVTTSS2SI_r32_xmm2m32);
+    build_sse_f2(0x2C, "CVTTSD2SI", OP_r32_xmm2m64, &Interpreter::CVTTSS2SI_r32_xmm2m64);
     build_sse_np(0x2D, "CVTPS2PI", OP_mm1_xmm2m64, &Interpreter::CVTPS2PI_xmm1_mm2m64);
-    build_sse_f3(0x2D, "CVTSS2SI", OP_r32_xmm2m32, &Interpreter::CVTSS2SI_xmm1_rm32);
+    build_sse_66(0x2D, "CVTPD2PI", OP_mm1_xmm2m128, &Interpreter::CVTPD2PI_xmm1_mm2m128);
+    build_sse_f3(0x2D, "CVTSS2SI", OP_r32_xmm2m32, &Interpreter::CVTSS2SI_r32_xmm2m32);
+    build_sse_f2(0x2D, "CVTSD2SI", OP_r32_xmm2m64, &Interpreter::CVTSD2SI_xmm1_rm64);
     build_sse_np(0x2E, "UCOMISS", OP_xmm1_xmm2m32, &Interpreter::UCOMISS_xmm1_xmm2m32);
+    build_sse_66(0x2E, "UCOMISD", OP_xmm1_xmm2m64, &Interpreter::UCOMISD_xmm1_xmm2m64);
     build_sse_np(0x2F, "COMISS", OP_xmm1_xmm2m32, &Interpreter::COMISS_xmm1_xmm2m32);
+    build_sse_66(0x2F, "COMISD", OP_xmm1_xmm2m64, &Interpreter::COMISD_xmm1_xmm2m64);
 
     build_0f(0x31, "RDTSC", OP, &Interpreter::RDTSC);
 
@@ -893,30 +957,56 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0x4F, "CMOVG", OP_reg16_RM16, &Interpreter::CMOVcc_reg16_RM16, OP_reg32_RM32, &Interpreter::CMOVcc_reg32_RM32);
 
     build_sse_np(0x50, "MOVMSKPS", OP_reg_xmm1, &Interpreter::MOVMSKPS_reg_xmm);
+    build_sse_66(0x50, "MOVMSKPD", OP_reg_xmm1, &Interpreter::MOVMSKPD_reg_xmm);
     build_sse_np(0x51, "SQRTPS", OP_xmm1_xmm2m128, &Interpreter::SQRTPS_xmm1_xmm2m128);
+    build_sse_66(0x51, "SQRTPD", OP_xmm1_xmm2m128, &Interpreter::SQRTPD_xmm1_xmm2m128);
     build_sse_f3(0x51, "SQRTSS", OP_xmm1_xmm2m32, &Interpreter::SQRTSS_xmm1_xmm2m32);
+    build_sse_f2(0x51, "SQRTSD", OP_xmm1_xmm2m32, &Interpreter::SQRTSD_xmm1_xmm2m32);
     build_sse_np(0x52, "RSQRTPS", OP_xmm1_xmm2m128, &Interpreter::RSQRTPS_xmm1_xmm2m128);
     build_sse_f3(0x52, "RSQRTSS", OP_xmm1_xmm2m32, &Interpreter::RSQRTSS_xmm1_xmm2m32);
     build_sse_np(0x53, "RCPPS", OP_xmm1_xmm2m128, &Interpreter::RCPPS_xmm1_xmm2m128);
     build_sse_f3(0x53, "RCPSS", OP_xmm1_xmm2m32, &Interpreter::RCPSS_xmm1_xmm2m32);
     build_sse_np(0x54, "ANDPS", OP_xmm1_xmm2m128, &Interpreter::ANDPS_xmm1_xmm2m128);
+    build_sse_66(0x54, "ANDPD", OP_xmm1_xmm2m128, &Interpreter::ANDPD_xmm1_xmm2m128);
     build_sse_np(0x55, "ANDNPS", OP_xmm1_xmm2m128, &Interpreter::ANDNPS_xmm1_xmm2m128);
+    build_sse_66(0x55, "ANDNPD", OP_xmm1_xmm2m128, &Interpreter::ANDNPD_xmm1_xmm2m128);
     build_sse_np(0x56, "ORPS", OP_xmm1_xmm2m128, &Interpreter::ORPS_xmm1_xmm2m128);
+    build_sse_66(0x56, "ORPD", OP_xmm1_xmm2m128, &Interpreter::ORPD_xmm1_xmm2m128);
     build_sse_np(0x57, "XORPS", OP_xmm1_xmm2m128, &Interpreter::XORPS_xmm1_xmm2m128);
+    build_sse_66(0x57, "XORPD", OP_xmm1_xmm2m128, &Interpreter::XORPD_xmm1_xmm2m128);
 
     build_sse_np(0x58, "ADDPS", OP_xmm1_xmm2m128, &Interpreter::ADDPS_xmm1_xmm2m128);
+    build_sse_66(0x58, "ADDPD", OP_xmm1_xmm2m128, &Interpreter::ADDPD_xmm1_xmm2m128);
     build_sse_f3(0x58, "ADDSS", OP_xmm1_xmm2m32, &Interpreter::ADDSS_xmm1_xmm2m32);
+    build_sse_f2(0x58, "ADDSD", OP_xmm1_xmm2m32, &Interpreter::ADDSD_xmm1_xmm2m32);
     build_sse_np(0x59, "MULPS", OP_xmm1_xmm2m128, &Interpreter::MULPS_xmm1_xmm2m128);
+    build_sse_66(0x59, "MULPD", OP_xmm1_xmm2m128, &Interpreter::MULPD_xmm1_xmm2m128);
     build_sse_f3(0x59, "MULSS", OP_xmm1_xmm2m32, &Interpreter::MULSS_xmm1_xmm2m32);
+    build_sse_f2(0x59, "MULSD", OP_xmm1_xmm2m32, &Interpreter::MULSD_xmm1_xmm2m32);
+    build_sse_np(0x5A, "CVTPS2PD", OP_xmm1_xmm2m64, &Interpreter::CVTPS2PD_xmm1_xmm2m64);
+    build_sse_66(0x5A, "CVTPD2PS", OP_xmm1_xmm2m128, &Interpreter::CVTPD2PS_xmm1_xmm2m128);
+    build_sse_f3(0x5A, "CVTSS2SD", OP_xmm1_xmm2m32, &Interpreter::CVTSS2SD_xmm1_xmm2m32);
+    build_sse_f2(0x5A, "CVTSD2SS", OP_xmm1_xmm2m64, &Interpreter::CVTSD2SS_xmm1_xmm2m64);
+    build_sse_np(0x5B, "CVTDQ2PS", OP_xmm1_xmm2m128, &Interpreter::CVTDQ2PS_xmm1_xmm2m128);
+    build_sse_66(0x5B, "CVTPS2DQ", OP_xmm1_xmm2m128, &Interpreter::CVTPS2DQ_xmm1_xmm2m128);
+    build_sse_f3(0x5B, "CVTTPS2DQ", OP_xmm1_xmm2m128, &Interpreter::CVTTPS2DQ_xmm1_xmm2m128);
 
     build_sse_np(0x5C, "SUBPS", OP_xmm1_xmm2m128, &Interpreter::SUBPS_xmm1_xmm2m128);
+    build_sse_66(0x5C, "SUBPD", OP_xmm1_xmm2m128, &Interpreter::SUBPD_xmm1_xmm2m128);
     build_sse_f3(0x5C, "SUBSS", OP_xmm1_xmm2m32, &Interpreter::SUBSS_xmm1_xmm2m32);
+    build_sse_f2(0x5C, "SUBSD", OP_xmm1_xmm2m32, &Interpreter::SUBSD_xmm1_xmm2m32);
     build_sse_np(0x5D, "MINPS", OP_xmm1_xmm2m128, &Interpreter::MINPS_xmm1_xmm2m128);
+    build_sse_66(0x5D, "MINPD", OP_xmm1_xmm2m128, &Interpreter::MINPD_xmm1_xmm2m128);
     build_sse_f3(0x5D, "MINSS", OP_xmm1_xmm2m32, &Interpreter::MINSS_xmm1_xmm2m32);
+    build_sse_f2(0x5D, "MINSD", OP_xmm1_xmm2m32, &Interpreter::MINSD_xmm1_xmm2m32);
     build_sse_np(0x5E, "DIVPS", OP_xmm1_xmm2m128, &Interpreter::DIVPS_xmm1_xmm2m128);
+    build_sse_66(0x5E, "DIVPD", OP_xmm1_xmm2m128, &Interpreter::DIVPD_xmm1_xmm2m128);
     build_sse_f3(0x5E, "DIVSS", OP_xmm1_xmm2m32, &Interpreter::DIVSS_xmm1_xmm2m32);
+    build_sse_f2(0x5E, "DIVSD", OP_xmm1_xmm2m32, &Interpreter::DIVSD_xmm1_xmm2m32);
     build_sse_np(0x5F, "MAXPS", OP_xmm1_xmm2m128, &Interpreter::MAXPS_xmm1_xmm2m128);
+    build_sse_66(0x5F, "MAXPD", OP_xmm1_xmm2m128, &Interpreter::MAXPD_xmm1_xmm2m128);
     build_sse_f3(0x5F, "MAXSS", OP_xmm1_xmm2m32, &Interpreter::MAXSS_xmm1_xmm2m32);
+    build_sse_f2(0x5F, "MAXSD", OP_xmm1_xmm2m32, &Interpreter::MAXSD_xmm1_xmm2m32);
 
     build_0f(0x60, "PUNPCKLBW", OP_mm1_mm2m32, &Interpreter::PUNPCKLBW_mm1_mm2m32);
     build_0f(0x61, "PUNPCKLWD", OP_mm1_mm2m32, &Interpreter::PUNPCKLWD_mm1_mm2m32);
@@ -930,27 +1020,42 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0x69, "PUNPCKHWD", OP_mm1_mm2m64, &Interpreter::PUNPCKHWD_mm1_mm2m64);
     build_0f(0x6A, "PUNPCKHDQ", OP_mm1_mm2m64, &Interpreter::PUNPCKHDQ_mm1_mm2m64);
     build_0f(0x6B, "PACKSSDW", OP_mm1_mm2m64, &Interpreter::PACKSSDW_mm1_mm2m64);
-    build_0f(0x6E, "MOVD", OP_mm1_rm32, &Interpreter::MOVD_mm1_rm32);
-    build_0f(0x6F, "MOVQ", OP_mm1_mm2m64, &Interpreter::MOVQ_mm1_mm2m64);
+    build_sse_66(0x6C, "PUNPCKLQDQ", OP_xmm1_xmm2m128, &Interpreter::PUNPCKLQDQ_xmm1_xmm2m128);
+    build_sse_66(0x6D, "PUNPCKHQDQ", OP_xmm1_xmm2m128, &Interpreter::PUNPCKHQDQ_xmm1_xmm2m128);
+    build_0f(0x6E, "MOVD", OP_mm1_rm32, &Interpreter::MOVD_mm1_rm32); // FIXME: REX.W -> MOVQ
+    build_sse_np(0x6F, "MOVQ", OP_mm1_mm2m64, &Interpreter::MOVQ_mm1_mm2m64);
+    build_sse_66(0x6F, "MOVDQA", OP_xmm1_xmm2m128, &Interpreter::MOVDQA_xmm1_xmm2m128);
+    build_sse_f3(0x6F, "MOVDQU", OP_xmm1_xmm2m128, &Interpreter::MOVDQU_xmm1_xmm2m128);
 
     build_sse_np(0x70, "PSHUFW", OP_mm1_mm2m64_imm8, &Interpreter::PSHUFW_mm1_mm2m64_imm8);
-    build_0f_slash(0x71, 2, "PSRLW", OP_mm1_imm8, &Interpreter::PSRLW_mm1_mm2m64);
+    build_sse_66(0x70, "PSHUFD", OP_xmm1_xmm2m128_imm8, &Interpreter::PSHUFD_xmm1_xmm2m128_imm8);
+    build_sse_f3(0x70, "PSHUFHW", OP_xmm1_xmm2m128_imm8, &Interpreter::PSHUFHW_xmm1_xmm2m128_imm8);
+    build_sse_f2(0x70, "PSHUFLW", OP_xmm1_xmm2m128_imm8, &Interpreter::PSHUFLW_xmm1_xmm2m128_imm8);
+    build_0f_slash(0x71, 2, "PSRLW", OP_mm1_imm8, &Interpreter::PSRLW_mm1_imm8);
     build_0f_slash(0x71, 4, "PSRAW", OP_mm1_imm8, &Interpreter::PSRAW_mm1_imm8);
     build_0f_slash(0x71, 6, "PSLLW", OP_mm1_imm8, &Interpreter::PSLLD_mm1_imm8);
 
-    build_0f_slash(0x72, 2, "PSRLD", OP_mm1_imm8, &Interpreter::PSRLD_mm1_mm2m64);
+    build_0f_slash(0x72, 2, "PSRLD", OP_mm1_imm8, &Interpreter::PSRLD_mm1_imm8);
     build_0f_slash(0x72, 4, "PSRAD", OP_mm1_imm8, &Interpreter::PSRAD_mm1_imm8);
     build_0f_slash(0x72, 6, "PSLLW", OP_mm1_imm8, &Interpreter::PSLLW_mm1_imm8);
 
-    build_0f_slash(0x73, 2, "PSRLQ", OP_mm1_imm8, &Interpreter::PSRLQ_mm1_mm2m64);
-    build_0f_slash(0x73, 6, "PSLLQ", OP_mm1_imm8, &Interpreter::PSLLQ_mm1_imm8);
+    build_sse_np_slash(0x73, 2, "PSRLQ", OP_mm1_imm8, &Interpreter::PSRLQ_mm1_imm8);
+    build_sse_66_slash(0x73, 2, "PSRLQ", OP_xmm1_imm8, &Interpreter::PSRLQ_xmm1_imm8);
+    build_sse_66_slash(0x73, 3, "PSRLDQ", OP_xmm1_imm8, &Interpreter::PSRLDQ_xmm1_imm8);
+    build_sse_np_slash(0x73, 6, "PSLLQ", OP_mm1_imm8, &Interpreter::PSLLQ_mm1_imm8);
+    build_sse_66_slash(0x73, 6, "PSLLQ", OP_xmm1_imm8, &Interpreter::PSLLQ_xmm1_imm8);
+    build_sse_66_slash(0x73, 7, "PSLLDQ", OP_xmm1_imm8, &Interpreter::PSLLDQ_xmm1_imm8);
 
     build_0f(0x74, "PCMPEQB", OP_mm1_mm2m64, &Interpreter::PCMPEQB_mm1_mm2m64);
-    build_0f(0x76, "PCMPEQD", OP_mm1_mm2m64, &Interpreter::PCMPEQD_mm1_mm2m64);
     build_0f(0x75, "PCMPEQW", OP_mm1_mm2m64, &Interpreter::PCMPEQW_mm1_mm2m64);
-    build_0f(0x77, "EMMS", OP, &Interpreter::EMMS);
-    build_0f(0x7E, "MOVD", OP_rm32_mm2, &Interpreter::MOVD_rm32_mm2);
-    build_0f(0x7F, "MOVQ", OP_mm1m64_mm2, &Interpreter::MOVQ_mm1m64_mm2);
+    build_0f(0x76, "PCMPEQD", OP_mm1_mm2m64, &Interpreter::PCMPEQD_mm1_mm2m64);
+    build_0f(0x77, "EMMS", OP, &Interpreter::EMMS);                         // Technically NP
+    build_sse_np(0x7E, "MOVD", OP_rm32_mm2, &Interpreter::MOVD_rm32_mm2);   // FIXME: REW.W -> MOVQ
+    build_sse_66(0x7E, "MOVD", OP_rm32_xmm2, &Interpreter::MOVD_rm32_xmm2); // FIXME: REW.W -> MOVQ
+    build_sse_f3(0x7E, "MOVQ", OP_xmm1_xmm2m128, &Interpreter::MOVQ_xmm1_xmm2m128);
+    build_sse_np(0x7F, "MOVQ", OP_mm1m64_mm2, &Interpreter::MOVQ_mm1m64_mm2);
+    build_sse_66(0x7F, "MOVDQA", OP_xmm1m128_xmm2, &Interpreter::MOVDQA_xmm1m128_xmm2);
+    build_sse_f3(0x7F, "MOVDQU", OP_xmm1m128_xmm2, &Interpreter::MOVDQU_xmm1m128_xmm2);
 
     build_0f(0x80, "JO", OP_NEAR_imm, &Interpreter::Jcc_NEAR_imm);
     build_0f(0x81, "JNO", OP_NEAR_imm, &Interpreter::Jcc_NEAR_imm);
@@ -1015,13 +1120,26 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0xC0, "XADD", OP_RM8_reg8, &Interpreter::XADD_RM8_reg8, LockPrefixAllowed);
     build_0f(0xC1, "XADD", OP_RM16_reg16, &Interpreter::XADD_RM16_reg16, OP_RM32_reg32, &Interpreter::XADD_RM32_reg32, LockPrefixAllowed);
     build_sse_np(0xC2, "CMPPS", OP_xmm1_xmm2m128_imm8, &Interpreter::CMPPS_xmm1_xmm2m128_imm8);
+    build_sse_66(0xC2, "CMPPD", OP_xmm1_xmm2m128_imm8, &Interpreter::CMPPD_xmm1_xmm2m128_imm8);
     build_sse_f3(0xC2, "CMPSS", OP_xmm1_xmm2m32_imm8, &Interpreter::CMPSS_xmm1_xmm2m32_imm8);
+    build_sse_f2(0xC2, "CMPSD", OP_xmm1_xmm2m32_imm8, &Interpreter::CMPSD_xmm1_xmm2m32_imm8);
 
-    build_sse_np(0xC5, "PINSRW", OP_mm1_r32m16_imm8, &Interpreter::PINSRW_mm1_r32m16_imm8);
-    build_sse_66(0xC5, "PINSRW", OP_xmm1_r32m16_imm8, &Interpreter::PINSRW_xmm1_r32m16_imm8);
+    build_sse_np(0xC4, "PINSRW", OP_mm1_r32m16_imm8, &Interpreter::PINSRW_mm1_r32m16_imm8);
+    build_sse_66(0xC4, "PINSRW", OP_xmm1_r32m16_imm8, &Interpreter::PINSRW_xmm1_r32m16_imm8);
     build_sse_np(0xC5, "PEXTRW", OP_reg_mm1_imm8, &Interpreter::PEXTRW_reg_mm1_imm8);
     build_sse_66(0xC5, "PEXTRW", OP_reg_xmm1_imm8, &Interpreter::PEXTRW_reg_xmm1_imm8);
     build_sse_np(0xC6, "SHUFPS", OP_xmm1_xmm2m128_imm8, &Interpreter::SHUFPS_xmm1_xmm2m128_imm8);
+    build_sse_66(0xC6, "SHUFPD", OP_xmm1_xmm2m128_imm8, &Interpreter::SHUFPD_xmm1_xmm2m128_imm8);
+
+    build_0f_slash(0xC7, 1, "CMPXCHG8B", OP_m64, &Interpreter::CMPXCHG8B_m64);
+    // FIXME: NP 0f c7 /2 XRSTORS[64] mem
+    // FIXME: NP 0F C7 / 4 XSAVEC mem
+    // FIXME: NP 0F C7 /5 XSAVES mem
+    // FIXME: VMPTRLD, VMPTRST, VMCLR, VMXON
+    // This is technically NFx prefixed
+    // FIXME: f3 0f c7 /7 RDPID
+    build_0f_slash(0xC7, 6, "RDRAND", OP_reg, &Interpreter::RDRAND_reg);
+    build_0f_slash(0xC7, 7, "RDSEED", OP_reg, &Interpreter::RDSEED_reg);
 
     for (u8 i = 0xc8; i <= 0xcf; ++i)
         build_0f(i, "BSWAP", OP_reg32, &Interpreter::BSWAP_reg32);
@@ -1029,8 +1147,12 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0xD1, "PSRLW", OP_mm1_mm2m64, &Interpreter::PSRLW_mm1_mm2m64);
     build_0f(0xD2, "PSRLD", OP_mm1_mm2m64, &Interpreter::PSRLD_mm1_mm2m64);
     build_0f(0xD3, "PSRLQ", OP_mm1_mm2m64, &Interpreter::PSRLQ_mm1_mm2m64);
+    build_0f(0xD4, "PADDQ", OP_mm1_mm2m64, &Interpreter::PADDQ_mm1_mm2m64);
     build_0f(0xD5, "PMULLW", OP_mm1_mm2m64, &Interpreter::PMULLW_mm1_mm2m64);
 
+    build_sse_66(0xD6, "MOVQ", OP_xmm1m128_xmm2, &Interpreter::MOVQ_xmm1m128_xmm2);
+    build_sse_f3(0xD6, "MOVQ2DQ", OP_xmm_mm, &Interpreter::MOVQ2DQ_xmm_mm);
+    build_sse_f2(0xD6, "MOVDQ2Q", OP_mm_xmm, &Interpreter::MOVDQ2Q_mm_xmm);
     build_sse_np(0xD7, "PMOVMSKB", OP_reg_mm1, &Interpreter::PMOVMSKB_reg_mm1);
     build_sse_66(0xD7, "PMOVMSKB", OP_reg_xmm1, &Interpreter::PMOVMSKB_reg_xmm1);
 
@@ -1055,6 +1177,9 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_sse_66(0xE4, "PMULHUW ", OP_xmm1_xmm2m64, &Interpreter::PMULHUW_xmm1_xmm2m64);
     build_0f(0xE5, "PMULHW", OP_mm1_mm2m64, &Interpreter::PMULHW_mm1_mm2m64);
 
+    build_sse_66(0xE6, "CVTTPD2DQ", OP_xmm1_xmm2m128, &Interpreter::CVTTPD2DQ_xmm1_xmm2m128);
+    build_sse_f2(0xE6, "CVTPD2DQ", OP_xmm1_xmm2m128, &Interpreter::CVTPD2DQ_xmm1_xmm2m128);
+    build_sse_f3(0xE6, "CVTDQ2PD", OP_xmm1_xmm2m64, &Interpreter::CVTDQ2PD_xmm1_xmm2m64);
     build_sse_np(0xE7, "MOVNTQ", OP_mm1m64_mm2, &Interpreter::MOVNTQ_m64_mm1);
 
     build_sse_np(0xEA, "PMINSB", OP_mm1_mm2m64, &Interpreter::PMINSB_mm1_mm2m64);
@@ -1073,6 +1198,8 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0xF1, "PSLLW", OP_mm1_mm2m64, &Interpreter::PSLLW_mm1_mm2m64);
     build_0f(0xF2, "PSLLD", OP_mm1_mm2m64, &Interpreter::PSLLD_mm1_mm2m64);
     build_0f(0xF3, "PSLLQ", OP_mm1_mm2m64, &Interpreter::PSLLQ_mm1_mm2m64);
+    build_sse_np(0xF4, "PMULUDQ", OP_mm1_mm2m64, &Interpreter::PMULUDQ_mm1_mm2m64);
+    build_sse_66(0xF4, "PMULUDQ", OP_xmm1_xmm2m128, &Interpreter::PMULUDQ_mm1_mm2m128);
     build_0f(0xF5, "PMADDWD", OP_mm1_mm2m64, &Interpreter::PMADDWD_mm1_mm2m64);
     build_sse_np(0xF6, "PSADBW", OP_mm1_mm2m64, &Interpreter::PSADBB_mm1_mm2m64);
     build_sse_66(0xF6, "PSADBW", OP_xmm1_xmm2m128, &Interpreter::PSADBB_xmm1_xmm2m128);
@@ -1080,123 +1207,190 @@ static void build_sse_f3(u8 op, const char* mnemonic, InstructionFormat format, 
     build_0f(0xF8, "PSUBB", OP_mm1_mm2m64, &Interpreter::PSUBB_mm1_mm2m64);
     build_0f(0xF9, "PSUBW", OP_mm1_mm2m64, &Interpreter::PSUBW_mm1_mm2m64);
     build_0f(0xFA, "PSUBD", OP_mm1_mm2m64, &Interpreter::PSUBD_mm1_mm2m64);
+    build_0f(0xFB, "PSUBQ", OP_mm1_mm2m64, &Interpreter::PSUBQ_mm1_mm2m64);
     build_0f(0xFC, "PADDB", OP_mm1_mm2m64, &Interpreter::PADDB_mm1_mm2m64);
     build_0f(0xFD, "PADDW", OP_mm1_mm2m64, &Interpreter::PADDW_mm1_mm2m64);
     build_0f(0xFE, "PADDD", OP_mm1_mm2m64, &Interpreter::PADDD_mm1_mm2m64);
     build_0f(0xFF, "UD0", OP, &Interpreter::UD0);
+
+    // Changes between 32-bit and 64-bit. These are marked with i64/d64/f64 in the Intel manual's opcode tables
+    auto* table64 = s_table[to_underlying(OperandSize::Size64)];
+    table64[0x06] = {}; // PUSH ES
+    table64[0x07] = {}; // POP ES
+    table64[0x16] = {}; // PUSH SS
+    table64[0x17] = {}; // POP SS
+    table64[0x27] = {}; // DAA
+    table64[0x37] = {}; // AAA
+    for (u8 rex = 0x40; rex < 0x50; rex++)
+        table64[rex] = {}; // INC/DEC, replaced by REX prefixes
+    for (u8 pushPop = 0x50; pushPop < 0x60; pushPop++)
+        table64[pushPop].long_mode_default_64 = true; // PUSH/POP general register
+    for (u8 i = 0x60; i < 0x68; i++)
+        table64[i] = {}; // PUSHA{D}, POPA{D}, BOUND
+    // ARPL replaced by MOVSXD
+    build_in_table(table64, 0x63, "MOVSXD", OP_RM32_reg32, nullptr, LockPrefixNotAllowed);
+    table64[0x68].long_mode_default_64 = true; // PUSH
+    table64[0x6A].long_mode_default_64 = true; // PUSH
+    for (u8 jmp = 0x70; jmp < 0x80; jmp++)
+        table64[jmp].long_mode_force_64 = true; // Jcc
+    table64[0x9A] = {};                         // far CALL
+    table64[0x9C].long_mode_default_64 = true;  // PUSHF/D/Q
+    table64[0x9D].long_mode_default_64 = true;  // POPF/D/Q
+    build_in_table(table64, 0xB8, "MOV", OP_regW_immW, &Interpreter::MOV_reg32_imm32, LockPrefixNotAllowed);
+    table64[0xC2].long_mode_force_64 = true;   // near RET
+    table64[0xC3].long_mode_force_64 = true;   // near RET
+    table64[0xC4] = {};                        // LES
+    table64[0xC5] = {};                        // LDS
+    table64[0xC9].long_mode_default_64 = true; // LEAVE
+    table64[0xCE].long_mode_default_64 = true; // INTO
+    table64[0xD4] = {};                        // AAM
+    table64[0xD5] = {};                        // AAD
+    for (u8 i = 0; i < 4; i++) {
+        table64[0xE0 | i].long_mode_force_64 = true; // LOOPN[EZ], LOOP[EZ], LOOP, JrCXZ
+        table64[0xE8 | i].long_mode_force_64 = true; // near CALL, {near,far,short} JMP
+    }
+
+    auto* table64_0f = s_0f_table[to_underlying(OperandSize::Size64)];
+    build_in_table(table64_0f, 0x05, "SYSCALL", OP, nullptr, LockPrefixNotAllowed);
+    build_in_table(table64_0f, 0x07, "SYSRET", OP, nullptr, LockPrefixNotAllowed);
+    for (u8 i = 0x80; i < 0x90; i++)
+        table64_0f[i].long_mode_force_64 = true;  // Jcc
+    table64_0f[0xA0].long_mode_default_64 = true; // PUSH FS
+    table64_0f[0xA1].long_mode_default_64 = true; // POP FS
+    table64_0f[0xA8].long_mode_default_64 = true; // PUSH GS
+    table64_0f[0xA9].long_mode_default_64 = true; // POP GS
 }
 
-static const char* register_name(RegisterIndex8);
-static const char* register_name(RegisterIndex16);
-static const char* register_name(RegisterIndex32);
-static const char* register_name(FpuRegisterIndex);
-static const char* register_name(SegmentRegister);
-static const char* register_name(MMXRegisterIndex);
-static const char* register_name(XMMRegisterIndex);
+static StringView register_name(RegisterIndex8);
+static StringView register_name(RegisterIndex16);
+static StringView register_name(RegisterIndex32);
+static StringView register_name(RegisterIndex64);
+static StringView register_name(FpuRegisterIndex);
+static StringView register_name(SegmentRegister);
+static StringView register_name(MMXRegisterIndex);
+static StringView register_name(XMMRegisterIndex);
 
-const char* Instruction::reg8_name() const
+StringView Instruction::reg8_name() const
 {
     return register_name(static_cast<RegisterIndex8>(register_index()));
 }
 
-const char* Instruction::reg16_name() const
+StringView Instruction::reg16_name() const
 {
     return register_name(static_cast<RegisterIndex16>(register_index()));
 }
 
-const char* Instruction::reg32_name() const
+StringView Instruction::reg32_name() const
 {
     return register_name(static_cast<RegisterIndex32>(register_index()));
 }
 
-String MemoryOrRegisterReference::to_string_o8(const Instruction& insn) const
+StringView Instruction::reg64_name() const
+{
+    return register_name(static_cast<RegisterIndex64>(register_index()));
+}
+
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_o8(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg8());
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_o16(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_o16(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg16());
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_o32(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_o32(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg32());
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_fpu_reg() const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_o64(Instruction const& insn) const
+{
+    if (is_register())
+        return register_name(reg64());
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
+}
+
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu_reg() const
 {
     VERIFY(is_register());
     return register_name(reg_fpu());
 }
 
-String MemoryOrRegisterReference::to_string_fpu_mem(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu_mem(Instruction const& insn) const
 {
     VERIFY(!is_register());
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_fpu_ax16() const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu_ax16() const
 {
     VERIFY(is_register());
     return register_name(reg16());
 }
 
-String MemoryOrRegisterReference::to_string_fpu16(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu16(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg_fpu());
-    return String::formatted("word ptr [{}]", to_string(insn));
+    return DeprecatedString::formatted("word ptr [{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_fpu32(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu32(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg_fpu());
-    return String::formatted("dword ptr [{}]", to_string(insn));
+    return DeprecatedString::formatted("dword ptr [{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_fpu64(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu64(Instruction const& insn) const
 {
     if (is_register())
         return register_name(reg_fpu());
-    return String::formatted("qword ptr [{}]", to_string(insn));
+    return DeprecatedString::formatted("qword ptr [{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string_fpu80(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_fpu80(Instruction const& insn) const
 {
     VERIFY(!is_register());
-    return String::formatted("tbyte ptr [{}]", to_string(insn));
+    return DeprecatedString::formatted("tbyte ptr [{}]", to_deprecated_string(insn));
 }
-String MemoryOrRegisterReference::to_string_mm(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_mm(Instruction const& insn) const
 {
     if (is_register())
         return register_name(static_cast<MMXRegisterIndex>(m_register_index));
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
-String MemoryOrRegisterReference::to_string_xmm(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_xmm(Instruction const& insn) const
 {
     if (is_register())
         return register_name(static_cast<XMMRegisterIndex>(m_register_index));
-    return String::formatted("[{}]", to_string(insn));
+    return DeprecatedString::formatted("[{}]", to_deprecated_string(insn));
 }
 
-String MemoryOrRegisterReference::to_string(const Instruction& insn) const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string(Instruction const& insn) const
 {
-    if (insn.a32())
-        return to_string_a32();
-    return to_string_a16();
+    switch (insn.address_size()) {
+    case AddressSize::Size64:
+        return to_deprecated_string_a64();
+    case AddressSize::Size32:
+        return insn.mode() == ProcessorMode::Long ? to_deprecated_string_a64() : to_deprecated_string_a32();
+    case AddressSize::Size16:
+        return to_deprecated_string_a16();
+    }
+    VERIFY_NOT_REACHED();
 }
 
-String MemoryOrRegisterReference::to_string_a16() const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_a16() const
 {
-    String base;
+    DeprecatedString base;
     bool hasDisplacement = false;
 
     switch (rm()) {
@@ -1223,7 +1417,7 @@ String MemoryOrRegisterReference::to_string_a16() const
         break;
     case 6:
         if (mod() == 0)
-            base = String::formatted("{:#04x}", m_displacement16);
+            base = DeprecatedString::formatted("{:#04x}", m_displacement16);
         else
             base = "bp";
         break;
@@ -1238,87 +1432,38 @@ String MemoryOrRegisterReference::to_string_a16() const
     if (!hasDisplacement)
         return base;
 
-    String displacement_string;
-    if ((i16)m_displacement16 < 0)
-        displacement_string = String::formatted("-{:#x}", -(i16)m_displacement16);
-    else
-        displacement_string = String::formatted("+{:#x}", m_displacement16);
-    return String::formatted("{}{}", base, displacement_string);
+    return DeprecatedString::formatted("{}{:+#x}", base, (i16)m_displacement16);
 }
 
-static String sib_to_string(u8 rm, u8 sib)
+DeprecatedString MemoryOrRegisterReference::sib_to_deprecated_string(ProcessorMode mode) const
 {
-    String scale;
-    String index;
-    String base;
-    switch (sib & 0xC0) {
-    case 0x00:;
+    DeprecatedString scale;
+    DeprecatedString index;
+    DeprecatedString base;
+    switch (m_sib_scale) {
+    case 0:;
         break;
-    case 0x40:
+    case 1:
         scale = "*2";
         break;
-    case 0x80:
+    case 2:
         scale = "*4";
         break;
-    case 0xC0:
+    case 3:
         scale = "*8";
         break;
     }
-    switch ((sib >> 3) & 0x07) {
-    case 0:
-        index = "eax";
-        break;
-    case 1:
-        index = "ecx";
-        break;
-    case 2:
-        index = "edx";
-        break;
-    case 3:
-        index = "ebx";
-        break;
-    case 4:
-        break;
-    case 5:
-        index = "ebp";
-        break;
-    case 6:
-        index = "esi";
-        break;
-    case 7:
-        index = "edi";
-        break;
-    }
-    switch (sib & 0x07) {
-    case 0:
-        base = "eax";
-        break;
-    case 1:
-        base = "ecx";
-        break;
-    case 2:
-        base = "edx";
-        break;
-    case 3:
-        base = "ebx";
-        break;
-    case 4:
-        base = "esp";
-        break;
-    case 6:
-        base = "esi";
-        break;
-    case 7:
-        base = "edi";
-        break;
-    default: // 5
-        switch ((rm >> 6) & 3) {
+    if (m_sib_index != 4)
+        index = mode == ProcessorMode::Long ? register_name(RegisterIndex64(m_sib_index)) : register_name(RegisterIndex32(m_sib_index));
+    if (m_sib_base == 5) {
+        switch (m_reg) {
         case 1:
         case 2:
-            base = "ebp";
+            base = mode == ProcessorMode::Long ? "rbp" : "ebp";
             break;
         }
-        break;
+    } else {
+        base = mode == ProcessorMode::Long ? register_name(RegisterIndex64(m_sib_base)) : register_name(RegisterIndex32(m_sib_base));
     }
     StringBuilder builder;
     if (base.is_empty()) {
@@ -1331,10 +1476,48 @@ static String sib_to_string(u8 rm, u8 sib)
         builder.append(index);
         builder.append(scale);
     }
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
-String MemoryOrRegisterReference::to_string_a32() const
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_a64() const
+{
+    if (is_register())
+        return register_name(static_cast<RegisterIndex64>(m_register_index));
+
+    bool has_displacement = false;
+    switch (mod()) {
+    case 0b00:
+        has_displacement = m_rm == 5;
+        break;
+    case 0b01:
+    case 0b10:
+        has_displacement = true;
+    }
+    if (m_has_sib && m_sib_base == 5)
+        has_displacement = true;
+
+    DeprecatedString base;
+    switch (m_rm) {
+    case 5:
+        if (mod() == 0)
+            base = "rip";
+        else
+            base = "rbp";
+        break;
+    case 4:
+        base = sib_to_deprecated_string(ProcessorMode::Long);
+        break;
+    default:
+        base = register_name(RegisterIndex64(m_rm));
+    }
+
+    if (!has_displacement)
+        return base;
+
+    return DeprecatedString::formatted("{}{:+#x}", base, (i32)m_displacement32);
+}
+
+DeprecatedString MemoryOrRegisterReference::to_deprecated_string_a32() const
 {
     if (is_register())
         return register_name(static_cast<RegisterIndex32>(m_register_index));
@@ -1345,125 +1528,129 @@ String MemoryOrRegisterReference::to_string_a32() const
     case 0b10:
         has_displacement = true;
     }
-    if (m_has_sib && (m_sib & 7) == 5)
+    if (m_has_sib && m_sib_base == 5)
         has_displacement = true;
 
-    String base;
-    switch (rm()) {
-    case 0:
-        base = "eax";
-        break;
-    case 1:
-        base = "ecx";
-        break;
-    case 2:
-        base = "edx";
-        break;
-    case 3:
-        base = "ebx";
-        break;
-    case 6:
-        base = "esi";
-        break;
-    case 7:
-        base = "edi";
-        break;
+    DeprecatedString base;
+    switch (m_rm) {
     case 5:
         if (mod() == 0)
-            base = String::formatted("{:#08x}", m_displacement32);
+            base = DeprecatedString::formatted("{:x}", m_displacement32);
         else
             base = "ebp";
         break;
     case 4:
-        base = sib_to_string(m_rm_byte, m_sib);
+        base = sib_to_deprecated_string(ProcessorMode::Protected);
         break;
+    default:
+        base = register_name(RegisterIndex32(m_rm));
     }
 
     if (!has_displacement)
         return base;
 
-    String displacement_string;
-    if ((i32)m_displacement32 < 0)
-        displacement_string = String::formatted("-{:#x}", -(i32)m_displacement32);
-    else
-        displacement_string = String::formatted("+{:#x}", m_displacement32);
-    return String::formatted("{}{}", base, displacement_string);
+    return DeprecatedString::formatted("{}{:+#x}", base, (i32)m_displacement32);
 }
 
-static String relative_address(u32 origin, bool x32, i8 imm)
+static DeprecatedString relative_address(u32 origin, bool x32, i8 imm)
 {
     if (x32)
-        return String::formatted("{:#08x}", origin + imm);
+        return DeprecatedString::formatted("{:x}", origin + imm);
     u16 w = origin & 0xffff;
-    return String::formatted("{:#04x}", w + imm);
+    return DeprecatedString::formatted("{:x}", w + imm);
 }
 
-static String relative_address(u32 origin, bool x32, i32 imm)
+static DeprecatedString relative_address(u32 origin, bool x32, i32 imm)
 {
     if (x32)
-        return String::formatted("{:#08x}", origin + imm);
+        return DeprecatedString::formatted("{:x}", origin + imm);
     u16 w = origin & 0xffff;
     i16 si = imm;
-    return String::formatted("{:#04x}", w + si);
+    return DeprecatedString::formatted("{:x}", w + si);
 }
 
-String Instruction::to_string(u32 origin, const SymbolProvider* symbol_provider, bool x32) const
+DeprecatedString Instruction::to_deprecated_string(u32 origin, SymbolProvider const* symbol_provider, bool x32) const
 {
     StringBuilder builder;
     if (has_segment_prefix())
         builder.appendff("{}: ", register_name(segment_prefix().value()));
-    if (has_address_size_override_prefix())
-        builder.append(m_a32 ? "a32 " : "a16 ");
-    if (has_operand_size_override_prefix())
-        builder.append(m_o32 ? "o32 " : "o16 ");
+    if (has_address_size_override_prefix()) {
+        switch (m_address_size) {
+        case AddressSize::Size16:
+            builder.append("a16"sv);
+            break;
+        case AddressSize::Size32:
+            builder.append("a32"sv);
+            break;
+        case AddressSize::Size64:
+            builder.append("a64"sv);
+            break;
+        }
+    }
+    if (has_operand_size_override_prefix()) {
+        switch (m_operand_size) {
+        case OperandSize::Size16:
+            builder.append("o16"sv);
+            break;
+        case OperandSize::Size32:
+            builder.append("o32"sv);
+            break;
+        case OperandSize::Size64:
+            builder.append("o64"sv);
+            break;
+        }
+    }
     if (has_lock_prefix())
-        builder.append("lock ");
-    if (has_rep_prefix())
-        builder.append(m_rep_prefix == Prefix::REPNZ ? "repnz " : "repz ");
-    to_string_internal(builder, origin, symbol_provider, x32);
-    return builder.to_string();
+        builder.append("lock "sv);
+    // Note: SSE instructions use these to toggle between packed and single data
+    if (has_rep_prefix() && !(m_descriptor->format > __SSE && m_descriptor->format < __EndFormatsWithRMByte))
+        builder.append(m_rep_prefix == Prefix::REPNZ ? "repnz "sv : "repz "sv);
+    to_deprecated_string_internal(builder, origin, symbol_provider, x32);
+    return builder.to_deprecated_string();
 }
 
-void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const SymbolProvider* symbol_provider, bool x32) const
+void Instruction::to_deprecated_string_internal(StringBuilder& builder, u32 origin, SymbolProvider const* symbol_provider, bool x32) const
 {
     if (!m_descriptor) {
         builder.appendff("db {:02x}", m_op);
         return;
     }
 
-    String mnemonic = String(m_descriptor->mnemonic).to_lowercase();
+    DeprecatedString mnemonic = DeprecatedString(m_descriptor->mnemonic).to_lowercase();
 
     auto append_mnemonic = [&] { builder.append(mnemonic); };
-    auto append_mnemonic_space = [&] {
-        builder.append(mnemonic);
-        builder.append(' ');
-    };
+
+    auto append_mnemonic_space = [&] { builder.appendff("{: <6} ", mnemonic); };
 
     auto formatted_address = [&](FlatPtr origin, bool x32, auto offset) {
         builder.append(relative_address(origin, x32, offset));
         if (symbol_provider) {
             u32 symbol_offset = 0;
             auto symbol = symbol_provider->symbolicate(origin + offset, &symbol_offset);
-            builder.append(" <");
+            builder.append(" <"sv);
             builder.append(symbol);
             if (symbol_offset)
-                builder.appendff("+{}", symbol_offset);
+                builder.appendff("+{:#x}", symbol_offset);
             builder.append('>');
         }
     };
 
-    auto append_rm8 = [&] { builder.append(m_modrm.to_string_o8(*this)); };
-    auto append_rm16 = [&] { builder.append(m_modrm.to_string_o16(*this)); };
-    auto append_rm32 = [&] { builder.append(m_modrm.to_string_o32(*this)); };
-    // FIXME: Registers in long-mode
-    auto append_rm64 = [&] { builder.append(m_modrm.to_string_o32(*this)); };
-    auto append_fpu_reg = [&] { builder.append(m_modrm.to_string_fpu_reg()); };
-    auto append_fpu_mem = [&] { builder.append(m_modrm.to_string_fpu_mem(*this)); };
-    auto append_fpu_ax16 = [&] { builder.append(m_modrm.to_string_fpu_ax16()); };
-    auto append_fpu_rm16 = [&] { builder.append(m_modrm.to_string_fpu16(*this)); };
-    auto append_fpu_rm32 = [&] { builder.append(m_modrm.to_string_fpu32(*this)); };
-    auto append_fpu_rm64 = [&] { builder.append(m_modrm.to_string_fpu64(*this)); };
-    auto append_fpu_rm80 = [&] { builder.append(m_modrm.to_string_fpu80(*this)); };
+    auto append_rm8 = [&] { builder.append(m_modrm.to_deprecated_string_o8(*this)); };
+    auto append_rm16 = [&] { builder.append(m_modrm.to_deprecated_string_o16(*this)); };
+    auto append_rm32 = [&] {
+        if (m_operand_size == OperandSize::Size64)
+            builder.append(m_modrm.to_deprecated_string_o64(*this));
+        else
+            builder.append(m_modrm.to_deprecated_string_o32(*this));
+    };
+    auto append_rm64 = [&] { builder.append(m_modrm.to_deprecated_string_o64(*this)); };
+    auto append_fpu_reg = [&] { builder.append(m_modrm.to_deprecated_string_fpu_reg()); };
+    auto append_fpu_mem = [&] { builder.append(m_modrm.to_deprecated_string_fpu_mem(*this)); };
+    auto append_fpu_ax16 = [&] { builder.append(m_modrm.to_deprecated_string_fpu_ax16()); };
+    auto append_fpu_rm16 = [&] { builder.append(m_modrm.to_deprecated_string_fpu16(*this)); };
+    auto append_fpu_rm32 = [&] { builder.append(m_modrm.to_deprecated_string_fpu32(*this)); };
+    auto append_fpu_rm64 = [&] { builder.append(m_modrm.to_deprecated_string_fpu64(*this)); };
+    auto append_fpu_rm80 = [&] { builder.append(m_modrm.to_deprecated_string_fpu80(*this)); };
     auto append_imm8 = [&] { builder.appendff("{:#02x}", imm8()); };
     auto append_imm8_2 = [&] { builder.appendff("{:#02x}", imm8_2()); };
     auto append_imm16 = [&] { builder.appendff("{:#04x}", imm16()); };
@@ -1471,32 +1658,75 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     auto append_imm16_2 = [&] { builder.appendff("{:#04x}", imm16_2()); };
     auto append_imm32 = [&] { builder.appendff("{:#08x}", imm32()); };
     auto append_imm32_2 = [&] { builder.appendff("{:#08x}", imm32_2()); };
+    auto append_imm64 = [&] { builder.appendff("{:#016x}", imm64()); };
+    auto append_immW = [&] {
+        if (m_operand_size == OperandSize::Size64)
+            append_imm64();
+        else
+            append_imm32();
+    };
     auto append_reg8 = [&] { builder.append(reg8_name()); };
     auto append_reg16 = [&] { builder.append(reg16_name()); };
-    auto append_reg32 = [&] { builder.append(reg32_name()); };
+    auto append_reg32 = [&] {
+        if (m_operand_size == OperandSize::Size64)
+            builder.append(reg64_name());
+        else
+            builder.append(reg32_name());
+    };
     auto append_seg = [&] { builder.append(register_name(segment_register())); };
     auto append_creg = [&] { builder.appendff("cr{}", register_index()); };
     auto append_dreg = [&] { builder.appendff("dr{}", register_index()); };
-    auto append_relative_addr = [&] { formatted_address(origin + (m_a32 ? 6 : 4), x32, i32(m_a32 ? imm32() : imm16())); };
+    auto append_relative_addr = [&] {
+        switch (m_address_size) {
+        case AddressSize::Size16:
+            formatted_address(origin + 4, x32, i32(imm16()));
+            break;
+        case AddressSize::Size32:
+            formatted_address(origin + 6, x32, i32(imm32()));
+            break;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    };
     auto append_relative_imm8 = [&] { formatted_address(origin + 2, x32, i8(imm8())); };
     auto append_relative_imm16 = [&] { formatted_address(origin + 3, x32, i16(imm16())); };
     auto append_relative_imm32 = [&] { formatted_address(origin + 5, x32, i32(imm32())); };
 
     auto append_mm = [&] { builder.appendff("mm{}", register_index()); };
-    auto append_mmrm32 = [&] { builder.append(m_modrm.to_string_mm(*this)); };
-    auto append_mmrm64 = [&] { builder.append(m_modrm.to_string_mm(*this)); };
-    auto append_xmm = [&] { builder.appendff("mm{}", register_index()); };
-    auto append_xmmrm32 = [&] { builder.append(m_modrm.to_string_xmm(*this)); };
-    auto append_xmmrm64 = [&] { builder.append(m_modrm.to_string_xmm(*this)); };
-    auto append_xmmrm128 = [&] { builder.append(m_modrm.to_string_xmm(*this)); };
+    auto append_mmrm32 = [&] { builder.append(m_modrm.to_deprecated_string_mm(*this)); };
+    auto append_mmrm64 = [&] { builder.append(m_modrm.to_deprecated_string_mm(*this)); };
+    auto append_xmm = [&] { builder.appendff("xmm{}", register_index()); };
+    auto append_xmmrm32 = [&] { builder.append(m_modrm.to_deprecated_string_xmm(*this)); };
+    auto append_xmmrm64 = [&] { builder.append(m_modrm.to_deprecated_string_xmm(*this)); };
+    auto append_xmmrm128 = [&] { builder.append(m_modrm.to_deprecated_string_xmm(*this)); };
 
-    auto append = [&](auto& content) { builder.append(content); };
+    auto append_mm_or_xmm = [&] {
+        if (has_operand_size_override_prefix())
+            append_xmm();
+        else
+            append_mm();
+    };
+
+    auto append_mm_or_xmm_or_mem = [&] {
+        // FIXME: The sizes here dont fully match what is meant, but it does
+        //        not really matter...
+        if (has_operand_size_override_prefix())
+            append_xmmrm128();
+        else
+            append_mmrm64();
+    };
+
+    auto append = [&](auto content) { builder.append(content); };
     auto append_moff = [&] {
         builder.append('[');
-        if (m_a32) {
+        if (m_address_size == AddressSize::Size64) {
+            append_imm64();
+        } else if (m_address_size == AddressSize::Size32) {
             append_imm32();
-        } else {
+        } else if (m_address_size == AddressSize::Size16) {
             append_imm16();
+        } else {
+            VERIFY_NOT_REACHED();
         }
         builder.append(']');
     };
@@ -1505,40 +1735,40 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case OP_RM8_imm8:
         append_mnemonic_space();
         append_rm8();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_RM16_imm8:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_RM32_imm8:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_reg16_RM16_imm8:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_rm16();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_reg32_RM32_imm8:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm32();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_AL_imm8:
         append_mnemonic_space();
-        append("al, ");
+        append("al,"sv);
         append_imm8();
         break;
     case OP_imm8:
@@ -1548,37 +1778,37 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case OP_reg8_imm8:
         append_mnemonic_space();
         append_reg8();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_AX_imm8:
         append_mnemonic_space();
-        append("ax, ");
+        append("ax,"sv);
         append_imm8();
         break;
     case OP_EAX_imm8:
         append_mnemonic_space();
-        append("eax, ");
+        append("eax,"sv);
         append_imm8();
         break;
     case OP_imm8_AL:
         append_mnemonic_space();
         append_imm8();
-        append(", al");
+        append(",al"sv);
         break;
     case OP_imm8_AX:
         append_mnemonic_space();
         append_imm8();
-        append(", ax");
+        append(",ax"sv);
         break;
     case OP_imm8_EAX:
         append_mnemonic_space();
         append_imm8();
-        append(", eax");
+        append(",eax"sv);
         break;
     case OP_AX_imm16:
         append_mnemonic_space();
-        append("ax, ");
+        append("ax,"sv);
         append_imm16();
         break;
     case OP_imm16:
@@ -1588,23 +1818,23 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case OP_reg16_imm16:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_imm16();
         break;
     case OP_reg16_RM16_imm16:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_rm16();
-        append(", ");
+        append(',');
         append_imm16();
         break;
     case OP_reg32_RM32_imm32:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm32();
-        append(", ");
+        append(',');
         append_imm32();
         break;
     case OP_imm32:
@@ -1613,35 +1843,35 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
         break;
     case OP_EAX_imm32:
         append_mnemonic_space();
-        append("eax, ");
+        append("eax,"sv);
         append_imm32();
         break;
     case OP_CS:
         append_mnemonic_space();
-        append("cs");
+        append("cs"sv);
         break;
     case OP_DS:
         append_mnemonic_space();
-        append("ds");
+        append("ds"sv);
         break;
     case OP_ES:
         append_mnemonic_space();
-        append("es");
+        append("es"sv);
         break;
     case OP_SS:
         append_mnemonic_space();
-        append("ss");
+        append("ss"sv);
         break;
     case OP_FS:
         append_mnemonic_space();
-        append("fs");
+        append("fs"sv);
         break;
     case OP_GS:
         append_mnemonic_space();
-        append("gs");
+        append("gs"sv);
         break;
     case OP:
-        append_mnemonic_space();
+        append_mnemonic();
         break;
     case OP_reg32:
         append_mnemonic_space();
@@ -1650,86 +1880,92 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case OP_imm16_imm8:
         append_mnemonic_space();
         append_imm16_1();
-        append(", ");
+        append(',');
         append_imm8_2();
         break;
     case OP_moff8_AL:
         append_mnemonic_space();
         append_moff();
-        append(", al");
+        append(",al"sv);
         break;
     case OP_moff16_AX:
         append_mnemonic_space();
         append_moff();
-        append(", ax");
+        append(",ax"sv);
         break;
     case OP_moff32_EAX:
         append_mnemonic_space();
         append_moff();
-        append(", eax");
+        append(",eax"sv);
         break;
     case OP_AL_moff8:
         append_mnemonic_space();
-        append("al, ");
+        append("al,"sv);
         append_moff();
         break;
     case OP_AX_moff16:
         append_mnemonic_space();
-        append("ax, ");
+        append("ax,"sv);
         append_moff();
         break;
     case OP_EAX_moff32:
         append_mnemonic_space();
-        append("eax, ");
+        append("eax,"sv);
         append_moff();
         break;
     case OP_imm16_imm16:
         append_mnemonic_space();
         append_imm16_1();
-        append(":");
+        append(":"sv);
         append_imm16_2();
         break;
     case OP_imm16_imm32:
         append_mnemonic_space();
         append_imm16_1();
-        append(":");
+        append(":"sv);
         append_imm32_2();
         break;
     case OP_reg32_imm32:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_imm32();
+        break;
+    case OP_regW_immW:
+        append_mnemonic_space();
+        append_reg32();
+        append(", "sv);
+        append_immW();
         break;
     case OP_RM8_1:
         append_mnemonic_space();
         append_rm8();
-        append(", 0x01");
+        append(",0x01"sv);
         break;
     case OP_RM16_1:
         append_mnemonic_space();
         append_rm16();
-        append(", 0x01");
+        append(",0x01"sv);
         break;
     case OP_RM32_1:
         append_mnemonic_space();
         append_rm32();
-        append(", 0x01");
+        append(",0x01"sv);
         break;
     case OP_RM8_CL:
         append_mnemonic_space();
         append_rm8();
-        append(", cl");
+        append(",cl"sv);
         break;
     case OP_RM16_CL:
         append_mnemonic_space();
         append_rm16();
-        append(", cl");
+        append(",cl"sv);
         break;
     case OP_RM32_CL:
         append_mnemonic_space();
         append_rm32();
-        append(", cl");
+        append(",cl"sv);
         break;
     case OP_reg16:
         append_mnemonic_space();
@@ -1737,46 +1973,46 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
         break;
     case OP_AX_reg16:
         append_mnemonic_space();
-        append("ax, ");
+        append("ax,"sv);
         append_reg16();
         break;
     case OP_EAX_reg32:
         append_mnemonic_space();
-        append("eax, ");
+        append("eax,"sv);
         append_reg32();
         break;
     case OP_3:
         append_mnemonic_space();
-        append("0x03");
+        append("0x03"sv);
         break;
     case OP_AL_DX:
         append_mnemonic_space();
-        append("al, dx");
+        append("al,dx"sv);
         break;
     case OP_AX_DX:
         append_mnemonic_space();
-        append("ax, dx");
+        append("ax,dx"sv);
         break;
     case OP_EAX_DX:
         append_mnemonic_space();
-        append("eax, dx");
+        append("eax,dx"sv);
         break;
     case OP_DX_AL:
         append_mnemonic_space();
-        append("dx, al");
+        append("dx,al"sv);
         break;
     case OP_DX_AX:
         append_mnemonic_space();
-        append("dx, ax");
+        append("dx,ax"sv);
         break;
     case OP_DX_EAX:
         append_mnemonic_space();
-        append("dx, eax");
+        append("dx,eax"sv);
         break;
     case OP_reg8_CL:
         append_mnemonic_space();
         append_reg8();
-        append(", cl");
+        append(",cl"sv);
         break;
     case OP_RM8:
         append_mnemonic_space();
@@ -1824,142 +2060,142 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case OP_RM8_reg8:
         append_mnemonic_space();
         append_rm8();
-        append(", ");
+        append(',');
         append_reg8();
         break;
     case OP_RM16_reg16:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_reg16();
         break;
     case OP_RM32_reg32:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_reg32();
         break;
     case OP_reg8_RM8:
         append_mnemonic_space();
         append_reg8();
-        append(", ");
+        append(',');
         append_rm8();
         break;
     case OP_reg16_RM16:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_rm16();
         break;
     case OP_reg32_RM32:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm32();
         break;
     case OP_reg32_RM16:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm16();
         break;
     case OP_reg16_RM8:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_rm8();
         break;
     case OP_reg32_RM8:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm8();
         break;
     case OP_RM16_imm16:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_imm16();
         break;
     case OP_RM32_imm32:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_imm32();
         break;
     case OP_RM16_seg:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_seg();
         break;
     case OP_RM32_seg:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_seg();
         break;
     case OP_seg_RM16:
         append_mnemonic_space();
         append_seg();
-        append(", ");
+        append(',');
         append_rm16();
         break;
     case OP_seg_RM32:
         append_mnemonic_space();
         append_seg();
-        append(", ");
+        append(',');
         append_rm32();
         break;
     case OP_reg16_mem16:
         append_mnemonic_space();
         append_reg16();
-        append(", ");
+        append(',');
         append_rm16();
         break;
     case OP_reg32_mem32:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_rm32();
         break;
     case OP_FAR_mem16:
         append_mnemonic_space();
-        append("far ");
+        append("far "sv);
         append_rm16();
         break;
     case OP_FAR_mem32:
         append_mnemonic_space();
-        append("far ");
+        append("far "sv);
         append_rm32();
         break;
     case OP_reg32_CR:
         append_mnemonic_space();
         builder.append(register_name(static_cast<RegisterIndex32>(modrm().rm())));
-        append(", ");
+        append(',');
         append_creg();
         break;
     case OP_CR_reg32:
         append_mnemonic_space();
         append_creg();
-        append(", ");
+        append(',');
         builder.append(register_name(static_cast<RegisterIndex32>(modrm().rm())));
         break;
     case OP_reg32_DR:
         append_mnemonic_space();
         builder.append(register_name(static_cast<RegisterIndex32>(modrm().rm())));
-        append(", ");
+        append(',');
         append_dreg();
         break;
     case OP_DR_reg32:
         append_mnemonic_space();
         append_dreg();
-        append(", ");
+        append(',');
         builder.append(register_name(static_cast<RegisterIndex32>(modrm().rm())));
         break;
     case OP_short_imm8:
         append_mnemonic_space();
-        append("short ");
+        append("short "sv);
         append_relative_imm8();
         break;
     case OP_relimm16:
@@ -1972,227 +2208,264 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
         break;
     case OP_NEAR_imm:
         append_mnemonic_space();
-        append("near ");
+        append("near "sv);
         append_relative_addr();
         break;
     case OP_RM16_reg16_imm8:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_reg16();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_RM32_reg32_imm8:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_reg32();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_RM16_reg16_CL:
         append_mnemonic_space();
         append_rm16();
-        append(", ");
+        append(',');
         append_reg16();
-        append(", cl");
+        append(", cl"sv);
         break;
     case OP_RM32_reg32_CL:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
+        append(',');
         append_reg32();
-        append(", cl");
+        append(",cl"sv);
+        break;
+    case OP_reg:
+        append_mnemonic_space();
+        if (m_operand_size == OperandSize::Size32)
+            append_reg32();
+        else
+            append_reg16();
+        break;
+    case OP_m64:
+        append_mnemonic_space();
+        append_rm64();
         break;
     case OP_mm1_imm8:
         append_mnemonic_space();
-        append_mm();
-        append(", ");
+        append_mm_or_xmm();
+        append(',');
         append_imm8();
         break;
     case OP_mm1_mm2m32:
         append_mnemonic_space();
-        append_mm();
-        append(", ");
-        append_mmrm32();
+        append_mm_or_xmm();
+        append(',');
+        append_mm_or_xmm_or_mem();
         break;
     case OP_mm1_rm32:
         append_mnemonic_space();
-        append_mm();
-        append(", ");
+        append_mm_or_xmm();
+        append(',');
         append_rm32();
         break;
     case OP_rm32_mm2:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
-        append_mm();
+        append(',');
+        append_mm_or_xmm();
         break;
     case OP_mm1_mm2m64:
         append_mnemonic_space();
-        append_mm();
-        append(", ");
-        append_mmrm64();
+        append_mm_or_xmm();
+        append(',');
+        append_mm_or_xmm_or_mem();
         break;
     case OP_mm1m64_mm2:
         append_mnemonic_space();
-        append_mmrm64();
-        append(", ");
-        append_mm();
+        append_mm_or_xmm_or_mem();
+        append(',');
+        append_mm_or_xmm();
         break;
     case OP_mm1_mm2m64_imm8:
         append_mnemonic_space();
-        append_mm();
-        append(", ");
-        append_mmrm64();
-        append(", ");
+        append_mm_or_xmm();
+        append(',');
+        append_mm_or_xmm_or_mem();
+        append(',');
         append_imm8();
         break;
     case OP_reg_mm1:
         append_mnemonic_space();
         append_rm32();
-        append(", ");
-        append_mm();
+        append(',');
+        append_mm_or_xmm();
         break;
     case OP_reg_mm1_imm8:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
-        append_mmrm64();
-        append(", ");
+        append(',');
+        append_mm_or_xmm_or_mem();
+        append(',');
         append_imm8();
         break;
     case OP_mm1_r32m16_imm8:
         append_mnemonic_space();
-        append_mm();
+        append_mm_or_xmm();
         append_rm32(); // FIXME: r32m16
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case __SSE:
         break;
+    case OP_xmm_mm:
+        append_mnemonic_space();
+        append_xmm();
+        append(',');
+        append_mmrm32(); // FIXME: No Memory
+        break;
+    case OP_mm1_xmm2m128:
+    case OP_mm_xmm:
+        append_mnemonic_space();
+        append_mm();
+        append(',');
+        append_xmmrm32(); // FIXME: No Memory
+        break;
+    case OP_xmm1_imm8:
+        append_mnemonic_space();
+        append_xmm();
+        append(',');
+        append_imm8();
+        break;
     case OP_xmm1_xmm2m32:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_xmmrm32();
         break;
     case OP_xmm1_xmm2m64:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_xmmrm64();
         break;
     case OP_xmm1_xmm2m128:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_xmmrm128();
         break;
     case OP_xmm1_xmm2m32_imm8:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_xmmrm32();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_xmm1_xmm2m128_imm8:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_xmmrm32();
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_xmm1m32_xmm2:
         append_mnemonic_space();
         append_xmmrm32();
-        append(", ");
+        append(',');
         append_xmm();
         break;
     case OP_xmm1m64_xmm2:
         append_mnemonic_space();
         append_xmmrm64();
-        append(", ");
+        append(',');
         append_xmm();
         break;
     case OP_xmm1m128_xmm2:
         append_mnemonic_space();
         append_xmmrm128();
-        append(", ");
+        append(',');
         append_xmm();
         break;
     case OP_reg_xmm1:
+    case OP_r32_xmm2m64:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_xmmrm128(); // second entry in the rm byte
+        break;
+    case OP_rm32_xmm2:
+        append_mnemonic_space();
+        append_rm32();
+        append(',');
+        append_xmm();
         break;
     case OP_reg_xmm1_imm8:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_xmmrm128(); // second entry in the rm byte
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case OP_xmm1_rm32:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_rm32(); // second entry in the rm byte
         break;
     case OP_xmm1_m64:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_rm64(); // second entry in the rm byte
         break;
 
     case OP_m64_xmm2:
         append_mnemonic_space();
         append_rm64(); // second entry in the rm byte
-        append(", ");
+        append(',');
         append_xmm();
         break;
     case OP_rm8_xmm2m32:
         append_mnemonic_space();
         append_rm8();
-        append(", ");
+        append(',');
         append_xmmrm32();
         break;
     case OP_xmm1_mm2m64:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_mmrm64();
         break;
     case OP_mm1m64_xmm2:
         append_mnemonic_space();
         append_mmrm64();
-        append(", ");
+        append(',');
         append_xmm();
         break;
     case OP_mm1_xmm2m64:
         append_mnemonic_space();
         append_mm();
-        append(", ");
+        append(',');
         append_xmmrm64();
         break;
     case OP_r32_xmm2m32:
         append_mnemonic_space();
         append_reg32();
-        append(", ");
+        append(',');
         append_xmmrm32();
         break;
     case OP_xmm1_r32m16_imm8:
         append_mnemonic_space();
         append_xmm();
-        append(", ");
+        append(',');
         append_rm32(); // FIXME: r32m16
-        append(", ");
+        append(',');
         append_imm8();
         break;
     case InstructionPrefix:
@@ -2202,12 +2475,12 @@ void Instruction::to_string_internal(StringBuilder& builder, u32 origin, const S
     case MultibyteWithSlash:
     case __BeginFormatsWithRMByte:
     case __EndFormatsWithRMByte:
-        builder.append(String::formatted("(!{})", mnemonic));
+        builder.append(DeprecatedString::formatted("(!{})", mnemonic));
         break;
     }
 }
 
-String Instruction::mnemonic() const
+DeprecatedString Instruction::mnemonic() const
 {
     if (!m_descriptor) {
         VERIFY_NOT_REACHED();
@@ -2215,46 +2488,52 @@ String Instruction::mnemonic() const
     return m_descriptor->mnemonic;
 }
 
-const char* register_name(SegmentRegister index)
+StringView register_name(SegmentRegister index)
 {
-    static constexpr const char* names[] = { "es", "cs", "ss", "ds", "fs", "gs", "segr6", "segr7" };
+    static constexpr StringView names[] = { "es"sv, "cs"sv, "ss"sv, "ds"sv, "fs"sv, "gs"sv, "segr6"sv, "segr7"sv };
     return names[(int)index & 7];
 }
 
-const char* register_name(RegisterIndex8 register_index)
+StringView register_name(RegisterIndex8 register_index)
 {
-    static constexpr const char* names[] = { "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh" };
+    static constexpr StringView names[] = { "al"sv, "cl"sv, "dl"sv, "bl"sv, "ah"sv, "ch"sv, "dh"sv, "bh"sv, "r8b"sv, "r9b"sv, "r10b"sv, "r11b"sv, "r12b"sv, "r13b"sv, "r14b"sv, "r15b"sv };
+    return names[register_index & 15];
+}
+
+StringView register_name(RegisterIndex16 register_index)
+{
+    static constexpr StringView names[] = { "ax"sv, "cx"sv, "dx"sv, "bx"sv, "sp"sv, "bp"sv, "si"sv, "di"sv, "r8w"sv, "r9w"sv, "r10w"sv, "r11w"sv, "r12w"sv, "r13w"sv, "r14w"sv, "r15w"sv };
+    return names[register_index & 15];
+}
+
+StringView register_name(RegisterIndex32 register_index)
+{
+    static constexpr StringView names[] = { "eax"sv, "ecx"sv, "edx"sv, "ebx"sv, "esp"sv, "ebp"sv, "esi"sv, "edi"sv, "r8d"sv, "r9d"sv, "r10d"sv, "r11d"sv, "r12d"sv, "r13d"sv, "r14d"sv, "r15d"sv };
+    return names[register_index & 15];
+}
+
+StringView register_name(RegisterIndex64 register_index)
+{
+    static constexpr StringView names[] = { "rax"sv, "rcx"sv, "rdx"sv, "rbx"sv, "rsp"sv, "rbp"sv, "rsi"sv, "rdi"sv, "r8"sv, "r9"sv, "r10"sv, "r11"sv, "r12"sv, "r13"sv, "r14"sv, "r15"sv };
+    return names[register_index & 15];
+}
+
+StringView register_name(FpuRegisterIndex register_index)
+{
+    static constexpr StringView names[] = { "st0"sv, "st1"sv, "st2"sv, "st3"sv, "st4"sv, "st5"sv, "st6"sv, "st7"sv };
     return names[register_index & 7];
 }
 
-const char* register_name(RegisterIndex16 register_index)
+StringView register_name(MMXRegisterIndex register_index)
 {
-    static constexpr const char* names[] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
+    static constexpr StringView names[] = { "mm0"sv, "mm1"sv, "mm2"sv, "mm3"sv, "mm4"sv, "mm5"sv, "mm6"sv, "mm7"sv };
     return names[register_index & 7];
 }
 
-const char* register_name(RegisterIndex32 register_index)
+StringView register_name(XMMRegisterIndex register_index)
 {
-    static constexpr const char* names[] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" };
-    return names[register_index & 7];
-}
-
-const char* register_name(FpuRegisterIndex register_index)
-{
-    static constexpr const char* names[] = { "st0", "st1", "st2", "st3", "st4", "st5", "st6", "st7" };
-    return names[register_index & 7];
-}
-
-const char* register_name(MMXRegisterIndex register_index)
-{
-    static constexpr const char* names[] = { "mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7" };
-    return names[register_index & 7];
-}
-
-const char* register_name(XMMRegisterIndex register_index)
-{
-    static constexpr const char* names[] = { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7" };
-    return names[register_index & 7];
+    static constexpr StringView names[] = { "xmm0"sv, "xmm1"sv, "xmm2"sv, "xmm3"sv, "xmm4"sv, "xmm5"sv, "xmm6"sv, "xmm7"sv, "xmm8"sv, "xmm9"sv, "xmm10"sv, "xmm11"sv, "xmm12"sv, "xmm13"sv, "xmm14"sv, "xmm15"sv };
+    return names[register_index & 15];
 }
 
 }

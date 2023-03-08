@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,20 +11,23 @@
 
 namespace Web::Layout {
 
-class ListItemMarkerBox;
-
 class ListItemBox final : public BlockContainer {
-public:
-    ListItemBox(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>);
-    virtual ~ListItemBox() override;
+    JS_CELL(ListItemBox, BlockContainer);
 
-    void layout_marker();
+public:
+    ListItemBox(DOM::Document&, DOM::Element*, NonnullRefPtr<CSS::StyleProperties>);
+    virtual ~ListItemBox() override;
 
     DOM::Element& dom_node() { return static_cast<DOM::Element&>(*BlockContainer::dom_node()); }
     DOM::Element const& dom_node() const { return static_cast<DOM::Element const&>(*BlockContainer::dom_node()); }
 
+    ListItemMarkerBox const* marker() const { return m_marker; }
+    void set_marker(JS::GCPtr<ListItemMarkerBox>);
+
 private:
-    RefPtr<ListItemMarkerBox> m_marker;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::GCPtr<ListItemMarkerBox> m_marker;
 };
 
 }

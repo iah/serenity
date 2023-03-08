@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/IterationDecision.h>
 #include <AK/Platform.h>
 #include <AK/StdLibExtras.h>
 
@@ -19,10 +18,26 @@ using i32 = __INT32_TYPE__;
 using i16 = __INT16_TYPE__;
 using i8 = __INT8_TYPE__;
 
-#ifdef __serenity__
+#ifndef KERNEL
+using f32 = float;
+static_assert(__FLT_MANT_DIG__ == 24 && __FLT_MAX_EXP__ == 128);
+
+using f64 = double;
+static_assert(__DBL_MANT_DIG__ == 53 && __DBL_MAX_EXP__ == 1024);
+
+#    if __LDBL_MANT_DIG__ == 64 && __LDBL_MAX_EXP__ == 16384
+#        define AK_HAS_FLOAT_80 1
+using f80 = long double;
+#    elif __LDBL_MANT_DIG__ == 113 && __LDBL_MAX_EXP__ == 16384
+#        define AK_HAS_FLOAT_128 1
+using f128 = long double;
+#    endif
+#endif
+
+#ifdef AK_OS_SERENITY
 
 using size_t = __SIZE_TYPE__;
-using ssize_t = MakeSigned<size_t>;
+using ssize_t = AK::Detail::MakeSigned<size_t>;
 
 using ptrdiff_t = __PTRDIFF_TYPE__;
 
@@ -50,9 +65,13 @@ using pid_t = int;
 using __ptrdiff_t = __PTRDIFF_TYPE__;
 #    endif
 
+#    if defined(AK_OS_WINDOWS)
+using ssize_t = AK::Detail::MakeSigned<size_t>;
+using mode_t = unsigned short;
+#    endif
 #endif
 
-using FlatPtr = Conditional<sizeof(void*) == 8, u64, u32>;
+using FlatPtr = AK::Detail::Conditional<sizeof(void*) == 8, u64, u32>;
 
 constexpr u64 KiB = 1024;
 constexpr u64 MiB = KiB * KiB;
@@ -61,9 +80,13 @@ constexpr u64 TiB = KiB * KiB * KiB * KiB;
 constexpr u64 PiB = KiB * KiB * KiB * KiB * KiB;
 constexpr u64 EiB = KiB * KiB * KiB * KiB * KiB * KiB;
 
-namespace std { //NOLINT(cert-dcl58-cpp) nullptr_t must be in ::std:: for some analysis tools
+namespace AK_REPLACED_STD_NAMESPACE { // NOLINT(cert-dcl58-cpp) nullptr_t must be in ::std:: for some analysis tools
 using nullptr_t = decltype(nullptr);
 }
+
+namespace AK {
+
+using nullptr_t = AK_REPLACED_STD_NAMESPACE::nullptr_t;
 
 static constexpr FlatPtr explode_byte(u8 b)
 {
@@ -84,13 +107,16 @@ constexpr size_t align_up_to(const size_t value, const size_t alignment)
     return (value + (alignment - 1)) & ~(alignment - 1);
 }
 
+constexpr size_t align_down_to(const size_t value, const size_t alignment)
+{
+    return value & ~(alignment - 1);
+}
+
 enum class [[nodiscard]] TriState : u8 {
     False,
     True,
     Unknown
 };
-
-namespace AK {
 
 enum MemoryOrder {
     memory_order_relaxed = __ATOMIC_RELAXED,
@@ -102,3 +128,12 @@ enum MemoryOrder {
 };
 
 }
+
+#if USING_AK_GLOBALLY
+using AK::align_down_to;
+using AK::align_up_to;
+using AK::explode_byte;
+using AK::MemoryOrder;
+using AK::nullptr_t;
+using AK::TriState;
+#endif

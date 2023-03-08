@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -26,10 +27,6 @@ IconView::IconView()
     horizontal_scrollbar().set_visible(false);
 }
 
-IconView::~IconView()
-{
-}
-
 void IconView::select_all()
 {
     for (int item_index = 0; item_index < item_count(); ++item_index) {
@@ -43,7 +40,7 @@ void IconView::select_all()
     }
 }
 
-void IconView::scroll_into_view(const ModelIndex& index, bool scroll_horizontally, bool scroll_vertically)
+void IconView::scroll_into_view(ModelIndex const& index, bool scroll_horizontally, bool scroll_vertically)
 {
     if (!index.is_valid())
         return;
@@ -60,6 +57,12 @@ void IconView::resize_event(ResizeEvent& event)
         if (!selection().is_empty())
             scroll_into_view(selection().first());
     }
+}
+
+void IconView::did_change_font()
+{
+    AbstractView::did_change_font();
+    rebuild_item_cache();
 }
 
 void IconView::rebuild_item_cache() const
@@ -103,13 +106,13 @@ auto IconView::get_item_data(int item_index) const -> ItemData&
         return item_data;
 
     item_data.index = model()->index(item_index, model_column());
-    item_data.text = item_data.index.data().to_string();
+    item_data.text = item_data.index.data().to_deprecated_string();
     get_item_rects(item_index, item_data, font_for_index(item_data.index));
     item_data.valid = true;
     return item_data;
 }
 
-auto IconView::item_data_from_content_position(const Gfx::IntPoint& content_position) const -> ItemData*
+auto IconView::item_data_from_content_position(Gfx::IntPoint content_position) const -> ItemData*
 {
     if (!m_visual_row_count || !m_visual_column_count)
         return nullptr;
@@ -198,7 +201,7 @@ Gfx::IntRect IconView::item_rect(int item_index) const
     };
 }
 
-ModelIndex IconView::index_at_event_position(const Gfx::IntPoint& position) const
+ModelIndex IconView::index_at_event_position(Gfx::IntPoint position) const
 {
     VERIFY(model());
     auto adjusted_position = to_content_position(position);
@@ -241,15 +244,15 @@ void IconView::mouseup_event(MouseEvent& event)
 {
     if (m_rubber_banding && event.button() == MouseButton::Primary) {
         m_rubber_banding = false;
-        set_automatic_scrolling_timer(false);
+        set_automatic_scrolling_timer_active(false);
         update(to_widget_rect(Gfx::IntRect::from_two_points(m_rubber_band_origin, m_rubber_band_current)));
     }
     AbstractView::mouseup_event(event);
 }
 
-bool IconView::update_rubber_banding(const Gfx::IntPoint& input_position)
+bool IconView::update_rubber_banding(Gfx::IntPoint input_position)
 {
-    auto adjusted_position = to_content_position(input_position.constrained(widget_inner_rect()));
+    auto adjusted_position = to_content_position(input_position.constrained(widget_inner_rect().inflated(1, 1)));
     if (m_rubber_band_current != adjusted_position) {
         auto prev_rect = Gfx::IntRect::from_two_points(m_rubber_band_origin, m_rubber_band_current);
         auto prev_rubber_band_fill_rect = prev_rect.shrunken(1, 1);
@@ -332,7 +335,7 @@ void IconView::mousemove_event(MouseEvent& event)
 
     if (m_rubber_banding) {
         m_out_of_view_position = event.position();
-        set_automatic_scrolling_timer(!m_rubber_band_scroll_delta.is_null());
+        set_automatic_scrolling_timer_active(!m_rubber_band_scroll_delta.is_zero());
 
         if (update_rubber_banding(event.position()))
             return;
@@ -341,11 +344,11 @@ void IconView::mousemove_event(MouseEvent& event)
     AbstractView::mousemove_event(event);
 }
 
-void IconView::on_automatic_scrolling_timer_fired()
+void IconView::automatic_scrolling_timer_did_fire()
 {
-    AbstractView::on_automatic_scrolling_timer_fired();
+    AbstractView::automatic_scrolling_timer_did_fire();
 
-    if (m_rubber_band_scroll_delta.is_null())
+    if (m_rubber_band_scroll_delta.is_zero())
         return;
 
     vertical_scrollbar().increase_slider_by(m_rubber_band_scroll_delta.y());
@@ -376,12 +379,12 @@ Gfx::IntRect IconView::editing_rect(ModelIndex const& index) const
         return {};
     auto& item_data = get_item_data(index.row());
     auto editing_rect = item_data.text_rect;
-    editing_rect.set_height(font_for_index(index)->glyph_height() + 8);
+    editing_rect.set_height(font_for_index(index)->pixel_size_rounded_up() + 8);
     editing_rect.set_y(item_data.text_rect.y() - 2);
     return editing_rect;
 }
 
-void IconView::editing_widget_did_change(const ModelIndex& index)
+void IconView::editing_widget_did_change(ModelIndex const& index)
 {
     if (m_editing_delegate->value().is_string()) {
         auto text_width = font_for_index(index)->width(m_editing_delegate->value().as_string());
@@ -392,7 +395,7 @@ void IconView::editing_widget_did_change(const ModelIndex& index)
 }
 
 Gfx::IntRect
-IconView::paint_invalidation_rect(const ModelIndex& index) const
+IconView::paint_invalidation_rect(ModelIndex const& index) const
 {
     if (!index.is_valid())
         return {};
@@ -400,7 +403,7 @@ IconView::paint_invalidation_rect(const ModelIndex& index) const
     return item_data.rect(true);
 }
 
-void IconView::did_change_hovered_index(const ModelIndex& old_index, const ModelIndex& new_index)
+void IconView::did_change_hovered_index(ModelIndex const& old_index, ModelIndex const& new_index)
 {
     AbstractView::did_change_hovered_index(old_index, new_index);
     if (old_index.is_valid())
@@ -409,7 +412,7 @@ void IconView::did_change_hovered_index(const ModelIndex& old_index, const Model
         get_item_rects(new_index.row(), get_item_data(new_index.row()), font_for_index(new_index));
 }
 
-void IconView::did_change_cursor_index(const ModelIndex& old_index, const ModelIndex& new_index)
+void IconView::did_change_cursor_index(ModelIndex const& old_index, ModelIndex const& new_index)
 {
     AbstractView::did_change_cursor_index(old_index, new_index);
     if (old_index.is_valid())
@@ -418,17 +421,17 @@ void IconView::did_change_cursor_index(const ModelIndex& old_index, const ModelI
         get_item_rects(new_index.row(), get_item_data(new_index.row()), font_for_index(new_index));
 }
 
-void IconView::get_item_rects(int item_index, ItemData& item_data, const Gfx::Font& font) const
+void IconView::get_item_rects(int item_index, ItemData& item_data, Gfx::Font const& font) const
 {
     auto item_rect = this->item_rect(item_index);
     item_data.icon_rect = Gfx::IntRect(0, 0, 32, 32).centered_within(item_rect);
-    item_data.icon_offset_y = -font.glyph_height() - 6;
+    item_data.icon_offset_y = -font.pixel_size_rounded_up() - 6;
     item_data.icon_rect.translate_by(0, item_data.icon_offset_y);
 
-    int unwrapped_text_width = font.width(item_data.text);
+    int unwrapped_text_width = static_cast<int>(ceilf(font.width(item_data.text)));
     int available_width = item_rect.width() - 6;
 
-    item_data.text_rect = { 0, item_data.icon_rect.bottom() + 6 + 1, 0, font.glyph_height() };
+    item_data.text_rect = { 0, item_data.icon_rect.bottom() + 6 + 1, 0, font.pixel_size_rounded_up() };
     item_data.wrapped_text_lines.clear();
 
     if ((unwrapped_text_width > available_width) && (item_data.selected || m_hovered_index == item_data.index || cursor_index() == item_data.index || m_always_wrap_item_labels)) {
@@ -455,7 +458,7 @@ void IconView::get_item_rects(int item_index, ItemData& item_data, const Gfx::Fo
         item_data.text_rect.set_width(widest_line_width);
         item_data.text_rect.center_horizontally_within(item_rect);
         item_data.text_rect.intersect(item_rect);
-        item_data.text_rect.set_height(font.glyph_height() * item_data.wrapped_text_lines.size());
+        item_data.text_rect.set_height(font.pixel_size_rounded_up() * item_data.wrapped_text_lines.size());
         item_data.text_rect.inflate(6, 6);
         item_data.text_rect_wrapped = item_data.text_rect;
     } else {
@@ -548,14 +551,14 @@ void IconView::paint_event(PaintEvent& event)
             // Item text would not fit in the item text rect, let's break it up into lines..
 
             const auto& lines = item_data.wrapped_text_lines;
-            size_t number_of_text_lines = min((size_t)text_rect.height() / font->glyph_height(), lines.size());
+            size_t number_of_text_lines = min((size_t)text_rect.height() / font->pixel_size_rounded_up(), lines.size());
             size_t previous_line_lengths = 0;
             for (size_t line_index = 0; line_index < number_of_text_lines; ++line_index) {
                 Gfx::IntRect line_rect;
                 line_rect.set_width(text_rect.width());
-                line_rect.set_height(font->glyph_height());
+                line_rect.set_height(font->pixel_size_rounded_up());
                 line_rect.center_horizontally_within(item_data.text_rect);
-                line_rect.set_y(3 + item_data.text_rect.y() + line_index * font->glyph_height());
+                line_rect.set_y(3 + item_data.text_rect.y() + line_index * font->pixel_size_rounded_up());
                 line_rect.inflate(6, 0);
 
                 // Shrink the line_rect on the last line to apply elision if there are more lines.
@@ -592,7 +595,7 @@ void IconView::did_update_selection()
 
     // Selection was modified externally, we need to synchronize our cache
     do_clear_selection();
-    selection().for_each_index([&](const ModelIndex& index) {
+    selection().for_each_index([&](ModelIndex const& index) {
         if (index.is_valid()) {
             auto item_index = model_index_to_item_index(index);
             if ((size_t)item_index < m_item_data_cache.size())
@@ -642,7 +645,7 @@ void IconView::add_selection(ItemData& item_data)
         AbstractView::add_selection(item_data.index);
 }
 
-void IconView::add_selection(const ModelIndex& new_index)
+void IconView::add_selection(ModelIndex const& new_index)
 {
     TemporaryChange change(m_changing_selection, true);
     auto item_index = model_index_to_item_index(new_index);
@@ -657,7 +660,7 @@ void IconView::toggle_selection(ItemData& item_data)
         remove_item_selection(item_data);
 }
 
-void IconView::toggle_selection(const ModelIndex& new_index)
+void IconView::toggle_selection(ModelIndex const& new_index)
 {
     TemporaryChange change(m_changing_selection, true);
     auto item_index = model_index_to_item_index(new_index);
@@ -687,7 +690,7 @@ void IconView::remove_item_selection(ItemData& item_data)
     AbstractView::remove_selection(item_data.index);
 }
 
-void IconView::set_selection(const ModelIndex& new_index)
+void IconView::set_selection(ModelIndex const& new_index)
 {
     TemporaryChange change(m_changing_selection, true);
     do_clear_selection();
@@ -778,7 +781,7 @@ void IconView::set_flow_direction(FlowDirection flow_direction)
 }
 
 template<typename Function>
-inline IterationDecision IconView::for_each_item_intersecting_rect(const Gfx::IntRect& rect, Function f) const
+inline IterationDecision IconView::for_each_item_intersecting_rect(Gfx::IntRect const& rect, Function f) const
 {
     VERIFY(model());
     if (rect.is_empty())
@@ -817,7 +820,7 @@ inline IterationDecision IconView::for_each_item_intersecting_rect(const Gfx::In
 }
 
 template<typename Function>
-inline IterationDecision IconView::for_each_item_intersecting_rects(const Vector<Gfx::IntRect>& rects, Function f) const
+inline IterationDecision IconView::for_each_item_intersecting_rects(Vector<Gfx::IntRect> const& rects, Function f) const
 {
     for (auto& rect : rects) {
         auto decision = for_each_item_intersecting_rect(rect, f);

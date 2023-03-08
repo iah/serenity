@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Jack Karamanian <karamanian.jack@gmail.com>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,43 +12,50 @@
 
 namespace JS {
 
-BooleanConstructor::BooleanConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.Boolean.as_string(), *global_object.function_prototype())
+BooleanConstructor::BooleanConstructor(Realm& realm)
+    : NativeFunction(realm.vm().names.Boolean.as_string(), *realm.intrinsics().function_prototype())
 {
 }
 
-void BooleanConstructor::initialize(GlobalObject& global_object)
+ThrowCompletionOr<void> BooleanConstructor::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    NativeFunction::initialize(global_object);
+    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
 
     // 20.3.2.1 Boolean.prototype, https://tc39.es/ecma262/#sec-boolean.prototype
-    define_direct_property(vm.names.prototype, global_object.boolean_prototype(), 0);
+    define_direct_property(vm.names.prototype, realm.intrinsics().boolean_prototype(), 0);
 
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-}
 
-BooleanConstructor::~BooleanConstructor()
-{
+    return {};
 }
 
 // 20.3.1.1 Boolean ( value ), https://tc39.es/ecma262/#sec-boolean-constructor-boolean-value
 ThrowCompletionOr<Value> BooleanConstructor::call()
 {
     auto& vm = this->vm();
+    auto value = vm.argument(0);
 
-    auto b = vm.argument(0).to_boolean();
+    // 1. Let b be ToBoolean(value).
+    auto b = value.to_boolean();
+
+    // 2. If NewTarget is undefined, return b.
     return Value(b);
 }
 
 // 20.3.1.1 Boolean ( value ), https://tc39.es/ecma262/#sec-boolean-constructor-boolean-value
-ThrowCompletionOr<Object*> BooleanConstructor::construct(FunctionObject& new_target)
+ThrowCompletionOr<NonnullGCPtr<Object>> BooleanConstructor::construct(FunctionObject& new_target)
 {
     auto& vm = this->vm();
-    auto& global_object = this->global_object();
+    auto value = vm.argument(0);
 
-    auto b = vm.argument(0).to_boolean();
-    return TRY(ordinary_create_from_constructor<BooleanObject>(global_object, new_target, &GlobalObject::boolean_prototype, b));
+    // 1. Let b be ToBoolean(value).
+    auto b = value.to_boolean();
+
+    // 3. Let O be ? OrdinaryCreateFromConstructor(NewTarget, "%Boolean.prototype%", « [[BooleanData]] »).
+    // 4. Set O.[[BooleanData]] to b.
+    // 5. Return O.
+    return TRY(ordinary_create_from_constructor<BooleanObject>(vm, new_target, &Intrinsics::boolean_prototype, b));
 }
 
 }

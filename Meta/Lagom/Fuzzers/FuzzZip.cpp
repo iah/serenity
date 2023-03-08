@@ -8,13 +8,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
+extern "C" int LLVMFuzzerTestOneInput(uint8_t const* data, size_t size)
 {
     auto zip_file = Archive::Zip::try_create({ data, size });
     if (!zip_file.has_value())
         return 0;
 
-    zip_file->for_each_member([](auto&) {
+    (void)zip_file->for_each_member([](auto&) {
         return IterationDecision::Continue;
     });
 

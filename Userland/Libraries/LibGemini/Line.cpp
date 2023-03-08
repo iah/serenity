@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,43 +9,32 @@
 
 namespace Gemini {
 
-String Text::render_to_html() const
+DeprecatedString Text::render_to_html() const
 {
     StringBuilder builder;
     builder.append(escape_html_entities(m_text));
-    builder.append("<br>\n");
-    return builder.build();
+    builder.append("<br>\n"sv);
+    return builder.to_deprecated_string();
 }
 
-Text::~Text()
+DeprecatedString Heading::render_to_html() const
 {
+    return DeprecatedString::formatted("<h{}>{}</h{}>", m_level, escape_html_entities(m_text.substring_view(m_level, m_text.length() - m_level)), m_level);
 }
 
-String Heading::render_to_html() const
-{
-    return String::formatted("<h{}>{}</h{}>", m_level, escape_html_entities(m_text.substring_view(m_level, m_text.length() - m_level)), m_level);
-}
-
-Heading::~Heading()
-{
-}
-
-String UnorderedList::render_to_html() const
+DeprecatedString UnorderedList::render_to_html() const
 {
     // 1.3.5.4.2 "Advanced clients can take the space of the bullet symbol into account"
     //           FIXME: The spec is unclear about what the space means, or where it goes
     //                  somehow figure this out
     StringBuilder builder;
-    builder.append("<li>");
+    builder.append("<li>"sv);
     builder.append(escape_html_entities(m_text.substring_view(1, m_text.length() - 1)));
-    builder.append("</li>");
-    return builder.build();
-}
-UnorderedList::~UnorderedList()
-{
+    builder.append("</li>"sv);
+    return builder.to_deprecated_string();
 }
 
-String Control::render_to_html() const
+DeprecatedString Control::render_to_html() const
 {
     switch (m_kind) {
     case Kind::PreformattedEnd:
@@ -62,19 +51,16 @@ String Control::render_to_html() const
         return "";
     }
 }
-Control::~Control()
-{
-}
 
-Link::Link(String text, const Document& document)
+Link::Link(DeprecatedString text, Document const& document)
     : Line(move(text))
 {
     size_t index = 2;
     while (index < m_text.length() && (m_text[index] == ' ' || m_text[index] == '\t'))
         ++index;
     auto url_string = m_text.substring_view(index, m_text.length() - index);
-    auto space_offset = url_string.find_any_of(" \t");
-    String url = url_string;
+    auto space_offset = url_string.find_any_of(" \t"sv);
+    DeprecatedString url = url_string;
     if (space_offset.has_value()) {
         url = url_string.substring_view(0, space_offset.value());
         auto offset = space_offset.value();
@@ -84,37 +70,27 @@ Link::Link(String text, const Document& document)
     }
     m_url = document.url().complete_url(url);
     if (m_name.is_null())
-        m_name = m_url.to_string();
-}
-Link::~Link()
-{
+        m_name = m_url.to_deprecated_string();
 }
 
-String Link::render_to_html() const
+DeprecatedString Link::render_to_html() const
 {
     StringBuilder builder;
-    builder.append("<a href=\"");
-    builder.append(escape_html_entities(m_url.to_string()));
-    builder.append("\">");
+    builder.append("<a href=\""sv);
+    builder.append(escape_html_entities(m_url.to_deprecated_string()));
+    builder.append("\">"sv);
     builder.append(escape_html_entities(m_name));
-    builder.append("</a><br>\n");
-    return builder.build();
+    builder.append("</a><br>\n"sv);
+    return builder.to_deprecated_string();
 }
 
-String Preformatted::render_to_html() const
+DeprecatedString Preformatted::render_to_html() const
 {
     StringBuilder builder;
     builder.append(escape_html_entities(m_text));
-    builder.append("\n");
+    builder.append('\n');
 
-    return builder.build();
-}
-Preformatted::~Preformatted()
-{
-}
-
-Line::~Line()
-{
+    return builder.to_deprecated_string();
 }
 
 }

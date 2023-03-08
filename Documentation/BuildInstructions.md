@@ -7,31 +7,55 @@ Make sure you have all the dependencies installed:
 ### Debian / Ubuntu
 
 ```console
-sudo apt install build-essential cmake curl libmpfr-dev libmpc-dev libgmp-dev e2fsprogs ninja-build qemu-system-gui qemu-system-x86 qemu-utils ccache rsync unzip texinfo
+sudo apt install build-essential cmake curl libmpfr-dev libmpc-dev libgmp-dev e2fsprogs ninja-build qemu-system-gui qemu-system-x86 qemu-utils ccache rsync unzip texinfo libssl-dev
 ```
+Optional: `fuse2fs` for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).
 
-#### GCC 11
+#### GCC 12 or Clang 13
 
-On Ubuntu gcc-11 is available in the repositories of 21.04 (Hirsuite) and later - add the `ubuntu-toolchain-r/test` PPA if you're running an older version:
+A host compiler that supports C++20 features is required for building host tools, the newer the better. Tested versions include gcc-12 and clang-13.
+
+On Ubuntu gcc-12 is available in the repositories of 22.04 (Jammy) and later.
+If you are running an older version, you will either need to upgrade, or find an alternative installation source.
+
+Next, update your local package information from this repository:
 
 ```console
-sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+sudo apt update
 ```
 
-Now on Ubuntu or Debian you can install gcc-11 with apt like this:
+Now on Ubuntu or Debian you can install gcc-12 with apt like this:
 
 ```console
-sudo apt install gcc-11 g++-11
+sudo apt install gcc-12 g++-12
 ```
 
-#### QEMU 5 or later
+#### QEMU 6.2 or later
 
-QEMU version 5 is available in Ubuntu 20.10, but it is recommended to build Qemu as provided by the toolchain by running `Toolchain/BuildQemu.sh`.
-Note that you might need additional dev packages:
+Version 6.2 of QEMU is available in Ubuntu 22.04. On earlier versions of Ubuntu,
+you can build the recommended version of QEMU as provided by the toolchain by running
+`Toolchain/BuildQemu.sh`.
+Note that you might need additional dev packages in order to build QEMU on your machine:
 
 ```console
 sudo apt install libgtk-3-dev libpixman-1-dev libsdl2-dev libspice-server-dev
 ```
+
+#### CMake version 3.25.0 or later
+
+Serenity-specific patches were upstreamed to CMake in major version 3.25. To avoid carrying
+patches to CMake, the minimum required CMake to build Serenity is set to that version.
+If more patches are upstreamed to CMake, the minimum will be bumped again once that version releases.
+
+To accommodate distributions that do not ship bleeding-edge CMake versions, the build scripts will
+attempt to build CMake from source if the version on your path is older than 3.25.x.
+
+If you have previously compiled SerenityOS with an older or distribution-provided version of CMake,
+you will need to manually remove the CMakeCache.txt files, as these files reference the older CMake version and path.
+```console
+rm Build/*/CMakeCache.txt
+```
+
 
 ### Windows
 
@@ -41,8 +65,9 @@ for details.
 ### Arch Linux / Manjaro
 
 ```console
-sudo pacman -S --needed base-devel cmake curl mpfr libmpc gmp e2fsprogs ninja qemu qemu-arch-extra ccache rsync unzip
+sudo pacman -S --needed base-devel cmake curl mpfr libmpc gmp e2fsprogs ninja qemu-desktop qemu-system-x86 qemu-system-aarch64 ccache rsync unzip
 ```
+Optional: `fuse2fs` for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).
 
 ### Other systems
 
@@ -67,8 +92,10 @@ Run the following command to build and run SerenityOS:
 Meta/serenity.sh run
 ```
 
-This will compile all of SerenityOS and install the built files into the `Build/i686/Root` directory inside your Git
+This will compile all of SerenityOS and install the built files into the `Build/x86_64/Root` directory inside your Git
 repository. It will also build a disk image and start SerenityOS using QEMU.
+
+If, during build, an error like `fusermount: failed to open /etc/mtab: No such file or directory` appears, you have installed `fuse2fs` but your system does not provide the mtab symlink for various reasons. Simply create this symlink with `ln -sv /proc/self/mounts /etc/mtab`.
 
 Note that the `anon` user is able to become `root` without a password by default, as a development convenience.
 To prevent this, remove `anon` from the `wheel` group and he will no longer be able to run `/bin/su`.

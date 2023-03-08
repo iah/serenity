@@ -8,38 +8,21 @@
 
 #include <AK/RefCounted.h>
 #include <AK/Weakable.h>
-#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/DOM/EventTarget.h>
-#include <LibWeb/DOM/Window.h>
 #include <LibWeb/Forward.h>
 
 namespace Web::DOM {
 
 // https://dom.spec.whatwg.org/#abortsignal
-class AbortSignal final
-    : public RefCounted<AbortSignal>
-    , public Weakable<AbortSignal>
-    , public EventTarget
-    , public Bindings::Wrappable {
+class AbortSignal final : public EventTarget {
+    WEB_PLATFORM_OBJECT(AbortSignal, EventTarget);
+
 public:
-    using WrapperType = Bindings::AbortSignalWrapper;
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> construct_impl(JS::Realm&);
 
-    using RefCounted::ref;
-    using RefCounted::unref;
+    virtual ~AbortSignal() override = default;
 
-    static NonnullRefPtr<AbortSignal> create()
-    {
-        return adopt_ref(*new AbortSignal());
-    }
-
-    static NonnullRefPtr<AbortSignal> create_with_global_object(Bindings::WindowObject&)
-    {
-        return AbortSignal::create();
-    }
-
-    virtual ~AbortSignal() override;
-
-    void add_abort_algorithm(Function<void()>);
+    void add_abort_algorithm(JS::SafeFunction<void()>);
 
     // https://dom.spec.whatwg.org/#dom-abortsignal-aborted
     // An AbortSignal object is aborted when its abort reason is not undefined.
@@ -47,23 +30,21 @@ public:
 
     void signal_abort(JS::Value reason);
 
-    void set_onabort(Optional<Bindings::CallbackType>);
-    Bindings::CallbackType* onabort();
+    void set_onabort(WebIDL::CallbackType*);
+    WebIDL::CallbackType* onabort();
 
     // https://dom.spec.whatwg.org/#dom-abortsignal-reason
     JS::Value reason() const { return m_abort_reason; }
 
     JS::ThrowCompletionOr<void> throw_if_aborted() const;
 
-    void visit_edges(JS::Cell::Visitor&);
-
-    // ^EventTarget
-    virtual void ref_event_target() override { ref(); }
-    virtual void unref_event_target() override { unref(); }
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
+    void follow(JS::NonnullGCPtr<AbortSignal> parent_signal);
 
 private:
-    AbortSignal();
+    explicit AbortSignal(JS::Realm&);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(JS::Cell::Visitor&) override;
 
     // https://dom.spec.whatwg.org/#abortsignal-abort-reason
     // An AbortSignal object has an associated abort reason, which is a JavaScript value. It is undefined unless specified otherwise.
@@ -71,7 +52,7 @@ private:
 
     // https://dom.spec.whatwg.org/#abortsignal-abort-algorithms
     // FIXME: This should be a set.
-    Vector<Function<void()>> m_abort_algorithms;
+    Vector<JS::SafeFunction<void()>> m_abort_algorithms;
 };
 
 }

@@ -5,9 +5,9 @@
  */
 
 #include <AK/ByteReader.h>
-#include <Kernel/Arch/x86/IO.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Controller/MemoryBackedHostBridge.h>
+#include <Kernel/Memory/MemoryManager.h>
 
 namespace Kernel::PCI {
 
@@ -17,7 +17,7 @@ NonnullOwnPtr<MemoryBackedHostBridge> MemoryBackedHostBridge::must_create(Domain
 }
 
 MemoryBackedHostBridge::MemoryBackedHostBridge(PCI::Domain const& domain, PhysicalAddress start_address)
-    : HostBridge(domain)
+    : HostController(domain)
     , m_start_address(start_address)
 {
 }
@@ -26,7 +26,7 @@ u8 MemoryBackedHostBridge::read8_field(BusNumber bus, DeviceNumber device, Funct
 {
     VERIFY(Access::the().access_lock().is_locked());
     VERIFY(field <= 0xfff);
-    return *((volatile u8*)(get_device_configuration_memory_mapped_space(bus, device, function).get() + (field & 0xfff)));
+    return *((u8 volatile*)(get_device_configuration_memory_mapped_space(bus, device, function).get() + (field & 0xfff)));
 }
 u16 MemoryBackedHostBridge::read16_field(BusNumber bus, DeviceNumber device, FunctionNumber function, u32 field)
 {
@@ -48,7 +48,7 @@ void MemoryBackedHostBridge::write8_field(BusNumber bus, DeviceNumber device, Fu
 {
     VERIFY(Access::the().access_lock().is_locked());
     VERIFY(field <= 0xfff);
-    *((volatile u8*)(get_device_configuration_memory_mapped_space(bus, device, function).get() + (field & 0xfff))) = value;
+    *((u8 volatile*)(get_device_configuration_memory_mapped_space(bus, device, function).get() + (field & 0xfff))) = value;
 }
 void MemoryBackedHostBridge::write16_field(BusNumber bus, DeviceNumber device, FunctionNumber function, u32 field, u16 value)
 {
@@ -69,7 +69,7 @@ void MemoryBackedHostBridge::map_bus_region(BusNumber bus)
     if (m_mapped_bus == bus && m_mapped_bus_region)
         return;
     auto bus_base_address = determine_memory_mapped_bus_base_address(bus);
-    auto region_or_error = MM.allocate_kernel_region(bus_base_address, memory_range_per_bus, "PCI ECAM", Memory::Region::Access::ReadWrite);
+    auto region_or_error = MM.allocate_kernel_region(bus_base_address, memory_range_per_bus, "PCI ECAM"sv, Memory::Region::Access::ReadWrite);
     // FIXME: Find a way to propagate error from here.
     if (region_or_error.is_error())
         VERIFY_NOT_REACHED();

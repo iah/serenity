@@ -7,7 +7,6 @@
 
 #pragma once
 
-#include <AK/NonnullPtrVector.h>
 #include <AK/RefPtr.h>
 #include <AK/WeakPtr.h>
 #include <DevTools/HackStudio/ProjectTemplate.h>
@@ -36,7 +35,7 @@ public:
 
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
-    virtual String column_name(int) const override;
+    virtual DeprecatedString column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
 
     void update();
@@ -45,7 +44,7 @@ public:
 private:
     explicit ProjectTemplatesModel();
 
-    NonnullRefPtrVector<ProjectTemplate> m_templates;
+    Vector<NonnullRefPtr<ProjectTemplate>> m_templates;
     Vector<ProjectTemplate*> m_mapping;
 
     RefPtr<Core::FileWatcher> m_file_watcher;

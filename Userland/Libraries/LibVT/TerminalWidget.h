@@ -1,12 +1,13 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/Timer.h>
@@ -27,7 +28,7 @@ class TerminalWidget final
     C_OBJECT(TerminalWidget);
 
 public:
-    virtual ~TerminalWidget() override;
+    virtual ~TerminalWidget() override = default;
 
     void set_pty_master_fd(int fd);
     void inject_string(StringView string)
@@ -56,10 +57,10 @@ public:
 
     bool has_selection() const;
     bool selection_contains(const VT::Position&) const;
-    String selected_text() const;
+    DeprecatedString selected_text() const;
     VT::Range normalized_selection() const { return m_selection.normalized(); }
     void set_selection(const VT::Range& selection);
-    VT::Position buffer_position_at(const Gfx::IntPoint&) const;
+    VT::Position buffer_position_at(Gfx::IntPoint) const;
 
     VT::Range find_next(StringView, const VT::Position& start = {}, bool case_sensitivity = false, bool should_wrap = false);
     VT::Range find_previous(StringView, const VT::Position& start = {}, bool case_sensitivity = false, bool should_wrap = false);
@@ -84,16 +85,25 @@ public:
     const StringView color_scheme_name() const { return m_color_scheme_name; }
 
     Function<void(StringView)> on_title_change;
-    Function<void(const Gfx::IntSize&)> on_terminal_size_change;
+    Function<void(Gfx::IntSize)> on_terminal_size_change;
     Function<void()> on_command_exit;
 
     GUI::Menu& context_menu() { return *m_context_menu; }
 
     constexpr Gfx::Color terminal_color_to_rgb(VT::Color) const;
 
-    void set_font_and_resize_to_fit(const Gfx::Font&);
+    void set_font_and_resize_to_fit(Gfx::Font const&);
 
-    void set_color_scheme(StringView);
+    void update_color_scheme();
+
+    void set_logical_focus(bool);
+
+    VT::CursorShape cursor_shape() { return m_cursor_shape; }
+    virtual void set_cursor_blinking(bool) override;
+    virtual void set_cursor_shape(CursorShape) override;
+
+    static Optional<VT::CursorShape> parse_cursor_shape(StringView);
+    static DeprecatedString stringify_cursor_shape(VT::CursorShape);
 
 private:
     TerminalWidget(int ptm_fd, bool automatic_size_policy);
@@ -112,6 +122,7 @@ private:
     virtual void focusin_event(GUI::FocusEvent&) override;
     virtual void focusout_event(GUI::FocusEvent&) override;
     virtual void context_menu_event(GUI::ContextMenuEvent&) override;
+    virtual void drag_enter_event(GUI::DragEvent&) override;
     virtual void drop_event(GUI::DropEvent&) override;
     virtual void leave_event(Core::Event&) override;
     virtual void did_change_font() override;
@@ -122,25 +133,22 @@ private:
     virtual void set_window_progress(int value, int max) override;
     virtual void terminal_did_resize(u16 columns, u16 rows) override;
     virtual void terminal_history_changed(int delta) override;
-    virtual void emit(const u8*, size_t) override;
-    virtual void set_cursor_style(CursorStyle) override;
+    virtual void emit(u8 const*, size_t) override;
 
     // ^GUI::Clipboard::ClipboardClient
-    virtual void clipboard_content_did_change(const String&) override { update_paste_action(); }
-
-    void set_logical_focus(bool);
+    virtual void clipboard_content_did_change(DeprecatedString const&) override { update_paste_action(); }
 
     void send_non_user_input(ReadonlyBytes);
 
     Gfx::IntRect glyph_rect(u16 row, u16 column);
     Gfx::IntRect row_rect(u16 row);
 
-    Gfx::IntSize widget_size_for_font(const Gfx::Font&) const;
+    Gfx::IntSize widget_size_for_font(Gfx::Font const&) const;
 
     void update_cursor();
     void invalidate_cursor();
 
-    void relayout(const Gfx::IntSize&);
+    void relayout(Gfx::IntSize);
 
     void update_copy_action();
     void update_paste_action();
@@ -153,25 +161,27 @@ private:
     VT::Position next_position_after(const VT::Position&, bool should_wrap) const;
     VT::Position previous_position_before(const VT::Position&, bool should_wrap) const;
 
+    void update_cached_font_metrics();
+
     VT::Terminal m_terminal;
 
     VT::Range m_selection;
 
-    String m_hovered_href;
-    String m_hovered_href_id;
+    DeprecatedString m_hovered_href;
+    DeprecatedString m_hovered_href_id;
 
-    String m_active_href;
-    String m_active_href_id;
+    DeprecatedString m_active_href;
+    DeprecatedString m_active_href_id;
 
     // Snapshot of m_hovered_href when opening a context menu for a hyperlink.
-    String m_context_menu_href;
+    DeprecatedString m_context_menu_href;
 
-    unsigned m_colors[256];
+    Gfx::Color m_colors[256];
     Gfx::Color m_default_foreground_color;
     Gfx::Color m_default_background_color;
     bool m_show_bold_text_as_bright { true };
 
-    String m_color_scheme_name;
+    DeprecatedString m_color_scheme_name;
 
     BellMode m_bell_mode { BellMode::Visible };
     bool m_alt_key_held { false };
@@ -183,6 +193,8 @@ private:
     int m_inset { 2 };
     int m_line_spacing { 4 };
     int m_line_height { 0 };
+    int m_cell_height { 0 };
+    int m_column_width { 0 };
 
     int m_ptm_fd { -1 };
 
@@ -195,7 +207,8 @@ private:
     bool m_cursor_blink_state { true };
     bool m_automatic_size_policy { false };
 
-    VT::CursorStyle m_cursor_style { BlinkingBlock };
+    VT::CursorShape m_cursor_shape { VT::CursorShape::Block };
+    bool m_cursor_is_blinking_set { true };
 
     enum class AutoScrollDirection {
         None,

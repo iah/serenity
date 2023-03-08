@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2020-2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,7 +8,7 @@
 #include <LibCpp/Lexer.h>
 #include <LibCpp/SyntaxHighlighter.h>
 #include <LibGUI/TextEditor.h>
-#include <LibGfx/Font.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
 namespace Cpp {
@@ -60,10 +60,12 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
     auto text = m_client->get_text();
     Cpp::Lexer lexer(text);
 
+    Vector<Token> folding_region_start_tokens;
+    Vector<GUI::TextDocumentFoldingRegion> folding_regions;
     Vector<GUI::TextDocumentSpan> spans;
     lexer.lex_iterable([&](auto token) {
         // FIXME: The +1 for the token end column is a quick hack due to not wanting to modify the lexer (which is also used by the parser). Maybe there's a better way to do this.
-        dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "{} @ {}:{} - {}:{}", token.type_as_string(), token.start().line, token.start().column, token.end().line, token.end().column + 1);
+        dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "{} @ {}:{} - {}:{}", token.type_as_deprecated_string(), token.start().line, token.start().column, token.end().line, token.end().column + 1);
         GUI::TextDocumentSpan span;
         span.range.set_start({ token.start().line, token.start().column });
         span.range.set_end({ token.end().line, token.end().column + 1 });
@@ -73,8 +75,21 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         span.is_skippable = token.type() == Cpp::Token::Type::Whitespace;
         span.data = static_cast<u64>(token.type());
         spans.append(span);
+
+        if (token.type() == Token::Type::LeftCurly) {
+            folding_region_start_tokens.append(token);
+        } else if (token.type() == Token::Type::RightCurly) {
+            if (!folding_region_start_tokens.is_empty()) {
+                auto start_token = folding_region_start_tokens.take_last();
+                GUI::TextDocumentFoldingRegion folding_region;
+                folding_region.range.set_start({ start_token.end().line, start_token.end().column });
+                folding_region.range.set_end({ token.start().line, token.start().column });
+                folding_regions.append(move(folding_region));
+            }
+        }
     });
     m_client->do_set_spans(move(spans));
+    m_client->do_set_folding_regions(move(folding_regions));
 
     m_has_brace_buddies = false;
     highlight_matching_token_pair();
@@ -96,10 +111,6 @@ Vector<SyntaxHighlighter::MatchingTokenPair> SyntaxHighlighter::matching_token_p
 bool SyntaxHighlighter::token_types_equal(u64 token1, u64 token2) const
 {
     return static_cast<Cpp::Token::Type>(token1) == static_cast<Cpp::Token::Type>(token2);
-}
-
-SyntaxHighlighter::~SyntaxHighlighter()
-{
 }
 
 }

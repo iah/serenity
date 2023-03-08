@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,26 +12,35 @@
 
 namespace HTTP {
 
-HttpRequest::HttpRequest()
+DeprecatedString to_deprecated_string(HttpRequest::Method method)
 {
-}
-
-HttpRequest::~HttpRequest()
-{
-}
-
-String HttpRequest::method_name() const
-{
-    switch (m_method) {
-    case Method::GET:
+    switch (method) {
+    case HttpRequest::Method::GET:
         return "GET";
-    case Method::HEAD:
+    case HttpRequest::Method::HEAD:
         return "HEAD";
-    case Method::POST:
+    case HttpRequest::Method::POST:
         return "POST";
+    case HttpRequest::Method::DELETE:
+        return "DELETE";
+    case HttpRequest::Method::PATCH:
+        return "PATCH";
+    case HttpRequest::Method::OPTIONS:
+        return "OPTIONS";
+    case HttpRequest::Method::TRACE:
+        return "TRACE";
+    case HttpRequest::Method::CONNECT:
+        return "CONNECT";
+    case HttpRequest::Method::PUT:
+        return "PUT";
     default:
         VERIFY_NOT_REACHED();
     }
+}
+
+DeprecatedString HttpRequest::method_name() const
+{
+    return to_deprecated_string(m_method);
 }
 
 ByteBuffer HttpRequest::to_raw_request() const
@@ -44,22 +54,24 @@ ByteBuffer HttpRequest::to_raw_request() const
     builder.append(URL::percent_encode(m_url.path(), URL::PercentEncodeSet::EncodeURI));
     if (!m_url.query().is_empty()) {
         builder.append('?');
-        builder.append(URL::percent_encode(m_url.query(), URL::PercentEncodeSet::EncodeURI));
+        builder.append(m_url.query());
     }
-    builder.append(" HTTP/1.1\r\nHost: ");
+    builder.append(" HTTP/1.1\r\nHost: "sv);
     builder.append(m_url.host());
-    builder.append("\r\n");
+    if (m_url.port().has_value())
+        builder.appendff(":{}", *m_url.port());
+    builder.append("\r\n"sv);
     for (auto& header : m_headers) {
         builder.append(header.name);
-        builder.append(": ");
+        builder.append(": "sv);
         builder.append(header.value);
-        builder.append("\r\n");
+        builder.append("\r\n"sv);
     }
-    if (!m_body.is_empty()) {
+    if (!m_body.is_empty() || method() == Method::POST) {
         builder.appendff("Content-Length: {}\r\n\r\n", m_body.size());
         builder.append((char const*)m_body.data(), m_body.size());
     }
-    builder.append("\r\n");
+    builder.append("\r\n"sv);
     return builder.to_byte_buffer();
 }
 
@@ -71,6 +83,7 @@ Optional<HttpRequest> HttpRequest::from_raw_request(ReadonlyBytes raw_request)
         InProtocol,
         InHeaderName,
         InHeaderValue,
+        InBody,
     };
 
     State state { State::InMethod };
@@ -89,14 +102,15 @@ Optional<HttpRequest> HttpRequest::from_raw_request(ReadonlyBytes raw_request)
 
     Vector<u8, 256> buffer;
 
-    String method;
-    String resource;
-    String protocol;
+    DeprecatedString method;
+    DeprecatedString resource;
+    DeprecatedString protocol;
     Vector<Header> headers;
     Header current_header;
+    ByteBuffer body;
 
     auto commit_and_advance_to = [&](auto& output, State new_state) {
-        output = String::copy(buffer);
+        output = DeprecatedString::copy(buffer);
         buffer.clear();
         state = new_state;
     };
@@ -144,11 +158,32 @@ Optional<HttpRequest> HttpRequest::from_raw_request(ReadonlyBytes raw_request)
             if (peek(0) == '\r' && peek(1) == '\n') {
                 consume();
                 consume();
-                commit_and_advance_to(current_header.value, State::InHeaderName);
+
+                // Detect end of headers
+                auto next_state = State::InHeaderName;
+                if (peek(0) == '\r' && peek(1) == '\n') {
+                    consume();
+                    consume();
+                    next_state = State::InBody;
+                }
+
+                commit_and_advance_to(current_header.value, next_state);
                 headers.append(move(current_header));
                 break;
             }
             buffer.append(consume());
+            break;
+        case State::InBody:
+            buffer.append(consume());
+            if (index == raw_request.size()) {
+                // End of data, so store the body
+                auto maybe_body = ByteBuffer::copy(buffer);
+                // FIXME: Propagate this error somehow.
+                if (maybe_body.is_error())
+                    return {};
+                body = maybe_body.release_value();
+                buffer.clear();
+            }
             break;
         }
     }
@@ -160,16 +195,40 @@ Optional<HttpRequest> HttpRequest::from_raw_request(ReadonlyBytes raw_request)
         request.m_method = Method::HEAD;
     else if (method == "POST")
         request.m_method = Method::POST;
+    else if (method == "DELETE")
+        request.set_method(HTTP::HttpRequest::Method::DELETE);
+    else if (method == "PATCH")
+        request.set_method(HTTP::HttpRequest::Method::PATCH);
+    else if (method == "OPTIONS")
+        request.set_method(HTTP::HttpRequest::Method::OPTIONS);
+    else if (method == "TRACE")
+        request.set_method(HTTP::HttpRequest::Method::TRACE);
+    else if (method == "CONNECT")
+        request.set_method(HTTP::HttpRequest::Method::CONNECT);
+    else if (method == "PUT")
+        request.set_method(HTTP::HttpRequest::Method::PUT);
     else
         return {};
 
-    request.m_resource = URL::percent_decode(resource);
     request.m_headers = move(headers);
+    auto url_parts = resource.split_limit('?', 2, SplitBehavior::KeepEmpty);
+
+    request.m_url.set_cannot_be_a_base_url(true);
+    if (url_parts.size() == 2) {
+        request.m_resource = url_parts[0];
+        request.m_url.set_paths({ url_parts[0] });
+        request.m_url.set_query(url_parts[1]);
+    } else {
+        request.m_resource = resource;
+        request.m_url.set_paths({ resource });
+    }
+
+    request.set_body(move(body));
 
     return request;
 }
 
-void HttpRequest::set_headers(HashMap<String, String> const& headers)
+void HttpRequest::set_headers(HashMap<DeprecatedString, DeprecatedString> const& headers)
 {
     for (auto& it : headers)
         m_headers.append({ it.key, it.value });
@@ -183,16 +242,18 @@ Optional<HttpRequest::Header> HttpRequest::get_http_basic_authentication_header(
     builder.append(url.username());
     builder.append(':');
     builder.append(url.password());
-    auto token = encode_base64(builder.to_string().bytes());
+
+    // FIXME: change to TRY() and make method fallible
+    auto token = MUST(encode_base64(MUST(builder.to_string()).bytes()));
     builder.clear();
-    builder.append("Basic ");
+    builder.append("Basic "sv);
     builder.append(token);
-    return Header { "Authorization", builder.to_string() };
+    return Header { "Authorization", builder.to_deprecated_string() };
 }
 
-Optional<HttpRequest::BasicAuthenticationCredentials> HttpRequest::parse_http_basic_authentication_header(String const& value)
+Optional<HttpRequest::BasicAuthenticationCredentials> HttpRequest::parse_http_basic_authentication_header(DeprecatedString const& value)
 {
-    if (!value.starts_with("Basic ", AK::CaseSensitivity::CaseInsensitive))
+    if (!value.starts_with("Basic "sv, AK::CaseSensitivity::CaseInsensitive))
         return {};
     auto token = value.substring_view(6);
     if (token.is_empty())
@@ -200,7 +261,7 @@ Optional<HttpRequest::BasicAuthenticationCredentials> HttpRequest::parse_http_ba
     auto decoded_token_bb = decode_base64(token);
     if (decoded_token_bb.is_error())
         return {};
-    auto decoded_token = String::copy(decoded_token_bb.value());
+    auto decoded_token = DeprecatedString::copy(decoded_token_bb.value());
     auto colon_index = decoded_token.find(':');
     if (!colon_index.has_value())
         return {};

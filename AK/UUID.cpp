@@ -97,34 +97,26 @@ ErrorOr<NonnullOwnPtr<Kernel::KString>> UUID::to_string() const
     return Kernel::KString::try_create(builder.string_view());
 }
 #else
-String UUID::to_string() const
+ErrorOr<String> UUID::to_string() const
 {
+    auto buffer_span = m_uuid_buffer.span();
     StringBuilder builder(36);
-    builder.append(encode_hex(m_uuid_buffer.span().trim(4)).view());
-    builder.append('-');
-    builder.append(encode_hex(m_uuid_buffer.span().slice(4).trim(2)).view());
-    builder.append('-');
-    builder.append(encode_hex(m_uuid_buffer.span().slice(6).trim(2)).view());
-    builder.append('-');
-    builder.append(encode_hex(m_uuid_buffer.span().slice(8).trim(2)).view());
-    builder.append('-');
-    builder.append(encode_hex(m_uuid_buffer.span().slice(10).trim(6)).view());
+    TRY(builder.try_append(encode_hex(buffer_span.trim(4)).view()));
+    TRY(builder.try_append('-'));
+    TRY(builder.try_append(encode_hex(buffer_span.slice(4, 2)).view()));
+    TRY(builder.try_append('-'));
+    TRY(builder.try_append(encode_hex(buffer_span.slice(6, 2)).view()));
+    TRY(builder.try_append('-'));
+    TRY(builder.try_append(encode_hex(buffer_span.slice(8, 2)).view()));
+    TRY(builder.try_append('-'));
+    TRY(builder.try_append(encode_hex(buffer_span.slice(10, 6)).view()));
     return builder.to_string();
 }
 #endif
 
-bool UUID::operator==(const UUID& other) const
-{
-    for (size_t index = 0; index < 16; index++) {
-        if (m_uuid_buffer[index] != other.m_uuid_buffer[index])
-            return false;
-    }
-    return true;
-}
-
 bool UUID::is_zero() const
 {
-    return all_of(m_uuid_buffer, [](const auto octet) { return octet == 0; });
+    return all_of(m_uuid_buffer, [](auto const octet) { return octet == 0; });
 }
 
 }

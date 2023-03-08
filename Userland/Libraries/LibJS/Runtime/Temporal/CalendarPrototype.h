@@ -15,11 +15,12 @@ class CalendarPrototype final : public PrototypeObject<CalendarPrototype, Calend
     JS_PROTOTYPE_OBJECT(CalendarPrototype, Calendar, Temporal.Calendar);
 
 public:
-    explicit CalendarPrototype(GlobalObject&);
-    virtual void initialize(GlobalObject&) override;
+    virtual ThrowCompletionOr<void> initialize(Realm&) override;
     virtual ~CalendarPrototype() override = default;
 
 private:
+    explicit CalendarPrototype(Realm&);
+
     JS_DECLARE_NATIVE_FUNCTION(id_getter);
     JS_DECLARE_NATIVE_FUNCTION(date_from_fields);
     JS_DECLARE_NATIVE_FUNCTION(year_month_from_fields);
@@ -33,6 +34,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(day_of_week);
     JS_DECLARE_NATIVE_FUNCTION(day_of_year);
     JS_DECLARE_NATIVE_FUNCTION(week_of_year);
+    JS_DECLARE_NATIVE_FUNCTION(year_of_week);
     JS_DECLARE_NATIVE_FUNCTION(days_in_week);
     JS_DECLARE_NATIVE_FUNCTION(days_in_month);
     JS_DECLARE_NATIVE_FUNCTION(days_in_year);

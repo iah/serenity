@@ -6,31 +6,33 @@
 
 #pragma once
 
-#include "AK/kmalloc.h"
-#include <AK/NonnullRefPtr.h>
-#include <AK/NonnullRefPtrVector.h>
 #include <AK/OwnPtr.h>
-#include <AK/RefCounted.h>
-#include <AK/RefPtr.h>
 #include <AK/Types.h>
+#include <AK/kmalloc.h>
+#include <Kernel/Library/LockRefPtr.h>
+#include <Kernel/Library/NonnullLockRefPtr.h>
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Storage/NVMe/NVMeDefinitions.h>
 #include <Kernel/Storage/NVMe/NVMeQueue.h>
 #include <Kernel/Storage/StorageDevice.h>
 
 namespace Kernel {
+
+class NVMeController;
 class NVMeNameSpace : public StorageDevice {
+    friend class DeviceManagement;
 
 public:
-    static ErrorOr<NonnullRefPtr<NVMeNameSpace>> try_create(NonnullRefPtrVector<NVMeQueue> queues, u8 controller_id, u16 nsid, size_t storage_size, size_t lba_size);
-    explicit NVMeNameSpace(NonnullRefPtrVector<NVMeQueue> queues, size_t storage_size, size_t lba_size, size_t major_number, size_t minor_number, u16 nsid, NonnullOwnPtr<KString> early_device_name);
+    static ErrorOr<NonnullLockRefPtr<NVMeNameSpace>> try_create(NVMeController const&, Vector<NonnullLockRefPtr<NVMeQueue>> queues, u16 nsid, size_t storage_size, size_t lba_size);
 
     CommandSet command_set() const override { return CommandSet::NVMe; };
     void start_request(AsyncBlockDeviceRequest& request) override;
 
 private:
+    NVMeNameSpace(LUNAddress, u32 hardware_relative_controller_id, Vector<NonnullLockRefPtr<NVMeQueue>> queues, size_t storage_size, size_t lba_size, u16 nsid);
+
     u16 m_nsid;
-    NonnullRefPtrVector<NVMeQueue> m_queues;
+    Vector<NonnullLockRefPtr<NVMeQueue>> m_queues;
 };
 
 }

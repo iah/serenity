@@ -1,12 +1,14 @@
 /*
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, David Tuin <davidot@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <AK/QuickSort.h>
 #include <LibJS/Interpreter.h>
+#include <LibJS/Parser.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/ModuleEnvironment.h>
 #include <LibJS/SourceTextModule.h>
@@ -14,7 +16,7 @@
 namespace JS {
 
 // 2.7 Static Semantics: AssertClauseToAssertions, https://tc39.es/proposal-import-assertions/#sec-assert-clause-to-assertions
-static Vector<ModuleRequest::Assertion> assert_clause_to_assertions(Vector<ModuleRequest::Assertion> const& source_assertions, Vector<String> const& supported_import_assertions)
+static Vector<ModuleRequest::Assertion> assert_clause_to_assertions(Vector<ModuleRequest::Assertion> const& source_assertions, Vector<DeprecatedString> const& supported_import_assertions)
 {
     // AssertClause : assert { AssertEntries ,opt }
     // 1. Let assertions be AssertClauseToAssertions of AssertEntries.
@@ -41,32 +43,31 @@ static Vector<ModuleRequest::Assertion> assert_clause_to_assertions(Vector<Modul
 }
 
 // 16.2.1.3 Static Semantics: ModuleRequests, https://tc39.es/ecma262/#sec-static-semantics-modulerequests
-static Vector<ModuleRequest> module_requests(Program& program, Vector<String> const& supported_import_assertions)
+static Vector<ModuleRequest> module_requests(Program& program, Vector<DeprecatedString> const& supported_import_assertions)
 {
     // A List of all the ModuleSpecifier strings used by the module represented by this record to request the importation of a module.
     // Note: The List is source text occurrence ordered!
     struct RequestedModuleAndSourceIndex {
-        u64 source_index { 0 };
-        ModuleRequest* module_request { nullptr };
+        u32 source_offset { 0 };
+        ModuleRequest const* module_request { nullptr };
     };
 
     Vector<RequestedModuleAndSourceIndex> requested_modules_with_indices;
 
-    for (auto& import_statement : program.imports()) {
-        requested_modules_with_indices.empend(import_statement.source_range().start.offset, &import_statement.module_request());
-    }
+    for (auto& import_statement : program.imports())
+        requested_modules_with_indices.empend(import_statement->start_offset(), &import_statement->module_request());
 
     for (auto& export_statement : program.exports()) {
-        for (auto& export_entry : export_statement.entries()) {
+        for (auto& export_entry : export_statement->entries()) {
             if (!export_entry.is_module_request())
                 continue;
-            requested_modules_with_indices.empend(export_statement.source_range().start.offset, &export_statement.module_request());
+            requested_modules_with_indices.empend(export_statement->start_offset(), &export_statement->module_request());
         }
     }
 
     // Note: The List is source code occurrence ordered. https://tc39.es/proposal-import-assertions/#table-cyclic-module-fields
     quick_sort(requested_modules_with_indices, [&](RequestedModuleAndSourceIndex const& lhs, RequestedModuleAndSourceIndex const& rhs) {
-        return lhs.source_index < rhs.source_index;
+        return lhs.source_offset < rhs.source_offset;
     });
 
     Vector<ModuleRequest> requested_modules_in_source_order;
@@ -88,7 +89,7 @@ static Vector<ModuleRequest> module_requests(Program& program, Vector<String> co
             // 2. Let assertions be AssertClauseToAssertions of AssertClause.
             auto assertions = assert_clause_to_assertions(module.module_request->assertions, supported_import_assertions);
             // Note: We have to modify the assertions in place because else it might keep non supported ones
-            module.module_request->assertions = move(assertions);
+            const_cast<ModuleRequest*>(module.module_request)->assertions = move(assertions);
 
             // 3. Return a ModuleRequest Record { [[Specifer]]: specifier, [[Assertions]]: assertions }.
             requested_modules_in_source_order.empend(module.module_request->module_specifier, module.module_request->assertions);
@@ -98,11 +99,11 @@ static Vector<ModuleRequest> module_requests(Program& program, Vector<String> co
     return requested_modules_in_source_order;
 }
 
-SourceTextModule::SourceTextModule(Realm& realm, StringView filename, bool has_top_level_await, NonnullRefPtr<Program> body, Vector<ModuleRequest> requested_modules,
+SourceTextModule::SourceTextModule(Realm& realm, StringView filename, Script::HostDefined* host_defined, bool has_top_level_await, NonnullRefPtr<Program> body, Vector<ModuleRequest> requested_modules,
     Vector<ImportEntry> import_entries, Vector<ExportEntry> local_export_entries,
     Vector<ExportEntry> indirect_export_entries, Vector<ExportEntry> star_export_entries,
-    RefPtr<ExportStatement> default_export)
-    : CyclicModule(realm, filename, has_top_level_await, move(requested_modules))
+    RefPtr<ExportStatement const> default_export)
+    : CyclicModule(realm, filename, has_top_level_await, move(requested_modules), host_defined)
     , m_ecmascript_code(move(body))
     , m_execution_context(realm.heap())
     , m_import_entries(move(import_entries))
@@ -113,8 +114,14 @@ SourceTextModule::SourceTextModule(Realm& realm, StringView filename, bool has_t
 {
 }
 
+void SourceTextModule::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_import_meta);
+}
+
 // 16.2.1.6.1 ParseModule ( sourceText, realm, hostDefined ), https://tc39.es/ecma262/#sec-parsemodule
-Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule::parse(StringView source_text, Realm& realm, StringView filename)
+Result<NonnullGCPtr<SourceTextModule>, Vector<ParserError>> SourceTextModule::parse(StringView source_text, Realm& realm, StringView filename, Script::HostDefined* host_defined)
 {
     // 1. Let body be ParseText(sourceText, Module).
     auto parser = Parser(Lexer(source_text, filename), Program::Type::Module);
@@ -134,7 +141,7 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
     // 4. Let importEntries be ImportEntries of body.
     Vector<ImportEntry> import_entries;
     for (auto const& import_statement : body->imports())
-        import_entries.extend(import_statement.entries());
+        import_entries.extend(import_statement->entries());
 
     // 5. Let importedBoundNames be ImportedLocalNames(importEntries).
     // Note: Since we have to potentially extract the import entry we just use importEntries
@@ -150,19 +157,19 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
     Vector<ExportEntry> star_export_entries;
 
     // Note: Not in the spec but makes it easier to find the default.
-    RefPtr<ExportStatement> default_export;
+    RefPtr<ExportStatement const> default_export;
 
     // 9. Let exportEntries be ExportEntries of body.
     // 10. For each ExportEntry Record ee of exportEntries, do
     for (auto const& export_statement : body->exports()) {
 
-        if (export_statement.is_default_export()) {
+        if (export_statement->is_default_export()) {
             VERIFY(!default_export);
-            VERIFY(export_statement.entries().size() == 1);
-            VERIFY(export_statement.has_statement());
+            VERIFY(export_statement->entries().size() == 1);
+            VERIFY(export_statement->has_statement());
 
-            auto const& entry = export_statement.entries()[0];
-            VERIFY(entry.kind == ExportStatement::ExportEntry::Kind::NamedExport);
+            auto const& entry = export_statement->entries()[0];
+            VERIFY(entry.kind == ExportEntry::Kind::NamedExport);
             VERIFY(!entry.is_module_request());
             VERIFY(import_entries.find_if(
                                      [&](ImportEntry const& import_entry) {
@@ -172,7 +179,14 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
             default_export = export_statement;
         }
 
-        for (auto const& export_entry : export_statement.entries()) {
+        for (auto const& export_entry : export_statement->entries()) {
+
+            // Special case, export {} from "module" should add "module" to
+            // required_modules but not any import or export so skip here.
+            if (export_entry.kind == ExportEntry::Kind::EmptyNamedExport) {
+                VERIFY(export_statement->entries().size() == 1);
+                break;
+            }
 
             // a. If ee.[[ModuleRequest]] is null, then
             if (!export_entry.is_module_request()) {
@@ -195,8 +209,6 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
                     // 2. If ie.[[ImportName]] is namespace-object, then
                     if (import_entry.is_namespace) {
                         // a. NOTE: This is a re-export of an imported module namespace object.
-                        VERIFY(export_entry.is_module_request() && export_entry.kind != ExportStatement::ExportEntry::Kind::NamedExport);
-
                         // b. Append ee to localExportEntries.
                         local_export_entries.empend(export_entry);
                     }
@@ -209,7 +221,7 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
                 }
             }
             // b. Else if ee.[[ImportName]] is all-but-default, then
-            else if (export_entry.kind == ExportStatement::ExportEntry::Kind::ModuleRequestAllButDefault) {
+            else if (export_entry.kind == ExportEntry::Kind::ModuleRequestAllButDefault) {
                 // i. Assert: ee.[[ExportName]] is null.
                 VERIFY(export_entry.export_name.is_null());
                 // ii. Append ee to starExportEntries.
@@ -233,12 +245,22 @@ Result<NonnullRefPtr<SourceTextModule>, Vector<Parser::Error>> SourceTextModule:
     //          [[HostDefined]]: hostDefined, [[ECMAScriptCode]]: body, [[Context]]: empty, [[ImportMeta]]: empty,
     //          [[RequestedModules]]: requestedModules, [[ImportEntries]]: importEntries, [[LocalExportEntries]]: localExportEntries,
     //          [[IndirectExportEntries]]: indirectExportEntries, [[StarExportEntries]]: starExportEntries, [[DFSIndex]]: empty, [[DFSAncestorIndex]]: empty }.
-    // FIXME: Add HostDefined
-    return adopt_ref(*new SourceTextModule(realm, filename, async, move(body), move(requested_modules), move(import_entries), move(local_export_entries), move(indirect_export_entries), move(star_export_entries), move(default_export)));
+    return realm.heap().allocate_without_realm<SourceTextModule>(
+        realm,
+        filename,
+        host_defined,
+        async,
+        move(body),
+        move(requested_modules),
+        move(import_entries),
+        move(local_export_entries),
+        move(indirect_export_entries),
+        move(star_export_entries),
+        move(default_export));
 }
 
 // 16.2.1.6.2 GetExportedNames ( [ exportStarSet ] ), https://tc39.es/ecma262/#sec-getexportednames
-ThrowCompletionOr<Vector<FlyString>> SourceTextModule::get_exported_names(VM& vm, Vector<Module*> export_star_set)
+ThrowCompletionOr<Vector<DeprecatedFlyString>> SourceTextModule::get_exported_names(VM& vm, Vector<Module*> export_star_set)
 {
     dbgln_if(JS_MODULE_DEBUG, "[JS MODULE] get_export_names of {}", filename());
     // 1. If exportStarSet is not present, set exportStarSet to a new empty List.
@@ -250,14 +272,14 @@ ThrowCompletionOr<Vector<FlyString>> SourceTextModule::get_exported_names(VM& vm
         // FIXME: How do we check that?
 
         // b. Return a new empty List.
-        return Vector<FlyString> {};
+        return Vector<DeprecatedFlyString> {};
     }
 
     // 3. Append module to exportStarSet.
     export_star_set.append(this);
 
     // 4. Let exportedNames be a new empty List.
-    Vector<FlyString> exported_names;
+    Vector<DeprecatedFlyString> exported_names;
 
     // 5. For each ExportEntry Record e of module.[[LocalExportEntries]], do
     for (auto& entry : m_local_export_entries) {
@@ -280,7 +302,7 @@ ThrowCompletionOr<Vector<FlyString>> SourceTextModule::get_exported_names(VM& vm
     // 7. For each ExportEntry Record e of module.[[StarExportEntries]], do
     for (auto& entry : m_star_export_entries) {
         // a. Let requestedModule be ? HostResolveImportedModule(module, e.[[ModuleRequest]]).
-        auto requested_module = TRY(vm.host_resolve_imported_module(this->make_weak_ptr(), entry.module_request()));
+        auto requested_module = TRY(vm.host_resolve_imported_module(NonnullGCPtr<Module>(*this), entry.module_request()));
 
         // b. Let starNames be ? requestedModule.GetExportedNames(exportStarSet).
         auto star_names = TRY(requested_module->get_exported_names(vm, export_star_set));
@@ -303,7 +325,7 @@ ThrowCompletionOr<Vector<FlyString>> SourceTextModule::get_exported_names(VM& vm
 }
 
 // 16.2.1.6.4 InitializeEnvironment ( ), https://tc39.es/ecma262/#sec-source-text-module-record-initialize-environment
-Completion SourceTextModule::initialize_environment(VM& vm)
+ThrowCompletionOr<void> SourceTextModule::initialize_environment(VM& vm)
 {
     // 1. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
     for (auto& entry : m_indirect_export_entries) {
@@ -311,7 +333,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
         auto resolution = TRY(resolve_export(vm, entry.export_name));
         // b. If resolution is null or ambiguous, throw a SyntaxError exception.
         if (!resolution.is_valid())
-            return vm.throw_completion<SyntaxError>(realm().global_object(), ErrorType::InvalidOrAmbiguousExportEntry, entry.export_name);
+            return vm.throw_completion<SyntaxError>(ErrorType::InvalidOrAmbiguousExportEntry, entry.export_name);
 
         // c. Assert: resolution is a ResolvedBinding Record.
         VERIFY(resolution.is_valid());
@@ -325,10 +347,8 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     // 4. Assert: realm is not undefined.
     // Note: This must be true because we use a reference.
 
-    auto& global_object = realm().global_object();
-
     // 5. Let env be NewModuleEnvironment(realm.[[GlobalEnv]]).
-    auto* environment = vm.heap().allocate_without_global_object<ModuleEnvironment>(&realm().global_environment());
+    auto environment = vm.heap().allocate_without_realm<ModuleEnvironment>(&realm().global_environment());
 
     // 6. Set module.[[Environment]] to env.
     set_environment(environment);
@@ -336,7 +356,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     // 7. For each ImportEntry Record in of module.[[ImportEntries]], do
     for (auto& import_entry : m_import_entries) {
         // a. Let importedModule be ! HostResolveImportedModule(module, in.[[ModuleRequest]]).
-        auto imported_module = MUST(vm.host_resolve_imported_module(this->make_weak_ptr(), import_entry.module_request()));
+        auto imported_module = MUST(vm.host_resolve_imported_module(NonnullGCPtr<Module>(*this), import_entry.module_request()));
         // b. NOTE: The above call cannot fail because imported module requests are a subset of module.[[RequestedModules]], and these have been resolved earlier in this algorithm.
 
         // c. If in.[[ImportName]] is namespace-object, then
@@ -345,10 +365,10 @@ Completion SourceTextModule::initialize_environment(VM& vm)
             auto* namespace_ = TRY(imported_module->get_module_namespace(vm));
 
             // ii. Perform ! env.CreateImmutableBinding(in.[[LocalName]], true).
-            MUST(environment->create_immutable_binding(global_object, import_entry.local_name, true));
+            MUST(environment->create_immutable_binding(vm, import_entry.local_name, true));
 
-            // iii. Call env.InitializeBinding(in.[[LocalName]], namespace).
-            environment->initialize_binding(global_object, import_entry.local_name, namespace_);
+            // iii. Perform ! env.InitializeBinding(in.[[LocalName]], namespace, normal).
+            MUST(environment->initialize_binding(vm, import_entry.local_name, namespace_, Environment::InitializeBindingHint::Normal));
         }
         // d. Else,
         else {
@@ -357,7 +377,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
 
             // ii. If resolution is null or ambiguous, throw a SyntaxError exception.
             if (!resolution.is_valid())
-                return vm.throw_completion<SyntaxError>(global_object, ErrorType::InvalidOrAmbiguousExportEntry, import_entry.import_name);
+                return vm.throw_completion<SyntaxError>(ErrorType::InvalidOrAmbiguousExportEntry, import_entry.import_name);
 
             // iii. If resolution.[[BindingName]] is namespace, then
             if (resolution.is_namespace()) {
@@ -365,14 +385,14 @@ Completion SourceTextModule::initialize_environment(VM& vm)
                 auto* namespace_ = TRY(resolution.module->get_module_namespace(vm));
 
                 // 2. Perform ! env.CreateImmutableBinding(in.[[LocalName]], true).
-                MUST(environment->create_immutable_binding(global_object, import_entry.local_name, true));
+                MUST(environment->create_immutable_binding(vm, import_entry.local_name, true));
 
-                // 3. Call env.InitializeBinding(in.[[LocalName]], namespace).
-                MUST(environment->initialize_binding(global_object, import_entry.local_name, namespace_));
+                // 3. Perform ! env.InitializeBinding(in.[[LocalName]], namespace, normal).
+                MUST(environment->initialize_binding(vm, import_entry.local_name, namespace_, Environment::InitializeBindingHint::Normal));
             }
             // iv. Else,
             else {
-                // 1. Call env.CreateImportBinding(in.[[LocalName]], resolution.[[Module]], resolution.[[BindingName]]).
+                // 1. Perform env.CreateImportBinding(in.[[LocalName]], resolution.[[Module]], resolution.[[BindingName]]).
                 MUST(environment->create_import_binding(import_entry.local_name, resolution.module, resolution.export_name));
             }
         }
@@ -390,7 +410,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     m_execution_context.realm = &realm();
 
     // 12. Set the ScriptOrModule of moduleContext to module.
-    m_execution_context.script_or_module = this->make_weak_ptr();
+    m_execution_context.script_or_module = NonnullGCPtr<Module>(*this);
 
     // 13. Set the VariableEnvironment of moduleContext to module.[[Environment]].
     m_execution_context.variable_environment = environment;
@@ -404,7 +424,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     // Note: We're already working on that one.
 
     // 17. Push moduleContext onto the execution context stack; moduleContext is now the running execution context.
-    vm.push_execution_context(m_execution_context, realm().global_object());
+    TRY(vm.push_execution_context(m_execution_context, {}));
 
     // 18. Let code be module.[[ECMAScriptCode]].
 
@@ -412,23 +432,25 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     // Note: We just loop through them in step 21.
 
     // 20. Let declaredVarNames be a new empty List.
-    Vector<FlyString> declared_var_names;
+    Vector<DeprecatedFlyString> declared_var_names;
 
     // 21. For each element d of varDeclarations, do
     // a. For each element dn of the BoundNames of d, do
-    m_ecmascript_code->for_each_var_declared_name([&](auto const& name) {
+    // NOTE: Due to the use of MUST with `create_mutable_binding` and `initialize_binding` below,
+    //       an exception should not result from `for_each_var_declared_name`.
+    MUST(m_ecmascript_code->for_each_var_declared_name([&](auto const& name) {
         // i. If dn is not an element of declaredVarNames, then
         if (!declared_var_names.contains_slow(name)) {
             // 1. Perform ! env.CreateMutableBinding(dn, false).
-            MUST(environment->create_mutable_binding(global_object, name, false));
+            MUST(environment->create_mutable_binding(vm, name, false));
 
-            // 2. Call env.InitializeBinding(dn, undefined).
-            MUST(environment->initialize_binding(global_object, name, js_undefined()));
+            // 2. Perform ! env.InitializeBinding(dn, undefined, normal).
+            MUST(environment->initialize_binding(vm, name, js_undefined(), Environment::InitializeBindingHint::Normal));
 
             // 3. Append dn to declaredVarNames.
             declared_var_names.empend(name);
         }
-    });
+    }));
 
     // 22. Let lexDeclarations be the LexicallyScopedDeclarations of code.
     // Note: We only loop through them in step 24.
@@ -437,18 +459,21 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     PrivateEnvironment* private_environment = nullptr;
 
     // 24. For each element d of lexDeclarations, do
-    m_ecmascript_code->for_each_lexically_scoped_declaration([&](Declaration const& declaration) {
+    // NOTE: Due to the use of MUST in the callback, an exception should not result from `for_each_lexically_scoped_declaration`.
+    MUST(m_ecmascript_code->for_each_lexically_scoped_declaration([&](Declaration const& declaration) {
         // a. For each element dn of the BoundNames of d, do
-        declaration.for_each_bound_name([&](FlyString const& name) {
+        // NOTE: Due to the use of MUST with `create_immutable_binding`, `create_mutable_binding` and `initialize_binding` below,
+        //       an exception should not result from `for_each_bound_name`.
+        MUST(declaration.for_each_bound_name([&](DeprecatedFlyString const& name) {
             // i. If IsConstantDeclaration of d is true, then
             if (declaration.is_constant_declaration()) {
                 // 1. Perform ! env.CreateImmutableBinding(dn, true).
-                MUST(environment->create_immutable_binding(global_object, name, true));
+                MUST(environment->create_immutable_binding(vm, name, true));
             }
             // ii. Else,
             else {
                 // 1. Perform ! env.CreateMutableBinding(dn, false).
-                MUST(environment->create_mutable_binding(global_object, name, false));
+                MUST(environment->create_mutable_binding(vm, name, false));
             }
 
             // iii. If d is a FunctionDeclaration, a GeneratorDeclaration, an AsyncFunctionDeclaration, or an AsyncGeneratorDeclaration, then
@@ -457,13 +482,18 @@ Completion SourceTextModule::initialize_environment(VM& vm)
                 auto const& function_declaration = static_cast<FunctionDeclaration const&>(declaration);
 
                 // 1. Let fo be InstantiateFunctionObject of d with arguments env and privateEnv.
-                auto* function = ECMAScriptFunctionObject::create(global_object, function_declaration.name(), function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(), function_declaration.might_need_arguments_object(), function_declaration.contains_direct_call_to_eval());
+                // NOTE: Special case if the function is a default export of an anonymous function
+                //       it has name "*default*" but internally should have name "default".
+                DeprecatedFlyString function_name = function_declaration.name();
+                if (function_name == ExportStatement::local_name_for_default)
+                    function_name = "default"sv;
+                auto function = ECMAScriptFunctionObject::create(realm(), function_name, function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(), function_declaration.might_need_arguments_object(), function_declaration.contains_direct_call_to_eval());
 
-                // 2. Call env.InitializeBinding(dn, fo).
-                environment->initialize_binding(global_object, name, function);
+                // 2. Perform ! env.InitializeBinding(dn, fo, normal).
+                MUST(environment->initialize_binding(vm, name, function, Environment::InitializeBindingHint::Normal));
             }
-        });
-    });
+        }));
+    }));
 
     // Note: The default export name is also part of the local lexical declarations but
     //       instead of making that a special case in the parser we just check it here.
@@ -479,7 +509,7 @@ Completion SourceTextModule::initialize_environment(VM& vm)
             dbgln_if(JS_MODULE_DEBUG, "[JS MODULE] Adding default export to lexical declarations: local name: {}, Expression: {}", name, statement.class_name());
 
             // 1. Perform ! env.CreateMutableBinding(dn, false).
-            MUST(environment->create_mutable_binding(global_object, name, false));
+            MUST(environment->create_mutable_binding(vm, name, false));
 
             // Note: Since this is not a function declaration 24.a.iii never applies
         }
@@ -488,12 +518,12 @@ Completion SourceTextModule::initialize_environment(VM& vm)
     // 25. Remove moduleContext from the execution context stack.
     vm.pop_execution_context();
 
-    // 26. Return NormalCompletion(empty).
-    return normal_completion({});
+    // 26. Return unused.
+    return {};
 }
 
 // 16.2.1.6.3 ResolveExport ( exportName [ , resolveSet ] ), https://tc39.es/ecma262/#sec-resolveexport
-ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, FlyString const& export_name, Vector<ResolvedBinding> resolve_set)
+ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, DeprecatedFlyString const& export_name, Vector<ResolvedBinding> resolve_set)
 {
     // 1. If resolveSet is not present, set resolveSet to a new empty List.
     // Note: This is done by the default argument.
@@ -536,10 +566,10 @@ ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, FlyS
             continue;
 
         // i. Let importedModule be ? HostResolveImportedModule(module, e.[[ModuleRequest]]).
-        auto imported_module = TRY(vm.host_resolve_imported_module(this->make_weak_ptr(), entry.module_request()));
+        auto imported_module = TRY(vm.host_resolve_imported_module(NonnullGCPtr<Module>(*this), entry.module_request()));
 
         // ii. If e.[[ImportName]] is all, then
-        if (entry.kind == ExportStatement::ExportEntry::Kind::ModuleRequestAll) {
+        if (entry.kind == ExportEntry::Kind::ModuleRequestAll) {
             // 1. Assert: module does not provide the direct binding for this export.
             // FIXME: What does this mean? / How do we check this
 
@@ -555,7 +585,7 @@ ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, FlyS
             // 1. Assert: module imports a specific binding for this export.
             // FIXME: What does this mean? / How do we check this
 
-            // 2. Return importedModule.ResolveExport(e.[[ImportName]], resolveSet).
+            // 2. Return ? importedModule.ResolveExport(e.[[ImportName]], resolveSet).
             return imported_module->resolve_export(vm, entry.local_or_import_name, resolve_set);
         }
     }
@@ -576,7 +606,7 @@ ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, FlyS
     // 8. For each ExportEntry Record e of module.[[StarExportEntries]], do
     for (auto& entry : m_star_export_entries) {
         // a. Let importedModule be ? HostResolveImportedModule(module, e.[[ModuleRequest]]).
-        auto imported_module = TRY(vm.host_resolve_imported_module(this->make_weak_ptr(), entry.module_request()));
+        auto imported_module = TRY(vm.host_resolve_imported_module(NonnullGCPtr<Module>(*this), entry.module_request()));
 
         // b. Let resolution be ? importedModule.ResolveExport(exportName, resolveSet).
         auto resolution = TRY(imported_module->resolve_export(vm, export_name, resolve_set));
@@ -622,9 +652,9 @@ ThrowCompletionOr<ResolvedBinding> SourceTextModule::resolve_export(VM& vm, FlyS
 }
 
 // 16.2.1.6.5 ExecuteModule ( [ capability ] ), https://tc39.es/ecma262/#sec-source-text-module-record-execute-module
-Completion SourceTextModule::execute_module(VM& vm, Optional<PromiseCapability> capability)
+ThrowCompletionOr<void> SourceTextModule::execute_module(VM& vm, GCPtr<PromiseCapability> capability)
 {
-    dbgln_if(JS_MODULE_DEBUG, "[JS MODULE] SourceTextModule::execute_module({}, capability has value: {})", filename(), capability.has_value());
+    dbgln_if(JS_MODULE_DEBUG, "[JS MODULE] SourceTextModule::execute_module({}, PromiseCapability @ {})", filename(), capability.ptr());
 
     // 1. Let moduleContext be a new ECMAScript code execution context.
     ExecutionContext module_context { vm.heap() };
@@ -638,7 +668,7 @@ Completion SourceTextModule::execute_module(VM& vm, Optional<PromiseCapability> 
     module_context.realm = &realm();
 
     // 4. Set the ScriptOrModule of moduleContext to module.
-    module_context.script_or_module = this->make_weak_ptr();
+    module_context.script_or_module = NonnullGCPtr<Module>(*this);
 
     // 5. Assert: module has been linked and declarations in its module environment have been instantiated.
     VERIFY(m_status != ModuleStatus::Unlinked && m_status != ModuleStatus::Linking && environment());
@@ -655,39 +685,43 @@ Completion SourceTextModule::execute_module(VM& vm, Optional<PromiseCapability> 
     // 9. If module.[[HasTLA]] is false, then
     if (!m_has_top_level_await) {
         // a. Assert: capability is not present.
-        VERIFY(!capability.has_value());
+        VERIFY(capability == nullptr);
         // b. Push moduleContext onto the execution context stack; moduleContext is now the running execution context.
-        vm.push_execution_context(module_context, realm().global_object());
+        TRY(vm.push_execution_context(module_context, {}));
 
         // c. Let result be the result of evaluating module.[[ECMAScriptCode]].
-        auto result = m_ecmascript_code->execute(vm.interpreter(), realm().global_object());
+        auto result = m_ecmascript_code->execute(vm.interpreter());
 
-        // d. Suspend moduleContext and remove it from the execution context stack.
+        // d. Let env be moduleContext's LexicalEnvironment.
+        auto* env = module_context.lexical_environment;
+        VERIFY(is<DeclarativeEnvironment>(*env));
+
+        // e. Set result to DisposeResources(env, result).
+        result = dispose_resources(vm, static_cast<DeclarativeEnvironment*>(env), result);
+
+        // f. Suspend moduleContext and remove it from the execution context stack.
         vm.pop_execution_context();
 
-        // e. Resume the context that is now on the top of the execution context stack as the running execution context.
+        // g. Resume the context that is now on the top of the execution context stack as the running execution context.
         // FIXME: We don't have resume yet.
 
-        // f. Return Completion(result).
-        if (result.is_error())
+        // h. If result is an abrupt completion, then
+        if (result.is_error()) {
+            // i. Return ? result.
             return result;
-
-        // 16.2.1.11 Runtime Semantics: Evaluation, https://tc39.es/ecma262/#sec-module-semantics-runtime-semantics-evaluation
-        // -> Replace any empty value with undefined.
-
-        result = result.update_empty(js_undefined());
-        return *result.value();
+        }
     }
     // 10. Else,
+    else {
+        // a. Assert: capability is a PromiseCapability Record.
+        VERIFY(capability != nullptr);
 
-    // a. Assert: capability is a PromiseCapability Record.
-    VERIFY(capability.has_value());
+        // b. Perform AsyncBlockStart(capability, module.[[ECMAScriptCode]], moduleContext).
+        async_block_start(vm, m_ecmascript_code, *capability, module_context);
+    }
 
-    // b. Perform ! AsyncBlockStart(capability, module.[[ECMAScriptCode]], moduleContext).
-    async_block_start(vm, m_ecmascript_code, capability.value(), module_context);
-
-    // c. Return NormalCompletion(empty).
-    return normal_completion({});
+    // 11. Return unused.
+    return {};
 }
 
 }

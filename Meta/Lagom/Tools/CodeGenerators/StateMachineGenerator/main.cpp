@@ -4,15 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/DeprecatedString.h>
 #include <AK/GenericLexer.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
 #include <AK/SourceGenerator.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Types.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
+#include <LibMain/Main.h>
 #include <ctype.h>
 
 struct Range {
@@ -21,8 +22,8 @@ struct Range {
 };
 
 struct StateTransition {
-    Optional<String> new_state;
-    Optional<String> action;
+    Optional<DeprecatedString> new_state;
+    Optional<DeprecatedString> action;
 };
 
 struct MatchedAction {
@@ -31,18 +32,18 @@ struct MatchedAction {
 };
 
 struct State {
-    String name;
+    DeprecatedString name;
     Vector<MatchedAction> actions;
-    Optional<String> entry_action;
-    Optional<String> exit_action;
+    Optional<DeprecatedString> entry_action;
+    Optional<DeprecatedString> exit_action;
 };
 
 struct StateMachine {
-    String name;
-    String initial_state;
+    DeprecatedString name;
+    DeprecatedString initial_state;
     Vector<State> states;
     Optional<State> anywhere;
-    Optional<String> namespaces;
+    Optional<DeprecatedString> namespaces;
 };
 
 static OwnPtr<StateMachine>
@@ -158,7 +159,7 @@ parse_state_machine(StringView input)
                       consume_whitespace();
                       state.exit_action = consume_identifier();
                   } else if (lexer.next_is('@')) {
-                      auto directive = consume_identifier().to_string();
+                      auto directive = consume_identifier().to_deprecated_string();
                       fprintf(stderr, "Unimplemented @ directive %s\n", directive.characters());
                       exit(1);
                   } else {
@@ -188,7 +189,7 @@ parse_state_machine(StringView input)
             lexer.consume_specific('@');
             state_machine->anywhere = consume_state_description();
         } else if (lexer.consume_specific('@')) {
-            auto directive = consume_identifier().to_string();
+            auto directive = consume_identifier().to_deprecated_string();
             fprintf(stderr, "Unimplemented @ directive %s\n", directive.characters());
             exit(1);
         } else {
@@ -211,21 +212,17 @@ parse_state_machine(StringView input)
     return state_machine;
 }
 
-void output_header(const StateMachine&, SourceGenerator&);
+void output_header(StateMachine const&, SourceGenerator&);
 
-int main(int argc, char** argv)
+ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
-    const char* path = nullptr;
+    StringView path;
     args_parser.add_positional_argument(path, "Path to parser description", "input", Core::ArgsParser::Required::Yes);
-    args_parser.parse(argc, argv);
+    args_parser.parse(arguments);
 
-    auto file_or_error = Core::File::open(path, Core::OpenMode::ReadOnly);
-    if (file_or_error.is_error()) {
-        fprintf(stderr, "Cannot open %s\n", path);
-    }
-
-    auto content = file_or_error.value()->read_all();
+    auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
+    auto content = TRY(file->read_until_eof());
     auto state_machine = parse_state_machine(content);
 
     StringBuilder builder;
@@ -235,11 +232,11 @@ int main(int argc, char** argv)
     return 0;
 }
 
-HashTable<String> actions(const StateMachine& machine)
+HashTable<DeprecatedString> actions(StateMachine const& machine)
 {
-    HashTable<String> table;
+    HashTable<DeprecatedString> table;
 
-    auto do_state = [&](const State& state) {
+    auto do_state = [&](State const& state) {
         if (state.entry_action.has_value())
             table.set(state.entry_action.value());
         if (state.exit_action.has_value())
@@ -257,13 +254,13 @@ HashTable<String> actions(const StateMachine& machine)
     return table;
 }
 
-void generate_lookup_table(const StateMachine& machine, SourceGenerator& generator)
+void generate_lookup_table(StateMachine const& machine, SourceGenerator& generator)
 {
     generator.append(R"~~~(
     static constexpr StateTransition STATE_TRANSITION_TABLE[][256] = {
 )~~~");
 
-    auto generate_for_state = [&](const State& s) {
+    auto generate_for_state = [&](State const& s) {
         auto table_generator = generator.fork();
         table_generator.set("active_state", s.name);
         table_generator.append("/* @active_state@ */ { ");
@@ -295,11 +292,11 @@ void generate_lookup_table(const StateMachine& machine, SourceGenerator& generat
 )~~~");
 }
 
-void output_header(const StateMachine& machine, SourceGenerator& generator)
+void output_header(StateMachine const& machine, SourceGenerator& generator)
 {
     generator.set("class_name", machine.name);
     generator.set("initial_state", machine.initial_state);
-    generator.set("state_count", String::number(machine.states.size() + 1));
+    generator.set("state_count", DeprecatedString::number(machine.states.size() + 1));
 
     generator.append(R"~~~(
 #pragma once
@@ -401,11 +398,9 @@ private:
         _Anywhere,
 )~~~");
 
-    int largest_state_value = 0;
     for (auto s : machine.states) {
         auto state_generator = generator.fork();
         state_generator.set("state.name", s.name);
-        largest_state_value++;
         state_generator.append(R"~~~(
         @state.name@,
 )~~~");

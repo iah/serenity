@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,19 +15,20 @@ namespace GUI {
 class TreeView : public AbstractTableView {
     C_OBJECT(TreeView)
 public:
-    virtual ~TreeView() override;
+    virtual ~TreeView() override = default;
 
-    virtual void scroll_into_view(const ModelIndex&, bool scroll_horizontally, bool scroll_vertically) override;
+    virtual void scroll_into_view(ModelIndex const&, bool scroll_horizontally, bool scroll_vertically) override;
 
     virtual int item_count() const override;
-    virtual void toggle_index(const ModelIndex&) override;
+    virtual void toggle_index(ModelIndex const&) override;
+    bool is_toggled(ModelIndex const& index);
 
-    void expand_tree(const ModelIndex& root = {});
-    void collapse_tree(const ModelIndex& root = {});
+    void expand_tree(ModelIndex const& root = {});
+    void collapse_tree(ModelIndex const& root = {});
 
-    void expand_all_parents_of(const ModelIndex&);
+    void expand_all_parents_of(ModelIndex const&);
 
-    Function<void(const ModelIndex&, const bool)> on_toggle;
+    Function<void(ModelIndex const&, bool const)> on_toggle;
 
     void set_should_fill_selected_rows(bool fill) { m_should_fill_selected_rows = fill; }
     bool should_fill_selected_rows() const { return m_should_fill_selected_rows; }
@@ -41,6 +43,7 @@ public:
 protected:
     TreeView();
 
+    virtual void mousedown_event(MouseEvent&) override;
     virtual void paint_event(PaintEvent&) override;
     virtual void doubleclick_event(MouseEvent&) override;
     virtual void keydown_event(KeyEvent&) override;
@@ -50,9 +53,8 @@ protected:
     virtual void move_cursor(CursorMovement, SelectionUpdate) override;
 
 private:
-    virtual ModelIndex index_at_event_position(const Gfx::IntPoint&, bool& is_toggle) const override;
+    virtual ModelIndex index_at_event_position(Gfx::IntPoint, bool& is_toggle) const override;
 
-    int row_height() const { return 16; }
     int max_item_width() const { return frame_inner_rect().width(); }
     int indent_width_in_pixels() const { return 16; }
     int icon_size() const { return 16; }
@@ -68,10 +70,10 @@ private:
 
     struct MetadataForIndex;
 
-    MetadataForIndex& ensure_metadata_for_index(const ModelIndex&) const;
-    void set_open_state_of_all_in_subtree(const ModelIndex& root, bool open);
+    MetadataForIndex& ensure_metadata_for_index(ModelIndex const&) const;
+    void set_open_state_of_all_in_subtree(ModelIndex const& root, bool open);
 
-    mutable HashMap<void*, NonnullOwnPtr<MetadataForIndex>> m_view_metadata;
+    mutable HashMap<ModelIndex, NonnullOwnPtr<MetadataForIndex>> m_view_metadata;
 
     RefPtr<Gfx::Bitmap> m_expand_bitmap;
     RefPtr<Gfx::Bitmap> m_collapse_bitmap;

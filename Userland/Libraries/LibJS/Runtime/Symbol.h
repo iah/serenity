@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2022-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,26 +13,23 @@
 namespace JS {
 
 class Symbol final : public Cell {
-    AK_MAKE_NONCOPYABLE(Symbol);
-    AK_MAKE_NONMOVABLE(Symbol);
+    JS_CELL(Symbol, Cell);
 
 public:
-    Symbol(Optional<String>, bool);
-    virtual ~Symbol();
+    [[nodiscard]] static NonnullGCPtr<Symbol> create(VM&, Optional<String> description, bool is_global);
 
-    String description() const { return m_description.value_or(""); }
-    const Optional<String>& raw_description() const { return m_description; }
+    virtual ~Symbol() = default;
+
+    Optional<String> const& description() const { return m_description; }
     bool is_global() const { return m_is_global; }
-    String to_string() const { return String::formatted("Symbol({})", description()); }
+
+    ErrorOr<String> descriptive_string() const;
 
 private:
-    virtual const char* class_name() const override { return "Symbol"; }
+    Symbol(Optional<String>, bool);
 
     Optional<String> m_description;
     bool m_is_global;
 };
-
-Symbol* js_symbol(Heap&, Optional<String> description, bool is_global);
-Symbol* js_symbol(VM&, Optional<String> description, bool is_global);
 
 }

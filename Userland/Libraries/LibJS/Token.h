@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/FlyString.h>
+#include <AK/DeprecatedFlyString.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Variant.h>
@@ -14,13 +14,13 @@
 namespace JS {
 
 // U+2028 LINE SEPARATOR
-constexpr const char line_separator_chars[] { (char)0xe2, (char)0x80, (char)0xa8, 0 };
-constexpr const StringView LINE_SEPARATOR_STRING { line_separator_chars };
+constexpr char const line_separator_chars[] { (char)0xe2, (char)0x80, (char)0xa8, 0 };
+constexpr const StringView LINE_SEPARATOR_STRING { line_separator_chars, sizeof(line_separator_chars) - 1 };
 constexpr const u32 LINE_SEPARATOR { 0x2028 };
 
 // U+2029 PARAGRAPH SEPARATOR
-constexpr const char paragraph_separator_chars[] { (char)0xe2, (char)0x80, (char)0xa9, 0 };
-constexpr const StringView PARAGRAPH_SEPARATOR_STRING { paragraph_separator_chars };
+constexpr char const paragraph_separator_chars[] { (char)0xe2, (char)0x80, (char)0xa9, 0 };
+constexpr const StringView PARAGRAPH_SEPARATOR_STRING { paragraph_separator_chars, sizeof(paragraph_separator_chars) - 1 };
 constexpr const u32 PARAGRAPH_SEPARATOR { 0x2029 };
 
 // U+00A0 NO BREAK SPACE
@@ -183,7 +183,7 @@ public:
 
     Token(TokenType type, String message, StringView trivia, StringView value, StringView filename, size_t line_number, size_t line_column, size_t offset)
         : m_type(type)
-        , m_message(message)
+        , m_message(move(message))
         , m_trivia(trivia)
         , m_original_value(value)
         , m_value(value)
@@ -197,26 +197,26 @@ public:
     TokenType type() const { return m_type; }
     TokenCategory category() const;
     static TokenCategory category(TokenType);
-    const char* name() const;
-    static const char* name(TokenType);
+    char const* name() const;
+    static char const* name(TokenType);
 
-    const String& message() const { return m_message; }
+    String const& message() const { return m_message; }
     StringView trivia() const { return m_trivia; }
     StringView original_value() const { return m_original_value; }
     StringView value() const
     {
         return m_value.visit(
             [](StringView view) { return view; },
-            [](FlyString const& identifier) { return identifier.view(); },
+            [](DeprecatedFlyString const& identifier) { return identifier.view(); },
             [](Empty) -> StringView { VERIFY_NOT_REACHED(); });
     }
 
-    FlyString flystring_value() const
+    DeprecatedFlyString DeprecatedFlyString_value() const
     {
         return m_value.visit(
-            [](StringView view) -> FlyString { return view; },
-            [](FlyString const& identifier) -> FlyString { return identifier; },
-            [](Empty) -> FlyString { VERIFY_NOT_REACHED(); });
+            [](StringView view) -> DeprecatedFlyString { return view; },
+            [](DeprecatedFlyString const& identifier) -> DeprecatedFlyString { return identifier; },
+            [](Empty) -> DeprecatedFlyString { VERIFY_NOT_REACHED(); });
     }
 
     StringView filename() const { return m_filename; }
@@ -233,10 +233,10 @@ public:
         UnicodeEscapeOverflow,
         LegacyOctalEscapeSequence,
     };
-    String string_value(StringValueStatus& status) const;
-    String raw_template_value() const;
+    DeprecatedString string_value(StringValueStatus& status) const;
+    DeprecatedString raw_template_value() const;
 
-    void set_identifier_value(FlyString value)
+    void set_identifier_value(DeprecatedFlyString value)
     {
         m_value = move(value);
     }
@@ -249,7 +249,7 @@ private:
     String m_message;
     StringView m_trivia;
     StringView m_original_value;
-    Variant<Empty, StringView, FlyString> m_value {};
+    Variant<Empty, StringView, DeprecatedFlyString> m_value {};
     StringView m_filename;
     size_t m_line_number { 0 };
     size_t m_line_column { 0 };

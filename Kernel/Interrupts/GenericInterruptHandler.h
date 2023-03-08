@@ -28,7 +28,7 @@ public:
     }
     // Note: this method returns boolean value, to indicate if the handler handled
     // the interrupt or not. This is useful for shared handlers mostly.
-    virtual bool handle_interrupt(const RegisterState& regs) = 0;
+    virtual bool handle_interrupt(RegisterState const& regs) = 0;
 
     void will_be_destroyed();
     bool is_registered() const { return m_registered; }
@@ -37,7 +37,7 @@ public:
 
     u8 interrupt_number() const { return m_interrupt_number; }
 
-    size_t get_invoking_count() const { return m_invoking_count; }
+    ReadonlySpan<u32> per_cpu_call_counts() const;
 
     virtual size_t sharing_devices_count() const = 0;
     virtual bool is_shared_handler() const = 0;
@@ -48,10 +48,7 @@ public:
     virtual StringView controller() const = 0;
 
     virtual bool eoi() = 0;
-    ALWAYS_INLINE void increment_invoking_counter()
-    {
-        m_invoking_count++;
-    }
+    void increment_call_count();
 
 protected:
     void change_interrupt_number(u8 number);
@@ -60,7 +57,8 @@ protected:
     void disable_remap() { m_disable_remap = true; }
 
 private:
-    Atomic<u32, AK::MemoryOrder::memory_order_relaxed> m_invoking_count { 0 };
+    Array<u32, MAX_CPU_COUNT> m_per_cpu_call_counts {};
+
     u8 m_interrupt_number { 0 };
     bool m_disable_remap { false };
     bool m_registered { false };

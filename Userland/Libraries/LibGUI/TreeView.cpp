@@ -1,10 +1,12 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
+#include <LibCore/Object.h>
 #include <LibGUI/HeaderView.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/Painter.h>
@@ -20,41 +22,38 @@ struct TreeView::MetadataForIndex {
     bool open { false };
 };
 
-TreeView::MetadataForIndex& TreeView::ensure_metadata_for_index(const ModelIndex& index) const
+TreeView::MetadataForIndex& TreeView::ensure_metadata_for_index(ModelIndex const& index) const
 {
     VERIFY(index.is_valid());
-    auto it = m_view_metadata.find(index.internal_data());
+    auto it = m_view_metadata.find(index);
     if (it != m_view_metadata.end())
         return *it->value;
     auto new_metadata = make<MetadataForIndex>();
     auto& new_metadata_ref = *new_metadata;
-    m_view_metadata.set(index.internal_data(), move(new_metadata));
+    m_view_metadata.set(index, move(new_metadata));
     return new_metadata_ref;
 }
 
 TreeView::TreeView()
 {
+    REGISTER_BOOL_PROPERTY("should_fill_selected_rows", should_fill_selected_rows, set_should_fill_selected_rows);
     set_selection_behavior(SelectionBehavior::SelectItems);
     set_fill_with_background_color(true);
     set_background_role(ColorRole::Base);
     set_foreground_role(ColorRole::BaseText);
     set_column_headers_visible(false);
-    m_expand_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/serenity/treeview-expand.png").release_value_but_fixme_should_propagate_errors();
-    m_collapse_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/serenity/treeview-collapse.png").release_value_but_fixme_should_propagate_errors();
+    m_expand_bitmap = Gfx::Bitmap::load_from_file("/res/icons/serenity/treeview-expand.png"sv).release_value_but_fixme_should_propagate_errors();
+    m_collapse_bitmap = Gfx::Bitmap::load_from_file("/res/icons/serenity/treeview-collapse.png"sv).release_value_but_fixme_should_propagate_errors();
 }
 
-TreeView::~TreeView()
-{
-}
-
-ModelIndex TreeView::index_at_event_position(const Gfx::IntPoint& a_position, bool& is_toggle) const
+ModelIndex TreeView::index_at_event_position(Gfx::IntPoint a_position, bool& is_toggle) const
 {
     auto position = a_position.translated(0, -column_header().height()).translated(horizontal_scrollbar().value() - frame_thickness(), vertical_scrollbar().value() - frame_thickness());
     is_toggle = false;
     if (!model())
         return {};
     ModelIndex result;
-    traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect& rect, const Gfx::IntRect& toggle_rect, int) {
+    traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const& rect, Gfx::IntRect const& toggle_rect, int) {
         if (toggle_rect.contains(position)) {
             result = index;
             is_toggle = true;
@@ -89,7 +88,7 @@ void TreeView::doubleclick_event(MouseEvent& event)
     }
 }
 
-void TreeView::set_open_state_of_all_in_subtree(const ModelIndex& root, bool open)
+void TreeView::set_open_state_of_all_in_subtree(ModelIndex const& root, bool open)
 {
     if (root.is_valid()) {
         ensure_metadata_for_index(root).open = open;
@@ -106,7 +105,7 @@ void TreeView::set_open_state_of_all_in_subtree(const ModelIndex& root, bool ope
     }
 }
 
-void TreeView::expand_all_parents_of(const ModelIndex& index)
+void TreeView::expand_all_parents_of(ModelIndex const& index)
 {
     if (!model())
         return;
@@ -123,7 +122,7 @@ void TreeView::expand_all_parents_of(const ModelIndex& index)
     update();
 }
 
-void TreeView::expand_tree(const ModelIndex& root)
+void TreeView::expand_tree(ModelIndex const& root)
 {
     if (!model())
         return;
@@ -133,7 +132,7 @@ void TreeView::expand_tree(const ModelIndex& root)
     update();
 }
 
-void TreeView::collapse_tree(const ModelIndex& root)
+void TreeView::collapse_tree(ModelIndex const& root)
 {
     if (!model())
         return;
@@ -143,7 +142,7 @@ void TreeView::collapse_tree(const ModelIndex& root)
     update();
 }
 
-void TreeView::toggle_index(const ModelIndex& index)
+void TreeView::toggle_index(ModelIndex const& index)
 {
     VERIFY(model()->row_count(index));
     auto& metadata = ensure_metadata_for_index(index);
@@ -159,6 +158,18 @@ void TreeView::toggle_index(const ModelIndex& index)
     update();
 }
 
+bool TreeView::is_toggled(ModelIndex const& index)
+{
+    if (model()->row_count(index) == 0) {
+        if (model()->parent_index(index).is_valid())
+            return is_toggled(model()->parent_index(index));
+        return false;
+    }
+
+    auto& metadata = ensure_metadata_for_index(index);
+    return metadata.open;
+}
+
 template<typename Callback>
 void TreeView::traverse_in_paint_order(Callback callback) const
 {
@@ -169,15 +180,15 @@ void TreeView::traverse_in_paint_order(Callback callback) const
     int y_offset = 0;
     int tree_column_x_offset = this->tree_column_x_offset();
 
-    Function<IterationDecision(const ModelIndex&)> traverse_index = [&](const ModelIndex& index) {
+    Function<IterationDecision(ModelIndex const&)> traverse_index = [&](ModelIndex const& index) {
         int row_count_at_index = model.row_count(index);
         if (index.is_valid()) {
             auto& metadata = ensure_metadata_for_index(index);
             int x_offset = tree_column_x_offset + horizontal_padding() + indent_level * indent_width_in_pixels();
-            auto node_text = index.data().to_string();
+            auto node_text = index.data().to_deprecated_string();
             Gfx::IntRect rect = {
                 x_offset, y_offset,
-                icon_size() + icon_spacing() + text_padding() + font_for_index(index)->width(node_text) + text_padding(), row_height()
+                static_cast<int>(ceilf(icon_size() + icon_spacing() + text_padding() + font_for_index(index)->width(node_text) + text_padding())), row_height()
             };
             Gfx::IntRect toggle_rect;
             if (row_count_at_index > 0) {
@@ -237,7 +248,7 @@ void TreeView::paint_event(PaintEvent& event)
 
     int painted_row_index = 0;
 
-    traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect& a_rect, const Gfx::IntRect& a_toggle_rect, int indent_level) {
+    traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const& a_rect, Gfx::IntRect const& a_toggle_rect, int indent_level) {
         if (!a_rect.intersects_vertically(visible_content_rect))
             return IterationDecision::Continue;
 
@@ -306,7 +317,7 @@ void TreeView::paint_event(PaintEvent& event)
                         }
                     } else {
                         auto text_alignment = cell_index.data(ModelRole::TextAlignment).to_text_alignment(Gfx::TextAlignment::CenterLeft);
-                        draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
+                        draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_deprecated_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
                     }
                 }
             } else {
@@ -314,6 +325,7 @@ void TreeView::paint_event(PaintEvent& event)
                 int indent_width = indent_width_in_pixels() * indent_level;
 
                 Gfx::IntRect icon_rect = { rect.x(), rect.y(), icon_size(), icon_size() };
+                icon_rect.center_vertically_within(rect);
                 Gfx::IntRect background_rect = {
                     icon_rect.right() + 1 + icon_spacing(), rect.y(),
                     min(rect.width(), column_width - indent_width) - icon_size() - icon_spacing(), rect.height()
@@ -333,7 +345,9 @@ void TreeView::paint_event(PaintEvent& event)
                         }
                     }
                 }
-                draw_item_text(painter, index, is_selected_row, text_rect, index.data().to_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::Right);
+                auto display_data = index.data();
+                if (display_data.is_string() || display_data.is_u32() || display_data.is_i32() || display_data.is_u64() || display_data.is_i64() || display_data.is_bool() || display_data.is_float())
+                    draw_item_text(painter, index, is_selected_row, text_rect, display_data.to_deprecated_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::Right);
 
                 if (selection_behavior() == SelectionBehavior::SelectItems && is_focused() && index == cursor_index()) {
                     painter.draw_rect(background_rect, palette().color(background_role()));
@@ -383,12 +397,12 @@ void TreeView::paint_event(PaintEvent& event)
     });
 }
 
-void TreeView::scroll_into_view(const ModelIndex& a_index, bool, bool scroll_vertically)
+void TreeView::scroll_into_view(ModelIndex const& a_index, bool, bool scroll_vertically)
 {
     if (!a_index.is_valid())
         return;
     Gfx::IntRect found_rect;
-    traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect& rect, const Gfx::IntRect&, int) {
+    traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const& rect, Gfx::IntRect const&, int) {
         if (index == a_index) {
             found_rect = rect;
             return IterationDecision::Break;
@@ -415,6 +429,33 @@ void TreeView::did_update_selection()
 
     if (activates_on_selection())
         activate(index);
+}
+
+void TreeView::mousedown_event(MouseEvent& event)
+{
+    if (!model())
+        return AbstractView::mousedown_event(event);
+
+    if (event.button() != MouseButton::Primary)
+        return AbstractView::mousedown_event(event);
+
+    bool is_toggle;
+    auto index = index_at_event_position(event.position(), is_toggle);
+
+    if (index.is_valid() && is_toggle && model()->row_count(index)) {
+        if (event.alt()) {
+            if (is_toggled(index)) {
+                collapse_tree(index);
+            } else {
+                expand_tree(index);
+            }
+            return;
+        }
+        toggle_index(index);
+        return;
+    }
+
+    AbstractView::mousedown_event(event);
 }
 
 void TreeView::keydown_event(KeyEvent& event)
@@ -585,7 +626,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
         return;
     }
     case CursorMovement::PageUp: {
-        const int items_per_page = visible_content_rect().height() / row_height();
+        int const items_per_page = visible_content_rect().height() / row_height();
         auto new_index = cursor_index();
         for (int step = 0; step < items_per_page; ++step)
             new_index = step_up(new_index);
@@ -594,7 +635,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
         return;
     }
     case CursorMovement::PageDown: {
-        const int items_per_page = visible_content_rect().height() / row_height();
+        int const items_per_page = visible_content_rect().height() / row_height();
         auto new_index = cursor_index();
         for (int step = 0; step < items_per_page; ++step)
             new_index = step_down(new_index);
@@ -612,7 +653,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
 int TreeView::item_count() const
 {
     int count = 0;
-    traverse_in_paint_order([&](const ModelIndex&, const Gfx::IntRect&, const Gfx::IntRect&, int) {
+    traverse_in_paint_order([&](ModelIndex const&, Gfx::IntRect const&, Gfx::IntRect const&, int) {
         ++count;
         return IterationDecision::Continue;
     });
@@ -631,11 +672,11 @@ void TreeView::auto_resize_column(int column)
 
     int header_width = column_header().font().width(model.column_name(column));
     if (column == m_key_column && model.is_column_sortable(column))
-        header_width += font().width(" \xE2\xAC\x86");
+        header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
     int column_width = header_width;
 
     bool is_empty = true;
-    traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect&, const Gfx::IntRect&, int indent_level) {
+    traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const&, Gfx::IntRect const&, int indent_level) {
         auto cell_data = model.index(index.row(), column, index.parent()).data();
         int cell_width = 0;
         if (cell_data.is_icon()) {
@@ -643,7 +684,7 @@ void TreeView::auto_resize_column(int column)
         } else if (cell_data.is_bitmap()) {
             cell_width = cell_data.as_bitmap().width();
         } else if (cell_data.is_valid()) {
-            cell_width = font().width(cell_data.to_string());
+            cell_width = font().width(cell_data.to_deprecated_string());
         }
         if (is_empty && cell_width > 0)
             is_empty = false;
@@ -676,9 +717,9 @@ void TreeView::update_column_sizes()
             continue;
         int header_width = column_header().font().width(model.column_name(column));
         if (column == m_key_column && model.is_column_sortable(column))
-            header_width += font().width(" \xE2\xAC\x86");
+            header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
         int column_width = header_width;
-        traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect&, const Gfx::IntRect&, int) {
+        traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const&, Gfx::IntRect const&, int) {
             auto cell_data = model.index(index.row(), column, index.parent()).data();
             int cell_width = 0;
             if (cell_data.is_icon()) {
@@ -686,7 +727,7 @@ void TreeView::update_column_sizes()
             } else if (cell_data.is_bitmap()) {
                 cell_width = cell_data.as_bitmap().width();
             } else if (cell_data.is_valid()) {
-                cell_width = font().width(cell_data.to_string());
+                cell_width = font().width(cell_data.to_deprecated_string());
             }
             column_width = max(column_width, cell_width);
             return IterationDecision::Continue;
@@ -697,13 +738,13 @@ void TreeView::update_column_sizes()
 
     int tree_column_header_width = column_header().font().width(model.column_name(tree_column));
     if (tree_column == m_key_column && model.is_column_sortable(tree_column))
-        tree_column_header_width += font().width(" \xE2\xAC\x86");
+        tree_column_header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
     int tree_column_width = tree_column_header_width;
-    traverse_in_paint_order([&](const ModelIndex& index, const Gfx::IntRect&, const Gfx::IntRect&, int indent_level) {
+    traverse_in_paint_order([&](ModelIndex const& index, Gfx::IntRect const&, Gfx::IntRect const&, int indent_level) {
         auto cell_data = model.index(index.row(), tree_column, index.parent()).data();
         int cell_width = 0;
         if (cell_data.is_valid()) {
-            cell_width = font().width(cell_data.to_string());
+            cell_width = font().width(cell_data.to_deprecated_string());
             cell_width += horizontal_padding() * 2 + indent_level * indent_width_in_pixels() + icon_size() / 2 + text_padding() * 2;
         }
         tree_column_width = max(tree_column_width, cell_width);
@@ -735,6 +776,7 @@ Gfx::IntRect TreeView::content_rect(ModelIndex const& index) const
     traverse_in_paint_order([&](ModelIndex const& current_index, Gfx::IntRect const& rect, Gfx::IntRect const&, int) {
         if (index == current_index) {
             found_rect = rect;
+            found_rect.translate_by(0, column_header().height());
             return IterationDecision::Break;
         }
         return IterationDecision::Continue;

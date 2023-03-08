@@ -6,10 +6,10 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Bus/PCI/API.h>
-#include <Kernel/Bus/USB/SysFSUSB.h>
 #include <Kernel/Bus/USB/UHCI/UHCIController.h>
 #include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/CommandLine.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/Bus/USB/BusDirectory.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel::USB {
@@ -27,7 +27,7 @@ UNMAP_AFTER_INIT void USBManagement::enumerate_controllers()
     if (kernel_command_line().disable_usb())
         return;
 
-    PCI::enumerate([this](PCI::DeviceIdentifier const& device_identifier) {
+    MUST(PCI::enumerate([this](PCI::DeviceIdentifier const& device_identifier) {
         if (!(device_identifier.class_code().value() == 0xc && device_identifier.subclass_code().value() == 0x3))
             return;
         if (device_identifier.prog_if().value() == 0x0) {
@@ -56,7 +56,7 @@ UNMAP_AFTER_INIT void USBManagement::enumerate_controllers()
         }
 
         dmesgln("USBManagement: Unknown/unsupported controller at {} with programming interface 0x{:02x}", device_identifier.address(), device_identifier.prog_if().value());
-    });
+    }));
 }
 
 bool USBManagement::initialized()
@@ -67,7 +67,7 @@ bool USBManagement::initialized()
 UNMAP_AFTER_INIT void USBManagement::initialize()
 {
     if (!s_initialized_sys_fs_directory) {
-        USB::SysFSUSBBusDirectory::initialize();
+        SysFSUSBBusDirectory::initialize();
         s_initialized_sys_fs_directory = true;
     }
 

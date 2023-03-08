@@ -7,11 +7,11 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/Format.h>
 #include <AK/StringView.h>
 #include <AK/Types.h>
 
-namespace Crypto {
-namespace Hash {
+namespace Crypto::Hash {
 
 template<size_t DigestS>
 struct Digest {
@@ -19,10 +19,13 @@ struct Digest {
     constexpr static size_t Size = DigestS / 8;
     u8 data[Size];
 
-    [[nodiscard]] ALWAYS_INLINE const u8* immutable_data() const { return data; }
+    [[nodiscard]] ALWAYS_INLINE u8 const* immutable_data() const { return data; }
     [[nodiscard]] ALWAYS_INLINE size_t data_length() const { return Size; }
 
     [[nodiscard]] ALWAYS_INLINE ReadonlyBytes bytes() const { return { immutable_data(), data_length() }; }
+
+    [[nodiscard]] bool operator==(Digest const& other) const = default;
+    [[nodiscard]] bool operator!=(Digest const& other) const = default;
 };
 
 template<size_t BlockS, size_t DigestS, typename DigestT = Digest<DigestS>>
@@ -39,12 +42,12 @@ public:
     constexpr static size_t block_size() { return BlockSize; }
     constexpr static size_t digest_size() { return DigestSize; }
 
-    virtual void update(const u8*, size_t) = 0;
+    virtual void update(u8 const*, size_t) = 0;
 
     void update(Bytes buffer) { update(buffer.data(), buffer.size()); }
     void update(ReadonlyBytes buffer) { update(buffer.data(), buffer.size()); }
-    void update(const ByteBuffer& buffer) { update(buffer.data(), buffer.size()); }
-    void update(StringView string) { update((const u8*)string.characters_without_null_termination(), string.length()); }
+    void update(ByteBuffer const& buffer) { update(buffer.data(), buffer.size()); }
+    void update(StringView string) { update((u8 const*)string.characters_without_null_termination(), string.length()); }
 
     virtual DigestType peek() = 0;
     virtual DigestType digest() = 0;
@@ -52,11 +55,23 @@ public:
     virtual void reset() = 0;
 
 #ifndef KERNEL
-    virtual String class_name() const = 0;
+    virtual DeprecatedString class_name() const = 0;
 #endif
 
 protected:
     virtual ~HashFunction() = default;
 };
 }
-}
+
+template<size_t DigestS>
+struct AK::Formatter<Crypto::Hash::Digest<DigestS>> : StandardFormatter {
+    ErrorOr<void> format(FormatBuilder& builder, Crypto::Hash::Digest<DigestS> const& digest)
+    {
+        for (size_t i = 0; i < digest.Size; ++i) {
+            if (i > 0 && i % 4 == 0)
+                TRY(builder.put_padding('-', 1));
+            TRY(builder.put_u64(digest.data[i], 16, false, false, true, FormatBuilder::Align::Right, 2));
+        }
+        return {};
+    }
+};

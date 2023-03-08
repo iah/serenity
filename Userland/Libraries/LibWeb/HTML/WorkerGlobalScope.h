@@ -9,12 +9,12 @@
 #include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/URL.h>
-#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/DOM/EventTarget.h>
-#include <LibWeb/DOM/ExceptionOr.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/HTML/WorkerLocation.h>
 #include <LibWeb/HTML/WorkerNavigator.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 #define ENUMERATE_WORKER_GLOBAL_SCOPE_EVENT_HANDLERS(E)       \
     E(onerror, HTML::EventNames::error)                       \
@@ -30,47 +30,33 @@ namespace Web::HTML {
 // WorkerGlobalScope is the base class of each real WorkerGlobalScope that will be created when the
 // user agent runs the run a worker algorithm.
 class WorkerGlobalScope
-    : public RefCounted<WorkerGlobalScope>
-    , public DOM::EventTarget
-    , public Bindings::Wrappable {
+    : public DOM::EventTarget
+    , public WindowOrWorkerGlobalScopeMixin {
+    WEB_PLATFORM_OBJECT(WorkerGlobalScope, DOM::EventTarget);
+
 public:
-    using WrapperType = Bindings::WorkerGlobalScopeWrapper;
-
-    using RefCounted::ref;
-    using RefCounted::unref;
-
     virtual ~WorkerGlobalScope() override;
 
-    // ^EventTarget
-    virtual void ref_event_target() override { ref(); }
-    virtual void unref_event_target() override { unref(); }
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
+    // ^WindowOrWorkerGlobalScopeMixin
+    virtual Bindings::PlatformObject& this_impl() override { return *this; }
+    virtual Bindings::PlatformObject const& this_impl() const override { return *this; }
 
     // Following methods are from the WorkerGlobalScope IDL definition
     // https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-self
-    NonnullRefPtr<WorkerGlobalScope const> self() const { return *this; }
+    JS::NonnullGCPtr<WorkerGlobalScope const> self() const { return *this; }
 
-    NonnullRefPtr<WorkerLocation const> location() const;
-    NonnullRefPtr<WorkerNavigator const> navigator() const;
-    DOM::ExceptionOr<void> import_scripts(Vector<String> urls);
+    JS::NonnullGCPtr<WorkerLocation> location() const;
+    JS::NonnullGCPtr<WorkerNavigator> navigator() const;
+    WebIDL::ExceptionOr<void> import_scripts(Vector<String> urls);
 
 #undef __ENUMERATE
-#define __ENUMERATE(attribute_name, event_name)                  \
-    void set_##attribute_name(Optional<Bindings::CallbackType>); \
-    Bindings::CallbackType* attribute_name();
+#define __ENUMERATE(attribute_name, event_name)       \
+    void set_##attribute_name(WebIDL::CallbackType*); \
+    WebIDL::CallbackType* attribute_name();
     ENUMERATE_WORKER_GLOBAL_SCOPE_EVENT_HANDLERS(__ENUMERATE)
 #undef __ENUMERATE
-
-    // Following methods are from the WindowOrWorkerGlobalScope mixin
-    // https://html.spec.whatwg.org/multipage/webappapis.html#windoworworkerglobalscope-mixin
-
-    String origin() const;
-    bool is_secure_context() const;
-    bool cross_origin_isolated() const;
-    DOM::ExceptionOr<String> btoa(String const& data) const;
-    DOM::ExceptionOr<String> atob(String const& data) const;
 
     // Non-IDL public methods
 
@@ -79,16 +65,19 @@ public:
 
     // Spec note: While the WorkerLocation object is created after the WorkerGlobalScope object,
     //            this is not problematic as it cannot be observed from script.
-    void set_location(NonnullRefPtr<WorkerLocation> loc) { m_location = move(loc); }
+    void set_location(JS::NonnullGCPtr<WorkerLocation> loc) { m_location = move(loc); }
 
 protected:
-    explicit WorkerGlobalScope();
+    explicit WorkerGlobalScope(JS::Realm&);
 
 private:
-    RefPtr<WorkerLocation> m_location;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 
-    // FIXME: Implement WorkerNavigator according to the spec
-    NonnullRefPtr<WorkerNavigator> m_navigator;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::GCPtr<WorkerLocation> m_location;
+
+    JS::GCPtr<WorkerNavigator> m_navigator;
 
     // FIXME: Add all these internal slots
 

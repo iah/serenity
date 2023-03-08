@@ -17,7 +17,7 @@ UCICommand UCICommand::from_string(StringView command)
     return UCICommand();
 }
 
-String UCICommand::to_string() const
+DeprecatedString UCICommand::to_deprecated_string() const
 {
     return "uci\n";
 }
@@ -35,7 +35,7 @@ DebugCommand DebugCommand::from_string(StringView command)
     VERIFY_NOT_REACHED();
 }
 
-String DebugCommand::to_string() const
+DeprecatedString DebugCommand::to_deprecated_string() const
 {
     if (flag() == Flag::On) {
         return "debug on\n";
@@ -52,7 +52,7 @@ IsReadyCommand IsReadyCommand::from_string(StringView command)
     return IsReadyCommand();
 }
 
-String IsReadyCommand::to_string() const
+DeprecatedString IsReadyCommand::to_deprecated_string() const
 {
     return "isready\n";
 }
@@ -92,20 +92,20 @@ SetOptionCommand SetOptionCommand::from_string(StringView command)
 
     VERIFY(!name.is_empty());
 
-    return SetOptionCommand(name.to_string().trim_whitespace(), value.to_string().trim_whitespace());
+    return SetOptionCommand(name.to_deprecated_string().trim_whitespace(), value.to_deprecated_string().trim_whitespace());
 }
 
-String SetOptionCommand::to_string() const
+DeprecatedString SetOptionCommand::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("setoption name ");
+    builder.append("setoption name "sv);
     builder.append(name());
     if (value().has_value()) {
-        builder.append(" value ");
+        builder.append(" value "sv);
         builder.append(value().value());
     }
     builder.append('\n');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 PositionCommand PositionCommand::from_string(StringView command)
@@ -115,7 +115,7 @@ PositionCommand PositionCommand::from_string(StringView command)
     VERIFY(tokens[0] == "position");
     VERIFY(tokens[2] == "moves");
 
-    Optional<String> fen;
+    Optional<DeprecatedString> fen;
     if (tokens[1] != "startpos")
         fen = tokens[1];
 
@@ -126,22 +126,22 @@ PositionCommand PositionCommand::from_string(StringView command)
     return PositionCommand(fen, moves);
 }
 
-String PositionCommand::to_string() const
+DeprecatedString PositionCommand::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("position ");
+    builder.append("position "sv);
     if (fen().has_value()) {
         builder.append(fen().value());
     } else {
-        builder.append("startpos ");
+        builder.append("startpos "sv);
     }
-    builder.append("moves");
+    builder.append("moves"sv);
     for (auto& move : moves()) {
         builder.append(' ');
         builder.append(move.to_long_algebraic());
     }
     builder.append('\n');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 GoCommand GoCommand::from_string(StringView command)
@@ -190,13 +190,13 @@ GoCommand GoCommand::from_string(StringView command)
     return go_command;
 }
 
-String GoCommand::to_string() const
+DeprecatedString GoCommand::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("go");
+    builder.append("go"sv);
 
     if (searchmoves.has_value()) {
-        builder.append(" searchmoves");
+        builder.append(" searchmoves"sv);
         for (auto& move : searchmoves.value()) {
             builder.append(' ');
             builder.append(move.to_long_algebraic());
@@ -204,7 +204,7 @@ String GoCommand::to_string() const
     }
 
     if (ponder)
-        builder.append(" ponder");
+        builder.append(" ponder"sv);
     if (wtime.has_value())
         builder.appendff(" wtime {}", wtime.value());
     if (btime.has_value())
@@ -224,10 +224,10 @@ String GoCommand::to_string() const
     if (movetime.has_value())
         builder.appendff(" movetime {}", movetime.value());
     if (infinite)
-        builder.append(" infinite");
+        builder.append(" infinite"sv);
 
     builder.append('\n');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 StopCommand StopCommand::from_string(StringView command)
@@ -238,7 +238,7 @@ StopCommand StopCommand::from_string(StringView command)
     return StopCommand();
 }
 
-String StopCommand::to_string() const
+DeprecatedString StopCommand::to_deprecated_string() const
 {
     return "stop\n";
 }
@@ -256,25 +256,25 @@ IdCommand IdCommand::from_string(StringView command)
     }
 
     if (tokens[1] == "name") {
-        return IdCommand(Type::Name, value.build());
+        return IdCommand(Type::Name, value.to_deprecated_string());
     } else if (tokens[1] == "author") {
-        return IdCommand(Type::Author, value.build());
+        return IdCommand(Type::Author, value.to_deprecated_string());
     }
     VERIFY_NOT_REACHED();
 }
 
-String IdCommand::to_string() const
+DeprecatedString IdCommand::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("id ");
+    builder.append("id "sv);
     if (field_type() == Type::Name) {
-        builder.append("name ");
+        builder.append("name "sv);
     } else {
-        builder.append("author ");
+        builder.append("author "sv);
     }
     builder.append(value());
     builder.append('\n');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 UCIOkCommand UCIOkCommand::from_string(StringView command)
@@ -285,7 +285,7 @@ UCIOkCommand UCIOkCommand::from_string(StringView command)
     return UCIOkCommand();
 }
 
-String UCIOkCommand::to_string() const
+DeprecatedString UCIOkCommand::to_deprecated_string() const
 {
     return "uciok\n";
 }
@@ -298,7 +298,7 @@ ReadyOkCommand ReadyOkCommand::from_string(StringView command)
     return ReadyOkCommand();
 }
 
-String ReadyOkCommand::to_string() const
+DeprecatedString ReadyOkCommand::to_deprecated_string() const
 {
     return "readyok\n";
 }
@@ -311,13 +311,13 @@ BestMoveCommand BestMoveCommand::from_string(StringView command)
     return BestMoveCommand(Move(tokens[1]));
 }
 
-String BestMoveCommand::to_string() const
+DeprecatedString BestMoveCommand::to_deprecated_string() const
 {
     StringBuilder builder;
-    builder.append("bestmove ");
+    builder.append("bestmove "sv);
     builder.append(move().to_long_algebraic());
     builder.append('\n');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 InfoCommand InfoCommand::from_string([[maybe_unused]] StringView command)
@@ -326,7 +326,7 @@ InfoCommand InfoCommand::from_string([[maybe_unused]] StringView command)
     VERIFY_NOT_REACHED();
 }
 
-String InfoCommand::to_string() const
+DeprecatedString InfoCommand::to_deprecated_string() const
 {
     // FIXME: Implement this.
     VERIFY_NOT_REACHED();

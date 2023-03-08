@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,7 +11,6 @@
 #include <AK/Stream.h>
 #include <LibCore/Forward.h>
 #include <LibCore/Object.h>
-#include <LibCore/Stream.h>
 
 namespace Core {
 
@@ -24,10 +24,10 @@ public:
         ProtocolFailed,
         Cancelled,
     };
-    virtual ~NetworkJob() override;
+    virtual ~NetworkJob() override = default;
 
     // Could fire twice, after Headers and after Trailers!
-    Function<void(const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers, Optional<u32> response_code)> on_headers_received;
+    Function<void(HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> response_code)> on_headers_received;
     Function<void(bool success)> on_finish;
     Function<void(Optional<u32>, u32)> on_progress;
 
@@ -35,13 +35,13 @@ public:
     bool has_error() const { return m_error != Error::None; }
     Error error() const { return m_error; }
     NetworkResponse* response() { return m_response.ptr(); }
-    const NetworkResponse* response() const { return m_response.ptr(); }
+    NetworkResponse const* response() const { return m_response.ptr(); }
 
     enum class ShutdownMode {
         DetachFromSocket,
         CloseSocket,
     };
-    virtual void start(Core::Stream::Socket&) = 0;
+    virtual void start(Core::Socket&) = 0;
     virtual void shutdown(ShutdownMode) = 0;
     virtual void fail(Error error) { did_fail(error); }
 
@@ -52,7 +52,7 @@ public:
     }
 
 protected:
-    NetworkJob(Core::Stream::Stream&);
+    NetworkJob(Stream&);
     void did_finish(NonnullRefPtr<NetworkResponse>&&);
     void did_fail(Error);
     void did_progress(Optional<u32> total_size, u32 downloaded);
@@ -61,11 +61,11 @@ protected:
 
 private:
     RefPtr<NetworkResponse> m_response;
-    Core::Stream::Stream& m_output_stream;
+    Stream& m_output_stream;
     Error m_error { Error::None };
 };
 
-const char* to_string(NetworkJob::Error);
+char const* to_string(NetworkJob::Error);
 
 }
 

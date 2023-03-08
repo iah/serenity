@@ -1,7 +1,7 @@
-From 88b42a9eb046b60493c3723cbc0f81fde0181b0c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Linus Groh <mail@linusgroh.de>
 Date: Fri, 14 Jan 2022 23:36:28 +0330
-Subject: [PATCH 3/4] Include `sys/uio.h` in `socketmodule.c`
+Subject: [PATCH] Include `sys/uio.h` in `socketmodule.c`
 
 This is to ensure that `struct iovec` is defined, which is required by
 the `socket` module.
@@ -10,10 +10,10 @@ the `socket` module.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Modules/socketmodule.c b/Modules/socketmodule.c
-index ab8618b..0109d97 100644
+index 14af496a45f4788dc55ec3d959c2de45147725bc..9dcad434af405f0a6f6233f36ef1e1062086050e 100644
 --- a/Modules/socketmodule.c
 +++ b/Modules/socketmodule.c
-@@ -168,7 +168,7 @@ shutdown(how) -- shut down traffic in one or both directions\n\
+@@ -175,7 +175,7 @@ shutdown(how) -- shut down traffic in one or both directions\n\
  # undef HAVE_GETHOSTBYNAME_R_6_ARG
  #endif
  
@@ -22,6 +22,3 @@ index ab8618b..0109d97 100644
  # include <sys/uio.h>
  #endif
  
--- 
-2.34.1
-

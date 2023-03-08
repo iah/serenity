@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  * Copyright (c) 2022, Filiph Sandström <filiph.sandstrom@filfatstudios.com>
  *
@@ -22,7 +22,7 @@ PaletteImpl::PaletteImpl(Core::AnonymousBuffer buffer)
 {
 }
 
-Palette::Palette(const PaletteImpl& impl)
+Palette::Palette(PaletteImpl& impl)
     : m_impl(impl)
 {
 }
@@ -33,7 +33,7 @@ int PaletteImpl::metric(MetricRole role) const
     return theme().metric[(int)role];
 }
 
-String PaletteImpl::path(PathRole role) const
+DeprecatedString PaletteImpl::path(PathRole role) const
 {
     VERIFY((int)role < (int)PathRole::__Count);
     return theme().path[(int)role];
@@ -78,7 +78,7 @@ void Palette::set_metric(MetricRole role, int value)
     theme.metric[(int)role] = value;
 }
 
-void Palette::set_path(PathRole role, String path)
+void Palette::set_path(PathRole role, DeprecatedString path)
 {
     if (m_impl->ref_count() != 1)
         m_impl = m_impl->clone();

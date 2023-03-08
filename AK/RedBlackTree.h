@@ -404,7 +404,7 @@ template<typename TreeType, typename ElementType>
 class RedBlackTreeIterator {
 public:
     RedBlackTreeIterator() = default;
-    bool operator!=(const RedBlackTreeIterator& other) const { return m_node != other.m_node; }
+    bool operator!=(RedBlackTreeIterator const& other) const { return m_node != other.m_node; }
     RedBlackTreeIterator& operator++()
     {
         if (!m_node)
@@ -467,6 +467,14 @@ public:
         return &node->value;
     }
 
+    [[nodiscard]] V* find_smallest_not_below(K key)
+    {
+        auto* node = static_cast<Node*>(BaseTree::find_smallest_not_below(this->m_root, key));
+        if (!node)
+            return nullptr;
+        return &node->value;
+    }
+
     ErrorOr<void> try_insert(K key, V const& value)
     {
         return try_insert(key, V(value));
@@ -497,7 +505,7 @@ public:
     Iterator end() { return {}; }
     Iterator begin_from(K key) { return Iterator(static_cast<Node*>(BaseTree::find(this->m_root, key))); }
 
-    using ConstIterator = RedBlackTreeIterator<const RedBlackTree, const V>;
+    using ConstIterator = RedBlackTreeIterator<const RedBlackTree, V const>;
     friend ConstIterator;
     ConstIterator begin() const { return ConstIterator(static_cast<Node*>(this->m_minimum)); }
     ConstIterator end() const { return {}; }
@@ -579,4 +587,6 @@ private:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::RedBlackTree;
+#endif

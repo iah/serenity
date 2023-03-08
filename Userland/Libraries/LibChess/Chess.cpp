@@ -5,7 +5,7 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/String.h>
+#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibChess/Chess.h>
@@ -13,28 +13,28 @@
 
 namespace Chess {
 
-String char_for_piece(Chess::Type type)
+StringView char_for_piece(Chess::Type type)
 {
     switch (type) {
     case Type::Knight:
-        return "N";
+        return "N"sv;
     case Type::Bishop:
-        return "B";
+        return "B"sv;
     case Type::Rook:
-        return "R";
+        return "R"sv;
     case Type::Queen:
-        return "Q";
+        return "Q"sv;
     case Type::King:
-        return "K";
+        return "K"sv;
     case Type::Pawn:
     default:
-        return "";
+        return ""sv;
     }
 }
 
 Chess::Type piece_for_char_promotion(StringView str)
 {
-    String string = String(str).to_lowercase();
+    DeprecatedString string = DeprecatedString(str).to_lowercase();
     if (string == "")
         return Type::None;
     if (string == "n")
@@ -77,36 +77,36 @@ Square::Square(StringView name)
     }
 }
 
-String Square::to_algebraic() const
+DeprecatedString Square::to_algebraic() const
 {
     StringBuilder builder;
     builder.append(file + 'a');
     builder.append(rank + '1');
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 Move::Move(StringView long_algebraic)
     : from(long_algebraic.substring_view(0, 2))
     , to(long_algebraic.substring_view(2, 2))
-    , promote_to(piece_for_char_promotion((long_algebraic.length() >= 5) ? long_algebraic.substring_view(4, 1) : ""))
+    , promote_to(piece_for_char_promotion((long_algebraic.length() >= 5) ? long_algebraic.substring_view(4, 1) : ""sv))
 {
 }
 
-String Move::to_long_algebraic() const
+DeprecatedString Move::to_long_algebraic() const
 {
     StringBuilder builder;
     builder.append(from.to_algebraic());
     builder.append(to.to_algebraic());
-    builder.append(char_for_piece(promote_to).to_lowercase());
-    return builder.build();
+    builder.append(DeprecatedString(char_for_piece(promote_to)).to_lowercase());
+    return builder.to_deprecated_string();
 }
 
-Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& board)
+Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& board)
 {
-    String move_string = algebraic;
+    DeprecatedString move_string = algebraic;
     Move move({ 50, 50 }, { 50, 50 });
 
-    if (move_string.contains("-")) {
+    if (move_string.contains('-')) {
         move.from = Square(turn == Color::White ? 0 : 7, 4);
         move.to = Square(turn == Color::White ? 0 : 7, move_string == "O-O" ? 6 : 2);
         move.promote_to = Type::None;
@@ -115,15 +115,15 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& b
         return move;
     }
 
-    if (algebraic.contains("#")) {
+    if (algebraic.contains('#')) {
         move.is_mate = true;
         move_string = move_string.substring(0, move_string.length() - 1);
-    } else if (algebraic.contains("+")) {
+    } else if (algebraic.contains('+')) {
         move.is_check = true;
         move_string = move_string.substring(0, move_string.length() - 1);
     }
 
-    if (algebraic.contains("=")) {
+    if (algebraic.contains('=')) {
         move.promote_to = piece_for_char_promotion(move_string.split('=').at(1).substring(0, 1));
         move_string = move_string.split('=').at(0);
     }
@@ -131,7 +131,7 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& b
     move.to = Square(move_string.substring(move_string.length() - 2, 2));
     move_string = move_string.substring(0, move_string.length() - 2);
 
-    if (move_string.contains("x")) {
+    if (move_string.contains('x')) {
         move.is_capture = true;
         move_string = move_string.substring(0, move_string.length() - 1);
     }
@@ -143,7 +143,7 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& b
         move_string = move_string.substring(1, move_string.length() - 1);
     }
 
-    Square::for_each([&](const Square& square) {
+    Square::for_each([&](Square const& square) {
         if (!move_string.is_empty()) {
             if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to), turn)) {
                 if (move_string.length() >= 2) {
@@ -165,7 +165,7 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& b
             }
             return IterationDecision::Continue;
         } else {
-            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to), turn)) {
+            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to, move.promote_to), turn)) {
                 move.from = square;
                 return IterationDecision::Break;
             }
@@ -176,7 +176,7 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, const Board& b
     return move;
 }
 
-String Move::to_algebraic() const
+DeprecatedString Move::to_algebraic() const
 {
     if (piece.type == Type::King && from.file == 4) {
         if (to.file == 2)
@@ -201,22 +201,22 @@ String Move::to_algebraic() const
     if (is_capture) {
         if (piece.type == Type::Pawn && !is_ambiguous)
             builder.append(from.to_algebraic().substring(0, 1));
-        builder.append("x");
+        builder.append('x');
     }
 
     builder.append(to.to_algebraic());
 
     if (promote_to != Type::None) {
-        builder.append("=");
+        builder.append('=');
         builder.append(char_for_piece(promote_to));
     }
 
     if (is_mate)
-        builder.append("#");
+        builder.append('#');
     else if (is_check)
-        builder.append("+");
+        builder.append('+');
 
-    return builder.build();
+    return builder.to_deprecated_string();
 }
 
 Board::Board()
@@ -259,7 +259,17 @@ Board::Board()
     set_piece(Square("h8"), { Color::Black, Type::Rook });
 }
 
-String Board::to_fen() const
+Board Board::clone_without_history() const
+{
+    // Note: When used in the MCTSTree, the board doesn't need to have all information about previous states.
+    // It spares a huge amount of memory.
+    auto result = *this;
+    result.m_moves.clear();
+    result.m_previous_states.clear();
+    return result;
+}
+
+DeprecatedString Board::to_fen() const
 {
     StringBuilder builder;
 
@@ -273,72 +283,72 @@ String Board::to_fen() const
                 continue;
             }
             if (empty > 0) {
-                builder.append(String::number(empty));
+                builder.append(DeprecatedString::number(empty));
                 empty = 0;
             }
-            String piece = char_for_piece(p.type);
-            if (piece == "")
-                piece = "P";
-
-            builder.append(p.color == Color::Black ? piece.to_lowercase() : piece);
+            auto const piece = char_for_piece(p.type);
+            if (p.color == Color::Black)
+                builder.append(DeprecatedString(piece).to_lowercase());
+            else
+                builder.append(piece);
         }
         if (empty > 0) {
-            builder.append(String::number(empty));
+            builder.append(DeprecatedString::number(empty));
             empty = 0;
         }
         if (rank < 7)
-            builder.append("/");
+            builder.append('/');
     }
 
     // 2. Active color
     VERIFY(m_turn != Color::None);
-    builder.append(m_turn == Color::White ? " w " : " b ");
+    builder.append(m_turn == Color::White ? " w "sv : " b "sv);
 
     // 3. Castling availability
-    builder.append(m_white_can_castle_kingside ? "K" : "");
-    builder.append(m_white_can_castle_queenside ? "Q" : "");
-    builder.append(m_black_can_castle_kingside ? "k" : "");
-    builder.append(m_black_can_castle_queenside ? "q" : "");
-    builder.append(" ");
+    builder.append(m_white_can_castle_kingside ? "K"sv : ""sv);
+    builder.append(m_white_can_castle_queenside ? "Q"sv : ""sv);
+    builder.append(m_black_can_castle_kingside ? "k"sv : ""sv);
+    builder.append(m_black_can_castle_queenside ? "q"sv : ""sv);
+    builder.append(' ');
 
     // 4. En passant target square
     if (!m_last_move.has_value())
-        builder.append("-");
+        builder.append('-');
     else if (m_last_move.value().piece.type == Type::Pawn) {
         if (m_last_move.value().from.rank == 1 && m_last_move.value().to.rank == 3)
             builder.append(Square(m_last_move.value().to.rank - 1, m_last_move.value().to.file).to_algebraic());
         else if (m_last_move.value().from.rank == 6 && m_last_move.value().to.rank == 4)
             builder.append(Square(m_last_move.value().to.rank + 1, m_last_move.value().to.file).to_algebraic());
         else
-            builder.append("-");
+            builder.append('-');
     } else {
-        builder.append("-");
+        builder.append('-');
     }
-    builder.append(" ");
+    builder.append(' ');
 
     // 5. Halfmove clock
-    builder.append(String::number(min(m_moves_since_capture, m_moves_since_pawn_advance)));
-    builder.append(" ");
+    builder.append(DeprecatedString::number(min(m_moves_since_capture, m_moves_since_pawn_advance)));
+    builder.append(' ');
 
     // 6. Fullmove number
-    builder.append(String::number(1 + m_moves.size() / 2));
+    builder.append(DeprecatedString::number(1 + m_moves.size() / 2));
 
-    return builder.to_string();
+    return builder.to_deprecated_string();
 }
 
-Piece Board::get_piece(const Square& square) const
+Piece Board::get_piece(Square const& square) const
 {
     VERIFY(square.in_bounds());
     return m_board[square.rank][square.file];
 }
 
-Piece Board::set_piece(const Square& square, const Piece& piece)
+Piece Board::set_piece(Square const& square, Piece const& piece)
 {
     VERIFY(square.in_bounds());
     return m_board[square.rank][square.file] = piece;
 }
 
-bool Board::is_legal_promotion(const Move& move, Color color) const
+bool Board::is_legal_promotion(Move const& move, Color color) const
 {
     auto piece = get_piece(move.from);
 
@@ -367,7 +377,7 @@ bool Board::is_legal_promotion(const Move& move, Color color) const
     return true;
 }
 
-bool Board::is_legal(const Move& move, Color color) const
+bool Board::is_legal(Move const& move, Color color) const
 {
     if (color == Color::None)
         color = turn();
@@ -409,7 +419,7 @@ bool Board::is_legal(const Move& move, Color color) const
     return true;
 }
 
-bool Board::is_legal_no_check(const Move& move, Color color) const
+bool Board::is_legal_no_check(Move const& move, Color color) const
 {
     auto piece = get_piece(move.from);
 
@@ -536,7 +546,7 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
 bool Board::in_check(Color color) const
 {
     Square king_square = { 50, 50 };
-    Square::for_each([&](const Square& square) {
+    Square::for_each([&](Square const& square) {
         if (get_piece(square) == Piece(color, Type::King)) {
             king_square = square;
             return IterationDecision::Break;
@@ -545,7 +555,7 @@ bool Board::in_check(Color color) const
     });
 
     bool check = false;
-    Square::for_each([&](const Square& square) {
+    Square::for_each([&](Square const& square) {
         if (is_legal_no_check({ square, king_square }, opposing_color(color))) {
             check = true;
             return IterationDecision::Break;
@@ -556,7 +566,7 @@ bool Board::in_check(Color color) const
     return check;
 }
 
-bool Board::apply_move(const Move& move, Color color)
+bool Board::apply_move(Move const& move, Color color)
 {
     if (color == Color::None)
         color = turn();
@@ -569,7 +579,7 @@ bool Board::apply_move(const Move& move, Color color)
     return apply_illegal_move(move, color);
 }
 
-bool Board::apply_illegal_move(const Move& move, Color color)
+bool Board::apply_illegal_move(Move const& move, Color color)
 {
     auto state = Traits<Board>::hash(*this);
     auto state_count = 0;
@@ -826,7 +836,7 @@ int Board::material_imbalance() const
     return imbalance;
 }
 
-bool Board::is_promotion_move(const Move& move, Color color) const
+bool Board::is_promotion_move(Move const& move, Color color) const
 {
     if (color == Color::None)
         color = turn();
@@ -846,7 +856,7 @@ bool Board::is_promotion_move(const Move& move, Color color) const
     return true;
 }
 
-bool Board::operator==(const Board& other) const
+bool Board::operator==(Board const& other) const
 {
     bool equal_squares = true;
     Square::for_each([&](Square sq) {
@@ -876,59 +886,54 @@ void Board::set_resigned(Chess::Color c)
     m_resigned = c;
 }
 
-String Board::result_to_string(Result result, Color turn)
+StringView Board::result_to_string(Result result, Color turn)
 {
     switch (result) {
     case Result::CheckMate:
         VERIFY(turn != Chess::Color::None);
-        return turn == Chess::Color::White ? "Black wins by Checkmate" : "White wins by Checkmate";
+        return turn == Chess::Color::White ? "Black wins by Checkmate"sv : "White wins by Checkmate"sv;
     case Result::WhiteResign:
-        return "Black wins by Resignation";
+        return "Black wins by Resignation"sv;
     case Result::BlackResign:
-        return "White wins by Resignation";
+        return "White wins by Resignation"sv;
     case Result::StaleMate:
-        return "Draw by Stalemate";
+        return "Draw by Stalemate"sv;
     case Chess::Board::Result::FiftyMoveRule:
-        return "Draw by 50 move rule";
+        return "Draw by 50 move rule"sv;
     case Chess::Board::Result::SeventyFiveMoveRule:
-        return "Draw by 75 move rule";
+        return "Draw by 75 move rule"sv;
     case Chess::Board::Result::ThreeFoldRepetition:
-        return "Draw by threefold repetition";
+        return "Draw by threefold repetition"sv;
     case Chess::Board::Result::FiveFoldRepetition:
-        return "Draw by fivefold repetition";
+        return "Draw by fivefold repetition"sv;
     case Chess::Board::Result::InsufficientMaterial:
-        return "Draw by insufficient material";
+        return "Draw by insufficient material"sv;
     case Chess::Board::Result::NotFinished:
-        return "Game not finished";
+        return "Game not finished"sv;
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-String Board::result_to_points(Result result, Color turn)
+StringView Board::result_to_points_string(Result result, Color turn)
 {
     switch (result) {
     case Result::CheckMate:
         VERIFY(turn != Chess::Color::None);
-        return turn == Chess::Color::White ? "0-1" : "1-0";
+        return turn == Chess::Color::White ? "0-1"sv : "1-0"sv;
     case Result::WhiteResign:
-        return "0-1";
+        return "0-1"sv;
     case Result::BlackResign:
-        return "1-0";
+        return "1-0"sv;
     case Result::StaleMate:
-        return "1/2-1/2";
     case Chess::Board::Result::FiftyMoveRule:
-        return "1/2-1/2";
     case Chess::Board::Result::SeventyFiveMoveRule:
-        return "1/2-1/2";
     case Chess::Board::Result::ThreeFoldRepetition:
-        return "1/2-1/2";
     case Chess::Board::Result::FiveFoldRepetition:
-        return "1/2-1/2";
     case Chess::Board::Result::InsufficientMaterial:
-        return "1/2-1/2";
+        return "1/2-1/2"sv;
     case Chess::Board::Result::NotFinished:
-        return "*";
+        return "*"sv;
     default:
         VERIFY_NOT_REACHED();
     }

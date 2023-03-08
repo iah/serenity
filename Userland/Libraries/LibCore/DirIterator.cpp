@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,17 +8,16 @@
 #include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
 #include <errno.h>
-#include <unistd.h>
 
 namespace Core {
 
-DirIterator::DirIterator(String path, Flags flags)
+DirIterator::DirIterator(DeprecatedString path, Flags flags)
     : m_path(move(path))
     , m_flags(flags)
 {
     m_dir = opendir(m_path.characters());
     if (!m_dir) {
-        m_error = errno;
+        m_error = Error::from_errno(errno);
     }
 }
 
@@ -31,7 +31,7 @@ DirIterator::~DirIterator()
 
 DirIterator::DirIterator(DirIterator&& other)
     : m_dir(other.m_dir)
-    , m_error(other.m_error)
+    , m_error(move(other.m_error))
     , m_next(move(other.m_next))
     , m_path(move(other.m_path))
     , m_flags(other.m_flags)
@@ -48,73 +48,60 @@ bool DirIterator::advance_next()
         errno = 0;
         auto* de = readdir(m_dir);
         if (!de) {
-            m_error = errno;
-            m_next = String();
+            m_error = Error::from_errno(errno);
+            m_next.clear();
             return false;
         }
 
-        m_next = de->d_name;
-        if (m_next.is_null())
+        m_next = DirectoryEntry::from_dirent(*de);
+
+        if (m_next->name.is_empty())
             return false;
 
-        if (m_flags & Flags::SkipDots && m_next.starts_with('.'))
+        if (m_flags & Flags::SkipDots && m_next->name.starts_with('.'))
             continue;
 
-        if (m_flags & Flags::SkipParentAndBaseDir && (m_next == "." || m_next == ".."))
+        if (m_flags & Flags::SkipParentAndBaseDir && (m_next->name == "." || m_next->name == ".."))
             continue;
 
-        return !m_next.is_empty();
+        return !m_next->name.is_empty();
     }
 }
 
 bool DirIterator::has_next()
 {
-    if (!m_next.is_null())
+    if (m_next.has_value())
         return true;
 
     return advance_next();
 }
 
-String DirIterator::next_path()
+Optional<DirectoryEntry> DirIterator::next()
 {
-    if (m_next.is_null())
+    if (!m_next.has_value())
         advance_next();
 
-    auto tmp = m_next;
-    m_next = String();
-    return tmp;
+    auto result = m_next;
+    m_next.clear();
+    return result;
 }
 
-String DirIterator::next_full_path()
+DeprecatedString DirIterator::next_path()
+{
+    auto entry = next();
+    if (entry.has_value())
+        return entry->name;
+    return "";
+}
+
+DeprecatedString DirIterator::next_full_path()
 {
     StringBuilder builder;
     builder.append(m_path);
     if (!m_path.ends_with('/'))
         builder.append('/');
     builder.append(next_path());
-    return builder.to_string();
-}
-
-String find_executable_in_path(String filename)
-{
-    if (filename.is_empty())
-        return {};
-
-    if (filename.starts_with('/')) {
-        if (access(filename.characters(), X_OK) == 0)
-            return filename;
-
-        return {};
-    }
-
-    for (auto directory : String { getenv("PATH") }.split(':')) {
-        auto fullpath = String::formatted("{}/{}", directory, filename);
-
-        if (access(fullpath.characters(), X_OK) == 0)
-            return fullpath;
-    }
-
-    return {};
+    return builder.to_deprecated_string();
 }
 
 int DirIterator::fd() const

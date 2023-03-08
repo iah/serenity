@@ -53,9 +53,9 @@ static_assert(AssertSize<NtpPacket, 48>());
 // NTP measures time in seconds since 1900-01-01, POSIX in seconds since 1970-01-01.
 // 1900 wasn't a leap year, so there are 70/4 leap years between 1900 and 1970.
 // Overflows a 32-bit signed int, but not a 32-bit unsigned int.
-const unsigned SecondsFrom1900To1970 = (70u * 365u + 70u / 4u) * 24u * 60u * 60u;
+unsigned const SecondsFrom1900To1970 = (70u * 365u + 70u / 4u) * 24u * 60u * 60u;
 
-static NtpTimestamp ntp_timestamp_from_timeval(const timeval& t)
+static NtpTimestamp ntp_timestamp_from_timeval(timeval const& t)
 {
     VERIFY(t.tv_usec >= 0 && t.tv_usec < 1'000'000); // Fits in 20 bits when normalized.
 
@@ -68,7 +68,7 @@ static NtpTimestamp ntp_timestamp_from_timeval(const timeval& t)
     return (static_cast<NtpTimestamp>(seconds) << 32) | fractional_bits;
 }
 
-static timeval timeval_from_ntp_timestamp(const NtpTimestamp& ntp_timestamp)
+static timeval timeval_from_ntp_timestamp(NtpTimestamp const& ntp_timestamp)
 {
     timeval t;
     t.tv_sec = static_cast<time_t>(ntp_timestamp >> 32) - SecondsFrom1900To1970;
@@ -76,7 +76,7 @@ static timeval timeval_from_ntp_timestamp(const NtpTimestamp& ntp_timestamp)
     return t;
 }
 
-static String format_ntp_timestamp(NtpTimestamp ntp_timestamp)
+static DeprecatedString format_ntp_timestamp(NtpTimestamp ntp_timestamp)
 {
     char buffer[28]; // YYYY-MM-DDTHH:MM:SS.UUUUUUZ is 27 characters long.
     timeval t = timeval_from_ntp_timestamp(ntp_timestamp);
@@ -90,15 +90,9 @@ static String format_ntp_timestamp(NtpTimestamp ntp_timestamp)
     buffer[written] = '\0';
     return buffer;
 }
-#ifdef __serenity__
 ErrorOr<int> serenity_main(Main::Arguments arguments)
-#else
-int main(int argc, char** argv)
-#endif
 {
-#ifdef __serenity__
-    TRY(Core::System::pledge("stdio inet unix settime"));
-#endif
+    TRY(Core::System::pledge("stdio inet unix settime wpath rpath"));
 
     bool adjust_time = false;
     bool set_time = false;
@@ -113,39 +107,34 @@ int main(int argc, char** argv)
     // Leap seconds smearing NTP servers:
     // - time.facebook.com , https://engineering.fb.com/production-engineering/ntp-service/ , sine-smears over 18 hours
     // - time.google.com , https://developers.google.com/time/smear , linear-smears over 24 hours
-    const char* host = "time.google.com";
+    DeprecatedString host = "time.google.com"sv;
     Core::ArgsParser args_parser;
     args_parser.add_option(adjust_time, "Gradually adjust system time (requires root)", "adjust", 'a');
     args_parser.add_option(set_time, "Immediately set system time (requires root)", "set", 's');
     args_parser.add_option(verbose, "Verbose output", "verbose", 'v');
     args_parser.add_positional_argument(host, "NTP server", "host", Core::ArgsParser::Required::No);
-#ifdef __serenity__
     args_parser.parse(arguments);
-#else
-    args_parser.parse(argc, argv);
-#endif
+
+    TRY(Core::System::unveil("/tmp/portal/lookup", "rw"));
+    TRY(Core::System::unveil("/etc/timezone", "r"));
+    TRY(Core::System::unveil(nullptr, nullptr));
 
     if (adjust_time && set_time) {
         warnln("-a and -s are mutually exclusive");
         return 1;
     }
 
-#ifdef __serenity__
     if (!adjust_time && !set_time) {
-        TRY(Core::System::pledge("stdio inet unix"));
+        TRY(Core::System::pledge("stdio inet unix rpath"));
     }
-#endif
 
-    auto* hostent = gethostbyname(host);
+    auto* hostent = gethostbyname(host.characters());
     if (!hostent) {
         warnln("Lookup failed for '{}'", host);
         return 1;
     }
 
-#ifdef __serenity__
-    TRY(Core::System::pledge((adjust_time || set_time) ? "stdio inet settime" : "stdio inet"));
-    TRY(Core::System::unveil(nullptr, nullptr));
-#endif
+    TRY(Core::System::pledge((adjust_time || set_time) ? "stdio inet settime wpath rpath"sv : "stdio inet rpath"sv));
 
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) {
@@ -171,7 +160,7 @@ int main(int argc, char** argv)
     memset(&peer_address, 0, sizeof(peer_address));
     peer_address.sin_family = AF_INET;
     peer_address.sin_port = htons(123);
-    peer_address.sin_addr.s_addr = *(const in_addr_t*)hostent->h_addr_list[0];
+    peer_address.sin_addr.s_addr = *(in_addr_t const*)hostent->h_addr_list[0];
 
     NtpPacket packet;
     memset(&packet, 0, sizeof(packet));
@@ -198,7 +187,15 @@ int main(int argc, char** argv)
 
     iovec iov { &packet, sizeof(packet) };
     char control_message_buffer[CMSG_SPACE(sizeof(timeval))];
-    msghdr msg = { &peer_address, sizeof(peer_address), &iov, 1, control_message_buffer, sizeof(control_message_buffer), 0 };
+    msghdr msg = {};
+    msg.msg_name = &peer_address;
+    msg.msg_namelen = sizeof(peer_address);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control_message_buffer;
+    msg.msg_controllen = sizeof(control_message_buffer);
+    msg.msg_flags = 0;
+
     rc = recvmsg(fd, &msg, 0);
     if (rc < 0) {
         perror("recvmsg");

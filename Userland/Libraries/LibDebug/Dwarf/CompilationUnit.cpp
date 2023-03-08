@@ -5,8 +5,10 @@
  */
 
 #include "CompilationUnit.h"
-#include "DIE.h"
 #include <AK/ByteReader.h>
+#include <LibDebug/Dwarf/DIE.h>
+#include <LibDebug/Dwarf/DwarfInfo.h>
+#include <LibDebug/Dwarf/LineProgram.h>
 
 namespace Debug::Dwarf {
 
@@ -20,6 +22,8 @@ CompilationUnit::CompilationUnit(DwarfInfo const& dwarf_info, u32 offset, Compil
     VERIFY(header.version() < 5 || header.unit_type() == CompilationUnitType::Full);
 }
 
+CompilationUnit::~CompilationUnit() = default;
+
 DIE CompilationUnit::root_die() const
 {
     return DIE(*this, m_offset + m_header.header_size());
@@ -31,27 +35,32 @@ DIE CompilationUnit::get_die_at_offset(u32 die_offset) const
     return DIE(*this, die_offset);
 }
 
-Optional<FlatPtr> CompilationUnit::base_address() const
+LineProgram const& CompilationUnit::line_program() const
+{
+    return *m_line_program;
+}
+
+ErrorOr<Optional<FlatPtr>> CompilationUnit::base_address() const
 {
     if (m_has_cached_base_address)
         return m_cached_base_address;
 
     auto die = root_die();
-    auto res = die.get_attribute(Attribute::LowPc);
+    auto res = TRY(die.get_attribute(Attribute::LowPc));
     if (res.has_value()) {
-        m_cached_base_address = res->as_addr();
+        m_cached_base_address = TRY(res->as_addr());
     }
     m_has_cached_base_address = true;
     return m_cached_base_address;
 }
 
-u64 CompilationUnit::address_table_base() const
+ErrorOr<u64> CompilationUnit::address_table_base() const
 {
     if (m_has_cached_address_table_base)
         return m_cached_address_table_base;
 
     auto die = root_die();
-    auto res = die.get_attribute(Attribute::AddrBase);
+    auto res = TRY(die.get_attribute(Attribute::AddrBase));
     if (res.has_value()) {
         VERIFY(res->form() == AttributeDataForm::SecOffset);
         m_cached_address_table_base = res->as_unsigned();
@@ -60,13 +69,13 @@ u64 CompilationUnit::address_table_base() const
     return m_cached_address_table_base;
 }
 
-u64 CompilationUnit::string_offsets_base() const
+ErrorOr<u64> CompilationUnit::string_offsets_base() const
 {
     if (m_has_cached_string_offsets_base)
         return m_cached_string_offsets_base;
 
     auto die = root_die();
-    auto res = die.get_attribute(Attribute::StrOffsetsBase);
+    auto res = TRY(die.get_attribute(Attribute::StrOffsetsBase));
     if (res.has_value()) {
         VERIFY(res->form() == AttributeDataForm::SecOffset);
         m_cached_string_offsets_base = res->as_unsigned();
@@ -75,13 +84,13 @@ u64 CompilationUnit::string_offsets_base() const
     return m_cached_string_offsets_base;
 }
 
-u64 CompilationUnit::range_lists_base() const
+ErrorOr<u64> CompilationUnit::range_lists_base() const
 {
     if (m_has_cached_range_lists_base)
         return m_cached_range_lists_base;
 
     auto die = root_die();
-    auto res = die.get_attribute(Attribute::RngListsBase);
+    auto res = TRY(die.get_attribute(Attribute::RngListsBase));
     if (res.has_value()) {
         VERIFY(res->form() == AttributeDataForm::SecOffset);
         m_cached_range_lists_base = res->as_unsigned();
@@ -90,9 +99,9 @@ u64 CompilationUnit::range_lists_base() const
     return m_cached_range_lists_base;
 }
 
-FlatPtr CompilationUnit::get_address(size_t index) const
+ErrorOr<FlatPtr> CompilationUnit::get_address(size_t index) const
 {
-    auto base = address_table_base();
+    auto base = TRY(address_table_base());
     auto debug_addr_data = dwarf_info().debug_addr_data();
     VERIFY(base < debug_addr_data.size());
     auto addresses = debug_addr_data.slice(base);
@@ -102,9 +111,9 @@ FlatPtr CompilationUnit::get_address(size_t index) const
     return value;
 }
 
-char const* CompilationUnit::get_string(size_t index) const
+ErrorOr<char const*> CompilationUnit::get_string(size_t index) const
 {
-    auto base = string_offsets_base();
+    auto base = TRY(string_offsets_base());
     auto debug_str_offsets_data = dwarf_info().debug_str_offsets_data();
     VERIFY(base < debug_str_offsets_data.size());
     // FIXME: This assumes DWARF32

@@ -5,10 +5,11 @@
  */
 
 #include <Kernel/Devices/BlockDevice.h>
+#include <Kernel/FileSystem/SysFS/Subsystems/DeviceIdentifiers/BlockDevicesDirectory.h>
 
 namespace Kernel {
 
-AsyncBlockDeviceRequest::AsyncBlockDeviceRequest(Device& block_device, RequestType request_type, u64 block_index, u32 block_count, const UserOrKernelBuffer& buffer, size_t buffer_size)
+AsyncBlockDeviceRequest::AsyncBlockDeviceRequest(Device& block_device, RequestType request_type, u64 block_index, u32 block_count, UserOrKernelBuffer const& buffer, size_t buffer_size)
     : AsyncDeviceRequest(block_device)
     , m_block_device(static_cast<BlockDevice&>(block_device))
     , m_request_type(request_type)
@@ -24,8 +25,40 @@ void AsyncBlockDeviceRequest::start()
     m_block_device.start_request(*this);
 }
 
-BlockDevice::~BlockDevice()
+BlockDevice::~BlockDevice() = default;
+
+void BlockDevice::after_inserting_add_symlink_to_device_identifier_directory()
 {
+    VERIFY(m_symlink_sysfs_component);
+    SysFSBlockDevicesDirectory::the().devices_list({}).with([&](auto& list) -> void {
+        list.append(*m_symlink_sysfs_component);
+    });
+}
+
+void BlockDevice::before_will_be_destroyed_remove_symlink_from_device_identifier_directory()
+{
+    VERIFY(m_symlink_sysfs_component);
+    SysFSBlockDevicesDirectory::the().devices_list({}).with([&](auto& list) -> void {
+        list.remove(*m_symlink_sysfs_component);
+    });
+}
+
+// FIXME: This method will be eventually removed after all nodes in /sys/dev/block/ are symlinks
+void BlockDevice::after_inserting_add_to_device_identifier_directory()
+{
+    VERIFY(m_sysfs_component);
+    SysFSBlockDevicesDirectory::the().devices_list({}).with([&](auto& list) -> void {
+        list.append(*m_sysfs_component);
+    });
+}
+
+// FIXME: This method will be eventually removed after all nodes in /sys/dev/block/ are symlinks
+void BlockDevice::before_will_be_destroyed_remove_from_device_identifier_directory()
+{
+    VERIFY(m_sysfs_component);
+    SysFSBlockDevicesDirectory::the().devices_list({}).with([&](auto& list) -> void {
+        list.remove(*m_sysfs_component);
+    });
 }
 
 bool BlockDevice::read_block(u64 index, UserOrKernelBuffer& buffer)
@@ -54,7 +87,7 @@ bool BlockDevice::read_block(u64 index, UserOrKernelBuffer& buffer)
     return false;
 }
 
-bool BlockDevice::write_block(u64 index, const UserOrKernelBuffer& buffer)
+bool BlockDevice::write_block(u64 index, UserOrKernelBuffer const& buffer)
 {
     auto write_request_or_error = try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index, 1, buffer, m_block_size);
     if (write_request_or_error.is_error()) {

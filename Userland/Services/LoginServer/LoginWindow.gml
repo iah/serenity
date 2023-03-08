@@ -25,7 +25,12 @@
         @GUI::Widget {
             layout: @GUI::HorizontalBoxLayout {}
 
-            @GUI::Widget {}
+            @GUI::Label {
+                name: "fail_message"
+                text_alignment: "CenterLeft"
+            }
+
+            @GUI::Layout::Spacer {}
 
             @GUI::Button {
                 name: "log_in"

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/OwnPtr.h>
+#include <AK/Vector.h>
 #include <Kernel/Memory/PhysicalPage.h>
 #include <Kernel/Memory/PhysicalZone.h>
 
@@ -28,13 +29,13 @@ public:
 
     PhysicalAddress lower() const { return m_lower; }
     PhysicalAddress upper() const { return m_upper; }
-    unsigned size() const { return m_pages; }
+    size_t size() const { return m_pages; }
     bool contains(PhysicalAddress paddr) const { return paddr >= m_lower && paddr < m_upper; }
 
-    OwnPtr<PhysicalRegion> try_take_pages_from_beginning(unsigned);
+    OwnPtr<PhysicalRegion> try_take_pages_from_beginning(size_t);
 
     RefPtr<PhysicalPage> take_free_page();
-    NonnullRefPtrVector<PhysicalPage> take_contiguous_free_pages(size_t count);
+    Vector<NonnullRefPtr<PhysicalPage>> take_contiguous_free_pages(size_t count);
     void return_page(PhysicalAddress);
 
 private:
@@ -43,7 +44,7 @@ private:
     static constexpr size_t large_zone_size = 16 * MiB;
     static constexpr size_t small_zone_size = 1 * MiB;
 
-    NonnullOwnPtrVector<PhysicalZone> m_zones;
+    Vector<NonnullOwnPtr<PhysicalZone>> m_zones;
 
     size_t m_large_zones { 0 };
 
@@ -52,7 +53,7 @@ private:
 
     PhysicalAddress m_lower;
     PhysicalAddress m_upper;
-    unsigned m_pages { 0 };
+    size_t m_pages { 0 };
 };
 
 }

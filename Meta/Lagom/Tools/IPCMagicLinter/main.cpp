@@ -7,7 +7,7 @@
 #include <AK/HashMap.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
-#include <LibCore/File.h>
+#include <LibCore/DeprecatedFile.h>
 
 // Exit code is bitwise-or of these values:
 static constexpr auto EXIT_COLLISION = 0x1;
@@ -21,20 +21,20 @@ int main(int argc, char** argv)
     }
 
     // Read files, compute their hashes, ignore collisions for now.
-    HashMap<u32, Vector<String>> inverse_hashes;
+    HashMap<u32, Vector<DeprecatedString>> inverse_hashes;
     bool had_errors = false;
     for (int file_index = 1; file_index < argc; ++file_index) {
-        String filename(argv[file_index]);
-        auto file_or_error = Core::File::open(filename, Core::OpenMode::ReadOnly);
+        DeprecatedString filename(argv[file_index]);
+        auto file_or_error = Core::DeprecatedFile::open(filename, Core::OpenMode::ReadOnly);
         if (file_or_error.is_error()) {
             warnln("Error: Cannot open '{}': {}", filename, file_or_error.error());
             had_errors = true;
             continue; // next file
         }
         auto file = file_or_error.value();
-        String endpoint_name;
+        DeprecatedString endpoint_name;
         while (true) {
-            String line = file->read_line();
+            DeprecatedString line = file->read_line();
             if (file->error() != 0 || line.is_null())
                 break;
             if (!line.starts_with("endpoint "sv))

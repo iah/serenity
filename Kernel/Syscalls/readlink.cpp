@@ -10,14 +10,14 @@
 
 namespace Kernel {
 
-ErrorOr<FlatPtr> Process::sys$readlink(Userspace<const Syscall::SC_readlink_params*> user_params)
+ErrorOr<FlatPtr> Process::sys$readlink(Userspace<Syscall::SC_readlink_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::rpath));
     auto params = TRY(copy_typed_from_user(user_params));
 
     auto path = TRY(get_syscall_path_argument(params.path));
-    auto description = TRY(VirtualFileSystem::the().open(path->view(), O_RDONLY | O_NOFOLLOW_NOERROR, 0, current_directory()));
+    auto description = TRY(VirtualFileSystem::the().open(credentials(), path->view(), O_RDONLY | O_NOFOLLOW_NOERROR, 0, TRY(custody_for_dirfd(params.dirfd))));
 
     if (!description->metadata().is_symlink())
         return EINVAL;

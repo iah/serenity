@@ -31,17 +31,12 @@ public:
     UUID(StringView, Endianness endianness = Endianness::Little);
     ~UUID() = default;
 
-    bool operator==(const UUID&) const;
-    bool operator!=(const UUID& other) const { return !(*this == other); }
-    bool operator<=(const UUID&) const = delete;
-    bool operator>=(const UUID&) const = delete;
-    bool operator<(const UUID&) const = delete;
-    bool operator>(const UUID&) const = delete;
+    bool operator==(const UUID&) const = default;
 
 #ifdef KERNEL
     ErrorOr<NonnullOwnPtr<Kernel::KString>> to_string() const;
 #else
-    String to_string() const;
+    ErrorOr<String> to_string() const;
 #endif
     bool is_zero() const;
 
@@ -54,4 +49,6 @@ private:
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::UUID;
+#endif

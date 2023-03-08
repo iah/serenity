@@ -11,11 +11,20 @@
 namespace Web::HTML {
 
 class HTMLMediaElement : public HTMLElement {
-public:
-    using WrapperType = Bindings::HTMLMediaElementWrapper;
+    WEB_PLATFORM_OBJECT(HTMLMediaElement, HTMLElement);
 
-    HTMLMediaElement(DOM::Document&, QualifiedName);
+public:
     virtual ~HTMLMediaElement() override;
+
+    Bindings::CanPlayTypeResult can_play_type(DeprecatedString const& type) const;
+
+    void load() const;
+    void pause() const;
+
+protected:
+    HTMLMediaElement(DOM::Document&, DOM::QualifiedName);
+
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
 };
 
 }

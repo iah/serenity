@@ -1,20 +1,26 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/NonnullOwnPtrVector.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Object.h>
 #include <LibGUI/Action.h>
+#include <LibGUI/ColorFilterer.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/Forward.h>
 #include <LibGfx/Forward.h>
 
 namespace GUI {
+
+namespace CommonMenus {
+
+ErrorOr<NonnullRefPtr<Menu>> make_accessibility_menu(GUI::ColorFilterer&);
+
+};
 
 class Menu final : public Core::Object {
     C_OBJECT(Menu)
@@ -26,24 +32,27 @@ public:
     static Menu* from_menu_id(int);
     int menu_id() const { return m_menu_id; }
 
-    const String& name() const { return m_name; }
-    const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
-    void set_icon(const Gfx::Bitmap*);
+    DeprecatedString const& name() const { return m_name; }
+    Gfx::Bitmap const* icon() const { return m_icon.ptr(); }
+    void set_icon(Gfx::Bitmap const*);
 
     Action* action_at(size_t);
 
     ErrorOr<void> try_add_action(NonnullRefPtr<Action>);
     ErrorOr<void> try_add_separator();
-    ErrorOr<NonnullRefPtr<Menu>> try_add_submenu(String name);
+    ErrorOr<NonnullRefPtr<Menu>> try_add_submenu(DeprecatedString name);
 
     void add_action(NonnullRefPtr<Action>);
     void add_separator();
-    Menu& add_submenu(String name);
+    Menu& add_submenu(DeprecatedString name);
+    void remove_all_actions();
 
-    void popup(const Gfx::IntPoint& screen_position, const RefPtr<Action>& default_action = nullptr);
+    ErrorOr<void> add_recent_files_list(Function<void(Action&)>);
+
+    void popup(Gfx::IntPoint screen_position, RefPtr<Action> const& default_action = nullptr, Gfx::IntRect const& button_rect = {});
     void dismiss();
 
-    void visibility_did_change(Badge<WindowServerConnection>, bool visible);
+    void visibility_did_change(Badge<ConnectionToWindowServer>, bool visible);
 
     void set_children_actions_enabled(bool enabled);
 
@@ -51,25 +60,27 @@ public:
 
     bool is_visible() const { return m_visible; }
 
-    NonnullOwnPtrVector<MenuItem> const& items() const { return m_items; }
+    Vector<NonnullOwnPtr<MenuItem>> const& items() const { return m_items; }
 
 private:
     friend class Menubar;
 
-    explicit Menu(String name = "");
+    explicit Menu(DeprecatedString name = "");
 
     int realize_menu(RefPtr<Action> default_action = nullptr);
     void unrealize_menu();
-    void realize_if_needed(const RefPtr<Action>& default_action);
+    void realize_if_needed(RefPtr<Action> const& default_action);
 
     void realize_menu_item(MenuItem&, int item_id);
 
     int m_menu_id { -1 };
-    String m_name;
-    RefPtr<Gfx::Bitmap> m_icon;
-    NonnullOwnPtrVector<MenuItem> m_items;
+    DeprecatedString m_name;
+    RefPtr<Gfx::Bitmap const> m_icon;
+    Vector<NonnullOwnPtr<MenuItem>> m_items;
     WeakPtr<Action> m_current_default_action;
     bool m_visible { false };
+
+    Function<void(Action&)> m_recent_files_callback;
 };
 
 }

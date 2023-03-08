@@ -4,17 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLDataElement.h>
 
 namespace Web::HTML {
 
-HTMLDataElement::HTMLDataElement(DOM::Document& document, QualifiedName qualified_name)
+HTMLDataElement::HTMLDataElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-HTMLDataElement::~HTMLDataElement()
+HTMLDataElement::~HTMLDataElement() = default;
+
+JS::ThrowCompletionOr<void> HTMLDataElement::initialize(JS::Realm& realm)
 {
+    MUST_OR_THROW_OOM(Base::initialize(realm));
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLDataElementPrototype>(realm, "HTMLDataElement"));
+
+    return {};
 }
 
 }

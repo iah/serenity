@@ -11,7 +11,7 @@
 #include <LibGUI/Window.h>
 #include <LibGfx/Palette.h>
 
-void EyesWidget::track_mouse_move(Gfx::IntPoint const& point)
+void EyesWidget::track_mouse_move(Gfx::IntPoint point)
 {
     m_mouse_position = point - window()->position();
     update();
@@ -20,18 +20,19 @@ void EyesWidget::track_mouse_move(Gfx::IntPoint const& point)
 void EyesWidget::paint_event(GUI::PaintEvent& event)
 {
     GUI::Painter painter(*this);
+    Gfx::AntiAliasingPainter aa_painter { painter };
 
     painter.clear_rect(event.rect(), Gfx::Color());
 
     for (int i = 0; i < m_full_rows; i++) {
         for (int j = 0; j < m_eyes_in_row; j++)
-            render_eyeball(i, j, painter);
+            render_eyeball(i, j, aa_painter);
     }
     for (int i = 0; i < m_extra_columns; ++i)
-        render_eyeball(m_full_rows, i, painter);
+        render_eyeball(m_full_rows, i, aa_painter);
 }
 
-void EyesWidget::render_eyeball(int row, int column, GUI::Painter& painter) const
+void EyesWidget::render_eyeball(int row, int column, Gfx::AntiAliasingPainter& painter) const
 {
     auto eye_width = width() / m_eyes_in_row;
     auto eye_height = height() / m_num_rows;

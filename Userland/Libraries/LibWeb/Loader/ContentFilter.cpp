@@ -15,20 +15,16 @@ ContentFilter& ContentFilter::the()
     return filter;
 }
 
-ContentFilter::ContentFilter()
-{
-}
+ContentFilter::ContentFilter() = default;
 
-ContentFilter::~ContentFilter()
-{
-}
+ContentFilter::~ContentFilter() = default;
 
 bool ContentFilter::is_filtered(const AK::URL& url) const
 {
-    if (url.protocol() == "data")
+    if (url.scheme() == "data")
         return false;
 
-    auto url_string = url.to_string();
+    auto url_string = url.to_deprecated_string();
 
     for (auto& pattern : m_patterns) {
         if (url_string.matches(pattern.text, CaseSensitivity::CaseSensitive))
@@ -37,7 +33,7 @@ bool ContentFilter::is_filtered(const AK::URL& url) const
     return false;
 }
 
-void ContentFilter::add_pattern(const String& pattern)
+void ContentFilter::add_pattern(DeprecatedString const& pattern)
 {
     StringBuilder builder;
     if (!pattern.starts_with('*'))
@@ -45,7 +41,7 @@ void ContentFilter::add_pattern(const String& pattern)
     builder.append(pattern);
     if (!pattern.ends_with('*'))
         builder.append('*');
-    m_patterns.empend(builder.to_string());
+    m_patterns.empend(builder.to_deprecated_string());
 }
 
 }

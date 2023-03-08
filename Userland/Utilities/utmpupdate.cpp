@@ -24,8 +24,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     pid_t pid = 0;
     bool flag_create = false;
     bool flag_delete = false;
-    const char* tty_name = nullptr;
-    const char* from = nullptr;
+    StringView tty_name;
+    StringView from;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(flag_create, "Create entry", "create", 'c');
@@ -42,9 +42,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     dbgln("Updating utmp from UID={} GID={} EGID={} PID={}", getuid(), getgid(), getegid(), pid);
 
-    auto file = TRY(Core::File::open("/var/run/utmp", Core::OpenMode::ReadWrite));
+    auto file = TRY(Core::File::open("/var/run/utmp"sv, Core::File::OpenMode::ReadWrite));
 
-    auto file_contents = file->read_all();
+    auto file_contents = TRY(file->read_until_eof());
     auto previous_json = TRY(JsonValue::from_string(file_contents));
 
     JsonObject json;
@@ -70,20 +70,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         json.remove(tty_name);
     }
 
-    if (!file->seek(0)) {
-        dbgln("Seek failed");
-        return 1;
-    }
-
-    if (!file->truncate(0)) {
-        dbgln("Truncation failed");
-        return 1;
-    }
-
-    if (!file->write(json.to_string())) {
-        dbgln("Write failed");
-        return 1;
-    }
+    TRY(file->seek(0, SeekMode::SetPosition));
+    TRY(file->truncate(0));
+    TRY(file->write(json.to_deprecated_string().bytes()));
 
     return 0;
 }

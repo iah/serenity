@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -29,12 +30,7 @@ Frame::Frame()
         { Gfx::FrameShape::Box, "Box" },
         { Gfx::FrameShape::Container, "Container" },
         { Gfx::FrameShape::Panel, "Panel" },
-        { Gfx::FrameShape::VerticalLine, "VerticalLine" },
-        { Gfx::FrameShape::HorizontalLine, "HorizontalLine" });
-}
-
-Frame::~Frame()
-{
+        { Gfx::FrameShape::Window, "Window" });
 }
 
 void Frame::set_frame_thickness(int thickness)
@@ -43,6 +39,7 @@ void Frame::set_frame_thickness(int thickness)
         return;
     m_thickness = thickness;
     set_grabbable_margins(thickness);
+    layout_relevant_change_occurred();
 }
 
 void Frame::paint_event(PaintEvent& event)

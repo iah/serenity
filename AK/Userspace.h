@@ -7,7 +7,6 @@
 #pragma once
 
 #include <AK/Assertions.h>
-#include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 
 #ifdef KERNEL
@@ -25,11 +24,11 @@ public:
     Userspace() = default;
 
     // Disable default implementations that would use surprising integer promotion.
-    bool operator==(const Userspace&) const = delete;
-    bool operator<=(const Userspace&) const = delete;
-    bool operator>=(const Userspace&) const = delete;
-    bool operator<(const Userspace&) const = delete;
-    bool operator>(const Userspace&) const = delete;
+    bool operator==(Userspace const&) const = delete;
+    bool operator<=(Userspace const&) const = delete;
+    bool operator>=(Userspace const&) const = delete;
+    bool operator<(Userspace const&) const = delete;
+    bool operator>(Userspace const&) const = delete;
 
 #ifdef KERNEL
     Userspace(FlatPtr ptr)
@@ -62,7 +61,7 @@ private:
 };
 
 template<typename T, typename U>
-inline Userspace<T> static_ptr_cast(const Userspace<U>& ptr)
+inline Userspace<T> static_ptr_cast(Userspace<U> const& ptr)
 {
 #ifdef KERNEL
     auto casted_ptr = static_cast<T>(ptr.unsafe_userspace_ptr());
@@ -74,5 +73,7 @@ inline Userspace<T> static_ptr_cast(const Userspace<U>& ptr)
 
 }
 
+#if USING_AK_GLOBALLY
 using AK::static_ptr_cast;
 using AK::Userspace;
+#endif

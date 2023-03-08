@@ -7,6 +7,7 @@
 #pragma once
 
 #include <Kernel/API/POSIX/sys/time.h>
+#include <sys/cdefs.h>
 #include <time.h>
 
 __BEGIN_DECLS
@@ -19,7 +20,7 @@ struct timezone {
 int adjtime(const struct timeval* delta, struct timeval* old_delta);
 int gettimeofday(struct timeval* __restrict__, void* __restrict__);
 int settimeofday(struct timeval* __restrict__, void* __restrict__);
-int utimes(const char* pathname, const struct timeval[2]);
+int utimes(char const* pathname, const struct timeval[2]);
 
 static inline void timeradd(const struct timeval* a, const struct timeval* b, struct timeval* out)
 {

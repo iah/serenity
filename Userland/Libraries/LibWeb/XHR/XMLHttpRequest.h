@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, Kenneth Myhra <kennethmyhra@serenityos.org>
+ * Copyright (c) 2023, Luke Wilde <lukew@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,21 +12,27 @@
 #include <AK/RefCounted.h>
 #include <AK/URL.h>
 #include <AK/Weakable.h>
-#include <LibWeb/Bindings/WindowObject.h>
-#include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/DOM/EventTarget.h>
-#include <LibWeb/DOM/ExceptionOr.h>
+#include <LibWeb/Fetch/BodyInit.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/Headers.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/Statuses.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/MimeSniff/MimeType.h>
+#include <LibWeb/URL/URLSearchParams.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/XHR/XMLHttpRequestEventTarget.h>
 
 namespace Web::XHR {
 
-class XMLHttpRequest final
-    : public RefCounted<XMLHttpRequest>
-    , public Weakable<XMLHttpRequest>
-    , public XMLHttpRequestEventTarget {
+// https://fetch.spec.whatwg.org/#typedefdef-xmlhttprequestbodyinit
+using DocumentOrXMLHttpRequestBodyInit = Variant<JS::Handle<Web::DOM::Document>, JS::Handle<Web::FileAPI::Blob>, JS::Handle<JS::Object>, JS::Handle<Web::URL::URLSearchParams>, AK::String>;
+
+class XMLHttpRequest final : public XMLHttpRequestEventTarget {
+    WEB_PLATFORM_OBJECT(XMLHttpRequest, XMLHttpRequestEventTarget);
+
 public:
-    enum class ReadyState : u16 {
+    enum class State : u16 {
         Unsent = 0,
         Opened = 1,
         HeadersReceived = 2,
@@ -32,90 +40,163 @@ public:
         Done = 4,
     };
 
-    using WrapperType = Bindings::XMLHttpRequestWrapper;
-
-    static NonnullRefPtr<XMLHttpRequest> create(DOM::Window& window)
-    {
-        return adopt_ref(*new XMLHttpRequest(window));
-    }
-    static NonnullRefPtr<XMLHttpRequest> create_with_global_object(Bindings::WindowObject& window)
-    {
-        return XMLHttpRequest::create(window.impl());
-    }
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<XMLHttpRequest>> construct_impl(JS::Realm&);
 
     virtual ~XMLHttpRequest() override;
 
-    using RefCounted::ref;
-    using RefCounted::unref;
-
-    ReadyState ready_state() const { return m_ready_state; };
-    unsigned status() const { return m_status; };
-    DOM::ExceptionOr<String> response_text() const;
-    DOM::ExceptionOr<JS::Value> response();
+    State ready_state() const { return m_state; };
+    Fetch::Infrastructure::Status status() const;
+    WebIDL::ExceptionOr<String> status_text() const;
+    WebIDL::ExceptionOr<String> response_text() const;
+    WebIDL::ExceptionOr<JS::Value> response();
     Bindings::XMLHttpRequestResponseType response_type() const { return m_response_type; }
 
-    DOM::ExceptionOr<void> open(const String& method, const String& url);
-    DOM::ExceptionOr<void> send(String body);
+    WebIDL::ExceptionOr<void> open(String const& method, String const& url);
+    WebIDL::ExceptionOr<void> open(String const& method, String const& url, bool async, Optional<String> const& username = Optional<String> {}, Optional<String> const& password = Optional<String> {});
+    WebIDL::ExceptionOr<void> send(Optional<DocumentOrXMLHttpRequestBodyInit> body);
 
-    DOM::ExceptionOr<void> set_request_header(const String& header, const String& value);
-    void set_response_type(Bindings::XMLHttpRequestResponseType type) { m_response_type = type; }
+    WebIDL::ExceptionOr<void> set_request_header(String const& header, String const& value);
+    WebIDL::ExceptionOr<void> set_response_type(Bindings::XMLHttpRequestResponseType);
 
-    String get_response_header(const String& name) { return m_response_headers.get(name).value_or({}); }
-    String get_all_response_headers() const;
+    WebIDL::ExceptionOr<Optional<String>> get_response_header(String const& name) const;
+    WebIDL::ExceptionOr<String> get_all_response_headers() const;
 
-    Bindings::CallbackType* onreadystatechange();
-    void set_onreadystatechange(Optional<Bindings::CallbackType>);
+    WebIDL::CallbackType* onreadystatechange();
+    void set_onreadystatechange(WebIDL::CallbackType*);
 
-    DOM::ExceptionOr<void> override_mime_type(String const& mime);
+    WebIDL::ExceptionOr<void> override_mime_type(String const& mime);
+
+    u32 timeout() const;
+    WebIDL::ExceptionOr<void> set_timeout(u32 timeout);
+
+    bool with_credentials() const;
+    WebIDL::ExceptionOr<void> set_with_credentials(bool);
+
+    void abort();
+
+    JS::NonnullGCPtr<XMLHttpRequestUpload> upload() const;
 
 private:
-    virtual void ref_event_target() override { ref(); }
-    virtual void unref_event_target() override { unref(); }
-    virtual JS::Object* create_wrapper(JS::GlobalObject&) override;
+    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+    virtual bool must_survive_garbage_collection() const override;
 
-    void set_ready_state(ReadyState);
-    void set_status(unsigned status) { m_status = status; }
-    void fire_progress_event(const String&, u64, u64);
-
-    MimeSniff::MimeType get_response_mime_type() const;
-    Optional<String> get_final_encoding() const;
-    MimeSniff::MimeType get_final_mime_type() const;
+    ErrorOr<MimeSniff::MimeType> get_response_mime_type() const;
+    ErrorOr<Optional<StringView>> get_final_encoding() const;
+    ErrorOr<MimeSniff::MimeType> get_final_mime_type() const;
 
     String get_text_response() const;
 
-    Optional<Vector<String>> get_decode_and_split(String const& header_name, HashMap<String, String, CaseInsensitiveStringTraits> const& header_list) const;
-    Optional<MimeSniff::MimeType> extract_mime_type(HashMap<String, String, CaseInsensitiveStringTraits> const& header_list) const;
+    WebIDL::ExceptionOr<void> handle_response_end_of_body();
+    WebIDL::ExceptionOr<void> handle_errors();
+    JS::ThrowCompletionOr<void> request_error_steps(DeprecatedFlyString const& event_name, JS::GCPtr<WebIDL::DOMException> exception = nullptr);
 
-    explicit XMLHttpRequest(DOM::Window&);
+    XMLHttpRequest(JS::Realm&, XMLHttpRequestUpload&, Fetch::Infrastructure::HeaderList&, Fetch::Infrastructure::Response&, Fetch::Infrastructure::FetchController&);
 
-    NonnullRefPtr<DOM::Window> m_window;
+    // https://xhr.spec.whatwg.org/#upload-object
+    // upload object
+    //     An XMLHttpRequestUpload object.
+    JS::NonnullGCPtr<XMLHttpRequestUpload> m_upload_object;
 
-    ReadyState m_ready_state { ReadyState::Unsent };
-    unsigned m_status { 0 };
+    // https://xhr.spec.whatwg.org/#concept-xmlhttprequest-state
+    // state
+    //     One of unsent, opened, headers received, loading, and done; initially unsent.
+    State m_state { State::Unsent };
+
+    // https://xhr.spec.whatwg.org/#send-flag
+    // send() flag
+    //     A flag, initially unset.
     bool m_send { false };
 
-    String m_method;
-    AK::URL m_url;
+    // https://xhr.spec.whatwg.org/#timeout
+    // timeout
+    //     An unsigned integer, initially 0.
+    u32 m_timeout { 0 };
 
-    Bindings::XMLHttpRequestResponseType m_response_type;
+    // https://xhr.spec.whatwg.org/#cross-origin-credentials
+    // cross-origin credentials
+    //     A boolean, initially false.
+    bool m_cross_origin_credentials { false };
 
-    HashMap<String, String, CaseInsensitiveStringTraits> m_request_headers;
-    HashMap<String, String, CaseInsensitiveStringTraits> m_response_headers;
+    // https://xhr.spec.whatwg.org/#request-method
+    // request method
+    //     A method.
+    DeprecatedString m_request_method;
 
+    // https://xhr.spec.whatwg.org/#request-url
+    // request URL
+    //     A URL.
+    AK::URL m_request_url;
+
+    // https://xhr.spec.whatwg.org/#author-request-headers
+    // author request headers
+    //     A header list, initially empty.
+    JS::NonnullGCPtr<Fetch::Infrastructure::HeaderList> m_author_request_headers;
+
+    // https://xhr.spec.whatwg.org/#request-body
+    // request body
+    //     Initially null.
+    Optional<Fetch::Infrastructure::Body> m_request_body;
+
+    // https://xhr.spec.whatwg.org/#synchronous-flag
+    // synchronous flag
+    //     A flag, initially unset.
     bool m_synchronous { false };
+
+    // https://xhr.spec.whatwg.org/#upload-complete-flag
+    // upload complete flag
+    //     A flag, initially unset.
     bool m_upload_complete { false };
+
+    // https://xhr.spec.whatwg.org/#upload-listener-flag
+    // upload listener flag
+    //     A flag, initially unset.
     bool m_upload_listener { false };
+
+    // https://xhr.spec.whatwg.org/#timed-out-flag
+    // timed out flag
+    //     A flag, initially unset.
     bool m_timed_out { false };
 
+    // https://xhr.spec.whatwg.org/#response
+    // response
+    //     A response, initially a network error.
+    JS::NonnullGCPtr<Fetch::Infrastructure::Response> m_response;
+
+    // https://xhr.spec.whatwg.org/#received-bytes
+    // received bytes
+    //     A byte sequence, initially the empty byte sequence.
     ByteBuffer m_received_bytes;
+
+    // https://xhr.spec.whatwg.org/#response-type
+    // response type
+    //     One of the empty string, "arraybuffer", "blob", "document", "json", and "text"; initially the empty string.
+    Bindings::XMLHttpRequestResponseType m_response_type;
 
     enum class Failure {
         /// ????
     };
-    Variant<JS::Handle<JS::Value>, Failure, Empty> m_response_object;
+
+    // https://xhr.spec.whatwg.org/#response-object
+    // response object
+    //     An object, failure, or null, initially null.
+    //     NOTE: This needs to be a JS::Value as the JSON response might not actually be an object.
+    Variant<JS::Value, Failure, Empty> m_response_object;
+
+    // https://xhr.spec.whatwg.org/#xmlhttprequest-fetch-controller
+    // fetch controller
+    //     A fetch controller, initially a new fetch controller.
+    //     NOTE: The send() method sets it to a useful fetch controller, but for simplicity it always holds a fetch controller.
+    JS::NonnullGCPtr<Fetch::Infrastructure::FetchController> m_fetch_controller;
 
     // https://xhr.spec.whatwg.org/#override-mime-type
+    // override MIME type
+    //     A MIME type or null, initially null.
+    //     NOTE: Can get a value when overrideMimeType() is invoked.
     Optional<MimeSniff::MimeType> m_override_mime_type;
+
+    // Non-standard, see async path in `send()`
+    u64 m_request_body_transmitted { 0 };
 };
 
 }
