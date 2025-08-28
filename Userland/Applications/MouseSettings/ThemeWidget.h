@@ -11,6 +11,7 @@
 #include <LibGUI/SettingsWindow.h>
 #include <LibGfx/CursorParams.h>
 
+namespace MouseSettings {
 class MouseCursorModel final : public GUI::Model {
 public:
     static NonnullRefPtr<MouseCursorModel> create() { return adopt_ref(*new MouseCursorModel); }
@@ -25,11 +26,11 @@ public:
     virtual int row_count(const GUI::ModelIndex&) const override { return m_cursors.size(); }
     virtual int column_count(const GUI::ModelIndex&) const override { return Column::__Count; }
 
-    virtual DeprecatedString column_name(int column_index) const override;
+    virtual ErrorOr<String> column_name(int column_index) const override;
     virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override;
     virtual void invalidate() override;
 
-    void change_theme(DeprecatedString const& name)
+    void change_theme(ByteString const& name)
     {
         m_theme_name = name;
         invalidate();
@@ -40,13 +41,13 @@ private:
 
     struct Cursor {
         RefPtr<Gfx::Bitmap> bitmap;
-        DeprecatedString path;
-        DeprecatedString name;
+        ByteString path;
+        ByteString name;
         Gfx::CursorParams params;
     };
 
     Vector<Cursor> m_cursors;
-    DeprecatedString m_theme_name;
+    ByteString m_theme_name;
 };
 
 class ThemeModel final : public GUI::Model {
@@ -56,24 +57,29 @@ public:
     virtual int column_count(const GUI::ModelIndex&) const override { return 1; }
 
     virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override;
+    virtual Vector<GUI::ModelIndex> matches(StringView, unsigned = GUI::Model::MatchesFlag::AllMatching, GUI::ModelIndex const& = GUI::ModelIndex()) override;
     virtual void invalidate() override;
 
 private:
-    Vector<DeprecatedString> m_themes;
+    Vector<ByteString> m_themes;
 };
 
 class ThemeWidget final : public GUI::SettingsWindow::Tab {
-    C_OBJECT(ThemeWidget)
+    C_OBJECT_ABSTRACT(ThemeWidget)
 public:
+    static ErrorOr<NonnullRefPtr<ThemeWidget>> try_create();
+    ErrorOr<void> initialize();
+
     virtual ~ThemeWidget() override = default;
 
     virtual void apply_settings() override;
     virtual void reset_default_values() override;
 
 private:
-    ThemeWidget();
+    ThemeWidget() = default;
 
     RefPtr<GUI::TableView> m_cursors_tableview;
     RefPtr<GUI::ComboBox> m_theme_name_box;
     RefPtr<MouseCursorModel> m_mouse_cursor_model;
 };
+}

@@ -19,11 +19,11 @@ ClassViewWidget::ClassViewWidget()
     m_class_tree = add<GUI::TreeView>();
 
     m_class_tree->on_selection_change = [this] {
-        const auto& index = m_class_tree->selection().first();
+        auto const& index = m_class_tree->selection().first();
         if (!index.is_valid())
             return;
 
-        auto* node = static_cast<const ClassViewNode*>(index.internal_data());
+        auto* node = static_cast<ClassViewNode const*>(index.internal_data());
         if (!node->declaration)
             return;
 
@@ -91,9 +91,9 @@ GUI::ModelIndex ClassViewModel::parent_index(const GUI::ModelIndex& index) const
 GUI::ModelIndex ClassViewModel::index(int row, int column, const GUI::ModelIndex& parent_index) const
 {
     if (!parent_index.is_valid())
-        return create_index(row, column, &m_root_scope[row]);
+        return create_index(row, column, m_root_scope[row].ptr());
     auto* parent = static_cast<ClassViewNode const*>(parent_index.internal_data());
-    auto* child = &parent->children[row];
+    auto* child = parent->children[row].ptr();
     return create_index(row, column, child);
 }
 

@@ -10,7 +10,7 @@ if [ "$#" -eq "0" ]; then
         git ls-files -- \
             '*.sh' \
             ':!:Ports' \
-            ':!:Userland/Shell/Tests' \
+            ':!:Tests/LibShell' \
             ':!:Base/home/anon/Tests' \
             ':!:Base/root/generate_manpages.sh' \
             ':!:Base/usr/share/shell' \
@@ -36,7 +36,7 @@ if (( ${#files[@]} )); then
         exit 1
     fi
 
-    shellcheck --source-path=SCRIPTDIR "${files[@]}"
+    shellcheck --source-path=SCRIPTDIR --external-sources "${files[@]}"
 
     for file in "${files[@]}"; do
         if (< "$file" grep -qE "grep [^|);]*-[^- ]*P"); then

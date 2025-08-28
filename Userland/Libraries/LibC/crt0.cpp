@@ -11,39 +11,38 @@
 #include <sys/internals.h>
 #include <unistd.h>
 
-#ifndef _DYNAMIC_LOADER
-extern "C" {
-
-extern uintptr_t __stack_chk_guard;
-extern bool s_global_initializers_ran;
-
 int main(int, char**, char**);
 
+extern "C" {
+
 // Tell the compiler that this may be called from somewhere else.
-int _entry(int argc, char** argv, char** env) __attribute__((used));
+int _entry(int argc, char** argv) __attribute__((used));
 void _start(int, char**, char**) __attribute__((used));
 
 NAKED void _start(int, char**, char**)
 {
-#    ifdef AK_ARCH_AARCH64
+#if ARCH(AARCH64)
     asm(
+        "mov x29, 0\n"
+        "mov x30, 0\n"
         "bl _entry\n");
-#    else
+#elif ARCH(RISCV64)
+    asm(
+        "li fp, 0\n"
+        "li ra, 0\n"
+        "tail _entry@plt\n");
+#elif ARCH(X86_64)
     asm(
         "push $0\n"
         "jmp _entry@plt\n");
-#    endif
+#else
+#    error "Unknown architecture"
+#endif
 }
 
-int _entry(int argc, char** argv, char** env)
+int _entry(int argc, char** argv)
 {
-    environ = env;
-    __environ_is_malloced = false;
     __begin_atexit_locking();
-
-    s_global_initializers_ran = true;
-
-    _init();
 
     int status = main(argc, argv, environ);
 
@@ -52,4 +51,3 @@ int _entry(int argc, char** argv, char** env)
     return 20150614;
 }
 }
-#endif

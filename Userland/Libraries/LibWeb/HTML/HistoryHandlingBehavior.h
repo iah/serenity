@@ -10,9 +10,7 @@ namespace Web::HTML {
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#history-handling-behavior
 enum class HistoryHandlingBehavior {
-    Default,
-    EntryUpdate,
-    Reload,
+    Push,
     Replace,
 };
 

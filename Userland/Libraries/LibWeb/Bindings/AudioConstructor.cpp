@@ -14,20 +14,20 @@
 
 namespace Web::Bindings {
 
+JS_DEFINE_ALLOCATOR(AudioConstructor);
+
 AudioConstructor::AudioConstructor(JS::Realm& realm)
-    : NativeFunction(*realm.intrinsics().function_prototype())
+    : NativeFunction(realm.intrinsics().function_prototype())
 {
 }
 
-JS::ThrowCompletionOr<void> AudioConstructor::initialize(JS::Realm& realm)
+void AudioConstructor::initialize(JS::Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
-    define_direct_property(vm.names.prototype, &ensure_web_prototype<Bindings::HTMLAudioElementPrototype>(realm, "HTMLAudioElement"), 0);
+    define_direct_property(vm.names.prototype, &ensure_web_prototype<Bindings::HTMLAudioElementPrototype>(realm, "HTMLAudioElement"_fly_string), 0);
     define_direct_property(vm.names.length, JS::Value(0), JS::Attribute::Configurable);
-
-    return {};
 }
 
 JS::ThrowCompletionOr<JS::Value> AudioConstructor::call()
@@ -48,14 +48,14 @@ JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Object>> AudioConstructor::construct(
     auto audio = TRY(Bindings::throw_dom_exception_if_needed(vm, [&]() { return DOM::create_element(document, HTML::TagNames::audio, Namespace::HTML); }));
 
     // 3. Set an attribute value for audio using "preload" and "auto".
-    MUST(audio->set_attribute(HTML::AttributeNames::preload, "auto"sv));
+    MUST(audio->set_attribute(HTML::AttributeNames::preload, "auto"_string));
 
     auto src_value = vm.argument(0);
 
     // 4. If src is given, then set an attribute value for audio using "src" and src.
     //    (This will cause the user agent to invoke the object's resource selection algorithm before returning.)
     if (!src_value.is_undefined()) {
-        auto src = TRY(src_value.to_deprecated_string(vm));
+        auto src = TRY(src_value.to_string(vm));
         MUST(audio->set_attribute(HTML::AttributeNames::src, move(src)));
     }
 

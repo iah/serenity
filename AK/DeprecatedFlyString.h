@@ -6,14 +6,17 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/StringUtils.h>
 
 namespace AK {
 
 class DeprecatedFlyString {
 public:
-    DeprecatedFlyString() = default;
+    DeprecatedFlyString()
+        : m_impl(StringImpl::the_empty_stringimpl())
+    {
+    }
     DeprecatedFlyString(DeprecatedFlyString const& other)
         : m_impl(other.impl())
     {
@@ -22,10 +25,10 @@ public:
         : m_impl(move(other.m_impl))
     {
     }
-    DeprecatedFlyString(DeprecatedString const&);
+    DeprecatedFlyString(ByteString const&);
     DeprecatedFlyString(StringView);
     DeprecatedFlyString(char const* string)
-        : DeprecatedFlyString(static_cast<DeprecatedString>(string))
+        : DeprecatedFlyString(static_cast<ByteString>(string))
     {
     }
 
@@ -49,53 +52,49 @@ public:
         return *this;
     }
 
-    bool is_empty() const { return !m_impl || !m_impl->length(); }
-    bool is_null() const { return !m_impl; }
+    bool is_empty() const { return !m_impl->length(); }
 
     bool operator==(DeprecatedFlyString const& other) const { return m_impl == other.m_impl; }
 
-    bool operator==(DeprecatedString const&) const;
+    bool operator==(ByteString const&) const;
 
     bool operator==(StringView) const;
 
     bool operator==(char const*) const;
 
-    StringImpl const* impl() const { return m_impl; }
-    char const* characters() const { return m_impl ? m_impl->characters() : nullptr; }
-    size_t length() const { return m_impl ? m_impl->length() : 0; }
+    NonnullRefPtr<StringImpl const> impl() const { return m_impl; }
+    char const* characters() const { return m_impl->characters(); }
+    size_t length() const { return m_impl->length(); }
 
-    ALWAYS_INLINE u32 hash() const { return m_impl ? m_impl->existing_hash() : 0; }
-    ALWAYS_INLINE StringView view() const { return m_impl ? m_impl->view() : StringView {}; }
+    ALWAYS_INLINE u32 hash() const { return m_impl->existing_hash(); }
+    ALWAYS_INLINE StringView view() const { return m_impl->view(); }
 
     DeprecatedFlyString to_lowercase() const;
 
-    template<typename T = int>
-    Optional<T> to_int(TrimWhitespace = TrimWhitespace::Yes) const;
-    template<typename T = unsigned>
-    Optional<T> to_uint(TrimWhitespace = TrimWhitespace::Yes) const;
-#ifndef KERNEL
-    Optional<double> to_double(TrimWhitespace = TrimWhitespace::Yes) const;
-    Optional<float> to_float(TrimWhitespace = TrimWhitespace::Yes) const;
-#endif
+    template<Arithmetic T>
+    Optional<T> to_number(TrimWhitespace trim_whitespace = TrimWhitespace::Yes) const
+    {
+        return view().to_number<T>(trim_whitespace);
+    }
 
-    bool equals_ignoring_case(StringView) const;
+    bool equals_ignoring_ascii_case(StringView) const;
     bool starts_with(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive) const;
     bool ends_with(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive) const;
 
     static void did_destroy_impl(Badge<StringImpl>, StringImpl&);
 
     template<typename... Ts>
-    [[nodiscard]] ALWAYS_INLINE constexpr bool is_one_of(Ts... strings) const
+    [[nodiscard]] ALWAYS_INLINE constexpr bool is_one_of(Ts&&... strings) const
     {
         return (... || this->operator==(forward<Ts>(strings)));
     }
 
 private:
-    RefPtr<StringImpl const> m_impl;
+    NonnullRefPtr<StringImpl const> m_impl;
 };
 
 template<>
-struct Traits<DeprecatedFlyString> : public GenericTraits<DeprecatedFlyString> {
+struct Traits<DeprecatedFlyString> : public DefaultTraits<DeprecatedFlyString> {
     static unsigned hash(DeprecatedFlyString const& s) { return s.hash(); }
 };
 

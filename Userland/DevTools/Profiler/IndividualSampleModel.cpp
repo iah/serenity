@@ -29,15 +29,15 @@ int IndividualSampleModel::column_count(GUI::ModelIndex const&) const
     return Column::__Count;
 }
 
-DeprecatedString IndividualSampleModel::column_name(int column) const
+ErrorOr<String> IndividualSampleModel::column_name(int column) const
 {
     switch (column) {
     case Column::Address:
-        return "Address";
+        return "Address"_string;
     case Column::ObjectName:
-        return "Object";
+        return "Object"_string;
     case Column::Symbol:
-        return "Symbol";
+        return "Symbol"_string;
     default:
         VERIFY_NOT_REACHED();
     }
@@ -50,7 +50,7 @@ GUI::Variant IndividualSampleModel::data(GUI::ModelIndex const& index, GUI::Mode
 
     if (role == GUI::ModelRole::Display) {
         if (index.column() == Column::Address)
-            return DeprecatedString::formatted("{:p}", frame.address);
+            return ByteString::formatted("{:p}", frame.address);
 
         if (index.column() == Column::Symbol) {
             return frame.symbol;

@@ -102,6 +102,20 @@ int sigdelset(sigset_t* set, int sig)
     return 0;
 }
 
+// https://pubs.opengroup.org/onlinepubs/009696699/functions/siginterrupt.html
+int siginterrupt(int sig, int flag)
+{
+    struct sigaction act;
+    int rc = sigaction(sig, nullptr, &act);
+    if (rc < 0)
+        return rc;
+    if (flag)
+        act.sa_flags &= ~SA_RESTART;
+    else
+        act.sa_flags |= SA_RESTART;
+    return sigaction(sig, &act, nullptr);
+}
+
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigismember.html
 int sigismember(sigset_t const* set, int sig)
 {
@@ -128,39 +142,53 @@ int sigpending(sigset_t* set)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
+// Signal 0 (the null signal) and Signal 32 (SIGCANCEL) are deliberately set to null here.
+// They are not intended to be resolved by strsignal(), sig2str() or str2sig().
+#define ENUMERATE_SIGNALS                                  \
+    __ENUMERATE_SIGNAL(nullptr, nullptr)                   \
+    __ENUMERATE_SIGNAL("HUP", "Hangup")                    \
+    __ENUMERATE_SIGNAL("INT", "Interrupt")                 \
+    __ENUMERATE_SIGNAL("QUIT", "Quit")                     \
+    __ENUMERATE_SIGNAL("ILL", "Illegal instruction")       \
+    __ENUMERATE_SIGNAL("TRAP", "Trap")                     \
+    __ENUMERATE_SIGNAL("ABRT", "Aborted")                  \
+    __ENUMERATE_SIGNAL("BUS", "Bus error")                 \
+    __ENUMERATE_SIGNAL("FPE", "Division by zero")          \
+    __ENUMERATE_SIGNAL("KILL", "Killed")                   \
+    __ENUMERATE_SIGNAL("USR1", "User signal 1")            \
+    __ENUMERATE_SIGNAL("SEGV", "Segmentation violation")   \
+    __ENUMERATE_SIGNAL("USR2", "User signal 2")            \
+    __ENUMERATE_SIGNAL("PIPE", "Broken pipe")              \
+    __ENUMERATE_SIGNAL("ALRM", "Alarm clock")              \
+    __ENUMERATE_SIGNAL("TERM", "Terminated")               \
+    __ENUMERATE_SIGNAL("STKFLT", "Stack fault")            \
+    __ENUMERATE_SIGNAL("CHLD", "Child exited")             \
+    __ENUMERATE_SIGNAL("CONT", "Continued")                \
+    __ENUMERATE_SIGNAL("STOP", "Stopped (signal)")         \
+    __ENUMERATE_SIGNAL("TSTP", "Stopped")                  \
+    __ENUMERATE_SIGNAL("TTIN", "Stopped (tty input)")      \
+    __ENUMERATE_SIGNAL("TTOU", "Stopped (tty output)")     \
+    __ENUMERATE_SIGNAL("URG", "Urgent I/O condition)")     \
+    __ENUMERATE_SIGNAL("XCPU", "CPU limit exceeded")       \
+    __ENUMERATE_SIGNAL("XFSZ", "File size limit exceeded") \
+    __ENUMERATE_SIGNAL("VTALRM", "Virtual timer expired")  \
+    __ENUMERATE_SIGNAL("PROF", "Profiling timer expired")  \
+    __ENUMERATE_SIGNAL("WINCH", "Window changed")          \
+    __ENUMERATE_SIGNAL("IO", "I/O possible")               \
+    __ENUMERATE_SIGNAL("INFO", "Power failure")            \
+    __ENUMERATE_SIGNAL("SYS", "Bad system call")           \
+    __ENUMERATE_SIGNAL(nullptr, nullptr)
+
 char const* sys_siglist[NSIG] = {
-    "Invalid signal number",
-    "Hangup",
-    "Interrupt",
-    "Quit",
-    "Illegal instruction",
-    "Trap",
-    "Aborted",
-    "Bus error",
-    "Division by zero",
-    "Killed",
-    "User signal 1",
-    "Segmentation violation",
-    "User signal 2",
-    "Broken pipe",
-    "Alarm clock",
-    "Terminated",
-    "Stack fault",
-    "Child exited",
-    "Continued",
-    "Stopped (signal)",
-    "Stopped",
-    "Stopped (tty input)",
-    "Stopped (tty output)",
-    "Urgent I/O condition)",
-    "CPU limit exceeded",
-    "File size limit exceeded",
-    "Virtual timer expired",
-    "Profiling timer expired",
-    "Window changed",
-    "I/O possible",
-    "Power failure",
-    "Bad system call",
+#define __ENUMERATE_SIGNAL(name, description) description,
+    ENUMERATE_SIGNALS
+#undef __ENUMERATE_SIGNAL
+};
+
+char const* sys_signame[NSIG] = {
+#define __ENUMERATE_SIGNAL(name, description) name,
+    ENUMERATE_SIGNALS
+#undef __ENUMERATE_SIGNAL
 };
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/siglongjmp.html
@@ -210,62 +238,80 @@ int sigtimedwait(sigset_t const* set, siginfo_t* info, struct timespec const* ti
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-char const* sys_signame[] = {
-    "INVAL",
-    "HUP",
-    "INT",
-    "QUIT",
-    "ILL",
-    "TRAP",
-    "ABRT",
-    "BUS",
-    "FPE",
-    "KILL",
-    "USR1",
-    "SEGV",
-    "USR2",
-    "PIPE",
-    "ALRM",
-    "TERM",
-    "STKFLT",
-    "CHLD",
-    "CONT",
-    "STOP",
-    "TSTP",
-    "TTIN",
-    "TTOU",
-    "URG",
-    "XCPU",
-    "XFSZ",
-    "VTALRM",
-    "PROF",
-    "WINCH",
-    "IO",
-    "INFO",
-    "SYS",
-};
-
-static_assert(sizeof(sys_signame) == sizeof(char const*) * NSIG);
-
-int getsignalbyname(char const* name)
+// https://pubs.opengroup.org/onlinepubs/9799919799/functions/sig2str.html
+int sig2str(int signum, char* str)
 {
-    VERIFY(name);
-    StringView name_sv { name, strlen(name) };
-    for (size_t i = 0; i < NSIG; ++i) {
-        StringView signal_name { sys_signame[i], sizeof(sys_signame[i]) - 1 };
-        if (signal_name == name_sv || (name_sv.starts_with("SIG"sv) && signal_name == name_sv.substring_view(3)))
-            return i;
+    VERIFY(str);
+
+    // If signum is equal to 0, the behavior is unspecified.
+    if (signum <= 0)
+        return -1;
+
+    // If signum is a valid, supported signal number (...), the sig2str()
+    // function shall return 0; otherwise, if signum is not equal to 0, it shall
+    // return -1.
+    if (signum < 0 || signum >= NSIG)
+        return -1;
+
+    // If signum is equal to one of the symbolic constants listed in the table
+    // of signal numbers in <signal.h>, the stored signal name shall be the
+    // name of the symbolic constant without the SIG prefix.
+    if (sys_signame[signum]) {
+        size_t signal_string_length = strlen(sys_signame[signum]);
+        // SIG2STR_MAX includes the null terminator while strlen does not,
+        // so the length must be at most SIG2STR_MAX - 1.
+        VERIFY(signal_string_length < SIG2STR_MAX);
+        memcpy(str, sys_signame[signum], signal_string_length);
+        str[signal_string_length] = 0;
+        return 0;
     }
-    errno = EINVAL;
+
+    // FIXME: Handle realtime signals.
+
     return -1;
 }
 
-char const* getsignalname(int signal)
+// https://pubs.opengroup.org/onlinepubs/9799919799/functions/str2sig.html
+int str2sig(char const* __restrict__ str, int* __restrict__ pnum)
 {
-    if (signal < 0 || signal >= NSIG) {
-        errno = EINVAL;
-        return nullptr;
+    VERIFY(str);
+    VERIFY(pnum);
+
+    // If str points to a string containing the name of one of the symbolic
+    // constants listed in the table of signal numbers in <signal.h>, without
+    // the SIG prefix, the stored signal number shall be equal to the value of
+    // the symbolic constant.
+    for (int i = 1; i < NSIG; ++i) {
+        if (!sys_signame[i])
+            continue;
+        if (strcmp(str, sys_signame[i]) == 0) {
+            *pnum = i;
+            return 0;
+        }
     }
-    return sys_signame[signal];
+
+    // FIXME: Handle realtime signals.
+
+    // If str points to a string containing a decimal representation of a valid,
+    // supported signal number, the value stored in the location pointed to by
+    // pnum shall be equal to that number.
+    int parsed_number = 0;
+    for (size_t i = 0; str[i]; ++i) {
+        if (str[i] < '0' || str[i] > '9')
+            return -1;
+        parsed_number = (parsed_number * 10) + (str[i] - '0');
+    }
+
+    // If str points to a string containing a decimal representation of the
+    // value 0 and the string was not returned by a previous successful call
+    // to sig2str() with a signum argument of 0, the behavior is unspecified.
+    if (parsed_number <= 0)
+        return -1;
+
+    if (parsed_number >= NSIG || !sys_signame[parsed_number])
+        return -1;
+
+    *pnum = parsed_number;
+    return 0;
 }
 }

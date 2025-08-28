@@ -14,7 +14,7 @@ JsonObject::JsonObject() = default;
 JsonObject::~JsonObject() = default;
 
 JsonObject::JsonObject(JsonObject const& other)
-    : m_members(other.m_members)
+    : m_members(other.m_members.clone().release_value_but_fixme_should_propagate_errors())
 {
 }
 
@@ -26,7 +26,7 @@ JsonObject::JsonObject(JsonObject&& other)
 JsonObject& JsonObject::operator=(JsonObject const& other)
 {
     if (this != &other)
-        m_members = other.m_members;
+        m_members = other.m_members.clone().release_value_but_fixme_should_propagate_errors();
     return *this;
 }
 
@@ -109,7 +109,7 @@ Optional<bool> JsonObject::get_bool(StringView key) const
 }
 
 #if !defined(KERNEL)
-Optional<DeprecatedString> JsonObject::get_deprecated_string(StringView key) const
+Optional<ByteString> JsonObject::get_byte_string(StringView key) const
 {
     auto maybe_value = get(key);
     if (maybe_value.has_value() && maybe_value->is_string())
@@ -135,19 +135,19 @@ Optional<JsonArray const&> JsonObject::get_array(StringView key) const
 }
 
 #if !defined(KERNEL)
-Optional<double> JsonObject::get_double(StringView key) const
+Optional<double> JsonObject::get_double_with_precision_loss(StringView key) const
 {
     auto maybe_value = get(key);
-    if (maybe_value.has_value() && maybe_value->is_double())
-        return maybe_value->as_double();
+    if (maybe_value.has_value())
+        return maybe_value->get_double_with_precision_loss();
     return {};
 }
 
-Optional<float> JsonObject::get_float(StringView key) const
+Optional<float> JsonObject::get_float_with_precision_loss(StringView key) const
 {
     auto maybe_value = get(key);
-    if (maybe_value.has_value() && maybe_value->is_double())
-        return static_cast<float>(maybe_value->as_double());
+    if (maybe_value.has_value())
+        return maybe_value->get_float_with_precision_loss();
     return {};
 }
 #endif
@@ -241,15 +241,7 @@ bool JsonObject::has_object(StringView key) const
     return value.has_value() && value->is_object();
 }
 
-#ifndef KERNEL
-bool JsonObject::has_double(StringView key) const
-{
-    auto value = get(key);
-    return value.has_value() && value->is_double();
-}
-#endif
-
-void JsonObject::set(DeprecatedString const& key, JsonValue value)
+void JsonObject::set(ByteString const& key, JsonValue value)
 {
     m_members.set(key, move(value));
 }
@@ -259,7 +251,7 @@ bool JsonObject::remove(StringView key)
     return m_members.remove(key);
 }
 
-DeprecatedString JsonObject::to_deprecated_string() const
+ByteString JsonObject::to_byte_string() const
 {
     return serialized<StringBuilder>();
 }

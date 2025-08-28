@@ -1,6 +1,7 @@
 add_compile_options(-Wvla)
 
 set(SOURCES
+    AEAD/ChaCha20Poly1305.cpp
     ASN1/ASN1.cpp
     ASN1/DER.cpp
     ASN1/PEM.cpp
@@ -17,14 +18,16 @@ set(SOURCES
     BigInt/SignedBigInteger.cpp
     BigInt/UnsignedBigInteger.cpp
     Checksum/Adler32.cpp
+    Checksum/cksum.cpp
     Checksum/CRC32.cpp
+    Checksum/IPv4Header.cpp
     Cipher/AES.cpp
     Cipher/ChaCha20.cpp
     Curves/Curve25519.cpp
     Curves/Ed25519.cpp
-    Curves/SECP256r1.cpp
     Curves/X25519.cpp
     Curves/X448.cpp
+    Hash/BLAKE2b.cpp
     Hash/MD5.cpp
     Hash/SHA1.cpp
     Hash/SHA2.cpp

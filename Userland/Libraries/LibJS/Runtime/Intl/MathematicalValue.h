@@ -15,7 +15,7 @@
 
 namespace JS::Intl {
 
-// https://tc39.es/proposal-intl-numberformat-v3/out/numberformat/proposed.html#intl-mathematical-value
+// https://tc39.es/ecma402/#intl-mathematical-value
 class MathematicalValue {
 public:
     enum class Symbol {
@@ -44,8 +44,8 @@ public:
 
     MathematicalValue(Value value)
         : m_value(value.is_number()
-                ? value_from_number(value.as_double())
-                : ValueType(value.as_bigint().big_integer()))
+                  ? value_from_number(value.as_double())
+                  : ValueType(value.as_bigint().big_integer()))
     {
     }
 
@@ -80,7 +80,7 @@ public:
 
     bool modulo_is_zero(Checked<i32> mod) const;
 
-    ThrowCompletionOr<int> logarithmic_floor(VM&) const;
+    int logarithmic_floor() const;
 
     bool is_equal_to(MathematicalValue const&) const;
     bool is_less_than(MathematicalValue const&) const;
@@ -89,7 +89,7 @@ public:
     bool is_positive() const;
     bool is_zero() const;
 
-    ThrowCompletionOr<String> to_string(VM&) const;
+    String to_string() const;
     Value to_value(VM&) const;
 
 private:

@@ -23,33 +23,40 @@ public:
 private:
     struct Context {
         bool has_svg_root = false;
+        bool layout_top_layer = false;
+        bool layout_svg_mask_or_clip_path = false;
     };
 
-    ErrorOr<void> create_layout_tree(DOM::Node&, Context&);
+    i32 calculate_list_item_index(DOM::Node&);
+
+    void create_layout_tree(DOM::Node&, Context&);
 
     void push_parent(Layout::NodeWithStyle& node) { m_ancestor_stack.append(node); }
     void pop_parent() { m_ancestor_stack.take_last(); }
 
-    template<CSS::Display::Internal, typename Callback>
+    template<CSS::DisplayInternal, typename Callback>
     void for_each_in_tree_with_internal_display(NodeWithStyle& root, Callback);
 
-    template<CSS::Display::Inside, typename Callback>
+    template<CSS::DisplayInside, typename Callback>
     void for_each_in_tree_with_inside_display(NodeWithStyle& root, Callback);
 
     void fixup_tables(NodeWithStyle& root);
     void remove_irrelevant_boxes(NodeWithStyle& root);
     void generate_missing_child_wrappers(NodeWithStyle& root);
-    void generate_missing_parents(NodeWithStyle& root);
+    Vector<JS::Handle<Box>> generate_missing_parents(NodeWithStyle& root);
+    void missing_cells_fixup(Vector<JS::Handle<Box>> const&);
 
     enum class AppendOrPrepend {
         Append,
         Prepend,
     };
     void insert_node_into_inline_or_block_ancestor(Layout::Node&, CSS::Display, AppendOrPrepend);
-    ErrorOr<void> create_pseudo_element_if_needed(DOM::Element&, CSS::Selector::PseudoElement, AppendOrPrepend);
+    void create_pseudo_element_if_needed(DOM::Element&, CSS::Selector::PseudoElement::Type, AppendOrPrepend);
 
     JS::GCPtr<Layout::Node> m_layout_root;
-    Vector<Layout::NodeWithStyle&> m_ancestor_stack;
+    Vector<JS::NonnullGCPtr<Layout::NodeWithStyle>> m_ancestor_stack;
+
+    u32 m_quote_nesting_level { 0 };
 };
 
 }

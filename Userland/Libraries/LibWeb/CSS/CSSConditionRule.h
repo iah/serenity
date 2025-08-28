@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2024, Sam Atkins <sam@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,16 +18,15 @@ class CSSConditionRule : public CSSGroupingRule {
 public:
     virtual ~CSSConditionRule() = default;
 
-    virtual DeprecatedString condition_text() const = 0;
-    virtual void set_condition_text(DeprecatedString) = 0;
+    virtual String condition_text() const = 0;
     virtual bool condition_matches() const = 0;
 
-    virtual void for_each_effective_style_rule(Function<void(CSSStyleRule const&)> const& callback) const override;
+    virtual void for_each_effective_rule(TraversalOrder, Function<void(CSSRule const&)> const& callback) const override;
 
 protected:
     CSSConditionRule(JS::Realm&, CSSRuleList&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

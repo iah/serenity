@@ -12,6 +12,10 @@ $ chres <width> <height> [scale factor]
 
 `chres` changes the display resolution to <width>x<height>@<scale factor>x.
 
+## Options
+
+-   `-s`, `--screen`: Screen
+
 ## Examples
 
 ```sh
@@ -21,4 +25,4 @@ $ chres 1920 1080 2
 
 ## Files
 
-* `/tmp/portal/window` to communicate with WindowServer
+-   `/tmp/portal/window` to communicate with WindowServer

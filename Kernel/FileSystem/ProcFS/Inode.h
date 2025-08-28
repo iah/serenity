@@ -11,7 +11,7 @@
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/ProcFS/Definitions.h>
 #include <Kernel/FileSystem/ProcFS/FileSystem.h>
-#include <Kernel/KBufferBuilder.h>
+#include <Kernel/Library/KBufferBuilder.h>
 #include <Kernel/UnixTypes.h>
 
 namespace Kernel {
@@ -43,18 +43,17 @@ private:
     ProcFS const& procfs() const { return static_cast<ProcFS const&>(Inode::fs()); }
 
     // ^Inode (EROFS handling)
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> create_child(StringView, mode_t, dev_t, UserID, GroupID) override { return EROFS; }
+    virtual ErrorOr<NonnullRefPtr<Inode>> create_child(StringView, mode_t, dev_t, UserID, GroupID) override { return EROFS; }
     virtual ErrorOr<void> add_child(Inode&, StringView, mode_t) override { return EROFS; }
     virtual ErrorOr<void> remove_child(StringView) override { return EROFS; }
-    virtual ErrorOr<void> replace_child(StringView, Inode&) override { return EROFS; }
     virtual ErrorOr<void> chmod(mode_t) override { return EROFS; }
     virtual ErrorOr<void> chown(UserID, GroupID) override { return EROFS; }
     virtual ErrorOr<size_t> write_bytes_locked(off_t, size_t, UserOrKernelBuffer const&, OpenFileDescription*) override { return EROFS; }
-    virtual ErrorOr<void> truncate(u64) override { return EROFS; }
+    virtual ErrorOr<void> truncate_locked(u64) override { return EROFS; }
 
     // ^Inode (Silent ignore handling)
     virtual ErrorOr<void> flush_metadata() override { return {}; }
-    virtual ErrorOr<void> update_timestamps(Optional<Time>, Optional<Time>, Optional<Time>) override { return {}; }
+    virtual ErrorOr<void> update_timestamps(Optional<UnixDateTime>, Optional<UnixDateTime>, Optional<UnixDateTime>) override { return {}; }
 
     // ^Inode
     virtual ErrorOr<void> attach(OpenFileDescription& description) override;
@@ -65,11 +64,11 @@ private:
     virtual InodeMetadata metadata() const override;
     virtual ErrorOr<size_t> read_bytes_locked(off_t, size_t, UserOrKernelBuffer& buffer, OpenFileDescription*) const override;
 
-    ErrorOr<NonnullLockRefPtr<Inode>> lookup_as_root_directory(StringView name);
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> lookup(StringView name) override final;
+    ErrorOr<NonnullRefPtr<Inode>> lookup_as_root_directory(StringView name);
+    virtual ErrorOr<NonnullRefPtr<Inode>> lookup(StringView name) override final;
 
     ErrorOr<void> refresh_process_property_data(OpenFileDescription& description);
-    ErrorOr<void> try_fetch_process_property_data(NonnullLockRefPtr<Process>, KBufferBuilder& builder) const;
+    ErrorOr<void> try_fetch_process_property_data(NonnullRefPtr<Process>, KBufferBuilder& builder) const;
 
     Type m_type;
     Optional<ProcessID> const m_associated_pid {};

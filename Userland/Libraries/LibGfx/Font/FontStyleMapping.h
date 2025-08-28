@@ -12,35 +12,41 @@
 namespace Gfx {
 
 struct FontStyleMapping {
-    // NOTE: __builtin_strlen required to make this work at compile time.
-    constexpr FontStyleMapping(int s, char const* n)
-        : style(s)
-        , name(StringView { n, __builtin_strlen(n) })
-    {
-    }
     int style { 0 };
     StringView name;
 };
 
-static constexpr FontStyleMapping font_weight_names[] = {
-    { 100, "Thin" },
-    { 200, "Extra Light" },
-    { 300, "Light" },
-    { 400, "Regular" },
-    { 500, "Medium" },
-    { 600, "Semi Bold" },
-    { 700, "Bold" },
-    { 800, "Extra Bold" },
-    { 900, "Black" },
-    { 950, "Extra Black" },
-};
+static constexpr Array<FontStyleMapping, 10> font_weight_names = { {
+    { 100, "Thin"sv },
+    { 200, "Extra Light"sv },
+    { 300, "Light"sv },
+    { 400, "Regular"sv },
+    { 500, "Medium"sv },
+    { 600, "Semi Bold"sv },
+    { 700, "Bold"sv },
+    { 800, "Extra Bold"sv },
+    { 900, "Black"sv },
+    { 950, "Extra Black"sv },
+} };
 
-static constexpr FontStyleMapping font_slope_names[] = {
-    { 0, "Regular" },
-    { 1, "Italic" },
-    { 2, "Oblique" },
-    { 3, "Reclined" }
-};
+static constexpr Array<FontStyleMapping, 4> font_slope_names = { {
+    { 0, "Regular"sv },
+    { 1, "Italic"sv },
+    { 2, "Oblique"sv },
+    { 3, "Reclined"sv },
+} };
+
+static constexpr Array<FontStyleMapping, 9> font_width_names = { {
+    { 1, "Ultra Condensed"sv },
+    { 2, "Extra Condensed"sv },
+    { 3, "Condensed"sv },
+    { 4, "Semi Condensed"sv },
+    { 5, "Normal"sv },
+    { 6, "Semi Expanded"sv },
+    { 7, "Expanded"sv },
+    { 8, "Extra Expanded"sv },
+    { 9, "Ultra Expanded"sv },
+} };
 
 static constexpr StringView weight_to_name(int weight)
 {
@@ -72,6 +78,24 @@ static constexpr StringView slope_to_name(int slope)
 static constexpr int name_to_slope(StringView name)
 {
     for (auto& it : font_slope_names) {
+        if (it.name == name)
+            return it.style;
+    }
+    return {};
+}
+
+static constexpr StringView width_to_name(int width)
+{
+    for (auto& it : font_width_names) {
+        if (it.style == width)
+            return it.name;
+    }
+    return {};
+}
+
+static constexpr int name_to_width(StringView name)
+{
+    for (auto& it : font_width_names) {
         if (it.name == name)
             return it.style;
     }

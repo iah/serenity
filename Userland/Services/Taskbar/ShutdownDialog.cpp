@@ -5,7 +5,7 @@
  */
 
 #include "ShutdownDialog.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Vector.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
@@ -17,32 +17,31 @@
 #include <LibGfx/Font/FontDatabase.h>
 
 struct Option {
-    DeprecatedString title;
-    Vector<char const*> cmd;
+    ByteString title;
+    ShutdownDialog::Command command;
     bool enabled;
     bool default_action;
 };
 
-static Vector<Option> const options = {
-    { "Power off computer", { "/bin/shutdown", "--now", nullptr }, true, true },
-    { "Reboot", { "/bin/reboot", nullptr }, true, false },
-    { "Log out", { "/bin/logout", nullptr }, true, false },
+static Array const options = {
+    Option { "Power off computer", { "/bin/shutdown"sv, { "--now" } }, true, true },
+    Option { "Reboot", { "/bin/reboot"sv, {} }, true, false },
+    Option { "Log out", { "/bin/logout"sv, {} }, true, false },
 };
 
-Vector<char const*> ShutdownDialog::show()
+Optional<ShutdownDialog::Command const&> ShutdownDialog::show()
 {
     auto dialog = ShutdownDialog::construct();
     auto rc = dialog->exec();
     if (rc == ExecResult::OK && dialog->m_selected_option != -1)
-        return options[dialog->m_selected_option].cmd;
-
+        return options[dialog->m_selected_option].command;
     return {};
 }
 
 ShutdownDialog::ShutdownDialog()
     : Dialog(nullptr)
 {
-    auto widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto widget = set_main_widget<GUI::Widget>();
     widget->set_fill_with_background_color(true);
     widget->set_layout<GUI::VerticalBoxLayout>(GUI::Margins {}, 0);
 
@@ -66,7 +65,7 @@ ShutdownDialog::ShutdownDialog()
     auto& right_container = content_container.add<GUI::Widget>();
     right_container.set_layout<GUI::VerticalBoxLayout>(GUI::Margins { 12, 12, 8, 0 });
 
-    auto& label = right_container.add<GUI::Label>("What would you like to do?");
+    auto& label = right_container.add<GUI::Label>("What would you like to do?"_string);
     label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
     label.set_fixed_height(22);
     label.set_font(Gfx::FontDatabase::default_font().bold_variant());
@@ -75,7 +74,7 @@ ShutdownDialog::ShutdownDialog()
         auto action = options[i];
         auto& radio = right_container.add<GUI::RadioButton>();
         radio.set_enabled(action.enabled);
-        radio.set_text(String::from_deprecated_string(action.title).release_value_but_fixme_should_propagate_errors());
+        radio.set_text(String::from_byte_string(action.title).release_value_but_fixme_should_propagate_errors());
 
         radio.on_checked = [this, i](auto) {
             m_selected_option = i;
@@ -87,19 +86,19 @@ ShutdownDialog::ShutdownDialog()
         }
     }
 
-    right_container.add_spacer().release_value_but_fixme_should_propagate_errors();
+    right_container.add_spacer();
 
     auto& button_container = right_container.add<GUI::Widget>();
     button_container.set_fixed_height(23);
     button_container.set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, 5);
-    button_container.add_spacer().release_value_but_fixme_should_propagate_errors();
-    auto& ok_button = button_container.add<GUI::Button>("OK"_short_string);
+    button_container.add_spacer();
+    auto& ok_button = button_container.add<GUI::Button>("OK"_string);
     ok_button.set_fixed_size(80, 23);
     ok_button.on_click = [this](auto) {
         done(ExecResult::OK);
     };
     ok_button.set_default(true);
-    auto& cancel_button = button_container.add<GUI::Button>("Cancel"_short_string);
+    auto& cancel_button = button_container.add<GUI::Button>("Cancel"_string);
     cancel_button.set_fixed_size(80, 23);
     cancel_button.on_click = [this](auto) {
         done(ExecResult::Cancel);

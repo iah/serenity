@@ -14,14 +14,14 @@ ErrorOr<NonnullRefPtr<ProgressWindow>> ProgressWindow::try_create(StringView tit
 {
     auto window = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProgressWindow(title, parent)));
 
-    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
+    auto main_widget = window->set_main_widget<GUI::Widget>();
     main_widget->set_fill_with_background_color(true);
-    TRY(main_widget->try_set_layout<GUI::VerticalBoxLayout>());
+    main_widget->set_layout<GUI::VerticalBoxLayout>();
 
-    auto label = TRY(main_widget->try_add<GUI::Label>("Analyzing storage space..."));
-    label->set_fixed_height(22);
+    auto& label = main_widget->add<GUI::Label>("Analyzing storage space..."_string);
+    label.set_fixed_height(22);
 
-    window->m_progress_label = TRY(main_widget->try_add<GUI::Label>());
+    window->m_progress_label = main_widget->add<GUI::Label>();
     window->m_progress_label->set_fixed_height(22);
 
     window->update_progress_label(0);
@@ -42,7 +42,7 @@ ProgressWindow::~ProgressWindow() = default;
 
 void ProgressWindow::update_progress_label(size_t files_encountered_count)
 {
-    m_progress_label->set_text(DeprecatedString::formatted("{} files...", files_encountered_count));
+    m_progress_label->set_text(String::formatted("{} files...", files_encountered_count).release_value_but_fixme_should_propagate_errors());
     // FIXME: Why is this necessary to make the window repaint?
     Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents);
 }

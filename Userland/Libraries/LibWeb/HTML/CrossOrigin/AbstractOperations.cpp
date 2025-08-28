@@ -31,26 +31,26 @@ Vector<CrossOriginProperty> cross_origin_properties(Variant<HTML::Location const
         // 2. If O is a Location object, then return « { [[Property]]: "href", [[NeedsGet]]: false, [[NeedsSet]]: true }, { [[Property]]: "replace" } ».
         [](HTML::Location const*) -> Vector<CrossOriginProperty> {
             return {
-                { .property = "href"sv, .needs_get = false, .needs_set = true },
-                { .property = "replace"sv },
+                { .property = "href"_string, .needs_get = false, .needs_set = true },
+                { .property = "replace"_string },
             };
         },
         // 3. Return « { [[Property]]: "window", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "self", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "location", [[NeedsGet]]: true, [[NeedsSet]]: true }, { [[Property]]: "close" }, { [[Property]]: "closed", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "focus" }, { [[Property]]: "blur" }, { [[Property]]: "frames", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "length", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "top", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "opener", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "parent", [[NeedsGet]]: true, [[NeedsSet]]: false }, { [[Property]]: "postMessage" } ».
         [](HTML::Window const*) -> Vector<CrossOriginProperty> {
             return {
-                { .property = "window"sv, .needs_get = true, .needs_set = false },
-                { .property = "self"sv, .needs_get = true, .needs_set = false },
-                { .property = "location"sv, .needs_get = true, .needs_set = true },
-                { .property = "close"sv },
-                { .property = "closed"sv, .needs_get = true, .needs_set = false },
-                { .property = "focus"sv },
-                { .property = "blur"sv },
-                { .property = "frames"sv, .needs_get = true, .needs_set = false },
-                { .property = "length"sv, .needs_get = true, .needs_set = false },
-                { .property = "top"sv, .needs_get = true, .needs_set = false },
-                { .property = "opener"sv, .needs_get = true, .needs_set = false },
-                { .property = "parent"sv, .needs_get = true, .needs_set = false },
-                { .property = "postMessage"sv },
+                { .property = "window"_string, .needs_get = true, .needs_set = false },
+                { .property = "self"_string, .needs_get = true, .needs_set = false },
+                { .property = "location"_string, .needs_get = true, .needs_set = true },
+                { .property = "close"_string },
+                { .property = "closed"_string, .needs_get = true, .needs_set = false },
+                { .property = "focus"_string },
+                { .property = "blur"_string },
+                { .property = "frames"_string, .needs_get = true, .needs_set = false },
+                { .property = "length"_string, .needs_get = true, .needs_set = false },
+                { .property = "top"_string, .needs_get = true, .needs_set = false },
+                { .property = "opener"_string, .needs_get = true, .needs_set = false },
+                { .property = "parent"_string, .needs_get = true, .needs_set = false },
+                { .property = "postMessage"_string },
             };
         });
 }
@@ -78,7 +78,7 @@ JS::ThrowCompletionOr<JS::PropertyDescriptor> cross_origin_property_fallback(JS:
         return JS::PropertyDescriptor { .value = JS::js_undefined(), .writable = false, .enumerable = false, .configurable = true };
 
     // 2. Throw a "SecurityError" DOMException.
-    return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), DeprecatedString::formatted("Can't access property '{}' on cross-origin object", property_key)));
+    return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), MUST(String::formatted("Can't access property '{}' on cross-origin object", property_key))));
 }
 
 // 7.2.3.3 IsPlatformObjectSameOrigin ( O ), https://html.spec.whatwg.org/multipage/browsers.html#isplatformobjectsameorigin-(-o-)
@@ -102,8 +102,17 @@ Optional<JS::PropertyDescriptor> cross_origin_get_own_property_helper(Variant<HT
         .property_key = property_key,
     };
 
+    // SameValue(e.[[Property]], P) can never be true at step 2.1 if P is not a string due to the different type, so we can return early.
+    if (!property_key.is_string()) {
+        return {};
+    }
+    auto const& property_key_string = MUST(FlyString::from_deprecated_fly_string(property_key.as_string()));
+
     // 2. For each e of CrossOriginProperties(O):
     for (auto const& entry : cross_origin_properties(object_const_variant)) {
+        if (entry.property != property_key_string)
+            continue;
+        // 1. If SameValue(e.[[Property]], P) is true, then:
         auto& cross_origin_property_descriptor_map = object.visit([](auto* o) -> CrossOriginPropertyDescriptorMap& { return o->cross_origin_property_descriptor_map(); });
 
         // 1. If the value of the [[CrossOriginPropertyDescriptorMap]] internal slot of O contains an entry whose key is crossOriginKey, then return that entry's value.
@@ -126,7 +135,7 @@ Optional<JS::PropertyDescriptor> cross_origin_get_own_property_helper(Variant<HT
             if (value->is_function()) {
                 value = JS::NativeFunction::create(
                     realm, [function = JS::make_handle(*value)](auto& vm) {
-                        return JS::call(vm, function.value(), JS::js_undefined());
+                        return JS::call(vm, function.value(), JS::js_undefined(), vm.running_execution_context().arguments.span());
                     },
                     0, "");
             }
@@ -137,25 +146,25 @@ Optional<JS::PropertyDescriptor> cross_origin_get_own_property_helper(Variant<HT
         // 5. Otherwise:
         else {
             // 1. Let crossOriginGet be undefined.
-            Optional<JS::FunctionObject*> cross_origin_get;
+            Optional<JS::GCPtr<JS::FunctionObject>> cross_origin_get;
 
             // 2. If e.[[NeedsGet]] is true, then set crossOriginGet to an anonymous built-in function, created in the current Realm Record, that performs the same steps as the getter of the IDL attribute P on object O.
             if (*entry.needs_get) {
                 cross_origin_get = JS::NativeFunction::create(
                     realm, [object_ptr, getter = JS::make_handle(*original_descriptor->get)](auto& vm) {
-                        return JS::call(vm, getter.cell(), object_ptr);
+                        return JS::call(vm, getter.cell(), object_ptr, vm.running_execution_context().arguments.span());
                     },
                     0, "");
             }
 
             // 3. Let crossOriginSet be undefined.
-            Optional<JS::FunctionObject*> cross_origin_set;
+            Optional<JS::GCPtr<JS::FunctionObject>> cross_origin_set;
 
             // If e.[[NeedsSet]] is true, then set crossOriginSet to an anonymous built-in function, created in the current Realm Record, that performs the same steps as the setter of the IDL attribute P on object O.
             if (*entry.needs_set) {
                 cross_origin_set = JS::NativeFunction::create(
                     realm, [object_ptr, setter = JS::make_handle(*original_descriptor->set)](auto& vm) {
-                        return JS::call(vm, setter.cell(), object_ptr);
+                        return JS::call(vm, setter.cell(), object_ptr, vm.running_execution_context().arguments.span());
                     },
                     0, "");
             }
@@ -196,7 +205,7 @@ JS::ThrowCompletionOr<JS::Value> cross_origin_get(JS::VM& vm, JS::Object const& 
 
     // 6. If getter is undefined, then throw a "SecurityError" DOMException.
     if (!getter.has_value())
-        return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), DeprecatedString::formatted("Can't get property '{}' on cross-origin object", property_key)));
+        return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), MUST(String::formatted("Can't get property '{}' on cross-origin object", property_key))));
 
     // 7. Return ? Call(getter, Receiver).
     return JS::call(vm, *getter, receiver);
@@ -222,7 +231,7 @@ JS::ThrowCompletionOr<bool> cross_origin_set(JS::VM& vm, JS::Object& object, JS:
     }
 
     // 4. Throw a "SecurityError" DOMException.
-    return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), DeprecatedString::formatted("Can't set property '{}' on cross-origin object", property_key)));
+    return throw_completion(WebIDL::SecurityError::create(*vm.current_realm(), MUST(String::formatted("Can't set property '{}' on cross-origin object", property_key))));
 }
 
 // 7.2.3.7 CrossOriginOwnPropertyKeys ( O ), https://html.spec.whatwg.org/multipage/browsers.html#crossoriginownpropertykeys-(-o-)

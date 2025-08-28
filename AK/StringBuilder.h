@@ -16,11 +16,19 @@ namespace AK {
 
 class StringBuilder {
 public:
-    using OutputType = DeprecatedString;
+    static constexpr size_t inline_capacity = 256;
+
+    using OutputType = ByteString;
 
     static ErrorOr<StringBuilder> create(size_t initial_capacity = inline_capacity);
 
     explicit StringBuilder(size_t initial_capacity = inline_capacity);
+
+    enum class UseInlineCapacityOnly {
+        Yes,
+        No,
+    };
+    explicit StringBuilder(UseInlineCapacityOnly use_inline_capacity_only);
     ~StringBuilder() = default;
 
     ErrorOr<void> try_append(StringView);
@@ -62,20 +70,23 @@ public:
     }
 
 #ifndef KERNEL
-    [[nodiscard]] DeprecatedString to_deprecated_string() const;
+    [[nodiscard]] ByteString to_byte_string() const;
 #endif
 
+    [[nodiscard]] String to_string_without_validation() const;
     ErrorOr<String> to_string() const;
+
+    [[nodiscard]] FlyString to_fly_string_without_validation() const;
     ErrorOr<FlyString> to_fly_string() const;
 
-    [[nodiscard]] ByteBuffer to_byte_buffer() const;
+    [[nodiscard]] ErrorOr<ByteBuffer> to_byte_buffer() const;
 
     [[nodiscard]] StringView string_view() const;
     void clear();
 
-    [[nodiscard]] size_t length() const { return m_buffer.size(); }
-    [[nodiscard]] bool is_empty() const { return m_buffer.is_empty(); }
-    void trim(size_t count) { m_buffer.resize(m_buffer.size() - count); }
+    [[nodiscard]] size_t length() const;
+    [[nodiscard]] bool is_empty() const;
+    void trim(size_t count);
 
     template<class SeparatorType, class CollectionType>
     void join(SeparatorType const& separator, CollectionType const& collection, StringView fmtstr = "{}"sv)
@@ -98,10 +109,10 @@ public:
 
 private:
     ErrorOr<void> will_append(size_t);
-    u8* data() { return m_buffer.data(); }
-    u8 const* data() const { return m_buffer.data(); }
+    u8* data();
+    u8 const* data() const;
 
-    static constexpr size_t inline_capacity = 256;
+    UseInlineCapacityOnly m_use_inline_capacity_only { UseInlineCapacityOnly::No };
     Detail::ByteBuffer<inline_capacity> m_buffer;
 };
 

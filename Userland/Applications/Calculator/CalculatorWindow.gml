@@ -1,4 +1,4 @@
-@GUI::Widget {
+@Calculator::CalculatorWidget {
     fixed_width: 250
     fixed_height: 215
     fill_with_background_color: true
@@ -18,7 +18,9 @@
 
             @GUI::TextBox {
                 name: "entry_textbox"
-                font_type: "FixedWidth"
+                font_fixed_width: true
+                mode: "DisplayOnly"
+                focus_policy: "NoFocus"
             }
 
             @GUI::Widget {
@@ -306,6 +308,7 @@
                     fixed_width: 35
                     fixed_height: 28
                     foreground_role: "SyntaxPreprocessorValue"
+                    focus_policy: "NoFocus"
                 }
             }
         }

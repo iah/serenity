@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <LibCore/Object.h>
+#include <AK/RefCounted.h>
 #include <LibSQL/Forward.h>
 #include <LibSQL/Meta.h>
 #include <LibSQL/Serializer.h>
@@ -16,46 +16,43 @@ namespace SQL {
 class IndexNode {
 public:
     virtual ~IndexNode() = default;
-    [[nodiscard]] u32 pointer() const { return m_pointer; }
+    [[nodiscard]] Block::Index block_index() const { return m_block_index; }
     IndexNode* as_index_node() { return dynamic_cast<IndexNode*>(this); }
 
 protected:
-    explicit IndexNode(u32 pointer)
-        : m_pointer(pointer)
+    explicit IndexNode(Block::Index block_index)
+        : m_block_index(block_index)
     {
     }
 
-    void set_pointer(u32 pointer) { m_pointer = pointer; }
+    void set_block_index(Block::Index block_index) { m_block_index = block_index; }
 
 private:
-    u32 m_pointer;
+    Block::Index m_block_index;
 };
 
-class Index : public Core::Object {
-    C_OBJECT_ABSTRACT(Index);
-
+class Index : public RefCounted<Index> {
 public:
-    ~Index() override = default;
+    virtual ~Index() = default;
 
     NonnullRefPtr<TupleDescriptor> descriptor() const { return m_descriptor; }
     [[nodiscard]] bool duplicates_allowed() const { return !m_unique; }
     [[nodiscard]] bool unique() const { return m_unique; }
-    [[nodiscard]] u32 pointer() const { return m_pointer; }
+    [[nodiscard]] Block::Index block_index() const { return m_block_index; }
 
 protected:
-    Index(Serializer&, NonnullRefPtr<TupleDescriptor> const&, bool unique, u32 pointer);
-    Index(Serializer&, NonnullRefPtr<TupleDescriptor> const&, u32 pointer);
+    Index(Serializer&, NonnullRefPtr<TupleDescriptor> const&, bool unique, Block::Index block_index);
+    Index(Serializer&, NonnullRefPtr<TupleDescriptor> const&, Block::Index block_index);
 
     [[nodiscard]] Serializer& serializer() { return m_serializer; }
-    void set_pointer(u32 pointer) { m_pointer = pointer; }
-    u32 new_record_pointer() { return m_serializer.new_record_pointer(); }
-    //    ByteBuffer read_block(u32);
+    void set_block_index(Block::Index block_index) { m_block_index = block_index; }
+    u32 request_new_block_index() { return m_serializer.request_new_block_index(); }
 
 private:
     Serializer m_serializer;
     NonnullRefPtr<TupleDescriptor> m_descriptor;
     bool m_unique { false };
-    u32 m_pointer { 0 };
+    Block::Index m_block_index { 0 };
 };
 
 }

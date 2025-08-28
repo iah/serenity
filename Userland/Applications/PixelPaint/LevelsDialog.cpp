@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Torsten Engelmann <engelTorsten@gmx.de>
+ * Copyright (c) 2022-2023, Torsten Engelmann <engelTorsten@gmx.de>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,7 +18,7 @@ LevelsDialog::LevelsDialog(GUI::Window* parent_window, ImageEditor* editor)
     set_title("Levels");
     set_icon(parent_window->icon());
 
-    auto main_widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto main_widget = set_main_widget<GUI::Widget>();
     main_widget->load_from_gml(levels_dialog_gml).release_value_but_fixme_should_propagate_errors();
 
     resize(305, 202);
@@ -41,7 +41,7 @@ LevelsDialog::LevelsDialog(GUI::Window* parent_window, ImageEditor* editor)
     VERIFY(cancel_button);
     VERIFY(m_editor->active_layer());
 
-    context_label->set_text(DeprecatedString::formatted("Working on layer: {}", m_editor->active_layer()->name()));
+    context_label->set_text(String::formatted("Working on layer: {}", m_editor->active_layer()->name()).release_value_but_fixme_should_propagate_errors());
     m_gamma_slider->set_value(100);
 
     m_brightness_slider->on_change = [this](auto) {
@@ -71,16 +71,10 @@ LevelsDialog::LevelsDialog(GUI::Window* parent_window, ImageEditor* editor)
 
 void LevelsDialog::revert_possible_changes()
 {
-    // FIXME: Find a faster way to revert all the changes that we have done.
     if (m_did_change && m_reference_bitmap) {
-        for (int x = 0; x < m_reference_bitmap->width(); x++) {
-            for (int y = 0; y < m_reference_bitmap->height(); y++) {
-                m_editor->active_layer()->content_bitmap().set_pixel(x, y, m_reference_bitmap->get_pixel(x, y));
-            }
-        }
+        MUST(m_editor->active_layer()->set_bitmaps(m_reference_bitmap.release_nonnull(), m_editor->active_layer()->mask_bitmap()));
         m_editor->layers_did_change();
     }
-
     cleanup_resources();
 }
 
@@ -94,15 +88,24 @@ void LevelsDialog::generate_new_image()
     Color current_pixel_color;
     Color new_pixel_color;
     Gfx::StorageFormat storage_format = Gfx::determine_storage_format(m_editor->active_layer()->content_bitmap().format());
+    auto apply_only_on_mask = m_editor->active_layer()->mask_type() == Layer::MaskType::EditingMask;
+    auto relevant_area = m_masked_area.value_or({ 0, 0, m_reference_bitmap->width(), m_reference_bitmap->height() });
 
-    for (int x = 0; x < m_reference_bitmap->width(); x++) {
-        for (int y = 0; y < m_reference_bitmap->height(); y++) {
+    for (int y = relevant_area.top(); y < relevant_area.bottom(); y++) {
+        for (int x = relevant_area.left(); x < relevant_area.right(); x++) {
             current_pixel_color = m_reference_bitmap->get_pixel(x, y);
 
-            new_pixel_color.set_alpha(current_pixel_color.alpha());
-            new_pixel_color.set_red(m_precomputed_color_correction[current_pixel_color.red()]);
-            new_pixel_color.set_green(m_precomputed_color_correction[current_pixel_color.green()]);
-            new_pixel_color.set_blue(m_precomputed_color_correction[current_pixel_color.blue()]);
+            // Check if we can avoid setting pixels as nothing will change when we don't have a mask at x,y.
+            if (apply_only_on_mask && !m_editor->active_layer()->mask_bitmap()->get_pixel(x, y).alpha())
+                continue;
+
+            auto target_color = Color(
+                m_precomputed_color_correction[current_pixel_color.red()],
+                m_precomputed_color_correction[current_pixel_color.green()],
+                m_precomputed_color_correction[current_pixel_color.blue()],
+                current_pixel_color.alpha());
+
+            new_pixel_color = m_editor->active_layer()->modify_pixel_with_editing_mask(x, y, target_color, current_pixel_color);
 
             switch (storage_format) {
             case Gfx::StorageFormat::BGRx8888:
@@ -121,8 +124,10 @@ void LevelsDialog::generate_new_image()
 
 ErrorOr<void> LevelsDialog::ensure_reference_bitmap()
 {
-    if (m_reference_bitmap.is_null())
+    if (m_reference_bitmap.is_null()) {
         m_reference_bitmap = TRY(m_editor->active_layer()->content_bitmap().clone());
+        m_masked_area = m_editor->active_layer()->editing_mask_bounding_rect();
+    }
 
     return {};
 }

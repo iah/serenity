@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, David Tuin <davidot@serenityos.org>
+ * Copyright (c) 2023, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,12 +9,16 @@
 #include <LibJS/CyclicModule.h>
 #include <LibJS/Module.h>
 #include <LibJS/Runtime/ModuleNamespaceObject.h>
+#include <LibJS/Runtime/ModuleRequest.h>
 #include <LibJS/Runtime/Promise.h>
 #include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
-Module::Module(Realm& realm, DeprecatedString filename, Script::HostDefined* host_defined)
+JS_DEFINE_ALLOCATOR(Module);
+JS_DEFINE_ALLOCATOR(GraphLoadingState);
+
+Module::Module(Realm& realm, ByteString filename, Script::HostDefined* host_defined)
     : m_realm(realm)
     , m_host_defined(host_defined)
     , m_filename(move(filename))
@@ -60,6 +65,58 @@ ThrowCompletionOr<u32> Module::inner_module_evaluation(VM& vm, Vector<Module*>&,
 
     // d. Return index.
     return index;
+}
+
+// 16.2.1.9 FinishLoadingImportedModule ( referrer, specifier, payload, result ), https://tc39.es/ecma262/#sec-FinishLoadingImportedModule
+void finish_loading_imported_module(ImportedModuleReferrer referrer, ModuleRequest const& module_request, ImportedModulePayload payload, ThrowCompletionOr<NonnullGCPtr<Module>> const& result)
+{
+    // 1. If result is a normal completion, then
+    if (!result.is_error()) {
+        // NOTE: Only Script and CyclicModule referrers have the [[LoadedModules]] internal slot.
+        if (referrer.has<NonnullGCPtr<Script>>() || referrer.has<NonnullGCPtr<CyclicModule>>()) {
+            auto& loaded_modules = referrer.visit(
+                [](JS::NonnullGCPtr<JS::Realm>&) -> Vector<ModuleWithSpecifier>& {
+                    VERIFY_NOT_REACHED();
+                    __builtin_unreachable();
+                },
+                [](auto& script_or_module) -> Vector<ModuleWithSpecifier>& {
+                    return script_or_module->loaded_modules();
+                });
+
+            bool found_record = false;
+
+            // a. If referrer.[[LoadedModules]] contains a Record whose [[Specifier]] is specifier, then
+            for (auto const& record : loaded_modules) {
+                if (record.specifier == module_request.module_specifier) {
+                    // i. Assert: That Record's [[Module]] is result.[[Value]].
+                    VERIFY(record.module == result.value());
+                    found_record = true;
+                }
+            }
+
+            // b. Else,
+            if (!found_record) {
+                auto module = result.value();
+
+                // i. Append the Record { [[Specifier]]: specifier, [[Module]]: result.[[Value]] } to referrer.[[LoadedModules]].
+                loaded_modules.append(ModuleWithSpecifier {
+                    .specifier = module_request.module_specifier,
+                    .module = NonnullGCPtr<Module>(*module) });
+            }
+        }
+    }
+
+    if (payload.has<NonnullGCPtr<GraphLoadingState>>()) {
+        // a. Perform ContinueModuleLoading(payload, result)
+        continue_module_loading(payload.get<NonnullGCPtr<GraphLoadingState>>(), result);
+    }
+    // Else,
+    else {
+        // a. Perform ContinueDynamicImport(payload, result).
+        continue_dynamic_import(payload.get<NonnullGCPtr<PromiseCapability>>(), result);
+    }
+
+    // 4. Return unused.
 }
 
 // 16.2.1.10 GetModuleNamespace ( module ), https://tc39.es/ecma262/#sec-getmodulenamespace
@@ -114,7 +171,7 @@ Object* Module::module_namespace_create(VM& vm, Vector<DeprecatedFlyString> unam
     // 6. Let sortedExports be a List whose elements are the elements of exports ordered as if an Array of the same values had been sorted using %Array.prototype.sort% using undefined as comparefn.
     // 7. Set M.[[Exports]] to sortedExports.
     // 8. Create own properties of M corresponding to the definitions in 28.3.
-    auto module_namespace = vm.heap().allocate<ModuleNamespaceObject>(realm, realm, this, move(unambiguous_names)).release_allocated_value_but_fixme_should_propagate_errors();
+    auto module_namespace = vm.heap().allocate<ModuleNamespaceObject>(realm, realm, this, move(unambiguous_names));
 
     // 9. Set module.[[Namespace]] to M.
     m_namespace = make_handle(module_namespace);

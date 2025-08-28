@@ -21,7 +21,7 @@ FilterGallery::FilterGallery(GUI::Window* parent_window, ImageEditor* editor)
     resize(400, 250);
     set_resizable(true);
 
-    auto main_widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto main_widget = set_main_widget<GUI::Widget>();
     main_widget->load_from_gml(filter_gallery_gml).release_value_but_fixme_should_propagate_errors();
 
     m_filter_tree = main_widget->find_descendant_of_type_named<GUI::TreeView>("tree_view");
@@ -36,7 +36,7 @@ FilterGallery::FilterGallery(GUI::Window* parent_window, ImageEditor* editor)
     VERIFY(m_config_widget);
     VERIFY(m_preview_widget);
 
-    m_error_label = GUI::Label::try_create().release_value_but_fixme_should_propagate_errors();
+    m_error_label = GUI::Label::construct();
     m_error_label->set_enabled(false);
 
     auto filter_tree_model = MUST(create_filter_tree_model(editor));
@@ -64,7 +64,7 @@ FilterGallery::FilterGallery(GUI::Window* parent_window, ImageEditor* editor)
 
         auto settings_widget_or_error = m_selected_filter->get_settings_widget();
         if (settings_widget_or_error.is_error()) {
-            m_error_label->set_text(DeprecatedString::formatted("Error creating settings: {}", settings_widget_or_error.error()));
+            m_error_label->set_text(String::formatted("Error creating settings: {}", settings_widget_or_error.error()).release_value_but_fixme_should_propagate_errors());
             m_selected_filter_config_widget = m_error_label;
         } else {
             m_selected_filter_config_widget = settings_widget_or_error.release_value();
@@ -74,7 +74,14 @@ FilterGallery::FilterGallery(GUI::Window* parent_window, ImageEditor* editor)
     };
 
     m_preview_widget->set_layer(editor->active_layer());
-    m_preview_widget->set_bitmap(editor->active_layer()->content_bitmap().clone().release_value());
+    switch (editor->active_layer()->edit_mode()) {
+    case Layer::EditMode::Content:
+        m_preview_widget->set_bitmap(editor->active_layer()->content_bitmap().clone().release_value());
+        break;
+    case Layer::EditMode::Mask:
+        m_preview_widget->set_bitmap(editor->active_layer()->mask_bitmap()->clone().release_value());
+        break;
+    }
 
     apply_button->on_click = [this](auto) {
         if (!m_selected_filter) {

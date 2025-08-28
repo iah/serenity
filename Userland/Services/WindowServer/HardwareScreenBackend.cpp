@@ -8,16 +8,16 @@
 #include "HardwareScreenBackend.h"
 #include "ScreenBackend.h"
 #include <AK/Try.h>
-#include <Kernel/API/Graphics.h>
 #include <LibCore/System.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/devices/gpu.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 namespace WindowServer {
 
-HardwareScreenBackend::HardwareScreenBackend(DeprecatedString device)
+HardwareScreenBackend::HardwareScreenBackend(ByteString device)
     : m_device(move(device))
 {
 }
@@ -28,7 +28,7 @@ ErrorOr<void> HardwareScreenBackend::open()
 
     GraphicsConnectorProperties properties;
     if (graphics_connector_get_properties(m_display_connector_fd, &properties) < 0)
-        return Error::from_syscall(DeprecatedString::formatted("failed to ioctl {}", m_device), errno);
+        return Error::from_syscall(ByteString::formatted("failed to ioctl {}", m_device), errno);
 
     m_can_device_flush_buffers = (properties.partial_flushing_support != 0);
     m_can_device_flush_entire_framebuffer = (properties.flushing_support != 0);

@@ -8,8 +8,8 @@
 #pragma once
 
 #include <AK/Vector.h>
+#include <LibDisassembly/x86/Instruction.h>
 #include <LibGUI/Model.h>
-#include <LibX86/Instruction.h>
 #include <sys/arch/regs.h>
 
 namespace Debug {
@@ -21,8 +21,8 @@ class DebugSession;
 namespace HackStudio {
 
 struct InstructionData {
-    X86::Instruction insn;
-    DeprecatedString disassembly;
+    NonnullOwnPtr<Disassembly::Instruction> insn;
+    ByteString disassembly;
     StringView bytes;
     FlatPtr address { 0 };
 };
@@ -45,7 +45,7 @@ public:
 
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
 
 private:

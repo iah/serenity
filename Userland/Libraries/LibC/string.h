@@ -7,10 +7,18 @@
 
 #pragma once
 
+// Includes essentially mandated by POSIX:
+// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/string.h.html
+#include <stddef.h>
+
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
 __BEGIN_DECLS
+
+#ifdef __cplusplus
+#    define __CORRECT_ISO_CPP_STRING_H_PROTO
+#endif
 
 // A few C Standard Libraries include this header in <string.h>, and hence expect
 // `strcasecmp` etcetera to be available as part of a <string.h> include, so let's
@@ -26,9 +34,10 @@ int strncmp(char const*, char const*, size_t);
 int memcmp(void const*, void const*, size_t);
 int timingsafe_memcmp(void const*, void const*, size_t);
 void* memcpy(void*, void const*, size_t);
+void* memccpy(void*, void const*, int, size_t);
 void* memmove(void*, void const*, size_t);
 void* memchr(void const*, int c, size_t);
-void const* memmem(void const* haystack, size_t, void const* needle, size_t);
+void* memmem(void const* haystack, size_t, void const* needle, size_t);
 
 void* memset(void*, int, size_t);
 void explicit_bzero(void*, size_t) __attribute__((nonnull(1)));
@@ -37,6 +46,7 @@ __attribute__((malloc)) char* strdup(char const*);
 __attribute__((malloc)) char* strndup(char const*, size_t);
 
 char* strcpy(char* dest, char const* src);
+char* stpcpy(char* dest, char const* src);
 char* strncpy(char* dest, char const* src, size_t);
 __attribute__((warn_unused_result)) size_t strlcpy(char* dest, char const* src, size_t);
 

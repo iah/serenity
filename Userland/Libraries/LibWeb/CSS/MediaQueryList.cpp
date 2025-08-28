@@ -15,9 +15,11 @@
 
 namespace Web::CSS {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<MediaQueryList>> MediaQueryList::create(DOM::Document& document, Vector<NonnullRefPtr<MediaQuery>>&& media)
+JS_DEFINE_ALLOCATOR(MediaQueryList);
+
+JS::NonnullGCPtr<MediaQueryList> MediaQueryList::create(DOM::Document& document, Vector<NonnullRefPtr<MediaQuery>>&& media)
 {
-    return MUST_OR_THROW_OOM(document.heap().allocate<MediaQueryList>(document.realm(), document, move(media)));
+    return document.heap().allocate<MediaQueryList>(document.realm(), document, move(media));
 }
 
 MediaQueryList::MediaQueryList(DOM::Document& document, Vector<NonnullRefPtr<MediaQuery>>&& media)
@@ -28,48 +30,57 @@ MediaQueryList::MediaQueryList(DOM::Document& document, Vector<NonnullRefPtr<Med
     evaluate();
 }
 
-JS::ThrowCompletionOr<void> MediaQueryList::initialize(JS::Realm& realm)
+void MediaQueryList::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::MediaQueryListPrototype>(realm, "MediaQueryList"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(MediaQueryList);
 }
 
 void MediaQueryList::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_document.ptr());
+    visitor.visit(m_document);
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-mediaquerylist-media
-DeprecatedString MediaQueryList::media() const
+String MediaQueryList::media() const
 {
-    return serialize_a_media_query_list(m_media).release_value_but_fixme_should_propagate_errors().to_deprecated_string();
+    return serialize_a_media_query_list(m_media);
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-mediaquerylist-matches
 bool MediaQueryList::matches() const
 {
+    if (m_media.is_empty())
+        return true;
+
     for (auto& media : m_media) {
         if (media->matches())
             return true;
     }
+
     return false;
 }
 
 bool MediaQueryList::evaluate()
 {
+    auto window = m_document->window();
+    if (!window)
+        return false;
+
+    if (m_media.is_empty())
+        return true;
+
     bool now_matches = false;
     for (auto& media : m_media) {
-        now_matches = now_matches || media->evaluate(m_document->window());
+        now_matches = now_matches || media->evaluate(*window);
     }
 
     return now_matches;
 }
 
 // https://www.w3.org/TR/cssom-view/#dom-mediaquerylist-addlistener
-void MediaQueryList::add_listener(DOM::IDLEventListener* listener)
+void MediaQueryList::add_listener(JS::GCPtr<DOM::IDLEventListener> listener)
 {
     // 1. If listener is null, terminate these steps.
     if (!listener)
@@ -83,12 +94,13 @@ void MediaQueryList::add_listener(DOM::IDLEventListener* listener)
 }
 
 // https://www.w3.org/TR/cssom-view/#dom-mediaquerylist-removelistener
-void MediaQueryList::remove_listener(DOM::IDLEventListener* listener)
+void MediaQueryList::remove_listener(JS::GCPtr<DOM::IDLEventListener> listener)
 {
     // 1. Remove an event listener from the associated list of event listeners, whose type is change, callback is listener, and capture is false.
     // NOTE: While the spec doesn't technically use remove_event_listener and instead manipulates the list directly, every major engine uses remove_event_listener.
     //       This means if an event listener removes another event listener that comes after it, the removed event listener will not be invoked.
-    remove_event_listener_without_options(HTML::EventNames::change, *listener);
+    if (listener)
+        remove_event_listener_without_options(HTML::EventNames::change, *listener);
 }
 
 void MediaQueryList::set_onchange(WebIDL::CallbackType* event_handler)

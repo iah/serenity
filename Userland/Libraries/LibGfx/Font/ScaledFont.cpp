@@ -22,18 +22,23 @@ ScaledFont::ScaledFont(NonnullRefPtr<VectorFont> font, float point_width, float 
 
     auto metrics = m_font->metrics(m_x_scale, m_y_scale);
 
-    m_pixel_size = m_point_height * 1.33333333f;
+    m_pixel_size = m_point_height * (DEFAULT_DPI / POINTS_PER_INCH);
     m_pixel_size_rounded_up = static_cast<int>(ceilf(m_pixel_size));
 
     m_pixel_metrics = Gfx::FontPixelMetrics {
         .size = (float)pixel_size(),
-        .x_height = (float)x_height(),
+        .x_height = metrics.x_height,
         .advance_of_ascii_zero = (float)glyph_width('0'),
         .glyph_spacing = (float)glyph_spacing(),
         .ascent = metrics.ascender,
         .descent = metrics.descender,
         .line_gap = metrics.line_gap,
     };
+}
+
+int ScaledFont::width_rounded_up(StringView view) const
+{
+    return static_cast<int>(ceilf(width(view)));
 }
 
 float ScaledFont::width(StringView view) const { return unicode_view_width(Utf8View(view)); }
@@ -78,17 +83,46 @@ RefPtr<Gfx::Bitmap> ScaledFont::rasterize_glyph(u32 glyph_id, GlyphSubpixelOffse
     return glyph_bitmap;
 }
 
+bool ScaledFont::append_glyph_path_to(Gfx::Path& path, u32 glyph_id) const
+{
+    auto glyph_iterator = m_glyph_cache.find(glyph_id);
+    if (glyph_iterator != m_glyph_cache.end()) {
+        path.append_path(glyph_iterator->value, Path::AppendRelativeToLastPoint::Yes);
+        return true;
+    }
+    Gfx::Path glyph_path;
+    bool success = m_font->append_glyph_path_to(glyph_path, glyph_id, m_x_scale, m_y_scale);
+    if (success) {
+        path.append_path(glyph_path, Path::AppendRelativeToLastPoint::Yes);
+        m_glyph_cache.set(glyph_id, move(glyph_path));
+    }
+    return success;
+}
+
 Gfx::Glyph ScaledFont::glyph(u32 code_point) const
 {
     return glyph(code_point, GlyphSubpixelOffset { 0, 0 });
 }
 
-Gfx::Glyph ScaledFont::glyph(u32 code_point, GlyphSubpixelOffset subpixel_offset) const
+Glyph ScaledFont::glyph_for_id(u32 id, GlyphSubpixelOffset subpixel_offset) const
 {
-    auto id = glyph_id_for_code_point(code_point);
     auto bitmap = rasterize_glyph(id, subpixel_offset);
     auto metrics = glyph_metrics(id);
     return Gfx::Glyph(bitmap, metrics.left_side_bearing, metrics.advance_width, metrics.ascender, m_font->has_color_bitmaps());
+}
+
+Gfx::Glyph ScaledFont::glyph(u32 code_point, GlyphSubpixelOffset subpixel_offset) const
+{
+    auto id = glyph_id_for_code_point(code_point);
+    return glyph_for_id(id, subpixel_offset);
+}
+
+Optional<Glyph> ScaledFont::glyph_for_postscript_name(StringView name, GlyphSubpixelOffset subpixel_offset) const
+{
+    auto id = glyph_id_for_postscript_name(name);
+    if (!id.has_value())
+        return {};
+    return glyph_for_id(id.value(), subpixel_offset);
 }
 
 float ScaledFont::glyph_left_bearing(u32 code_point) const
@@ -97,11 +131,26 @@ float ScaledFont::glyph_left_bearing(u32 code_point) const
     return glyph_metrics(id).left_side_bearing;
 }
 
+Optional<float> ScaledFont::glyph_left_bearing_for_postscript_name(StringView name) const
+{
+    auto id = glyph_id_for_postscript_name(name);
+    if (!id.has_value())
+        return {};
+    return glyph_metrics(id.value()).left_side_bearing;
+}
+
 float ScaledFont::glyph_width(u32 code_point) const
 {
     auto id = glyph_id_for_code_point(code_point);
-    auto metrics = glyph_metrics(id);
-    return metrics.advance_width;
+    return m_font->glyph_advance(id, m_x_scale, m_y_scale, m_point_width, m_point_height);
+}
+
+Optional<float> ScaledFont::glyph_width_for_postscript_name(StringView name) const
+{
+    auto id = glyph_id_for_postscript_name(name);
+    if (!id.has_value())
+        return {};
+    return m_font->glyph_advance(id.value(), m_x_scale, m_y_scale, m_point_width, m_point_height);
 }
 
 template<typename CodePointIterator>
@@ -143,9 +192,16 @@ u8 ScaledFont::glyph_fixed_width() const
     return glyph_metrics(glyph_id_for_code_point(' ')).advance_width;
 }
 
-RefPtr<Font> ScaledFont::with_size(float point_size) const
+NonnullRefPtr<ScaledFont> ScaledFont::scaled_with_size(float point_size) const
 {
-    return adopt_ref(*new Gfx::ScaledFont(*m_font, point_size, point_size));
+    if (point_size == m_point_height && point_size == m_point_width)
+        return *const_cast<ScaledFont*>(this);
+    return m_font->scaled_font(point_size);
+}
+
+NonnullRefPtr<Font> ScaledFont::with_size(float point_size) const
+{
+    return scaled_with_size(point_size);
 }
 
 Gfx::FontPixelMetrics ScaledFont::pixel_metrics() const
@@ -161,6 +217,11 @@ float ScaledFont::pixel_size() const
 int ScaledFont::pixel_size_rounded_up() const
 {
     return m_pixel_size_rounded_up;
+}
+
+float ScaledFont::point_size() const
+{
+    return m_point_height;
 }
 
 }

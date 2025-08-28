@@ -4,13 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Arch/Processor.h>
 #include <Kernel/Arch/aarch64/ASM_wrapper.h>
 #include <Kernel/Arch/aarch64/CPU.h>
-#include <Kernel/Arch/aarch64/Processor.h>
 #include <Kernel/Arch/aarch64/Registers.h>
-#include <Kernel/Panic.h>
-
-extern "C" uintptr_t vector_table_el1;
+#include <Kernel/Library/Panic.h>
 
 namespace Kernel {
 
@@ -65,15 +63,7 @@ static void drop_el2_to_el1()
 
 static void setup_el1()
 {
-    Aarch64::SCTLR_EL1 system_control_register_el1 = Aarch64::SCTLR_EL1::reset_value();
-
-    system_control_register_el1.UCT = 1;  // Don't trap access to CTR_EL0
-    system_control_register_el1.nTWE = 1; // Don't trap WFE instructions
-    system_control_register_el1.nTWI = 1; // Don't trap WFI instructions
-    system_control_register_el1.DZE = 1;  // Don't trap DC ZVA instructions
-    system_control_register_el1.UMA = 1;  // Don't trap access to DAIF (debugging) flags of EFLAGS register
-    system_control_register_el1.SA0 = 1;  // Enable stack access alignment check for EL0
-    system_control_register_el1.SA = 1;   // Enable stack access alignment check for EL1
+    Aarch64::SCTLR_EL1 system_control_register_el1 = Aarch64::SCTLR_EL1::default_value();
 
     // FIXME: Enable memory access alignment check when userspace will not execute unaligned memory accesses anymore.
     //        See: https://github.com/SerenityOS/serenity/issues/17516
@@ -87,8 +77,6 @@ static void setup_el1()
     cpacr_el1.SMEN = 0;    // Trap SME instructions at EL1 and EL0
     cpacr_el1.TTA = 0;     // Don't trap access to trace registers
     Aarch64::CPACR_EL1::write(cpacr_el1);
-
-    Aarch64::Asm::load_el1_vector_table(&vector_table_el1);
 }
 
 void initialize_exceptions()

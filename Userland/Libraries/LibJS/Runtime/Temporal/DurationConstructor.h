@@ -12,9 +12,10 @@ namespace JS::Temporal {
 
 class DurationConstructor final : public NativeFunction {
     JS_OBJECT(DurationConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DurationConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DurationConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

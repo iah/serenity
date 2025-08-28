@@ -61,10 +61,10 @@ void Typeface::set_vector_font(RefPtr<VectorFont> font)
 
 RefPtr<Font> Typeface::get_font(float point_size, Font::AllowInexactSizeMatch allow_inexact_size_match) const
 {
-    VERIFY(point_size > 0);
+    VERIFY(point_size >= 0);
 
     if (m_vector_font)
-        return adopt_ref(*new Gfx::ScaledFont(*m_vector_font, point_size, point_size));
+        return m_vector_font->scaled_font(point_size);
 
     RefPtr<BitmapFont> best_match;
     int size = roundf(point_size);
@@ -73,16 +73,22 @@ RefPtr<Font> Typeface::get_font(float point_size, Font::AllowInexactSizeMatch al
     for (auto font : m_bitmap_fonts) {
         if (font->presentation_size() == size)
             return font;
-        if (allow_inexact_size_match == Font::AllowInexactSizeMatch::Yes) {
+        if (allow_inexact_size_match != Font::AllowInexactSizeMatch::No) {
             int delta = static_cast<int>(font->presentation_size()) - static_cast<int>(size);
-            if (abs(delta) < best_delta) {
+            if (abs(delta) == best_delta) {
+                if (allow_inexact_size_match == Font::AllowInexactSizeMatch::Larger && delta > 0) {
+                    best_match = font;
+                } else if (allow_inexact_size_match == Font::AllowInexactSizeMatch::Smaller && delta < 0) {
+                    best_match = font;
+                }
+            } else if (abs(delta) < best_delta) {
                 best_match = font;
                 best_delta = abs(delta);
             }
         }
     }
 
-    if (allow_inexact_size_match == Font::AllowInexactSizeMatch::Yes && best_match)
+    if (allow_inexact_size_match != Font::AllowInexactSizeMatch::No && best_match)
         return best_match;
 
     return {};

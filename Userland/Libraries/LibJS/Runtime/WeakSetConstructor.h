@@ -12,9 +12,10 @@ namespace JS {
 
 class WeakSetConstructor final : public NativeFunction {
     JS_OBJECT(WeakSetConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(WeakSetConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~WeakSetConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

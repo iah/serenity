@@ -13,9 +13,10 @@ namespace JS {
 
 class ObjectPrototype final : public Object {
     JS_OBJECT(ObjectPrototype, Object);
+    JS_DECLARE_ALLOCATOR(ObjectPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ObjectPrototype() override = default;
 
     // 10.4.7 Immutable Prototype Exotic Objects, https://tc39.es/ecma262/#sec-immutable-prototype-exotic-objects

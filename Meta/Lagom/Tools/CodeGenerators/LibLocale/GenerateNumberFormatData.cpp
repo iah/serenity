@@ -7,8 +7,8 @@
 #include "../LibUnicode/GeneratorUtil.h" // FIXME: Move this somewhere common.
 #include <AK/AllOf.h>
 #include <AK/Array.h>
+#include <AK/ByteString.h>
 #include <AK/CharacterTypes.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Find.h>
 #include <AK/Format.h>
 #include <AK/HashFunctions.h>
@@ -23,8 +23,8 @@
 #include <AK/Traits.h>
 #include <AK/Utf8View.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
-#include <LibCore/DirIterator.h>
+#include <LibCore/Directory.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibJS/Runtime/Intl/SingleUnitIdentifiers.h>
 #include <LibLocale/Locale.h>
 #include <LibLocale/NumberFormat.h>
@@ -85,12 +85,12 @@ struct AK::Formatter<NumberFormat> : Formatter<FormatString> {
             format.zero_format_index,
             format.positive_format_index,
             format.negative_format_index,
-            identifier_indices.to_deprecated_string());
+            identifier_indices.to_byte_string());
     }
 };
 
 template<>
-struct AK::Traits<NumberFormat> : public GenericTraits<NumberFormat> {
+struct AK::Traits<NumberFormat> : public DefaultTraits<NumberFormat> {
     static unsigned hash(NumberFormat const& f) { return f.hash(); }
 };
 
@@ -109,7 +109,6 @@ struct NumberSystem {
         hash = pair_int_hash(hash, currency_format);
         hash = pair_int_hash(hash, accounting_format);
         hash = pair_int_hash(hash, currency_unit_formats);
-        hash = pair_int_hash(hash, currency_short_formats);
         hash = pair_int_hash(hash, percent_format);
         hash = pair_int_hash(hash, scientific_format);
         return hash;
@@ -126,7 +125,6 @@ struct NumberSystem {
             && (currency_format == other.currency_format)
             && (accounting_format == other.accounting_format)
             && (currency_unit_formats == other.currency_unit_formats)
-            && (currency_short_formats == other.currency_short_formats)
             && (percent_format == other.percent_format)
             && (scientific_format == other.scientific_format);
     }
@@ -143,7 +141,6 @@ struct NumberSystem {
     size_t currency_format { 0 };
     size_t accounting_format { 0 };
     size_t currency_unit_formats { 0 };
-    size_t currency_short_formats { 0 };
 
     size_t percent_format { 0 };
     size_t scientific_format { 0 };
@@ -154,7 +151,7 @@ struct AK::Formatter<NumberSystem> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, NumberSystem const& system)
     {
         return Formatter<FormatString>::format(builder,
-            "{{ {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }}"sv,
+            "{{ {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }}"sv,
             system.symbols,
             system.primary_grouping_size,
             system.secondary_grouping_size,
@@ -164,14 +161,13 @@ struct AK::Formatter<NumberSystem> : Formatter<FormatString> {
             system.currency_format,
             system.accounting_format,
             system.currency_unit_formats,
-            system.currency_short_formats,
             system.percent_format,
             system.scientific_format);
     }
 };
 
 template<>
-struct AK::Traits<NumberSystem> : public GenericTraits<NumberSystem> {
+struct AK::Traits<NumberSystem> : public DefaultTraits<NumberSystem> {
     static unsigned hash(NumberSystem const& s) { return s.hash(); }
 };
 
@@ -213,13 +209,13 @@ struct AK::Formatter<Unit> : Formatter<FormatString> {
 };
 
 template<>
-struct AK::Traits<Unit> : public GenericTraits<Unit> {
+struct AK::Traits<Unit> : public DefaultTraits<Unit> {
     static unsigned hash(Unit const& u) { return u.hash(); }
 };
 
 struct LocaleData {
     Vector<size_t> number_systems;
-    HashMap<DeprecatedString, size_t> units {};
+    HashMap<ByteString, size_t> units {};
     u8 minimum_grouping_digits { 0 };
 };
 
@@ -231,14 +227,14 @@ struct CLDR {
     UniqueStorage<NumberSystem> unique_systems;
     UniqueStorage<Unit> unique_units;
 
-    HashMap<DeprecatedString, Array<u32, 10>> number_system_digits;
-    Vector<DeprecatedString> number_systems;
+    HashMap<ByteString, Array<u32, 10>> number_system_digits;
+    Vector<ByteString> number_systems;
 
-    HashMap<DeprecatedString, LocaleData> locales;
+    HashMap<ByteString, LocaleData> locales;
     size_t max_identifier_count { 0 };
 };
 
-static ErrorOr<void> parse_number_system_digits(DeprecatedString core_supplemental_path, CLDR& cldr)
+static ErrorOr<void> parse_number_system_digits(ByteString core_supplemental_path, CLDR& cldr)
 {
     LexicalPath number_systems_path(move(core_supplemental_path));
     number_systems_path = number_systems_path.append("numberingSystems.json"sv);
@@ -248,11 +244,11 @@ static ErrorOr<void> parse_number_system_digits(DeprecatedString core_supplement
     auto const& number_systems_object = supplemental_object.get_object("numberingSystems"sv).value();
 
     number_systems_object.for_each_member([&](auto const& number_system, auto const& digits_object) {
-        auto type = digits_object.as_object().get_deprecated_string("_type"sv).value();
+        auto type = digits_object.as_object().get_byte_string("_type"sv).value();
         if (type != "numeric"sv)
             return;
 
-        auto digits = digits_object.as_object().get_deprecated_string("_digits"sv).value();
+        auto digits = digits_object.as_object().get_byte_string("_digits"sv).value();
 
         Utf8View utf8_digits { digits };
         VERIFY(utf8_digits.length() == 10);
@@ -270,7 +266,7 @@ static ErrorOr<void> parse_number_system_digits(DeprecatedString core_supplement
     return {};
 }
 
-static DeprecatedString parse_identifiers(DeprecatedString pattern, StringView replacement, CLDR& cldr, NumberFormat& format)
+static ByteString parse_identifiers(ByteString pattern, StringView replacement, CLDR& cldr, NumberFormat& format)
 {
     static constexpr Utf8View whitespace { "\u0020\u00a0\u200f"sv };
 
@@ -316,7 +312,7 @@ static DeprecatedString parse_identifiers(DeprecatedString pattern, StringView r
             cldr.max_identifier_count = max(cldr.max_identifier_count, format.identifier_indices.size());
         }
 
-        pattern = DeprecatedString::formatted("{}{{{}:{}}}{}",
+        pattern = ByteString::formatted("{}{{{}:{}}}{}",
             *start_index > 0 ? pattern.substring_view(0, *start_index) : ""sv,
             replacement,
             replacement_index,
@@ -324,13 +320,13 @@ static DeprecatedString parse_identifiers(DeprecatedString pattern, StringView r
     }
 }
 
-static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, NumberFormatType type, NumberFormat& format, NumberSystem* number_system_for_groupings = nullptr)
+static void parse_number_pattern(Vector<ByteString> patterns, CLDR& cldr, NumberFormatType type, NumberFormat& format, NumberSystem* number_system_for_groupings = nullptr)
 {
     // https://unicode.org/reports/tr35/tr35-numbers.html#Number_Format_Patterns
     // https://cldr.unicode.org/translation/number-currency-formats/number-and-currency-patterns
     VERIFY((patterns.size() == 1) || (patterns.size() == 2));
 
-    auto replace_patterns = [&](DeprecatedString pattern) {
+    auto replace_patterns = [&](ByteString pattern) {
         static HashMap<StringView, StringView> replacements = {
             { "{0}"sv, "{number}"sv },
             { "{1}"sv, "{currency}"sv },
@@ -344,7 +340,7 @@ static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, 
         for (auto const& replacement : replacements)
             pattern = pattern.replace(replacement.key, replacement.value, ReplaceMode::All);
 
-        if (auto start_number_index = pattern.find_any_of("#0"sv, DeprecatedString::SearchDirection::Forward); start_number_index.has_value()) {
+        if (auto start_number_index = pattern.find_any_of("#0"sv, ByteString::SearchDirection::Forward); start_number_index.has_value()) {
             auto end_number_index = *start_number_index + 1;
 
             for (; end_number_index < pattern.length(); ++end_number_index) {
@@ -371,7 +367,7 @@ static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, 
                 }
             }
 
-            pattern = DeprecatedString::formatted("{}{{number}}{}",
+            pattern = ByteString::formatted("{}{{number}}{}",
                 *start_number_index > 0 ? pattern.substring_view(0, *start_number_index) : ""sv,
                 pattern.substring_view(end_number_index));
 
@@ -388,19 +384,19 @@ static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, 
     };
 
     auto zero_format = replace_patterns(move(patterns[0]));
-    format.positive_format_index = cldr.unique_strings.ensure(DeprecatedString::formatted("{{plusSign}}{}", zero_format));
+    format.positive_format_index = cldr.unique_strings.ensure(ByteString::formatted("{{plusSign}}{}", zero_format));
 
     if (patterns.size() == 2) {
         auto negative_format = replace_patterns(move(patterns[1]));
         format.negative_format_index = cldr.unique_strings.ensure(move(negative_format));
     } else {
-        format.negative_format_index = cldr.unique_strings.ensure(DeprecatedString::formatted("{{minusSign}}{}", zero_format));
+        format.negative_format_index = cldr.unique_strings.ensure(ByteString::formatted("{{minusSign}}{}", zero_format));
     }
 
     format.zero_format_index = cldr.unique_strings.ensure(move(zero_format));
 }
 
-static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, NumberFormatType type, size_t& format_index, NumberSystem* number_system_for_groupings = nullptr)
+static void parse_number_pattern(Vector<ByteString> patterns, CLDR& cldr, NumberFormatType type, size_t& format_index, NumberSystem* number_system_for_groupings = nullptr)
 {
     NumberFormat format {};
     parse_number_pattern(move(patterns), cldr, type, format, number_system_for_groupings);
@@ -408,7 +404,7 @@ static void parse_number_pattern(Vector<DeprecatedString> patterns, CLDR& cldr, 
     format_index = cldr.unique_formats.ensure(move(format));
 }
 
-static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, CLDR& cldr, LocaleData& locale)
+static ErrorOr<void> parse_number_systems(ByteString locale_numbers_path, CLDR& cldr, LocaleData& locale)
 {
     LexicalPath numbers_path(move(locale_numbers_path));
     numbers_path = numbers_path.append("numbers.json"sv);
@@ -417,7 +413,7 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
     auto const& main_object = numbers.as_object().get_object("main"sv).value();
     auto const& locale_object = main_object.get_object(numbers_path.parent().basename()).value();
     auto const& locale_numbers_object = locale_object.get_object("numbers"sv).value();
-    auto const& minimum_grouping_digits = locale_numbers_object.get_deprecated_string("minimumGroupingDigits"sv).value();
+    auto const& minimum_grouping_digits = locale_numbers_object.get_byte_string("minimumGroupingDigits"sv).value();
 
     Vector<Optional<NumberSystem>> number_systems;
     number_systems.resize(cldr.number_systems.size());
@@ -445,7 +441,7 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
             auto patterns = value.as_string().split(';');
             NumberFormat format {};
 
-            if (auto type = split_key[0].template to_uint<u64>(); type.has_value()) {
+            if (auto type = split_key[0].template to_number<u64>(); type.has_value()) {
                 VERIFY(*type % 10 == 0);
                 format.magnitude = static_cast<u8>(log10(*type));
 
@@ -521,9 +517,9 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
 
             // The range separator does not appear in the symbols list, we have to extract it from
             // the range pattern.
-            auto misc_patterns_key = DeprecatedString::formatted("{}{}", misc_patterns_prefix, system);
+            auto misc_patterns_key = ByteString::formatted("{}{}", misc_patterns_prefix, system);
             auto misc_patterns = locale_numbers_object.get_object(misc_patterns_key).value();
-            auto range_separator = misc_patterns.get_deprecated_string("range"sv).value();
+            auto range_separator = misc_patterns.get_byte_string("range"sv).value();
 
             auto begin_index = range_separator.find("{0}"sv).value() + "{0}"sv.length();
             auto end_index = range_separator.find("{1}"sv).value();
@@ -540,7 +536,7 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
             auto system = key.substring(decimal_formats_prefix.length());
             auto& number_system = ensure_number_system(system);
 
-            auto format_object = value.as_object().get_deprecated_string("standard"sv).value();
+            auto format_object = value.as_object().get_byte_string("standard"sv).value();
             parse_number_pattern(format_object.split(';'), cldr, NumberFormatType::Standard, number_system.decimal_format, &number_system);
 
             auto const& long_format = value.as_object().get_object("long"sv)->get_object("decimalFormat"sv).value();
@@ -552,29 +548,24 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
             auto system = key.substring(currency_formats_prefix.length());
             auto& number_system = ensure_number_system(system);
 
-            auto format_object = value.as_object().get_deprecated_string("standard"sv).value();
+            auto format_object = value.as_object().get_byte_string("standard"sv).value();
             parse_number_pattern(format_object.split(';'), cldr, NumberFormatType::Standard, number_system.currency_format);
 
-            format_object = value.as_object().get_deprecated_string("accounting"sv).value();
+            format_object = value.as_object().get_byte_string("accounting"sv).value();
             parse_number_pattern(format_object.split(';'), cldr, NumberFormatType::Standard, number_system.accounting_format);
 
             number_system.currency_unit_formats = parse_number_format(value.as_object());
-
-            if (value.as_object().has_object("short"sv)) {
-                auto const& short_format = value.as_object().get_object("short"sv)->get_object("standard"sv).value();
-                number_system.currency_short_formats = parse_number_format(short_format);
-            }
         } else if (key.starts_with(percent_formats_prefix)) {
             auto system = key.substring(percent_formats_prefix.length());
             auto& number_system = ensure_number_system(system);
 
-            auto format_object = value.as_object().get_deprecated_string("standard"sv).value();
+            auto format_object = value.as_object().get_byte_string("standard"sv).value();
             parse_number_pattern(format_object.split(';'), cldr, NumberFormatType::Standard, number_system.percent_format);
         } else if (key.starts_with(scientific_formats_prefix)) {
             auto system = key.substring(scientific_formats_prefix.length());
             auto& number_system = ensure_number_system(system);
 
-            auto format_object = value.as_object().get_deprecated_string("standard"sv).value();
+            auto format_object = value.as_object().get_byte_string("standard"sv).value();
             parse_number_pattern(format_object.split(';'), cldr, NumberFormatType::Standard, number_system.scientific_format);
         }
     });
@@ -589,11 +580,11 @@ static ErrorOr<void> parse_number_systems(DeprecatedString locale_numbers_path, 
         locale.number_systems.append(system_index);
     }
 
-    locale.minimum_grouping_digits = minimum_grouping_digits.template to_uint<u8>().value();
+    locale.minimum_grouping_digits = minimum_grouping_digits.template to_number<u8>().value();
     return {};
 }
 
-static ErrorOr<void> parse_units(DeprecatedString locale_units_path, CLDR& cldr, LocaleData& locale)
+static ErrorOr<void> parse_units(ByteString locale_units_path, CLDR& cldr, LocaleData& locale)
 {
     LexicalPath units_path(move(locale_units_path));
     units_path = units_path.append("units.json"sv);
@@ -606,7 +597,7 @@ static ErrorOr<void> parse_units(DeprecatedString locale_units_path, CLDR& cldr,
     auto const& short_object = locale_units_object.get_object("short"sv).value();
     auto const& narrow_object = locale_units_object.get_object("narrow"sv).value();
 
-    HashMap<DeprecatedString, Unit> units;
+    HashMap<ByteString, Unit> units;
 
     auto ensure_unit = [&](auto const& unit) -> Unit& {
         return units.ensure(unit, [&]() {
@@ -696,18 +687,15 @@ static ErrorOr<void> parse_units(DeprecatedString locale_units_path, CLDR& cldr,
     return {};
 }
 
-static ErrorOr<void> parse_all_locales(DeprecatedString core_path, DeprecatedString numbers_path, DeprecatedString units_path, CLDR& cldr)
+static ErrorOr<void> parse_all_locales(ByteString core_path, ByteString numbers_path, ByteString units_path, CLDR& cldr)
 {
-    auto numbers_iterator = TRY(path_to_dir_iterator(move(numbers_path)));
-    auto units_iterator = TRY(path_to_dir_iterator(move(units_path)));
-
     LexicalPath core_supplemental_path(move(core_path));
     core_supplemental_path = core_supplemental_path.append("supplemental"sv);
-    VERIFY(Core::DeprecatedFile::is_directory(core_supplemental_path.string()));
+    VERIFY(FileSystem::is_directory(core_supplemental_path.string()));
 
     TRY(parse_number_system_digits(core_supplemental_path.string(), cldr));
 
-    auto remove_variants_from_path = [&](DeprecatedString path) -> ErrorOr<DeprecatedString> {
+    auto remove_variants_from_path = [&](ByteString path) -> ErrorOr<ByteString> {
         auto parsed_locale = TRY(CanonicalLanguageID::parse(cldr.unique_strings, LexicalPath::basename(path)));
 
         StringBuilder builder;
@@ -717,42 +705,44 @@ static ErrorOr<void> parse_all_locales(DeprecatedString core_path, DeprecatedStr
         if (auto region = cldr.unique_strings.get(parsed_locale.region); !region.is_empty())
             builder.appendff("-{}", region);
 
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     };
 
-    while (numbers_iterator.has_next()) {
-        auto numbers_path = TRY(next_path_from_dir_iterator(numbers_iterator));
+    TRY(Core::Directory::for_each_entry(TRY(String::formatted("{}/main", numbers_path)), Core::DirIterator::SkipParentAndBaseDir, [&](auto& entry, auto& directory) -> ErrorOr<IterationDecision> {
+        auto numbers_path = LexicalPath::join(directory.path().string(), entry.name).string();
         auto language = TRY(remove_variants_from_path(numbers_path));
 
         auto& locale = cldr.locales.ensure(language);
         TRY(parse_number_systems(numbers_path, cldr, locale));
-    }
+        return IterationDecision::Continue;
+    }));
 
-    while (units_iterator.has_next()) {
-        auto units_path = TRY(next_path_from_dir_iterator(units_iterator));
+    TRY(Core::Directory::for_each_entry(TRY(String::formatted("{}/main", units_path)), Core::DirIterator::SkipParentAndBaseDir, [&](auto& entry, auto& directory) -> ErrorOr<IterationDecision> {
+        auto units_path = LexicalPath::join(directory.path().string(), entry.name).string();
         auto language = TRY(remove_variants_from_path(units_path));
 
         auto& locale = cldr.locales.ensure(language);
         TRY(parse_units(units_path, cldr, locale));
-    }
+        return IterationDecision::Continue;
+    }));
 
     return {};
 }
 
-static DeprecatedString format_identifier(StringView, DeprecatedString identifier)
+static ByteString format_identifier(StringView, ByteString identifier)
 {
     return identifier.to_titlecase();
 }
 
-static ErrorOr<void> generate_unicode_locale_header(Core::BufferedFile& file, CLDR& cldr)
+static ErrorOr<void> generate_unicode_locale_header(Core::InputBufferedFile& file, CLDR& cldr)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
 
     generator.append(R"~~~(
-#include <AK/Types.h>
-
 #pragma once
+
+#include <AK/Types.h>
 
 namespace Locale {
 )~~~");
@@ -763,11 +753,11 @@ namespace Locale {
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
-static ErrorOr<void> generate_unicode_locale_implementation(Core::BufferedFile& file, CLDR& cldr)
+static ErrorOr<void> generate_unicode_locale_implementation(Core::InputBufferedFile& file, CLDR& cldr)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -775,7 +765,7 @@ static ErrorOr<void> generate_unicode_locale_implementation(Core::BufferedFile& 
     generator.set("number_format_index_type"sv, cldr.unique_formats.type_that_fits());
     generator.set("number_format_list_index_type"sv, cldr.unique_format_lists.type_that_fits());
     generator.set("numeric_symbol_list_index_type"sv, cldr.unique_symbols.type_that_fits());
-    generator.set("identifier_count", DeprecatedString::number(cldr.max_identifier_count));
+    generator.set("identifier_count", ByteString::number(cldr.max_identifier_count));
 
     generator.append(R"~~~(
 #include <AK/Array.h>
@@ -797,7 +787,7 @@ namespace Locale {
 
     generator.append(R"~~~(
 struct NumberFormatImpl {
-    ErrorOr<NumberFormat> to_unicode_number_format() const {
+    NumberFormat to_unicode_number_format() const {
         NumberFormat number_format {};
 
         number_format.magnitude = magnitude;
@@ -807,7 +797,7 @@ struct NumberFormatImpl {
         number_format.positive_format = decode_string(positive_format);
         number_format.negative_format = decode_string(negative_format);
 
-        TRY(number_format.identifiers.try_ensure_capacity(identifiers.size()));
+        number_format.identifiers.ensure_capacity(identifiers.size());
         for (@string_index_type@ identifier : identifiers)
             number_format.identifiers.unchecked_append(decode_string(identifier));
 
@@ -836,7 +826,6 @@ struct NumberSystemData {
     @number_format_index_type@ currency_format { 0 };
     @number_format_index_type@ accounting_format { 0 };
     @number_format_list_index_type@ currency_unit_formats { 0 };
-    @number_format_list_index_type@ currency_short_formats { 0 };
 
     @number_format_index_type@ percent_format { 0 };
     @number_format_index_type@ scientific_format { 0 };
@@ -859,22 +848,22 @@ struct Unit {
     auto locales = cldr.locales.keys();
     quick_sort(locales);
 
-    generator.set("size", DeprecatedString::number(locales.size()));
+    generator.set("size", ByteString::number(locales.size()));
     generator.append(R"~~~(
 static constexpr Array<u8, @size@> s_minimum_grouping_digits { { )~~~");
 
     bool first = true;
     for (auto const& locale : locales) {
         generator.append(first ? " "sv : ", "sv);
-        generator.append(DeprecatedString::number(cldr.locales.find(locale)->value.minimum_grouping_digits));
+        generator.append(ByteString::number(cldr.locales.find(locale)->value.minimum_grouping_digits));
         first = false;
     }
     generator.append(" } };\n");
 
-    auto append_map = [&](DeprecatedString name, auto type, auto const& map) {
+    auto append_map = [&](ByteString name, auto type, auto const& map) {
         generator.set("name", name);
         generator.set("type", type);
-        generator.set("size", DeprecatedString::number(map.size()));
+        generator.set("size", ByteString::number(map.size()));
 
         generator.append(R"~~~(
 static constexpr Array<@type@, @size@> @name@ { {)~~~");
@@ -883,9 +872,9 @@ static constexpr Array<@type@, @size@> @name@ { {)~~~");
         for (auto const& item : map) {
             generator.append(first ? " "sv : ", "sv);
             if constexpr (requires { item.value; })
-                generator.append(DeprecatedString::number(item.value));
+                generator.append(ByteString::number(item.value));
             else
-                generator.append(DeprecatedString::number(item));
+                generator.append(ByteString::number(item));
             first = false;
         }
 
@@ -928,7 +917,7 @@ Optional<ReadonlySpan<u32>> get_digits_for_number_system(StringView system)
     return s_number_systems_digits[number_system_index];
 }
 
-static ErrorOr<NumberSystemData const*> find_number_system(StringView locale, StringView system)
+static NumberSystemData const* find_number_system(StringView locale, StringView system)
 {
     auto locale_value = locale_from_string(locale);
     if (!locale_value.has_value())
@@ -958,44 +947,44 @@ static ErrorOr<NumberSystemData const*> find_number_system(StringView locale, St
     if (auto const* number_system = lookup_number_system(system))
         return number_system;
 
-    auto default_number_system = TRY(get_preferred_keyword_value_for_locale(locale, "nu"sv));
+    auto default_number_system = get_preferred_keyword_value_for_locale(locale, "nu"sv);
     if (!default_number_system.has_value())
         return nullptr;
 
     return lookup_number_system(*default_number_system);
 }
 
-ErrorOr<Optional<StringView>> get_number_system_symbol(StringView locale, StringView system, NumericSymbol symbol)
+Optional<StringView> get_number_system_symbol(StringView locale, StringView system, NumericSymbol symbol)
 {
-    if (auto const* number_system = TRY(find_number_system(locale, system)); number_system != nullptr) {
+    if (auto const* number_system = find_number_system(locale, system); number_system != nullptr) {
         auto symbols = s_numeric_symbol_lists.at(number_system->symbols);
 
         auto symbol_index = to_underlying(symbol);
         if (symbol_index >= symbols.size())
-            return OptionalNone {};
+            return {};
 
-        return Optional<StringView> { decode_string(symbols[symbol_index]) };
+        return decode_string(symbols[symbol_index]);
     }
 
-    return OptionalNone {};
+    return {};
 }
 
-ErrorOr<Optional<NumberGroupings>> get_number_system_groupings(StringView locale, StringView system)
+Optional<NumberGroupings> get_number_system_groupings(StringView locale, StringView system)
 {
     auto locale_value = locale_from_string(locale);
     if (!locale_value.has_value())
-        return OptionalNone {};
+        return {};
 
     u8 minimum_grouping_digits = s_minimum_grouping_digits[to_underlying(*locale_value) - 1];
 
-    if (auto const* number_system = TRY(find_number_system(locale, system)); number_system != nullptr)
+    if (auto const* number_system = find_number_system(locale, system); number_system != nullptr)
         return NumberGroupings { minimum_grouping_digits, number_system->primary_grouping_size, number_system->secondary_grouping_size };
-    return OptionalNone {};
+    return {};
 }
 
-ErrorOr<Optional<NumberFormat>> get_standard_number_system_format(StringView locale, StringView system, StandardNumberFormatType type)
+Optional<NumberFormat> get_standard_number_system_format(StringView locale, StringView system, StandardNumberFormatType type)
 {
-    if (auto const* number_system = TRY(find_number_system(locale, system)); number_system != nullptr) {
+    if (auto const* number_system = find_number_system(locale, system); number_system != nullptr) {
         @number_format_index_type@ format_index = 0;
 
         switch (type) {
@@ -1016,17 +1005,17 @@ ErrorOr<Optional<NumberFormat>> get_standard_number_system_format(StringView loc
             break;
         }
 
-        return TRY(s_number_formats[format_index].to_unicode_number_format());
+        return s_number_formats[format_index].to_unicode_number_format();
     }
 
-    return OptionalNone {};
+    return {};
 }
 
-ErrorOr<Vector<NumberFormat>> get_compact_number_system_formats(StringView locale, StringView system, CompactNumberFormatType type)
+Vector<NumberFormat> get_compact_number_system_formats(StringView locale, StringView system, CompactNumberFormatType type)
 {
     Vector<NumberFormat> formats;
 
-    if (auto const* number_system = TRY(find_number_system(locale, system)); number_system != nullptr) {
+    if (auto const* number_system = find_number_system(locale, system); number_system != nullptr) {
         @number_format_list_index_type@ number_format_list_index { 0 };
 
         switch (type) {
@@ -1039,16 +1028,13 @@ ErrorOr<Vector<NumberFormat>> get_compact_number_system_formats(StringView local
         case CompactNumberFormatType::CurrencyUnit:
             number_format_list_index = number_system->currency_unit_formats;
             break;
-        case CompactNumberFormatType::CurrencyShort:
-            number_format_list_index = number_system->currency_short_formats;
-            break;
         }
 
         auto number_formats = s_number_format_lists.at(number_format_list_index);
-        TRY(formats.try_ensure_capacity(number_formats.size()));
+        formats.ensure_capacity(number_formats.size());
 
         for (auto number_format : number_formats)
-            formats.unchecked_append(TRY(s_number_formats[number_format].to_unicode_number_format()));
+            formats.unchecked_append(s_number_formats[number_format].to_unicode_number_format());
     }
 
     return formats;
@@ -1073,7 +1059,7 @@ static Unit const* find_units(StringView locale, StringView unit)
     return nullptr;
 }
 
-ErrorOr<Vector<NumberFormat>> get_unit_formats(StringView locale, StringView unit, Style style)
+Vector<NumberFormat> get_unit_formats(StringView locale, StringView unit, Style style)
 {
     Vector<NumberFormat> formats;
 
@@ -1095,10 +1081,10 @@ ErrorOr<Vector<NumberFormat>> get_unit_formats(StringView locale, StringView uni
         }
 
         auto number_formats = s_number_format_lists.at(number_format_list_index);
-        TRY(formats.try_ensure_capacity(number_formats.size()));
+        formats.ensure_capacity(number_formats.size());
 
         for (auto number_format : number_formats)
-            formats.unchecked_append(TRY(s_number_formats[number_format].to_unicode_number_format()));
+            formats.unchecked_append(s_number_formats[number_format].to_unicode_number_format());
     }
 
     return formats;
@@ -1107,7 +1093,7 @@ ErrorOr<Vector<NumberFormat>> get_unit_formats(StringView locale, StringView uni
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 

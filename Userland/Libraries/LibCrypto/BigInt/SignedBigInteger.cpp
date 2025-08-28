@@ -35,7 +35,7 @@ size_t SignedBigInteger::export_data(Bytes data, bool remove_leading_zeros) cons
     return m_unsigned_data.export_data(bytes_view, remove_leading_zeros) + 1;
 }
 
-SignedBigInteger SignedBigInteger::from_base(u16 N, StringView str)
+ErrorOr<SignedBigInteger> SignedBigInteger::from_base(u16 N, StringView str)
 {
     auto sign = false;
     if (str.length() > 1) {
@@ -47,8 +47,8 @@ SignedBigInteger SignedBigInteger::from_base(u16 N, StringView str)
         if (maybe_sign == '+')
             str = str.substring_view(1);
     }
-    auto unsigned_data = UnsignedBigInteger::from_base(N, str);
-    return { move(unsigned_data), sign };
+    auto unsigned_data = TRY(UnsignedBigInteger::from_base(N, str));
+    return SignedBigInteger { move(unsigned_data), sign };
 }
 
 ErrorOr<String> SignedBigInteger::to_base(u16 N) const
@@ -64,9 +64,9 @@ ErrorOr<String> SignedBigInteger::to_base(u16 N) const
     return builder.to_string();
 }
 
-DeprecatedString SignedBigInteger::to_base_deprecated(u16 N) const
+ByteString SignedBigInteger::to_base_deprecated(u16 N) const
 {
-    return MUST(to_base(N)).to_deprecated_string();
+    return MUST(to_base(N)).to_byte_string();
 }
 
 u64 SignedBigInteger::to_u64() const
@@ -279,6 +279,11 @@ bool SignedBigInteger::operator>(UnsignedBigInteger const& other) const
 FLATTEN SignedBigInteger SignedBigInteger::shift_left(size_t num_bits) const
 {
     return SignedBigInteger { m_unsigned_data.shift_left(num_bits), m_sign };
+}
+
+FLATTEN SignedBigInteger SignedBigInteger::shift_right(size_t num_bits) const
+{
+    return SignedBigInteger { m_unsigned_data.shift_right(num_bits), m_sign };
 }
 
 FLATTEN SignedBigInteger SignedBigInteger::multiplied_by(SignedBigInteger const& other) const

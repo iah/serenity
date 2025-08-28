@@ -12,9 +12,10 @@ namespace JS {
 
 class SymbolConstructor final : public NativeFunction {
     JS_OBJECT(SymbolConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(SymbolConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~SymbolConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

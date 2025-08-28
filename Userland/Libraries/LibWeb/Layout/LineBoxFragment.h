@@ -7,7 +7,10 @@
 #pragma once
 
 #include <LibGfx/Rect.h>
+#include <LibGfx/TextLayout.h>
+#include <LibJS/Heap/GCPtr.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::Layout {
@@ -16,34 +19,14 @@ class LineBoxFragment {
     friend class LineBox;
 
 public:
-    enum class Type {
-        Normal,
-        Leading,
-        Trailing,
-    };
-
-    LineBoxFragment(Node const& layout_node, int start, int length, CSSPixelPoint offset, CSSPixelSize size, CSSPixels border_box_top, CSSPixels border_box_bottom, Type type)
-        : m_layout_node(layout_node)
-        , m_start(start)
-        , m_length(length)
-        , m_offset(offset)
-        , m_size(size)
-        , m_border_box_top(border_box_top)
-        , m_border_box_bottom(border_box_bottom)
-        , m_type(type)
-    {
-    }
+    LineBoxFragment(Node const& layout_node, int start, int length, CSSPixelPoint offset, CSSPixelSize size, CSSPixels border_box_top, CSS::Direction, RefPtr<Gfx::GlyphRun>);
 
     Node const& layout_node() const { return m_layout_node; }
     int start() const { return m_start; }
     int length() const { return m_length; }
     CSSPixelRect const absolute_rect() const;
-    Type type() const { return m_type; }
 
-    CSSPixelPoint offset() const
-    {
-        return m_offset;
-    }
+    CSSPixelPoint offset() const { return m_offset; }
     void set_offset(CSSPixelPoint offset) { m_offset = offset; }
 
     // The baseline of a fragment is the number of pixels from the top to the text baseline.
@@ -59,33 +42,34 @@ public:
     CSSPixels width() const { return m_size.width(); }
     CSSPixels height() const { return m_size.height(); }
 
-    CSSPixels border_box_height() const
-    {
-        return m_border_box_top + height() + m_border_box_bottom;
-    }
     CSSPixels border_box_top() const { return m_border_box_top; }
-    CSSPixels border_box_bottom() const { return m_border_box_bottom; }
-
-    CSSPixels absolute_x() const { return absolute_rect().x(); }
 
     bool ends_in_whitespace() const;
     bool is_justifiable_whitespace() const;
     StringView text() const;
 
-    int text_index_at(CSSPixels x) const;
+    bool is_atomic_inline() const;
 
-    CSSPixelRect selection_rect(Gfx::Font const&) const;
+    RefPtr<Gfx::GlyphRun> glyph_run() const { return m_glyph_run; }
+    void append_glyph_run(RefPtr<Gfx::GlyphRun> const&, CSSPixels run_width);
 
 private:
-    Node const& m_layout_node;
+    CSS::Direction resolve_glyph_run_direction(Gfx::GlyphRun::TextType) const;
+    void append_glyph_run_ltr(RefPtr<Gfx::GlyphRun> const&, CSSPixels run_width);
+    void append_glyph_run_rtl(RefPtr<Gfx::GlyphRun> const&, CSSPixels run_width);
+
+    JS::NonnullGCPtr<Node const> m_layout_node;
     int m_start { 0 };
     int m_length { 0 };
     CSSPixelPoint m_offset;
     CSSPixelSize m_size;
     CSSPixels m_border_box_top { 0 };
-    CSSPixels m_border_box_bottom { 0 };
     CSSPixels m_baseline { 0 };
-    Type m_type { Type::Normal };
+    CSS::Direction m_direction { CSS::Direction::Ltr };
+
+    RefPtr<Gfx::GlyphRun> m_glyph_run;
+    float m_insert_position { 0 };
+    CSS::Direction m_current_insert_direction { CSS::Direction::Ltr };
 };
 
 }

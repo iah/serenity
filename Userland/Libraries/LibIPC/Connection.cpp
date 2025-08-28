@@ -7,6 +7,7 @@
 
 #include <LibCore/System.h>
 #include <LibIPC/Connection.h>
+#include <LibIPC/File.h>
 #include <LibIPC/Stub.h>
 #include <sys/select.h>
 
@@ -27,7 +28,7 @@ ConnectionBase::ConnectionBase(IPC::Stub& local_stub, NonnullOwnPtr<Core::LocalS
     , m_local_endpoint_magic(local_endpoint_magic)
     , m_deferred_invoker(make<CoreEventLoopDeferredInvoker>())
 {
-    m_responsiveness_timer = Core::Timer::create_single_shot(3000, [this] { may_have_become_unresponsive(); }).release_value_but_fixme_should_propagate_errors();
+    m_responsiveness_timer = Core::Timer::create_single_shot(3000, [this] { may_have_become_unresponsive(); });
 }
 
 void ConnectionBase::set_deferred_invoker(NonnullOwnPtr<DeferredInvoker> deferred_invoker)
@@ -35,80 +36,24 @@ void ConnectionBase::set_deferred_invoker(NonnullOwnPtr<DeferredInvoker> deferre
     m_deferred_invoker = move(deferred_invoker);
 }
 
-void ConnectionBase::set_fd_passing_socket(NonnullOwnPtr<Core::LocalSocket> socket)
+ErrorOr<void> ConnectionBase::post_message(Message const& message, MessageKind kind)
 {
-    m_fd_passing_socket = move(socket);
+    return post_message(TRY(message.encode()), kind);
 }
 
-Core::LocalSocket& ConnectionBase::fd_passing_socket()
-{
-    if (m_fd_passing_socket)
-        return *m_fd_passing_socket;
-    return *m_socket;
-}
-
-ErrorOr<void> ConnectionBase::post_message(Message const& message)
-{
-    return post_message(TRY(message.encode()));
-}
-
-ErrorOr<void> ConnectionBase::post_message(MessageBuffer buffer)
+ErrorOr<void> ConnectionBase::post_message(MessageBuffer buffer, MessageKind kind)
 {
     // NOTE: If this connection is being shut down, but has not yet been destroyed,
     //       the socket will be closed. Don't try to send more messages.
     if (!m_socket->is_open())
         return Error::from_string_literal("Trying to post_message during IPC shutdown");
 
-    // Prepend the message size.
-    uint32_t message_size = buffer.data.size();
-    TRY(buffer.data.try_prepend(reinterpret_cast<u8 const*>(&message_size), sizeof(message_size)));
-
-    for (auto& fd : buffer.fds) {
-        if (auto result = fd_passing_socket().send_fd(fd->value()); result.is_error()) {
-            shutdown_with_error(result.error());
-            return result;
-        }
+    if (auto result = buffer.transfer_message(*m_socket, kind == MessageKind::Sync); result.is_error()) {
+        shutdown_with_error(result.error());
+        return result.release_error();
     }
 
-    ReadonlyBytes bytes_to_write { buffer.data.span() };
-    int writes_done = 0;
-    size_t initial_size = bytes_to_write.size();
-    while (!bytes_to_write.is_empty()) {
-        auto maybe_nwritten = m_socket->write(bytes_to_write);
-        writes_done++;
-        if (maybe_nwritten.is_error()) {
-            auto error = maybe_nwritten.release_error();
-            if (error.is_errno()) {
-                // FIXME: This is a hacky way to at least not crash on large messages
-                // The limit of 100 writes is arbitrary, and there to prevent indefinite spinning on the EventLoop
-                if (error.code() == EAGAIN && writes_done < 100) {
-                    sched_yield();
-                    continue;
-                }
-                shutdown_with_error(error);
-                switch (error.code()) {
-                case EPIPE:
-                    return Error::from_string_literal("IPC::Connection::post_message: Disconnected from peer");
-                case EAGAIN:
-                    return Error::from_string_literal("IPC::Connection::post_message: Peer buffer overflowed");
-                default:
-                    return Error::from_syscall("IPC::Connection::post_message write"sv, -error.code());
-                }
-            } else {
-                return error;
-            }
-        }
-
-        bytes_to_write = bytes_to_write.slice(maybe_nwritten.value());
-    }
-    if (writes_done > 1) {
-        dbgln("LibIPC::Connection FIXME Warning, needed {} writes needed to send message of size {}B, this is pretty bad, as it spins on the EventLoop", writes_done, initial_size);
-    }
-
-    // Note: This disables responsiveness detection when an event loop is absent.
-    //       There are no users which both need this feature but don't have an event loop.
-    if (Core::EventLoop::has_been_instantiated())
-        m_responsiveness_timer->start();
+    m_responsiveness_timer->start();
     return {};
 }
 
@@ -136,7 +81,7 @@ void ConnectionBase::handle_messages()
             }
 
             if (auto response = handler_result.release_value()) {
-                if (auto post_result = post_message(*response); post_result.is_error()) {
+                if (auto post_result = post_message(*response, MessageKind::Async); post_result.is_error()) {
                     dbgln("IPC::ConnectionBase::handle_messages: {}", post_result.error());
                 }
             }
@@ -166,6 +111,7 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
     }
 
     u8 buffer[4096];
+    Vector<int> received_fds;
 
     bool should_shut_down = false;
     auto schedule_shutdown = [this, &should_shut_down]() {
@@ -176,7 +122,7 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
     };
 
     while (m_socket->is_open()) {
-        auto maybe_bytes_read = m_socket->read_without_waiting({ buffer, 4096 });
+        auto maybe_bytes_read = m_socket->receive_message({ buffer, 4096 }, MSG_DONTWAIT, received_fds);
         if (maybe_bytes_read.is_error()) {
             auto error = maybe_bytes_read.release_error();
             if (error.is_syscall() && error.code() == EAGAIN) {
@@ -200,6 +146,8 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
         }
 
         bytes.append(bytes_read.data(), bytes_read.size());
+        for (auto const& fd : received_fds)
+            m_unprocessed_fds.enqueue(IPC::File::adopt_fd(fd));
     }
 
     if (!bytes.is_empty()) {

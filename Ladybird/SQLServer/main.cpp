@@ -1,12 +1,10 @@
 /*
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#define AK_DONT_REPLACE_STD
-
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
@@ -15,20 +13,33 @@
 #include <LibMain/Main.h>
 #include <SQLServer/ConnectionFromClient.h>
 
+#if defined(AK_OS_MACOS)
+#    include <LibCore/Platform/ProcessStatisticsMach.h>
+#endif
+
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    DeprecatedString pid_file;
+    AK::set_rich_debug_enabled(true);
+
+    StringView pid_file;
+    StringView mach_server_name;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(pid_file, "Path to the PID file for the SQLServer singleton process", "pid-file", 'p', "pid_file");
+    args_parser.add_option(mach_server_name, "Mach server name", "mach-server-name", 0, "mach_server_name");
     args_parser.parse(arguments);
 
     VERIFY(!pid_file.is_empty());
 
-    auto database_path = DeprecatedString::formatted("{}/Ladybird", Core::StandardPaths::data_directory());
+    auto database_path = ByteString::formatted("{}/Ladybird", Core::StandardPaths::data_directory());
     TRY(Core::Directory::create(database_path, Core::Directory::CreateDirectories::Yes));
 
     Core::EventLoop loop;
+
+#if defined(AK_OS_MACOS)
+    if (!mach_server_name.is_empty())
+        Core::Platform::register_with_mach_server(mach_server_name);
+#endif
 
     auto server = TRY(IPC::MultiServer<SQLServer::ConnectionFromClient>::try_create());
     u64 connection_count { 0 };

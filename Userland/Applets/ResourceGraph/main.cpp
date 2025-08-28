@@ -35,7 +35,7 @@ private:
     GraphWidget(GraphType graph_type, Optional<Gfx::Color> graph_color, Optional<Gfx::Color> graph_error_color)
         : m_graph_type(graph_type)
     {
-        set_frame_thickness(1);
+        set_frame_style(Gfx::FrameStyle::SunkenPanel);
         m_graph_color = graph_color.value_or(palette().menu_selection());
         m_graph_error_color = graph_error_color.value_or(Color::Red);
         start_timer(1000);
@@ -53,10 +53,10 @@ private:
                 m_last_idle = idle;
                 float cpu = total_diff > 0 ? (float)(total_diff - idle_diff) / (float)total_diff : 0;
                 m_history.enqueue(cpu);
-                m_tooltip = DeprecatedString::formatted("CPU usage: {:.1}%", 100 * cpu);
+                m_tooltip = MUST(String::formatted("CPU usage: {:.1}%", 100 * cpu));
             } else {
                 m_history.enqueue(-1);
-                m_tooltip = "Unable to determine CPU usage"sv;
+                m_tooltip = "Unable to determine CPU usage"_string;
             }
             break;
         }
@@ -66,10 +66,10 @@ private:
                 double total_memory = allocated + available;
                 double memory = (double)allocated / total_memory;
                 m_history.enqueue(memory);
-                m_tooltip = DeprecatedString::formatted("Memory: {} MiB of {:.1} MiB in use", allocated / MiB, total_memory / MiB);
+                m_tooltip = MUST(String::formatted("Memory: {} MiB of {:.1} MiB in use", allocated / MiB, total_memory / MiB));
             } else {
                 m_history.enqueue(-1);
-                m_tooltip = "Unable to determine memory usage"sv;
+                m_tooltip = "Unable to determine memory usage"_string;
             }
             break;
         }
@@ -97,10 +97,10 @@ private:
                     }
                 }
                 m_history.enqueue(static_cast<float>(recent_tx) / static_cast<float>(m_current_scale));
-                m_tooltip = DeprecatedString::formatted("Network: TX {} / RX {} ({:.1} kbit/s)", tx, rx, static_cast<double>(recent_tx) * 8.0 / 1000.0);
+                m_tooltip = MUST(String::formatted("Network: TX {} / RX {} ({:.1} kbit/s)", tx, rx, static_cast<double>(recent_tx) * 8.0 / 1000.0));
             } else {
                 m_history.enqueue(-1);
-                m_tooltip = "Unable to determine network usage"sv;
+                m_tooltip = "Unable to determine network usage"_string;
             }
             break;
         }
@@ -123,13 +123,13 @@ private:
         for (auto value : m_history) {
             if (value >= 0) {
                 painter.draw_line(
-                    { rect.x() + i, rect.bottom() },
+                    { rect.x() + i, rect.bottom() - 1 },
                     { rect.x() + i, rect.top() + (int)(roundf(rect.height() - (value * rect.height()))) },
                     m_graph_color);
             } else {
                 painter.draw_line(
                     { rect.x() + i, rect.top() },
-                    { rect.x() + i, rect.bottom() },
+                    { rect.x() + i, rect.bottom() - 1 },
                     m_graph_error_color);
             }
             ++i;
@@ -229,7 +229,7 @@ private:
     u64 m_last_total { 0 };
     static constexpr u64 const scale_unit = 8000;
     u64 m_current_scale { scale_unit };
-    DeprecatedString m_tooltip;
+    String m_tooltip;
     OwnPtr<Core::File> m_proc_stat;
     OwnPtr<Core::File> m_proc_mem;
     OwnPtr<Core::File> m_proc_net;
@@ -239,7 +239,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio recvfd sendfd proc exec rpath unix"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio recvfd sendfd proc exec rpath"));
 
@@ -275,7 +275,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         window->set_window_type(GUI::WindowType::Applet);
         window->resize(GraphWidget::history_size + 2, 15);
 
-        auto graph_widget = TRY(window->set_main_widget<GraphWidget>(graph_type, graph_color, Optional<Gfx::Color> {}));
+        auto graph_widget = window->set_main_widget<GraphWidget>(graph_type, graph_color, Optional<Gfx::Color> {});
         window->show();
         applet_windows.append(move(window));
 

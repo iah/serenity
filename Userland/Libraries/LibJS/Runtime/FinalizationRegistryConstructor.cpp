@@ -13,22 +13,22 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(FinalizationRegistryConstructor);
+
 FinalizationRegistryConstructor::FinalizationRegistryConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.FinalizationRegistry.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.FinalizationRegistry.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> FinalizationRegistryConstructor::initialize(Realm& realm)
+void FinalizationRegistryConstructor::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     // 26.2.2.1 FinalizationRegistry.prototype, https://tc39.es/ecma262/#sec-finalization-registry.prototype
     define_direct_property(vm.names.prototype, realm.intrinsics().finalization_registry_prototype(), 0);
 
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-
-    return {};
 }
 
 // 26.2.1.1 FinalizationRegistry ( cleanupCallback ), https://tc39.es/ecma262/#sec-finalization-registry-cleanup-callback
@@ -48,7 +48,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> FinalizationRegistryConstructor::constru
     // 2. If IsCallable(cleanupCallback) is false, throw a TypeError exception.
     auto cleanup_callback = vm.argument(0);
     if (!cleanup_callback.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, cleanup_callback.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, cleanup_callback.to_string_without_side_effects());
 
     // 3. Let finalizationRegistry be ? OrdinaryCreateFromConstructor(NewTarget, "%FinalizationRegistry.prototype%", « [[Realm]], [[CleanupCallback]], [[Cells]] »).
     // 4. Let fn be the active function object.

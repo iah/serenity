@@ -13,7 +13,7 @@
 #include <LibVT/Color.h>
 #include <LibVT/Terminal.h>
 #ifdef KERNEL
-#    include <Kernel/TTY/VirtualConsole.h>
+#    include <Kernel/Devices/TTY/VirtualConsole.h>
 #endif
 
 namespace VT {
@@ -35,6 +35,9 @@ void Terminal::clear()
     for (size_t i = 0; i < rows(); ++i)
         active_buffer()[i]->clear();
     set_cursor(0, 0);
+
+    if (!m_use_alternate_screen_buffer)
+        m_client.terminal_did_perform_possibly_partial_clear();
 }
 
 void Terminal::clear_history()
@@ -44,6 +47,68 @@ void Terminal::clear_history()
     m_history.clear();
     m_history_start = 0;
     m_client.terminal_history_changed(-previous_history_size);
+}
+
+void Terminal::clear_to_mark(Mark mark)
+{
+    auto cursor_row = this->cursor_row();
+    ScopeGuard send_sigwinch = [&] {
+        set_cursor(cursor_row, 1);
+        mark_cursor();
+        m_client.terminal_did_perform_possibly_partial_clear();
+    };
+    m_valid_marks.remove(mark);
+
+    {
+        auto it = active_buffer().rbegin();
+        size_t row = m_rows - 1;
+        // Skip to the cursor line.
+        for (size_t i = this->cursor_row() + 1; i < active_buffer().size(); ++i, row--)
+            ++it;
+        for (; it != active_buffer().rend(); ++it, row--) {
+            auto& line = *it;
+            auto line_mark = line->mark();
+            auto is_target_line = line_mark == mark;
+            if (line_mark.has_value())
+                m_valid_marks.remove(*line_mark);
+            line->clear();
+            if (is_target_line) {
+                cursor_row = row;
+                return;
+            }
+        }
+    }
+
+    // If the mark is not found, go through the history.
+    auto it = AK::find_if(
+        m_history.rbegin(),
+        m_history.rend(),
+        [mark](auto& line) {
+            return line->mark() == mark;
+        });
+    auto index = it == m_history.rend() ? 0 : m_history.size() - it.index();
+    m_client.terminal_history_changed(m_history.size() - index);
+    auto count = m_history.size() - index;
+    for (size_t i = 0; i < count; ++i) {
+        if (auto mark = m_history[index + i]->mark(); mark.has_value())
+            m_valid_marks.remove(*mark);
+    }
+    m_history.remove(index, count);
+    cursor_row = 0;
+}
+
+void Terminal::mark_cursor()
+{
+    static u32 next_mark_id { 0 };
+
+    auto& line = active_buffer()[cursor_row()];
+    if (line->mark().has_value()) {
+        return;
+    }
+
+    auto mark = Mark(next_mark_id++);
+    line->set_marked(mark);
+    m_valid_marks.set(mark);
 }
 #endif
 
@@ -237,6 +302,9 @@ void Terminal::SGR(Parameters params)
             case 7:
                 m_current_state.attribute.flags |= Attribute::Flags::Negative;
                 break;
+            case 8:
+                m_current_state.attribute.flags |= Attribute::Flags::Concealed;
+                break;
             case 22:
                 m_current_state.attribute.flags &= ~Attribute::Flags::Bold;
                 break;
@@ -251,6 +319,9 @@ void Terminal::SGR(Parameters params)
                 break;
             case 27:
                 m_current_state.attribute.flags &= ~Attribute::Flags::Negative;
+                break;
+            case 28:
+                m_current_state.attribute.flags &= ~Attribute::Flags::Concealed;
                 break;
             case 30:
             case 31:
@@ -941,14 +1012,14 @@ void Terminal::DECDC(Parameters params)
         scroll_left(row, cursor_column(), num);
 }
 
-void Terminal::DECPNM()
+void Terminal::DECKPNM()
 {
-    dbgln("FIXME: implement setting the keypad to numeric mode");
+    m_in_application_keypad_mode = false;
 }
 
-void Terminal::DECPAM()
+void Terminal::DECKPAM()
 {
-    dbgln("FIXME: implement setting the keypad to application mode");
+    m_in_application_keypad_mode = true;
 }
 
 void Terminal::DSR(Parameters params)
@@ -1081,10 +1152,10 @@ void Terminal::execute_escape_sequence(Intermediates intermediates, bool ignore,
             DECFI();
             return;
         case '=':
-            DECPAM();
+            DECKPAM();
             return;
         case '>':
-            DECPNM();
+            DECKPNM();
             return;
         }
         unimplemented_escape_sequence(intermediates, last_byte);
@@ -1248,7 +1319,7 @@ void Terminal::execute_osc_sequence(OscParameters parameters, u8 last_byte)
         return;
     }
 
-    auto command_number = stringview_ify(0).to_uint();
+    auto command_number = stringview_ify(0).to_number<unsigned>();
     if (!command_number.has_value()) {
         unimplemented_osc_sequence(parameters, last_byte);
         return;
@@ -1264,7 +1335,7 @@ void Terminal::execute_osc_sequence(OscParameters parameters, u8 last_byte)
             // FIXME: the split breaks titles containing semicolons.
             // Should we expose the raw OSC string from the parser? Or join by semicolon?
 #ifndef KERNEL
-            m_current_window_title = stringview_ify(1).to_deprecated_string();
+            m_current_window_title = stringview_ify(1).to_byte_string();
             m_client.set_window_title(m_current_window_title);
 #endif
         }
@@ -1275,12 +1346,12 @@ void Terminal::execute_osc_sequence(OscParameters parameters, u8 last_byte)
             dbgln("Attempted to set href but gave too few parameters");
         } else if (parameters[1].is_empty() && parameters[2].is_empty()) {
             // Clear hyperlink
-            m_current_state.attribute.href = DeprecatedString();
-            m_current_state.attribute.href_id = DeprecatedString();
+            m_current_state.attribute.href = {};
+            m_current_state.attribute.href_id = {};
         } else {
             m_current_state.attribute.href = stringview_ify(2);
             // FIXME: Respect the provided ID
-            m_current_state.attribute.href_id = DeprecatedString::number(m_next_href_id++);
+            m_current_state.attribute.href_id = ByteString::number(m_next_href_id++);
         }
 #endif
         break;
@@ -1288,9 +1359,9 @@ void Terminal::execute_osc_sequence(OscParameters parameters, u8 last_byte)
         if (parameters.size() < 2)
             dbgln("Atttempted to set window progress but gave too few parameters");
         else if (parameters.size() == 2)
-            m_client.set_window_progress(stringview_ify(1).to_int().value_or(-1), 0);
+            m_client.set_window_progress(stringview_ify(1).to_number<int>().value_or(-1), 0);
         else
-            m_client.set_window_progress(stringview_ify(1).to_int().value_or(-1), stringview_ify(2).to_int().value_or(0));
+            m_client.set_window_progress(stringview_ify(1).to_number<int>().value_or(-1), stringview_ify(2).to_number<int>().value_or(0));
         break;
     default:
         unimplemented_osc_sequence(parameters, last_byte);
@@ -1327,6 +1398,7 @@ void Terminal::handle_key_press(KeyCode key, u32 code_point, u8 flags)
     bool ctrl = flags & Mod_Ctrl;
     bool alt = flags & Mod_Alt;
     bool shift = flags & Mod_Shift;
+    bool keypad = flags & Mod_Keypad;
     unsigned modifier_mask = int(shift) + (int(alt) << 1) + (int(ctrl) << 2);
 
     auto emit_final_with_modifier = [this, modifier_mask](char final) {
@@ -1346,6 +1418,64 @@ void Terminal::handle_key_press(KeyCode key, u32 code_point, u8 flags)
             MUST(builder.try_appendff("\e[{}~", num)); // StringBuilder's inline capacity of 256 is enough to guarantee no allocations
         emit_string(builder.string_view());
     };
+
+    auto emit_application_code = [this](KeyCode key) {
+        // The table providing mapping from numeric keys to application keys can be found at https://vt100.net/docs/vt100-ug/chapter3.html#T3-7
+        StringBuilder builder;
+        builder.append("\x1bO"sv);
+        switch (key) {
+        case KeyCode::Key_0:
+            builder.append('p');
+            break;
+        case KeyCode::Key_1:
+            builder.append('q');
+            break;
+        case KeyCode::Key_2:
+            builder.append('r');
+            break;
+        case KeyCode::Key_3:
+            builder.append('s');
+            break;
+        case KeyCode::Key_4:
+            builder.append('t');
+            break;
+        case KeyCode::Key_5:
+            builder.append('u');
+            break;
+        case KeyCode::Key_6:
+            builder.append('v');
+            break;
+        case KeyCode::Key_7:
+            builder.append('w');
+            break;
+        case KeyCode::Key_8:
+            builder.append('x');
+            break;
+        case KeyCode::Key_9:
+            builder.append('y');
+            break;
+        case KeyCode::Key_Minus:
+            builder.append('m');
+            break;
+        case KeyCode::Key_Comma:
+            builder.append('l');
+            break;
+        case KeyCode::Key_Period:
+            builder.append('n');
+            break;
+        case KeyCode::Key_Return:
+            builder.append('M');
+            break;
+        default:
+            break;
+        }
+        emit_string(builder.string_view());
+    };
+
+    if (keypad && m_in_application_keypad_mode) {
+        emit_application_code(key);
+        return;
+    }
 
     switch (key) {
     case KeyCode::Key_Up:
@@ -1411,11 +1541,25 @@ void Terminal::handle_key_press(KeyCode key, u32 code_point, u8 flags)
     // Key event was not one of the above special cases,
     // attempt to treat it as a character...
     if (ctrl) {
-        if (code_point >= 'a' && code_point <= 'z') {
-            code_point = code_point - 'a' + 1;
-        } else if (code_point == '\\') {
-            code_point = 0x1c;
-        }
+        constexpr auto ESC = '\033';
+        constexpr auto NUL = 0;
+        constexpr auto DEL = 0x7f;
+
+        if (code_point >= '@' && code_point < DEL)
+            code_point &= 0x1f;
+        // Legacy aliases
+        else if (code_point == '2' || code_point == ' ')
+            // Ctrl+{2, Space, @, `} -> ^@ (NUL)
+            code_point = NUL;
+        else if (code_point >= '3' && code_point <= '7')
+            // Ctrl+3 -> ^[ (ESC), Ctrl+4 -> ^\, Ctrl+5 -> ^], Ctrl+6 -> ^^, Ctrl+7 -> ^_
+            code_point = ESC + (code_point - '3');
+        else if (code_point == '8')
+            // Ctrl+8 -> ^? (DEL)
+            code_point = DEL;
+        else if (code_point == '/')
+            // Ctrl+/ -> ^_
+            code_point = '_' & 0x1f;
     }
 
     // Alt modifier sends escape prefix.

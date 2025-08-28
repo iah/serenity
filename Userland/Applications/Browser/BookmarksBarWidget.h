@@ -32,13 +32,14 @@ public:
         InNewWindow
     };
 
-    Function<void(DeprecatedString const& url, Open)> on_bookmark_click;
-    Function<void(DeprecatedString const&, DeprecatedString const&)> on_bookmark_hover;
+    Function<void(ByteString const& url, Open)> on_bookmark_click;
+    Function<void(ByteString const&, ByteString const&)> on_bookmark_hover;
+    Function<void()> on_bookmark_change;
 
-    bool contains_bookmark(DeprecatedString const& url);
-    bool remove_bookmark(DeprecatedString const& url);
-    bool add_bookmark(DeprecatedString const& url, DeprecatedString const& title);
-    bool edit_bookmark(DeprecatedString const& url);
+    bool contains_bookmark(StringView url);
+    ErrorOr<void> remove_bookmark(StringView url);
+    ErrorOr<void> add_bookmark(StringView url, StringView title);
+    ErrorOr<void> edit_bookmark(StringView url);
 
     virtual Optional<GUI::UISize> calculated_min_size() const override
     {
@@ -47,7 +48,7 @@ public:
     }
 
 private:
-    BookmarksBarWidget(DeprecatedString const&, bool enabled);
+    BookmarksBarWidget(ByteString const&, bool enabled);
 
     // ^GUI::ModelClient
     virtual void model_did_update(unsigned) override;
@@ -57,6 +58,8 @@ private:
 
     void update_content_size();
 
+    ErrorOr<void> update_model(Vector<JsonValue>& values, Function<ErrorOr<void>(GUI::JsonArrayModel& model, Vector<JsonValue>&& values)> perform_model_change);
+
     RefPtr<GUI::Model> m_model;
     RefPtr<GUI::Button> m_additional;
     RefPtr<GUI::Widget> m_separator;
@@ -64,7 +67,7 @@ private:
 
     RefPtr<GUI::Menu> m_context_menu;
     RefPtr<GUI::Action> m_context_menu_default_action;
-    DeprecatedString m_context_menu_url;
+    ByteString m_context_menu_url;
 
     Vector<NonnullRefPtr<GUI::Button>> m_bookmarks;
 

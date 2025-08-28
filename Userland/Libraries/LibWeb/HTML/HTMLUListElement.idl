@@ -4,7 +4,10 @@
 [Exposed=Window]
 interface HTMLUListElement : HTMLElement {
 
-    [Reflect] attribute boolean compact;
-    [Reflect] attribute DOMString type;
+    [HTMLConstructor] constructor();
+
+    // Obsolete
+    [CEReactions, Reflect] attribute boolean compact;
+    [CEReactions, Reflect] attribute DOMString type;
 
 };

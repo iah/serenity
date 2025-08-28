@@ -5,7 +5,6 @@
  */
 
 #include "EyesWidget.h"
-#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibDesktop/Launcher.h>
@@ -15,6 +14,7 @@
 #include <LibGUI/Menubar.h>
 #include <LibGUI/Window.h>
 #include <LibMain/Main.h>
+#include <LibURL/URL.h>
 #include <unistd.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -38,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     TRY(Core::System::pledge("stdio recvfd sendfd rpath unix cpath wpath thread"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::unveil("/tmp/session/%sid/portal/launch", "rw"));
     TRY(Core::System::unveil("/res", "r"));
@@ -63,7 +63,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-eyes"sv));
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title("Eyes");
     window->set_icon(app_icon.bitmap_for_size(16));
     window->resize(75 * (full_rows > 0 ? max_in_row : extra_columns), 100 * (full_rows + (extra_columns > 0 ? 1 : 0)));
@@ -84,19 +84,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     set_window_frame_enabled(!hide_window_frame);
     show_window_frame_action->set_checked(window_frame_enabled);
 
-    auto file_menu = TRY(window->try_add_menu("&File"));
-    TRY(file_menu->try_add_action(move(show_window_frame_action)));
-    TRY(file_menu->try_add_separator());
-    TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); })));
+    auto file_menu = window->add_menu("&File"_string);
+    file_menu->add_action(move(show_window_frame_action));
+    file_menu->add_separator();
+    file_menu->add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
 
-    auto help_menu = TRY(window->try_add_menu("&Help"));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_help_action([](auto&) {
-        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Eyes.md"), "/bin/Help");
-    })));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Eyes Demo", app_icon, window)));
+    auto help_menu = window->add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(window));
+    help_menu->add_action(GUI::CommonActions::make_help_action([](auto&) {
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Applications/Eyes.md"), "/bin/Help");
+    }));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Eyes Demo"_string, app_icon, window));
 
-    auto eyes_widget = TRY(window->set_main_widget<EyesWidget>(num_eyes, full_rows, extra_columns));
+    auto eyes_widget = window->set_main_widget<EyesWidget>(num_eyes, full_rows, extra_columns);
     eyes_widget->on_context_menu_request = [&](auto& event) {
         file_menu->popup(event.screen_position());
     };

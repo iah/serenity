@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <andreas@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,21 +18,27 @@
 
 namespace JS {
 
-NonnullOwnPtr<HeapBlock> HeapBlock::create_with_cell_size(Heap& heap, size_t cell_size)
+size_t HeapBlockBase::block_size = PAGE_SIZE;
+
+NonnullOwnPtr<HeapBlock> HeapBlock::create_with_cell_size(Heap& heap, CellAllocator& cell_allocator, size_t cell_size, [[maybe_unused]] char const* class_name)
 {
 #ifdef AK_OS_SERENITY
     char name[64];
-    snprintf(name, sizeof(name), "LibJS: HeapBlock(%zu)", cell_size);
+    if (class_name)
+        snprintf(name, sizeof(name), "LibJS: HeapBlock(%zu): %s", cell_size, class_name);
+    else
+        snprintf(name, sizeof(name), "LibJS: HeapBlock(%zu)", cell_size);
 #else
     char const* name = nullptr;
 #endif
-    auto* block = static_cast<HeapBlock*>(heap.block_allocator().allocate_block(name));
-    new (block) HeapBlock(heap, cell_size);
+    auto* block = static_cast<HeapBlock*>(cell_allocator.block_allocator().allocate_block(name));
+    new (block) HeapBlock(heap, cell_allocator, cell_size);
     return NonnullOwnPtr<HeapBlock>(NonnullOwnPtr<HeapBlock>::Adopt, *block);
 }
 
-HeapBlock::HeapBlock(Heap& heap, size_t cell_size)
-    : m_heap(heap)
+HeapBlock::HeapBlock(Heap& heap, CellAllocator& cell_allocator, size_t cell_size)
+    : HeapBlockBase(heap)
+    , m_cell_allocator(cell_allocator)
     , m_cell_size(cell_size)
 {
     VERIFY(cell_size >= sizeof(FreelistEntry));

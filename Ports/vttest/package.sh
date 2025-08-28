@@ -1,6 +1,7 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=vttest
-version=20220215
-useconfigure=true
-files="https://invisible-mirror.net/archives/vttest/vttest-$version.tgz vttest-$version.tar.gz 4a65998c5e12cf08ced2cfce119adb44fa842ac1495d0f150f21c8a6785915a1"
-auth_type=sha256
+port='vttest'
+version='20240708'
+useconfigure='true'
+files=(
+    "https://invisible-mirror.net/archives/vttest/vttest-${version}.tgz#c195449eb2d2299ca3c0a24788a9aab569fe41c2e0e83128b5c29ba96e5abb1b"
+)

@@ -10,7 +10,6 @@
 #include "MP3Types.h"
 #include <AK/BitStream.h>
 #include <AK/MemoryStream.h>
-#include <AK/Tuple.h>
 #include <LibDSP/MDCT.h>
 
 namespace Audio {
@@ -24,10 +23,10 @@ public:
     explicit MP3LoaderPlugin(NonnullOwnPtr<SeekableStream> stream);
     virtual ~MP3LoaderPlugin() = default;
 
-    static Result<NonnullOwnPtr<MP3LoaderPlugin>, LoaderError> create(StringView path);
-    static Result<NonnullOwnPtr<MP3LoaderPlugin>, LoaderError> create(Bytes buffer);
+    static bool sniff(SeekableStream& stream);
+    static ErrorOr<NonnullOwnPtr<LoaderPlugin>, LoaderError> create(NonnullOwnPtr<SeekableStream>);
 
-    virtual LoaderSamples get_more_samples(size_t max_bytes_to_read_from_input = 128 * KiB) override;
+    virtual ErrorOr<Vector<FixedArray<Sample>>, LoaderError> load_chunks(size_t samples_to_read_from_input) override;
 
     virtual MaybeLoaderError reset() override;
     virtual MaybeLoaderError seek(int const position) override;
@@ -37,13 +36,16 @@ public:
     virtual u32 sample_rate() override { return m_sample_rate; }
     virtual u16 num_channels() override { return m_num_channels; }
     virtual PcmSampleFormat pcm_format() override { return m_sample_format; }
-    virtual DeprecatedString format_name() override { return "MP3 (.mp3)"; }
+    virtual ByteString format_name() override { return "MP3 (.mp3)"; }
 
 private:
     MaybeLoaderError initialize();
-    MaybeLoaderError synchronize();
+    static MaybeLoaderError skip_id3(SeekableStream& stream);
+    static MaybeLoaderError synchronize(SeekableStream& stream, size_t sample_index);
+    static ErrorOr<MP3::Header, LoaderError> read_header(SeekableStream& stream, size_t sample_index);
+    static ErrorOr<MP3::Header, LoaderError> synchronize_and_read_header(SeekableStream& stream, size_t sample_index);
+    ErrorOr<MP3::Header, LoaderError> synchronize_and_read_header();
     MaybeLoaderError build_seek_table();
-    ErrorOr<MP3::Header, LoaderError> read_header();
     ErrorOr<MP3::MP3Frame, LoaderError> read_next_frame();
     ErrorOr<MP3::MP3Frame, LoaderError> read_frame_data(MP3::Header const&);
     MaybeLoaderError read_side_information(MP3::MP3Frame&);
@@ -57,7 +59,7 @@ private:
     static void synthesis(Array<float, 1024>& V, Array<float, 32>& samples, Array<float, 32>& result);
     static ReadonlySpan<MP3::Tables::ScaleFactorBand> get_scalefactor_bands(MP3::Granule const&, int samplerate);
 
-    AK::Vector<AK::Tuple<size_t, int>> m_seek_table;
+    SeekTable m_seek_table;
     AK::Array<AK::Array<AK::Array<float, 18>, 32>, 2> m_last_values {};
     AK::Array<AK::Array<float, 1024>, 2> m_synthesis_buffer {};
     static DSP::MDCT<36> s_mdct_36;
@@ -69,9 +71,6 @@ private:
     int m_total_samples { 0 };
     size_t m_loaded_samples { 0 };
 
-    AK::Optional<MP3::MP3Frame> m_current_frame;
-    u32 m_current_frame_read;
-    OwnPtr<BigEndianInputBitStream> m_bitstream;
     AllocatingMemoryStream m_bit_reservoir;
 };
 

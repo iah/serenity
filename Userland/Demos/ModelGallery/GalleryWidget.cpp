@@ -13,9 +13,9 @@ GalleryWidget::GalleryWidget()
     set_layout<GUI::VerticalBoxLayout>();
 
     auto& inner_widget = add<GUI::Widget>();
-    inner_widget.try_set_layout<GUI::VerticalBoxLayout>(4).release_value_but_fixme_should_propagate_errors();
+    inner_widget.set_layout<GUI::VerticalBoxLayout>(4);
 
-    m_tab_widget = inner_widget.try_add<GUI::TabWidget>().release_value_but_fixme_should_propagate_errors();
+    m_tab_widget = inner_widget.add<GUI::TabWidget>();
     m_statusbar = add<GUI::Statusbar>();
 
     (void)load_basic_model_tab();
@@ -24,30 +24,30 @@ GalleryWidget::GalleryWidget()
 
 ErrorOr<void> GalleryWidget::load_basic_model_tab()
 {
-    auto tab = TRY(m_tab_widget->try_add_tab<GUI::Widget>("Basic Model"));
-    TRY(tab->load_from_gml(basic_model_tab_gml));
+    auto& tab = m_tab_widget->add_tab<GUI::Widget>("Basic Model"_string);
+    TRY(tab.load_from_gml(basic_model_tab_gml));
 
     m_basic_model = BasicModel::create();
-    m_basic_model_table = *tab->find_descendant_of_type_named<GUI::TableView>("model_table");
+    m_basic_model_table = *tab.find_descendant_of_type_named<GUI::TableView>("model_table");
     m_basic_model_table->set_model(m_basic_model);
 
     m_basic_model->on_invalidate = [&] {
         m_invalidation_count++;
-        m_statusbar->set_text(DeprecatedString::formatted("Times invalidated: {}", m_invalidation_count));
+        m_statusbar->set_text(String::formatted("Times invalidated: {}", m_invalidation_count).release_value_but_fixme_should_propagate_errors());
     };
 
-    m_statusbar->set_text(DeprecatedString::formatted("Times invalidated: {}", m_invalidation_count));
+    m_statusbar->set_text(TRY(String::formatted("Times invalidated: {}", m_invalidation_count)));
 
     m_basic_model->add_item("Well...");
     m_basic_model->add_item("...hello...");
     m_basic_model->add_item("...friends! :^)");
 
-    m_new_item_name = *tab->find_descendant_of_type_named<GUI::TextBox>("new_item_name");
-    m_add_new_item = *tab->find_descendant_of_type_named<GUI::Button>("add_new_item");
-    m_remove_selected_item = *tab->find_descendant_of_type_named<GUI::Button>("remove_selected_item");
+    m_new_item_name = *tab.find_descendant_of_type_named<GUI::TextBox>("new_item_name");
+    m_add_new_item = *tab.find_descendant_of_type_named<GUI::Button>("add_new_item");
+    m_remove_selected_item = *tab.find_descendant_of_type_named<GUI::Button>("remove_selected_item");
 
-    m_add_new_item->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/plus.png"sv).release_value_but_fixme_should_propagate_errors());
-    m_remove_selected_item->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/minus.png"sv).release_value_but_fixme_should_propagate_errors());
+    m_add_new_item->set_icon(TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/plus.png"sv)));
+    m_remove_selected_item->set_icon(TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/minus.png"sv)));
 
     m_new_item_name->on_return_pressed = [&] { add_textbox_contents_to_basic_model(); };
     m_add_new_item->on_click = [&](auto) { add_textbox_contents_to_basic_model(); };

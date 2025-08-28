@@ -20,6 +20,16 @@ namespace Core {
 /// classes. Sockets are non-seekable streams which can be read byte-wise.
 class Socket : public Stream {
 public:
+    enum class PreventSIGPIPE {
+        No,
+        Yes,
+    };
+
+    enum class SocketType {
+        Stream,
+        Datagram,
+    };
+
     Socket(Socket&&) = default;
     Socket& operator=(Socket&&) = default;
 
@@ -46,12 +56,11 @@ public:
     /// Conversely, set_notifications_enabled(true) will re-enable notifications.
     virtual void set_notifications_enabled(bool) { }
 
-    Function<void()> on_ready_to_read;
+    // FIXME: This will need to be updated when IPv6 socket arrives. Perhaps a
+    //        base class for all address types is appropriate.
+    static ErrorOr<IPv4Address> resolve_host(ByteString const&, SocketType);
 
-    enum class PreventSIGPIPE {
-        No,
-        Yes,
-    };
+    Function<void()> on_ready_to_read;
 
 protected:
     enum class SocketDomain {
@@ -59,22 +68,14 @@ protected:
         Inet,
     };
 
-    enum class SocketType {
-        Stream,
-        Datagram,
-    };
-
-    Socket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::No)
+    explicit Socket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::Yes)
         : m_prevent_sigpipe(prevent_sigpipe == PreventSIGPIPE::Yes)
     {
     }
 
     static ErrorOr<int> create_fd(SocketDomain, SocketType);
-    // FIXME: This will need to be updated when IPv6 socket arrives. Perhaps a
-    //        base class for all address types is appropriate.
-    static ErrorOr<IPv4Address> resolve_host(DeprecatedString const&, SocketType);
 
-    static ErrorOr<void> connect_local(int fd, DeprecatedString const& path);
+    static ErrorOr<void> connect_local(int fd, ByteString const& path);
     static ErrorOr<void> connect_inet(int fd, SocketAddress const&);
 
     int default_flags() const
@@ -86,7 +87,7 @@ protected:
     }
 
 private:
-    bool m_prevent_sigpipe { false };
+    bool m_prevent_sigpipe { true };
 };
 
 /// A reusable socket maintains state about being connected in addition to
@@ -97,7 +98,7 @@ public:
     virtual bool is_connected() = 0;
     /// Reconnects the socket to the given host and port. Returns EALREADY if
     /// is_connected() is true.
-    virtual ErrorOr<void> reconnect(DeprecatedString const& host, u16 port) = 0;
+    virtual ErrorOr<void> reconnect(ByteString const& host, u16 port) = 0;
     /// Connects the socket to the given socket address (IP address + port).
     /// Returns EALREADY is_connected() is true.
     virtual ErrorOr<void> reconnect(SocketAddress const&) = 0;
@@ -133,6 +134,7 @@ public:
     ErrorOr<size_t> write(ReadonlyBytes, int flags);
 
     bool is_eof() const { return !is_open() || m_last_read_was_eof; }
+    void did_reach_eof_on_read();
     bool is_open() const { return m_fd != -1; }
     void close();
 
@@ -141,7 +143,7 @@ public:
 
     ErrorOr<void> set_blocking(bool enabled);
     ErrorOr<void> set_close_on_exec(bool enabled);
-    ErrorOr<void> set_receive_timeout(Time timeout);
+    ErrorOr<void> set_receive_timeout(Duration timeout);
 
     void setup_notifier();
     RefPtr<Core::Notifier> notifier() { return m_notifier; }
@@ -154,9 +156,12 @@ private:
 
 class TCPSocket final : public Socket {
 public:
-    static ErrorOr<NonnullOwnPtr<TCPSocket>> connect(DeprecatedString const& host, u16 port);
+    static ErrorOr<NonnullOwnPtr<TCPSocket>> connect(ByteString const& host, u16 port);
     static ErrorOr<NonnullOwnPtr<TCPSocket>> connect(SocketAddress const& address);
     static ErrorOr<NonnullOwnPtr<TCPSocket>> adopt_fd(int fd);
+
+    static Coroutine<ErrorOr<NonnullOwnPtr<TCPSocket>>> async_connect(ByteString const& host, u16 port);
+    static Coroutine<ErrorOr<NonnullOwnPtr<TCPSocket>>> async_connect(SocketAddress const& address);
 
     TCPSocket(TCPSocket&& other)
         : Socket(static_cast<Socket&&>(other))
@@ -176,11 +181,11 @@ public:
         return *this;
     }
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override { return m_helper.read(buffer, default_flags()); }
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override { return m_helper.read(buffer, default_flags()); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
     virtual bool is_eof() const override { return m_helper.is_eof(); }
-    virtual bool is_open() const override { return m_helper.is_open(); };
-    virtual void close() override { m_helper.close(); };
+    virtual bool is_open() const override { return m_helper.is_open(); }
+    virtual void close() override { m_helper.close(); }
     virtual ErrorOr<size_t> pending_bytes() const override { return m_helper.pending_bytes(); }
     virtual ErrorOr<bool> can_read_without_blocking(int timeout = 0) const override { return m_helper.can_read_without_blocking(timeout); }
     virtual void set_notifications_enabled(bool enabled) override
@@ -194,7 +199,7 @@ public:
     virtual ~TCPSocket() override { close(); }
 
 private:
-    TCPSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::No)
+    explicit TCPSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::Yes)
         : Socket(prevent_sigpipe)
     {
     }
@@ -204,7 +209,7 @@ private:
         VERIFY(is_open());
 
         m_helper.setup_notifier();
-        m_helper.notifier()->on_ready_to_read = [this] {
+        m_helper.notifier()->on_activation = [this] {
             if (on_ready_to_read)
                 on_ready_to_read();
         };
@@ -215,8 +220,8 @@ private:
 
 class UDPSocket final : public Socket {
 public:
-    static ErrorOr<NonnullOwnPtr<UDPSocket>> connect(DeprecatedString const& host, u16 port, Optional<Time> timeout = {});
-    static ErrorOr<NonnullOwnPtr<UDPSocket>> connect(SocketAddress const& address, Optional<Time> timeout = {});
+    static ErrorOr<NonnullOwnPtr<UDPSocket>> connect(ByteString const& host, u16 port, Optional<Duration> timeout = {});
+    static ErrorOr<NonnullOwnPtr<UDPSocket>> connect(SocketAddress const& address, Optional<Duration> timeout = {});
 
     UDPSocket(UDPSocket&& other)
         : Socket(static_cast<Socket&&>(other))
@@ -236,22 +241,21 @@ public:
         return *this;
     }
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override
     {
         auto pending_bytes = TRY(this->pending_bytes());
         if (pending_bytes > buffer.size()) {
             // With UDP datagrams, reading a datagram into a buffer that's
             // smaller than the datagram's size will cause the rest of the
             // datagram to be discarded. That's not very nice, so let's bail
-            // early, telling the caller that he should allocate a bigger
-            // buffer.
+            // early, telling the caller to allocate a bigger buffer.
             return Error::from_errno(EMSGSIZE);
         }
 
         return m_helper.read(buffer, default_flags());
     }
 
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
     virtual bool is_eof() const override { return m_helper.is_eof(); }
     virtual bool is_open() const override { return m_helper.is_open(); }
     virtual void close() override { m_helper.close(); }
@@ -268,7 +272,7 @@ public:
     virtual ~UDPSocket() override { close(); }
 
 private:
-    UDPSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::No)
+    explicit UDPSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::Yes)
         : Socket(prevent_sigpipe)
     {
     }
@@ -278,7 +282,7 @@ private:
         VERIFY(is_open());
 
         m_helper.setup_notifier();
-        m_helper.notifier()->on_ready_to_read = [this] {
+        m_helper.notifier()->on_activation = [this] {
             if (on_ready_to_read)
                 on_ready_to_read();
         };
@@ -289,8 +293,8 @@ private:
 
 class LocalSocket final : public Socket {
 public:
-    static ErrorOr<NonnullOwnPtr<LocalSocket>> connect(DeprecatedString const& path, PreventSIGPIPE = PreventSIGPIPE::No);
-    static ErrorOr<NonnullOwnPtr<LocalSocket>> adopt_fd(int fd, PreventSIGPIPE = PreventSIGPIPE::No);
+    static ErrorOr<NonnullOwnPtr<LocalSocket>> connect(ByteString const& path, PreventSIGPIPE = PreventSIGPIPE::Yes);
+    static ErrorOr<NonnullOwnPtr<LocalSocket>> adopt_fd(int fd, PreventSIGPIPE = PreventSIGPIPE::Yes);
 
     LocalSocket(LocalSocket&& other)
         : Socket(static_cast<Socket&&>(other))
@@ -310,8 +314,8 @@ public:
         return *this;
     }
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override { return m_helper.read(buffer, default_flags()); }
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override { return m_helper.read(buffer, default_flags()); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_helper.write(buffer, default_flags()); }
     virtual bool is_eof() const override { return m_helper.is_eof(); }
     virtual bool is_open() const override { return m_helper.is_open(); }
     virtual void close() override { m_helper.close(); }
@@ -327,6 +331,10 @@ public:
 
     ErrorOr<int> receive_fd(int flags);
     ErrorOr<void> send_fd(int fd);
+
+    ErrorOr<Bytes> receive_message(Bytes buffer, int flags, Vector<int>& fds);
+    ErrorOr<ssize_t> send_message(ReadonlyBytes msg, int flags, Vector<int, 1> fds = {});
+
     ErrorOr<pid_t> peer_pid() const;
     ErrorOr<Bytes> read_without_waiting(Bytes buffer);
 
@@ -342,7 +350,7 @@ public:
     virtual ~LocalSocket() { close(); }
 
 private:
-    LocalSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::No)
+    explicit LocalSocket(PreventSIGPIPE prevent_sigpipe = PreventSIGPIPE::Yes)
         : Socket(prevent_sigpipe)
     {
     }
@@ -352,7 +360,7 @@ private:
         VERIFY(is_open());
 
         m_helper.setup_notifier();
-        m_helper.notifier()->on_ready_to_read = [this] {
+        m_helper.notifier()->on_activation = [this] {
             if (on_ready_to_read)
                 on_ready_to_read();
         };
@@ -369,6 +377,7 @@ public:
     virtual ErrorOr<StringView> read_line(Bytes buffer) = 0;
     virtual ErrorOr<Bytes> read_until(Bytes buffer, StringView candidate) = 0;
     virtual ErrorOr<bool> can_read_line() = 0;
+    virtual ErrorOr<bool> can_read_up_to_delimiter(ReadonlyBytes delimiter) = 0;
     virtual size_t buffer_size() const = 0;
 };
 
@@ -398,8 +407,8 @@ public:
         return *this;
     }
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override { return m_helper.read(move(buffer)); }
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_helper.stream().write(buffer); }
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override { return m_helper.read(move(buffer)); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_helper.stream().write_some(buffer); }
     virtual bool is_eof() const override { return m_helper.is_eof(); }
     virtual bool is_open() const override { return m_helper.stream().is_open(); }
     virtual void close() override { m_helper.stream().close(); }
@@ -413,10 +422,14 @@ public:
     virtual void set_notifications_enabled(bool enabled) override { m_helper.stream().set_notifications_enabled(enabled); }
 
     virtual ErrorOr<StringView> read_line(Bytes buffer) override { return m_helper.read_line(move(buffer)); }
+    virtual ErrorOr<bool> can_read_line() override
+    {
+        return TRY(m_helper.can_read_up_to_delimiter("\n"sv.bytes())) || m_helper.is_eof_with_data_left_over();
+    }
     virtual ErrorOr<Bytes> read_until(Bytes buffer, StringView candidate) override { return m_helper.read_until(move(buffer), move(candidate)); }
     template<size_t N>
     ErrorOr<Bytes> read_until_any_of(Bytes buffer, Array<StringView, N> candidates) { return m_helper.read_until_any_of(move(buffer), move(candidates)); }
-    virtual ErrorOr<bool> can_read_line() override { return m_helper.can_read_line(); }
+    virtual ErrorOr<bool> can_read_up_to_delimiter(ReadonlyBytes delimiter) override { return m_helper.can_read_up_to_delimiter(delimiter); }
 
     virtual size_t buffer_size() const override { return m_helper.buffer_size(); }
 
@@ -450,7 +463,7 @@ using BufferedLocalSocket = BufferedSocket<LocalSocket>;
 template<SocketLike T>
 class BasicReusableSocket final : public ReusableSocket {
 public:
-    static ErrorOr<NonnullOwnPtr<BasicReusableSocket<T>>> connect(DeprecatedString const& host, u16 port)
+    static ErrorOr<NonnullOwnPtr<BasicReusableSocket<T>>> connect(ByteString const& host, u16 port)
     {
         return make<BasicReusableSocket<T>>(TRY(T::connect(host, port)));
     }
@@ -465,7 +478,7 @@ public:
         return m_socket.is_open();
     }
 
-    virtual ErrorOr<void> reconnect(DeprecatedString const& host, u16 port) override
+    virtual ErrorOr<void> reconnect(ByteString const& host, u16 port) override
     {
         if (is_connected())
             return Error::from_errno(EALREADY);
@@ -483,8 +496,8 @@ public:
         return {};
     }
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override { return m_socket.read(move(buffer)); }
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_socket.write(buffer); }
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override { return m_socket.read(move(buffer)); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_socket.write(buffer); }
     virtual bool is_eof() const override { return m_socket.is_eof(); }
     virtual bool is_open() const override { return m_socket.is_open(); }
     virtual void close() override { m_socket.close(); }

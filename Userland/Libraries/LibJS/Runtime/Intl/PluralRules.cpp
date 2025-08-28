@@ -11,6 +11,8 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(PluralRules);
+
 // 16 PluralRules Objects, https://tc39.es/ecma402/#pluralrules-objects
 PluralRules::PluralRules(Object& prototype)
     : NumberFormatBase(prototype)
@@ -21,7 +23,7 @@ PluralRules::PluralRules(Object& prototype)
 ::Locale::PluralOperands get_operands(StringView string)
 {
     // 1.Let n be ! ToNumber(s).
-    auto number = string.to_double(AK::TrimWhitespace::Yes).release_value();
+    auto number = string.to_number<double>(AK::TrimWhitespace::Yes).release_value();
 
     // 2. Assert: n is finite.
     VERIFY(isfinite(number));
@@ -55,7 +57,7 @@ PluralRules::PluralRules(Object& prototype)
             return static_cast<u64>(fabs(value));
         },
         [](StringView value) {
-            auto value_as_int = value.template to_int<i64>().value();
+            auto value_as_int = value.template to_number<i64>().value();
             return static_cast<u64>(value_as_int);
         });
 
@@ -63,7 +65,7 @@ PluralRules::PluralRules(Object& prototype)
     auto fraction_digit_count = fraction_slice.length();
 
     // 8. Let f be ! ToNumber(fracSlice).
-    auto fraction = fraction_slice.is_empty() ? 0u : fraction_slice.template to_uint<u64>().value();
+    auto fraction = fraction_slice.is_empty() ? 0u : fraction_slice.template to_number<u64>().value();
 
     // 9. Let significantFracSlice be the value of fracSlice stripped of trailing "0".
     auto significant_fraction_slice = fraction_slice.trim("0"sv, TrimMode::Right);
@@ -72,7 +74,7 @@ PluralRules::PluralRules(Object& prototype)
     auto significant_fraction_digit_count = significant_fraction_slice.length();
 
     // 11. Let significantFrac be ! ToNumber(significantFracSlice).
-    auto significant_fraction = significant_fraction_slice.is_empty() ? 0u : significant_fraction_slice.template to_uint<u64>().value();
+    auto significant_fraction = significant_fraction_slice.is_empty() ? 0u : significant_fraction_slice.template to_number<u64>().value();
 
     // 12. Return a new Record { [[Number]]: abs(n), [[IntegerDigits]]: i, [[FractionDigits]]: f, [[NumberOfFractionDigits]]: fracDigitCount, [[FractionDigitsWithoutTrailing]]: significantFrac, [[NumberOfFractionDigitsWithoutTrailing]]: significantFracDigitCount }.
     return ::Locale::PluralOperands {
@@ -92,14 +94,13 @@ PluralRules::PluralRules(Object& prototype)
 }
 
 // 16.5.3 ResolvePlural ( pluralRules, n ), https://tc39.es/ecma402/#sec-resolveplural
-// 1.5.3 ResolvePlural ( pluralRules, n ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-resolveplural
-ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, PluralRules const& plural_rules, Value number)
+ResolvedPlurality resolve_plural(PluralRules const& plural_rules, Value number)
 {
-    return resolve_plural(vm, plural_rules, plural_rules.type(), number);
+    return resolve_plural(plural_rules, plural_rules.type(), number);
 }
 
 // Non-standard overload of ResolvePlural to allow using the AO without an Intl.PluralRules object.
-ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, NumberFormatBase const& number_format, ::Locale::PluralForm type, Value number)
+ResolvedPlurality resolve_plural(NumberFormatBase const& number_format, ::Locale::PluralForm type, Value number)
 {
     // 1. Assert: Type(pluralRules) is Object.
     // 2. Assert: pluralRules has an [[InitializedPluralRules]] internal slot.
@@ -108,7 +109,7 @@ ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, NumberFormatBase con
     // 4. If n is not a finite Number, then
     if (!number.is_finite_number()) {
         // a. Return "other".
-        return ResolvedPlurality { ::Locale::PluralCategory::Other, String {} };
+        return { ::Locale::PluralCategory::Other, String {} };
     }
 
     // 5. Let locale be pluralRules.[[Locale]].
@@ -117,7 +118,7 @@ ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, NumberFormatBase con
     // 6. Let type be pluralRules.[[Type]].
 
     // 7. Let res be ! FormatNumericToString(pluralRules, n).
-    auto result = MUST_OR_THROW_OOM(format_numeric_to_string(vm, number_format, number));
+    auto result = format_numeric_to_string(number_format, number);
 
     // 8. Let s be res.[[FormattedString]].
     auto string = move(result.formatted_string);
@@ -129,16 +130,16 @@ ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM& vm, NumberFormatBase con
     auto plural_category = plural_rule_select(locale, type, number, move(operands));
 
     // 11. Return the Record { [[PluralCategory]]: p, [[FormattedString]]: s }.
-    return ResolvedPlurality { plural_category, move(string) };
+    return { plural_category, move(string) };
 }
 
-// 1.5.4 PluralRuleSelectRange ( locale, type, xp, yp ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-pluralruleselectrange
+// 16.5.4 PluralRuleSelectRange ( locale, type, xp, yp ), https://tc39.es/ecma402/#sec-resolveplural
 ::Locale::PluralCategory plural_rule_select_range(StringView locale, ::Locale::PluralForm, ::Locale::PluralCategory start, ::Locale::PluralCategory end)
 {
     return ::Locale::determine_plural_range(locale, start, end);
 }
 
-// 1.5.5 ResolvePluralRange ( pluralRules, x, y ), https://tc39.es/proposal-intl-numberformat-v3/out/pluralrules/proposed.html#sec-resolvepluralrange
+// 16.5.5 ResolvePluralRange ( pluralRules, x, y ), https://tc39.es/ecma402/#sec-resolveplural
 ThrowCompletionOr<::Locale::PluralCategory> resolve_plural_range(VM& vm, PluralRules const& plural_rules, Value start, Value end)
 {
     // 1. Assert: Type(pluralRules) is Object.
@@ -148,15 +149,15 @@ ThrowCompletionOr<::Locale::PluralCategory> resolve_plural_range(VM& vm, PluralR
 
     // 5. If x is NaN or y is NaN, throw a RangeError exception.
     if (start.is_nan())
-        return vm.throw_completion<RangeError>(ErrorType::IntlNumberIsNaN, "start"sv);
+        return vm.throw_completion<RangeError>(ErrorType::NumberIsNaN, "start"sv);
     if (end.is_nan())
-        return vm.throw_completion<RangeError>(ErrorType::IntlNumberIsNaN, "end"sv);
+        return vm.throw_completion<RangeError>(ErrorType::NumberIsNaN, "end"sv);
 
     // 6. Let xp be ! ResolvePlural(pluralRules, x).
-    auto start_plurality = MUST_OR_THROW_OOM(resolve_plural(vm, plural_rules, start));
+    auto start_plurality = resolve_plural(plural_rules, start);
 
     // 7. Let yp be ! ResolvePlural(pluralRules, y).
-    auto end_plurality = MUST_OR_THROW_OOM(resolve_plural(vm, plural_rules, end));
+    auto end_plurality = resolve_plural(plural_rules, end);
 
     // 8. If xp.[[FormattedString]] is yp.[[FormattedString]], then
     if (start_plurality.formatted_string == end_plurality.formatted_string) {

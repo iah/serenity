@@ -14,6 +14,9 @@
 
 namespace AK {
 
+// A map datastructure, mapping keys K to values V, based on a hash table with closed hashing.
+// HashMap can optionally provide ordered iteration based on the order of keys when IsOrdered = true.
+// HashMap is based on HashTable, which should be used instead if just a set datastructure is required.
 template<typename K, typename V, typename KeyTraits, typename ValueTraits, bool IsOrdered>
 class HashMap {
 private:
@@ -36,9 +39,14 @@ public:
     HashMap(std::initializer_list<Entry> list)
     {
         MUST(try_ensure_capacity(list.size()));
-        for (auto& item : list)
-            set(item.key, item.value);
+        for (auto& [key, value] : list)
+            set(key, value);
     }
+
+    HashMap(HashMap const&) = default; // FIXME: Not OOM-safe! Use clone() instead.
+    HashMap(HashMap&& other) noexcept = default;
+    HashMap& operator=(HashMap const& other) = default; // FIXME: Not OOM-safe! Use clone() instead.
+    HashMap& operator=(HashMap&& other) noexcept = default;
 
     [[nodiscard]] bool is_empty() const
     {
@@ -80,7 +88,7 @@ public:
     template<typename TUnaryPredicate>
     bool remove_all_matching(TUnaryPredicate const& predicate)
     {
-        return m_table.template remove_all_matching([&](auto& entry) {
+        return m_table.remove_all_matching([&](auto& entry) {
             return predicate(entry.key, entry.value);
         });
     }
@@ -93,7 +101,9 @@ public:
     [[nodiscard]] IteratorType end() { return m_table.end(); }
     [[nodiscard]] IteratorType find(K const& key)
     {
-        return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(key, entry.key); });
+        if (m_table.is_empty())
+            return m_table.end();
+        return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(entry.key, key); });
     }
     template<typename TUnaryPredicate>
     [[nodiscard]] IteratorType find(unsigned hash, TUnaryPredicate predicate)
@@ -105,7 +115,9 @@ public:
     [[nodiscard]] ConstIteratorType end() const { return m_table.end(); }
     [[nodiscard]] ConstIteratorType find(K const& key) const
     {
-        return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(key, entry.key); });
+        if (m_table.is_empty())
+            return m_table.end();
+        return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(entry.key, key); });
     }
     template<typename TUnaryPredicate>
     [[nodiscard]] ConstIteratorType find(unsigned hash, TUnaryPredicate predicate) const
@@ -116,16 +128,22 @@ public:
     template<Concepts::HashCompatible<K> Key>
     requires(IsSame<KeyTraits, Traits<K>>) [[nodiscard]] IteratorType find(Key const& key)
     {
-        return m_table.find(Traits<Key>::hash(key), [&](auto& entry) { return Traits<K>::equals(key, entry.key); });
+        if (m_table.is_empty())
+            return m_table.end();
+        return m_table.find(Traits<Key>::hash(key), [&](auto& entry) { return Traits<K>::equals(entry.key, key); });
     }
 
     template<Concepts::HashCompatible<K> Key>
     requires(IsSame<KeyTraits, Traits<K>>) [[nodiscard]] ConstIteratorType find(Key const& key) const
     {
-        return m_table.find(Traits<Key>::hash(key), [&](auto& entry) { return Traits<K>::equals(key, entry.key); });
+        if (m_table.is_empty())
+            return m_table.end();
+        return m_table.find(Traits<Key>::hash(key), [&](auto& entry) { return Traits<K>::equals(entry.key, key); });
     }
 
     ErrorOr<void> try_ensure_capacity(size_t capacity) { return m_table.try_ensure_capacity(capacity); }
+
+    void ensure_capacity(size_t capacity) { return m_table.ensure_capacity(capacity); }
 
     Optional<typename ValueTraits::ConstPeekType> get(K const& key) const
     requires(!IsPointer<typename ValueTraits::PeekType>)
@@ -266,26 +284,28 @@ public:
     {
         Vector<K> list;
         list.ensure_capacity(size());
-        for (auto& it : *this)
-            list.unchecked_append(it.key);
+        for (auto const& [key, _] : *this)
+            list.unchecked_append(key);
         return list;
     }
 
     [[nodiscard]] u32 hash() const
     {
         u32 hash = 0;
-        for (auto& it : *this) {
-            auto entry_hash = pair_int_hash(it.key.hash(), it.value.hash());
+        for (auto const& [key, value] : *this) {
+            auto entry_hash = pair_int_hash(key.hash(), value.hash());
             hash = pair_int_hash(hash, entry_hash);
         }
         return hash;
     }
 
-    ErrorOr<HashMap<K, V>> clone()
+    template<typename NewKeyTraits = KeyTraits, typename NewValueTraits = ValueTraits, bool NewIsOrdered = IsOrdered>
+    ErrorOr<HashMap<K, V, NewKeyTraits, NewValueTraits, NewIsOrdered>> clone() const
     {
-        HashMap<K, V> hash_map_clone;
-        for (auto& it : *this)
-            TRY(hash_map_clone.try_set(it.key, it.value));
+        HashMap<K, V, NewKeyTraits, NewValueTraits, NewIsOrdered> hash_map_clone;
+        TRY(hash_map_clone.try_ensure_capacity(size()));
+        for (auto const& [key, value] : *this)
+            hash_map_clone.set(key, value);
         return hash_map_clone;
     }
 

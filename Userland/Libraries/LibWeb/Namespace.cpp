@@ -8,18 +8,17 @@
 
 namespace Web::Namespace {
 
-#define __ENUMERATE_NAMESPACE(name, namespace_) DeprecatedFlyString name;
+#define __ENUMERATE_NAMESPACE(name, namespace_) FlyString name;
 ENUMERATE_NAMESPACES
 #undef __ENUMERATE_NAMESPACE
 
-[[gnu::constructor]] static void initialize()
+void initialize_strings()
 {
     static bool s_initialized = false;
-    if (s_initialized)
-        return;
+    VERIFY(!s_initialized);
 
 #define __ENUMERATE_NAMESPACE(name, namespace_) \
-    name = namespace_;
+    name = namespace_##_fly_string;
     ENUMERATE_NAMESPACES
 #undef __ENUMERATE_NAMESPACE
 

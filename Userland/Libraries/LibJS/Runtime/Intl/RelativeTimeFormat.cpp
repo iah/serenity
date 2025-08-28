@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -11,9 +12,10 @@
 #include <LibJS/Runtime/Intl/NumberFormatConstructor.h>
 #include <LibJS/Runtime/Intl/PluralRules.h>
 #include <LibJS/Runtime/Intl/RelativeTimeFormat.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
 
 namespace JS::Intl {
+
+JS_DEFINE_ALLOCATOR(RelativeTimeFormat);
 
 // 17 RelativeTimeFormat Objects, https://tc39.es/ecma402/#relativetimeformat-objects
 RelativeTimeFormat::RelativeTimeFormat(Object& prototype)
@@ -99,7 +101,7 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_patt
 
     // 4. If value is NaN, +∞𝔽, or -∞𝔽, throw a RangeError exception.
     if (!Value(value).is_finite_number())
-        return vm.throw_completion<RangeError>(ErrorType::IntlNumberIsNaNOrInfinity);
+        return vm.throw_completion<RangeError>(ErrorType::NumberIsNaNOrInfinity);
 
     // 5. Let unit be ? SingularRelativeTimeUnit(unit).
     auto time_unit = TRY(singular_relative_time_unit(vm, unit));
@@ -117,20 +119,20 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_patt
     //       then filtering the large set of locale data down to the pattern we are looking for. Instead,
     //       LibUnicode expects the individual options as enumeration values, and returns the couple of
     //       patterns that match those options.
-    auto find_patterns_for_tense_or_number = [&](StringView tense_or_number) -> ThrowCompletionOr<Vector<::Locale::RelativeTimeFormat>> {
+    auto find_patterns_for_tense_or_number = [&](StringView tense_or_number) {
         // 10. If style is equal to "short", then
         //     a. Let entry be the string-concatenation of unit and "-short".
         // 11. Else if style is equal to "narrow", then
         //     a. Let entry be the string-concatenation of unit and "-narrow".
         // 12. Else,
         //     a. Let entry be unit.
-        auto patterns = TRY_OR_THROW_OOM(vm, ::Locale::get_relative_time_format_patterns(data_locale, time_unit, tense_or_number, style));
+        auto patterns = ::Locale::get_relative_time_format_patterns(data_locale, time_unit, tense_or_number, style);
 
         // 13. If fields doesn't have a field [[<entry>]], then
         if (patterns.is_empty()) {
             // a. Let entry be unit.
             // NOTE: In the CLDR, the lack of "short" or "narrow" in the key implies "long".
-            patterns = TRY_OR_THROW_OOM(vm, ::Locale::get_relative_time_format_patterns(data_locale, time_unit, tense_or_number, ::Locale::Style::Long));
+            patterns = ::Locale::get_relative_time_format_patterns(data_locale, time_unit, tense_or_number, ::Locale::Style::Long);
         }
 
         // 14. Let patterns be fields.[[<entry>]].
@@ -144,16 +146,14 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_patt
         auto value_string = MUST(Value(value).to_string(vm));
 
         // b. If patterns has a field [[<valueString>]], then
-        if (auto patterns = MUST_OR_THROW_OOM(find_patterns_for_tense_or_number(value_string)); !patterns.is_empty()) {
+        if (auto patterns = find_patterns_for_tense_or_number(value_string); !patterns.is_empty()) {
             VERIFY(patterns.size() == 1);
 
             // i. Let result be patterns.[[<valueString>]].
-            auto result = TRY_OR_THROW_OOM(vm, String::from_utf8(patterns[0].pattern));
+            auto result = MUST(String::from_utf8(patterns[0].pattern));
 
             // ii. Return a List containing the Record { [[Type]]: "literal", [[Value]]: result }.
-            Vector<PatternPartitionWithUnit> result_list;
-            TRY_OR_THROW_OOM(vm, result_list.try_empend("literal"sv, move(result)));
-            return result_list;
+            return Vector<PatternPartitionWithUnit> { { "literal"sv, move(result) } };
         }
     }
 
@@ -173,13 +173,13 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_patt
     }
 
     // 19. Let po be patterns.[[<tl>]].
-    auto patterns = MUST_OR_THROW_OOM(find_patterns_for_tense_or_number(tense));
+    auto patterns = find_patterns_for_tense_or_number(tense);
 
     // 20. Let fv be ! PartitionNumberPattern(relativeTimeFormat.[[NumberFormat]], value).
-    auto value_partitions = MUST_OR_THROW_OOM(partition_number_pattern(vm, relative_time_format.number_format(), Value(value)));
+    auto value_partitions = partition_number_pattern(vm, relative_time_format.number_format(), Value(value));
 
-    // 21. Let pr be ! ResolvePlural(relativeTimeFormat.[[PluralRules]], value).
-    auto plurality = MUST_OR_THROW_OOM(resolve_plural(vm, relative_time_format.plural_rules(), Value(value)));
+    // 21. Let pr be ! ResolvePlural(relativeTimeFormat.[[PluralRules]], value).[[PluralCategory]].
+    auto plurality = resolve_plural(relative_time_format.plural_rules(), Value(value));
 
     // 22. Let pattern be po.[[<pr>]].
     auto pattern = patterns.find_if([&](auto& p) { return p.plurality == plurality.plural_category; });
@@ -187,14 +187,14 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> partition_relative_time_patt
         return Vector<PatternPartitionWithUnit> {};
 
     // 23. Return ! MakePartsList(pattern, unit, fv).
-    return MUST_OR_THROW_OOM(make_parts_list(vm, pattern->pattern, ::Locale::time_unit_to_string(time_unit), move(value_partitions)));
+    return make_parts_list(pattern->pattern, ::Locale::time_unit_to_string(time_unit), move(value_partitions));
 }
 
 // 17.5.3 MakePartsList ( pattern, unit, parts ), https://tc39.es/ecma402/#sec-makepartslist
-ThrowCompletionOr<Vector<PatternPartitionWithUnit>> make_parts_list(VM& vm, StringView pattern, StringView unit, Vector<PatternPartition> parts)
+Vector<PatternPartitionWithUnit> make_parts_list(StringView pattern, StringView unit, Vector<PatternPartition> parts)
 {
     // 1. Let patternParts be PartitionPattern(pattern).
-    auto pattern_parts = MUST_OR_THROW_OOM(partition_pattern(vm, pattern));
+    auto pattern_parts = partition_pattern(pattern);
 
     // 2. Let result be a new empty List.
     Vector<PatternPartitionWithUnit> result;
@@ -204,7 +204,7 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> make_parts_list(VM& vm, Stri
         // a. If patternPart.[[Type]] is "literal", then
         if (pattern_part.type == "literal"sv) {
             // i. Append Record { [[Type]]: "literal", [[Value]]: patternPart.[[Value]], [[Unit]]: empty } to result.
-            TRY_OR_THROW_OOM(vm, result.try_empend("literal"sv, move(pattern_part.value)));
+            result.empend("literal"sv, move(pattern_part.value));
         }
         // b. Else,
         else {
@@ -214,7 +214,7 @@ ThrowCompletionOr<Vector<PatternPartitionWithUnit>> make_parts_list(VM& vm, Stri
             // ii. For each Record { [[Type]], [[Value]] } part in parts, do
             for (auto& part : parts) {
                 // 1. Append Record { [[Type]]: part.[[Type]], [[Value]]: part.[[Value]], [[Unit]]: unit } to result.
-                TRY_OR_THROW_OOM(vm, result.try_empend(part.type, move(part.value), unit));
+                result.empend(part.type, move(part.value), unit);
             }
         }
     }
@@ -230,20 +230,20 @@ ThrowCompletionOr<String> format_relative_time(VM& vm, RelativeTimeFormat& relat
     auto parts = TRY(partition_relative_time_pattern(vm, relative_time_format, value, unit));
 
     // 2. Let result be an empty String.
-    ThrowableStringBuilder result(vm);
+    StringBuilder result;
 
     // 3. For each Record { [[Type]], [[Value]], [[Unit]] } part in parts, do
     for (auto& part : parts) {
         // a. Set result to the string-concatenation of result and part.[[Value]].
-        MUST_OR_THROW_OOM(result.append(part.value));
+        result.append(part.value);
     }
 
     // 4. Return result.
-    return result.to_string();
+    return MUST(result.to_string());
 }
 
 // 17.5.5 FormatRelativeTimeToParts ( relativeTimeFormat, value, unit ), https://tc39.es/ecma402/#sec-FormatRelativeTimeToParts
-ThrowCompletionOr<Array*> format_relative_time_to_parts(VM& vm, RelativeTimeFormat& relative_time_format, double value, StringView unit)
+ThrowCompletionOr<NonnullGCPtr<Array>> format_relative_time_to_parts(VM& vm, RelativeTimeFormat& relative_time_format, double value, StringView unit)
 {
     auto& realm = *vm.current_realm();
 
@@ -262,7 +262,7 @@ ThrowCompletionOr<Array*> format_relative_time_to_parts(VM& vm, RelativeTimeForm
         auto object = Object::create(realm, realm.intrinsics().object_prototype());
 
         // b. Perform ! CreateDataPropertyOrThrow(O, "type", part.[[Type]]).
-        MUST(object->create_data_property_or_throw(vm.names.type, MUST_OR_THROW_OOM(PrimitiveString::create(vm, part.type))));
+        MUST(object->create_data_property_or_throw(vm.names.type, PrimitiveString::create(vm, part.type)));
 
         // c. Perform ! CreateDataPropertyOrThrow(O, "value", part.[[Value]]).
         MUST(object->create_data_property_or_throw(vm.names.value, PrimitiveString::create(vm, move(part.value))));
@@ -270,7 +270,7 @@ ThrowCompletionOr<Array*> format_relative_time_to_parts(VM& vm, RelativeTimeForm
         // d. If part.[[Unit]] is not empty, then
         if (!part.unit.is_empty()) {
             // i. Perform ! CreateDataPropertyOrThrow(O, "unit", part.[[Unit]]).
-            MUST(object->create_data_property_or_throw(vm.names.unit, MUST_OR_THROW_OOM(PrimitiveString::create(vm, part.unit))));
+            MUST(object->create_data_property_or_throw(vm.names.unit, PrimitiveString::create(vm, part.unit)));
         }
 
         // e. Perform ! CreateDataPropertyOrThrow(result, ! ToString(n), O).
@@ -281,7 +281,7 @@ ThrowCompletionOr<Array*> format_relative_time_to_parts(VM& vm, RelativeTimeForm
     }
 
     // 5. Return result.
-    return result.ptr();
+    return result;
 }
 
 }

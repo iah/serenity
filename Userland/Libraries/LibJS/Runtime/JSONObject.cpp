@@ -23,30 +23,31 @@
 #include <LibJS/Runtime/NumberObject.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/StringObject.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(JSONObject);
+
 JSONObject::JSONObject(Realm& realm)
-    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
+    : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> JSONObject::initialize(Realm& realm)
+void JSONObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.stringify, stringify, 3, attr);
     define_native_function(realm, vm.names.parse, parse, 2, attr);
 
     // 25.5.3 JSON [ @@toStringTag ], https://tc39.es/ecma262/#sec-json-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), MUST_OR_THROW_OOM(PrimitiveString::create(vm, "JSON"sv)), Attribute::Configurable);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "JSON"_string), Attribute::Configurable);
 }
 
 // 25.5.2 JSON.stringify ( value [ , replacer [ , space ] ] ), https://tc39.es/ecma262/#sec-json.stringify
-ThrowCompletionOr<DeprecatedString> JSONObject::stringify_impl(VM& vm, Value value, Value replacer, Value space)
+ThrowCompletionOr<Optional<ByteString>> JSONObject::stringify_impl(VM& vm, Value value, Value replacer, Value space)
 {
     auto& realm = *vm.current_realm();
 
@@ -60,21 +61,21 @@ ThrowCompletionOr<DeprecatedString> JSONObject::stringify_impl(VM& vm, Value val
             if (is_array) {
                 auto& replacer_object = replacer.as_object();
                 auto replacer_length = TRY(length_of_array_like(vm, replacer_object));
-                Vector<DeprecatedString> list;
+                Vector<ByteString> list;
                 for (size_t i = 0; i < replacer_length; ++i) {
                     auto replacer_value = TRY(replacer_object.get(i));
-                    DeprecatedString item;
+                    Optional<ByteString> item;
                     if (replacer_value.is_string()) {
-                        item = TRY(replacer_value.as_string().deprecated_string());
+                        item = replacer_value.as_string().byte_string();
                     } else if (replacer_value.is_number()) {
-                        item = MUST(replacer_value.to_deprecated_string(vm));
+                        item = MUST(replacer_value.to_byte_string(vm));
                     } else if (replacer_value.is_object()) {
                         auto& value_object = replacer_value.as_object();
                         if (is<StringObject>(value_object) || is<NumberObject>(value_object))
-                            item = TRY(replacer_value.to_deprecated_string(vm));
+                            item = TRY(replacer_value.to_byte_string(vm));
                     }
-                    if (!item.is_null() && !list.contains_slow(item)) {
-                        list.append(item);
+                    if (item.has_value() && !list.contains_slow(*item)) {
+                        list.append(*item);
                     }
                 }
                 state.property_list = list;
@@ -93,20 +94,20 @@ ThrowCompletionOr<DeprecatedString> JSONObject::stringify_impl(VM& vm, Value val
     if (space.is_number()) {
         auto space_mv = MUST(space.to_integer_or_infinity(vm));
         space_mv = min(10, space_mv);
-        state.gap = space_mv < 1 ? DeprecatedString::empty() : DeprecatedString::repeated(' ', space_mv);
+        state.gap = space_mv < 1 ? ByteString::empty() : ByteString::repeated(' ', space_mv);
     } else if (space.is_string()) {
-        auto string = TRY(space.as_string().deprecated_string());
+        auto string = space.as_string().byte_string();
         if (string.length() <= 10)
             state.gap = string;
         else
             state.gap = string.substring(0, 10);
     } else {
-        state.gap = DeprecatedString::empty();
+        state.gap = ByteString::empty();
     }
 
     auto wrapper = Object::create(realm, realm.intrinsics().object_prototype());
-    MUST(wrapper->create_data_property_or_throw(DeprecatedString::empty(), value));
-    return serialize_json_property(vm, state, DeprecatedString::empty(), wrapper);
+    MUST(wrapper->create_data_property_or_throw(ByteString::empty(), value));
+    return serialize_json_property(vm, state, ByteString::empty(), wrapper);
 }
 
 // 25.5.2 JSON.stringify ( value [ , replacer [ , space ] ] ), https://tc39.es/ecma262/#sec-json.stringify
@@ -119,15 +120,15 @@ JS_DEFINE_NATIVE_FUNCTION(JSONObject::stringify)
     auto replacer = vm.argument(1);
     auto space = vm.argument(2);
 
-    auto string = TRY(stringify_impl(vm, value, replacer, space));
-    if (string.is_null())
+    auto maybe_string = TRY(stringify_impl(vm, value, replacer, space));
+    if (!maybe_string.has_value())
         return js_undefined();
 
-    return PrimitiveString::create(vm, string);
+    return PrimitiveString::create(vm, maybe_string.release_value());
 }
 
 // 25.5.2.1 SerializeJSONProperty ( state, key, holder ), https://tc39.es/ecma262/#sec-serializejsonproperty
-ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_property(VM& vm, StringifyState& state, PropertyKey const& key, Object* holder)
+ThrowCompletionOr<Optional<ByteString>> JSONObject::serialize_json_property(VM& vm, StringifyState& state, PropertyKey const& key, Object* holder)
 {
     // 1. Let value be ? Get(holder, key).
     auto value = TRY(holder->get(key));
@@ -187,13 +188,13 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_property(VM& vm, 
 
     // 8. If Type(value) is String, return QuoteJSONString(value).
     if (value.is_string())
-        return quote_json_string(TRY(value.as_string().deprecated_string()));
+        return quote_json_string(value.as_string().byte_string());
 
     // 9. If Type(value) is Number, then
     if (value.is_number()) {
         // a. If value is finite, return ! ToString(value).
         if (value.is_finite_number())
-            return MUST(value.to_deprecated_string(vm));
+            return MUST(value.to_byte_string(vm));
 
         // b. Return "null".
         return "null"sv;
@@ -210,33 +211,33 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_property(VM& vm, 
 
         // b. If isArray is true, return ? SerializeJSONArray(state, value).
         if (is_array)
-            return serialize_json_array(vm, state, value.as_object());
+            return TRY(serialize_json_array(vm, state, value.as_object()));
 
         // c. Return ? SerializeJSONObject(state, value).
-        return serialize_json_object(vm, state, value.as_object());
+        return TRY(serialize_json_object(vm, state, value.as_object()));
     }
 
     // 12. Return undefined.
-    return DeprecatedString {};
+    return Optional<ByteString> {};
 }
 
 // 25.5.2.4 SerializeJSONObject ( state, value ), https://tc39.es/ecma262/#sec-serializejsonobject
-ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_object(VM& vm, StringifyState& state, Object& object)
+ThrowCompletionOr<ByteString> JSONObject::serialize_json_object(VM& vm, StringifyState& state, Object& object)
 {
     if (state.seen_objects.contains(&object))
         return vm.throw_completion<TypeError>(ErrorType::JsonCircular);
 
     state.seen_objects.set(&object);
-    DeprecatedString previous_indent = state.indent;
-    state.indent = DeprecatedString::formatted("{}{}", state.indent, state.gap);
-    Vector<DeprecatedString> property_strings;
+    ByteString previous_indent = state.indent;
+    state.indent = ByteString::formatted("{}{}", state.indent, state.gap);
+    Vector<ByteString> property_strings;
 
     auto process_property = [&](PropertyKey const& key) -> ThrowCompletionOr<void> {
         if (key.is_symbol())
             return {};
         auto serialized_property_string = TRY(serialize_json_property(vm, state, key, &object));
-        if (!serialized_property_string.is_null()) {
-            property_strings.append(DeprecatedString::formatted(
+        if (serialized_property_string.has_value()) {
+            property_strings.append(ByteString::formatted(
                 "{}:{}{}",
                 quote_json_string(key.to_string()),
                 state.gap.is_empty() ? "" : " ",
@@ -252,7 +253,7 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_object(VM& vm, St
     } else {
         auto property_list = TRY(object.enumerable_own_property_names(PropertyKind::Key));
         for (auto& property : property_list)
-            TRY(process_property(TRY(property.as_string().deprecated_string())));
+            TRY(process_property(property.as_string().byte_string()));
     }
     StringBuilder builder;
     if (property_strings.is_empty()) {
@@ -270,7 +271,7 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_object(VM& vm, St
         } else {
             builder.append('\n');
             builder.append(state.indent);
-            auto separator = DeprecatedString::formatted(",\n{}", state.indent);
+            auto separator = ByteString::formatted(",\n{}", state.indent);
             for (auto& property_string : property_strings) {
                 if (!first)
                     builder.append(separator);
@@ -285,19 +286,19 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_object(VM& vm, St
 
     state.seen_objects.remove(&object);
     state.indent = previous_indent;
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 // 25.5.2.5 SerializeJSONArray ( state, value ), https://tc39.es/ecma262/#sec-serializejsonarray
-ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_array(VM& vm, StringifyState& state, Object& object)
+ThrowCompletionOr<ByteString> JSONObject::serialize_json_array(VM& vm, StringifyState& state, Object& object)
 {
     if (state.seen_objects.contains(&object))
         return vm.throw_completion<TypeError>(ErrorType::JsonCircular);
 
     state.seen_objects.set(&object);
-    DeprecatedString previous_indent = state.indent;
-    state.indent = DeprecatedString::formatted("{}{}", state.indent, state.gap);
-    Vector<DeprecatedString> property_strings;
+    ByteString previous_indent = state.indent;
+    state.indent = ByteString::formatted("{}{}", state.indent, state.gap);
+    Vector<ByteString> property_strings;
 
     auto length = TRY(length_of_array_like(vm, object));
 
@@ -306,10 +307,10 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_array(VM& vm, Str
 
     for (size_t i = 0; i < length; ++i) {
         auto serialized_property_string = TRY(serialize_json_property(vm, state, i, &object));
-        if (serialized_property_string.is_null()) {
+        if (!serialized_property_string.has_value()) {
             property_strings.append("null"sv);
         } else {
-            property_strings.append(serialized_property_string);
+            property_strings.append(serialized_property_string.release_value());
         }
     }
 
@@ -330,7 +331,7 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_array(VM& vm, Str
         } else {
             builder.append("[\n"sv);
             builder.append(state.indent);
-            auto separator = DeprecatedString::formatted(",\n{}", state.indent);
+            auto separator = ByteString::formatted(",\n{}", state.indent);
             bool first = true;
             for (auto& property_string : property_strings) {
                 if (!first)
@@ -346,11 +347,11 @@ ThrowCompletionOr<DeprecatedString> JSONObject::serialize_json_array(VM& vm, Str
 
     state.seen_objects.remove(&object);
     state.indent = previous_indent;
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 // 25.5.2.2 QuoteJSONString ( value ), https://tc39.es/ecma262/#sec-quotejsonstring
-DeprecatedString JSONObject::quote_json_string(DeprecatedString string)
+ByteString JSONObject::quote_json_string(ByteString string)
 {
     // 1. Let product be the String value consisting solely of the code unit 0x0022 (QUOTATION MARK).
     StringBuilder builder;
@@ -401,7 +402,7 @@ DeprecatedString JSONObject::quote_json_string(DeprecatedString string)
     builder.append('"');
 
     // 4. Return product.
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 // 25.5.1 JSON.parse ( text [ , reviver ] ), https://tc39.es/ecma262/#sec-json.parse
@@ -409,7 +410,7 @@ JS_DEFINE_NATIVE_FUNCTION(JSONObject::parse)
 {
     auto& realm = *vm.current_realm();
 
-    auto string = TRY(vm.argument(0).to_deprecated_string(vm));
+    auto string = TRY(vm.argument(0).to_byte_string(vm));
     auto reviver = vm.argument(1);
 
     auto json = JsonValue::from_string(string);
@@ -418,7 +419,7 @@ JS_DEFINE_NATIVE_FUNCTION(JSONObject::parse)
     Value unfiltered = parse_json_value(vm, json.value());
     if (reviver.is_function()) {
         auto root = Object::create(realm, realm.intrinsics().object_prototype());
-        auto root_name = DeprecatedString::empty();
+        auto root_name = ByteString::empty();
         MUST(root->create_data_property_or_throw(root_name, unfiltered));
         return internalize_json_property(vm, root, root_name, reviver.as_function());
     }
@@ -433,12 +434,10 @@ Value JSONObject::parse_json_value(VM& vm, JsonValue const& value)
         return Value(parse_json_array(vm, value.as_array()));
     if (value.is_null())
         return js_null();
-    if (value.is_i32())
-        return Value(value.as_i32());
-    if (value.is_number())
-        return Value(value.to_double(0));
+    if (auto double_value = value.get_double_with_precision_loss(); double_value.has_value())
+        return Value(double_value.value());
     if (value.is_string())
-        return PrimitiveString::create(vm, value.to_deprecated_string());
+        return PrimitiveString::create(vm, value.as_string());
     if (value.is_bool())
         return Value(static_cast<bool>(value.as_bool()));
     VERIFY_NOT_REACHED();
@@ -489,7 +488,7 @@ ThrowCompletionOr<Value> JSONObject::internalize_json_property(VM& vm, Object* h
         } else {
             auto property_list = TRY(value_object.enumerable_own_property_names(Object::PropertyKind::Key));
             for (auto& property_key : property_list)
-                TRY(process_property(TRY(property_key.as_string().deprecated_string())));
+                TRY(process_property(property_key.as_string().byte_string()));
         }
     }
 

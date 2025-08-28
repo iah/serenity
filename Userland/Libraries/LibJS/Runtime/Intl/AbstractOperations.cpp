@@ -15,21 +15,22 @@
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Intl/AbstractOperations.h>
 #include <LibJS/Runtime/Intl/Locale.h>
+#include <LibJS/Runtime/ValueInlines.h>
 #include <LibLocale/Locale.h>
 
 namespace JS::Intl {
 
 // 6.2.2 IsStructurallyValidLanguageTag ( locale ), https://tc39.es/ecma402/#sec-isstructurallyvalidlanguagetag
-ThrowCompletionOr<Optional<::Locale::LocaleID>> is_structurally_valid_language_tag(VM& vm, StringView locale)
+Optional<::Locale::LocaleID> is_structurally_valid_language_tag(StringView locale)
 {
-    auto contains_duplicate_variant = [&](auto& variants) -> ThrowCompletionOr<bool> {
+    auto contains_duplicate_variant = [&](auto& variants) {
         if (variants.is_empty())
             return false;
 
         quick_sort(variants);
 
         for (size_t i = 0; i < variants.size() - 1; ++i) {
-            if (TRY_OR_THROW_OOM(vm, variants[i].equals_ignoring_case(variants[i + 1])))
+            if (variants[i].equals_ignoring_case(variants[i + 1]))
                 return true;
         }
 
@@ -39,18 +40,18 @@ ThrowCompletionOr<Optional<::Locale::LocaleID>> is_structurally_valid_language_t
     // IsStructurallyValidLanguageTag returns true if all of the following conditions hold, false otherwise:
 
     // locale can be generated from the EBNF grammar for unicode_locale_id in Unicode Technical Standard #35 LDML § 3.2 Unicode Locale Identifier;
-    auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(locale));
+    auto locale_id = ::Locale::parse_unicode_locale_id(locale);
     if (!locale_id.has_value())
-        return OptionalNone {};
+        return {};
 
     // locale does not use any of the backwards compatibility syntax described in Unicode Technical Standard #35 LDML § 3.3 BCP 47 Conformance;
     // https://unicode.org/reports/tr35/#BCP_47_Conformance
     if (locale.contains('_') || locale_id->language_id.is_root || !locale_id->language_id.language.has_value())
-        return OptionalNone {};
+        return {};
 
     // the unicode_language_id within locale contains no duplicate unicode_variant_subtag subtags; and
-    if (TRY(contains_duplicate_variant(locale_id->language_id.variants)))
-        return OptionalNone {};
+    if (contains_duplicate_variant(locale_id->language_id.variants))
+        return {};
 
     // if locale contains an extensions* component, that component
     Vector<char> unique_keys;
@@ -64,16 +65,16 @@ ThrowCompletionOr<Optional<::Locale::LocaleID>> is_structurally_valid_language_t
             [](::Locale::OtherExtension const& ext) { return static_cast<char>(to_ascii_lowercase(ext.key)); });
 
         if (unique_keys.contains_slow(key))
-            return OptionalNone {};
+            return {};
 
-        TRY_OR_THROW_OOM(vm, unique_keys.try_append(key));
+        unique_keys.append(key);
 
         // if a transformed_extensions component that contains a tlang component is present, then
         // the tlang component contains no duplicate unicode_variant_subtag subtags.
         if (auto* transformed = extension.get_pointer<::Locale::TransformedExtension>()) {
             auto& language = transformed->language;
-            if (language.has_value() && TRY(contains_duplicate_variant(language->variants)))
-                return Optional<::Locale::LocaleID> {};
+            if (language.has_value() && contains_duplicate_variant(language->variants))
+                return {};
         }
     }
 
@@ -81,7 +82,7 @@ ThrowCompletionOr<Optional<::Locale::LocaleID>> is_structurally_valid_language_t
 }
 
 // 6.2.3 CanonicalizeUnicodeLocaleId ( locale ), https://tc39.es/ecma402/#sec-canonicalizeunicodelocaleid
-ThrowCompletionOr<String> canonicalize_unicode_locale_id(VM& vm, ::Locale::LocaleID& locale)
+String canonicalize_unicode_locale_id(::Locale::LocaleID& locale)
 {
     // Note: This implementation differs from the spec in how Step 3 is implemented. The spec assumes
     // the input to this method is a string, and is written such that operations are performed on parts
@@ -101,13 +102,13 @@ ThrowCompletionOr<String> canonicalize_unicode_locale_id(VM& vm, ::Locale::Local
         auto attributes = move(locale_extension.attributes);
         for (auto& attribute : attributes) {
             if (!locale_extension.attributes.contains_slow(attribute))
-                TRY_OR_THROW_OOM(vm, locale_extension.attributes.try_append(move(attribute)));
+                locale_extension.attributes.append(move(attribute));
         }
 
         auto keywords = move(locale_extension.keywords);
         for (auto& keyword : keywords) {
             if (!any_of(locale_extension.keywords, [&](auto const& k) { return k.key == keyword.key; }))
-                TRY_OR_THROW_OOM(vm, locale_extension.keywords.try_append(move(keyword)));
+                locale_extension.keywords.append(move(keyword));
         }
 
         break;
@@ -115,7 +116,7 @@ ThrowCompletionOr<String> canonicalize_unicode_locale_id(VM& vm, ::Locale::Local
 
     // 1. Let localeId be the string locale after performing the algorithm to transform it to canonical syntax per Unicode Technical Standard #35 LDML § 3.2.1 Canonical Unicode Locale Identifiers.
     // 2. Let localeId be the string localeId after performing the algorithm to transform it to canonical form.
-    auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::canonicalize_unicode_locale_id(locale));
+    auto locale_id = ::Locale::canonicalize_unicode_locale_id(locale);
     VERIFY(locale_id.has_value());
 
     // 4. Return localeId.
@@ -245,16 +246,16 @@ ThrowCompletionOr<Vector<String>> canonicalize_locale_list(VM& vm, Value locales
             }
 
             // v. If ! IsStructurallyValidLanguageTag(tag) is false, throw a RangeError exception.
-            auto locale_id = MUST_OR_THROW_OOM(is_structurally_valid_language_tag(vm, tag));
+            auto locale_id = is_structurally_valid_language_tag(tag);
             if (!locale_id.has_value())
                 return vm.throw_completion<RangeError>(ErrorType::IntlInvalidLanguageTag, tag);
 
             // vi. Let canonicalizedTag be ! CanonicalizeUnicodeLocaleId(tag).
-            auto canonicalized_tag = MUST_OR_THROW_OOM(canonicalize_unicode_locale_id(vm, *locale_id));
+            auto canonicalized_tag = JS::Intl::canonicalize_unicode_locale_id(*locale_id);
 
             // vii. If canonicalizedTag is not an element of seen, append canonicalizedTag as the last element of seen.
             if (!seen.contains_slow(canonicalized_tag))
-                TRY_OR_THROW_OOM(vm, seen.try_append(move(canonicalized_tag)));
+                seen.append(move(canonicalized_tag));
         }
 
         // d. Increase k by 1.
@@ -264,7 +265,6 @@ ThrowCompletionOr<Vector<String>> canonicalize_locale_list(VM& vm, Value locales
 }
 
 // 9.2.2 BestAvailableLocale ( availableLocales, locale ), https://tc39.es/ecma402/#sec-bestavailablelocale
-// 1.2.2 BestAvailableLocale ( availableLocales, locale ), https://tc39.es/proposal-intl-numberformat-v3/out/negotiation/proposed.html#sec-bestavailablelocale
 Optional<StringView> best_available_locale(StringView locale)
 {
     // 1. Let candidate be locale.
@@ -296,19 +296,19 @@ struct MatcherResult {
 };
 
 // 9.2.3 LookupMatcher ( availableLocales, requestedLocales ), https://tc39.es/ecma402/#sec-lookupmatcher
-static ThrowCompletionOr<MatcherResult> lookup_matcher(VM& vm, Vector<String> const& requested_locales)
+static MatcherResult lookup_matcher(Vector<String> const& requested_locales)
 {
     // 1. Let result be a new Record.
     MatcherResult result {};
 
     // 2. For each element locale of requestedLocales, do
     for (auto const& locale : requested_locales) {
-        auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(locale));
+        auto locale_id = ::Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
 
         // a. Let noExtensionsLocale be the String value that is locale with any Unicode locale extension sequences removed.
         auto extensions = locale_id->remove_extension_type<::Locale::LocaleExtension>();
-        auto no_extensions_locale = TRY_OR_THROW_OOM(vm, locale_id->to_string());
+        auto no_extensions_locale = locale_id->to_string();
 
         // b. Let availableLocale be ! BestAvailableLocale(availableLocales, noExtensionsLocale).
         auto available_locale = best_available_locale(no_extensions_locale);
@@ -316,7 +316,7 @@ static ThrowCompletionOr<MatcherResult> lookup_matcher(VM& vm, Vector<String> co
         // c. If availableLocale is not undefined, then
         if (available_locale.has_value()) {
             // i. Set result.[[locale]] to availableLocale.
-            result.locale = TRY_OR_THROW_OOM(vm, String::from_utf8(*available_locale));
+            result.locale = MUST(String::from_utf8(*available_locale));
 
             // ii. If locale and noExtensionsLocale are not the same String value, then
             if (locale != no_extensions_locale) {
@@ -332,29 +332,30 @@ static ThrowCompletionOr<MatcherResult> lookup_matcher(VM& vm, Vector<String> co
 
     // 3. Let defLocale be ! DefaultLocale().
     // 4. Set result.[[locale]] to defLocale.
-    result.locale = TRY_OR_THROW_OOM(vm, String::from_utf8(::Locale::default_locale()));
+    result.locale = MUST(String::from_utf8(::Locale::default_locale()));
 
     // 5. Return result.
     return result;
 }
 
 // 9.2.4 BestFitMatcher ( availableLocales, requestedLocales ), https://tc39.es/ecma402/#sec-bestfitmatcher
-static ThrowCompletionOr<MatcherResult> best_fit_matcher(VM& vm, Vector<String> const& requested_locales)
+static MatcherResult best_fit_matcher(Vector<String> const& requested_locales)
 {
     // The algorithm is implementation dependent, but should produce results that a typical user of the requested locales would
     // perceive as at least as good as those produced by the LookupMatcher abstract operation.
-    return lookup_matcher(vm, requested_locales);
+    return lookup_matcher(requested_locales);
 }
 
 // 9.2.6 InsertUnicodeExtensionAndCanonicalize ( locale, extension ), https://tc39.es/ecma402/#sec-insert-unicode-extension-and-canonicalize
-ThrowCompletionOr<String> insert_unicode_extension_and_canonicalize(VM& vm, ::Locale::LocaleID locale, ::Locale::LocaleExtension extension)
+String insert_unicode_extension_and_canonicalize(::Locale::LocaleID locale, ::Locale::LocaleExtension extension)
 {
     // Note: This implementation differs from the spec in how the extension is inserted. The spec assumes
     // the input to this method is a string, and is written such that operations are performed on parts
     // of that string. LibUnicode gives us the parsed locale in a structure, so we can mutate that
     // structure directly.
-    TRY_OR_THROW_OOM(vm, locale.extensions.try_append(move(extension)));
-    return MUST_OR_THROW_OOM(canonicalize_unicode_locale_id(vm, locale));
+    locale.extensions.append(move(extension));
+
+    return JS::Intl::canonicalize_unicode_locale_id(locale);
 }
 
 template<typename T>
@@ -378,21 +379,21 @@ static auto& find_key_in_value(T& value, StringView key)
 }
 
 // 9.2.7 ResolveLocale ( availableLocales, requestedLocales, options, relevantExtensionKeys, localeData ), https://tc39.es/ecma402/#sec-resolvelocale
-ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& requested_locales, LocaleOptions const& options, ReadonlySpan<StringView> relevant_extension_keys)
+LocaleResult resolve_locale(Vector<String> const& requested_locales, LocaleOptions const& options, ReadonlySpan<StringView> relevant_extension_keys)
 {
     // 1. Let matcher be options.[[localeMatcher]].
     auto const& matcher = options.locale_matcher;
     MatcherResult matcher_result;
 
     // 2. If matcher is "lookup", then
-    if (matcher.is_string() && (TRY(matcher.as_string().utf8_string_view()) == "lookup"sv)) {
+    if (matcher.is_string() && (matcher.as_string().utf8_string_view()) == "lookup"sv) {
         // a. Let r be ! LookupMatcher(availableLocales, requestedLocales).
-        matcher_result = MUST_OR_THROW_OOM(lookup_matcher(vm, requested_locales));
+        matcher_result = lookup_matcher(requested_locales);
     }
     // 3. Else,
     else {
         // a. Let r be ! BestFitMatcher(availableLocales, requestedLocales).
-        matcher_result = MUST_OR_THROW_OOM(best_fit_matcher(vm, requested_locales));
+        matcher_result = best_fit_matcher(requested_locales);
     }
 
     // 4. Let foundLocale be r.[[locale]].
@@ -434,8 +435,8 @@ ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& req
         // NOTE: ECMA-402 assumes keyLocaleData is sorted by locale preference. Our list is sorted
         //       alphabetically, so we get the locale's preferred value from LibUnicode.
         Optional<String> value;
-        if (auto preference = TRY_OR_THROW_OOM(vm, ::Locale::get_preferred_keyword_value_for_locale(found_locale, key)); preference.has_value())
-            value = TRY_OR_THROW_OOM(vm, String::from_utf8(*preference));
+        if (auto preference = ::Locale::get_preferred_keyword_value_for_locale(found_locale, key); preference.has_value())
+            value = MUST(String::from_utf8(*preference));
 
         // g. Let supportedExtensionAddition be "".
         Optional<::Locale::Keyword> supported_extension_addition {};
@@ -458,16 +459,16 @@ ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& req
                     value = move(requested_value);
 
                     // ii. Let supportedExtensionAddition be the string-concatenation of "-", key, "-", and value.
-                    supported_extension_addition = ::Locale::Keyword { TRY_OR_THROW_OOM(vm, String::from_utf8(key)), move(entry.value) };
+                    supported_extension_addition = ::Locale::Keyword { MUST(String::from_utf8(key)), move(entry.value) };
                 }
             }
             // 4. Else if keyLocaleData contains "true", then
             else if (key_locale_data.contains_slow("true"sv)) {
                 // a. Let value be "true".
-                value = TRY_OR_THROW_OOM(vm, "true"_string);
+                value = "true"_string;
 
                 // b. Let supportedExtensionAddition be the string-concatenation of "-" and key.
-                supported_extension_addition = ::Locale::Keyword { TRY_OR_THROW_OOM(vm, String::from_utf8(key)), {} };
+                supported_extension_addition = ::Locale::Keyword { MUST(String::from_utf8(key)), {} };
             }
 
             break;
@@ -482,12 +483,12 @@ ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& req
         if (options_value.has_value()) {
             // 1. Let optionsValue be the string optionsValue after performing the algorithm steps to transform Unicode extension values to canonical syntax per Unicode Technical Standard #35 LDML § 3.2.1 Canonical Unicode Locale Identifiers, treating key as ukey and optionsValue as uvalue productions.
             // 2. Let optionsValue be the string optionsValue after performing the algorithm steps to replace Unicode extension values with their canonical form per Unicode Technical Standard #35 LDML § 3.2.1 Canonical Unicode Locale Identifiers, treating key as ukey and optionsValue as uvalue productions.
-            TRY_OR_THROW_OOM(vm, ::Locale::canonicalize_unicode_extension_values(key, *options_value, true));
+            ::Locale::canonicalize_unicode_extension_values(key, *options_value, true);
 
             // 3. If optionsValue is the empty String, then
             if (options_value->is_empty()) {
                 // a. Let optionsValue be "true".
-                options_value = TRY_OR_THROW_OOM(vm, "true"_string);
+                options_value = "true"_string;
             }
         }
 
@@ -505,16 +506,16 @@ ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& req
 
         // k. Set supportedExtension to the string-concatenation of supportedExtension and supportedExtensionAddition.
         if (supported_extension_addition.has_value())
-            TRY_OR_THROW_OOM(vm, supported_extension.keywords.try_append(supported_extension_addition.release_value()));
+            supported_extension.keywords.append(supported_extension_addition.release_value());
     }
 
     // 10. If supportedExtension is not "-u", then
     if (!supported_extension.keywords.is_empty()) {
-        auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(found_locale));
+        auto locale_id = ::Locale::parse_unicode_locale_id(found_locale);
         VERIFY(locale_id.has_value());
 
         // a. Set foundLocale to InsertUnicodeExtensionAndCanonicalize(foundLocale, supportedExtension).
-        found_locale = MUST_OR_THROW_OOM(insert_unicode_extension_and_canonicalize(vm, locale_id.release_value(), move(supported_extension)));
+        found_locale = insert_unicode_extension_and_canonicalize(locale_id.release_value(), move(supported_extension));
     }
 
     // 11. Set result.[[locale]] to foundLocale.
@@ -525,26 +526,26 @@ ThrowCompletionOr<LocaleResult> resolve_locale(VM& vm, Vector<String> const& req
 }
 
 // 9.2.8 LookupSupportedLocales ( availableLocales, requestedLocales ), https://tc39.es/ecma402/#sec-lookupsupportedlocales
-static ThrowCompletionOr<Vector<String>> lookup_supported_locales(VM& vm, Vector<String> const& requested_locales)
+static Vector<String> lookup_supported_locales(Vector<String> const& requested_locales)
 {
     // 1. Let subset be a new empty List.
     Vector<String> subset;
 
     // 2. For each element locale of requestedLocales, do
     for (auto const& locale : requested_locales) {
-        auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(locale));
+        auto locale_id = ::Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
 
         // a. Let noExtensionsLocale be the String value that is locale with any Unicode locale extension sequences removed.
         locale_id->remove_extension_type<::Locale::LocaleExtension>();
-        auto no_extensions_locale = TRY_OR_THROW_OOM(vm, locale_id->to_string());
+        auto no_extensions_locale = locale_id->to_string();
 
         // b. Let availableLocale be ! BestAvailableLocale(availableLocales, noExtensionsLocale).
         auto available_locale = best_available_locale(no_extensions_locale);
 
         // c. If availableLocale is not undefined, append locale to the end of subset.
         if (available_locale.has_value())
-            TRY_OR_THROW_OOM(vm, subset.try_append(locale));
+            subset.append(locale);
     }
 
     // 3. Return subset.
@@ -552,7 +553,7 @@ static ThrowCompletionOr<Vector<String>> lookup_supported_locales(VM& vm, Vector
 }
 
 // 9.2.9 BestFitSupportedLocales ( availableLocales, requestedLocales ), https://tc39.es/ecma402/#sec-bestfitsupportedlocales
-static ThrowCompletionOr<Vector<String>> best_fit_supported_locales(VM& vm, Vector<String> const& requested_locales)
+static Vector<String> best_fit_supported_locales(Vector<String> const& requested_locales)
 {
     // The BestFitSupportedLocales abstract operation returns the subset of the provided BCP 47
     // language priority list requestedLocales for which availableLocales has a matching locale
@@ -560,7 +561,7 @@ static ThrowCompletionOr<Vector<String>> best_fit_supported_locales(VM& vm, Vect
     // list as in requestedLocales. The steps taken are implementation dependent.
 
     // :yakbrain:
-    return lookup_supported_locales(vm, requested_locales);
+    return lookup_supported_locales(requested_locales);
 }
 
 // 9.2.10 SupportedLocales ( availableLocales, requestedLocales, options ), https://tc39.es/ecma402/#sec-supportedlocales
@@ -577,14 +578,14 @@ ThrowCompletionOr<Array*> supported_locales(VM& vm, Vector<String> const& reques
     Vector<String> supported_locales;
 
     // 3. If matcher is "best fit", then
-    if (TRY(matcher.as_string().utf8_string_view()) == "best fit"sv) {
+    if (matcher.as_string().utf8_string_view() == "best fit"sv) {
         // a. Let supportedLocales be BestFitSupportedLocales(availableLocales, requestedLocales).
-        supported_locales = TRY(best_fit_supported_locales(vm, requested_locales));
+        supported_locales = best_fit_supported_locales(requested_locales);
     }
     // 4. Else,
     else {
         // a. Let supportedLocales be LookupSupportedLocales(availableLocales, requestedLocales).
-        supported_locales = TRY(lookup_supported_locales(vm, requested_locales));
+        supported_locales = lookup_supported_locales(requested_locales);
     }
 
     // 5. Return CreateArrayFromList(supportedLocales).
@@ -603,12 +604,12 @@ ThrowCompletionOr<Object*> coerce_options_to_object(VM& vm, Value options)
     }
 
     // 2. Return ? ToObject(options).
-    return TRY(options.to_object(vm));
+    return TRY(options.to_object(vm)).ptr();
 }
 
 // NOTE: 9.2.13 GetOption has been removed and is being pulled in from ECMA-262 in the Temporal proposal.
 
-// 1.2.14 GetBooleanOrStringNumberFormatOption ( options, property, stringValues, fallback ), https://tc39.es/proposal-intl-numberformat-v3/out/negotiation/proposed.html#sec-getbooleanorstringnumberformatoption
+// 9.2.14 GetBooleanOrStringNumberFormatOption ( options, property, stringValues, fallback ), https://tc39.es/ecma402/#sec-getbooleanorstringnumberformatoption
 ThrowCompletionOr<StringOrBoolean> get_boolean_or_string_number_format_option(VM& vm, Object const& options, PropertyKey const& property, ReadonlySpan<StringView> string_values, StringOrBoolean fallback)
 {
     // 1. Let value be ? Get(options, property).
@@ -638,7 +639,7 @@ ThrowCompletionOr<StringOrBoolean> get_boolean_or_string_number_format_option(VM
     return StringOrBoolean { *it };
 }
 
-// 9.2.14 DefaultNumberOption ( value, minimum, maximum, fallback ), https://tc39.es/ecma402/#sec-defaultnumberoption
+// 9.2.15 DefaultNumberOption ( value, minimum, maximum, fallback ), https://tc39.es/ecma402/#sec-defaultnumberoption
 ThrowCompletionOr<Optional<int>> default_number_option(VM& vm, Value value, int minimum, int maximum, Optional<int> fallback)
 {
     // 1. If value is undefined, return fallback.
@@ -656,7 +657,7 @@ ThrowCompletionOr<Optional<int>> default_number_option(VM& vm, Value value, int 
     return floor(value.as_double());
 }
 
-// 9.2.15 GetNumberOption ( options, property, minimum, maximum, fallback ), https://tc39.es/ecma402/#sec-getnumberoption
+// 9.2.16 GetNumberOption ( options, property, minimum, maximum, fallback ), https://tc39.es/ecma402/#sec-getnumberoption
 ThrowCompletionOr<Optional<int>> get_number_option(VM& vm, Object const& options, PropertyKey const& property, int minimum, int maximum, Optional<int> fallback)
 {
     // 1. Assert: Type(options) is Object.
@@ -668,8 +669,8 @@ ThrowCompletionOr<Optional<int>> get_number_option(VM& vm, Object const& options
     return default_number_option(vm, value, minimum, maximum, move(fallback));
 }
 
-// 9.2.16 PartitionPattern ( pattern ), https://tc39.es/ecma402/#sec-partitionpattern
-ThrowCompletionOr<Vector<PatternPartition>> partition_pattern(VM& vm, StringView pattern)
+// 9.2.17 PartitionPattern ( pattern ), https://tc39.es/ecma402/#sec-partitionpattern
+Vector<PatternPartition> partition_pattern(StringView pattern)
 {
     // 1. Let result be a new empty List.
     Vector<PatternPartition> result;
@@ -698,14 +699,14 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_pattern(VM& vm, StringView
             auto literal = pattern.substring_view(next_index, *begin_index - next_index);
 
             // ii. Append a new Record { [[Type]]: "literal", [[Value]]: literal } as the last element of the list result.
-            TRY_OR_THROW_OOM(vm, result.try_append({ "literal"sv, TRY_OR_THROW_OOM(vm, String::from_utf8(literal)) }));
+            result.append({ "literal"sv, MUST(String::from_utf8(literal)) });
         }
 
         // d. Let p be the substring of pattern from position beginIndex, exclusive, to position endIndex, exclusive.
         auto partition = pattern.substring_view(*begin_index + 1, end_index - *begin_index - 1);
 
         // e. Append a new Record { [[Type]]: p, [[Value]]: undefined } as the last element of the list result.
-        TRY_OR_THROW_OOM(vm, result.try_append({ partition, {} }));
+        result.append({ partition, {} });
 
         // f. Set nextIndex to endIndex + 1.
         next_index = end_index + 1;
@@ -720,7 +721,7 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_pattern(VM& vm, StringView
         auto literal = pattern.substring_view(next_index);
 
         // b. Append a new Record { [[Type]]: "literal", [[Value]]: literal } as the last element of the list result.
-        TRY_OR_THROW_OOM(vm, result.try_append({ "literal"sv, TRY_OR_THROW_OOM(vm, String::from_utf8(literal)) }));
+        result.append({ "literal"sv, MUST(String::from_utf8(literal)) });
     }
 
     // 8. Return result.

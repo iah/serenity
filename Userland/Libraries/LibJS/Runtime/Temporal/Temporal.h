@@ -12,9 +12,10 @@ namespace JS::Temporal {
 
 class Temporal final : public Object {
     JS_OBJECT(Temporal, Object);
+    JS_DECLARE_ALLOCATOR(Temporal);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~Temporal() override = default;
 
 private:

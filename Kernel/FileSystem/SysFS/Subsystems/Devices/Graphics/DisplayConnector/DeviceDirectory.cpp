@@ -4,11 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/Access.h>
+#include <Kernel/Devices/GPU/DisplayConnector.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Graphics/DisplayConnector/DeviceAttribute.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Graphics/DisplayConnector/DeviceDirectory.h>
-#include <Kernel/Graphics/DisplayConnector.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel {
@@ -18,11 +17,11 @@ DisplayConnector const& DisplayConnectorSysFSDirectory::device(Badge<DisplayConn
     return *m_device;
 }
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<DisplayConnectorSysFSDirectory> DisplayConnectorSysFSDirectory::create(SysFSDirectory const& parent_directory, DisplayConnector const& device)
+UNMAP_AFTER_INIT NonnullRefPtr<DisplayConnectorSysFSDirectory> DisplayConnectorSysFSDirectory::create(SysFSDirectory const& parent_directory, DisplayConnector const& device)
 {
     // FIXME: Handle allocation failure gracefully
     auto device_name = MUST(KString::formatted("{}", device.minor()));
-    auto directory = adopt_lock_ref(*new (nothrow) DisplayConnectorSysFSDirectory(move(device_name), parent_directory, device));
+    auto directory = adopt_ref(*new (nothrow) DisplayConnectorSysFSDirectory(move(device_name), parent_directory, device));
     MUST(directory->m_child_components.with([&](auto& list) -> ErrorOr<void> {
         list.append(DisplayConnectorAttributeSysFSComponent::must_create(*directory, DisplayConnectorAttributeSysFSComponent::Type::MutableModeSettingCapable));
         list.append(DisplayConnectorAttributeSysFSComponent::must_create(*directory, DisplayConnectorAttributeSysFSComponent::Type::DoubleFrameBufferingCapable));

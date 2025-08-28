@@ -14,11 +14,12 @@ REGISTER_WIDGET(FontEditor, GlyphEditorWidget);
 
 namespace FontEditor {
 
-void GlyphEditorWidget::set_font(Gfx::BitmapFont& mutable_font)
+void GlyphEditorWidget::initialize(Gfx::BitmapFont* mutable_font)
 {
     if (m_font == mutable_font)
         return;
     m_font = mutable_font;
+    update();
 }
 
 void GlyphEditorWidget::set_glyph(int glyph)
@@ -31,6 +32,9 @@ void GlyphEditorWidget::set_glyph(int glyph)
 
 void GlyphEditorWidget::paint_event(GUI::PaintEvent& event)
 {
+    if (!m_font)
+        return;
+
     GUI::Frame::paint_event(event);
 
     GUI::Painter painter(*this);
@@ -40,21 +44,21 @@ void GlyphEditorWidget::paint_event(GUI::PaintEvent& event)
     painter.translate(frame_thickness(), frame_thickness());
 
     painter.translate(-1, -1);
-    for (int y = 1; y < font().glyph_height(); ++y) {
+    for (int y = 1; y < m_font->glyph_height(); ++y) {
         int y_below = y - 1;
-        bool bold_line = y_below == font().baseline() || y_below == font().mean_line();
-        painter.draw_line({ 0, y * m_scale }, { font().max_glyph_width() * m_scale, y * m_scale }, palette().threed_shadow2(), bold_line ? 2 : 1);
+        bool bold_line = y_below == m_font->baseline() || y_below == m_font->mean_line();
+        painter.draw_line({ 0, y * m_scale }, { m_font->max_glyph_width() * m_scale, y * m_scale }, palette().threed_shadow2(), bold_line ? 2 : 1);
     }
 
-    for (int x = 1; x < font().max_glyph_width(); ++x)
-        painter.draw_line({ x * m_scale, 0 }, { x * m_scale, font().glyph_height() * m_scale }, palette().threed_shadow2());
+    for (int x = 1; x < m_font->max_glyph_width(); ++x)
+        painter.draw_line({ x * m_scale, 0 }, { x * m_scale, m_font->glyph_height() * m_scale }, palette().threed_shadow2());
 
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
 
-    for (int y = 0; y < font().glyph_height(); ++y) {
-        for (int x = 0; x < font().max_glyph_width(); ++x) {
+    for (int y = 0; y < m_font->glyph_height(); ++y) {
+        for (int x = 0; x < m_font->max_glyph_width(); ++x) {
             Gfx::IntRect rect { x * m_scale, y * m_scale, m_scale, m_scale };
-            if (x >= font().raw_glyph_width(m_glyph)) {
+            if (x >= m_font->raw_glyph_width(m_glyph)) {
                 painter.fill_rect(rect, palette().threed_shadow1());
             } else {
                 if (bitmap.bit_at(x, y))
@@ -66,9 +70,9 @@ void GlyphEditorWidget::paint_event(GUI::PaintEvent& event)
 
 bool GlyphEditorWidget::is_glyph_empty()
 {
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
-    for (int x = 0; x < font().max_glyph_width(); x++)
-        for (int y = 0; y < font().glyph_height(); y++)
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
+    for (int x = 0; x < m_font->max_glyph_width(); x++)
+        for (int y = 0; y < m_font->glyph_height(); y++)
             if (bitmap.bit_at(x, y))
                 return false;
     return true;
@@ -76,18 +80,16 @@ bool GlyphEditorWidget::is_glyph_empty()
 
 void GlyphEditorWidget::mousedown_event(GUI::MouseEvent& event)
 {
-    if ((event.x() - 1) / m_scale + 1 > font().raw_glyph_width(m_glyph))
+    if ((event.x() - 1) / m_scale + 1 > m_font->raw_glyph_width(m_glyph))
         return;
     if (mode() == Move && is_glyph_empty())
         return;
     m_is_clicking_valid_cell = true;
-    if (on_undo_event)
-        on_undo_event();
     if (mode() == Paint) {
         draw_at_mouse(event);
     } else {
         memset(m_movable_bits, 0, sizeof(m_movable_bits));
-        auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
+        auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
         for (int x = 0; x < bitmap.width(); x++) {
             for (int y = 0; y < bitmap.height(); y++) {
                 int movable_x = Gfx::GlyphBitmap::max_width() + x;
@@ -103,9 +105,8 @@ void GlyphEditorWidget::mousedown_event(GUI::MouseEvent& event)
 
 void GlyphEditorWidget::mouseup_event(GUI::MouseEvent&)
 {
-    if (!m_is_clicking_valid_cell)
-        return;
     m_is_clicking_valid_cell = false;
+    m_is_altering_glyph = false;
 }
 
 void GlyphEditorWidget::mousemove_event(GUI::MouseEvent& event)
@@ -136,13 +137,16 @@ void GlyphEditorWidget::draw_at_mouse(GUI::MouseEvent const& event)
         return;
     int x = (event.x() - 1) / m_scale;
     int y = (event.y() - 1) / m_scale;
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
     if (x < 0 || x >= bitmap.width())
         return;
     if (y < 0 || y >= bitmap.height())
         return;
     if (bitmap.bit_at(x, y) == set)
         return;
+    if (on_undo_event && !m_is_altering_glyph)
+        on_undo_event("Paint Glyph"sv);
+    m_is_altering_glyph = true;
     bitmap.set_bit_at(x, y, set);
     if (on_glyph_altered)
         on_glyph_altered(m_glyph);
@@ -153,9 +157,14 @@ void GlyphEditorWidget::move_at_mouse(GUI::MouseEvent const& event)
 {
     int x_delta = ((event.x() - 1) / m_scale) - m_scaled_offset_x;
     int y_delta = ((event.y() - 1) / m_scale) - m_scaled_offset_y;
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
+    if (x_delta == 0 && y_delta == 0 && !m_is_altering_glyph)
+        return;
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
     if (abs(x_delta) > bitmap.width() || abs(y_delta) > bitmap.height())
         return;
+    if (on_undo_event && !m_is_altering_glyph)
+        on_undo_event("Move Glyph"sv);
+    m_is_altering_glyph = true;
     for (int x = 0; x < bitmap.width(); x++) {
         for (int y = 0; y < bitmap.height(); y++) {
             int movable_x = Gfx::GlyphBitmap::max_width() + x - x_delta;
@@ -187,12 +196,13 @@ static Vector<Vector<u8>> glyph_as_matrix(Gfx::GlyphBitmap const& bitmap)
 
 void GlyphEditorWidget::rotate_90(Gfx::RotationDirection direction)
 {
-    if (on_undo_event)
-        on_undo_event();
-
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
-    auto matrix = glyph_as_matrix(bitmap);
     auto clockwise = direction == Gfx::RotationDirection::Clockwise;
+    auto action_text = clockwise ? "Rotate Glyph Clockwise"sv : "Rotate Glyph Counterclockwise"sv;
+    if (on_undo_event)
+        on_undo_event(action_text);
+
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
+    auto matrix = glyph_as_matrix(bitmap);
 
     for (int y = 0; y < bitmap.height(); y++) {
         for (int x = 0; x < bitmap.width(); x++) {
@@ -213,12 +223,13 @@ void GlyphEditorWidget::rotate_90(Gfx::RotationDirection direction)
 
 void GlyphEditorWidget::flip(Gfx::Orientation orientation)
 {
-    if (on_undo_event)
-        on_undo_event();
-
-    auto bitmap = font().raw_glyph(m_glyph).glyph_bitmap();
-    auto matrix = glyph_as_matrix(bitmap);
     auto vertical = orientation == Gfx::Orientation::Vertical;
+    auto action_text = vertical ? "Flip Glyph Vertically"sv : "Flip Glyph Horizontally"sv;
+    if (on_undo_event)
+        on_undo_event(action_text);
+
+    auto bitmap = m_font->raw_glyph(m_glyph).glyph_bitmap();
+    auto matrix = glyph_as_matrix(bitmap);
 
     for (int y = 0; y < bitmap.height(); y++) {
         for (int x = 0; x < bitmap.width(); x++) {
@@ -236,12 +247,12 @@ void GlyphEditorWidget::flip(Gfx::Orientation orientation)
 
 int GlyphEditorWidget::preferred_width() const
 {
-    return frame_thickness() * 2 + font().max_glyph_width() * m_scale - 1;
+    return frame_thickness() * 2 + m_font->max_glyph_width() * m_scale - 1;
 }
 
 int GlyphEditorWidget::preferred_height() const
 {
-    return frame_thickness() * 2 + font().glyph_height() * m_scale - 1;
+    return frame_thickness() * 2 + m_font->glyph_height() * m_scale - 1;
 }
 
 void GlyphEditorWidget::set_scale(int scale)

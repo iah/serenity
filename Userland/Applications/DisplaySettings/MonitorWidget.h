@@ -6,18 +6,21 @@
 
 #pragma once
 
+#include <AK/Optional.h>
+#include <AK/String.h>
 #include <LibGUI/Widget.h>
 
 namespace DisplaySettings {
 
 class MonitorWidget final : public GUI::Widget {
-    C_OBJECT(MonitorWidget);
+    C_OBJECT_ABSTRACT(MonitorWidget);
 
 public:
-    bool set_wallpaper(DeprecatedString path);
-    StringView wallpaper() const;
+    static ErrorOr<NonnullRefPtr<MonitorWidget>> try_create();
+    bool set_wallpaper(String path);
+    Optional<StringView> wallpaper() const;
 
-    void set_wallpaper_mode(DeprecatedString mode);
+    void set_wallpaper_mode(String mode);
     StringView wallpaper_mode() const;
 
     RefPtr<Gfx::Bitmap> wallpaper_bitmap() const { return m_wallpaper_bitmap; }
@@ -32,27 +35,31 @@ public:
     Gfx::Color background_color();
 
 private:
-    MonitorWidget();
+    MonitorWidget() = default;
 
     void redraw_desktop_if_needed();
 
     virtual void paint_event(GUI::PaintEvent& event) override;
+
+    void load_wallpaper(String path);
 
     Gfx::IntRect m_monitor_rect;
     RefPtr<Gfx::Bitmap> m_monitor_bitmap;
     RefPtr<Gfx::Bitmap> m_desktop_bitmap;
     bool m_desktop_dirty { true };
 
-    DeprecatedString m_desktop_wallpaper_path;
+    Optional<String> m_desktop_wallpaper_path;
     RefPtr<Gfx::Bitmap> m_wallpaper_bitmap;
-    DeprecatedString m_desktop_wallpaper_mode;
+    String m_desktop_wallpaper_mode;
     Gfx::IntSize m_desktop_resolution;
     int m_desktop_scale_factor { 1 };
     Gfx::Color m_desktop_color;
 
-    bool is_different_to_current_wallpaper_path(DeprecatedString const& path)
+    bool is_different_to_current_wallpaper_path(String const& path)
     {
-        return (!path.is_empty() && path != m_desktop_wallpaper_path) || (path.is_empty() && m_desktop_wallpaper_path != nullptr);
+        if (!path.is_empty())
+            return path != m_desktop_wallpaper_path;
+        return m_desktop_wallpaper_path.has_value();
     }
 };
 

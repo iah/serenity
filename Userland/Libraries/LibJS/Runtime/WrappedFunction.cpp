@@ -10,6 +10,8 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(WrappedFunction);
+
 // 3.1.1 WrappedFunctionCreate ( callerRealm: a Realm Record, Target: a function object, ), https://tc39.es/proposal-shadowrealm/#sec-wrappedfunctioncreate
 ThrowCompletionOr<NonnullGCPtr<WrappedFunction>> WrappedFunction::create(Realm& realm, Realm& caller_realm, FunctionObject& target)
 {
@@ -22,7 +24,7 @@ ThrowCompletionOr<NonnullGCPtr<WrappedFunction>> WrappedFunction::create(Realm& 
     // 5. Set wrapped.[[WrappedTargetFunction]] to Target.
     // 6. Set wrapped.[[Realm]] to callerRealm.
     auto& prototype = *caller_realm.intrinsics().function_prototype();
-    auto wrapped = MUST_OR_THROW_OOM(vm.heap().allocate<WrappedFunction>(realm, caller_realm, target, prototype));
+    auto wrapped = vm.heap().allocate<WrappedFunction>(realm, caller_realm, target, prototype);
 
     // 7. Let result be CopyNameAndLength(wrapped, Target).
     auto result = copy_name_and_length(vm, *wrapped, target);
@@ -47,12 +49,12 @@ void WrappedFunction::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
 
-    visitor.visit(&m_wrapped_target_function);
-    visitor.visit(&m_realm);
+    visitor.visit(m_wrapped_target_function);
+    visitor.visit(m_realm);
 }
 
 // 2.1 [[Call]] ( thisArgument, argumentsList ), https://tc39.es/proposal-shadowrealm/#sec-wrapped-function-exotic-objects-call-thisargument-argumentslist
-ThrowCompletionOr<Value> WrappedFunction::internal_call(Value this_argument, MarkedVector<Value> arguments_list)
+ThrowCompletionOr<Value> WrappedFunction::internal_call(Value this_argument, ReadonlySpan<Value> arguments_list)
 {
     auto& vm = this->vm();
 
@@ -60,27 +62,24 @@ ThrowCompletionOr<Value> WrappedFunction::internal_call(Value this_argument, Mar
     // NOTE: No-op, kept by the VM in its execution context stack.
 
     // 2. Let calleeContext be PrepareForWrappedFunctionCall(F).
-    ExecutionContext callee_context { vm.heap() };
-    prepare_for_wrapped_function_call(*this, callee_context);
+    auto callee_context = ExecutionContext::create();
+    prepare_for_wrapped_function_call(*this, *callee_context);
 
     // 3. Assert: calleeContext is now the running execution context.
-    VERIFY(&vm.running_execution_context() == &callee_context);
+    VERIFY(&vm.running_execution_context() == callee_context);
 
-    // 4. Let result be OrdinaryWrappedFunctionCall(F, thisArgument, argumentsList).
+    // 4. Let result be Completion(OrdinaryWrappedFunctionCall(F, thisArgument, argumentsList)).
     auto result = ordinary_wrapped_function_call(*this, this_argument, arguments_list);
 
     // 5. Remove calleeContext from the execution context stack and restore callerContext as the running execution context.
     vm.pop_execution_context();
 
-    // NOTE: I think the spec isn't fully correct here, see https://github.com/tc39/proposal-shadowrealm/issues/371.
-    // 6. If result.[[Type]] is return, return result.[[Value]].
-    // 7. ReturnIfAbrupt(result).
-    // 8. Return undefined.
+    // 6. Return ? result.
     return result;
 }
 
 // 2.2 OrdinaryWrappedFunctionCall ( F: a wrapped function exotic object, thisArgument: an ECMAScript language value, argumentsList: a List of ECMAScript language values, ), https://tc39.es/proposal-shadowrealm/#sec-ordinary-wrapped-function-call
-ThrowCompletionOr<Value> ordinary_wrapped_function_call(WrappedFunction const& function, Value this_argument, MarkedVector<Value> const& arguments_list)
+ThrowCompletionOr<Value> ordinary_wrapped_function_call(WrappedFunction const& function, Value this_argument, ReadonlySpan<Value> arguments_list)
 {
     auto& vm = function.vm();
 
@@ -116,7 +115,7 @@ ThrowCompletionOr<Value> ordinary_wrapped_function_call(WrappedFunction const& f
     auto wrapped_this_argument = TRY(get_wrapped_value(vm, *target_realm, this_argument));
 
     // 9. Let result be the Completion Record of Call(target, wrappedThisArgument, wrappedArgs).
-    auto result = call(vm, &target, wrapped_this_argument, move(wrapped_args));
+    auto result = call(vm, &target, wrapped_this_argument, wrapped_args.span());
 
     // 10. If result.[[Type]] is normal or result.[[Type]] is return, then
     if (!result.is_throw_completion()) {

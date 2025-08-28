@@ -10,6 +10,8 @@
 
 namespace Web::XHR {
 
+JS_DEFINE_ALLOCATOR(XMLHttpRequestUpload);
+
 XMLHttpRequestUpload::XMLHttpRequestUpload(JS::Realm& realm)
     : XMLHttpRequestEventTarget(realm)
 {
@@ -17,12 +19,10 @@ XMLHttpRequestUpload::XMLHttpRequestUpload(JS::Realm& realm)
 
 XMLHttpRequestUpload::~XMLHttpRequestUpload() = default;
 
-JS::ThrowCompletionOr<void> XMLHttpRequestUpload::initialize(JS::Realm& realm)
+void XMLHttpRequestUpload::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::XMLHttpRequestUploadPrototype>(realm, "XMLHttpRequestUpload"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(XMLHttpRequestUpload);
 }
 
 }

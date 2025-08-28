@@ -7,31 +7,34 @@
 #pragma once
 
 #include <AK/RefPtr.h>
-#include <AK/URL.h>
 #include <LibCore/Proxy.h>
+#include <LibHTTP/HeaderMap.h>
+#include <LibURL/URL.h>
 #include <RequestServer/Forward.h>
 
 namespace RequestServer {
 
 class Protocol {
 public:
-    virtual ~Protocol();
+    virtual ~Protocol() = default;
 
-    DeprecatedString const& name() const { return m_name; }
-    virtual OwnPtr<Request> start_request(ConnectionFromClient&, DeprecatedString const& method, const URL&, HashMap<DeprecatedString, DeprecatedString> const& headers, ReadonlyBytes body, Core::ProxyData proxy_data = {}) = 0;
+    ByteString const& name() const { return m_name; }
+    virtual OwnPtr<Request> start_request(i32, ConnectionFromClient&, ByteString const& method, URL::URL const&, HTTP::HeaderMap const& headers, ReadonlyBytes body, Core::ProxyData proxy_data = {}) = 0;
 
-    static Protocol* find_by_name(DeprecatedString const&);
+    static Protocol* find_by_name(ByteString const&);
 
 protected:
-    explicit Protocol(DeprecatedString const& name);
+    explicit Protocol(ByteString const& name);
     struct Pipe {
         int read_fd { -1 };
         int write_fd { -1 };
     };
     static ErrorOr<Pipe> get_pipe_for_request();
 
+    static void install(NonnullOwnPtr<Protocol>);
+
 private:
-    DeprecatedString m_name;
+    ByteString m_name;
 };
 
 }

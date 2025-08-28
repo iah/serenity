@@ -67,12 +67,12 @@ ErrorOr<ByteBuffer> Packet::to_byte_buffer() const
             TRY(stream.write_value(name));
         } else {
             TRY(stream.write_value(htons(answer.record_data().length())));
-            TRY(stream.write_entire_buffer(answer.record_data().bytes()));
+            TRY(stream.write_until_depleted(answer.record_data().bytes()));
         }
     }
 
     auto buffer = TRY(ByteBuffer::create_uninitialized(stream.used_buffer_size()));
-    TRY(stream.read_entire_buffer(buffer));
+    TRY(stream.read_until_filled(buffer));
     return buffer;
 }
 
@@ -97,14 +97,14 @@ private:
 
 static_assert(sizeof(DNSRecordWithoutName) == 10);
 
-Optional<Packet> Packet::from_raw_packet(u8 const* raw_data, size_t raw_size)
+ErrorOr<Packet> Packet::from_raw_packet(ReadonlyBytes bytes)
 {
-    if (raw_size < sizeof(PacketHeader)) {
-        dbgln("DNS response not large enough ({} out of {}) to be a DNS packet.", raw_size, sizeof(PacketHeader));
-        return {};
+    if (bytes.size() < sizeof(PacketHeader)) {
+        dbgln_if(LOOKUPSERVER_DEBUG, "DNS response not large enough ({} out of {}) to be a DNS packet", bytes.size(), sizeof(PacketHeader));
+        return Error::from_string_literal("DNS response not large enough to be a DNS packet");
     }
 
-    auto& header = *(PacketHeader const*)(raw_data);
+    auto const& header = *bit_cast<PacketHeader const*>(bytes.data());
     dbgln_if(LOOKUPSERVER_DEBUG, "Got packet (ID: {})", header.id());
     dbgln_if(LOOKUPSERVER_DEBUG, "  Question count: {}", header.question_count());
     dbgln_if(LOOKUPSERVER_DEBUG, "    Answer count: {}", header.answer_count());
@@ -123,12 +123,15 @@ Optional<Packet> Packet::from_raw_packet(u8 const* raw_data, size_t raw_size)
     size_t offset = sizeof(PacketHeader);
 
     for (u16 i = 0; i < header.question_count(); i++) {
-        auto name = Name::parse(raw_data, offset, raw_size);
+        auto name = TRY(Name::parse(bytes, offset));
         struct RawDNSAnswerQuestion {
             NetworkOrdered<u16> record_type;
             NetworkOrdered<u16> class_code;
         };
-        auto& record_and_class = *(RawDNSAnswerQuestion const*)&raw_data[offset];
+        if (offset >= bytes.size() || bytes.size() - offset < sizeof(RawDNSAnswerQuestion))
+            return Error::from_string_literal("Unexpected EOF when parsing DNS packet");
+
+        auto const& record_and_class = *bit_cast<RawDNSAnswerQuestion const*>(bytes.offset_pointer(offset));
         u16 class_code = record_and_class.class_code & ~MDNS_WANTS_UNICAST_RESPONSE;
         bool mdns_wants_unicast_response = record_and_class.class_code & MDNS_WANTS_UNICAST_RESPONSE;
         packet.m_questions.empend(name, (RecordType)(u16)record_and_class.record_type, (RecordClass)class_code, mdns_wants_unicast_response);
@@ -138,18 +141,21 @@ Optional<Packet> Packet::from_raw_packet(u8 const* raw_data, size_t raw_size)
     }
 
     for (u16 i = 0; i < header.answer_count(); ++i) {
-        auto name = Name::parse(raw_data, offset, raw_size);
+        auto name = TRY(Name::parse(bytes, offset));
+        if (offset >= bytes.size() || bytes.size() - offset < sizeof(DNSRecordWithoutName))
+            return Error::from_string_literal("Unexpected EOF when parsing DNS packet");
 
-        auto& record = *(DNSRecordWithoutName const*)(&raw_data[offset]);
-
-        DeprecatedString data;
-
+        auto const& record = *bit_cast<DNSRecordWithoutName const*>(bytes.offset_pointer(offset));
         offset += sizeof(DNSRecordWithoutName);
+        if (record.data_length() > bytes.size() - offset)
+            return Error::from_string_literal("Unexpected EOF when parsing DNS packet");
+
+        ByteString data;
 
         switch ((RecordType)record.type()) {
         case RecordType::PTR: {
             size_t dummy_offset = offset;
-            data = Name::parse(raw_data, dummy_offset, raw_size).as_string();
+            data = TRY(Name::parse(bytes, dummy_offset)).as_string();
             break;
         }
         case RecordType::CNAME:
@@ -161,7 +167,7 @@ Optional<Packet> Packet::from_raw_packet(u8 const* raw_data, size_t raw_size)
         case RecordType::AAAA:
             // Fall through
         case RecordType::SRV:
-            data = { record.data(), record.data_length() };
+            data = ReadonlyBytes { record.data(), record.data_length() };
             break;
         default:
             // FIXME: Parse some other record types perhaps?

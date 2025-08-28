@@ -54,6 +54,13 @@ enum class SplitBehavior : unsigned {
 };
 AK_ENUM_BITWISE_OPERATORS(SplitBehavior);
 
+enum class TrailingCodePointTransformation : u8 {
+    // Default behaviour; Puts the first typographic letter unit of each word, if lowercase, in titlecase; the other characters in lowercase.
+    Lowercase,
+    // Puts the first typographic letter unit of each word, if lowercase, in titlecase; other characters are unaffected. (https://drafts.csswg.org/css-text/#valdef-text-transform-capitalize)
+    PreserveExisting,
+};
+
 struct MaskSpan {
     size_t start;
     size_t length;
@@ -79,7 +86,7 @@ Optional<T> convert_to_uint_from_octal(StringView, TrimWhitespace = TrimWhitespa
 template<typename T>
 Optional<T> convert_to_floating_point(StringView, TrimWhitespace = TrimWhitespace::Yes);
 #endif
-bool equals_ignoring_case(StringView, StringView);
+bool equals_ignoring_ascii_case(StringView, StringView);
 bool ends_with(StringView a, StringView b, CaseSensitivity);
 bool starts_with(StringView, StringView, CaseSensitivity);
 bool contains(StringView, StringView, CaseSensitivity);
@@ -99,14 +106,15 @@ enum class SearchDirection {
 };
 Optional<size_t> find_any_of(StringView haystack, StringView needles, SearchDirection);
 
-DeprecatedString to_snakecase(StringView);
-DeprecatedString to_titlecase(StringView);
-DeprecatedString invert_case(StringView);
+ByteString to_snakecase(StringView);
+ByteString to_titlecase(StringView);
+ByteString invert_case(StringView);
 
-DeprecatedString replace(StringView, StringView needle, StringView replacement, ReplaceMode);
+ByteString replace(StringView, StringView needle, StringView replacement, ReplaceMode);
 ErrorOr<String> replace(String const&, StringView needle, StringView replacement, ReplaceMode);
 
 size_t count(StringView, StringView needle);
+size_t count(StringView, char needle);
 
 }
 
@@ -116,6 +124,7 @@ size_t count(StringView, StringView needle);
 using AK::CaseSensitivity;
 using AK::ReplaceMode;
 using AK::SplitBehavior;
+using AK::TrailingCodePointTransformation;
 using AK::TrimMode;
 using AK::TrimWhitespace;
 #endif

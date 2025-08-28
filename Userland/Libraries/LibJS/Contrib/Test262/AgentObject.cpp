@@ -12,14 +12,16 @@
 
 namespace JS::Test262 {
 
+JS_DEFINE_ALLOCATOR(AgentObject);
+
 AgentObject::AgentObject(Realm& realm)
     : Object(Object::ConstructWithoutPrototypeTag::Tag, realm)
 {
 }
 
-JS::ThrowCompletionOr<void> AgentObject::initialize(JS::Realm& realm)
+void AgentObject::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, "monotonicNow", monotonic_now, 0, attr);
@@ -27,14 +29,12 @@ JS::ThrowCompletionOr<void> AgentObject::initialize(JS::Realm& realm)
     // TODO: broadcast
     // TODO: getReport
     // TODO: start
-
-    return {};
 }
 
 JS_DEFINE_NATIVE_FUNCTION(AgentObject::monotonic_now)
 {
-    auto time = Time::now_monotonic();
-    auto milliseconds = time.to_milliseconds();
+    auto time = MonotonicTime::now();
+    auto milliseconds = time.milliseconds();
     return Value(static_cast<double>(milliseconds));
 }
 

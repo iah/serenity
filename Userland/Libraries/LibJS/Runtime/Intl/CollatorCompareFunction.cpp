@@ -11,24 +11,24 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(CollatorCompareFunction);
+
 NonnullGCPtr<CollatorCompareFunction> CollatorCompareFunction::create(Realm& realm, Collator& collator)
 {
-    return realm.heap().allocate<CollatorCompareFunction>(realm, realm, collator).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<CollatorCompareFunction>(realm, realm, collator);
 }
 
 CollatorCompareFunction::CollatorCompareFunction(Realm& realm, Collator& collator)
-    : NativeFunction(*realm.intrinsics().function_prototype())
+    : NativeFunction(realm.intrinsics().function_prototype())
     , m_collator(collator)
 {
 }
 
-ThrowCompletionOr<void> CollatorCompareFunction::initialize(Realm&)
+void CollatorCompareFunction::initialize(Realm&)
 {
     auto& vm = this->vm();
     define_direct_property(vm.names.length, Value(2), Attribute::Configurable);
     define_direct_property(vm.names.name, PrimitiveString::create(vm, String {}), Attribute::Configurable);
-
-    return {};
 }
 
 // 10.3.3.2 CompareStrings ( collator, x, y ), https://tc39.es/ecma402/#sec-collator-comparestrings
@@ -71,7 +71,7 @@ ThrowCompletionOr<Value> CollatorCompareFunction::call()
 void CollatorCompareFunction::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_collator);
+    visitor.visit(m_collator);
 }
 
 }

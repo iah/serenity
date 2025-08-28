@@ -11,10 +11,11 @@
 #include <AK/HashTable.h>
 #include <AK/Noncopyable.h>
 #include <AK/RefCounted.h>
-#include <AK/URL.h>
 #include <AK/WeakPtr.h>
 #include <AK/Weakable.h>
 #include <LibGfx/Forward.h>
+#include <LibHTTP/HeaderMap.h>
+#include <LibURL/URL.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Loader/LoadRequest.h>
 
@@ -29,7 +30,6 @@ class Resource : public RefCounted<Resource> {
 public:
     enum class Type {
         Generic,
-        Image,
     };
 
     static NonnullRefPtr<Resource> create(Badge<ResourceLoader>, Type, LoadRequest const&);
@@ -37,17 +37,24 @@ public:
 
     Type type() const { return m_type; }
 
-    bool is_loaded() const { return m_loaded; }
+    enum class State {
+        Pending,
+        Loaded,
+        Failed,
+    };
 
-    bool is_failed() const { return m_failed; }
-    DeprecatedString const& error() const { return m_error; }
+    bool is_pending() const { return m_state == State::Pending; }
+    bool is_loaded() const { return m_state == State::Loaded; }
+    bool is_failed() const { return m_state == State::Failed; }
+
+    ByteString const& error() const { return m_error; }
 
     bool has_encoded_data() const { return !m_encoded_data.is_empty(); }
 
-    const AK::URL& url() const { return m_request.url(); }
+    const URL::URL& url() const { return m_request.url(); }
     ByteBuffer const& encoded_data() const { return m_encoded_data; }
 
-    HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers() const { return m_response_headers; }
+    [[nodiscard]] HTTP::HeaderMap const& response_headers() const { return m_response_headers; }
 
     [[nodiscard]] Optional<u32> status_code() const { return m_status_code; }
 
@@ -55,29 +62,30 @@ public:
     void unregister_client(Badge<ResourceClient>, ResourceClient&);
 
     bool has_encoding() const { return m_encoding.has_value(); }
-    Optional<DeprecatedString> const& encoding() const { return m_encoding; }
-    DeprecatedString const& mime_type() const { return m_mime_type; }
+    Optional<ByteString> const& encoding() const { return m_encoding; }
+    ByteString const& mime_type() const { return m_mime_type; }
 
     void for_each_client(Function<void(ResourceClient&)>);
 
-    void did_load(Badge<ResourceLoader>, ReadonlyBytes data, HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& headers, Optional<u32> status_code);
-    void did_fail(Badge<ResourceLoader>, DeprecatedString const& error, Optional<u32> status_code);
+    void did_load(Badge<ResourceLoader>, ReadonlyBytes data, HTTP::HeaderMap const&, Optional<u32> status_code);
+    void did_fail(Badge<ResourceLoader>, ByteString const& error, Optional<u32> status_code);
 
 protected:
     explicit Resource(Type, LoadRequest const&);
     Resource(Type, Resource&);
 
+    LoadRequest request() const { return m_request; }
+
 private:
     LoadRequest m_request;
     ByteBuffer m_encoded_data;
     Type m_type { Type::Generic };
-    bool m_loaded { false };
-    bool m_failed { false };
-    DeprecatedString m_error;
-    Optional<DeprecatedString> m_encoding;
+    State m_state { State::Pending };
+    ByteString m_error;
+    Optional<ByteString> m_encoding;
 
-    DeprecatedString m_mime_type;
-    HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> m_response_headers;
+    ByteString m_mime_type;
+    HTTP::HeaderMap m_response_headers;
     Optional<u32> m_status_code;
     HashTable<ResourceClient*> m_clients;
 };

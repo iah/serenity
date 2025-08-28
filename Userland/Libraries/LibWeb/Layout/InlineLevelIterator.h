@@ -31,7 +31,8 @@ public:
             FloatingElement,
         };
         Type type {};
-        Layout::Node const* node { nullptr };
+        JS::GCPtr<Layout::Node const> node {};
+        RefPtr<Gfx::GlyphRun> glyph_run {};
         size_t offset_in_node { 0 };
         size_t length_in_node { 0 };
         CSSPixels width { 0.0f };
@@ -49,11 +50,14 @@ public:
         }
     };
 
-    InlineLevelIterator(Layout::InlineFormattingContext&, LayoutState&, Layout::BlockContainer const&, LayoutMode);
+    InlineLevelIterator(Layout::InlineFormattingContext&, LayoutState&, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode);
 
-    Optional<Item> next(CSSPixels available_width);
+    Optional<Item> next();
+    CSSPixels next_non_whitespace_sequence_width();
 
 private:
+    Optional<Item> next_without_lookahead();
+    Gfx::GlyphRun::TextType resolve_text_direction_from_context();
     void skip_to_next();
     void compute_next();
 
@@ -68,10 +72,10 @@ private:
 
     Layout::InlineFormattingContext& m_inline_formatting_context;
     Layout::LayoutState& m_layout_state;
-    Layout::BlockContainer const& m_container;
-    Layout::LayoutState::UsedValues const& m_container_state;
-    Layout::Node const* m_current_node { nullptr };
-    Layout::Node const* m_next_node { nullptr };
+    JS::NonnullGCPtr<BlockContainer const> m_containing_block;
+    LayoutState::UsedValues const& m_containing_block_used_values;
+    JS::GCPtr<Layout::Node const> m_current_node;
+    JS::GCPtr<Layout::Node const> m_next_node;
     LayoutMode const m_layout_mode;
 
     struct TextNodeContext {
@@ -81,7 +85,7 @@ private:
         bool is_first_chunk {};
         bool is_last_chunk {};
         TextNode::ChunkIterator chunk_iterator;
-        Optional<TextNode::Chunk> next_chunk {};
+        Optional<Gfx::GlyphRun::TextType> last_known_direction {};
     };
 
     Optional<TextNodeContext> m_text_node_context;
@@ -95,7 +99,8 @@ private:
     Optional<ExtraBoxMetrics> m_extra_leading_metrics;
     Optional<ExtraBoxMetrics> m_extra_trailing_metrics;
 
-    Vector<NodeWithStyleAndBoxModelMetrics const&> m_box_model_node_stack;
+    Vector<JS::NonnullGCPtr<NodeWithStyleAndBoxModelMetrics const>> m_box_model_node_stack;
+    Queue<InlineLevelIterator::Item> m_lookahead_items;
 };
 
 }

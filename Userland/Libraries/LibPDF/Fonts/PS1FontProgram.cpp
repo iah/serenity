@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/Font/PathRasterizer.h>
 #include <LibPDF/CommonNames.h>
 #include <LibPDF/Encoding.h>
 #include <LibPDF/Fonts/PS1FontProgram.h>
@@ -71,9 +70,9 @@ PDFErrorOr<void> PS1FontProgram::parse_encrypted_portion(ByteBuffer const& buffe
     if (seek_name(reader, "lenIV"))
         m_lenIV = TRY(parse_int(reader));
 
-    if (!seek_name(reader, "Subrs"))
-        return error("Missing subroutine array");
-    auto subroutines = TRY(parse_subroutines(reader));
+    Vector<ByteBuffer> subroutines;
+    if (seek_name(reader, "Subrs"))
+        subroutines = TRY(parse_subroutines(reader));
 
     if (!seek_name(reader, "CharStrings"))
         return error("Missing char strings array");
@@ -93,7 +92,7 @@ PDFErrorOr<void> PS1FontProgram::parse_encrypted_portion(ByteBuffer const& buffe
                 reader.move_by(encrypted_size);
                 auto glyph_name = word.substring_view(1);
                 GlyphParserState state;
-                TRY(add_glyph(glyph_name, TRY(parse_glyph(line, subroutines, state, false))));
+                TRY(add_glyph(glyph_name, TRY(parse_glyph(line, subroutines, {}, state, false))));
             }
         }
     }
@@ -108,15 +107,14 @@ PDFErrorOr<Vector<ByteBuffer>> PS1FontProgram::parse_subroutines(Reader& reader)
         return error("Expected array length");
 
     auto length = TRY(parse_int(reader));
-    VERIFY(length <= 1024);
+    VERIFY(length >= 0);
 
     Vector<ByteBuffer> array;
     TRY(array.try_resize(length));
 
     while (reader.remaining()) {
         auto word = TRY(parse_word(reader));
-        if (word.is_empty())
-            VERIFY(0);
+        VERIFY(!word.is_empty());
 
         if (word == "dup") {
             auto index = TRY(parse_int(reader));
@@ -129,7 +127,7 @@ PDFErrorOr<Vector<ByteBuffer>> PS1FontProgram::parse_subroutines(Reader& reader)
                 return error("Array index out of bounds");
 
             if (isdigit(entry[0])) {
-                auto maybe_encrypted_size = entry.to_int();
+                auto maybe_encrypted_size = entry.to_number<int>();
                 if (!maybe_encrypted_size.has_value())
                     return error("Malformed array");
                 auto rd = TRY(parse_word(reader));
@@ -169,7 +167,7 @@ PDFErrorOr<Vector<float>> PS1FontProgram::parse_number_array(Reader& reader, siz
     return array;
 }
 
-PDFErrorOr<DeprecatedString> PS1FontProgram::parse_word(Reader& reader)
+PDFErrorOr<ByteString> PS1FontProgram::parse_word(Reader& reader)
 {
     reader.consume_whitespace();
 
@@ -188,12 +186,12 @@ PDFErrorOr<DeprecatedString> PS1FontProgram::parse_word(Reader& reader)
 PDFErrorOr<float> PS1FontProgram::parse_float(Reader& reader)
 {
     auto word = TRY(parse_word(reader));
-    return strtof(DeprecatedString(word).characters(), nullptr);
+    return strtof(ByteString(word).characters(), nullptr);
 }
 
 PDFErrorOr<int> PS1FontProgram::parse_int(Reader& reader)
 {
-    auto maybe_int = TRY(parse_word(reader)).to_int();
+    auto maybe_int = TRY(parse_word(reader)).to_number<int>();
     if (!maybe_int.has_value())
         return error("Invalid int");
     return maybe_int.value();
@@ -218,7 +216,7 @@ PDFErrorOr<ByteBuffer> PS1FontProgram::decrypt(ReadonlyBytes const& encrypted, u
     return decrypted;
 }
 
-bool PS1FontProgram::seek_name(Reader& reader, DeprecatedString const& name)
+bool PS1FontProgram::seek_name(Reader& reader, ByteString const& name)
 {
     auto start = reader.offset();
 
@@ -237,6 +235,21 @@ bool PS1FontProgram::seek_name(Reader& reader, DeprecatedString const& name)
     // Jump back to where we started
     reader.move_to(start);
     return false;
+}
+
+Error PS1FontProgram::error(
+    ByteString const& message
+#ifdef PDF_DEBUG
+    ,
+    SourceLocation loc
+#endif
+)
+{
+#ifdef PDF_DEBUG
+    dbgln("\033[31m{} Type 1 font error: {}\033[0m", loc, message);
+#endif
+
+    return Error { Error::Type::MalformedPDF, message };
 }
 
 }

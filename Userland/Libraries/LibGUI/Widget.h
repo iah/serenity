@@ -6,19 +6,21 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/EnumBits.h>
 #include <AK/JsonObject.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/Variant.h>
-#include <LibCore/Object.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/FocusPolicy.h>
 #include <LibGUI/Forward.h>
 #include <LibGUI/GML/AST.h>
 #include <LibGUI/Margins.h>
+#include <LibGUI/Object.h>
+#include <LibGUI/Property.h>
 #include <LibGUI/UIDimensions.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
@@ -26,18 +28,14 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/StandardCursor.h>
 
-namespace Core {
-namespace Registration {
-extern Core::ObjectClassRegistration registration_Widget;
-}
+namespace GUI::Registration {
+extern GUI::ObjectClassRegistration registration_Widget;
 }
 
-#define REGISTER_WIDGET(namespace_, class_name)                                                                                                                                                     \
-    namespace Core {                                                                                                                                                                                \
-    namespace Registration {                                                                                                                                                                        \
-    Core::ObjectClassRegistration registration_##class_name(                                                                                                                                        \
-        #namespace_ "::" #class_name##sv, []() -> ErrorOr<NonnullRefPtr<Core::Object>> { return static_ptr_cast<Core::Object>(TRY(namespace_::class_name::try_create())); }, &registration_Widget); \
-    }                                                                                                                                                                                               \
+#define REGISTER_WIDGET(namespace_, class_name)                                                                                                                                                   \
+    namespace GUI::Registration {                                                                                                                                                                 \
+    GUI::ObjectClassRegistration registration_##class_name(                                                                                                                                       \
+        #namespace_ "::" #class_name##sv, []() -> ErrorOr<NonnullRefPtr<GUI::Object>> { return static_ptr_cast<GUI::Object>(TRY(namespace_::class_name::try_create())); }, &registration_Widget); \
     }
 
 namespace GUI {
@@ -73,7 +71,16 @@ enum class AllowCallback {
     Yes
 };
 
-class Widget : public Core::Object {
+template<typename T>
+ALWAYS_INLINE ErrorOr<void> initialize(T& object)
+{
+    if constexpr (requires { { object.initialize() } -> SameAs<ErrorOr<void>>; })
+        return object.initialize();
+    else
+        return {};
+}
+
+class Widget : public GUI::Object {
     C_OBJECT(Widget)
 public:
     virtual ~Widget() override;
@@ -81,14 +88,6 @@ public:
     Layout* layout() { return m_layout.ptr(); }
     Layout const* layout() const { return m_layout.ptr(); }
     void set_layout(NonnullRefPtr<Layout>);
-
-    template<class T, class... Args>
-    ErrorOr<void> try_set_layout(Args&&... args)
-    {
-        auto layout = TRY(T::try_create(forward<Args>(args)...));
-        set_layout(*layout);
-        return {};
-    }
 
     template<class T, class... Args>
     inline void set_layout(Args&&... args)
@@ -171,8 +170,8 @@ public:
     virtual bool is_visible_for_timer_purposes() const override;
 
     bool has_tooltip() const { return !m_tooltip.is_empty(); }
-    DeprecatedString tooltip() const { return m_tooltip; }
-    void set_tooltip(DeprecatedString);
+    String tooltip() const { return m_tooltip; }
+    void set_tooltip(String tooltip);
 
     bool is_auto_focusable() const { return m_auto_focusable; }
     void set_auto_focusable(bool auto_focusable) { m_auto_focusable = auto_focusable; }
@@ -199,8 +198,8 @@ public:
 
     Gfx::IntRect rect() const { return { 0, 0, width(), height() }; }
     Gfx::IntSize size() const { return m_relative_rect.size(); }
-    Gfx::IntRect content_rect() const { return this->content_margins().applied_to(rect()); };
-    Gfx::IntSize content_size() const { return this->content_rect().size(); };
+    Gfx::IntRect content_rect() const { return this->content_margins().applied_to(rect()); }
+    Gfx::IntSize content_size() const { return this->content_rect().size(); }
 
     // Invalidate the widget (or an area thereof), causing a repaint to happen soon.
     void update();
@@ -216,7 +215,7 @@ public:
     bool focus_preempted() const { return m_focus_preempted; }
     void set_focus_preempted(bool b) { m_focus_preempted = b; }
 
-    Function<void(bool const, const FocusSource)> on_focus_change;
+    Function<void(bool const, FocusSource const)> on_focus_change;
 
     // Returns true if this widget or one of its descendants is focused.
     bool has_focus_within() const;
@@ -264,6 +263,8 @@ public:
     Gfx::ColorRole foreground_role() const { return m_foreground_role; }
     void set_foreground_role(Gfx::ColorRole);
 
+    void set_background_color(Gfx::Color);
+
     void set_autofill(bool b) { set_fill_with_background_color(b); }
 
     Window* window()
@@ -293,10 +294,11 @@ public:
     void set_font(Gfx::Font const*);
     void set_font(Gfx::Font const& font) { set_font(&font); }
 
-    void set_font_family(DeprecatedString const&);
+    void set_font_family(String const&);
     void set_font_size(unsigned);
     void set_font_weight(unsigned);
     void set_font_fixed_width(bool);
+    bool is_font_fixed_width();
 
     void notify_layout_changed(Badge<Layout>);
     void invalidate_layout();
@@ -334,8 +336,8 @@ public:
     Gfx::Palette palette() const;
     void set_palette(Gfx::Palette&);
 
-    DeprecatedString title() const;
-    void set_title(DeprecatedString);
+    String title() const;
+    void set_title(String);
 
     Margins const& grabbable_margins() const { return m_grabbable_margins; }
     void set_grabbable_margins(Margins const&);
@@ -352,7 +354,7 @@ public:
     AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const& override_cursor() const { return m_override_cursor; }
     void set_override_cursor(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>>);
 
-    using UnregisteredChildHandler = ErrorOr<NonnullRefPtr<Core::Object>>(DeprecatedString const&);
+    using UnregisteredChildHandler = ErrorOr<NonnullRefPtr<Core::EventReceiver>>(StringView);
     ErrorOr<void> load_from_gml(StringView);
     ErrorOr<void> load_from_gml(StringView, UnregisteredChildHandler);
 
@@ -365,7 +367,7 @@ public:
     // In order for others to be able to call this, it needs to be public.
     virtual ErrorOr<void> load_from_gml_ast(NonnullRefPtr<GUI::GML::Node const> ast, UnregisteredChildHandler);
 
-    ErrorOr<void> add_spacer();
+    void add_spacer();
 
 protected:
     Widget();
@@ -406,9 +408,6 @@ protected:
     virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
     virtual void applet_area_rect_change_event(AppletAreaRectChangeEvent&);
 
-    virtual void did_begin_inspection() override;
-    virtual void did_end_inspection() override;
-
     void show_or_hide_tooltip();
 
     void add_focus_delegator(Widget*);
@@ -433,6 +432,9 @@ private:
     int dummy_fixed_height() { return 0; }
     Gfx::IntSize dummy_fixed_size() { return {}; }
 
+    // HACK: Used as property getter for the font_family property, can be removed when Font is migrated from ByteString.
+    String font_family() const;
+
     Window* m_window { nullptr };
     RefPtr<Layout> m_layout;
 
@@ -440,7 +442,7 @@ private:
     Gfx::ColorRole m_background_role;
     Gfx::ColorRole m_foreground_role;
     NonnullRefPtr<Gfx::Font const> m_font;
-    DeprecatedString m_tooltip;
+    String m_tooltip;
 
     UISize m_min_size { SpecialDimension::Shrink };
     UISize m_max_size { SpecialDimension::Grow };
@@ -458,7 +460,7 @@ private:
     bool m_default_font { true };
 
     NonnullRefPtr<Gfx::PaletteImpl> m_palette;
-    DeprecatedString m_title { DeprecatedString::empty() };
+    String m_title;
 
     WeakPtr<Widget> m_focus_proxy;
     Vector<WeakPtr<Widget>> m_focus_delegators;
@@ -482,8 +484,8 @@ inline Widget const* Widget::parent_widget() const
 }
 
 template<>
-inline bool Core::Object::fast_is<GUI::Widget>() const { return is_widget(); }
+inline bool Core::EventReceiver::fast_is<GUI::Widget>() const { return is_widget(); }
 
 template<>
-struct AK::Formatter<GUI::Widget> : AK::Formatter<Core::Object> {
+struct AK::Formatter<GUI::Widget> : AK::Formatter<Core::EventReceiver> {
 };

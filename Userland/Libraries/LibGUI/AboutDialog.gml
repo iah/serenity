@@ -1,4 +1,4 @@
-@GUI::Frame {
+@GUI::AboutDialogWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         spacing: 0
@@ -61,7 +61,7 @@
                 name: "copyright"
                 text_alignment: "CenterLeft"
                 fixed_height: 14
-                text: "Copyright © the SerenityOS developers, 2018-2023"
+                text: "Copyright © the SerenityOS developers, 2018-2025"
             }
 
             @GUI::Layout::Spacer {}

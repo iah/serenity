@@ -141,3 +141,22 @@ test("parameter with an object default value", () => {
     expect(arrowFunc()).toBe("bar");
     expect(arrowFunc({ foo: "baz" })).toBe("baz");
 });
+
+test("use variable as default function parameter", () => {
+    let a = 1;
+
+    function func(param = a) {
+        return param;
+    }
+
+    expect(func()).toBe(a);
+});
+
+test("variable is initialized to the value of the parameter if one with the same name exists", () => {
+    function func(a = 1) {
+        var a;
+        return a;
+    }
+
+    expect(func()).toBe(1);
+});

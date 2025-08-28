@@ -7,43 +7,39 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/Process.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibCore/TCPServer.h>
 #include <LibMain/Main.h>
 #include <WebDriver/Client.h>
 
-static ErrorOr<pid_t> launch_browser(DeprecatedString const& socket_path)
+static ErrorOr<pid_t> launch_browser(ByteString const& socket_path)
 {
-    char const* argv[] = {
-        "/bin/Browser",
-        "--webdriver-content-path",
-        socket_path.characters(),
-        nullptr,
-    };
-
-    return Core::System::posix_spawn("/bin/Browser"sv, nullptr, nullptr, const_cast<char**>(argv), environ);
+    return Core::Process::spawn("/bin/Browser"sv,
+        Array {
+            "--webdriver-content-path",
+            socket_path.characters(),
+            "about:blank",
+        });
 }
 
-static ErrorOr<pid_t> launch_headless_browser(DeprecatedString const& socket_path)
+static ErrorOr<pid_t> launch_headless_browser(ByteString const& socket_path)
 {
-    char const* argv[] = {
-        "/bin/headless-browser",
-        "--webdriver-ipc-path",
-        socket_path.characters(),
-        "about:blank",
-        nullptr,
-    };
-
-    return Core::System::posix_spawn("/bin/headless-browser"sv, nullptr, nullptr, const_cast<char**>(argv), environ);
+    return Core::Process::spawn("/bin/headless-browser"sv,
+        Array {
+            "--webdriver-ipc-path",
+            socket_path.characters(),
+            "about:blank",
+        });
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    DeprecatedString default_listen_address = "0.0.0.0";
+    ByteString default_listen_address = "0.0.0.0";
     u16 default_port = 8000;
 
-    DeprecatedString listen_address = default_listen_address;
+    ByteString listen_address = default_listen_address;
     int port = default_port;
 
     Core::ArgsParser args_parser;
@@ -64,7 +60,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     TRY(Core::System::pledge("stdio accept cpath rpath recvfd inet unix proc exec fattr"));
 
-    auto webdriver_socket_path = DeprecatedString::formatted("{}/webdriver", TRY(Core::StandardPaths::runtime_directory()));
+    auto webdriver_socket_path = ByteString::formatted("{}/webdriver", TRY(Core::StandardPaths::runtime_directory()));
     TRY(Core::Directory::create(webdriver_socket_path, Core::Directory::CreateDirectories::Yes));
 
     Core::EventLoop loop;

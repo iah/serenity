@@ -5,11 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
 #include <LibCore/Account.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <unistd.h>
 
@@ -47,14 +46,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (access(target_account.home_directory().characters(), F_OK) == -1)
             return 0;
 
-        auto const real_path = Core::DeprecatedFile::real_path_for(target_account.home_directory());
+        auto const real_path = TRY(FileSystem::real_path(target_account.home_directory()));
 
-        if (real_path == "/") {
+        if (real_path == "/"sv) {
             warnln("home directory is /, not deleted!");
             return 12;
         }
 
-        if (auto result = Core::DeprecatedFile::remove(real_path, Core::DeprecatedFile::RecursionMode::Allowed); result.is_error()) {
+        if (auto result = FileSystem::remove(real_path, FileSystem::RecursionMode::Allowed); result.is_error()) {
             warnln("{}", result.release_error());
             return 12;
         }

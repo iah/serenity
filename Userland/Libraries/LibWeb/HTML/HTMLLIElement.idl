@@ -4,6 +4,11 @@
 [Exposed=Window]
 interface HTMLLIElement : HTMLElement {
 
-    [Reflect] attribute DOMString type;
+    [HTMLConstructor] constructor();
+
+    [CEReactions] attribute long value;
+
+    // Obsolete
+    [CEReactions, Reflect] attribute DOMString type;
 
 };

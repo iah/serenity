@@ -13,17 +13,18 @@ namespace Web::DOM {
 
 class CDATASection final : public Text {
     WEB_PLATFORM_OBJECT(CDATASection, Text);
+    JS_DECLARE_ALLOCATOR(CDATASection);
 
 public:
     virtual ~CDATASection() override;
 
     // ^Node
-    virtual DeprecatedFlyString node_name() const override { return "#cdata-section"; }
+    virtual FlyString node_name() const override { return "#cdata-section"_fly_string; }
 
 private:
-    CDATASection(Document&, DeprecatedString const&);
+    CDATASection(Document&, String const&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 template<>

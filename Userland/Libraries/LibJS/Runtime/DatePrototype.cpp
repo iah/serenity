@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2021, Petróczi Zoltán <petroczizoltan@tutanota.com>
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
@@ -7,8 +7,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ByteString.h>
 #include <AK/DateConstants.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
 #include <AK/TypeCasts.h>
 #include <LibCore/DateTime.h>
@@ -23,21 +23,24 @@
 #include <LibJS/Runtime/Intl/DateTimeFormatConstructor.h>
 #include <LibJS/Runtime/Temporal/Instant.h>
 #include <LibJS/Runtime/Value.h>
+#include <LibJS/Runtime/ValueInlines.h>
 #include <LibLocale/DateTimeFormat.h>
 #include <LibLocale/Locale.h>
 #include <LibTimeZone/TimeZone.h>
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(DatePrototype);
+
 DatePrototype::DatePrototype(Realm& realm)
-    : PrototypeObject(*realm.intrinsics().object_prototype())
+    : PrototypeObject(realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> DatePrototype::initialize(Realm& realm)
+void DatePrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.getDate, get_date, 0, attr);
     define_native_function(realm, vm.names.getDay, get_day, 0, attr);
@@ -87,7 +90,7 @@ ThrowCompletionOr<void> DatePrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.setYear, set_year, 1, attr);
 
     // 21.4.4.45 Date.prototype [ @@toPrimitive ] ( hint ), https://tc39.es/ecma262/#sec-date.prototype-@@toprimitive
-    define_native_function(realm, *vm.well_known_symbol_to_primitive(), symbol_to_primitive, 1, Attribute::Configurable);
+    define_native_function(realm, vm.well_known_symbol_to_primitive(), symbol_to_primitive, 1, Attribute::Configurable);
 
     // Aliases.
     define_native_function(realm, vm.names.valueOf, get_time, 0, attr);
@@ -95,8 +98,6 @@ ThrowCompletionOr<void> DatePrototype::initialize(Realm& realm)
     // B.2.4.3 Date.prototype.toGMTString ( ), https://tc39.es/ecma262/#sec-date.prototype.togmtstring
     // The initial value of the "toGMTString" property is %Date.prototype.toUTCString%, defined in 21.4.4.43.
     define_direct_property(vm.names.toGMTString, get_without_side_effects(vm.names.toUTCString), attr);
-
-    return {};
 }
 
 // thisTimeValue ( value ), https://tc39.es/ecma262/#thistimevalue
@@ -400,7 +401,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_date)
     new_date = time_clip(utc_time(new_date));
 
     // 7. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 8. Return u.
@@ -435,7 +436,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_full_year)
     new_date = time_clip(utc_time(new_date));
 
     // 8. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 9. Return u.
@@ -487,7 +488,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_hours)
     date = time_clip(utc_time(date));
 
     // 13. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 14. Return u.
@@ -522,7 +523,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_milliseconds)
     date = time_clip(utc_time(date));
 
     // 7. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 8. Return u.
@@ -569,7 +570,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_minutes)
     date = time_clip(utc_time(date));
 
     // 11. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 12. Return u.
@@ -609,7 +610,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_month)
     new_date = time_clip(utc_time(new_date));
 
     // 9. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 10. Return u.
@@ -650,7 +651,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_seconds)
     new_date = time_clip(utc_time(new_date));
 
     // 9. Set the [[DateValue]] internal slot of this Date object to u.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 10. Return u.
@@ -670,7 +671,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_time)
     time = time_clip(time);
 
     // 4. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(time);
 
     // 5. Return v.
@@ -701,7 +702,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_date)
     new_date = time_clip(new_date);
 
     // 6. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 7. Return v.
@@ -736,7 +737,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_full_year)
     new_date = time_clip(new_date);
 
     // 8. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 9. Return v.
@@ -785,7 +786,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_hours)
     date = time_clip(date);
 
     // 12. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 13. Return v.
@@ -817,7 +818,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_milliseconds)
     date = time_clip(date);
 
     // 6. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 7. Return v.
@@ -861,7 +862,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_minutes)
     date = time_clip(date);
 
     // 10. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(date);
 
     // 11. Return v.
@@ -898,7 +899,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_month)
     new_date = time_clip(new_date);
 
     // 8. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 9. Return v.
@@ -936,7 +937,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_utc_seconds)
     new_date = time_clip(new_date);
 
     // 8. Set the [[DateValue]] internal slot of this Date object to v.
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
     this_object->set_date_value(new_date);
 
     // 9. Return v.
@@ -952,7 +953,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_date_string)
 
     // 3. If tv is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
     // 4. Let t be LocalTime(tv).
     // 5. Return DateString(t).
@@ -962,12 +963,12 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_date_string)
 // 21.4.4.36 Date.prototype.toISOString ( ), https://tc39.es/ecma262/#sec-date.prototype.toisostring
 JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_iso_string)
 {
-    auto* this_object = TRY(typed_this_object(vm));
+    auto this_object = TRY(typed_this_object(vm));
 
     if (!Value(this_object->date_value()).is_finite_number())
         return vm.throw_completion<RangeError>(ErrorType::InvalidTimeValue);
 
-    auto string = this_object->iso_date_string();
+    auto string = TRY_OR_THROW_OOM(vm, this_object->iso_date_string());
     return PrimitiveString::create(vm, move(string));
 }
 
@@ -984,17 +985,12 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_json)
     return TRY(this_value.invoke(vm, vm.names.toISOString));
 }
 
-static ThrowCompletionOr<Intl::DateTimeFormat*> construct_date_time_format(VM& vm, Value locales, Value options)
-{
-    auto& realm = *vm.current_realm();
-    auto date_time_format = TRY(construct(vm, *realm.intrinsics().intl_date_time_format_constructor(), locales, options));
-    return static_cast<Intl::DateTimeFormat*>(date_time_format.ptr());
-}
-
 // 21.4.4.38 Date.prototype.toLocaleDateString ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-date.prototype.tolocaledatestring
 // 19.4.2 Date.prototype.toLocaleDateString ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sup-date.prototype.tolocaledatestring
 JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_date_string)
 {
+    auto& realm = *vm.current_realm();
+
     auto locales = vm.argument(0);
     auto options = vm.argument(1);
 
@@ -1003,16 +999,13 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_date_string)
 
     // 2. If x is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
-    // 3. Let options be ? ToDateTimeOptions(options, "date", "date").
-    options = Value(TRY(Intl::to_date_time_options(vm, options, Intl::OptionRequired::Date, Intl::OptionDefaults::Date)));
+    // 3. Let dateFormat be ? CreateDateTimeFormat(%DateTimeFormat%, locales, options, "date", "date").
+    auto date_format = TRY(Intl::create_date_time_format(vm, realm.intrinsics().intl_date_time_format_constructor(), locales, options, Intl::OptionRequired::Date, Intl::OptionDefaults::Date));
 
-    // 4. Let dateFormat be ? Construct(%DateTimeFormat%, « locales, options »).
-    auto* date_format = TRY(construct_date_time_format(vm, locales, options));
-
-    // 5. Return ? FormatDateTime(dateFormat, x).
-    auto formatted = TRY(Intl::format_date_time(vm, *date_format, time));
+    // 4. Return ? FormatDateTime(dateFormat, x).
+    auto formatted = TRY(Intl::format_date_time(vm, date_format, time));
     return PrimitiveString::create(vm, move(formatted));
 }
 
@@ -1020,6 +1013,8 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_date_string)
 // 19.4.1 Date.prototype.toLocaleString ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sup-date.prototype.tolocalestring
 JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_string)
 {
+    auto& realm = *vm.current_realm();
+
     auto locales = vm.argument(0);
     auto options = vm.argument(1);
 
@@ -1028,16 +1023,13 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_string)
 
     // 2. If x is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
-    // 3. Let options be ? ToDateTimeOptions(options, "any", "all").
-    options = Value(TRY(Intl::to_date_time_options(vm, options, Intl::OptionRequired::Any, Intl::OptionDefaults::All)));
+    // 3. Let dateFormat be ? CreateDateTimeFormat(%DateTimeFormat%, locales, options, "any", "all").
+    auto date_format = TRY(Intl::create_date_time_format(vm, realm.intrinsics().intl_date_time_format_constructor(), locales, options, Intl::OptionRequired::Any, Intl::OptionDefaults::All));
 
-    // 4. Let dateFormat be ? Construct(%DateTimeFormat%, « locales, options »).
-    auto* date_format = TRY(construct_date_time_format(vm, locales, options));
-
-    // 5. Return ? FormatDateTime(dateFormat, x).
-    auto formatted = TRY(Intl::format_date_time(vm, *date_format, time));
+    // 4. Return ? FormatDateTime(dateFormat, x).
+    auto formatted = TRY(Intl::format_date_time(vm, date_format, time));
     return PrimitiveString::create(vm, move(formatted));
 }
 
@@ -1045,6 +1037,8 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_string)
 // 19.4.3 Date.prototype.toLocaleTimeString ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sup-date.prototype.tolocaletimestring
 JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_time_string)
 {
+    auto& realm = *vm.current_realm();
+
     auto locales = vm.argument(0);
     auto options = vm.argument(1);
 
@@ -1053,16 +1047,13 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_locale_time_string)
 
     // 2. If x is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
-    // 3. Let options be ? ToDateTimeOptions(options, "time", "time").
-    options = Value(TRY(Intl::to_date_time_options(vm, options, Intl::OptionRequired::Time, Intl::OptionDefaults::Time)));
+    // 3. Let timeFormat be ? CreateDateTimeFormat(%DateTimeFormat%, locales, options, "time", "time").
+    auto time_format = TRY(Intl::create_date_time_format(vm, realm.intrinsics().intl_date_time_format_constructor(), locales, options, Intl::OptionRequired::Time, Intl::OptionDefaults::Time));
 
-    // 4. Let timeFormat be ? Construct(%DateTimeFormat%, « locales, options »).
-    auto* time_format = TRY(construct_date_time_format(vm, locales, options));
-
-    // 5. Return ? FormatDateTime(dateFormat, x).
-    auto formatted = TRY(Intl::format_date_time(vm, *time_format, time));
+    // 4. Return ? FormatDateTime(timeFormat, x).
+    auto formatted = TRY(Intl::format_date_time(vm, time_format, time));
     return PrimitiveString::create(vm, move(formatted));
 }
 
@@ -1077,7 +1068,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_string)
 }
 
 // 21.4.4.41.1 TimeString ( tv ), https://tc39.es/ecma262/#sec-timestring
-DeprecatedString time_string(double time)
+ByteString time_string(double time)
 {
     // 1. Let hour be ToZeroPaddedDecimalString(ℝ(HourFromTime(tv)), 2).
     auto hour = hour_from_time(time);
@@ -1089,11 +1080,11 @@ DeprecatedString time_string(double time)
     auto second = sec_from_time(time);
 
     // 4. Return the string-concatenation of hour, ":", minute, ":", second, the code unit 0x0020 (SPACE), and "GMT".
-    return DeprecatedString::formatted("{:02}:{:02}:{:02} GMT", hour, minute, second);
+    return ByteString::formatted("{:02}:{:02}:{:02} GMT", hour, minute, second);
 }
 
 // 21.4.4.41.2 DateString ( tv ), https://tc39.es/ecma262/#sec-datestring
-DeprecatedString date_string(double time)
+ByteString date_string(double time)
 {
     // 1. Let weekday be the Name of the entry in Table 62 with the Number WeekDay(tv).
     auto weekday = short_day_names[week_day(time)];
@@ -1112,27 +1103,27 @@ DeprecatedString date_string(double time)
 
     // 6. Let paddedYear be ToZeroPaddedDecimalString(abs(ℝ(yv)), 4).
     // 7. Return the string-concatenation of weekday, the code unit 0x0020 (SPACE), month, the code unit 0x0020 (SPACE), day, the code unit 0x0020 (SPACE), yearSign, and paddedYear.
-    return DeprecatedString::formatted("{} {} {:02} {}{:04}", weekday, month, day, year_sign, abs(year));
+    return ByteString::formatted("{} {} {:02} {}{:04}", weekday, month, day, year_sign, abs(year));
 }
 
 // 21.4.4.41.3 TimeZoneString ( tv ), https://tc39.es/ecma262/#sec-timezoneestring
-DeprecatedString time_zone_string(double time)
+ByteString time_zone_string(double time)
 {
-    // 1. Let localTimeZone be DefaultTimeZone().
-    auto local_time_zone = default_time_zone();
+    // 1. Let systemTimeZoneIdentifier be SystemTimeZoneIdentifier().
+    auto system_time_zone_identifier = JS::system_time_zone_identifier();
 
     double offset_nanoseconds { 0 };
 
-    // 2. If IsTimeZoneOffsetString(localTimeZone) is true, then
-    if (is_time_zone_offset_string(local_time_zone)) {
-        // a. Let offsetNs be ParseTimeZoneOffsetString(localTimeZone).
-        offset_nanoseconds = parse_time_zone_offset_string(local_time_zone);
+    // 2. If IsTimeZoneOffsetString(systemTimeZoneIdentifier) is true, then
+    if (is_time_zone_offset_string(system_time_zone_identifier)) {
+        // a. Let offsetNs be ParseTimeZoneOffsetString(systemTimeZoneIdentifier).
+        offset_nanoseconds = parse_time_zone_offset_string(system_time_zone_identifier);
     }
     // 3. Else,
     else {
-        // a. Let offsetNs be GetNamedTimeZoneOffsetNanoseconds(localTimeZone, ℤ(ℝ(tv) × 10^6)).
+        // a. Let offsetNs be GetNamedTimeZoneOffsetNanoseconds(systemTimeZoneIdentifier, ℤ(ℝ(tv) × 10^6)).
         auto time_bigint = Crypto::SignedBigInteger { time }.multiplied_by(Crypto::UnsignedBigInteger { 1'000'000 });
-        offset_nanoseconds = get_named_time_zone_offset_nanoseconds(local_time_zone, time_bigint);
+        offset_nanoseconds = get_named_time_zone_offset_nanoseconds(system_time_zone_identifier, time_bigint);
     }
 
     // 4. Let offset be 𝔽(truncate(offsetNs / 106)).
@@ -1164,17 +1155,17 @@ DeprecatedString time_zone_string(double time)
     auto tz_name = TimeZone::current_time_zone();
 
     // Most implementations seem to prefer the long-form display name of the time zone. Not super important, but we may as well match that behavior.
-    if (auto maybe_offset = TimeZone::get_time_zone_offset(tz_name, AK::Time::from_milliseconds(time)); maybe_offset.has_value()) {
+    if (auto maybe_offset = TimeZone::get_time_zone_offset(tz_name, AK::UnixDateTime::from_milliseconds_since_epoch(time)); maybe_offset.has_value()) {
         if (auto long_name = Locale::get_time_zone_name(Locale::default_locale(), tz_name, Locale::CalendarPatternStyle::Long, maybe_offset->in_dst); long_name.has_value())
             tz_name = long_name.release_value();
     }
 
     // 10. Return the string-concatenation of offsetSign, offsetHour, offsetMin, and tzName.
-    return DeprecatedString::formatted("{}{:02}{:02} ({})", offset_sign, offset_hour, offset_min, tz_name);
+    return ByteString::formatted("{}{:02}{:02} ({})", offset_sign, offset_hour, offset_min, tz_name);
 }
 
 // 21.4.4.41.4 ToDateString ( tv ), https://tc39.es/ecma262/#sec-todatestring
-DeprecatedString to_date_string(double time)
+ByteString to_date_string(double time)
 {
     // 1. If tv is NaN, return "Invalid Date".
     if (Value(time).is_nan())
@@ -1184,7 +1175,7 @@ DeprecatedString to_date_string(double time)
     time = local_time(time);
 
     // 3. Return the string-concatenation of DateString(t), the code unit 0x0020 (SPACE), TimeString(t), and TimeZoneString(tv).
-    return DeprecatedString::formatted("{} {}{}", date_string(time), time_string(time), time_zone_string(time));
+    return ByteString::formatted("{} {}{}", date_string(time), time_string(time), time_zone_string(time));
 }
 
 // 14.1.1 Date.prototype.toTemporalInstant ( ), https://tc39.es/proposal-temporal/#sec-date.prototype.totemporalinstant
@@ -1210,11 +1201,11 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_time_string)
 
     // 3. If tv is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
     // 4. Let t be LocalTime(tv).
     // 5. Return the string-concatenation of TimeString(t) and TimeZoneString(tv).
-    auto string = DeprecatedString::formatted("{}{}", time_string(local_time(time)), time_zone_string(time));
+    auto string = ByteString::formatted("{}{}", time_string(local_time(time)), time_zone_string(time));
     return PrimitiveString::create(vm, move(string));
 }
 
@@ -1227,7 +1218,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_utc_string)
 
     // 3. If tv is NaN, return "Invalid Date".
     if (isnan(time))
-        return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Invalid Date"sv));
+        return PrimitiveString::create(vm, "Invalid Date"_string);
 
     // 4. Let weekday be the Name of the entry in Table 62 with the Number WeekDay(tv).
     auto weekday = short_day_names[week_day(time)];
@@ -1246,7 +1237,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::to_utc_string)
 
     // 9. Let paddedYear be ToZeroPaddedDecimalString(abs(ℝ(yv)), 4).
     // 10. Return the string-concatenation of weekday, ",", the code unit 0x0020 (SPACE), day, the code unit 0x0020 (SPACE), month, the code unit 0x0020 (SPACE), yearSign, paddedYear, the code unit 0x0020 (SPACE), and TimeString(tv).
-    auto string = DeprecatedString::formatted("{}, {:02} {} {}{:04} {}", weekday, day, month, year_sign, abs(year), time_string(time));
+    auto string = ByteString::formatted("{}, {:02} {} {}{:04} {}", weekday, day, month, year_sign, abs(year), time_string(time));
     return PrimitiveString::create(vm, move(string));
 }
 
@@ -1255,11 +1246,11 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::symbol_to_primitive)
 {
     auto this_value = vm.this_value();
     if (!this_value.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, this_value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, this_value.to_string_without_side_effects());
     auto hint_value = vm.argument(0);
     if (!hint_value.is_string())
-        return vm.throw_completion<TypeError>(ErrorType::InvalidHint, TRY_OR_THROW_OOM(vm, hint_value.to_string_without_side_effects()));
-    auto hint = TRY(hint_value.as_string().deprecated_string());
+        return vm.throw_completion<TypeError>(ErrorType::InvalidHint, hint_value.to_string_without_side_effects());
+    auto hint = hint_value.as_string().byte_string();
     Value::PreferredType try_first;
     if (hint == "string" || hint == "default")
         try_first = Value::PreferredType::String;
@@ -1298,7 +1289,7 @@ JS_DEFINE_NATIVE_FUNCTION(DatePrototype::set_year)
     // 3. Let y be ? ToNumber(year).
     auto year = TRY(vm.argument(0).to_number(vm)).as_double();
 
-    auto* this_object = MUST(typed_this_object(vm));
+    auto this_object = MUST(typed_this_object(vm));
 
     // 4. If y is NaN, then
     if (isnan(year)) {

@@ -10,24 +10,24 @@
 
 namespace Kernel::Memory {
 
-static Singleton<SpinlockProtected<VMObject::AllInstancesList, LockRank::None>> s_all_instances;
+static Singleton<RecursiveSpinlockProtected<VMObject::AllInstancesList, LockRank::None>> s_all_instances;
 
-SpinlockProtected<VMObject::AllInstancesList, LockRank::None>& VMObject::all_instances()
+RecursiveSpinlockProtected<VMObject::AllInstancesList, LockRank::None>& VMObject::all_instances()
 {
     return s_all_instances;
 }
 
-ErrorOr<FixedArray<RefPtr<PhysicalPage>>> VMObject::try_clone_physical_pages() const
+ErrorOr<FixedArray<RefPtr<PhysicalRAMPage>>> VMObject::try_clone_physical_pages() const
 {
     return m_physical_pages.clone();
 }
 
-ErrorOr<FixedArray<RefPtr<PhysicalPage>>> VMObject::try_create_physical_pages(size_t size)
+ErrorOr<FixedArray<RefPtr<PhysicalRAMPage>>> VMObject::try_create_physical_pages(size_t size)
 {
-    return FixedArray<RefPtr<PhysicalPage>>::create(ceil_div(size, static_cast<size_t>(PAGE_SIZE)));
+    return FixedArray<RefPtr<PhysicalRAMPage>>::create(ceil_div(size, static_cast<size_t>(PAGE_SIZE)));
 }
 
-VMObject::VMObject(FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
+VMObject::VMObject(FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages)
     : m_physical_pages(move(new_physical_pages))
 {
     all_instances().with([&](auto& list) { list.append(*this); });
@@ -36,6 +36,30 @@ VMObject::VMObject(FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
 VMObject::~VMObject()
 {
     VERIFY(m_regions.is_empty());
+}
+
+void VMObject::remap_regions_locked()
+{
+    VERIFY(m_lock.is_locked());
+    for (auto& region : m_regions) {
+        region.remap_with_locked_vmobject();
+    }
+}
+
+void VMObject::remap_regions()
+{
+    SpinlockLocker lock(m_lock);
+    remap_regions_locked();
+}
+
+bool VMObject::remap_regions_one_page(size_t page_index, NonnullRefPtr<PhysicalRAMPage> page)
+{
+    bool success = true;
+    for_each_region([&](Region& region) {
+        if (!region.remap_vmobject_page(page_index, *page))
+            success = false;
+    });
+    return success;
 }
 
 }

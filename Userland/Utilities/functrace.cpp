@@ -12,10 +12,10 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibDebug/DebugSession.h>
+#include <LibDisassembly/Disassembler.h>
+#include <LibDisassembly/x86/Instruction.h>
 #include <LibELF/Image.h>
 #include <LibMain/Main.h>
-#include <LibX86/Disassembler.h>
-#include <LibX86/Instruction.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +34,7 @@ static void handle_sigint(int)
     g_debug_session = nullptr;
 }
 
-static void print_function_call(DeprecatedString function_name, size_t depth)
+static void print_function_call(ByteString function_name, size_t depth)
 {
     for (size_t i = 0; i < depth; ++i) {
         out("  ");
@@ -62,30 +62,38 @@ static void print_syscall(PtraceRegisters& regs, size_t depth)
     (void)begin_color;
     (void)end_color;
     TODO_AARCH64();
+#elif ARCH(RISCV64)
+    outln("=> {}SC_{}({:#x}, {:#x}, {:#x}){}",
+        begin_color,
+        Syscall::to_string((Syscall::Function)regs.x[16]),
+        regs.x[9],
+        regs.x[10],
+        regs.x[11],
+        end_color);
 #else
 #    error Unknown architecture
 #endif
 }
 
-static NonnullOwnPtr<HashMap<FlatPtr, X86::Instruction>> instrument_code()
+static NonnullOwnPtr<HashMap<FlatPtr, NonnullOwnPtr<Disassembly::Instruction>>> instrument_code()
 {
-    auto instrumented = make<HashMap<FlatPtr, X86::Instruction>>();
+    auto instrumented = make<HashMap<FlatPtr, NonnullOwnPtr<Disassembly::Instruction>>>();
     g_debug_session->for_each_loaded_library([&](Debug::LoadedLibrary const& lib) {
         lib.debug_info->elf().for_each_section_of_type(SHT_PROGBITS, [&](const ELF::Image::Section& section) {
             if (section.name() != ".text")
                 return IterationDecision::Continue;
 
-            X86::SimpleInstructionStream stream((const u8*)((uintptr_t)lib.file->data() + section.offset()), section.size());
-            X86::Disassembler disassembler(stream);
+            Disassembly::SimpleInstructionStream stream((u8 const*)((uintptr_t)lib.file->data() + section.offset()), section.size());
+            Disassembly::Disassembler disassembler(stream, Disassembly::architecture_from_elf_machine(lib.debug_info->elf().machine()).value_or(Disassembly::host_architecture()));
             for (;;) {
                 auto offset = stream.offset();
                 auto instruction_address = section.address() + offset + lib.base_address;
                 auto insn = disassembler.next();
                 if (!insn.has_value())
                     break;
-                if (insn.value().mnemonic() == "RET" || insn.value().mnemonic() == "CALL") {
+                if (insn.value()->mnemonic() == "RET" || insn.value()->mnemonic() == "CALL") {
                     g_debug_session->insert_breakpoint(instruction_address);
-                    instrumented->set(instruction_address, insn.value());
+                    instrumented->set(instruction_address, insn.release_value());
                 }
             }
             return IterationDecision::Continue;
@@ -138,10 +146,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
 #if ARCH(X86_64)
-        const FlatPtr ip = regs.value().rip;
+        FlatPtr const ip = regs.value().rip;
 #elif ARCH(AARCH64)
-        const FlatPtr ip = 0; // FIXME
+        FlatPtr const ip = 0; // FIXME
         TODO_AARCH64();
+#elif ARCH(RISCV64)
+        FlatPtr const ip = regs.value().pc;
 #else
 #    error Unknown architecture
 #endif
@@ -154,14 +164,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
         auto instruction = instrumented->get(ip).value();
 
-        if (instruction.mnemonic() == "RET") {
+        if (instruction->mnemonic() == "RET") {
             if (depth != 0)
                 --depth;
             return Debug::DebugSession::ContinueBreakAtSyscall;
         }
 
         // FIXME: we could miss some leaf functions that were called with a jump
-        VERIFY(instruction.mnemonic() == "CALL");
+        VERIFY(instruction->mnemonic() == "CALL");
 
         ++depth;
         new_function = true;

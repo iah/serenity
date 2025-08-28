@@ -1,6 +1,7 @@
 #import <DOM/AbortSignal.idl>
 
-[Exposed=(Window,Worker)]
+// https://dom.spec.whatwg.org/#interface-abortcontroller
+[Exposed=*]
 interface AbortController {
     constructor();
 

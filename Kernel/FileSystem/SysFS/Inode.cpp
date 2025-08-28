@@ -10,9 +10,9 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<SysFSInode>> SysFSInode::try_create(SysFS const& fs, SysFSComponent const& component)
+ErrorOr<NonnullRefPtr<SysFSInode>> SysFSInode::try_create(SysFS const& fs, SysFSComponent const& component)
 {
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) SysFSInode(fs, component));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) SysFSInode(fs, component));
 }
 
 SysFSInode::SysFSInode(SysFS const& fs, SysFSComponent const& component)
@@ -47,7 +47,7 @@ ErrorOr<void> SysFSInode::traverse_as_directory(Function<ErrorOr<void>(FileSyste
     VERIFY_NOT_REACHED();
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> SysFSInode::lookup(StringView)
+ErrorOr<NonnullRefPtr<Inode>> SysFSInode::lookup(StringView)
 {
     VERIFY_NOT_REACHED();
 }
@@ -75,7 +75,7 @@ ErrorOr<size_t> SysFSInode::write_bytes_locked(off_t offset, size_t count, UserO
     return m_associated_component->write_bytes(offset, count, buffer, fd);
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> SysFSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
+ErrorOr<NonnullRefPtr<Inode>> SysFSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
 {
     return EROFS;
 }
@@ -90,11 +90,6 @@ ErrorOr<void> SysFSInode::remove_child(StringView)
     return EROFS;
 }
 
-ErrorOr<void> SysFSInode::replace_child(StringView, Inode&)
-{
-    return EROFS;
-}
-
 ErrorOr<void> SysFSInode::chmod(mode_t)
 {
     return EPERM;
@@ -105,12 +100,13 @@ ErrorOr<void> SysFSInode::chown(UserID, GroupID)
     return EPERM;
 }
 
-ErrorOr<void> SysFSInode::truncate(u64 size)
+ErrorOr<void> SysFSInode::truncate_locked(u64 size)
 {
+    VERIFY(m_inode_lock.is_locked());
     return m_associated_component->truncate(size);
 }
 
-ErrorOr<void> SysFSInode::update_timestamps(Optional<Time>, Optional<Time>, Optional<Time>)
+ErrorOr<void> SysFSInode::update_timestamps(Optional<UnixDateTime>, Optional<UnixDateTime>, Optional<UnixDateTime>)
 {
     return {};
 }

@@ -1,16 +1,17 @@
 /*
  * Copyright (c) 2022, Maciej <sppmacd@pm.me>
+ * Copyright (c) 2023, Fabian Dellwing <fabian@dellwing.net>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "NetworkSettingsWidget.h"
-
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/IPv4Address.h>
+#include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
-#include <Applications/NetworkSettings/NetworkSettingsGML.h>
 #include <LibCore/Command.h>
+#include <LibCore/System.h>
 #include <LibGUI/CheckBox.h>
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/ItemListModel.h>
@@ -18,6 +19,7 @@
 #include <LibGUI/Process.h>
 #include <LibGUI/SpinBox.h>
 #include <LibGUI/TextBox.h>
+#include <unistd.h>
 
 namespace NetworkSettings {
 
@@ -27,10 +29,8 @@ static int netmask_to_cidr(IPv4Address const& address)
     return 32 - count_trailing_zeroes_safe(address_in_host_representation);
 }
 
-NetworkSettingsWidget::NetworkSettingsWidget()
+ErrorOr<void> NetworkSettingsWidget::initialize()
 {
-    load_from_gml(network_settings_gml).release_value_but_fixme_should_propagate_errors();
-
     m_adapters_combobox = *find_descendant_of_type_named<GUI::ComboBox>("adapters_combobox");
     m_enabled_checkbox = *find_descendant_of_type_named<GUI::CheckBox>("enabled_checkbox");
     m_enabled_checkbox->on_checked = [&](bool value) {
@@ -60,24 +60,18 @@ NetworkSettingsWidget::NetworkSettingsWidget()
         set_modified(true);
     };
 
-    auto config_file = Core::ConfigFile::open_for_system("Network").release_value_but_fixme_should_propagate_errors();
+    auto config_file = TRY(Core::ConfigFile::open_for_system("Network"));
 
-    auto proc_net_adapters_file = Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read).release_value_but_fixme_should_propagate_errors();
-    auto data = proc_net_adapters_file->read_until_eof().release_value_but_fixme_should_propagate_errors();
+    auto proc_net_adapters_file = TRY(Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read));
+    auto data = TRY(proc_net_adapters_file->read_until_eof());
     JsonParser parser(data);
-    JsonValue proc_net_adapters_json = parser.parse().release_value_but_fixme_should_propagate_errors();
-
-    // FIXME: This should be done before creating a window.
-    if (proc_net_adapters_json.as_array().is_empty()) {
-        GUI::MessageBox::show_error(window(), "No network adapters found!"sv);
-        ::exit(1);
-    }
+    JsonValue proc_net_adapters_json = TRY(parser.parse());
 
     size_t selected_adapter_index = 0;
     size_t index = 0;
     proc_net_adapters_json.as_array().for_each([&](auto& value) {
         auto& if_object = value.as_object();
-        auto adapter_name = if_object.get_deprecated_string("name"sv).value();
+        auto adapter_name = if_object.get_byte_string("name"sv).value();
         if (adapter_name == "loop")
             return;
 
@@ -99,17 +93,24 @@ NetworkSettingsWidget::NetworkSettingsWidget()
         index++;
     });
 
-    m_adapters_combobox->set_model(GUI::ItemListModel<DeprecatedString>::create(m_adapter_names));
-    m_adapters_combobox->on_change = [this](DeprecatedString const& text, GUI::ModelIndex const&) {
+    // FIXME: This should be done before creating a window.
+    if (m_adapter_names.is_empty()) {
+        GUI::MessageBox::show_error(window(), "No network adapters found!"sv);
+        ::exit(1);
+    }
+
+    m_adapters_combobox->set_model(GUI::ItemListModel<ByteString>::create(m_adapter_names));
+    m_adapters_combobox->on_change = [this](ByteString const& text, GUI::ModelIndex const&) {
         on_switch_adapter(text);
     };
     auto const& selected_adapter = selected_adapter_index;
     dbgln("{} in {}", selected_adapter, m_adapter_names);
     m_adapters_combobox->set_selected_index(selected_adapter);
     on_switch_adapter(m_adapter_names[selected_adapter_index]);
+    return {};
 }
 
-void NetworkSettingsWidget::on_switch_adapter(DeprecatedString const& adapter)
+void NetworkSettingsWidget::on_switch_adapter(ByteString const& adapter)
 {
     auto& adapter_data = m_network_adapters.get(adapter).value();
     m_current_adapter_data = &adapter_data;
@@ -134,33 +135,73 @@ void NetworkSettingsWidget::on_switch_enabled_or_dhcp()
 
 void NetworkSettingsWidget::apply_settings()
 {
-    auto config_file = Core::ConfigFile::open_for_system("Network", Core::ConfigFile::AllowWriting::Yes).release_value_but_fixme_should_propagate_errors();
-    for (auto const& adapter_data : m_network_adapters) {
-        auto netmask = IPv4Address::netmask_from_cidr(adapter_data.value.cidr).to_deprecated_string();
-        config_file->write_bool_entry(adapter_data.key, "Enabled", adapter_data.value.enabled);
-        config_file->write_bool_entry(adapter_data.key, "DHCP", adapter_data.value.dhcp);
-        if (adapter_data.value.enabled && !adapter_data.value.dhcp) {
-            if (!IPv4Address::from_string(adapter_data.value.ip_address).has_value()) {
-                GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Invalid IPv4 address for adapter {}", adapter_data.key));
-                return;
-            }
-            if (!IPv4Address::from_string(adapter_data.value.default_gateway).has_value()) {
-                GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Invalid IPv4 gateway for adapter {}", adapter_data.key));
-                return;
-            }
-        }
-        config_file->write_entry(adapter_data.key, "IPv4Address", adapter_data.value.ip_address);
-        config_file->write_entry(adapter_data.key, "IPv4Netmask", netmask);
-        config_file->write_entry(adapter_data.key, "IPv4Gateway", adapter_data.value.default_gateway);
+    auto result = apply_settings_impl();
+    if (result.is_error()) {
+        GUI::MessageBox::show_error(window(), result.release_error().string_literal());
+        return;
     }
-
-    GUI::Process::spawn_or_show_error(window(), "/bin/NetworkServer"sv);
 }
 
-void NetworkSettingsWidget::switch_adapter(DeprecatedString const& adapter)
+ErrorOr<void> NetworkSettingsWidget::apply_settings_impl()
 {
-    m_adapters_combobox->set_text(adapter, GUI::AllowCallback::No);
-    on_switch_adapter(adapter);
+    auto maybe_json = TRY(create_settings_object());
+    if (!maybe_json.has_value() || maybe_json.value().is_empty())
+        return {};
+    auto json = maybe_json.release_value();
+
+    auto pipefds = TRY(Core::System::pipe2(O_CLOEXEC));
+    ScopeGuard guard_fd1 { [&] { close(pipefds[1]); } };
+    {
+        posix_spawn_file_actions_t file_actions;
+        posix_spawn_file_actions_init(&file_actions);
+        posix_spawn_file_actions_adddup2(&file_actions, pipefds[0], STDIN_FILENO);
+
+        ScopeGuard guard_fd0_and_file_actions { [&]() {
+            posix_spawn_file_actions_destroy(&file_actions);
+            close(pipefds[0]);
+        } };
+
+        char const* argv[] = { "/bin/Escalator", "-I", "-P", "To apply these changes please enter your password:", "/bin/network-settings", nullptr };
+        (void)TRY(Core::System::posix_spawn("/bin/Escalator"sv, &file_actions, nullptr, const_cast<char**>(argv), environ));
+
+        auto outfile = TRY(Core::File::adopt_fd(pipefds[1], Core::File::OpenMode::Write, Core::File::ShouldCloseFileDescriptor::No));
+        TRY(outfile->write_until_depleted(json.serialized<StringBuilder>()));
+    }
+
+    return {};
+}
+
+ErrorOr<Optional<JsonObject>> NetworkSettingsWidget::create_settings_object()
+{
+    auto json = JsonObject();
+    for (auto const& adapter_data : m_network_adapters) {
+        auto netmask = TRY(IPv4Address::netmask_from_cidr(adapter_data.value.cidr).to_string());
+        if (adapter_data.value.enabled && !adapter_data.value.dhcp) {
+            if (!IPv4Address::from_string(adapter_data.value.ip_address).has_value()) {
+                GUI::MessageBox::show_error(window(), TRY(String::formatted("Invalid IPv4 address for adapter {}", adapter_data.key)));
+                return Optional<JsonObject> {};
+            }
+            if (!IPv4Address::from_string(adapter_data.value.default_gateway).has_value()) {
+                GUI::MessageBox::show_error(window(), TRY(String::formatted("Invalid IPv4 gateway for adapter {}", adapter_data.key)));
+                return Optional<JsonObject> {};
+            }
+        }
+
+        auto adapter = JsonObject();
+        adapter.set("Enabled", adapter_data.value.enabled);
+        adapter.set("DHCP", adapter_data.value.dhcp);
+        adapter.set("IPv4Address", adapter_data.value.ip_address);
+        adapter.set("IPv4Netmask", netmask.to_byte_string());
+        adapter.set("IPv4Gateway", adapter_data.value.default_gateway);
+        json.set(adapter_data.key, move(adapter));
+    }
+
+    return json;
+}
+
+void NetworkSettingsWidget::switch_adapter(ByteString const& adapter)
+{
+    m_adapters_combobox->set_text(adapter);
 }
 
 }

@@ -10,14 +10,15 @@
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeFile.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
+#include <Kernel/FileSystem/VFSRootContext.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Memory/PrivateInodeVMObject.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
-InodeFile::InodeFile(NonnullLockRefPtr<Inode>&& inode)
+InodeFile::InodeFile(NonnullRefPtr<Inode> inode)
     : m_inode(move(inode))
 {
 }
@@ -80,11 +81,18 @@ ErrorOr<void> InodeFile::ioctl(OpenFileDescription& description, unsigned reques
     }
 }
 
-ErrorOr<NonnullLockRefPtr<Memory::VMObject>> InodeFile::vmobject_for_mmap(Process&, Memory::VirtualRange const& range, u64& offset, bool shared)
+ErrorOr<File::VMObjectAndMemoryType> InodeFile::vmobject_and_memory_type_for_mmap(Process&, Memory::VirtualRange const& range, u64& offset, bool shared)
 {
-    if (shared)
-        return TRY(Memory::SharedInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size()));
-    return TRY(Memory::PrivateInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size()));
+    if (shared) {
+        return VMObjectAndMemoryType {
+            .vmobject = TRY(Memory::SharedInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size())),
+            .memory_type = Memory::MemoryType::Normal,
+        };
+    }
+    return VMObjectAndMemoryType {
+        .vmobject = TRY(Memory::PrivateInodeVMObject::try_create_with_inode_and_range(inode(), offset, range.size())),
+        .memory_type = Memory::MemoryType::Normal,
+    };
 }
 
 ErrorOr<NonnullOwnPtr<KString>> InodeFile::pseudo_path(OpenFileDescription const&) const
@@ -96,7 +104,9 @@ ErrorOr<NonnullOwnPtr<KString>> InodeFile::pseudo_path(OpenFileDescription const
 ErrorOr<void> InodeFile::truncate(u64 size)
 {
     TRY(m_inode->truncate(size));
-    TRY(m_inode->update_timestamps({}, {}, kgettimeofday()));
+    // FIXME: Make sure that the timestamps are updated by Inode::truncate for all filesystems before removing this.
+    auto truncated_at = kgettimeofday();
+    TRY(m_inode->update_timestamps({}, truncated_at, truncated_at));
     return {};
 }
 
@@ -110,14 +120,14 @@ ErrorOr<void> InodeFile::chown(Credentials const& credentials, OpenFileDescripti
 {
     VERIFY(description.inode() == m_inode);
     VERIFY(description.custody());
-    return VirtualFileSystem::the().chown(credentials, *description.custody(), uid, gid);
+    return VirtualFileSystem::chown(credentials, *description.custody(), uid, gid);
 }
 
 ErrorOr<void> InodeFile::chmod(Credentials const& credentials, OpenFileDescription& description, mode_t mode)
 {
     VERIFY(description.inode() == m_inode);
     VERIFY(description.custody());
-    return VirtualFileSystem::the().chmod(credentials, *description.custody(), mode);
+    return VirtualFileSystem::chmod(credentials, *description.custody(), mode);
 }
 
 bool InodeFile::is_regular_file() const

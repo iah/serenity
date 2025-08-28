@@ -16,7 +16,7 @@ template<typename NodeType>
 class ChildNode {
 public:
     // https://dom.spec.whatwg.org/#dom-childnode-before
-    WebIDL::ExceptionOr<void> before(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes)
+    WebIDL::ExceptionOr<void> before(Vector<Variant<JS::Handle<Node>, String>> const& nodes)
     {
         auto* node = static_cast<NodeType*>(this);
 
@@ -46,7 +46,7 @@ public:
     }
 
     // https://dom.spec.whatwg.org/#dom-childnode-after
-    WebIDL::ExceptionOr<void> after(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes)
+    WebIDL::ExceptionOr<void> after(Vector<Variant<JS::Handle<Node>, String>> const& nodes)
     {
         auto* node = static_cast<NodeType*>(this);
 
@@ -58,7 +58,7 @@ public:
             return {};
 
         // 3. Let viableNextSibling be this’s first following sibling not in nodes; otherwise null.
-        auto viable_next_sibling = viable_nest_sibling_for_insertion(nodes);
+        auto viable_next_sibling = viable_next_sibling_for_insertion(nodes);
 
         // 4. Let node be the result of converting nodes into a node, given nodes and this’s node document.
         auto node_to_insert = TRY(convert_nodes_to_single_node(nodes, node->document()));
@@ -70,7 +70,7 @@ public:
     }
 
     // https://dom.spec.whatwg.org/#dom-childnode-replacewith
-    WebIDL::ExceptionOr<void> replace_with(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes)
+    WebIDL::ExceptionOr<void> replace_with(Vector<Variant<JS::Handle<Node>, String>> const& nodes)
     {
         auto* node = static_cast<NodeType*>(this);
 
@@ -82,7 +82,7 @@ public:
             return {};
 
         // 3. Let viableNextSibling be this’s first following sibling not in nodes; otherwise null.
-        auto viable_next_sibling = viable_nest_sibling_for_insertion(nodes);
+        auto viable_next_sibling = viable_next_sibling_for_insertion(nodes);
 
         // 4. Let node be the result of converting nodes into a node, given nodes and this’s node document.
         auto node_to_insert = TRY(convert_nodes_to_single_node(nodes, node->document()));
@@ -117,51 +117,51 @@ protected:
     ChildNode() = default;
 
 private:
-    JS::GCPtr<Node> viable_previous_sibling_for_insertion(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes)
+    JS::GCPtr<Node> viable_previous_sibling_for_insertion(Vector<Variant<JS::Handle<Node>, String>> const& nodes)
     {
         auto* node = static_cast<NodeType*>(this);
 
-        while (auto* previous_sibling = node->previous_sibling()) {
+        for (auto* sibling = node->previous_sibling(); sibling; sibling = sibling->previous_sibling()) {
             bool contained_in_nodes = false;
 
             for (auto const& node_or_string : nodes) {
                 if (!node_or_string.template has<JS::Handle<Node>>())
                     continue;
 
-                auto node_in_vector = node_or_string.template get<JS::Handle<Node>>();
-                if (node_in_vector.cell() == previous_sibling) {
+                auto const& node_in_vector = node_or_string.template get<JS::Handle<Node>>();
+                if (node_in_vector.cell() == sibling) {
                     contained_in_nodes = true;
                     break;
                 }
             }
 
             if (!contained_in_nodes)
-                return previous_sibling;
+                return sibling;
         }
 
         return nullptr;
     }
 
-    JS::GCPtr<Node> viable_nest_sibling_for_insertion(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes)
+    JS::GCPtr<Node> viable_next_sibling_for_insertion(Vector<Variant<JS::Handle<Node>, String>> const& nodes)
     {
         auto* node = static_cast<NodeType*>(this);
 
-        while (auto* next_sibling = node->next_sibling()) {
+        for (auto* sibling = node->next_sibling(); sibling; sibling = sibling->next_sibling()) {
             bool contained_in_nodes = false;
 
             for (auto const& node_or_string : nodes) {
                 if (!node_or_string.template has<JS::Handle<Node>>())
                     continue;
 
-                auto& node_in_vector = node_or_string.template get<JS::Handle<Node>>();
-                if (node_in_vector.cell() == next_sibling) {
+                auto const& node_in_vector = node_or_string.template get<JS::Handle<Node>>();
+                if (node_in_vector.cell() == sibling) {
                     contained_in_nodes = true;
                     break;
                 }
             }
 
             if (!contained_in_nodes)
-                return next_sibling;
+                return sibling;
         }
 
         return nullptr;

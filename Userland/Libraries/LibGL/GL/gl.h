@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2021, Jesse Buhagiar <jooster669@gmail.com>
  * Copyright (c) 2021, Stephan Unverwerth <s.unverwerth@serenityos.org>
- * Copyright (c) 2021-2022, Jelle Raaijmakers <jelle@gmta.nl>
+ * Copyright (c) 2021-2024, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -85,8 +85,28 @@ extern "C" {
 #define GL_BLEND_DST_ALPHA 0x80CA
 #define GL_BLEND_DST_ALPHA_EXT 0x80CA
 
-// Attribute enum
+// Attribute bit flags
+#define GL_CURRENT_BIT 0x00000001
+#define GL_POINT_BIT 0x00000002
+#define GL_LINE_BIT 0x00000004
+#define GL_POLYGON_BIT 0x00000008
+#define GL_POLYGON_STIPPLE_BIT 0x00000010
+#define GL_PIXEL_MODE_BIT 0x00000020
+#define GL_LIGHTING_BIT 0x00000040
+#define GL_FOG_BIT 0x00000080
+#define GL_DEPTH_BUFFER_BIT 0x00000100
+#define GL_ACCUM_BUFFER_BIT 0x00000200
+#define GL_STENCIL_BUFFER_BIT 0x00000400
+#define GL_VIEWPORT_BIT 0x00000800
+#define GL_TRANSFORM_BIT 0x00001000
+#define GL_ENABLE_BIT 0x00002000
+#define GL_COLOR_BUFFER_BIT 0x00004000
+#define GL_HINT_BIT 0x00008000
 #define GL_EVAL_BIT 0x00010000
+#define GL_LIST_BIT 0x00020000
+#define GL_TEXTURE_BIT 0x00020000
+#define GL_SCISSOR_BIT 0x00080000
+#define GL_MULTISAMPLE_BIT 0x20000000
 #define GL_ALL_ATTRIB_BITS 0xFFFFFFFF
 
 // Utility
@@ -380,11 +400,18 @@ extern "C" {
 #define GL_LIGHT6 0x4006
 #define GL_LIGHT7 0x4007
 
-// More blend factors
+// Blend factors & modes
 #define GL_CONSTANT_COLOR 0x8001
 #define GL_ONE_MINUS_CONSTANT_COLOR 0x8002
 #define GL_CONSTANT_ALPHA 0x8003
 #define GL_ONE_MINUS_CONSTANT_ALPHA 0x8004
+#define GL_FUNC_ADD 0x8006
+#define GL_MIN 0x8007
+#define GL_MAX 0x8008
+#define GL_BLEND_EQUATION_RGB 0x8009
+#define GL_FUNC_SUBTRACT 0x800A
+#define GL_FUNC_REVERSE_SUBTRACT 0x800B
+#define GL_BLEND_EQUATION_ALPHA 0x883D
 
 // Points
 #define GL_POINT_SMOOTH 0x0B10

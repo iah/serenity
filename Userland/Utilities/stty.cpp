@@ -7,7 +7,8 @@
 
 #define __USE_MISC
 #define TTYDEFCHARS
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
 #include <AK/Optional.h>
 #include <AK/Result.h>
 #include <AK/ScopeGuard.h>
@@ -211,7 +212,7 @@ void print_human_readable(termios const& modes, winsize const& ws, bool verbose_
         } else {
             sb.append(ch);
         }
-        return sb.to_deprecated_string();
+        return sb.to_byte_string();
     };
 
     auto print_control_characters = [&] {
@@ -226,7 +227,7 @@ void print_human_readable(termios const& modes, winsize const& ws, bool verbose_
             out("\n");
     };
 
-    auto print_flags_of_type = [&](const TermiosFlag flags[], size_t flag_count, tcflag_t field_value, tcflag_t field_default) {
+    auto print_flags_of_type = [&](TermiosFlag const flags[], size_t flag_count, tcflag_t field_value, tcflag_t field_default) {
         bool first_in_line = true;
         for (size_t i = 0; i < flag_count; ++i) {
             auto& flag = flags[i];
@@ -265,9 +266,9 @@ Result<void, int> apply_stty_readable_modes(StringView mode_string, termios& t)
     auto parse_hex = [&](StringView v) {
         tcflag_t ret = 0;
         for (auto c : v) {
-            c = tolower(c);
+            c = to_ascii_lowercase(c);
             ret *= 16;
-            if (isdigit(c)) {
+            if (is_ascii_digit(c)) {
                 ret += c - '0';
             } else {
                 VERIFY(c >= 'a' && c <= 'f');
@@ -297,21 +298,21 @@ Result<void, int> apply_modes(size_t parameter_count, char** raw_parameters, ter
         parameters.append(StringView { raw_parameters[i], strlen(raw_parameters[i]) });
 
     auto parse_baud = [&](size_t idx) -> Optional<speed_t> {
-        auto maybe_numeric_value = parameters[idx].to_uint<uint32_t>();
+        auto maybe_numeric_value = parameters[idx].to_number<uint32_t>();
         if (maybe_numeric_value.has_value())
             return numeric_value_to_speed(maybe_numeric_value.value());
         return {};
     };
 
     auto parse_number = [&](size_t idx) -> Optional<cc_t> {
-        return parameters[idx].to_uint<cc_t>();
+        return parameters[idx].to_number<cc_t>();
     };
 
     auto looks_like_stty_readable = [&](size_t idx) {
         bool contains_colon = false;
         for (auto c : parameters[idx]) {
-            c = tolower(c);
-            if (!isdigit(c) && !(c >= 'a' && c <= 'f') && c != ':')
+            c = to_ascii_lowercase(c);
+            if (!is_ascii_digit(c) && !(c >= 'a' && c <= 'f') && c != ':')
                 return false;
             if (c == ':')
                 contains_colon = true;
@@ -326,7 +327,7 @@ Result<void, int> apply_modes(size_t parameter_count, char** raw_parameters, ter
             // We should add the _POSIX_VDISABLE macro.
             return 0;
         } else if (parameters[idx][0] == '^' && parameters[idx].length() == 2) {
-            return toupper(parameters[idx][1]) - 0x40;
+            return to_ascii_uppercase(parameters[idx][1]) - 0x40;
         } else if (parameters[idx].starts_with("0x"sv)) {
             cc_t value = 0;
             if (parameters[idx].length() == 2) {
@@ -334,12 +335,12 @@ Result<void, int> apply_modes(size_t parameter_count, char** raw_parameters, ter
                 return {};
             }
             for (size_t i = 2; i < parameters[idx].length(); ++i) {
-                char ch = tolower(parameters[idx][i]);
-                if (!isdigit(ch) && !(ch >= 'a' && ch <= 'f')) {
+                char ch = to_ascii_lowercase(parameters[idx][i]);
+                if (!is_ascii_digit(ch) && !(ch >= 'a' && ch <= 'f')) {
                     warnln("Invalid hexadecimal character code {}", parameters[idx]);
                     return {};
                 }
-                value = 16 * value + (isdigit(ch)) ? (ch - '0') : (ch - 'a');
+                value = 16 * value + (is_ascii_digit(ch) ? (ch - '0') : (ch - 'a'));
             }
             return value;
         } else if (parameters[idx].starts_with("0"sv)) {
@@ -353,8 +354,8 @@ Result<void, int> apply_modes(size_t parameter_count, char** raw_parameters, ter
                 value = 8 * value + (ch - '0');
             }
             return value;
-        } else if (isdigit(parameters[idx][0])) {
-            auto maybe_value = parameters[idx].to_uint<cc_t>();
+        } else if (is_ascii_digit(parameters[idx][0])) {
+            auto maybe_value = parameters[idx].to_number<cc_t>();
             if (!maybe_value.has_value()) {
                 warnln("Invalid decimal character code {}", parameters[idx]);
                 return {};
@@ -449,7 +450,7 @@ Result<void, int> apply_modes(size_t parameter_count, char** raw_parameters, ter
             auto maybe_error = apply_stty_readable_modes(parameters[parameter_idx], t);
             if (maybe_error.is_error())
                 return maybe_error.error();
-        } else if (isdigit(parameters[parameter_idx][0])) {
+        } else if (is_ascii_digit(parameters[parameter_idx][0])) {
             auto new_baud = parse_baud(parameter_idx);
             if (!new_baud.has_value()) {
                 warnln("Invalid baud rate {}", parameters[parameter_idx]);
@@ -535,7 +536,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/dev", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    DeprecatedString device_file;
+    ByteString device_file;
     bool stty_readable = false;
     bool all_settings = false;
 

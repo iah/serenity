@@ -13,9 +13,10 @@ namespace JS {
 
 class DataViewPrototype final : public PrototypeObject<DataViewPrototype, DataView> {
     JS_PROTOTYPE_OBJECT(DataViewPrototype, DataView, DataView);
+    JS_DECLARE_ALLOCATOR(DataViewPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DataViewPrototype() override = default;
 
 private:

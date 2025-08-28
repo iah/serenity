@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,47 +11,71 @@
 
 namespace Kernel {
 
-Mount::Mount(FileSystem& guest_fs, Custody* host_custody, int flags)
-    : m_guest(guest_fs.root_inode())
-    , m_guest_fs(guest_fs)
-    , m_host_custody(host_custody)
-    , m_flags(flags)
+Mount::Mount(NonnullRefPtr<Inode> source, int flags)
+    : m_details(Mount::Details(source->fs(), move(source)))
 {
+    set_flags(flags);
 }
 
-Mount::Mount(Inode& source, Custody& host_custody, int flags)
-    : m_guest(source)
-    , m_guest_fs(source.fs())
-    , m_host_custody(host_custody)
-    , m_flags(flags)
+Mount::Mount(NonnullRefPtr<Inode> source, NonnullRefPtr<Custody> host_custody, int flags)
+    : m_details(Mount::Details(source->fs(), move(source)))
+    , m_host_custody(move(host_custody))
 {
+    set_flags(flags);
+}
+
+void Mount::set_flags(int flags)
+{
+    // NOTE: We use a spinlock to serialize access, to protect against
+    // a case which the user requested to set the immutable flag, and
+    // there's another ongoing call to set the flags without it.
+    m_flags.with([this, flags](auto& current_flags) {
+        if (flags & MS_IMMUTABLE)
+            m_immutable.set();
+
+        current_flags = flags;
+        if (m_immutable.was_set())
+            current_flags |= MS_IMMUTABLE;
+    });
+}
+
+void Mount::delete_mount_from_list(Mount& mount)
+{
+    dbgln("VirtualFileSystem: Unmounting file system {}...", mount.guest_fs().fsid());
+    VERIFY(mount.m_vfs_list_node.is_in_list());
+    mount.m_vfs_list_node.remove();
+    delete &mount;
 }
 
 ErrorOr<NonnullOwnPtr<KString>> Mount::absolute_path() const
 {
-    return m_host_custody.with([&](auto& host_custody) -> ErrorOr<NonnullOwnPtr<KString>> {
-        if (!host_custody)
-            return KString::try_create("/"sv);
-        return host_custody->try_serialize_absolute_path();
-    });
+    if (!m_host_custody)
+        return KString::try_create("/"sv);
+    return m_host_custody->try_serialize_absolute_path();
 }
 
-LockRefPtr<Inode> Mount::host()
+RefPtr<Inode> Mount::host()
 {
-    return m_host_custody.with([](auto& host_custody) -> LockRefPtr<Inode> {
-        if (!host_custody)
-            return nullptr;
-        return &host_custody->inode();
-    });
+    if (!m_host_custody)
+        return nullptr;
+    return m_host_custody->inode();
 }
 
-LockRefPtr<Inode const> Mount::host() const
+RefPtr<Inode const> Mount::host() const
 {
-    return m_host_custody.with([](auto& host_custody) -> LockRefPtr<Inode const> {
-        if (!host_custody)
-            return nullptr;
-        return &host_custody->inode();
-    });
+    if (!m_host_custody)
+        return nullptr;
+    return m_host_custody->inode();
+}
+
+RefPtr<Custody const> Mount::host_custody() const
+{
+    return m_host_custody;
+}
+
+RefPtr<Custody> Mount::host_custody()
+{
+    return m_host_custody;
 }
 
 }

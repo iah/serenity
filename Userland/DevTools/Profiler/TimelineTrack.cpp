@@ -23,7 +23,7 @@ TimelineTrack::TimelineTrack(TimelineView const& view, Profile const& profile, P
     set_background_role(Gfx::ColorRole::Base);
     set_fixed_height(40);
     set_scale(view.scale());
-    set_frame_thickness(1);
+    set_frame_style(Gfx::FrameStyle::SunkenPanel);
 }
 
 void TimelineTrack::set_scale(float scale)
@@ -130,7 +130,7 @@ void TimelineTrack::mousemove_event(GUI::MouseEvent& event)
         Gfx::IntRect hoverable_rect { x - hoverable_padding, frame_thickness(), hoverable_padding * 2, height() - frame_thickness() * 2 };
         if (hoverable_rect.contains_horizontally(event.x())) {
             auto const& data = signpost.data.template get<Profile::Event::SignpostData>();
-            GUI::Application::the()->show_tooltip_immediately(DeprecatedString::formatted("{}, {}", data.string, data.arg), this);
+            GUI::Application::the()->show_tooltip_immediately(MUST(String::formatted("{}, {}", data.string, data.arg)), this);
             hovering_a_signpost = true;
             return IterationDecision::Break;
         }

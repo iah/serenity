@@ -24,7 +24,7 @@
 FlatPtr arg[SC_NARG];
 char outbuf[BUFSIZ];
 
-using Arguments = Vector<DeprecatedString>;
+using Arguments = Vector<ByteString>;
 using ArgIter = Arguments::Iterator;
 
 static FlatPtr parse_from(ArgIter&);
@@ -128,7 +128,7 @@ static FlatPtr as_buf(Vector<FlatPtr> params_vec)
             builder.appendff(" {:p}", params_vec[i]);
         }
         builder.appendff(" ] at {:p}", (FlatPtr)buf);
-        dbgln("{}", builder.to_deprecated_string());
+        dbgln("{}", builder.to_byte_string());
     }
 
     // Leak the buffer here. We need to keep it until the special syscall happens,
@@ -175,7 +175,7 @@ static FlatPtr parse_from(ArgIter& iter)
         return parse_parameter_buffer(iter);
 
     // Is it a number?
-    if (auto l = this_arg_string.to_uint(); l.has_value())
+    if (auto l = this_arg_string.to_number<unsigned>(); l.has_value())
         return *l;
 
     // Then it must be a string:

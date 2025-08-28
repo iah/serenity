@@ -1,16 +1,26 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='glib'
-version='2.75.2'
-files="https://download.gnome.org/sources/glib/2.75/glib-${version}.tar.xz glib-${version}.tar.xz 360d6fb75202c0eb0d07f0ab812b19b526f1c05ccc0a8ed7e5d2c988616d343a"
-auth_type='sha256'
+version='2.85.2'
+files=(
+    "https://download.gnome.org/sources/glib/2.85/glib-${version}.tar.xz#833b97c0f0a1bfdba1d0fbfc36cd368b855c5afd9f02b8ffb24129114ad051b2"
+)
 useconfigure='true'
-configopts=("--cross-file" "${SERENITY_BUILD_DIR}/meson-cross-file.txt")
-depends=("libiconv" "libffi" "zlib" "gettext" "pcre")
+configopts=(
+    '--cross-file'
+    "${SERENITY_BUILD_DIR}/meson-cross-file.txt"
+)
+depends=(
+    'gettext'
+    'libffi'
+    'libiconv'
+    'pcre2'
+    'zlib'
+)
 
 configure() {
     # TODO: Figure out why GCC doesn't autodetect that libgcc_s is needed.
-    if [ "${SERENITY_TOOLCHAIN}" = "GNU" ]; then
-        export LDFLAGS="-lgcc_s"
+    if [ "${SERENITY_TOOLCHAIN}" = 'GNU' ]; then
+        export LDFLAGS='-lgcc_s'
     fi
 
     run meson _build "${configopts[@]}"

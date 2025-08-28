@@ -5,9 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
-#include <AK/RefPtr.h>
-
+#include <AK/ByteString.h>
 #include <LibSQL/BTree.h>
 #include <LibSQL/Database.h>
 #include <LibSQL/Heap.h>
@@ -17,27 +15,34 @@
 
 namespace SQL {
 
-Database::Database(DeprecatedString name)
-    : m_heap(Heap::construct(move(name)))
+ErrorOr<NonnullRefPtr<Database>> Database::create(ByteString name)
+{
+    auto heap = TRY(Heap::create(move(name)));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) Database(move(heap)));
+}
+
+Database::Database(NonnullRefPtr<Heap> heap)
+    : m_heap(move(heap))
     , m_serializer(m_heap)
 {
 }
 
 ResultOr<void> Database::open()
 {
+    VERIFY(!m_open);
     TRY(m_heap->open());
 
-    m_schemas = BTree::construct(m_serializer, SchemaDef::index_def()->to_tuple_descriptor(), m_heap->schemas_root());
+    m_schemas = TRY(BTree::create(m_serializer, SchemaDef::index_def()->to_tuple_descriptor(), m_heap->schemas_root()));
     m_schemas->on_new_root = [&]() {
         m_heap->set_schemas_root(m_schemas->root());
     };
 
-    m_tables = BTree::construct(m_serializer, TableDef::index_def()->to_tuple_descriptor(), m_heap->tables_root());
+    m_tables = TRY(BTree::create(m_serializer, TableDef::index_def()->to_tuple_descriptor(), m_heap->tables_root()));
     m_tables->on_new_root = [&]() {
         m_heap->set_tables_root(m_tables->root());
     };
 
-    m_table_columns = BTree::construct(m_serializer, ColumnDef::index_def()->to_tuple_descriptor(), m_heap->table_columns_root());
+    m_table_columns = TRY(BTree::create(m_serializer, ColumnDef::index_def()->to_tuple_descriptor(), m_heap->table_columns_root()));
     m_table_columns->on_new_root = [&]() {
         m_heap->set_table_columns_root(m_table_columns->root());
     };
@@ -49,7 +54,7 @@ ResultOr<void> Database::open()
             if (result.error().error() != SQLErrorCode::SchemaDoesNotExist)
                 return result.release_error();
 
-            auto schema_def = SchemaDef::construct(schema_name);
+            auto schema_def = TRY(SchemaDef::create(schema_name));
             TRY(add_schema(*schema_def));
             return schema_def;
         } else {
@@ -64,7 +69,7 @@ ResultOr<void> Database::open()
         if (result.error().error() != SQLErrorCode::TableDoesNotExist)
             return result.release_error();
 
-        auto internal_describe_table = TableDef::construct(master_schema, "internal_describe_table");
+        auto internal_describe_table = TRY(TableDef::create(master_schema, "internal_describe_table"));
         internal_describe_table->append_column("Name", SQLType::Text);
         internal_describe_table->append_column("Type", SQLType::Text);
         TRY(add_table(*internal_describe_table));
@@ -91,14 +96,14 @@ ResultOr<void> Database::add_schema(SchemaDef const& schema)
     return {};
 }
 
-Key Database::get_schema_key(DeprecatedString const& schema_name)
+Key Database::get_schema_key(ByteString const& schema_name)
 {
     auto key = SchemaDef::make_key();
     key["schema_name"] = schema_name;
     return key;
 }
 
-ResultOr<NonnullRefPtr<SchemaDef>> Database::get_schema(DeprecatedString const& schema)
+ResultOr<NonnullRefPtr<SchemaDef>> Database::get_schema(ByteString const& schema)
 {
     VERIFY(is_open());
 
@@ -114,7 +119,7 @@ ResultOr<NonnullRefPtr<SchemaDef>> Database::get_schema(DeprecatedString const& 
     if (schema_iterator.is_end() || (*schema_iterator != key))
         return Result { SQLCommand::Unknown, SQLErrorCode::SchemaDoesNotExist, schema_name };
 
-    auto schema_def = SchemaDef::construct(*schema_iterator);
+    auto schema_def = TRY(SchemaDef::create(*schema_iterator));
     m_schema_cache.set(key.hash(), schema_def);
     return schema_def;
 }
@@ -134,14 +139,14 @@ ResultOr<void> Database::add_table(TableDef& table)
     return {};
 }
 
-Key Database::get_table_key(DeprecatedString const& schema_name, DeprecatedString const& table_name)
+Key Database::get_table_key(ByteString const& schema_name, ByteString const& table_name)
 {
     auto key = TableDef::make_key(get_schema_key(schema_name));
     key["table_name"] = table_name;
     return key;
 }
 
-ResultOr<NonnullRefPtr<TableDef>> Database::get_table(DeprecatedString const& schema, DeprecatedString const& name)
+ResultOr<NonnullRefPtr<TableDef>> Database::get_table(ByteString const& schema, ByteString const& name)
 {
     VERIFY(is_open());
 
@@ -155,11 +160,11 @@ ResultOr<NonnullRefPtr<TableDef>> Database::get_table(DeprecatedString const& sc
 
     auto table_iterator = m_tables->find(key);
     if (table_iterator.is_end() || (*table_iterator != key))
-        return Result { SQLCommand::Unknown, SQLErrorCode::TableDoesNotExist, DeprecatedString::formatted("{}.{}", schema_name, name) };
+        return Result { SQLCommand::Unknown, SQLErrorCode::TableDoesNotExist, ByteString::formatted("{}.{}", schema_name, name) };
 
     auto schema_def = TRY(get_schema(schema));
-    auto table_def = TableDef::construct(schema_def, name);
-    table_def->set_pointer((*table_iterator).pointer());
+    auto table_def = TRY(TableDef::create(schema_def, name));
+    table_def->set_block_index((*table_iterator).block_index());
     m_table_cache.set(key.hash(), table_def);
 
     auto table_hash = table_def->hash();
@@ -174,9 +179,8 @@ ErrorOr<Vector<Row>> Database::select_all(TableDef& table)
 {
     VERIFY(m_table_cache.get(table.key().hash()).has_value());
     Vector<Row> ret;
-    for (auto pointer = table.pointer(); pointer; pointer = ret.last().next_pointer()) {
-        ret.append(m_serializer.deserialize_block<Row>(pointer, table, pointer));
-    }
+    for (auto block_index = table.block_index(); block_index; block_index = ret.last().next_block_index())
+        ret.append(m_serializer.deserialize_block<Row>(block_index, table, block_index));
     return ret;
 }
 
@@ -187,11 +191,11 @@ ErrorOr<Vector<Row>> Database::match(TableDef& table, Key const& key)
 
     // TODO Match key against indexes defined on table. If found,
     // use the index instead of scanning the table.
-    for (auto pointer = table.pointer(); pointer;) {
-        auto row = m_serializer.deserialize_block<Row>(pointer, table, pointer);
+    for (auto block_index = table.block_index(); block_index;) {
+        auto row = m_serializer.deserialize_block<Row>(block_index, table, block_index);
         if (row.match(key))
             ret.append(row);
-        pointer = ret.last().next_pointer();
+        block_index = ret.last().next_block_index();
     }
     return ret;
 }
@@ -199,18 +203,18 @@ ErrorOr<Vector<Row>> Database::match(TableDef& table, Key const& key)
 ErrorOr<void> Database::insert(Row& row)
 {
     VERIFY(m_table_cache.get(row.table().key().hash()).has_value());
-    // TODO Check constraints
+    // TODO: implement table constraints such as unique, foreign key, etc.
 
-    row.set_pointer(m_heap->new_record_pointer());
-    row.set_next_pointer(row.table().pointer());
+    row.set_block_index(m_heap->request_new_block_index());
+    row.set_next_block_index(row.table().block_index());
     TRY(update(row));
 
     // TODO update indexes defined on table.
 
     auto table_key = row.table().key();
-    table_key.set_pointer(row.pointer());
+    table_key.set_block_index(row.block_index());
     VERIFY(m_tables->update_key_pointer(table_key));
-    row.table().set_pointer(row.pointer());
+    row.table().set_block_index(row.block_index());
     return {};
 }
 
@@ -219,25 +223,27 @@ ErrorOr<void> Database::remove(Row& row)
     auto& table = row.table();
     VERIFY(m_table_cache.get(table.key().hash()).has_value());
 
-    if (table.pointer() == row.pointer()) {
+    TRY(m_heap->free_storage(row.block_index()));
+
+    if (table.block_index() == row.block_index()) {
         auto table_key = table.key();
-        table_key.set_pointer(row.next_pointer());
+        table_key.set_block_index(row.next_block_index());
         m_tables->update_key_pointer(table_key);
 
-        table.set_pointer(row.next_pointer());
+        table.set_block_index(row.next_block_index());
         return {};
     }
 
-    for (auto pointer = table.pointer(); pointer;) {
-        auto current = m_serializer.deserialize_block<Row>(pointer, table, pointer);
+    for (auto block_index = table.block_index(); block_index;) {
+        auto current = m_serializer.deserialize_block<Row>(block_index, table, block_index);
 
-        if (current.next_pointer() == row.pointer()) {
-            current.set_next_pointer(row.next_pointer());
+        if (current.next_block_index() == row.block_index()) {
+            current.set_next_block_index(row.next_block_index());
             TRY(update(current));
             break;
         }
 
-        pointer = current.next_pointer();
+        block_index = current.next_block_index();
     }
 
     return {};
@@ -246,7 +252,8 @@ ErrorOr<void> Database::remove(Row& row)
 ErrorOr<void> Database::update(Row& tuple)
 {
     VERIFY(m_table_cache.get(tuple.table().key().hash()).has_value());
-    // TODO Check constraints
+    // TODO: implement table constraints such as unique, foreign key, etc.
+
     m_serializer.reset();
     m_serializer.serialize_and_write<Tuple>(tuple);
 

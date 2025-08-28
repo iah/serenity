@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,6 +13,12 @@
 
 #ifdef HAS_ADDRESS_SANITIZER
 #    include <sanitizer/asan_interface.h>
+#    include <sanitizer/lsan_interface.h>
+#endif
+
+// FIXME: Implement MADV_FREE and/or MADV_DONTNEED on SerenityOS.
+#if defined(AK_OS_SERENITY) || defined(AK_OS_GNU_HURD) || (!defined(MADV_FREE) && !defined(MADV_DONTNEED))
+#    define USE_FALLBACK_BLOCK_DEALLOCATION
 #endif
 
 namespace JS {
@@ -21,14 +27,10 @@ BlockAllocator::~BlockAllocator()
 {
     for (auto* block : m_blocks) {
         ASAN_UNPOISON_MEMORY_REGION(block, HeapBlock::block_size);
-#ifdef AK_OS_SERENITY
         if (munmap(block, HeapBlock::block_size) < 0) {
             perror("munmap");
             VERIFY_NOT_REACHED();
         }
-#else
-        free(block);
-#endif
     }
 }
 
@@ -39,6 +41,7 @@ void* BlockAllocator::allocate_block([[maybe_unused]] char const* name)
         size_t random_index = get_random_uniform(m_blocks.size());
         auto* block = m_blocks.unstable_take(random_index);
         ASAN_UNPOISON_MEMORY_REGION(block, HeapBlock::block_size);
+        LSAN_REGISTER_ROOT_REGION(block, HeapBlock::block_size);
 #ifdef AK_OS_SERENITY
         if (set_mmap_name(block, HeapBlock::block_size, name) < 0) {
             perror("set_mmap_name");
@@ -49,31 +52,43 @@ void* BlockAllocator::allocate_block([[maybe_unused]] char const* name)
     }
 
 #ifdef AK_OS_SERENITY
-    auto* block = (HeapBlock*)serenity_mmap(nullptr, HeapBlock::block_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_RANDOMIZED | MAP_PRIVATE, 0, 0, HeapBlock::block_size, name);
-    VERIFY(block != MAP_FAILED);
+    auto* block = (HeapBlock*)serenity_mmap(nullptr, HeapBlock::block_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_RANDOMIZED | MAP_PRIVATE, -1, 0, HeapBlock::block_size, name);
 #else
-    auto* block = (HeapBlock*)aligned_alloc(HeapBlock::block_size, HeapBlock::block_size);
-    VERIFY(block);
+    auto* block = (HeapBlock*)mmap(nullptr, HeapBlock::block_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 #endif
+    VERIFY(block != MAP_FAILED);
+    LSAN_REGISTER_ROOT_REGION(block, HeapBlock::block_size);
     return block;
 }
 
 void BlockAllocator::deallocate_block(void* block)
 {
     VERIFY(block);
-    if (m_blocks.size() >= max_cached_blocks) {
-#ifdef AK_OS_SERENITY
-        if (munmap(block, HeapBlock::block_size) < 0) {
-            perror("munmap");
-            VERIFY_NOT_REACHED();
-        }
-#else
-        free(block);
-#endif
-        return;
+
+#if defined(USE_FALLBACK_BLOCK_DEALLOCATION)
+    // If we can't use any of the nicer techniques, unmap and remap the block to return the physical pages while keeping the VM.
+    if (munmap(block, HeapBlock::block_size) < 0) {
+        perror("munmap");
+        VERIFY_NOT_REACHED();
     }
+    if (mmap(block, HeapBlock::block_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0) != block) {
+        perror("mmap");
+        VERIFY_NOT_REACHED();
+    }
+#elif defined(MADV_FREE)
+    if (madvise(block, HeapBlock::block_size, MADV_FREE) < 0) {
+        perror("madvise(MADV_FREE)");
+        VERIFY_NOT_REACHED();
+    }
+#elif defined(MADV_DONTNEED)
+    if (madvise(block, HeapBlock::block_size, MADV_DONTNEED) < 0) {
+        perror("madvise(MADV_DONTNEED)");
+        VERIFY_NOT_REACHED();
+    }
+#endif
 
     ASAN_POISON_MEMORY_REGION(block, HeapBlock::block_size);
+    LSAN_UNREGISTER_ROOT_REGION(block, HeapBlock::block_size);
     m_blocks.append(block);
 }
 

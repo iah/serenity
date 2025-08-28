@@ -1,16 +1,15 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=zstd
-version=1.5.2
-files="https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz zstd-${version}.tar.gz 7c42d56fac126929a6a85dbc73ff1db2411d04f104fae9bdea51305663a83fd0"
-auth_type=sha256
-useconfigure='true'
-configopts=(
-    "-Sbuild/cmake"
-    "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
+port='zstd'
+version='1.5.7'
+files=(
+    "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz#eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
 )
+useconfigure='true'
 
 configure() {
-    run cmake "${configopts[@]}"
+    run cmake \
+        -S 'build/cmake' \
+        -DCMAKE_TOOLCHAIN_FILE="${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
 }
 
 install() {

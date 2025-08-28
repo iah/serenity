@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2024, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, Timothy Slater <tslater2006@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -15,42 +15,51 @@
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Rect.h>
+#include <LibIPC/Forward.h>
 
-#define ENUMERATE_IMAGE_FORMATS             \
-    __ENUMERATE_IMAGE_FORMAT(pbm, ".pbm")   \
-    __ENUMERATE_IMAGE_FORMAT(pgm, ".pgm")   \
-    __ENUMERATE_IMAGE_FORMAT(png, ".png")   \
-    __ENUMERATE_IMAGE_FORMAT(ppm, ".ppm")   \
-    __ENUMERATE_IMAGE_FORMAT(gif, ".gif")   \
-    __ENUMERATE_IMAGE_FORMAT(bmp, ".bmp")   \
-    __ENUMERATE_IMAGE_FORMAT(ico, ".ico")   \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpg")  \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpeg") \
-    __ENUMERATE_IMAGE_FORMAT(dds, ".dds")   \
-    __ENUMERATE_IMAGE_FORMAT(qoi, ".qoi")   \
-    __ENUMERATE_IMAGE_FORMAT(tga, ".tga")
+#define ENUMERATE_IMAGE_FORMATS                \
+    __ENUMERATE_IMAGE_FORMAT(bmp, ".bmp")      \
+    __ENUMERATE_IMAGE_FORMAT(dds, ".dds")      \
+    __ENUMERATE_IMAGE_FORMAT(gif, ".gif")      \
+    __ENUMERATE_IMAGE_FORMAT(ico, ".ico")      \
+    __ENUMERATE_IMAGE_FORMAT(iff, ".iff")      \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jb2")     \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jbig2")   \
+    __ENUMERATE_IMAGE_FORMAT(jpeg2000, ".jp2") \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpeg")    \
+    __ENUMERATE_IMAGE_FORMAT(jpeg2000, ".jpf") \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpg")     \
+    __ENUMERATE_IMAGE_FORMAT(jpeg2000, ".jpx") \
+    __ENUMERATE_IMAGE_FORMAT(jxl, ".jxl")      \
+    __ENUMERATE_IMAGE_FORMAT(iff, ".lbm")      \
+    __ENUMERATE_IMAGE_FORMAT(pam, ".pam")      \
+    __ENUMERATE_IMAGE_FORMAT(pbm, ".pbm")      \
+    __ENUMERATE_IMAGE_FORMAT(pgm, ".pgm")      \
+    __ENUMERATE_IMAGE_FORMAT(png, ".png")      \
+    __ENUMERATE_IMAGE_FORMAT(ppm, ".ppm")      \
+    __ENUMERATE_IMAGE_FORMAT(qoi, ".qoi")      \
+    __ENUMERATE_IMAGE_FORMAT(tga, ".tga")      \
+    __ENUMERATE_IMAGE_FORMAT(tiff, ".tif")     \
+    __ENUMERATE_IMAGE_FORMAT(tiff, ".tiff")    \
+    __ENUMERATE_IMAGE_FORMAT(tvg, ".tvg")      \
+    __ENUMERATE_IMAGE_FORMAT(tvg, ".webp")
 
 namespace Gfx {
 
 enum class BitmapFormat {
     Invalid,
-    Indexed1,
-    Indexed2,
-    Indexed4,
-    Indexed8,
     BGRx8888,
     BGRA8888,
     RGBA8888,
+
+    FirstValid = BGRx8888,
+    LastValid = RGBA8888,
 };
 
 inline bool is_valid_bitmap_format(unsigned format)
 {
     switch (format) {
     case (unsigned)BitmapFormat::Invalid:
-    case (unsigned)BitmapFormat::Indexed1:
-    case (unsigned)BitmapFormat::Indexed2:
-    case (unsigned)BitmapFormat::Indexed4:
-    case (unsigned)BitmapFormat::Indexed8:
     case (unsigned)BitmapFormat::BGRx8888:
     case (unsigned)BitmapFormat::BGRA8888:
     case (unsigned)BitmapFormat::RGBA8888:
@@ -60,13 +69,12 @@ inline bool is_valid_bitmap_format(unsigned format)
 }
 
 enum class StorageFormat {
-    Indexed8,
     BGRx8888,
     BGRA8888,
     RGBA8888,
 };
 
-static StorageFormat determine_storage_format(BitmapFormat format)
+inline StorageFormat determine_storage_format(BitmapFormat format)
 {
     switch (format) {
     case BitmapFormat::BGRx8888:
@@ -75,11 +83,6 @@ static StorageFormat determine_storage_format(BitmapFormat format)
         return StorageFormat::BGRA8888;
     case BitmapFormat::RGBA8888:
         return StorageFormat::RGBA8888;
-    case BitmapFormat::Indexed1:
-    case BitmapFormat::Indexed2:
-    case BitmapFormat::Indexed4:
-    case BitmapFormat::Indexed8:
-        return StorageFormat::Indexed8;
     default:
         VERIFY_NOT_REACHED();
     }
@@ -87,19 +90,21 @@ static StorageFormat determine_storage_format(BitmapFormat format)
 
 struct BackingStore;
 
-enum RotationDirection {
+enum class RotationDirection {
     CounterClockwise,
-    Clockwise
+    Flip,
+    Clockwise,
 };
 
 class Bitmap : public RefCounted<Bitmap> {
 public:
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create(BitmapFormat, IntSize, int intrinsic_scale = 1);
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create(BitmapFormat, IntSize, int intrinsic_scale = 1, Optional<size_t> pitch = {});
     [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_shareable(BitmapFormat, IntSize, int intrinsic_scale = 1);
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_wrapper(BitmapFormat, IntSize, int intrinsic_scale, size_t pitch, void*);
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(StringView path, int scale_factor = 1);
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(NonnullOwnPtr<Core::File>, StringView path);
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_with_anonymous_buffer(BitmapFormat, Core::AnonymousBuffer, IntSize, int intrinsic_scale, Vector<ARGB32> const& palette);
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_wrapper(BitmapFormat, IntSize, int intrinsic_scale, size_t pitch, void*, Function<void()>&& destruction_callback = {});
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(StringView path, int scale_factor = 1, Optional<IntSize> ideal_size = {});
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(NonnullOwnPtr<Core::File>, StringView path, Optional<IntSize> ideal_size = {});
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_bytes(ReadonlyBytes, Optional<IntSize> ideal_size = {}, Optional<ByteString> mine_type = {});
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_with_anonymous_buffer(BitmapFormat, Core::AnonymousBuffer, IntSize, int intrinsic_scale);
     static ErrorOr<NonnullRefPtr<Bitmap>> create_from_serialized_bytes(ReadonlyBytes);
     static ErrorOr<NonnullRefPtr<Bitmap>> create_from_serialized_byte_buffer(ByteBuffer&&);
 
@@ -120,6 +125,7 @@ public:
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> flipped(Gfx::Orientation) const;
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> scaled(int sx, int sy) const;
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> scaled(float sx, float sy) const;
+    ErrorOr<NonnullRefPtr<Gfx::Bitmap>> scaled_to_size(Gfx::IntSize) const;
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> cropped(Gfx::IntRect, Optional<BitmapFormat> new_bitmap_format = {}) const;
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> to_bitmap_backed_by_anonymous_buffer() const;
     [[nodiscard]] ErrorOr<ByteBuffer> serialize_to_byte_buffer() const;
@@ -128,12 +134,25 @@ public:
 
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> inverted() const;
 
+    enum class MaskKind {
+        Alpha,
+        Luminance
+    };
+
+    void apply_mask(Gfx::Bitmap const& mask, MaskKind);
+
     ~Bitmap();
 
     [[nodiscard]] u8* scanline_u8(int physical_y);
     [[nodiscard]] u8 const* scanline_u8(int physical_y) const;
     [[nodiscard]] ARGB32* scanline(int physical_y);
     [[nodiscard]] ARGB32 const* scanline(int physical_y) const;
+
+    [[nodiscard]] ARGB32* begin();
+    [[nodiscard]] ARGB32 const* begin() const;
+    [[nodiscard]] ARGB32* end();
+    [[nodiscard]] ARGB32 const* end() const;
+    [[nodiscard]] size_t data_size() const;
 
     [[nodiscard]] IntRect rect() const { return { {}, m_size }; }
     [[nodiscard]] IntSize size() const { return m_size; }
@@ -147,46 +166,9 @@ public:
     [[nodiscard]] int physical_height() const { return physical_size().height(); }
     [[nodiscard]] size_t pitch() const { return m_pitch; }
 
-    [[nodiscard]] ALWAYS_INLINE bool is_indexed() const
-    {
-        return is_indexed(m_format);
-    }
-
-    [[nodiscard]] ALWAYS_INLINE static bool is_indexed(BitmapFormat format)
-    {
-        return format == BitmapFormat::Indexed8 || format == BitmapFormat::Indexed4
-            || format == BitmapFormat::Indexed2 || format == BitmapFormat::Indexed1;
-    }
-
-    [[nodiscard]] static size_t palette_size(BitmapFormat format)
-    {
-        switch (format) {
-        case BitmapFormat::Indexed1:
-            return 2;
-        case BitmapFormat::Indexed2:
-            return 4;
-        case BitmapFormat::Indexed4:
-            return 16;
-        case BitmapFormat::Indexed8:
-            return 256;
-        default:
-            return 0;
-        }
-    }
-
-    [[nodiscard]] Vector<ARGB32> palette_to_vector() const;
-
     [[nodiscard]] static unsigned bpp_for_format(BitmapFormat format)
     {
         switch (format) {
-        case BitmapFormat::Indexed1:
-            return 1;
-        case BitmapFormat::Indexed2:
-            return 2;
-        case BitmapFormat::Indexed4:
-            return 4;
-        case BitmapFormat::Indexed8:
-            return 8;
         case BitmapFormat::BGRx8888:
         case BitmapFormat::BGRA8888:
             return 32;
@@ -207,15 +189,27 @@ public:
     void fill(Color);
 
     [[nodiscard]] bool has_alpha_channel() const { return m_format == BitmapFormat::BGRA8888 || m_format == BitmapFormat::RGBA8888; }
+    void add_alpha_channel()
+    {
+        switch (m_format) {
+        case BitmapFormat::BGRx8888:
+            m_format = BitmapFormat::BGRA8888;
+            break;
+        case BitmapFormat::RGBA8888:
+        case BitmapFormat::BGRA8888:
+            // Nothing to do.
+            break;
+        case BitmapFormat::Invalid:
+            VERIFY_NOT_REACHED();
+        }
+    }
     [[nodiscard]] BitmapFormat format() const { return m_format; }
 
-    void set_mmap_name(DeprecatedString const&);
+    // Call only for BGRx8888 and BGRA8888 bitmaps.
+    void strip_alpha_channel();
 
     [[nodiscard]] static constexpr size_t size_in_bytes(size_t pitch, int physical_height) { return pitch * physical_height; }
     [[nodiscard]] size_t size_in_bytes() const { return size_in_bytes(m_pitch, physical_height()); }
-
-    [[nodiscard]] Color palette_color(u8 index) const { return Color::from_argb(m_palette[index]); }
-    void set_palette_color(u8 index, Color color) { m_palette[index] = color.value(); }
 
     template<StorageFormat>
     [[nodiscard]] Color get_pixel(int physical_x, int physical_y) const;
@@ -233,13 +227,6 @@ public:
         set_pixel(physical_position.x(), physical_position.y(), color);
     }
 
-    [[nodiscard]] bool is_volatile() const { return m_volatile; }
-    void set_volatile();
-
-    // Returns true if making the bitmap non-volatile succeeded. `was_purged` indicates status of contents.
-    // Returns false if there was not enough memory.
-    [[nodiscard]] bool set_nonvolatile(bool& was_purged);
-
     [[nodiscard]] Core::AnonymousBuffer& anonymous_buffer() { return m_buffer; }
     [[nodiscard]] Core::AnonymousBuffer const& anonymous_buffer() const { return m_buffer; }
 
@@ -251,22 +238,18 @@ public:
 
 private:
     Bitmap(BitmapFormat, IntSize, int, BackingStore const&);
-    Bitmap(BitmapFormat, IntSize, int, size_t pitch, void*);
-    Bitmap(BitmapFormat, Core::AnonymousBuffer, IntSize, int, Vector<ARGB32> const& palette);
+    Bitmap(BitmapFormat, IntSize, int, size_t pitch, void*, Function<void()>&& destruction_callback);
+    Bitmap(BitmapFormat, Core::AnonymousBuffer, IntSize, int);
 
-    static ErrorOr<BackingStore> allocate_backing_store(BitmapFormat format, IntSize size, int scale_factor);
-
-    void allocate_palette_from_format(BitmapFormat, Vector<ARGB32> const& source_palette);
+    static ErrorOr<BackingStore> allocate_backing_store(BitmapFormat format, IntSize size, int scale_factor, Optional<size_t> pitch = {});
 
     IntSize m_size;
     int m_scale;
     void* m_data { nullptr };
-    ARGB32* m_palette { nullptr };
     size_t m_pitch { 0 };
     BitmapFormat m_format { BitmapFormat::Invalid };
-    bool m_needs_munmap { false };
-    bool m_volatile { false };
     Core::AnonymousBuffer m_buffer;
+    Function<void()> m_destruction_callback;
 };
 
 ALWAYS_INLINE u8* Bitmap::scanline_u8(int y)
@@ -293,6 +276,31 @@ ALWAYS_INLINE ARGB32 const* Bitmap::scanline(int y) const
     return reinterpret_cast<ARGB32 const*>(scanline_u8(y));
 }
 
+ALWAYS_INLINE ARGB32* Bitmap::begin()
+{
+    return scanline(0);
+}
+
+ALWAYS_INLINE ARGB32 const* Bitmap::begin() const
+{
+    return scanline(0);
+}
+
+ALWAYS_INLINE ARGB32* Bitmap::end()
+{
+    return reinterpret_cast<ARGB32*>(reinterpret_cast<u8*>(m_data) + data_size());
+}
+
+ALWAYS_INLINE ARGB32 const* Bitmap::end() const
+{
+    return reinterpret_cast<ARGB32 const*>(reinterpret_cast<u8 const*>(m_data) + data_size());
+}
+
+ALWAYS_INLINE size_t Bitmap::data_size() const
+{
+    return m_size.height() * m_pitch;
+}
+
 template<>
 ALWAYS_INLINE Color Bitmap::get_pixel<StorageFormat::BGRx8888>(int x, int y) const
 {
@@ -309,14 +317,6 @@ ALWAYS_INLINE Color Bitmap::get_pixel<StorageFormat::BGRA8888>(int x, int y) con
     return Color::from_argb(scanline(y)[x]);
 }
 
-template<>
-ALWAYS_INLINE Color Bitmap::get_pixel<StorageFormat::Indexed8>(int x, int y) const
-{
-    VERIFY(x >= 0);
-    VERIFY(x < physical_width());
-    return Color::from_rgb(m_palette[scanline_u8(y)[x]]);
-}
-
 ALWAYS_INLINE Color Bitmap::get_pixel(int x, int y) const
 {
     switch (determine_storage_format(m_format)) {
@@ -324,8 +324,6 @@ ALWAYS_INLINE Color Bitmap::get_pixel(int x, int y) const
         return get_pixel<StorageFormat::BGRx8888>(x, y);
     case StorageFormat::BGRA8888:
         return get_pixel<StorageFormat::BGRA8888>(x, y);
-    case StorageFormat::Indexed8:
-        return get_pixel<StorageFormat::Indexed8>(x, y);
     default:
         VERIFY_NOT_REACHED();
     }
@@ -370,11 +368,19 @@ ALWAYS_INLINE void Bitmap::set_pixel(int x, int y, Color color)
     case StorageFormat::RGBA8888:
         set_pixel<StorageFormat::RGBA8888>(x, y, color);
         break;
-    case StorageFormat::Indexed8:
-        VERIFY_NOT_REACHED();
     default:
         VERIFY_NOT_REACHED();
     }
 }
+
+}
+
+namespace IPC {
+
+template<>
+ErrorOr<void> encode(Encoder&, AK::NonnullRefPtr<Gfx::Bitmap> const&);
+
+template<>
+ErrorOr<AK::NonnullRefPtr<Gfx::Bitmap>> decode(Decoder&);
 
 }

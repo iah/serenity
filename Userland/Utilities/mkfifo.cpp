@@ -14,7 +14,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio dpath"));
 
-    DeprecatedString mode_string;
+    ByteString mode_string;
     mode_t mask_reference_mode = 0777;
     mode_t mode = 0666;
     Vector<StringView> paths;
@@ -33,7 +33,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     for (auto path : paths) {
         auto error_or_void = Core::System::mkfifo(path, mode);
         if (error_or_void.is_error()) {
-            perror("mkfifo");
+            warnln("mkfifo: Couldn't create fifo '{}': {}", path, error_or_void.error());
             exit_code = 1;
         }
     }

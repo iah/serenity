@@ -179,21 +179,21 @@ void Scrollbar::paint_event(PaintEvent& event)
         Gfx::IntRect rect_to_fill = rect();
         if (orientation() == Orientation::Vertical) {
             if (m_gutter_click_state == GutterClickState::BeforeScrubber) {
-                rect_to_fill.set_top(decrement_button_rect().bottom());
-                rect_to_fill.set_bottom(scrubber_rect().top());
+                rect_to_fill.set_top(decrement_button_rect().bottom() - 1);
+                rect_to_fill.set_bottom(scrubber_rect().top() + 1);
             } else {
                 VERIFY(m_gutter_click_state == GutterClickState::AfterScrubber);
-                rect_to_fill.set_top(scrubber_rect().bottom());
-                rect_to_fill.set_bottom(increment_button_rect().top());
+                rect_to_fill.set_top(scrubber_rect().bottom() - 1);
+                rect_to_fill.set_bottom(increment_button_rect().top() + 1);
             }
         } else {
             if (m_gutter_click_state == GutterClickState::BeforeScrubber) {
-                rect_to_fill.set_left(decrement_button_rect().right());
-                rect_to_fill.set_right(scrubber_rect().left());
+                rect_to_fill.set_left(decrement_button_rect().right() - 1);
+                rect_to_fill.set_right(scrubber_rect().left() + 1);
             } else {
                 VERIFY(m_gutter_click_state == GutterClickState::AfterScrubber);
-                rect_to_fill.set_left(scrubber_rect().right());
-                rect_to_fill.set_right(increment_button_rect().left());
+                rect_to_fill.set_left(scrubber_rect().right() - 1);
+                rect_to_fill.set_right(increment_button_rect().left() + 1);
             }
         }
         painter.fill_rect_with_dither_pattern(rect_to_fill, palette().button(), palette().button().lightened(0.77f));
@@ -209,14 +209,14 @@ void Scrollbar::paint_event(PaintEvent& event)
         auto decrement_location = decrement_button_rect().location().translated(3, 3);
         if (decrement_pressed)
             decrement_location.translate_by(1, 1);
-        if (!has_scrubber() || !is_enabled())
+        if (!has_scrubber() || !is_enabled() || is_min())
             painter.draw_triangle(decrement_location + Gfx::IntPoint { 1, 1 }, orientation() == Orientation::Vertical ? s_up_arrow_coords : s_left_arrow_coords, palette().threed_highlight());
         painter.draw_triangle(decrement_location, orientation() == Orientation::Vertical ? s_up_arrow_coords : s_left_arrow_coords, (has_scrubber() && is_enabled() && !is_min()) ? palette().button_text() : palette().threed_shadow1());
 
         auto increment_location = increment_button_rect().location().translated(3, 3);
         if (increment_pressed)
             increment_location.translate_by(1, 1);
-        if (!has_scrubber() || !is_enabled())
+        if (!has_scrubber() || !is_enabled() || is_max())
             painter.draw_triangle(increment_location + Gfx::IntPoint { 1, 1 }, orientation() == Orientation::Vertical ? s_down_arrow_coords : s_right_arrow_coords, palette().threed_highlight());
         painter.draw_triangle(increment_location, orientation() == Orientation::Vertical ? s_down_arrow_coords : s_right_arrow_coords, (has_scrubber() && is_enabled() && !is_max()) ? palette().button_text() : palette().threed_shadow1());
     }

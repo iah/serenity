@@ -10,10 +10,14 @@
 #include <LibGUI/SettingsWindow.h>
 
 class ClockSettingsWidget final : public GUI::SettingsWindow::Tab {
-    C_OBJECT(ClockSettingsWidget)
+    C_OBJECT_ABSTRACT(ClockSettingsWidget)
+
+public:
+    static ErrorOr<NonnullRefPtr<ClockSettingsWidget>> try_create();
 
 private:
-    ClockSettingsWidget();
+    ClockSettingsWidget() = default;
+    ErrorOr<void> setup();
 
     virtual void apply_settings() override;
     virtual void reset_default_values() override;
@@ -28,5 +32,5 @@ private:
 
     RefPtr<Core::Timer> m_clock_preview_update_timer;
 
-    DeprecatedString m_time_format;
+    ByteString m_time_format;
 };

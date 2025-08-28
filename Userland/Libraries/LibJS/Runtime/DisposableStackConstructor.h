@@ -12,9 +12,10 @@ namespace JS {
 
 class DisposableStackConstructor final : public NativeFunction {
     JS_OBJECT(DisposableStackConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DisposableStackConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DisposableStackConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

@@ -6,17 +6,17 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 
 struct KeyPosition {
-    u32 scancode;
+    u32 kernel_map_entry_index;
     int x;
     int y;
     int width;
     int height;
     bool enabled;
     int map_index;
-    DeprecatedString name;
+    ByteString name;
 };
 
 #define KEY_COUNT 63

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <AK/BitStream.h>
 #include <AK/ByteBuffer.h>
 #include <AK/CircularBuffer.h>
 #include <AK/Endian.h>
@@ -27,17 +28,39 @@ public:
     static CanonicalCode const& fixed_literal_codes();
     static CanonicalCode const& fixed_distance_codes();
 
-    static Optional<CanonicalCode> from_bytes(ReadonlyBytes);
+    static ErrorOr<CanonicalCode> from_bytes(ReadonlyBytes);
 
 private:
+    static constexpr size_t max_allowed_prefixed_code_length = 8;
+
+    struct PrefixTableEntry {
+        u16 symbol_value { 0 };
+        u16 code_length { 0 };
+    };
+
     // Decompression - indexed by code
-    Vector<u16> m_symbol_codes;
-    Vector<u16> m_symbol_values;
+    Vector<u16, 286> m_symbol_values;
+
+    Vector<u32, 16> m_first_symbol_of_length_after;
+    Vector<u16, 16> m_offset_to_first_symbol_index;
+
+    Array<PrefixTableEntry, 1 << max_allowed_prefixed_code_length> m_prefix_table {};
+    size_t m_max_prefixed_code_length { 0 };
 
     // Compression - indexed by symbol
-    Array<u16, 288> m_bit_codes {}; // deflate uses a maximum of 288 symbols (maximum of 32 for distances)
-    Array<u16, 288> m_bit_code_lengths {};
+    // Deflate uses a maximum of 288 symbols (maximum of 32 for distances),
+    // but this is also used by webp, which can use up to 256 + 24 + (1 << 11) == 2328 symbols.
+    Vector<u16, 288> m_bit_codes {};
+    Vector<u16, 288> m_bit_code_lengths {};
 };
+
+ALWAYS_INLINE ErrorOr<void> CanonicalCode::write_symbol(LittleEndianOutputBitStream& stream, u32 symbol) const
+{
+    auto code = m_bit_codes[symbol];
+    auto length = m_bit_code_lengths[symbol];
+    TRY(stream.write_bits(code, length));
+    return {};
+}
 
 class DeflateDecompressor final : public Stream {
 private:
@@ -76,11 +99,11 @@ public:
     friend CompressedBlock;
     friend UncompressedBlock;
 
-    static ErrorOr<NonnullOwnPtr<DeflateDecompressor>> construct(MaybeOwned<Stream> stream);
+    static ErrorOr<NonnullOwnPtr<DeflateDecompressor>> construct(MaybeOwned<LittleEndianInputBitStream> stream);
     ~DeflateDecompressor();
 
-    virtual ErrorOr<Bytes> read(Bytes) override;
-    virtual ErrorOr<size_t> write(ReadonlyBytes) override;
+    virtual ErrorOr<Bytes> read_some(Bytes) override;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) override;
     virtual bool is_eof() const override;
     virtual bool is_open() const override;
     virtual void close() override;
@@ -88,13 +111,15 @@ public:
     static ErrorOr<ByteBuffer> decompress_all(ReadonlyBytes);
 
 private:
-    DeflateDecompressor(MaybeOwned<Stream> stream, CircularBuffer buffer);
+    DeflateDecompressor(MaybeOwned<LittleEndianInputBitStream> stream, CircularBuffer buffer);
 
     ErrorOr<u32> decode_length(u32);
     ErrorOr<u32> decode_distance(u32);
     ErrorOr<void> decode_codes(CanonicalCode& literal_code, Optional<CanonicalCode>& distance_code);
 
-    bool m_read_final_bock { false };
+    static constexpr u16 max_back_reference_length = 258;
+
+    bool m_read_final_block { false };
 
     State m_state { State::Idle };
     union {
@@ -144,8 +169,8 @@ public:
     static ErrorOr<NonnullOwnPtr<DeflateCompressor>> construct(MaybeOwned<Stream>, CompressionLevel = CompressionLevel::GOOD);
     ~DeflateCompressor();
 
-    virtual ErrorOr<Bytes> read(Bytes) override;
-    virtual ErrorOr<size_t> write(ReadonlyBytes) override;
+    virtual ErrorOr<Bytes> read_some(Bytes) override;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) override;
     virtual bool is_eof() const override;
     virtual bool is_open() const override;
     virtual void close() override;
@@ -170,11 +195,9 @@ private:
         u8 count; // used for special symbols 16-18
     };
     static u8 distance_to_base(u16 distance);
-    template<size_t Size>
-    static void generate_huffman_lengths(Array<u8, Size>& lengths, Array<u16, Size> const& frequencies, size_t max_bit_length, u16 frequency_cap = UINT16_MAX);
     size_t huffman_block_length(Array<u8, max_huffman_literals> const& literal_bit_lengths, Array<u8, max_huffman_distances> const& distance_bit_lengths);
     ErrorOr<void> write_huffman(CanonicalCode const& literal_code, Optional<CanonicalCode> const& distance_code);
-    static size_t encode_huffman_lengths(Array<u8, max_huffman_literals + max_huffman_distances> const& lengths, size_t lengths_count, Array<code_length_symbol, max_huffman_literals + max_huffman_distances>& encoded_lengths);
+    static size_t encode_huffman_lengths(ReadonlyBytes lengths, Array<code_length_symbol, max_huffman_literals + max_huffman_distances>& encoded_lengths);
     size_t encode_block_lengths(Array<u8, max_huffman_literals> const& literal_bit_lengths, Array<u8, max_huffman_distances> const& distance_bit_lengths, Array<code_length_symbol, max_huffman_literals + max_huffman_distances>& encoded_lengths, size_t& literal_code_count, size_t& distance_code_count);
     ErrorOr<void> write_dynamic_huffman(CanonicalCode const& literal_code, size_t literal_code_count, Optional<CanonicalCode> const& distance_code, size_t distance_code_count, Array<u8, 19> const& code_lengths_bit_lengths, size_t code_length_count, Array<code_length_symbol, max_huffman_literals + max_huffman_distances> const& encoded_lengths, size_t encoded_lengths_count);
 

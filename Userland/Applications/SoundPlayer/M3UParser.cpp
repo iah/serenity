@@ -20,13 +20,13 @@ NonnullOwnPtr<M3UParser> M3UParser::from_file(StringView path)
     auto file_result = Core::File::open(path, Core::File::OpenMode::Read).release_value_but_fixme_should_propagate_errors();
     auto contents = file_result->read_until_eof().release_value_but_fixme_should_propagate_errors();
     auto use_utf8 = path.ends_with(".m3u8"sv, CaseSensitivity::CaseInsensitive);
-    return from_memory(DeprecatedString { contents, NoChomp }, use_utf8);
+    return from_memory(ByteString { contents, NoChomp }, use_utf8);
 }
 
-NonnullOwnPtr<M3UParser> M3UParser::from_memory(DeprecatedString const& m3u_contents, bool utf8)
+NonnullOwnPtr<M3UParser> M3UParser::from_memory(ByteString const& m3u_contents, bool utf8)
 {
     auto parser = make<M3UParser>();
-    VERIFY(!m3u_contents.is_null() && !m3u_contents.is_empty() && !m3u_contents.is_whitespace());
+    VERIFY(!m3u_contents.is_empty() && !m3u_contents.is_whitespace());
     parser->m_m3u_raw_data = m3u_contents;
     parser->m_use_utf8 = utf8;
     return parser;
@@ -70,7 +70,7 @@ NonnullOwnPtr<Vector<M3UEntry>> M3UParser::parse(bool include_extended_info)
             VERIFY(separator.has_value());
             auto seconds = ext_inf.value().substring_view(0, separator.value());
             VERIFY(!seconds.is_whitespace() && !seconds.is_null() && !seconds.is_empty());
-            metadata_for_next_file.track_length_in_seconds = seconds.to_uint();
+            metadata_for_next_file.track_length_in_seconds = seconds.to_number<unsigned>();
             auto display_name = ext_inf.value().substring_view(seconds.length() + 1);
             VERIFY(!display_name.is_empty() && !display_name.is_null() && !display_name.is_empty());
             metadata_for_next_file.track_display_title = display_name;

@@ -11,17 +11,18 @@
 #include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Arch/x86_64/Interrupts/PIC.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
+#include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Interrupts/SpuriousInterruptHandler.h>
 #include <Kernel/Interrupts/UnhandledInterruptHandler.h>
-#include <Kernel/Panic.h>
-#include <Kernel/PerformanceManager.h>
-#include <Kernel/Process.h>
-#include <Kernel/Random.h>
-#include <Kernel/Scheduler.h>
+#include <Kernel/Library/Panic.h>
 #include <Kernel/Sections.h>
-#include <Kernel/Thread.h>
-#include <Kernel/ThreadTracer.h>
+#include <Kernel/Security/Random.h>
+#include <Kernel/Tasks/PerformanceManager.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/Thread.h>
+#include <Kernel/Tasks/ThreadTracer.h>
 
 #include <Kernel/Arch/CPU.h>
 #include <Kernel/Arch/PageFault.h>
@@ -30,6 +31,7 @@
 #include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Arch/x86_64/ISRStubs.h>
+#include <Kernel/Arch/x86_64/MSR.h>
 
 extern FlatPtr start_of_unmap_after_init;
 extern FlatPtr end_of_unmap_after_init;
@@ -43,6 +45,8 @@ namespace Kernel {
 READONLY_AFTER_INIT static DescriptorTablePointer s_idtr;
 READONLY_AFTER_INIT static IDTEntry s_idt[256];
 
+// This spinlock is used to reserve IRQs that can be later used by interrupt mechanism such as MSIx
+static Spinlock<LockRank::None> s_interrupt_handler_lock {};
 static GenericInterruptHandler* s_interrupt_handler[GENERIC_INTERRUPT_HANDLERS_COUNT];
 static GenericInterruptHandler* s_disabled_interrupt_handler[2];
 
@@ -130,8 +134,9 @@ void dump_registers(RegisterState const& regs)
 
     dbgln("Exception code: {:04x} (isr: {:04x})", regs.exception_code, regs.isr_number);
     dbgln("    pc={:#04x}:{:p} rflags={:p}", (u16)regs.cs, regs.rip, regs.rflags);
-    dbgln(" stack={:p}", rsp);
-    // FIXME: Add fs_base and gs_base here
+    MSR fs_base_msr(MSR_FS_BASE);
+    MSR gs_base_msr(MSR_GS_BASE);
+    dbgln(" stack={:p}  fs={:p}  gs={:p}", rsp, fs_base_msr.get(), gs_base_msr.get());
     dbgln("   rax={:p} rbx={:p} rcx={:p} rdx={:p}", regs.rax, regs.rbx, regs.rcx, regs.rdx);
     dbgln("   rbp={:p} rsp={:p} rsi={:p} rdi={:p}", regs.rbp, regs.rsp, regs.rsi, regs.rdi);
     dbgln("    r8={:p}  r9={:p} r10={:p} r11={:p}", regs.r8, regs.r9, regs.r10, regs.r11);
@@ -272,7 +277,7 @@ extern "C" UNMAP_AFTER_INIT void pre_init_finished(void)
     // to this point
 
     // The target flags will get restored upon leaving the trap
-    Scheduler::leave_on_first_switch(processor_interrupts_state());
+    Scheduler::leave_on_first_switch(Processor::interrupts_state());
 }
 
 extern "C" UNMAP_AFTER_INIT void post_init_finished(void)
@@ -306,7 +311,7 @@ void handle_interrupt(TrapFrame* trap)
     }
     VERIFY(handler);
     handler->increment_call_count();
-    handler->handle_interrupt(regs);
+    handler->handle_interrupt();
     handler->eoi();
 }
 
@@ -331,6 +336,53 @@ static void revert_to_unused_handler(u8 interrupt_number)
 {
     auto handler = new UnhandledInterruptHandler(interrupt_number);
     handler->register_interrupt_handler();
+}
+
+static bool is_unused_handler(GenericInterruptHandler* handler_slot)
+{
+    return (handler_slot->type() == HandlerType::UnhandledInterruptHandler) && !handler_slot->reserved();
+}
+
+// Sets the reserved flag on `number_of_irqs` if it finds unused interrupt handler on
+// a contiguous range.
+ErrorOr<u8> reserve_interrupt_handlers(u8 number_of_irqs)
+{
+    bool found_range = false;
+    u8 first_irq = 0;
+    SpinlockLocker locker(s_interrupt_handler_lock);
+    for (int start_irq = 0; start_irq < GENERIC_INTERRUPT_HANDLERS_COUNT; start_irq++) {
+        auto*& handler_slot = s_interrupt_handler[start_irq];
+        VERIFY(handler_slot != nullptr);
+
+        if (!is_unused_handler(handler_slot))
+            continue;
+
+        found_range = true;
+        for (auto off = 1; off < number_of_irqs; off++) {
+            auto*& handler = s_interrupt_handler[start_irq + off];
+            VERIFY(handler_slot != nullptr);
+
+            if (!is_unused_handler(handler)) {
+                found_range = false;
+                break;
+            }
+        }
+
+        if (found_range == true) {
+            first_irq = start_irq;
+            break;
+        }
+    }
+
+    if (!found_range)
+        return Error::from_errno(EAGAIN);
+
+    for (auto irq = first_irq; irq < number_of_irqs; irq++) {
+        auto*& handler_slot = s_interrupt_handler[irq];
+        handler_slot->set_reserved();
+    }
+
+    return first_irq;
 }
 
 void register_disabled_interrupt_handler(u8 number, GenericInterruptHandler& handler)
@@ -360,7 +412,7 @@ void register_generic_interrupt_handler(u8 interrupt_number, GenericInterruptHan
         handler_slot = &handler;
         return;
     }
-    if (handler_slot->is_shared_handler() && !handler_slot->is_sharing_with_others()) {
+    if (handler_slot->is_shared_handler()) {
         VERIFY(handler_slot->type() == HandlerType::SharedIRQHandler);
         static_cast<SharedIRQHandler*>(handler_slot)->register_handler(handler);
         return;
@@ -371,6 +423,7 @@ void register_generic_interrupt_handler(u8 interrupt_number, GenericInterruptHan
             return;
         }
         VERIFY(handler_slot->type() == HandlerType::IRQHandler);
+        static_cast<IRQHandler*>(handler_slot)->set_shared_with_others(true);
         auto& previous_handler = *handler_slot;
         handler_slot = nullptr;
         SharedIRQHandler::initialize(interrupt_number);
@@ -388,7 +441,7 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
     VERIFY(handler_slot != nullptr);
     if (handler_slot->type() == HandlerType::UnhandledInterruptHandler)
         return;
-    if (handler_slot->is_shared_handler() && !handler_slot->is_sharing_with_others()) {
+    if (handler_slot->is_shared_handler()) {
         VERIFY(handler_slot->type() == HandlerType::SharedIRQHandler);
         auto* shared_handler = static_cast<SharedIRQHandler*>(handler_slot);
         shared_handler->unregister_handler(handler);
@@ -400,6 +453,7 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
     }
     if (!handler_slot->is_shared_handler()) {
         VERIFY(handler_slot->type() == HandlerType::IRQHandler);
+        static_cast<IRQHandler*>(handler_slot)->set_shared_with_others(false);
         handler_slot = nullptr;
         revert_to_unused_handler(interrupt_number);
         return;
@@ -409,16 +463,12 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
 
 UNMAP_AFTER_INIT void register_interrupt_handler(u8 index, void (*handler)())
 {
-    // FIXME: Is the Gate Type really required to be an Interrupt
-    // FIXME: What's up with that storage segment 0?
-    s_idt[index] = IDTEntry((FlatPtr)handler, GDT_SELECTOR_CODE0, IDTEntryType::InterruptGate32, 0, 0);
+    s_idt[index] = IDTEntry((FlatPtr)handler, GDT_SELECTOR_CODE0, IDTEntryType::InterruptGate32, 0);
 }
 
 UNMAP_AFTER_INIT void register_user_callable_interrupt_handler(u8 index, void (*handler)())
 {
-    // FIXME: Is the Gate Type really required to be a Trap
-    // FIXME: What's up with that storage segment 0?
-    s_idt[index] = IDTEntry((FlatPtr)handler, GDT_SELECTOR_CODE0, IDTEntryType::TrapGate32, 0, 3);
+    s_idt[index] = IDTEntry((FlatPtr)handler, GDT_SELECTOR_CODE0, IDTEntryType::TrapGate32, 3);
 }
 
 UNMAP_AFTER_INIT void flush_idt()

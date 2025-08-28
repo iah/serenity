@@ -13,9 +13,9 @@
 namespace SQL {
 
 struct TupleElementDescriptor {
-    DeprecatedString schema { "" };
-    DeprecatedString table { "" };
-    DeprecatedString name { "" };
+    ByteString schema { "" };
+    ByteString table { "" };
+    ByteString name { "" };
     SQLType type { SQLType::Text };
     Order order { Order::Ascending };
 
@@ -29,19 +29,19 @@ struct TupleElementDescriptor {
     }
     void deserialize(Serializer& serializer)
     {
-        name = serializer.deserialize<DeprecatedString>();
+        name = serializer.deserialize<ByteString>();
         type = (SQLType)serializer.deserialize<u8>();
         order = (Order)serializer.deserialize<u8>();
     }
 
     size_t length() const
     {
-        return (sizeof(u32) + name.length()) + 2 * sizeof(u8);
+        return sizeof(u32) + name.length() + 2 * sizeof(u8);
     }
 
-    DeprecatedString to_deprecated_string() const
+    ByteString to_byte_string() const
     {
-        return DeprecatedString::formatted("  name: {} type: {} order: {}", name, SQLType_name(type), Order_name(order));
+        return ByteString::formatted("  name: {} type: {} order: {}", name, SQLType_name(type), Order_name(order));
     }
 };
 
@@ -85,19 +85,17 @@ public:
     size_t length() const
     {
         size_t len = sizeof(u32);
-        for (auto& element : *this) {
+        for (auto& element : *this)
             len += element.length();
-        }
         return len;
     }
 
-    DeprecatedString to_deprecated_string() const
+    ByteString to_byte_string() const
     {
-        Vector<DeprecatedString> elements;
-        for (auto& element : *this) {
-            elements.append(element.to_deprecated_string());
-        }
-        return DeprecatedString::formatted("[\n{}\n]", DeprecatedString::join('\n', elements));
+        Vector<ByteString> elements;
+        for (auto& element : *this)
+            elements.append(element.to_byte_string());
+        return ByteString::formatted("[\n{}\n]", ByteString::join('\n', elements));
     }
 
     using Vector<TupleElementDescriptor>::operator==;

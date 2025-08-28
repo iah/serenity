@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2022-2025, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,7 +16,7 @@
 #include <LibGUI/TextEditor.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
-#include <LibWebView/Forward.h>
+#include <LibWebView/OutOfProcessWebView.h>
 
 namespace TextEditor {
 
@@ -24,9 +24,12 @@ class MainWidget final : public GUI::Widget {
     C_OBJECT(MainWidget);
 
 public:
+    static ErrorOr<NonnullRefPtr<MainWidget>> try_create();
+    ErrorOr<void> initialize();
+
     virtual ~MainWidget() override = default;
-    ErrorOr<void> read_file(String const& filename, Core::File&);
-    void open_nonexistent_file(DeprecatedString const& path);
+    ErrorOr<void> read_file(ByteString const& filename, Core::File&);
+    void open_nonexistent_file(ByteString const& path);
     bool request_close();
 
     GUI::TextEditor& editor() { return *m_editor; }
@@ -35,6 +38,7 @@ public:
         None,
         Markdown,
         HTML,
+        Gemtext,
     };
 
     void set_preview_mode(PreviewMode);
@@ -42,14 +46,15 @@ public:
 
     void update_title();
     void update_statusbar();
-    void initialize_menubar(GUI::Window&);
+    ErrorOr<void> initialize_menubar(GUI::Window&);
 
 private:
-    MainWidget();
+    MainWidget() = default;
     void set_path(StringView);
     void update_preview();
     void update_markdown_preview();
     void update_html_preview();
+    void update_gemtext_preview();
 
     WebView::OutOfProcessWebView& ensure_web_view();
     void set_web_view_visible(bool);
@@ -64,9 +69,9 @@ private:
     void find_text(GUI::TextEditor::SearchDirection, ShowMessageIfNoResults);
 
     RefPtr<GUI::TextEditor> m_editor;
-    DeprecatedString m_path;
-    DeprecatedString m_name;
-    DeprecatedString m_extension;
+    ByteString m_path;
+    ByteString m_name;
+    ByteString m_extension;
     RefPtr<GUI::Action> m_new_action;
     RefPtr<GUI::Action> m_open_action;
     RefPtr<GUI::Action> m_save_action;
@@ -88,6 +93,7 @@ private:
     RefPtr<GUI::Action> m_no_preview_action;
     RefPtr<GUI::Action> m_markdown_preview_action;
     RefPtr<GUI::Action> m_html_preview_action;
+    RefPtr<GUI::Action> m_gemtext_preview_action;
 
     RefPtr<GUI::Toolbar> m_toolbar;
     RefPtr<GUI::ToolbarContainer> m_toolbar_container;
@@ -128,6 +134,7 @@ private:
     GUI::ActionGroup syntax_actions;
     RefPtr<GUI::Action> m_plain_text_highlight;
     RefPtr<GUI::Action> m_cmake_highlight;
+    RefPtr<GUI::Action> m_cmakecache_highlight;
     RefPtr<GUI::Action> m_cpp_highlight;
     RefPtr<GUI::Action> m_css_highlight;
     RefPtr<GUI::Action> m_js_highlight;
@@ -135,6 +142,7 @@ private:
     RefPtr<GUI::Action> m_git_highlight;
     RefPtr<GUI::Action> m_gml_highlight;
     RefPtr<GUI::Action> m_ini_highlight;
+    RefPtr<GUI::Action> m_markdown_highlight;
     RefPtr<GUI::Action> m_shell_highlight;
     RefPtr<GUI::Action> m_sql_highlight;
 

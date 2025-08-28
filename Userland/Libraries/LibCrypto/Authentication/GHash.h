@@ -12,13 +12,12 @@
 #include <LibCrypto/Hash/HashFunction.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
-namespace Crypto {
-namespace Authentication {
+namespace Crypto::Authentication {
 
-void galois_multiply(u32 (&z)[4], const u32 (&x)[4], const u32 (&y)[4]);
+void galois_multiply(u32 (&z)[4], u32 const (&x)[4], u32 const (&y)[4]);
 
 struct GHashDigest {
     constexpr static size_t Size = 16;
@@ -49,7 +48,7 @@ public:
     constexpr static size_t digest_size() { return TagType::Size; }
 
 #ifndef KERNEL
-    DeprecatedString class_name() const
+    ByteString class_name() const
     {
         return "GHash";
     }
@@ -60,7 +59,5 @@ public:
 private:
     u32 m_key[4];
 };
-
-}
 
 }

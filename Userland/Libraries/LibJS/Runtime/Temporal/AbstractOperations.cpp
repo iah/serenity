@@ -13,7 +13,7 @@
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Date.h>
-#include <LibJS/Runtime/IteratorOperations.h>
+#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
 #include <LibJS/Runtime/Temporal/Calendar.h>
@@ -24,6 +24,7 @@
 #include <LibJS/Runtime/Temporal/PlainTime.h>
 #include <LibJS/Runtime/Temporal/TimeZone.h>
 #include <LibJS/Runtime/Temporal/ZonedDateTime.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS::Temporal {
 
@@ -52,7 +53,7 @@ ThrowCompletionOr<MarkedVector<Value>> iterable_to_list_of_type(VM& vm, Value it
     // 4. Repeat, while next is not false,
     while (next) {
         // a. Set next to ? IteratorStep(iteratorRecord).
-        auto* iterator_result = TRY(iterator_step(vm, iterator_record));
+        auto iterator_result = TRY(iterator_step(vm, iterator_record));
         next = iterator_result;
 
         // b. If next is not false, then
@@ -62,7 +63,7 @@ ThrowCompletionOr<MarkedVector<Value>> iterable_to_list_of_type(VM& vm, Value it
             // ii. If Type(nextValue) is not an element of elementTypes, then
             if (auto type = to_option_type(next_value); !type.has_value() || !element_types.contains_slow(*type)) {
                 // 1. Let completion be ThrowCompletion(a newly created TypeError object).
-                auto completion = vm.throw_completion<TypeError>(ErrorType::IterableToListOfTypeInvalidValue, TRY_OR_THROW_OOM(vm, next_value.to_string_without_side_effects()));
+                auto completion = vm.throw_completion<TypeError>(ErrorType::IterableToListOfTypeInvalidValue, next_value.to_string_without_side_effects());
                 // 2. Return ? IteratorClose(iteratorRecord, completion).
                 return iterator_close(vm, iterator_record, move(completion));
             }
@@ -116,7 +117,7 @@ ThrowCompletionOr<Value> get_option(VM& vm, Object const& options, PropertyKey c
             [](Empty) -> ThrowCompletionOr<Value> { return js_undefined(); },
             [](bool b) -> ThrowCompletionOr<Value> { return Value(b); },
             [](double d) -> ThrowCompletionOr<Value> { return Value(d); },
-            [&vm](StringView s) -> ThrowCompletionOr<Value> { return MUST_OR_THROW_OOM(PrimitiveString::create(vm, s)); });
+            [&vm](StringView s) -> ThrowCompletionOr<Value> { return PrimitiveString::create(vm, s); });
     }
 
     // 5. If type is "boolean", then
@@ -146,7 +147,7 @@ ThrowCompletionOr<Value> get_option(VM& vm, Object const& options, PropertyKey c
     if (!values.is_empty()) {
         // NOTE: Every location in the spec that invokes GetOption with type=boolean also has values=undefined.
         VERIFY(value.is_string());
-        if (auto value_string = TRY(value.as_string().utf8_string()); !values.contains_slow(value_string))
+        if (auto value_string = value.as_string().utf8_string(); !values.contains_slow(value_string))
             return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, value_string, property.as_string());
     }
 
@@ -159,7 +160,7 @@ ThrowCompletionOr<String> to_temporal_overflow(VM& vm, Object const* options)
 {
     // 1. If options is undefined, return "constrain".
     if (options == nullptr)
-        return TRY_OR_THROW_OOM(vm, "constrain"_string);
+        return "constrain"_string;
 
     // 2. Return ? GetOption(options, "overflow", "string", « "constrain", "reject" », "constrain").
     auto option = TRY(get_option(vm, *options, vm.names.overflow, OptionType::String, { "constrain"sv, "reject"sv }, "constrain"sv));
@@ -173,7 +174,7 @@ ThrowCompletionOr<String> to_temporal_disambiguation(VM& vm, Object const* optio
 {
     // 1. If options is undefined, return "compatible".
     if (options == nullptr)
-        return TRY_OR_THROW_OOM(vm, "compatible"_string);
+        return "compatible"_string;
 
     // 2. Return ? GetOption(options, "disambiguation", "string", « "compatible", "earlier", "later", "reject" », "compatible").
     auto option = TRY(get_option(vm, *options, vm.names.disambiguation, OptionType::String, { "compatible"sv, "earlier"sv, "later"sv, "reject"sv }, "compatible"sv));
@@ -273,74 +274,62 @@ ThrowCompletionOr<String> to_show_offset_option(VM& vm, Object const& normalized
 }
 
 // 13.12 ToTemporalRoundingIncrement ( normalizedOptions, dividend, inclusive ), https://tc39.es/proposal-temporal/#sec-temporal-totemporalroundingincrement
-ThrowCompletionOr<u64> to_temporal_rounding_increment(VM& vm, Object const& normalized_options, Optional<double> dividend, bool inclusive)
+ThrowCompletionOr<u64> to_temporal_rounding_increment(VM& vm, Object const& normalized_options)
 {
-    double maximum;
-    // 1. If dividend is undefined, then
-    if (!dividend.has_value()) {
-        // a. Let maximum be +∞𝔽.
-        maximum = INFINITY;
-    }
-    // 2. Else if inclusive is true, then
-    else if (inclusive) {
-        // a. Let maximum be 𝔽(dividend).
-        maximum = *dividend;
-    }
-    // 3. Else if dividend is more than 1, then
-    else if (*dividend > 1) {
-        // a. Let maximum be 𝔽(dividend - 1).
-        maximum = *dividend - 1;
-    }
-    // 4. Else,
-    else {
-        // a. Let maximum be 1𝔽.
-        maximum = 1;
-    }
-
-    // 5. Let increment be ? GetOption(normalizedOptions, "roundingIncrement", "number", undefined, 1𝔽).
+    // 1. Let increment be ? GetOption(normalizedOptions, "roundingIncrement", "number", undefined, 1𝔽)
     auto increment_value = TRY(get_option(vm, normalized_options, vm.names.roundingIncrement, OptionType::Number, {}, 1.0));
     VERIFY(increment_value.is_number());
     auto increment = increment_value.as_double();
 
-    // 6. If increment < 1𝔽 or increment > maximum, throw a RangeError exception.
-    if (increment < 1 || increment > maximum)
+    // 2. If increment is not finite, throw a RangeError exception
+    if (!increment_value.is_finite_number())
         return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
 
-    // 7. Set increment to floor(ℝ(increment)).
-    auto floored_increment = static_cast<u64>(increment);
-
-    // 8. If dividend is not undefined and dividend modulo increment ≠ 0, then
-    if (dividend.has_value() && static_cast<u64>(*dividend) % floored_increment != 0)
-        // a. Throw a RangeError exception.
+    // 3. If increment < 1𝔽, throw a RangeError exception.
+    if (increment < 1) {
         return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
+    }
 
-    // 9. Return increment.
-    return floored_increment;
+    // 4. Return truncate(ℝ(increment))
+    return static_cast<u64>(trunc(increment));
 }
 
-// 13.13 ToTemporalDateTimeRoundingIncrement ( normalizedOptions, smallestUnit ), https://tc39.es/proposal-temporal/#sec-temporal-totemporaldatetimeroundingincrement
-ThrowCompletionOr<u64> to_temporal_date_time_rounding_increment(VM& vm, Object const& normalized_options, StringView smallest_unit)
+// 13.13 ValidateTemporalRoundingIncrement ( increment, dividend, inclusive ), https://tc39.es/proposal-temporal/#sec-validatetemporalroundingincrement
+ThrowCompletionOr<void> validate_temporal_rounding_increment(VM& vm, u64 increment, u64 dividend, bool inclusive)
 {
-    u16 maximum;
-
-    // 1. If smallestUnit is "day", then
-    if (smallest_unit == "day"sv) {
+    u64 maximum;
+    // 1. If inclusive is true, then
+    if (inclusive) {
+        // a. Let maximum be dividend.
+        maximum = dividend;
+    }
+    // 2. Else if dividend is more than 1, then
+    else if (dividend > 1) {
+        // a. Let maximum be dividend - 1.
+        maximum = dividend - 1;
+    }
+    // 3. Else
+    else {
         // a. Let maximum be 1.
         maximum = 1;
     }
-    // 2. Else,
-    else {
-        // a. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit).
-        // b. Assert: maximum is not undefined.
-        maximum = *maximum_temporal_duration_rounding_increment(smallest_unit);
+    // 4. If increment > maximum, throw a RangeError exception.
+    if (increment > maximum) {
+        return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
     }
 
-    // 3. Return ? ToTemporalRoundingIncrement(normalizedOptions, maximum, false).
-    return to_temporal_rounding_increment(vm, normalized_options, maximum, false);
+    // 5. If dividend modulo increment is not zero, then
+    if (modulo(dividend, increment) != 0) {
+        // a. Throw a RangeError exception.
+        return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
+    }
+
+    // 6. Return UNUSED.
+    return {};
 }
 
-// 13.14 ToSecondsStringPrecision ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-tosecondsstringprecision
-ThrowCompletionOr<SecondsStringPrecision> to_seconds_string_precision(VM& vm, Object const& normalized_options)
+// 13.14 ToSecondsStringPrecisionRecord ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-tosecondsstringprecisionrecord
+ThrowCompletionOr<SecondsStringPrecision> to_seconds_string_precision_record(VM& vm, Object const& normalized_options)
 {
     // 1. Let smallestUnit be ? GetTemporalUnit(normalizedOptions, "smallestUnit", time, undefined).
     auto smallest_unit = TRY(get_temporal_unit(vm, normalized_options, vm.names.smallestUnit, UnitGroup::Time, Optional<StringView> {}));
@@ -526,11 +515,11 @@ ThrowCompletionOr<Optional<String>> get_temporal_unit(VM& vm, Object const& norm
 
     // 10. If value is undefined and default is required, throw a RangeError exception.
     if (option_value.is_undefined() && default_.has<TemporalUnitRequired>())
-        return vm.throw_completion<RangeError>(ErrorType::IsUndefined, DeprecatedString::formatted("{} option value", key.as_string()));
+        return vm.throw_completion<RangeError>(ErrorType::IsUndefined, ByteString::formatted("{} option value", key.as_string()));
 
     auto value = option_value.is_undefined()
         ? Optional<String> {}
-        : TRY(option_value.as_string().utf8_string());
+        : option_value.as_string().utf8_string();
 
     // 11. If value is listed in the Plural column of Table 13, then
     for (auto const& row : temporal_units) {
@@ -544,8 +533,21 @@ ThrowCompletionOr<Optional<String>> get_temporal_unit(VM& vm, Object const& norm
     return value;
 }
 
+// FIXME: This function is a hack to undo a RelativeTo back to the old API, which was just a Value.
+//        We should get rid of this once all callers have been converted to the new API.
+Value relative_to_converted_to_value(RelativeTo const& relative_to)
+{
+    if (relative_to.plain_relative_to)
+        return relative_to.plain_relative_to;
+
+    if (relative_to.zoned_relative_to)
+        return relative_to.zoned_relative_to;
+
+    return js_undefined();
+}
+
 // 13.16 ToRelativeTemporalObject ( options ), https://tc39.es/proposal-temporal/#sec-temporal-torelativetemporalobject
-ThrowCompletionOr<Value> to_relative_temporal_object(VM& vm, Object const& options)
+ThrowCompletionOr<RelativeTo> to_relative_temporal_object(VM& vm, Object const& options)
 {
     auto& realm = *vm.current_realm();
 
@@ -557,7 +559,7 @@ ThrowCompletionOr<Value> to_relative_temporal_object(VM& vm, Object const& optio
     // 3. If value is undefined, then
     if (value.is_undefined()) {
         // a. Return value.
-        return value;
+        return RelativeTo {};
     }
 
     // 4. Let offsetBehaviour be option.
@@ -574,52 +576,77 @@ ThrowCompletionOr<Value> to_relative_temporal_object(VM& vm, Object const& optio
     // 6. If Type(value) is Object, then
     if (value.is_object()) {
         auto& value_object = value.as_object();
+        // a. If value has an [[InitializedTemporalZonedDateTime]] internal slot, then
+        if (is<ZonedDateTime>(value_object)) {
+            auto& zoned_relative_to = static_cast<ZonedDateTime&>(value_object);
 
-        // a. If value has either an [[InitializedTemporalDate]] or [[InitializedTemporalZonedDateTime]] internal slot, then
-        if (is<PlainDate>(value_object) || is<ZonedDateTime>(value_object)) {
-            // i. Return value.
-            return value;
+            // i. Let timeZoneRec be ? CreateTimeZoneMethodsRecord(value.[[TimeZone]], « GET-OFFSET-NANOSECONDS-FOR, GET-POSSIBLE-INSTANTS-FOR »).
+            auto time_zone_record = TRY(create_time_zone_methods_record(vm, NonnullGCPtr<Object> { zoned_relative_to.time_zone() }, { { TimeZoneMethod::GetOffsetNanosecondsFor, TimeZoneMethod::GetPossibleInstantsFor } }));
+
+            // ii. Return the Record { [[PlainRelativeTo]]: undefined, [[ZonedRelativeTo]]: value, [[TimeZoneRec]]: timeZoneRec }.
+            return RelativeTo {
+                .plain_relative_to = {},
+                .zoned_relative_to = zoned_relative_to,
+                .time_zone_record = time_zone_record,
+            };
         }
 
-        // b. If value has an [[InitializedTemporalDateTime]] internal slot, then
+        // b. If value has an [[InitializedTemporalDate]] internal slot, then
+        if (is<PlainDate>(value_object)) {
+            // i. Return the Record { [[PlainRelativeTo]]: value, [[ZonedRelativeTo]]: undefined, [[TimeZoneRec]]: undefined }.
+            return RelativeTo {
+                .plain_relative_to = static_cast<PlainDate&>(value_object),
+                .zoned_relative_to = {},
+                .time_zone_record = {},
+            };
+        }
+
+        // c. If value has an [[InitializedTemporalDateTime]] internal slot, then
         if (is<PlainDateTime>(value_object)) {
             auto& plain_date_time = static_cast<PlainDateTime&>(value_object);
 
-            // i. Return ? CreateTemporalDate(value.[[ISOYear]], value.[[ISOMonth]], value.[[ISODay]], 0, 0, 0, 0, 0, 0, value.[[Calendar]]).
-            return TRY(create_temporal_date(vm, plain_date_time.iso_year(), plain_date_time.iso_month(), plain_date_time.iso_day(), plain_date_time.calendar()));
+            // i. Let plainDate be ! CreateTemporalDate(value.[[ISOYear]], value.[[ISOMonth]], value.[[ISODay]], value.[[Calendar]]).
+            auto* plain_date = TRY(create_temporal_date(vm, plain_date_time.iso_year(), plain_date_time.iso_month(), plain_date_time.iso_day(), plain_date_time.calendar()));
+
+            // ii. Return the Record { [[PlainRelativeTo]]: plainDate, [[ZonedRelativeTo]]: undefined, [[TimeZoneRec]]: undefined }.
+            return RelativeTo {
+                .plain_relative_to = plain_date,
+                .zoned_relative_to = {},
+                .time_zone_record = {},
+            };
         }
 
-        // c. Let calendar be ? GetTemporalCalendarWithISODefault(value).
+        // d. Let calendar be ? GetTemporalCalendarWithISODefault(value).
         calendar = TRY(get_temporal_calendar_with_iso_default(vm, value_object));
 
-        // d. Let fieldNames be ? CalendarFields(calendar, « "day", "hour", "microsecond", "millisecond", "minute", "month", "monthCode", "nanosecond", "second", "year" »).
+        // e. Let fieldNames be ? CalendarFields(calendar, « "day", "hour", "microsecond", "millisecond", "minute", "month", "monthCode", "nanosecond", "second", "year" »).
         auto field_names = TRY(calendar_fields(vm, *calendar, { "day"sv, "hour"sv, "microsecond"sv, "millisecond"sv, "minute"sv, "month"sv, "monthCode"sv, "nanosecond"sv, "second"sv, "year"sv }));
 
-        // e. Let fields be ? PrepareTemporalFields(value, fieldNames, «»).
+        // f. Let fields be ? PrepareTemporalFields(value, fieldNames, «»).
         auto* fields = TRY(prepare_temporal_fields(vm, value_object, field_names, Vector<StringView> {}));
 
-        // f. Let dateOptions be OrdinaryObjectCreate(null).
+        // g. Let dateOptions be OrdinaryObjectCreate(null).
         auto date_options = Object::create(realm, nullptr);
 
-        // g. Perform ! CreateDataPropertyOrThrow(dateOptions, "overflow", "constrain").
-        MUST(date_options->create_data_property_or_throw(vm.names.overflow, MUST_OR_THROW_OOM(PrimitiveString::create(vm, "constrain"sv))));
+        // h. Perform ! CreateDataPropertyOrThrow(dateOptions, "overflow", "constrain").
+        MUST(date_options->create_data_property_or_throw(vm.names.overflow, PrimitiveString::create(vm, "constrain"_string)));
 
-        // h. Let result be ? InterpretTemporalDateTimeFields(calendar, fields, dateOptions).
-        result = TRY(interpret_temporal_date_time_fields(vm, *calendar, *fields, *date_options));
+        // i. Let result be ? InterpretTemporalDateTimeFields(calendar, fields, dateOptions).
+        result = TRY(interpret_temporal_date_time_fields(vm, *calendar, *fields, date_options));
 
-        // i. Let offsetString be ? Get(value, "offset").
+        // j. Let offsetString be ? Get(value, "offset").
         offset_string = TRY(value_object.get(vm.names.offset));
 
-        // j. Let timeZone be ? Get(value, "timeZone").
+        // k. Let timeZone be ? Get(value, "timeZone").
         time_zone = TRY(value_object.get(vm.names.timeZone));
 
-        // k. If timeZone is not undefined, then
+        // l. If timeZone is not undefined, then
         if (!time_zone.is_undefined()) {
             // i. Set timeZone to ? ToTemporalTimeZone(timeZone).
             time_zone = TRY(to_temporal_time_zone(vm, time_zone));
         }
 
-        // l. If offsetString is undefined, then
+        // m. If offsetString is undefined, then
         if (offset_string.is_undefined()) {
             // i. Set offsetBehaviour to wall.
             offset_behavior = OffsetBehavior::Wall;
@@ -681,7 +708,12 @@ ThrowCompletionOr<Value> to_relative_temporal_object(VM& vm, Object const& optio
     // 8. If timeZone is undefined, then
     if (time_zone.is_undefined()) {
         // a. Return ? CreateTemporalDate(result.[[Year]], result.[[Month]], result.[[Day]], calendar).
-        return TRY(create_temporal_date(vm, result.year, result.month, result.day, *calendar));
+        auto* plain_date = TRY(create_temporal_date(vm, result.year, result.month, result.day, *calendar));
+        return RelativeTo {
+            .plain_relative_to = plain_date,
+            .zoned_relative_to = {},
+            .time_zone_record = {},
+        };
     }
 
     double offset_ns;
@@ -709,7 +741,13 @@ ThrowCompletionOr<Value> to_relative_temporal_object(VM& vm, Object const& optio
     auto const* epoch_nanoseconds = TRY(interpret_iso_date_time_offset(vm, result.year, result.month, result.day, result.hour, result.minute, result.second, result.millisecond, result.microsecond, result.nanosecond, offset_behavior, offset_ns, time_zone, "compatible"sv, "reject"sv, match_behavior));
 
     // 12. Return ! CreateTemporalZonedDateTime(epochNanoseconds, timeZone, calendar).
-    return MUST(create_temporal_zoned_date_time(vm, *epoch_nanoseconds, time_zone.as_object(), *calendar));
+    auto time_zone_record = TRY(create_time_zone_methods_record(vm, NonnullGCPtr<Object> { time_zone.as_object() }, { { TimeZoneMethod::GetOffsetNanosecondsFor, TimeZoneMethod::GetPossibleInstantsFor } }));
+    auto* zoned_relative_to = MUST(create_temporal_zoned_date_time(vm, *epoch_nanoseconds, time_zone.as_object(), *calendar));
+    return RelativeTo {
+        .plain_relative_to = {},
+        .zoned_relative_to = zoned_relative_to,
+        .time_zone_record = time_zone_record,
+    };
 }
 
 // 13.17 LargerOfTwoTemporalUnits ( u1, u2 ), https://tc39.es/proposal-temporal/#sec-temporal-largeroftwotemporalunits
@@ -1269,28 +1307,28 @@ ThrowCompletionOr<ISODateTime> parse_iso_date_time(VM& vm, ParseResult const& pa
     }
 
     // 7. Let yearMV be ! ToIntegerOrInfinity(CodePointsToString(year)).
-    auto year_mv = *normalized_year.value_or("0"_short_string).to_number<i32>();
+    auto year_mv = *normalized_year.value_or("0"_string).to_number<i32>();
 
     // 8. If month is empty, then
     //    a. Let monthMV be 1.
     // 9. Else,
     //    a. Let monthMV be ! ToIntegerOrInfinity(CodePointsToString(month)).
-    auto month_mv = *month.value_or("1"sv).to_uint<u8>();
+    auto month_mv = *month.value_or("1"sv).to_number<u8>();
 
     // 10. If day is empty, then
     //    a. Let dayMV be 1.
     // 11. Else,
     //    a. Let dayMV be ! ToIntegerOrInfinity(CodePointsToString(day)).
-    auto day_mv = *day.value_or("1"sv).to_uint<u8>();
+    auto day_mv = *day.value_or("1"sv).to_number<u8>();
 
     // 12. Let hourMV be ! ToIntegerOrInfinity(CodePointsToString(hour)).
-    auto hour_mv = *hour.value_or("0"sv).to_uint<u8>();
+    auto hour_mv = *hour.value_or("0"sv).to_number<u8>();
 
     // 13. Let minuteMV be ! ToIntegerOrInfinity(CodePointsToString(minute)).
-    auto minute_mv = *minute.value_or("0"sv).to_uint<u8>();
+    auto minute_mv = *minute.value_or("0"sv).to_number<u8>();
 
     // 14. Let secondMV be ! ToIntegerOrInfinity(CodePointsToString(second)).
-    auto second_mv = *second.value_or("0"sv).to_uint<u8>();
+    auto second_mv = *second.value_or("0"sv).to_number<u8>();
 
     // 15. If secondMV is 60, then
     if (second_mv == 60) {
@@ -1425,7 +1463,7 @@ ThrowCompletionOr<TemporalInstant> parse_temporal_instant_string(VM& vm, StringV
     // 4. If result.[[TimeZone]].[[Z]] is true, then
     if (result.time_zone.z) {
         // a. Set offsetString to "+00:00".
-        offset_string = TRY_OR_THROW_OOM(vm, "+00:00"_string);
+        offset_string = "+00:00"_string;
     }
 
     // 6. Assert: offsetString is not undefined.
@@ -1460,7 +1498,7 @@ ThrowCompletionOr<String> parse_temporal_calendar_string(VM& vm, StringView iso_
 
         // b. If calendar is undefined, return "iso8601".
         if (!calendar.has_value())
-            return TRY_OR_THROW_OOM(vm, "iso8601"_string);
+            return "iso8601"_string;
         // c. Else, return calendar.
         else
             return calendar.release_value();
@@ -1531,19 +1569,19 @@ ThrowCompletionOr<DurationRecord> parse_temporal_duration_string(VM& vm, StringV
     auto f_seconds_part = parse_result->duration_seconds_fraction;
 
     // 4. Let yearsMV be ! ToIntegerOrInfinity(CodePointsToString(years)).
-    auto years = years_part.value_or("0"sv).to_double().release_value();
+    auto years = years_part.value_or("0"sv).to_number<double>().release_value();
 
     // 5. Let monthsMV be ! ToIntegerOrInfinity(CodePointsToString(months)).
-    auto months = months_part.value_or("0"sv).to_double().release_value();
+    auto months = months_part.value_or("0"sv).to_number<double>().release_value();
 
     // 6. Let weeksMV be ! ToIntegerOrInfinity(CodePointsToString(weeks)).
-    auto weeks = weeks_part.value_or("0"sv).to_double().release_value();
+    auto weeks = weeks_part.value_or("0"sv).to_number<double>().release_value();
 
     // 7. Let daysMV be ! ToIntegerOrInfinity(CodePointsToString(days)).
-    auto days = days_part.value_or("0"sv).to_double().release_value();
+    auto days = days_part.value_or("0"sv).to_number<double>().release_value();
 
     // 8. Let hoursMV be ! ToIntegerOrInfinity(CodePointsToString(hours)).
-    auto hours = hours_part.value_or("0"sv).to_double().release_value();
+    auto hours = hours_part.value_or("0"sv).to_number<double>().release_value();
 
     double minutes;
 
@@ -1560,12 +1598,12 @@ ThrowCompletionOr<DurationRecord> parse_temporal_duration_string(VM& vm, StringV
         auto f_hours_scale = (double)f_hours_digits.length();
 
         // d. Let minutesMV be ! ToIntegerOrInfinity(fHoursDigits) / 10^fHoursScale × 60.
-        minutes = f_hours_digits.to_double().release_value() / pow(10., f_hours_scale) * 60;
+        minutes = f_hours_digits.to_number<double>().release_value() / pow(10., f_hours_scale) * 60;
     }
     // 10. Else,
     else {
         // a. Let minutesMV be ! ToIntegerOrInfinity(CodePointsToString(minutes)).
-        minutes = minutes_part.value_or("0"sv).to_double().release_value();
+        minutes = minutes_part.value_or("0"sv).to_number<double>().release_value();
     }
 
     double seconds;
@@ -1583,12 +1621,12 @@ ThrowCompletionOr<DurationRecord> parse_temporal_duration_string(VM& vm, StringV
         auto f_minutes_scale = (double)f_minutes_digits.length();
 
         // d. Let secondsMV be ! ToIntegerOrInfinity(fMinutesDigits) / 10^fMinutesScale × 60.
-        seconds = f_minutes_digits.to_double().release_value() / pow(10, f_minutes_scale) * 60;
+        seconds = f_minutes_digits.to_number<double>().release_value() / pow(10, f_minutes_scale) * 60;
     }
     // 12. Else if seconds is not empty, then
     else if (seconds_part.has_value()) {
         // a. Let secondsMV be ! ToIntegerOrInfinity(CodePointsToString(seconds)).
-        seconds = seconds_part.value_or("0"sv).to_double().release_value();
+        seconds = seconds_part.value_or("0"sv).to_number<double>().release_value();
     }
     // 13. Else,
     else {
@@ -1607,7 +1645,7 @@ ThrowCompletionOr<DurationRecord> parse_temporal_duration_string(VM& vm, StringV
         auto f_seconds_scale = (double)f_seconds_digits.length();
 
         // c. Let millisecondsMV be ! ToIntegerOrInfinity(fSecondsDigits) / 10^fSecondsScale × 1000.
-        milliseconds = f_seconds_digits.to_double().release_value() / pow(10, f_seconds_scale) * 1000;
+        milliseconds = f_seconds_digits.to_number<double>().release_value() / pow(10, f_seconds_scale) * 1000;
     }
     // 15. Else,
     else {
@@ -1793,7 +1831,7 @@ ThrowCompletionOr<Object*> prepare_temporal_fields(VM& vm, Object const& fields,
     // 3. For each value property of fieldNames, do
     for (auto& property : field_names) {
         // a. Let value be ? Get(fields, property).
-        auto value = TRY(fields.get(property.to_deprecated_string()));
+        auto value = TRY(fields.get(property.to_byte_string()));
 
         // b. If value is not undefined, then
         if (!value.is_undefined()) {
@@ -1822,7 +1860,7 @@ ThrowCompletionOr<Object*> prepare_temporal_fields(VM& vm, Object const& fields,
             }
 
             // iii. Perform ! CreateDataPropertyOrThrow(result, property, value).
-            MUST(result->create_data_property_or_throw(property.to_deprecated_string(), value));
+            MUST(result->create_data_property_or_throw(property.to_byte_string(), value));
         }
         // c. Else if requiredFields is a List, then
         else if (required_fields.has<Vector<StringView>>()) {
@@ -1839,7 +1877,7 @@ ThrowCompletionOr<Object*> prepare_temporal_fields(VM& vm, Object const& fields,
             }
 
             // iii. Perform ! CreateDataPropertyOrThrow(result, property, value).
-            MUST(result->create_data_property_or_throw(property.to_deprecated_string(), value));
+            MUST(result->create_data_property_or_throw(property.to_byte_string(), value));
         }
     }
 
@@ -1896,10 +1934,15 @@ ThrowCompletionOr<DifferenceSettings> get_difference_settings(VM& vm, Difference
     // 11. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit).
     auto maximum = maximum_temporal_duration_rounding_increment(*smallest_unit);
 
-    // 12. Let roundingIncrement be ? ToTemporalRoundingIncrement(options, maximum, false).
-    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *options, Optional<double> { maximum }, false));
+    // 12. Let roundingIncrement be ? ToTemporalRoundingIncrement(options).
+    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *options));
 
-    // 13. Return the Record { [[SmallestUnit]]: smallestUnit, [[LargestUnit]]: largestUnit, [[RoundingMode]]: roundingMode, [[RoundingIncrement]]: roundingIncrement, [[Options]]: options }.
+    // 13. If maximum is not undefined, perform ? ValidateTemporalRoundingIncrement(roundingIncrement, maximum, false).
+    if (maximum.has_value()) {
+        TRY(validate_temporal_rounding_increment(vm, rounding_increment, *maximum, false));
+    }
+
+    // 14. Return the Record { [[SmallestUnit]]: smallestUnit, [[LargestUnit]]: largestUnit, [[RoundingMode]]: roundingMode, [[RoundingIncrement]]: roundingIncrement, [[Options]]: options }.
     return DifferenceSettings {
         .smallest_unit = smallest_unit.release_value(),
         .largest_unit = largest_unit.release_value(),

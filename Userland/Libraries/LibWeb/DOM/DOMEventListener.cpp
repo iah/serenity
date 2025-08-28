@@ -10,14 +10,16 @@
 
 namespace Web::DOM {
 
+JS_DEFINE_ALLOCATOR(DOMEventListener);
+
 DOMEventListener::DOMEventListener() = default;
 DOMEventListener::~DOMEventListener() = default;
 
 void DOMEventListener::visit_edges(Cell::Visitor& visitor)
 {
-    Cell::visit_edges(visitor);
-    visitor.visit(callback.ptr());
-    visitor.visit(signal.ptr());
+    Base::visit_edges(visitor);
+    visitor.visit(callback);
+    visitor.visit(signal);
 }
 
 }

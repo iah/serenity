@@ -10,7 +10,6 @@
 
 #include <LibCore/Timer.h>
 #include <LibCrypto/ASN1/DER.h>
-#include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
 
 namespace TLS {
@@ -76,10 +75,14 @@ ssize_t TLSv12::handle_certificate(ReadonlyBytes buffer)
             }
             remaining -= certificate_size_specific;
 
-            auto certificate = Certificate::parse_asn1(buffer.slice(res_cert, certificate_size_specific), false);
-            if (certificate.has_value()) {
-                m_context.certificates.append(certificate.value());
+            auto certificate = Certificate::parse_certificate(buffer.slice(res_cert, certificate_size_specific), false);
+            if (!certificate.is_error()) {
+                m_context.certificates.empend(certificate.value());
                 valid_certificate = true;
+            } else {
+                dbgln("Failed to parse client cert: {}", certificate.error());
+                dbgln("{:hex-dump}", buffer.slice(res_cert, certificate_size_specific));
+                dbgln("");
             }
             res_cert += certificate_size_specific;
         } while (remaining > 0);

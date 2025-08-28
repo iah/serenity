@@ -29,7 +29,7 @@ public:
     void set_selected(bool selected);
     Color color() const { return m_color; }
 
-    Function<void(const Color)> on_click;
+    Function<void(Color const)> on_click;
 
 protected:
     virtual void click(unsigned modifiers = 0) override;
@@ -183,8 +183,9 @@ private:
     Color m_col;
 };
 
-ColorPicker::ColorPicker(Color color, Window* parent_window, DeprecatedString title)
+ColorPicker::ColorPicker(Color color, Window* parent_window, ByteString title)
     : Dialog(parent_window)
+    , m_original_color(color)
     , m_color(color)
 {
     set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/color-chooser.png"sv).release_value_but_fixme_should_propagate_errors());
@@ -206,18 +207,18 @@ void ColorPicker::set_color_has_alpha_channel(bool has_alpha)
 
 void ColorPicker::build_ui()
 {
-    auto root_container = set_main_widget<Widget>().release_value_but_fixme_should_propagate_errors();
+    auto root_container = set_main_widget<Widget>();
     root_container->set_layout<VerticalBoxLayout>(4);
     root_container->set_fill_with_background_color(true);
 
     auto& tab_widget = root_container->add<GUI::TabWidget>();
 
-    auto& tab_palette = tab_widget.add_tab<Widget>("Palette");
+    auto& tab_palette = tab_widget.add_tab<Widget>("Palette"_string);
     tab_palette.set_layout<VerticalBoxLayout>(4, 4);
 
     build_ui_palette(tab_palette);
 
-    auto& tab_custom_color = tab_widget.add_tab<Widget>("Custom Color");
+    auto& tab_custom_color = tab_widget.add_tab<Widget>("Custom Color"_string);
     tab_custom_color.set_layout<VerticalBoxLayout>(4, 4);
 
     build_ui_custom(tab_custom_color);
@@ -225,18 +226,22 @@ void ColorPicker::build_ui()
     auto& button_container = root_container->add<Widget>();
     button_container.set_preferred_height(GUI::SpecialDimension::Fit);
     button_container.set_layout<HorizontalBoxLayout>(4);
-    button_container.add_spacer().release_value_but_fixme_should_propagate_errors();
+    button_container.add_spacer();
 
     auto& ok_button = button_container.add<DialogButton>();
-    ok_button.set_text("OK"_short_string);
+    ok_button.set_text("OK"_string);
     ok_button.on_click = [this](auto) {
+        if (on_color_changed)
+            on_color_changed(m_color);
         done(ExecResult::OK);
     };
     ok_button.set_default(true);
 
     auto& cancel_button = button_container.add<DialogButton>();
-    cancel_button.set_text("Cancel"_short_string);
+    cancel_button.set_text("Cancel"_string);
     cancel_button.on_click = [this](auto) {
+        if (on_color_changed)
+            on_color_changed(m_original_color);
         done(ExecResult::Cancel);
     };
 }
@@ -322,7 +327,7 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     // Preview selected color
     m_preview_widget = preview_container.add<ColorPreview>(m_color);
 
-    vertical_container.add_spacer().release_value_but_fixme_should_propagate_errors();
+    vertical_container.add_spacer();
 
     // HTML
     auto& html_container = vertical_container.add<GUI::Widget>();
@@ -332,10 +337,10 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     auto& html_label = html_container.add<GUI::Label>();
     html_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
     html_label.set_preferred_width(48);
-    html_label.set_text("HTML:");
+    html_label.set_text("HTML:"_string);
 
     m_html_text = html_container.add<GUI::TextBox>();
-    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_deprecated_string() : m_color.to_deprecated_string_without_alpha());
+    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_byte_string() : m_color.to_byte_string_without_alpha());
     m_html_text->on_change = [this]() {
         auto color_name = m_html_text->text();
         auto optional_color = Color::from_string(color_name);
@@ -388,16 +393,16 @@ void ColorPicker::build_ui_custom(Widget& root_container)
         };
 
         if (component == Red) {
-            rgb_label.set_text("Red:");
+            rgb_label.set_text("Red:"_string);
             m_red_spinbox = spinbox;
         } else if (component == Green) {
-            rgb_label.set_text("Green:");
+            rgb_label.set_text("Green:"_string);
             m_green_spinbox = spinbox;
         } else if (component == Blue) {
-            rgb_label.set_text("Blue:");
+            rgb_label.set_text("Blue:"_string);
             m_blue_spinbox = spinbox;
         } else if (component == Alpha) {
-            rgb_label.set_text("Alpha:");
+            rgb_label.set_text("Alpha:"_string);
             m_alpha_spinbox = spinbox;
         }
     };
@@ -407,7 +412,7 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     make_spinbox(Blue, m_color.blue());
     make_spinbox(Alpha, m_color.alpha());
 
-    m_selector_button = vertical_container.add<GUI::Button>("Select on screen"_string.release_value_but_fixme_should_propagate_errors());
+    m_selector_button = vertical_container.add<GUI::Button>("Select on Screen"_string);
     m_selector_button->on_click = [this](auto) {
         auto selector = ColorSelectOverlay::construct();
         auto original_color = m_color;
@@ -430,7 +435,7 @@ void ColorPicker::update_color_widgets()
 {
     m_preview_widget->set_color(m_color);
 
-    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_deprecated_string() : m_color.to_deprecated_string_without_alpha());
+    m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_byte_string() : m_color.to_byte_string_without_alpha());
 
     m_red_spinbox->set_value(m_color.red());
     m_green_spinbox->set_value(m_color.green());
@@ -439,6 +444,8 @@ void ColorPicker::update_color_widgets()
     m_alpha_spinbox->set_enabled(m_color_has_alpha_channel);
     m_alpha->set_value(m_color.alpha());
     m_alpha->set_visible(m_color_has_alpha_channel);
+    if (on_color_changed)
+        on_color_changed(m_color);
 }
 
 void ColorPicker::create_color_button(Widget& container, unsigned rgb)
@@ -705,6 +712,8 @@ void ColorSlider::pick_value_at_position(GUI::MouseEvent& event)
     auto inner_rect = frame_inner_rect();
     auto position = event.position().constrained(inner_rect).translated(-frame_thickness(), -frame_thickness());
     auto hue = (double)position.y() / inner_rect.height() * 360;
+    if (hue >= 360)
+        hue -= 360;
     m_last_position = position.y();
     m_value = hue;
 

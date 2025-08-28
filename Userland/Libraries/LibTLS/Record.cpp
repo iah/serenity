@@ -9,15 +9,14 @@
 #include <AK/MemoryStream.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Timer.h>
-#include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
 
 namespace TLS {
 
 ByteBuffer TLSv12::build_alert(bool critical, u8 code)
 {
-    PacketBuilder builder(MessageType::Alert, (u16)m_context.options.version);
-    builder.append((u8)(critical ? AlertLevel::Critical : AlertLevel::Warning));
+    PacketBuilder builder(ContentType::ALERT, (u16)m_context.options.version);
+    builder.append((u8)(critical ? AlertLevel::FATAL : AlertLevel::WARNING));
     builder.append(code);
 
     if (critical)
@@ -31,12 +30,12 @@ ByteBuffer TLSv12::build_alert(bool critical, u8 code)
 
 void TLSv12::alert(AlertLevel level, AlertDescription code)
 {
-    auto the_alert = build_alert(level == AlertLevel::Critical, (u8)code);
-    write_packet(the_alert);
+    auto the_alert = build_alert(level == AlertLevel::FATAL, (u8)code);
+    write_packet(the_alert, true);
     MUST(flush());
 }
 
-void TLSv12::write_packet(ByteBuffer& packet)
+void TLSv12::write_packet(ByteBuffer& packet, bool immediately)
 {
     auto schedule_or_perform_flush = [&](bool immediate) {
         if (m_context.connection_status > ConnectionStatus::Disconnected) {
@@ -61,7 +60,7 @@ void TLSv12::write_packet(ByteBuffer& packet)
         // Toooooo bad, drop the record on the ground.
         return;
     }
-    schedule_or_perform_flush(false);
+    schedule_or_perform_flush(immediately);
 }
 
 void TLSv12::update_packet(ByteBuffer& packet)
@@ -69,10 +68,10 @@ void TLSv12::update_packet(ByteBuffer& packet)
     u32 header_size = 5;
     ByteReader::store(packet.offset_pointer(3), AK::convert_between_host_and_network_endian((u16)(packet.size() - header_size)));
 
-    if (packet[0] != (u8)MessageType::ChangeCipher) {
-        if (packet[0] == (u8)MessageType::Handshake && packet.size() > header_size) {
-            u8 handshake_type = packet[header_size];
-            if (handshake_type != HandshakeType::HelloRequest && handshake_type != HandshakeType::HelloVerifyRequest) {
+    if (packet[0] != (u8)ContentType::CHANGE_CIPHER_SPEC) {
+        if (packet[0] == (u8)ContentType::HANDSHAKE && packet.size() > header_size) {
+            auto handshake_type = static_cast<HandshakeType>(packet[header_size]);
+            if (handshake_type != HandshakeType::HELLO_REQUEST_RESERVED && handshake_type != HandshakeType::HELLO_VERIFY_REQUEST_RESERVED) {
                 update_hash(packet.bytes(), header_size);
             }
         }
@@ -146,9 +145,9 @@ void TLSv12::update_packet(ByteBuffer& packet)
                         u64 seq_no = AK::convert_between_host_and_network_endian(m_context.local_sequence_number);
                         u16 len = AK::convert_between_host_and_network_endian((u16)(packet.size() - header_size));
 
-                        MUST(aad_stream.write_value(seq_no));                             // sequence number
-                        MUST(aad_stream.write_entire_buffer(packet.bytes().slice(0, 3))); // content-type + version
-                        MUST(aad_stream.write_value(len));                                // length
+                        MUST(aad_stream.write_value(seq_no));                              // sequence number
+                        MUST(aad_stream.write_until_depleted(packet.bytes().slice(0, 3))); // content-type + version
+                        MUST(aad_stream.write_value(len));                                 // length
                         VERIFY(MUST(aad_stream.tell()) == MUST(aad_stream.size()));
 
                         // AEAD IV (12)
@@ -159,7 +158,7 @@ void TLSv12::update_packet(ByteBuffer& packet)
                         u8 iv[16];
                         Bytes iv_bytes { iv, 16 };
                         Bytes { m_context.crypto.local_aead_iv, 4 }.copy_to(iv_bytes);
-                        fill_with_random(iv_bytes.offset(4), 8);
+                        fill_with_random(iv_bytes.slice(4, 8));
                         memset(iv_bytes.offset(12), 0, 4);
 
                         // write the random part of the iv out
@@ -207,7 +206,7 @@ void TLSv12::update_packet(ByteBuffer& packet)
                             VERIFY_NOT_REACHED();
                         }
                         auto iv = iv_buffer_result.release_value();
-                        fill_with_random(iv.data(), iv.size());
+                        fill_with_random(iv);
 
                         // write it into the ciphertext portion of the message
                         ct.overwrite(header_size, iv.data(), iv.size());
@@ -319,14 +318,14 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
         return (i8)Error::NeedMoreData;
     }
 
-    auto type = (MessageType)buffer[0];
+    auto type = (ContentType)buffer[0];
     size_t buffer_position { 1 };
 
     // FIXME: Read the version and verify it
 
     if constexpr (TLS_DEBUG) {
-        auto version = ByteReader::load16(buffer.offset_pointer(buffer_position));
-        dbgln("type={}, version={}", (u8)type, (u16)version);
+        auto version = static_cast<ProtocolVersion>(ByteReader::load16(buffer.offset_pointer(buffer_position)));
+        dbgln("type={}, version={}", enum_to_string(type), enum_to_string(version));
     }
 
     buffer_position += 2;
@@ -341,12 +340,12 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
         return (i8)Error::NeedMoreData;
     }
 
-    dbgln_if(TLS_DEBUG, "message type: {}, length: {}", (u8)type, length);
+    dbgln_if(TLS_DEBUG, "message type: {}, length: {}", enum_to_string(type), length);
     auto plain = buffer.slice(buffer_position, buffer.size() - buffer_position);
 
     ByteBuffer decrypted;
 
-    if (m_context.cipher_spec_set && type != MessageType::ChangeCipher) {
+    if (m_context.cipher_spec_set && type != ContentType::CHANGE_CIPHER_SPEC) {
         if constexpr (TLS_DEBUG) {
             dbgln("Encrypted: ");
             print_buffer(buffer.slice(header_size, length));
@@ -359,7 +358,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
                 VERIFY(is_aead());
                 if (length < 24) {
                     dbgln("Invalid packet length");
-                    auto packet = build_alert(true, (u8)AlertDescription::DecryptError);
+                    auto packet = build_alert(true, (u8)AlertDescription::DECRYPT_ERROR);
                     write_packet(packet);
                     return_value = Error::BrokenPacket;
                     return;
@@ -387,9 +386,9 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
                 u64 seq_no = AK::convert_between_host_and_network_endian(m_context.remote_sequence_number);
                 u16 len = AK::convert_between_host_and_network_endian((u16)packet_length);
 
-                MUST(aad_stream.write_value(seq_no));                                   // sequence number
-                MUST(aad_stream.write_entire_buffer(buffer.slice(0, header_size - 2))); // content-type + version
-                MUST(aad_stream.write_value(len));                                      // length
+                MUST(aad_stream.write_value(seq_no));                                    // sequence number
+                MUST(aad_stream.write_until_depleted(buffer.slice(0, header_size - 2))); // content-type + version
+                MUST(aad_stream.write_value(len));                                       // length
                 VERIFY(MUST(aad_stream.tell()) == MUST(aad_stream.size()));
 
                 auto nonce = payload.slice(0, iv_length());
@@ -418,7 +417,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
 
                 if (consistency != Crypto::VerificationConsistency::Consistent) {
                     dbgln("integrity check failed (tag length {})", tag.size());
-                    auto packet = build_alert(true, (u8)AlertDescription::BadRecordMAC);
+                    auto packet = build_alert(true, (u8)AlertDescription::BAD_RECORD_MAC);
                     write_packet(packet);
 
                     return_value = Error::IntegrityCheckFailed;
@@ -453,7 +452,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
                 auto mac_size = mac_length();
                 if (length < mac_size) {
                     dbgln("broken packet");
-                    auto packet = build_alert(true, (u8)AlertDescription::DecryptError);
+                    auto packet = build_alert(true, (u8)AlertDescription::DECRYPT_ERROR);
                     write_packet(packet);
                     return_value = Error::BrokenPacket;
                     return;
@@ -461,7 +460,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
 
                 length -= mac_size;
 
-                const u8* message_hmac = decrypted_span.offset(length);
+                u8 const* message_hmac = decrypted_span.offset(length);
                 u8 temp_buf[5];
                 memcpy(temp_buf, buffer.offset_pointer(0), 3);
                 *(u16*)(temp_buf + 3) = AK::convert_between_host_and_network_endian(length);
@@ -473,7 +472,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
                     print_buffer(message_mac);
                     dbgln("mac computed:");
                     print_buffer(hmac);
-                    auto packet = build_alert(true, (u8)AlertDescription::BadRecordMAC);
+                    auto packet = build_alert(true, (u8)AlertDescription::BAD_RECORD_MAC);
                     write_packet(packet);
 
                     return_value = Error::IntegrityCheckFailed;
@@ -489,30 +488,32 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
     m_context.remote_sequence_number++;
 
     switch (type) {
-    case MessageType::ApplicationData:
+    case ContentType::APPLICATION_DATA:
         if (m_context.connection_status != ConnectionStatus::Established) {
             dbgln("unexpected application data");
             payload_res = (i8)Error::UnexpectedMessage;
-            auto packet = build_alert(true, (u8)AlertDescription::UnexpectedMessage);
+            auto packet = build_alert(true, (u8)AlertDescription::UNEXPECTED_MESSAGE);
             write_packet(packet);
         } else {
             dbgln_if(TLS_DEBUG, "application data message of size {}", plain.size());
 
-            if (m_context.application_buffer.try_append(plain.data(), plain.size()).is_error()) {
+            if (m_context.application_buffer.try_append(plain).is_error()) {
                 payload_res = (i8)Error::DecryptionFailed;
-                auto packet = build_alert(true, (u8)AlertDescription::DecryptionFailed);
+                auto packet = build_alert(true, (u8)AlertDescription::DECRYPTION_FAILED_RESERVED);
                 write_packet(packet);
+            } else {
+                notify_client_for_app_data();
             }
         }
         break;
-    case MessageType::Handshake:
+    case ContentType::HANDSHAKE:
         dbgln_if(TLS_DEBUG, "tls handshake message");
         payload_res = handle_handshake_payload(plain);
         break;
-    case MessageType::ChangeCipher:
+    case ContentType::CHANGE_CIPHER_SPEC:
         if (m_context.connection_status != ConnectionStatus::KeyExchange) {
             dbgln("unexpected change cipher message");
-            auto packet = build_alert(true, (u8)AlertDescription::UnexpectedMessage);
+            auto packet = build_alert(true, (u8)AlertDescription::UNEXPECTED_MESSAGE);
             write_packet(packet);
             payload_res = (i8)Error::UnexpectedMessage;
         } else {
@@ -521,7 +522,7 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
             m_context.remote_sequence_number = 0;
         }
         break;
-    case MessageType::Alert:
+    case ContentType::ALERT:
         dbgln_if(TLS_DEBUG, "alert message of length {}", length);
         if (length >= 2) {
             if constexpr (TLS_DEBUG)
@@ -531,20 +532,20 @@ ssize_t TLSv12::handle_message(ReadonlyBytes buffer)
             auto code = plain[1];
             dbgln_if(TLS_DEBUG, "Alert received with level {}, code {}", level, code);
 
-            if (level == (u8)AlertLevel::Critical) {
-                dbgln("We were alerted of a critical error: {} ({})", code, alert_name((AlertDescription)code));
+            if (level == (u8)AlertLevel::FATAL) {
+                dbgln("We were alerted of a critical error: {} ({})", code, enum_to_string((AlertDescription)code));
                 m_context.critical_error = code;
                 try_disambiguate_error();
                 res = (i8)Error::UnknownError;
             }
 
-            if (code == (u8)AlertDescription::CloseNotify) {
+            if (code == (u8)AlertDescription::CLOSE_NOTIFY) {
                 res += 2;
-                alert(AlertLevel::Critical, AlertDescription::CloseNotify);
+                alert(AlertLevel::FATAL, AlertDescription::CLOSE_NOTIFY);
                 if (!m_context.cipher_spec_set) {
                     // AWS CloudFront hits this.
                     dbgln("Server sent a close notify and we haven't agreed on a cipher suite. Treating it as a handshake failure.");
-                    m_context.critical_error = (u8)AlertDescription::HandshakeFailure;
+                    m_context.critical_error = (u8)AlertDescription::HANDSHAKE_FAILURE;
                     try_disambiguate_error();
                 }
                 m_context.close_notify = true;

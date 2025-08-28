@@ -13,6 +13,7 @@ namespace Web::HTML {
 
 class HTMLHtmlElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLHtmlElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLHtmlElement);
 
 public:
     virtual ~HTMLHtmlElement() override;
@@ -25,7 +26,7 @@ public:
 private:
     HTMLHtmlElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual bool is_html_html_element() const override { return true; }
 };
 

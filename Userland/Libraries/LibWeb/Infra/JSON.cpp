@@ -20,7 +20,7 @@ WebIDL::ExceptionOr<JS::Value> parse_json_string_to_javascript_value(JS::Realm& 
     auto& vm = realm.vm();
 
     // 1. Return ? Call(%JSON.parse%, undefined, « string »).
-    return TRY(JS::call(vm, realm.intrinsics().json_parse_function(), JS::js_undefined(), MUST_OR_THROW_OOM(JS::PrimitiveString::create(vm, string))));
+    return TRY(JS::call(vm, *realm.intrinsics().json_parse_function(), JS::js_undefined(), JS::PrimitiveString::create(vm, string)));
 }
 
 // https://infra.spec.whatwg.org/#parse-json-bytes-to-a-javascript-value
@@ -42,7 +42,7 @@ WebIDL::ExceptionOr<String> serialize_javascript_value_to_json_string(JS::VM& vm
     auto& realm = *vm.current_realm();
 
     // 1. Let result be ? Call(%JSON.stringify%, undefined, « value »).
-    auto result = TRY(JS::call(vm, realm.intrinsics().json_stringify_function(), JS::js_undefined(), value));
+    auto result = TRY(JS::call(vm, *realm.intrinsics().json_stringify_function(), JS::js_undefined(), value));
 
     // 2. If result is undefined, then throw a TypeError.
     if (result.is_undefined())
@@ -52,7 +52,7 @@ WebIDL::ExceptionOr<String> serialize_javascript_value_to_json_string(JS::VM& vm
     VERIFY(result.is_string());
 
     // 4. Return result.
-    return TRY(result.as_string().utf8_string());
+    return result.as_string().utf8_string();
 }
 
 // https://infra.spec.whatwg.org/#serialize-a-javascript-value-to-json-bytes

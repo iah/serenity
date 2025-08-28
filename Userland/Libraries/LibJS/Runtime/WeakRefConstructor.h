@@ -12,9 +12,10 @@ namespace JS {
 
 class WeakRefConstructor final : public NativeFunction {
     JS_OBJECT(WeakRefConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(WeakRefConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~WeakRefConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

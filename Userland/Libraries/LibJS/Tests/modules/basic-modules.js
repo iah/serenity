@@ -207,8 +207,17 @@ describe("in- and exports", () => {
         expectModulePassed("./anon-func-decl-default-export.mjs");
     });
 
-    test("can have top level using declarations which trigger at the end of running a module", () => {
-        expectModulePassed("./top-level-dispose.mjs");
+    test.xfail(
+        "can have top level using declarations which trigger at the end of running a module",
+        () => {
+            expectModulePassed("./top-level-dispose.mjs");
+        }
+    );
+
+    test("can export default a RegExp", () => {
+        const result = expectModulePassed("./default-regexp-export.mjs");
+        expect(result.default).toBeInstanceOf(RegExp);
+        expect(result.default.toString()).toBe(/foo/.toString());
     });
 });
 

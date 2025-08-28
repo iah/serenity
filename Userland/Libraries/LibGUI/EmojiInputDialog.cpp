@@ -18,7 +18,7 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/EmojiInputDialog.h>
-#include <LibGUI/EmojiInputDialogGML.h>
+#include <LibGUI/EmojiInputDialogWidget.h>
 #include <LibGUI/Frame.h>
 #include <LibGUI/ScrollableContainerWidget.h>
 #include <LibGUI/TextBox.h>
@@ -48,8 +48,8 @@ EmojiInputDialog::EmojiInputDialog(Window* parent_window)
     : Dialog(parent_window)
     , m_category_action_group(make<ActionGroup>())
 {
-    auto main_widget = set_main_widget<Frame>().release_value_but_fixme_should_propagate_errors();
-    main_widget->load_from_gml(emoji_input_dialog_gml).release_value_but_fixme_should_propagate_errors();
+    auto main_widget = EmojiInputDialogWidget::try_create().release_value_but_fixme_should_propagate_errors();
+    set_main_widget(main_widget);
 
     set_window_type(GUI::WindowType::Popup);
     set_window_mode(GUI::WindowMode::Modeless);
@@ -59,7 +59,7 @@ EmojiInputDialog::EmojiInputDialog(Window* parent_window)
     auto& scrollable_container = *main_widget->find_descendant_of_type_named<GUI::ScrollableContainerWidget>("scrollable_container"sv);
     m_search_box = main_widget->find_descendant_of_type_named<GUI::TextBox>("search_box"sv);
     m_toolbar = main_widget->find_descendant_of_type_named<GUI::Toolbar>("toolbar"sv);
-    m_emojis_widget = main_widget->find_descendant_of_type_named<GUI::Widget>("emojis"sv);
+    m_emojis_widget = scrollable_container.widget();
     m_emojis = supported_emoji();
 
     m_category_action_group->set_exclusive(true);
@@ -67,7 +67,7 @@ EmojiInputDialog::EmojiInputDialog(Window* parent_window)
 
     for (auto const& category : s_emoji_groups) {
         auto name = Unicode::emoji_group_to_string(category.group);
-        auto tooltip = name.replace("&"sv, "&&"sv, ReplaceMode::FirstOnly);
+        ByteString tooltip = name;
 
         auto set_filter_action = Action::create_checkable(
             category.representative_emoji,
@@ -126,7 +126,7 @@ auto EmojiInputDialog::supported_emoji() -> Vector<Emoji>
             builder.append_code_point(*code_point);
             code_points.append(*code_point);
         });
-        auto text = builder.to_deprecated_string();
+        auto text = builder.to_byte_string();
 
         auto emoji = Unicode::find_emoji_for_code_points(code_points);
         if (!emoji.has_value()) {
@@ -135,7 +135,7 @@ auto EmojiInputDialog::supported_emoji() -> Vector<Emoji>
             emoji->display_order = NumericLimits<u32>::max();
         }
 
-        auto button = Button::construct(String::from_deprecated_string(text).release_value_but_fixme_should_propagate_errors());
+        auto button = Button::construct(String::from_byte_string(text).release_value_but_fixme_should_propagate_errors());
         button->set_fixed_size(button_size, button_size);
         button->set_button_style(Gfx::ButtonStyle::Coolbar);
         button->on_click = [this, text](auto) mutable {
@@ -144,7 +144,7 @@ auto EmojiInputDialog::supported_emoji() -> Vector<Emoji>
         };
 
         if (!emoji->name.is_empty())
-            button->set_tooltip(emoji->name);
+            button->set_tooltip(MUST(String::from_utf8(emoji->name)));
 
         emojis.empend(move(button), emoji.release_value(), move(text));
     }

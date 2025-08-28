@@ -64,7 +64,7 @@ test("async function cannot use await in default parameters", () => {
     // Even as a reference to some variable it is not allowed
     expect(`
         var await = 4;
-        async function foo(x = await) {} 
+        async function foo(x = await) {}
     `).not.toEval();
 });
 
@@ -199,4 +199,96 @@ describe("await cannot be used in class static init blocks", () => {
         expect("class A{ static { function* await() {} } }").not.toEval();
         expect("class A{ static { async function* await() {} } }").not.toEval();
     });
+});
+
+describe("await thenables", () => {
+    test("async returning a thanable variable without fulfilling", () => {
+        let isCalled = false;
+        const obj = {
+            then() {
+                isCalled = true;
+            },
+        };
+
+        const f = async () => await obj;
+        f();
+        runQueuedPromiseJobs();
+        expect(isCalled).toBe(true);
+    });
+
+    test("async returning a thanable variable that fulfills", () => {
+        let isCalled = false;
+        const obj = {
+            then(fulfill) {
+                isCalled = true;
+                fulfill(isCalled);
+            },
+        };
+
+        const f = async () => await obj;
+        f();
+        runQueuedPromiseJobs();
+        expect(isCalled).toBe(true);
+    });
+
+    test("async returning a thenable directly without fulfilling", () => {
+        let isCalled = false;
+        const f = async () => ({
+            then() {
+                isCalled = true;
+            },
+        });
+        f();
+        runQueuedPromiseJobs();
+        expect(isCalled).toBe(true);
+    });
+
+    test("async returning a thenable directly that fulfills", () => {
+        let isCalled = false;
+        const f = async () => ({
+            then(fulfill) {
+                isCalled = true;
+                fulfill(isCalled);
+            },
+        });
+        f();
+        runQueuedPromiseJobs();
+        expect(isCalled).toBe(true);
+    });
+});
+
+describe("await observably looks up constructor of Promise objects", () => {
+    let calls = 0;
+    function makeConstructorObservable(promise) {
+        Object.defineProperty(promise, "constructor", {
+            get() {
+                calls++;
+                return Promise;
+            },
+        });
+        return promise;
+    }
+
+    async function test() {
+        await makeConstructorObservable(Promise.resolve(1));
+        await makeConstructorObservable(
+            new Promise(resolve => {
+                resolve();
+            })
+        );
+        await makeConstructorObservable(new Boolean(true));
+        await makeConstructorObservable({});
+        await makeConstructorObservable(new Number(2));
+        try {
+            await makeConstructorObservable(Promise.reject(3));
+        } catch {}
+        try {
+            return makeConstructorObservable(Promise.reject(1));
+        } catch {
+            return 2;
+        }
+    }
+    test();
+    runQueuedPromiseJobs();
+    expect(calls).toBe(4);
 });

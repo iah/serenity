@@ -13,7 +13,8 @@
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/OpenType/Tables.h>
-#include <LibGfx/Font/PathRasterizer.h>
+#include <LibGfx/Path.h>
+#include <LibGfx/Size.h>
 #include <math.h>
 
 namespace OpenType {
@@ -22,7 +23,7 @@ namespace OpenType {
 // loca: Index to Location
 class Loca {
 public:
-    static Optional<Loca> from_slice(ReadonlyBytes, u32 num_glyphs, IndexToLocFormat);
+    static ErrorOr<Loca> from_slice(ReadonlyBytes, u32 num_glyphs, IndexToLocFormat);
     u32 get_glyph_offset(u32 glyph_id) const;
 
 private:
@@ -42,6 +43,21 @@ private:
 // glyf: Glyph Data
 class Glyf {
 public:
+    enum class CompositeFlags {
+        Arg1AndArg2AreWords = 0x0001,
+        ArgsAreXYValues = 0x0002,
+        RoundXYToGrid = 0x0004,
+        WeHaveAScale = 0x0008,
+        MoreComponents = 0x0020,
+        WeHaveAnXAndYScale = 0x0040,
+        WeHaveATwoByTwo = 0x0080,
+        WeHaveInstructions = 0x0100,
+        UseMyMetrics = 0x0200,
+        OverlapCompound = 0x0400, // Not relevant - can overlap without this set
+        ScaledComponentOffset = 0x0800,
+        UnscaledComponentOffset = 0x1000,
+    };
+
     class Glyph {
     public:
         Glyph(ReadonlyBytes slice, i16 xmin, i16 ymin, i16 xmax, i16 ymax, i16 num_contours = -1)
@@ -56,17 +72,22 @@ public:
                 m_type = Type::Simple;
             }
         }
+
         template<typename GlyphCb>
-        RefPtr<Gfx::Bitmap> rasterize(i16 font_ascender, i16 font_descender, float x_scale, float y_scale, Gfx::GlyphSubpixelOffset subpixel_offset, GlyphCb glyph_callback) const
+        bool append_path(Gfx::Path& path, i16 font_ascender, i16 font_descender, float x_scale, float y_scale, GlyphCb glyph_callback) const
         {
             switch (m_type) {
             case Type::Simple:
-                return rasterize_simple(font_ascender, font_descender, x_scale, y_scale, subpixel_offset);
+                return append_simple_path(path, font_ascender, font_descender, x_scale, y_scale);
             case Type::Composite:
-                return rasterize_composite(font_ascender, font_descender, x_scale, y_scale, subpixel_offset, glyph_callback);
+                return append_composite_path(path, font_ascender, x_scale, y_scale, glyph_callback);
             }
             VERIFY_NOT_REACHED();
         }
+
+        i16 xmax() const { return m_xmax; }
+        i16 xmin() const { return m_xmin; }
+
         int ascender() const { return m_ymax; }
         int descender() const { return m_ymin; }
 
@@ -97,11 +118,11 @@ public:
             u32 m_offset { 0 };
         };
 
-        void rasterize_impl(Gfx::PathRasterizer&, Gfx::AffineTransform const&) const;
-        RefPtr<Gfx::Bitmap> rasterize_simple(i16 ascender, i16 descender, float x_scale, float y_scale, Gfx::GlyphSubpixelOffset) const;
+        void append_path_impl(Gfx::Path&, Gfx::AffineTransform const&) const;
+        bool append_simple_path(Gfx::Path&, i16 ascender, i16 descender, float x_scale, float y_scale) const;
 
         template<typename GlyphCb>
-        void rasterize_composite_loop(Gfx::PathRasterizer& rasterizer, Gfx::AffineTransform const& transform, GlyphCb glyph_callback) const
+        void resolve_composite_path_loop(Gfx::Path& path, Gfx::AffineTransform const& transform, GlyphCb glyph_callback) const
         {
             ComponentIterator component_iterator(m_slice);
 
@@ -113,30 +134,27 @@ public:
                 auto item = opt_item.value();
                 Gfx::AffineTransform affine_here { transform };
                 affine_here.multiply(item.affine);
-                Glyph glyph = glyph_callback(item.glyph_id);
+                auto glyph = glyph_callback(item.glyph_id);
+                if (!glyph.has_value())
+                    continue;
 
-                if (glyph.m_type == Type::Simple) {
-                    glyph.rasterize_impl(rasterizer, affine_here);
+                if (glyph->m_type == Type::Simple) {
+                    glyph->append_path_impl(path, affine_here);
                 } else {
-                    glyph.rasterize_composite_loop(rasterizer, transform, glyph_callback);
+                    glyph->resolve_composite_path_loop(path, transform, glyph_callback);
                 }
             }
         }
 
         template<typename GlyphCb>
-        RefPtr<Gfx::Bitmap> rasterize_composite(i16 font_ascender, i16 font_descender, float x_scale, float y_scale, Gfx::GlyphSubpixelOffset subpixel_offset, GlyphCb glyph_callback) const
+        bool append_composite_path(Gfx::Path& path, i16 font_ascender, float x_scale, float y_scale, GlyphCb glyph_callback) const
         {
-            u32 width = (u32)(ceilf((m_xmax - m_xmin) * x_scale)) + 1;
-            u32 height = (u32)(ceilf((font_ascender - font_descender) * y_scale)) + 1;
-            Gfx::PathRasterizer rasterizer(Gfx::IntSize(width, height));
             auto affine = Gfx::AffineTransform()
-                              .translate(subpixel_offset.to_float_point())
+                              .translate(path.last_point())
                               .scale(x_scale, -y_scale)
                               .translate(-m_xmin, -font_ascender);
-
-            rasterize_composite_loop(rasterizer, affine, glyph_callback);
-
-            return rasterizer.accumulate();
+            resolve_composite_path_loop(path, affine, glyph_callback);
+            return true;
         }
 
         Type m_type { Type::Composite };
@@ -152,17 +170,18 @@ public:
         : m_slice(slice)
     {
     }
-    Glyph glyph(u32 offset) const;
+    Optional<Glyph> glyph(u32 offset) const;
 
 private:
     // https://learn.microsoft.com/en-us/typography/opentype/spec/glyf#glyph-headers
-    struct GlyphHeader {
+    struct [[gnu::packed]] GlyphHeader {
         BigEndian<i16> number_of_contours;
         BigEndian<i16> x_min;
         BigEndian<i16> y_min;
         BigEndian<i16> x_max;
         BigEndian<i16> y_max;
     };
+    static_assert(AssertSize<GlyphHeader, 10>());
 
     ReadonlyBytes m_slice;
 };

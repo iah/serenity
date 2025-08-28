@@ -12,9 +12,10 @@ namespace JS {
 
 class ArrayConstructor final : public NativeFunction {
     JS_OBJECT(ArrayConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(ArrayConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ArrayConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -26,6 +27,7 @@ private:
     virtual bool has_constructor() const override { return true; }
 
     JS_DECLARE_NATIVE_FUNCTION(from);
+    JS_DECLARE_NATIVE_FUNCTION(from_async);
     JS_DECLARE_NATIVE_FUNCTION(is_array);
     JS_DECLARE_NATIVE_FUNCTION(of);
 

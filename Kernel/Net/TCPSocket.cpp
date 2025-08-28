@@ -7,18 +7,20 @@
 #include <AK/Singleton.h>
 #include <AK/Time.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Devices/RandomDevice.h>
+#include <Kernel/Devices/Generic/RandomDevice.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/EthernetFrameHeader.h>
-#include <Kernel/Net/IPv4.h>
+#include <Kernel/Net/IP/IP.h>
+#include <Kernel/Net/IP/IPv4.h>
 #include <Kernel/Net/NetworkAdapter.h>
 #include <Kernel/Net/NetworkingManagement.h>
 #include <Kernel/Net/Routing.h>
 #include <Kernel/Net/TCP.h>
 #include <Kernel/Net/TCPSocket.h>
-#include <Kernel/Process.h>
-#include <Kernel/Random.h>
+#include <Kernel/Security/Random.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Time/TimeManagement.h>
 
 namespace Kernel {
 
@@ -73,24 +75,43 @@ void TCPSocket::set_state(State new_state)
         // are packets on the way which we wouldn't want a new socket to get hit
         // with, so there's no point in keeping the receive buffer around.
         drop_receive_buffer();
-    }
 
-    if (new_state == State::Closed) {
-        closing_sockets().with_exclusive([&](auto& table) {
-            table.remove(tuple());
+        auto deadline = TimeManagement::the().current_time(CLOCK_MONOTONIC_COARSE) + maximum_segment_lifetime;
+        auto timer_was_added = TimerQueue::the().add_timer_without_id(*m_timer, CLOCK_MONOTONIC_COARSE, deadline, [&]() {
+            dbgln_if(TCP_SOCKET_DEBUG, "TCPSocket({}) TimeWait timer elpased", this);
+            if (m_state == State::TimeWait) {
+                m_state = State::Closed;
+                do_state_closed();
+            }
         });
 
-        if (m_originator)
-            release_to_originator();
+        if (!timer_was_added) [[unlikely]] {
+            dbgln_if(TCP_SOCKET_DEBUG, "TCPSocket({}) TimeWait timer deadline is in the past", this);
+            m_state = State::Closed;
+            new_state = State::Closed;
+        }
     }
+
+    if (new_state == State::Closed)
+        do_state_closed();
 
     if (previous_role != m_role || was_disconnected != protocol_is_disconnected())
         evaluate_block_conditions();
 }
 
-static Singleton<MutexProtected<HashMap<IPv4SocketTuple, LockRefPtr<TCPSocket>>>> s_socket_closing;
+void TCPSocket::do_state_closed()
+{
+    if (m_originator)
+        release_to_originator();
 
-MutexProtected<HashMap<IPv4SocketTuple, LockRefPtr<TCPSocket>>>& TCPSocket::closing_sockets()
+    closing_sockets().with_exclusive([&](auto& table) {
+        table.remove(tuple());
+    });
+}
+
+static Singleton<MutexProtected<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>> s_socket_closing;
+
+MutexProtected<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& TCPSocket::closing_sockets()
 {
     return *s_socket_closing;
 }
@@ -102,9 +123,9 @@ MutexProtected<HashMap<IPv4SocketTuple, TCPSocket*>>& TCPSocket::sockets_by_tupl
     return *s_socket_tuples;
 }
 
-LockRefPtr<TCPSocket> TCPSocket::from_tuple(IPv4SocketTuple const& tuple)
+RefPtr<TCPSocket> TCPSocket::from_tuple(IPv4SocketTuple const& tuple)
 {
-    return sockets_by_tuple().with_shared([&](auto const& table) -> LockRefPtr<TCPSocket> {
+    return sockets_by_tuple().with_shared([&](auto const& table) -> RefPtr<TCPSocket> {
         auto exact_match = table.get(tuple);
         if (exact_match.has_value())
             return { *exact_match.value() };
@@ -122,10 +143,10 @@ LockRefPtr<TCPSocket> TCPSocket::from_tuple(IPv4SocketTuple const& tuple)
         return {};
     });
 }
-ErrorOr<NonnullLockRefPtr<TCPSocket>> TCPSocket::try_create_client(IPv4Address const& new_local_address, u16 new_local_port, IPv4Address const& new_peer_address, u16 new_peer_port)
+ErrorOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create_client(IPv4Address const& new_local_address, u16 new_local_port, IPv4Address const& new_peer_address, u16 new_peer_port)
 {
     auto tuple = IPv4SocketTuple(new_local_address, new_local_port, new_peer_address, new_peer_port);
-    return sockets_by_tuple().with_exclusive([&](auto& table) -> ErrorOr<NonnullLockRefPtr<TCPSocket>> {
+    return sockets_by_tuple().with_exclusive([&](auto& table) -> ErrorOr<NonnullRefPtr<TCPSocket>> {
         if (table.contains(tuple))
             return EEXIST;
 
@@ -137,10 +158,12 @@ ErrorOr<NonnullLockRefPtr<TCPSocket>> TCPSocket::try_create_client(IPv4Address c
         client->set_local_port(new_local_port);
         client->set_peer_address(new_peer_address);
         client->set_peer_port(new_peer_port);
+        client->set_bound();
         client->set_direction(Direction::Incoming);
         client->set_originator(*this);
 
         m_pending_release_for_accept.set(tuple, client);
+        client->m_registered_socket_tuple = tuple;
         table.set(tuple, client);
 
         return { move(client) };
@@ -154,7 +177,7 @@ void TCPSocket::release_to_originator()
     m_originator.clear();
 }
 
-void TCPSocket::release_for_accept(NonnullLockRefPtr<TCPSocket> socket)
+void TCPSocket::release_for_accept(NonnullRefPtr<TCPSocket> socket)
 {
     VERIFY(m_pending_release_for_accept.contains(socket->tuple()));
     m_pending_release_for_accept.remove(socket->tuple());
@@ -162,10 +185,12 @@ void TCPSocket::release_for_accept(NonnullLockRefPtr<TCPSocket> socket)
     [[maybe_unused]] auto rc = queue_connection_from(move(socket));
 }
 
-TCPSocket::TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, NonnullOwnPtr<KBuffer> scratch_buffer)
+TCPSocket::TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, NonnullOwnPtr<KBuffer> scratch_buffer, NonnullRefPtr<Timer> timer)
     : IPv4Socket(SOCK_STREAM, protocol, move(receive_buffer), move(scratch_buffer))
+    , m_last_ack_sent_time(TimeManagement::the().monotonic_time())
+    , m_last_retransmit_time(TimeManagement::the().monotonic_time())
+    , m_timer(timer)
 {
-    m_last_retransmit_time = kgettimeofday();
 }
 
 TCPSocket::~TCPSocket()
@@ -175,11 +200,12 @@ TCPSocket::~TCPSocket()
     dbgln_if(TCP_SOCKET_DEBUG, "~TCPSocket in state {}", to_string(state()));
 }
 
-ErrorOr<NonnullLockRefPtr<TCPSocket>> TCPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
+ErrorOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
 {
     // Note: Scratch buffer is only used for SOCK_STREAM sockets.
     auto scratch_buffer = TRY(KBuffer::try_create_with_size("TCPSocket: Scratch buffer"sv, 65536));
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) TCPSocket(protocol, move(receive_buffer), move(scratch_buffer)));
+    auto timer = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Timer));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) TCPSocket(protocol, move(receive_buffer), move(scratch_buffer), timer));
 }
 
 ErrorOr<size_t> TCPSocket::protocol_size(ReadonlyBytes raw_ipv4_packet)
@@ -202,10 +228,12 @@ ErrorOr<size_t> TCPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, UserO
 
 ErrorOr<size_t> TCPSocket::protocol_send(UserOrKernelBuffer const& data, size_t data_length)
 {
-    RoutingDecision routing_decision = route_to(peer_address(), local_address(), bound_interface());
+    auto adapter = bound_interface().with([](auto& bound_device) -> RefPtr<NetworkAdapter> { return bound_device; });
+    RoutingDecision routing_decision = route_to(peer_address(), local_address(), adapter);
     if (routing_decision.is_zero())
         return set_so_error(EHOSTUNREACH);
     size_t mss = routing_decision.adapter->mtu() - sizeof(IPv4Packet) - sizeof(TCPPacket);
+
     data_length = min(data_length, mss);
     TRY(send_tcp_packet(TCPFlags::PSH | TCPFlags::ACK, &data, data_length, &routing_decision));
     return data_length;
@@ -220,28 +248,33 @@ ErrorOr<void> TCPSocket::send_ack(bool allow_duplicate)
 
 ErrorOr<void> TCPSocket::send_tcp_packet(u16 flags, UserOrKernelBuffer const* payload, size_t payload_size, RoutingDecision* user_routing_decision)
 {
-    RoutingDecision routing_decision = user_routing_decision ? *user_routing_decision : route_to(peer_address(), local_address(), bound_interface());
+    auto adapter = bound_interface().with([](auto& bound_device) -> RefPtr<NetworkAdapter> { return bound_device; });
+    RoutingDecision routing_decision = user_routing_decision ? *user_routing_decision : route_to(peer_address(), local_address(), adapter);
     if (routing_decision.is_zero())
         return set_so_error(EHOSTUNREACH);
 
     auto ipv4_payload_offset = routing_decision.adapter->ipv4_payload_offset();
 
-    bool const has_mss_option = flags == TCPFlags::SYN;
-    const size_t options_size = has_mss_option ? sizeof(TCPOptionMSS) : 0;
-    const size_t tcp_header_size = sizeof(TCPPacket) + options_size;
-    const size_t buffer_size = ipv4_payload_offset + tcp_header_size + payload_size;
+    bool const has_mss_option = flags & TCPFlags::SYN;
+    bool const has_window_scale_option = flags & TCPFlags::SYN;
+    size_t const options_size = (has_mss_option ? sizeof(TCPOptionMSS) : 0) + (has_window_scale_option ? sizeof(TCPOptionWindowScale) : 0);
+    size_t const tcp_header_size = sizeof(TCPPacket) + align_up_to(options_size, 4);
+    size_t const buffer_size = ipv4_payload_offset + tcp_header_size + payload_size;
     auto packet = routing_decision.adapter->acquire_packet_buffer(buffer_size);
     if (!packet)
         return set_so_error(ENOMEM);
     routing_decision.adapter->fill_in_ipv4_header(*packet, local_address(),
-        routing_decision.next_hop, peer_address(), IPv4Protocol::TCP,
+        routing_decision.next_hop, peer_address(), TransportProtocol::TCP,
         buffer_size - ipv4_payload_offset, type_of_service(), ttl());
     memset(packet->buffer->data() + ipv4_payload_offset, 0, sizeof(TCPPacket));
     auto& tcp_packet = *(TCPPacket*)(packet->buffer->data() + ipv4_payload_offset);
     VERIFY(local_port());
     tcp_packet.set_source_port(local_port());
     tcp_packet.set_destination_port(peer_port());
-    tcp_packet.set_window_size(NumericLimits<u16>::max());
+    auto window_size = available_space_in_receive_buffer();
+    if ((flags & TCPFlags::SYN) == 0 && m_window_scaling_supported)
+        window_size >>= receive_window_scale();
+    tcp_packet.set_window_size(min(window_size, NumericLimits<u16>::max()));
     tcp_packet.set_sequence_number(m_sequence_number);
     tcp_packet.set_data_offset(tcp_header_size / sizeof(u32));
     tcp_packet.set_flags(flags);
@@ -255,7 +288,7 @@ ErrorOr<void> TCPSocket::send_tcp_packet(u16 flags, UserOrKernelBuffer const* pa
 
     if (flags & TCPFlags::ACK) {
         m_last_ack_number_sent = m_ack_number;
-        m_last_ack_sent_time = kgettimeofday();
+        m_last_ack_sent_time = TimeManagement::the().monotonic_time();
         tcp_packet.set_ack_number(m_ack_number);
     }
 
@@ -265,12 +298,20 @@ ErrorOr<void> TCPSocket::send_tcp_packet(u16 flags, UserOrKernelBuffer const* pa
         m_sequence_number += payload_size;
     }
 
+    u8* next_option = packet->buffer->data() + ipv4_payload_offset + sizeof(TCPPacket);
     if (has_mss_option) {
         u16 mss = routing_decision.adapter->mtu() - sizeof(IPv4Packet) - sizeof(TCPPacket);
         TCPOptionMSS mss_option { mss };
-        VERIFY(packet->buffer->size() >= ipv4_payload_offset + sizeof(TCPPacket) + sizeof(mss_option));
-        memcpy(packet->buffer->data() + ipv4_payload_offset + sizeof(TCPPacket), &mss_option, sizeof(mss_option));
+        memcpy(next_option, &mss_option, sizeof(mss_option));
+        next_option += sizeof(mss_option);
     }
+    if (has_window_scale_option) {
+        TCPOptionWindowScale window_scale_option { receive_window_scale() };
+        memcpy(next_option, &window_scale_option, sizeof(window_scale_option));
+        next_option += sizeof(window_scale_option);
+    }
+    if ((options_size % 4) != 0)
+        *next_option = to_underlying(TCPOptionKind::End);
 
     tcp_packet.set_checksum(compute_tcp_checksum(local_address(), peer_address(), tcp_packet, payload_size));
 
@@ -319,6 +360,9 @@ void TCPSocket::receive_tcp_packet(TCPPacket const& packet, u16 size)
                     if (old_adapter)
                         old_adapter->release_packet_buffer(*packet.buffer);
                     TCPPacket& tcp_packet = *(TCPPacket*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
+                    if (m_send_window_size != tcp_packet.window_size()) {
+                        m_send_window_size = tcp_packet.window_size() << m_send_window_scale;
+                    }
                     auto payload_size = packet.buffer->buffer->data() + packet.buffer->buffer->size() - (u8*)tcp_packet.payload();
                     unacked_packets.size -= payload_size;
                     evaluate_block_conditions();
@@ -345,14 +389,14 @@ void TCPSocket::receive_tcp_packet(TCPPacket const& packet, u16 size)
 bool TCPSocket::should_delay_next_ack() const
 {
     // FIXME: We don't know the MSS here so make a reasonable guess.
-    const size_t mss = 1500;
+    size_t const mss = 1500;
 
     // RFC 1122 says we should send an ACK for every two full-sized segments.
     if (m_ack_number >= m_last_ack_number_sent + 2 * mss)
         return false;
 
     // RFC 1122 says we should not delay ACKs for more than 500 milliseconds.
-    if (kgettimeofday() >= m_last_ack_sent_time + Time::from_milliseconds(500))
+    if (TimeManagement::the().monotonic_time(TimePrecision::Precise) >= m_last_ack_sent_time + Duration::from_milliseconds(500))
         return false;
 
     return true;
@@ -376,7 +420,7 @@ NetworkOrdered<u16> TCPSocket::compute_tcp_checksum(IPv4Address const& source, I
     packet_size += payload_size;
     VERIFY(!packet_size.has_overflow());
 
-    PseudoHeader pseudo_header { .header = { source, destination, 0, (u8)IPv4Protocol::TCP, packet_size.value() } };
+    PseudoHeader pseudo_header { .header = { source, destination, 0, (u8)TransportProtocol::TCP, packet_size.value() } };
 
     u32 checksum = 0;
     auto* raw_pseudo_header = pseudo_header.raw;
@@ -407,30 +451,96 @@ NetworkOrdered<u16> TCPSocket::compute_tcp_checksum(IPv4Address const& source, I
     return ~(checksum & 0xffff);
 }
 
-ErrorOr<void> TCPSocket::protocol_bind()
+ErrorOr<void> TCPSocket::setsockopt(int level, int option, Userspace<void const*> user_value, socklen_t user_value_size)
 {
-    if (has_specific_local_address() && !m_adapter) {
-        m_adapter = NetworkingManagement::the().from_ipv4_address(local_address());
-        if (!m_adapter)
-            return set_so_error(EADDRNOTAVAIL);
-    }
+    if (level != IPPROTO_TCP)
+        return IPv4Socket::setsockopt(level, option, user_value, user_value_size);
 
-    return {};
+    MutexLocker locker(mutex());
+
+    switch (option) {
+    default:
+        dbgln("setsockopt({}) at IPPROTO_TCP not implemented.", option);
+        return ENOPROTOOPT;
+    }
 }
 
-ErrorOr<void> TCPSocket::protocol_listen(bool did_allocate_port)
+ErrorOr<void> TCPSocket::getsockopt(OpenFileDescription& description, int level, int option, Userspace<void*> value, Userspace<socklen_t*> value_size)
 {
-    if (!did_allocate_port) {
+    if (level != IPPROTO_TCP)
+        return IPv4Socket::getsockopt(description, level, option, value, value_size);
+
+    MutexLocker locker(mutex());
+
+    socklen_t size;
+    TRY(copy_from_user(&size, value_size.unsafe_userspace_ptr()));
+
+    switch (option) {
+    default:
+        dbgln("getsockopt({}) at IPPROTO_TCP not implemented.", option);
+        return ENOPROTOOPT;
+    }
+}
+
+ErrorOr<void> TCPSocket::protocol_bind()
+{
+    dbgln_if(TCP_SOCKET_DEBUG, "TCPSocket::protocol_bind(), local_port() is {}", local_port());
+    // Check that we do have the address we're trying to bind to.
+    TRY(m_adapter.with([this](auto& adapter) -> ErrorOr<void> {
+        if (has_specific_local_address() && !adapter) {
+            adapter = NetworkingManagement::the().from_ipv4_address(local_address());
+            if (!adapter)
+                return set_so_error(EADDRNOTAVAIL);
+        }
+        return {};
+    }));
+
+    if (local_port() == 0) {
+        // Allocate an unused ephemeral port.
+        constexpr u16 first_ephemeral_port = 32768;
+        constexpr u16 last_ephemeral_port = 60999;
+        constexpr u16 ephemeral_port_range_size = last_ephemeral_port - first_ephemeral_port;
+        u16 first_scan_port = first_ephemeral_port + get_good_random<u16>() % ephemeral_port_range_size;
+
+        return sockets_by_tuple().with_exclusive([&](auto& table) -> ErrorOr<void> {
+            u16 port = first_scan_port;
+            while (true) {
+                IPv4SocketTuple proposed_tuple(local_address(), port, peer_address(), peer_port());
+
+                auto it = table.find(proposed_tuple);
+                if (it == table.end()) {
+                    set_local_port(port);
+                    m_registered_socket_tuple = proposed_tuple;
+                    table.set(proposed_tuple, this);
+                    dbgln_if(TCP_SOCKET_DEBUG, "...allocated port {}, tuple {}", port, proposed_tuple.to_string());
+                    return {};
+                }
+                ++port;
+                if (port > last_ephemeral_port)
+                    port = first_ephemeral_port;
+                if (port == first_scan_port)
+                    break;
+            }
+            return set_so_error(EADDRINUSE);
+        });
+    } else {
+        // Verify that the user-supplied port is not already used by someone else.
         bool ok = sockets_by_tuple().with_exclusive([&](auto& table) -> bool {
             if (table.contains(tuple()))
                 return false;
-            table.set(tuple(), this);
+            auto socket_tuple = tuple();
+            m_registered_socket_tuple = socket_tuple;
+            table.set(socket_tuple, this);
             return true;
         });
         if (!ok)
             return set_so_error(EADDRINUSE);
+        return {};
     }
+}
 
+ErrorOr<void> TCPSocket::protocol_listen()
+{
     set_direction(Direction::Passive);
     set_state(State::Listen);
     set_setup_state(SetupState::Completed);
@@ -447,8 +557,22 @@ ErrorOr<void> TCPSocket::protocol_connect(OpenFileDescription& description)
     if (!has_specific_local_address())
         set_local_address(routing_decision.adapter->ipv4_address());
 
-    if (auto result = allocate_local_port_if_needed(); result.error_or_port.is_error())
-        return result.error_or_port.release_error();
+    TRY(ensure_bound());
+    if (m_registered_socket_tuple.has_value() && m_registered_socket_tuple != tuple()) {
+        // If the socket was manually bound (using bind(2)) instead of implicitly using connect,
+        // it will already be registered in the TCPSocket sockets_by_tuple table, under the previous
+        // socket tuple. We replace the entry in the table to ensure it is also properly removed on
+        // socket deletion, to prevent a dangling reference.
+        TRY(sockets_by_tuple().with_exclusive([this](auto& table) -> ErrorOr<void> {
+            auto removed = table.remove(*m_registered_socket_tuple);
+            VERIFY(removed);
+            if (table.contains(tuple()))
+                return set_so_error(EADDRINUSE);
+            table.set(tuple(), this);
+            return {};
+        }));
+        m_registered_socket_tuple = tuple();
+    }
 
     m_sequence_number = get_good_random<u32>();
     m_ack_number = 0;
@@ -481,33 +605,6 @@ ErrorOr<void> TCPSocket::protocol_connect(OpenFileDescription& description)
     return set_so_error(EINPROGRESS);
 }
 
-ErrorOr<u16> TCPSocket::protocol_allocate_local_port()
-{
-    constexpr u16 first_ephemeral_port = 32768;
-    constexpr u16 last_ephemeral_port = 60999;
-    constexpr u16 ephemeral_port_range_size = last_ephemeral_port - first_ephemeral_port;
-    u16 first_scan_port = first_ephemeral_port + get_good_random<u16>() % ephemeral_port_range_size;
-
-    return sockets_by_tuple().with_exclusive([&](auto& table) -> ErrorOr<u16> {
-        for (u16 port = first_scan_port;;) {
-            IPv4SocketTuple proposed_tuple(local_address(), port, peer_address(), peer_port());
-
-            auto it = table.find(proposed_tuple);
-            if (it == table.end()) {
-                set_local_port(port);
-                table.set(proposed_tuple, this);
-                return port;
-            }
-            ++port;
-            if (port > last_ephemeral_port)
-                port = first_ephemeral_port;
-            if (port == first_scan_port)
-                break;
-        }
-        return set_so_error(EADDRINUSE);
-    });
-}
-
 bool TCPSocket::protocol_is_disconnected() const
 {
     switch (m_state) {
@@ -528,7 +625,7 @@ void TCPSocket::shut_down_for_writing()
 {
     if (state() == State::Established) {
         dbgln_if(TCP_SOCKET_DEBUG, " Sending FIN from Established and moving into FinWait1");
-        (void)send_tcp_packet(TCPFlags::FIN);
+        (void)send_tcp_packet(TCPFlags::FIN | TCPFlags::ACK);
         set_state(State::FinWait1);
     } else {
         dbgln(" Shutting down TCPSocket for writing but not moving to FinWait1 since state is {}", to_string(state()));
@@ -575,7 +672,7 @@ void TCPSocket::dequeue_for_retransmit()
 
 void TCPSocket::retransmit_packets()
 {
-    auto now = kgettimeofday();
+    auto now = TimeManagement::the().monotonic_time();
 
     // RFC6298 says we should have at least one second between retransmits. According to
     // RFC1122 we must do exponential backoff - even for SYN packets.
@@ -583,7 +680,7 @@ void TCPSocket::retransmit_packets()
     for (decltype(m_retransmit_attempts) i = 0; i < m_retransmit_attempts; i++)
         retransmit_interval *= 2;
 
-    if (m_last_retransmit_time > now - Time::from_seconds(retransmit_interval))
+    if (m_last_retransmit_time > now - Duration::from_seconds(retransmit_interval))
         return;
 
     dbgln_if(TCP_SOCKET_DEBUG, "TCPSocket({}) handling retransmit", this);
@@ -598,7 +695,8 @@ void TCPSocket::retransmit_packets()
         return;
     }
 
-    auto routing_decision = route_to(peer_address(), local_address(), bound_interface());
+    auto adapter = bound_interface().with([](auto& bound_device) -> RefPtr<NetworkAdapter> { return bound_device; });
+    auto routing_decision = route_to(peer_address(), local_address(), adapter);
     if (routing_decision.is_zero())
         return;
 
@@ -607,7 +705,7 @@ void TCPSocket::retransmit_packets()
             packet.tx_counter++;
 
             if constexpr (TCP_SOCKET_DEBUG) {
-                auto& tcp_packet = *(const TCPPacket*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
+                auto& tcp_packet = *(TCPPacket const*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
                 dbgln("Sending TCP packet from {}:{} to {}:{} with ({}{}{}{}) seq_no={}, ack_no={}, tx_counter={}",
                     local_address(), local_port(),
                     peer_address(), peer_port(),
@@ -632,7 +730,7 @@ void TCPSocket::retransmit_packets()
 
             routing_decision.adapter->fill_in_ipv4_header(*packet.buffer,
                 local_address(), routing_decision.next_hop, peer_address(),
-                IPv4Protocol::TCP, packet_buffer.size() - ipv4_payload_offset, type_of_service(), ttl());
+                TransportProtocol::TCP, packet_buffer.size() - ipv4_payload_offset, type_of_service(), ttl());
             routing_decision.adapter->send_packet(packet_buffer);
             m_packets_out++;
             m_bytes_out += packet_buffer.size();

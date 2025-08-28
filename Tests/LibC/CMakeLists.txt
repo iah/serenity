@@ -2,11 +2,15 @@ set(TEST_SOURCES
     TestAbort.cpp
     TestAssert.cpp
     TestCType.cpp
+    TestEnvironment.cpp
+    TestFenv.cpp
     TestIo.cpp
     TestLibCExec.cpp
+    TestLibCGrp.cpp
     TestLibCDirEnt.cpp
     TestLibCInodeWatcher.cpp
     TestLibCMkTemp.cpp
+    TestLibCNetdb.cpp
     TestLibCSetjmp.cpp
     TestLibCString.cpp
     TestLibCTime.cpp
@@ -26,6 +30,7 @@ set(TEST_SOURCES
     TestRealpath.cpp
     TestScanf.cpp
     TestSearch.cpp
+    TestSignal.cpp
     TestSnprintf.cpp
     TestStackSmash.cpp
     TestStdio.cpp
@@ -37,6 +42,8 @@ set(TEST_SOURCES
 
 set_source_files_properties(TestMath.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin")
 set_source_files_properties(TestStrtodAccuracy.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin-strtod")
+# Don't assume default rounding behavior is used for testing rounding behavior modifications.
+set_source_files_properties(TestFenv.cpp PROPERTIES COMPILE_FLAGS "-frounding-math")
 
 foreach(source IN LISTS TEST_SOURCES)
     serenity_test("${source}" LibC)

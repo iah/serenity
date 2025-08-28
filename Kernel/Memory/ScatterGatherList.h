@@ -11,7 +11,7 @@
 #include <Kernel/Devices/BlockDevice.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/PhysicalAddress.h>
+#include <Kernel/Memory/PhysicalAddress.h>
 
 namespace Kernel::Memory {
 
@@ -19,15 +19,15 @@ namespace Kernel::Memory {
 
 class ScatterGatherList final : public AtomicRefCounted<ScatterGatherList> {
 public:
-    static LockRefPtr<ScatterGatherList> try_create(AsyncBlockDeviceRequest&, Span<NonnullRefPtr<PhysicalPage>> allocated_pages, size_t device_block_size);
+    static ErrorOr<LockRefPtr<ScatterGatherList>> try_create(AsyncBlockDeviceRequest&, Span<NonnullRefPtr<PhysicalRAMPage>> allocated_pages, size_t device_block_size, StringView region_name);
     VMObject const& vmobject() const { return m_vm_object; }
     VirtualAddress dma_region() const { return m_dma_region->vaddr(); }
     size_t scatters_count() const { return m_vm_object->physical_pages().size(); }
 
 private:
-    ScatterGatherList(NonnullLockRefPtr<AnonymousVMObject>, AsyncBlockDeviceRequest&, size_t device_block_size);
+    ScatterGatherList(NonnullLockRefPtr<AnonymousVMObject>, NonnullOwnPtr<Region> dma_region);
     NonnullLockRefPtr<AnonymousVMObject> m_vm_object;
-    OwnPtr<Region> m_dma_region;
+    NonnullOwnPtr<Region> m_dma_region;
 };
 
 }

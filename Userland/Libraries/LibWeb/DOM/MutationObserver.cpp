@@ -6,14 +6,18 @@
 
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/Bindings/MutationObserverPrototype.h>
 #include <LibWeb/DOM/MutationObserver.h>
 #include <LibWeb/DOM/Node.h>
 
 namespace Web::DOM {
 
+JS_DEFINE_ALLOCATOR(MutationObserver);
+JS_DEFINE_ALLOCATOR(TransientRegisteredObserver);
+
 WebIDL::ExceptionOr<JS::NonnullGCPtr<MutationObserver>> MutationObserver::construct_impl(JS::Realm& realm, JS::GCPtr<WebIDL::CallbackType> callback)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<MutationObserver>(realm, realm, callback));
+    return realm.heap().allocate<MutationObserver>(realm, realm, callback);
 }
 
 // https://dom.spec.whatwg.org/#dom-mutationobserver-mutationobserver
@@ -29,22 +33,25 @@ MutationObserver::MutationObserver(JS::Realm& realm, JS::GCPtr<WebIDL::CallbackT
     agent_custom_data->mutation_observers.append(*this);
 }
 
-MutationObserver::~MutationObserver() = default;
-
-JS::ThrowCompletionOr<void> MutationObserver::initialize(JS::Realm& realm)
+MutationObserver::~MutationObserver()
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::MutationObserverPrototype>(realm, "MutationObserver"));
+    auto* agent_custom_data = verify_cast<Bindings::WebEngineCustomData>(vm().custom_data());
+    agent_custom_data->mutation_observers.remove_all_matching([this](auto& observer) {
+        return observer.ptr() == this;
+    });
+}
 
-    return {};
+void MutationObserver::initialize(JS::Realm& realm)
+{
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(MutationObserver);
 }
 
 void MutationObserver::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_callback.ptr());
-    for (auto& record : m_record_queue)
-        visitor.visit(record.ptr());
+    visitor.visit(m_callback);
+    visitor.visit(m_record_queue);
 }
 
 // https://dom.spec.whatwg.org/#dom-mutationobserver-observe
@@ -79,26 +86,30 @@ WebIDL::ExceptionOr<void> MutationObserver::observe(Node& target, MutationObserv
 
     // 7. For each registered of target’s registered observer list, if registered’s observer is this:
     bool updated_existing_observer = false;
-    for (auto& registered_observer : target.registered_observers_list()) {
-        if (registered_observer.observer().ptr() != this)
-            continue;
-
-        updated_existing_observer = true;
-
-        // 1. For each node of this’s node list, remove all transient registered observers whose source is registered from node’s registered observer list.
-        for (auto& node : m_node_list) {
-            // FIXME: Is this correct?
-            if (node.is_null())
+    if (target.registered_observer_list()) {
+        for (auto& registered_observer : *target.registered_observer_list()) {
+            if (registered_observer->observer().ptr() != this)
                 continue;
 
-            node->registered_observers_list().remove_all_matching([&registered_observer](RegisteredObserver& observer) {
-                return is<TransientRegisteredObserver>(observer) && verify_cast<TransientRegisteredObserver>(observer).source().ptr() == &registered_observer;
-            });
-        }
+            updated_existing_observer = true;
 
-        // 2. Set registered’s options to options.
-        registered_observer.set_options(options);
-        break;
+            // 1. For each node of this’s node list, remove all transient registered observers whose source is registered from node’s registered observer list.
+            for (auto& node : m_node_list) {
+                // FIXME: Is this correct?
+                if (node.is_null())
+                    continue;
+
+                if (node->registered_observer_list()) {
+                    node->registered_observer_list()->remove_all_matching([&registered_observer](RegisteredObserver& observer) {
+                        return is<TransientRegisteredObserver>(observer) && verify_cast<TransientRegisteredObserver>(observer).source().ptr() == registered_observer;
+                    });
+                }
+            }
+
+            // 2. Set registered’s options to options.
+            registered_observer->set_options(options);
+            break;
+        }
     }
 
     // 8. Otherwise:
@@ -123,9 +134,11 @@ void MutationObserver::disconnect()
         if (node.is_null())
             continue;
 
-        node->registered_observers_list().remove_all_matching([this](RegisteredObserver& registered_observer) {
-            return registered_observer.observer().ptr() == this;
-        });
+        if (node->registered_observer_list()) {
+            node->registered_observer_list()->remove_all_matching([this](RegisteredObserver& registered_observer) {
+                return registered_observer.observer().ptr() == this;
+            });
+        }
     }
 
     // 2. Empty this’s record queue.
@@ -163,7 +176,7 @@ RegisteredObserver::~RegisteredObserver() = default;
 void RegisteredObserver::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_observer.ptr());
+    visitor.visit(m_observer);
 }
 
 JS::NonnullGCPtr<TransientRegisteredObserver> TransientRegisteredObserver::create(MutationObserver& observer, MutationObserverInit const& options, RegisteredObserver& source)
@@ -182,7 +195,7 @@ TransientRegisteredObserver::~TransientRegisteredObserver() = default;
 void TransientRegisteredObserver::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_source.ptr());
+    visitor.visit(m_source);
 }
 
 }

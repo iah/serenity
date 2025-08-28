@@ -10,13 +10,15 @@
 
 namespace Web::CSS {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<MediaQueryListEvent>> MediaQueryListEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, MediaQueryListEventInit const& event_init)
+JS_DEFINE_ALLOCATOR(MediaQueryListEvent);
+
+JS::NonnullGCPtr<MediaQueryListEvent> MediaQueryListEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, MediaQueryListEventInit const& event_init)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<MediaQueryListEvent>(realm, realm, event_name, event_init));
+    return realm.heap().allocate<MediaQueryListEvent>(realm, realm, event_name, event_init);
 }
 
 MediaQueryListEvent::MediaQueryListEvent(JS::Realm& realm, FlyString const& event_name, MediaQueryListEventInit const& event_init)
-    : DOM::Event(realm, event_name.to_deprecated_fly_string(), event_init)
+    : DOM::Event(realm, event_name, event_init)
     , m_media(event_init.media)
     , m_matches(event_init.matches)
 {
@@ -24,12 +26,10 @@ MediaQueryListEvent::MediaQueryListEvent(JS::Realm& realm, FlyString const& even
 
 MediaQueryListEvent::~MediaQueryListEvent() = default;
 
-JS::ThrowCompletionOr<void> MediaQueryListEvent::initialize(JS::Realm& realm)
+void MediaQueryListEvent::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::MediaQueryListEventPrototype>(realm, "MediaQueryListEvent"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(MediaQueryListEvent);
 }
 
 }

@@ -7,3 +7,8 @@ Assume that EDOM exists
 Since errno values are not numeric constants on serenity, this won't
 work in cpp, assume that it exists.
 
+## `0002-Adapt-to-the-Serenity-thread-name-interface.patch`
+
+Adapt to the Serenity thread name interface
+
+

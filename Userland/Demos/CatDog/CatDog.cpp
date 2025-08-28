@@ -8,6 +8,7 @@
 #include "CatDog.h"
 #include <LibCore/File.h>
 #include <LibCore/ProcessStatisticsReader.h>
+#include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
 
@@ -22,30 +23,30 @@ ErrorOr<NonnullRefPtr<CatDog>> CatDog::create()
     //       So items with the more bits should be placed before items with less bits to
     //       ensure correct matching order. This also means that "Frame2" has to be first.
     static constexpr Array<ImageSource, 24> const image_sources = {
-        ImageSource { State::Up | State::Right | State::Frame2, "/res/icons/catdog/nerun2.png"sv },
-        { State::Up | State::Right, "/res/icons/catdog/nerun1.png"sv },
-        { State::Up | State::Left | State::Frame2, "/res/icons/catdog/nwrun2.png"sv },
-        { State::Up | State::Left, "/res/icons/catdog/nwrun1.png"sv },
-        { State::Down | State::Right | State::Frame2, "/res/icons/catdog/serun2.png"sv },
-        { State::Down | State::Right, "/res/icons/catdog/serun1.png"sv },
-        { State::Down | State::Left | State::Frame2, "/res/icons/catdog/swrun2.png"sv },
-        { State::Down | State::Left, "/res/icons/catdog/swrun1.png"sv },
-        { State::Up | State::Frame2, "/res/icons/catdog/nrun2.png"sv },
-        { State::Up, "/res/icons/catdog/nrun1.png"sv },
-        { State::Down | State::Frame2, "/res/icons/catdog/srun2.png"sv },
-        { State::Down, "/res/icons/catdog/srun1.png"sv },
-        { State::Left | State::Frame2, "/res/icons/catdog/wrun2.png"sv },
-        { State::Left, "/res/icons/catdog/wrun1.png"sv },
-        { State::Right | State::Frame2, "/res/icons/catdog/erun2.png"sv },
-        { State::Right, "/res/icons/catdog/erun1.png"sv },
-        { State::Sleeping | State::Frame2, "/res/icons/catdog/sleep2.png"sv },
-        { State::Sleeping, "/res/icons/catdog/sleep1.png"sv },
-        { State::Idle | State::Artist, "/res/icons/catdog/artist.png"sv },
-        { State::Idle | State::Inspector, "/res/icons/catdog/inspector.png"sv },
-        { State::Idle, "/res/icons/catdog/still.png"sv },
-        { State::Alert | State::Artist, "/res/icons/catdog/artist.png"sv },
-        { State::Alert | State::Inspector, "/res/icons/catdog/inspector.png"sv },
-        { State::Alert, "/res/icons/catdog/alert.png"sv }
+        ImageSource { State::Up | State::Right | State::Frame2, "/res/graphics/catdog/nerun2.png"sv },
+        { State::Up | State::Right, "/res/graphics/catdog/nerun1.png"sv },
+        { State::Up | State::Left | State::Frame2, "/res/graphics/catdog/nwrun2.png"sv },
+        { State::Up | State::Left, "/res/graphics/catdog/nwrun1.png"sv },
+        { State::Down | State::Right | State::Frame2, "/res/graphics/catdog/serun2.png"sv },
+        { State::Down | State::Right, "/res/graphics/catdog/serun1.png"sv },
+        { State::Down | State::Left | State::Frame2, "/res/graphics/catdog/swrun2.png"sv },
+        { State::Down | State::Left, "/res/graphics/catdog/swrun1.png"sv },
+        { State::Up | State::Frame2, "/res/graphics/catdog/nrun2.png"sv },
+        { State::Up, "/res/graphics/catdog/nrun1.png"sv },
+        { State::Down | State::Frame2, "/res/graphics/catdog/srun2.png"sv },
+        { State::Down, "/res/graphics/catdog/srun1.png"sv },
+        { State::Left | State::Frame2, "/res/graphics/catdog/wrun2.png"sv },
+        { State::Left, "/res/graphics/catdog/wrun1.png"sv },
+        { State::Right | State::Frame2, "/res/graphics/catdog/erun2.png"sv },
+        { State::Right, "/res/graphics/catdog/erun1.png"sv },
+        { State::Sleeping | State::Frame2, "/res/graphics/catdog/sleep2.png"sv },
+        { State::Sleeping, "/res/graphics/catdog/sleep1.png"sv },
+        { State::Idle | State::Artist, "/res/graphics/catdog/artist.png"sv },
+        { State::Idle | State::Inspector, "/res/graphics/catdog/inspector.png"sv },
+        { State::Idle, "/res/graphics/catdog/still.png"sv },
+        { State::Alert | State::Artist, "/res/graphics/catdog/artist.png"sv },
+        { State::Alert | State::Inspector, "/res/graphics/catdog/inspector.png"sv },
+        { State::Alert, "/res/graphics/catdog/alert.png"sv }
     };
 
     auto catdog = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) CatDog));
@@ -61,9 +62,25 @@ CatDog::CatDog()
     m_idle_sleep_timer.start();
 }
 
+void CatDog::update()
+{
+    if (m_state != m_last_state) {
+        if (on_state_change)
+            on_state_change();
+        m_last_state = m_state;
+    }
+    Widget::update();
+}
+
 void CatDog::set_roaming(bool roaming)
 {
     m_state = (roaming ? State::Idle : State::Alert) | special_application_states();
+    update();
+}
+
+void CatDog::set_sleeping(bool sleeping)
+{
+    m_state = (sleeping ? State::Sleeping : State::Idle) | special_application_states();
     update();
 }
 
@@ -75,13 +92,13 @@ CatDog::State CatDog::special_application_states() const
 
     auto proc_info = maybe_proc_info.release_value();
     auto maybe_paint_program = proc_info.processes.first_matching([](auto& process) {
-        return process.name.equals_ignoring_case("pixelpaint"sv) || process.name.equals_ignoring_case("fonteditor"sv);
+        return process.name.equals_ignoring_ascii_case("pixelpaint"sv) || process.name.equals_ignoring_ascii_case("fonteditor"sv);
     });
     if (maybe_paint_program.has_value())
         return State::Artist;
 
     auto maybe_inspector_program = proc_info.processes.first_matching([](auto& process) {
-        return process.name.equals_ignoring_case("inspector"sv) || process.name.equals_ignoring_case("systemmonitor"sv) || process.name.equals_ignoring_case("profiler"sv);
+        return process.name.equals_ignoring_ascii_case("systemmonitor"sv) || process.name.equals_ignoring_ascii_case("profiler"sv);
     });
     if (maybe_inspector_program.has_value())
         return State::Inspector;
@@ -99,12 +116,28 @@ bool CatDog::is_inspector() const
     return has_flag(special_application_states(), State::Inspector);
 }
 
+bool CatDog::is_sleeping() const
+{
+    return has_flag(m_state, State::Sleeping);
+}
+
 void CatDog::timer_event(Core::TimerEvent&)
 {
     using namespace AK::TimeLiterals;
 
     if (has_flag(m_state, State::Alert))
         return;
+
+    ScopeGuard update_animation_frame = [&] {
+        m_frame = m_frame == State::Frame1 ? State::Frame2 : State::Frame1;
+        update();
+    };
+
+    if (has_flag(m_state, State::Sleeping)) {
+        // Reset idle timer while sleeping to prevent instantly going to sleep again.
+        m_idle_sleep_timer.start();
+        return;
+    }
 
     m_state = special_application_states();
 
@@ -138,16 +171,12 @@ void CatDog::timer_event(Core::TimerEvent&)
 
     window()->move_to(window()->position() + move);
     m_mouse_offset -= move;
-
-    m_frame = m_frame == State::Frame1 ? State::Frame2 : State::Frame1;
-    m_state |= m_frame;
-
-    update();
 }
 
 Gfx::Bitmap& CatDog::bitmap_for_state() const
 {
-    auto const iter = m_images.find_if([&](auto const& image) { return (m_state & image.state) == image.state; });
+    auto state_with_frame = m_state | m_frame;
+    auto const iter = m_images.find_if([&](auto const& image) { return (state_with_frame & image.state) == image.state; });
     return iter != m_images.end() ? *iter->bitmap : *m_images[m_images.size() - 1].bitmap;
 }
 
@@ -162,6 +191,9 @@ void CatDog::paint_event(GUI::PaintEvent& event)
 void CatDog::track_mouse_move(Gfx::IntPoint point)
 {
     if (has_flag(m_state, State::Alert))
+        return;
+
+    if (has_flag(m_state, State::Sleeping))
         return;
 
     Gfx::IntPoint relative_offset = point - window()->position();

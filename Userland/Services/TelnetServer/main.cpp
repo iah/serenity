@@ -5,14 +5,14 @@
  */
 
 #include "Client.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/HashMap.h>
 #include <AK/Types.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Socket.h>
 #include <LibCore/TCPServer.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -20,7 +20,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-static void run_command(int ptm_fd, DeprecatedString command)
+static void run_command(int ptm_fd, ByteString command)
 {
     pid_t pid = fork();
     if (pid == 0) {
@@ -102,7 +102,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto server = TRY(Core::TCPServer::try_create());
     TRY(server->listen({}, port));
 
-    HashMap<int, NonnullRefPtr<Client>> clients;
+    IGNORE_USE_IN_ESCAPING_LAMBDA HashMap<int, NonnullRefPtr<Client>> clients;
     int next_id = 0;
 
     server->on_ready_to_accept = [&next_id, &clients, &server, command] {

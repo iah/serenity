@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -20,59 +20,63 @@
 
 namespace ThemeEditor {
 
-class AlignmentModel final : public GUI::Model {
+template<typename EnumType>
+class NamedEnumModel final : public GUI::Model {
 public:
-    static ErrorOr<NonnullRefPtr<AlignmentModel>> try_create()
+    struct EnumValue {
+        ByteString title;
+        EnumType enum_value;
+    };
+
+    static ErrorOr<NonnullRefPtr<NamedEnumModel>> try_create(Vector<EnumValue> values)
     {
-        return adopt_nonnull_ref_or_enomem(new (nothrow) AlignmentModel());
+        return adopt_nonnull_ref_or_enomem(new (nothrow) NamedEnumModel(move(values)));
     }
 
-    virtual ~AlignmentModel() = default;
+    virtual ~NamedEnumModel() = default;
 
-    virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return 3; }
+    virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return m_values.size(); }
     virtual int column_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return 2; }
 
     virtual GUI::Variant data(GUI::ModelIndex const& index, GUI::ModelRole role) const override
     {
         if (role == GUI::ModelRole::Display)
-            return m_alignments[index.row()].title;
+            return m_values[index.row()].title;
         if (role == GUI::ModelRole::Custom)
-            return m_alignments[index.row()].setting_value;
+            return m_values[index.row()].enum_value;
 
         return {};
     }
 
-    size_t index_of(Gfx::TextAlignment alignment) const
+    size_t index_of(EnumType enum_value) const
     {
-        auto match = m_alignments.find_if([&](auto& it) { return it.setting_value == alignment; });
+        auto match = m_values.find_if([&](auto& it) { return it.enum_value == enum_value; });
         return match.index();
     }
 
 private:
-    AlignmentModel() = default;
+    NamedEnumModel(Vector<EnumValue> values)
+        : m_values(move(values))
+    {
+    }
 
-    struct AlignmentValue {
-        DeprecatedString title;
-        Gfx::TextAlignment setting_value;
-    };
-    Vector<AlignmentValue> m_alignments {
-        { "Center", Gfx::TextAlignment::Center },
-        { "Left", Gfx::TextAlignment::CenterLeft },
-        { "Right", Gfx::TextAlignment::CenterRight },
-    };
+    Vector<EnumValue> m_values;
 };
 
+using AlignmentModel = NamedEnumModel<Gfx::TextAlignment>;
+using WindowThemeModel = NamedEnumModel<Gfx::WindowThemeProvider>;
+
 struct Property {
-    Variant<Gfx::AlignmentRole, Gfx::ColorRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole> role;
+    Variant<Gfx::AlignmentRole, Gfx::ColorRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole, Gfx::WindowThemeRole> role;
 };
 
 struct PropertyGroup {
-    DeprecatedString title;
+    ByteString title;
     Vector<Property> properties;
 };
 
 struct PropertyTab {
-    DeprecatedString title;
+    StringView title;
     Vector<PropertyGroup> property_groups;
 };
 
@@ -86,17 +90,17 @@ public:
     ErrorOr<void> initialize_menubar(GUI::Window&);
     GUI::Window::CloseRequestDecision request_close();
     void update_title();
-    ErrorOr<void> load_from_file(String const& filename, NonnullOwnPtr<Core::File> file);
+    ErrorOr<void> load_from_file(ByteString const& filename, NonnullOwnPtr<Core::File> file);
 
 private:
-    explicit MainWidget(NonnullRefPtr<AlignmentModel>);
+    explicit MainWidget(NonnullRefPtr<AlignmentModel>, NonnullRefPtr<WindowThemeModel>);
 
     virtual void drag_enter_event(GUI::DragEvent&) override;
     virtual void drop_event(GUI::DropEvent&) override;
 
-    void save_to_file(String const& filename, NonnullOwnPtr<Core::File> file);
+    void save_to_file(ByteString const& filename, NonnullOwnPtr<Core::File> file);
     ErrorOr<Core::AnonymousBuffer> encode();
-    void set_path(DeprecatedString);
+    void set_path(ByteString);
 
     void build_override_controls();
 
@@ -105,7 +109,8 @@ private:
     void set_color(Gfx::ColorRole, Gfx::Color);
     void set_flag(Gfx::FlagRole, bool);
     void set_metric(Gfx::MetricRole, int);
-    void set_path(Gfx::PathRole, DeprecatedString);
+    void set_path(Gfx::PathRole, ByteString);
+    void set_window_theme(Gfx::WindowThemeRole, Gfx::WindowThemeProvider);
 
     void set_palette(Gfx::Palette);
 
@@ -117,22 +122,25 @@ private:
 
     RefPtr<PreviewWidget> m_preview_widget;
     RefPtr<GUI::TabWidget> m_property_tabs;
+    RefPtr<GUI::Statusbar> m_statusbar;
     RefPtr<GUI::Action> m_save_action;
 
     RefPtr<GUI::Button> m_theme_override_apply;
     RefPtr<GUI::Button> m_theme_override_reset;
 
-    Optional<DeprecatedString> m_path;
+    Optional<ByteString> m_path;
     Gfx::Palette m_current_palette;
-    Time m_last_modified_time { Time::now_monotonic() };
+    MonotonicTime m_last_modified_time { MonotonicTime::now() };
 
     RefPtr<AlignmentModel> m_alignment_model;
+    RefPtr<WindowThemeModel> m_window_theme_model;
 
     Array<RefPtr<GUI::ComboBox>, to_underlying(Gfx::AlignmentRole::__Count)> m_alignment_inputs;
     Array<RefPtr<GUI::ColorInput>, to_underlying(Gfx::ColorRole::__Count)> m_color_inputs;
     Array<RefPtr<GUI::CheckBox>, to_underlying(Gfx::FlagRole::__Count)> m_flag_inputs;
     Array<RefPtr<GUI::SpinBox>, to_underlying(Gfx::MetricRole::__Count)> m_metric_inputs;
     Array<RefPtr<GUI::TextBox>, to_underlying(Gfx::PathRole::__Count)> m_path_inputs;
+    Array<RefPtr<GUI::ComboBox>, to_underlying(Gfx::WindowThemeRole::__Count)> m_window_theme_inputs;
 
     OwnPtr<GUI::ActionGroup> m_preview_type_action_group;
 };

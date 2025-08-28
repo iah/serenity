@@ -9,8 +9,8 @@
 #include <AK/Platform.h>
 #include <AK/Types.h>
 #include <Kernel/Arch/RegisterState.h>
-#include <Kernel/ExecutionMode.h>
-#include <Kernel/VirtualAddress.h>
+#include <Kernel/Memory/VirtualAddress.h>
+#include <Kernel/Security/ExecutionMode.h>
 
 namespace Kernel {
 
@@ -50,6 +50,7 @@ public:
     enum class Type {
         PageNotPresent = PageFaultFlags::NotPresent,
         ProtectionViolation = PageFaultFlags::ProtectionViolation,
+        Unknown,
     };
 
     enum class Access {
@@ -90,7 +91,7 @@ public:
     bool is_instruction_fetch() const { return m_is_instruction_fetch; }
 
 private:
-    Type m_type;
+    Type m_type = Type::Unknown;
     Access m_access;
     ExecutionMode m_execution_mode;
     bool m_is_reserved_bit_violation { false };

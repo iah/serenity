@@ -42,6 +42,29 @@ public:
         , m_left(left)
     {
     }
+
+    // GML compatibility constructors only for use in auto-generated code.
+
+    explicit Margins(Array<i64, 1> all)
+        : Margins(all[0])
+    {
+    }
+
+    explicit Margins(Array<i64, 2> vertical_horizontal)
+        : Margins(vertical_horizontal[0], vertical_horizontal[1])
+    {
+    }
+
+    explicit Margins(Array<i64, 3> top_horizontal_bottom)
+        : Margins(top_horizontal_bottom[0], top_horizontal_bottom[1], top_horizontal_bottom[2])
+    {
+    }
+
+    explicit Margins(Array<i64, 4> margins)
+        : Margins(margins[0], margins[1], margins[2], margins[3])
+    {
+    }
+
     ~Margins() = default;
 
     [[nodiscard]] Gfx::IntRect applied_to(Gfx::IntRect const& input) const
@@ -116,30 +139,15 @@ private:
 
 #define REGISTER_MARGINS_PROPERTY(property_name, getter, setter) \
     register_property(                                           \
-        property_name, [this]() {                                  \
-            auto m = getter();                                     \
-            JsonObject margins_object;                             \
-            margins_object.set("left", m.left());                  \
-            margins_object.set("right", m.right());                \
-            margins_object.set("top", m.top());                    \
-            margins_object.set("bottom", m.bottom());              \
-            return margins_object; },                             \
-        [this](auto& value) {                                    \
-            if (!value.is_array())                               \
-                return false;                                    \
-            auto size = value.as_array().size();                 \
-            if (size == 0 || size > 4)                           \
-                return false;                                    \
-            int m[4];                                            \
-            for (size_t i = 0; i < size; ++i)                    \
-                m[i] = value.as_array().at(i).to_i32();          \
-            if (size == 1)                                       \
-                setter({ m[0] });                                \
-            else if (size == 2)                                  \
-                setter({ m[0], m[1] });                          \
-            else if (size == 3)                                  \
-                setter({ m[0], m[1], m[2] });                    \
-            else                                                 \
-                setter({ m[0], m[1], m[2], m[3] });              \
-            return true;                                         \
-        });
+        property_name##sv,                                       \
+        [this]() {                                               \
+            auto m = getter();                                   \
+            JsonObject margins_object;                           \
+            margins_object.set("left", m.left());                \
+            margins_object.set("right", m.right());              \
+            margins_object.set("top", m.top());                  \
+            margins_object.set("bottom", m.bottom());            \
+            return margins_object;                               \
+        },                                                       \
+        ::GUI::PropertyDeserializer<::GUI::Margins> {},          \
+        [this](auto const& value) { return setter(value); });

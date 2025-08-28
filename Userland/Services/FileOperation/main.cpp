@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <AK/LexicalPath.h>
 #include <AK/StringView.h>
@@ -15,7 +15,6 @@
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
 #include <sched.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 struct WorkItem {
@@ -27,23 +26,24 @@ struct WorkItem {
         DeleteFile,
     };
     Type type;
-    DeprecatedString source;
-    DeprecatedString destination;
+    ByteString source;
+    ByteString destination;
     off_t size;
+    mode_t mode { 0 };
 };
 
 static void report_warning(StringView message);
 static void report_error(StringView message);
-static ErrorOr<int> perform_copy(Vector<StringView> const& sources, DeprecatedString const& destination);
-static ErrorOr<int> perform_move(Vector<StringView> const& sources, DeprecatedString const& destination);
+static ErrorOr<int> perform_copy(Vector<StringView> const& sources, ByteString const& destination);
+static ErrorOr<int> perform_move(Vector<StringView> const& sources, ByteString const& destination);
 static ErrorOr<int> perform_delete(Vector<StringView> const& sources);
 static ErrorOr<int> execute_work_items(Vector<WorkItem> const& items);
-static ErrorOr<NonnullOwnPtr<Core::File>> open_destination_file(DeprecatedString const& destination);
-static DeprecatedString deduplicate_destination_file_name(DeprecatedString const& destination);
+static ErrorOr<NonnullOwnPtr<Core::File>> open_destination_file(ByteString const& destination, mode_t mode);
+static ByteString deduplicate_destination_file_name(ByteString const& destination);
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    DeprecatedString operation;
+    ByteString operation;
     Vector<StringView> paths;
 
     Core::ArgsParser args_parser;
@@ -54,7 +54,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (operation == "Delete")
         return perform_delete(paths);
 
-    DeprecatedString destination = paths.take_last();
+    ByteString destination = paths.take_last();
     if (paths.is_empty())
         return Error::from_string_literal("At least one source and destination are required");
 
@@ -64,7 +64,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return perform_move(paths, destination);
 
     // FIXME: Return the formatted string directly. There is no way to do this right now without the temporary going out of scope and being destroyed.
-    report_error(DeprecatedString::formatted("Unknown operation '{}'", operation));
+    report_error(ByteString::formatted("Unknown operation '{}'", operation));
     return Error::from_string_literal("Unknown operation");
 }
 
@@ -78,15 +78,17 @@ static void report_error(StringView message)
     outln("ERROR {}", message);
 }
 
-static ErrorOr<int> collect_copy_work_items(DeprecatedString const& source, DeprecatedString const& destination, Vector<WorkItem>& items)
+static ErrorOr<int> collect_copy_work_items(ByteString const& source, ByteString const& destination, Vector<WorkItem>& items)
 {
-    if (auto const st = TRY(Core::System::lstat(source)); !S_ISDIR(st.st_mode)) {
+    auto const st = TRY(Core::System::lstat(source));
+    if (!S_ISDIR(st.st_mode)) {
         // It's a file.
         items.append(WorkItem {
             .type = WorkItem::Type::CopyFile,
             .source = source,
             .destination = LexicalPath::join(destination, LexicalPath::basename(source)).string(),
             .size = st.st_size,
+            .mode = st.st_mode,
         });
         return 0;
     }
@@ -97,6 +99,7 @@ static ErrorOr<int> collect_copy_work_items(DeprecatedString const& source, Depr
         .source = {},
         .destination = LexicalPath::join(destination, LexicalPath::basename(source)).string(),
         .size = 0,
+        .mode = st.st_mode,
     });
 
     Core::DirIterator dt(source, Core::DirIterator::SkipParentAndBaseDir);
@@ -111,7 +114,7 @@ static ErrorOr<int> collect_copy_work_items(DeprecatedString const& source, Depr
     return 0;
 }
 
-ErrorOr<int> perform_copy(Vector<StringView> const& sources, DeprecatedString const& destination)
+ErrorOr<int> perform_copy(Vector<StringView> const& sources, ByteString const& destination)
 {
     Vector<WorkItem> items;
 
@@ -122,15 +125,17 @@ ErrorOr<int> perform_copy(Vector<StringView> const& sources, DeprecatedString co
     return execute_work_items(items);
 }
 
-static ErrorOr<int> collect_move_work_items(DeprecatedString const& source, DeprecatedString const& destination, Vector<WorkItem>& items)
+static ErrorOr<int> collect_move_work_items(ByteString const& source, ByteString const& destination, Vector<WorkItem>& items)
 {
-    if (auto const st = TRY(Core::System::lstat(source)); !S_ISDIR(st.st_mode)) {
+    auto const st = TRY(Core::System::lstat(source));
+    if (!S_ISDIR(st.st_mode)) {
         // It's a file.
         items.append(WorkItem {
             .type = WorkItem::Type::MoveFile,
             .source = source,
             .destination = LexicalPath::join(destination, LexicalPath::basename(source)).string(),
             .size = st.st_size,
+            .mode = st.st_mode,
         });
         return 0;
     }
@@ -141,6 +146,7 @@ static ErrorOr<int> collect_move_work_items(DeprecatedString const& source, Depr
         .source = {},
         .destination = LexicalPath::join(destination, LexicalPath::basename(source)).string(),
         .size = 0,
+        .mode = st.st_mode,
     });
 
     Core::DirIterator dt(source, Core::DirIterator::SkipParentAndBaseDir);
@@ -162,7 +168,7 @@ static ErrorOr<int> collect_move_work_items(DeprecatedString const& source, Depr
     return 0;
 }
 
-ErrorOr<int> perform_move(Vector<StringView> const& sources, DeprecatedString const& destination)
+ErrorOr<int> perform_move(Vector<StringView> const& sources, ByteString const& destination)
 {
     Vector<WorkItem> items;
 
@@ -173,7 +179,7 @@ ErrorOr<int> perform_move(Vector<StringView> const& sources, DeprecatedString co
     return execute_work_items(items);
 }
 
-static ErrorOr<int> collect_delete_work_items(DeprecatedString const& source, Vector<WorkItem>& items)
+static ErrorOr<int> collect_delete_work_items(ByteString const& source, Vector<WorkItem>& items)
 {
     if (auto const st = TRY(Core::System::lstat(source)); !S_ISDIR(st.st_mode)) {
         // It's a file.
@@ -229,20 +235,20 @@ ErrorOr<int> execute_work_items(Vector<WorkItem> const& items)
             outln("PROGRESS {} {} {} {} {} {} {}", i, items.size(), executed_work_bytes, total_work_bytes, item_done, item.size, item.source);
         };
 
-        auto copy_file = [&](DeprecatedString const& source, DeprecatedString const& destination) -> ErrorOr<int> {
+        auto copy_file = [&](ByteString const& source, ByteString const& destination, mode_t mode) -> ErrorOr<int> {
             auto source_file = TRY(Core::File::open(source, Core::File::OpenMode::Read));
             // FIXME: When the file already exists, let the user choose the next action instead of renaming it by default.
-            auto destination_file = TRY(open_destination_file(destination));
+            auto destination_file = TRY(open_destination_file(destination, mode));
             auto buffer = TRY(ByteBuffer::create_zeroed(64 * KiB));
 
             while (true) {
                 print_progress();
-                auto bytes_read = TRY(source_file->read(buffer.bytes()));
+                auto bytes_read = TRY(source_file->read_some(buffer.bytes()));
                 if (bytes_read.is_empty())
                     break;
-                if (auto result = destination_file->write(bytes_read); result.is_error()) {
+                if (auto result = destination_file->write_until_depleted(bytes_read); result.is_error()) {
                     // FIXME: Return the formatted string directly. There is no way to do this right now without the temporary going out of scope and being destroyed.
-                    report_warning(DeprecatedString::formatted("Failed to write to destination file: {}", result.error()));
+                    report_warning(ByteString::formatted("Failed to write to destination file: {}", result.error()));
                     return result.release_error();
                 }
                 item_done += bytes_read.size();
@@ -262,8 +268,12 @@ ErrorOr<int> execute_work_items(Vector<WorkItem> const& items)
         case WorkItem::Type::CreateDirectory: {
             outln("MKDIR {}", item.destination);
             // FIXME: Support deduplication like open_destination_file() when the directory already exists.
-            if (mkdir(item.destination.characters(), 0755) < 0 && errno != EEXIST)
+            auto old_mask = umask(0);
+            auto maybe_error = Core::System::mkdir(item.destination, item.mode);
+            umask(old_mask);
+            if (maybe_error.is_error() && maybe_error.error().code() != EEXIST)
                 return Error::from_syscall("mkdir"sv, -errno);
+
             break;
         }
 
@@ -273,34 +283,35 @@ ErrorOr<int> execute_work_items(Vector<WorkItem> const& items)
         }
 
         case WorkItem::Type::CopyFile: {
-            TRY(copy_file(item.source, item.destination));
+            TRY(copy_file(item.source, item.destination, item.mode));
             break;
         }
 
         case WorkItem::Type::MoveFile: {
-            DeprecatedString destination = item.destination;
+            ByteString destination = item.destination;
             while (true) {
-                if (rename(item.source.characters(), destination.characters()) == 0) {
+                auto maybe_error = Core::System::rename(item.source, destination);
+                if (!maybe_error.is_error()) {
                     item_done += item.size;
                     executed_work_bytes += item.size;
                     print_progress();
                     break;
                 }
-                auto original_errno = errno;
+                auto error_code = maybe_error.release_error().code();
 
-                if (original_errno == EEXIST) {
+                if (error_code == EEXIST) {
                     destination = deduplicate_destination_file_name(destination);
                     continue;
                 }
 
-                if (original_errno != EXDEV) {
+                if (error_code != EXDEV) {
                     // FIXME: Return the formatted string directly. There is no way to do this right now without the temporary going out of scope and being destroyed.
-                    report_warning(DeprecatedString::formatted("Failed to move {}: {}", item.source, strerror(original_errno)));
-                    return Error::from_errno(original_errno);
+                    report_warning(ByteString::formatted("Failed to move {}: {}", item.source, strerror(error_code)));
+                    return Error::from_errno(error_code);
                 }
 
                 // EXDEV means we have to copy the file data and then remove the original
-                TRY(copy_file(item.source, item.destination));
+                TRY(copy_file(item.source, item.destination, item.mode));
                 TRY(Core::System::unlink(item.source));
                 break;
             }
@@ -327,16 +338,18 @@ ErrorOr<int> execute_work_items(Vector<WorkItem> const& items)
     return 0;
 }
 
-ErrorOr<NonnullOwnPtr<Core::File>> open_destination_file(DeprecatedString const& destination)
+ErrorOr<NonnullOwnPtr<Core::File>> open_destination_file(ByteString const& destination, mode_t mode)
 {
-    auto destination_file_or_error = Core::File::open(destination, (Core::File::OpenMode)(Core::File::OpenMode::Write | Core::File::OpenMode::Truncate | Core::File::OpenMode::MustBeNew));
+    auto old_mask = umask(0);
+    auto destination_file_or_error = Core::File::open(destination, (Core::File::OpenMode::Write | Core::File::OpenMode::Truncate | Core::File::OpenMode::MustBeNew), mode);
+    umask(old_mask);
     if (destination_file_or_error.is_error() && destination_file_or_error.error().code() == EEXIST) {
-        return open_destination_file(deduplicate_destination_file_name(destination));
+        return open_destination_file(deduplicate_destination_file_name(destination), mode);
     }
     return destination_file_or_error;
 }
 
-DeprecatedString deduplicate_destination_file_name(DeprecatedString const& destination)
+ByteString deduplicate_destination_file_name(ByteString const& destination)
 {
     LexicalPath destination_path(destination);
     auto title_without_counter = destination_path.title();
@@ -345,7 +358,7 @@ DeprecatedString deduplicate_destination_file_name(DeprecatedString const& desti
     auto last_hyphen_index = title_without_counter.find_last('-');
     if (last_hyphen_index.has_value()) {
         auto counter_string = title_without_counter.substring_view(*last_hyphen_index + 1);
-        auto last_counter = counter_string.to_uint();
+        auto last_counter = counter_string.to_number<unsigned>();
         if (last_counter.has_value()) {
             next_counter = *last_counter + 1;
             title_without_counter = title_without_counter.substring_view(0, *last_hyphen_index);
@@ -359,5 +372,5 @@ DeprecatedString deduplicate_destination_file_name(DeprecatedString const& desti
         basename.append(destination_path.extension());
     }
 
-    return LexicalPath::join(destination_path.dirname(), basename.to_deprecated_string()).string();
+    return LexicalPath::join(destination_path.dirname(), basename.to_byte_string()).string();
 }

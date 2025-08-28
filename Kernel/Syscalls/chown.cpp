@@ -8,7 +8,7 @@
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -27,18 +27,8 @@ ErrorOr<FlatPtr> Process::sys$chown(Userspace<Syscall::SC_chown_params const*> u
     TRY(require_promise(Pledge::chown));
     auto params = TRY(copy_typed_from_user(user_params));
     auto path = TRY(get_syscall_path_argument(params.path));
-
-    RefPtr<Custody> base;
-    if (params.dirfd == AT_FDCWD) {
-        base = current_directory();
-    } else {
-        auto base_description = TRY(open_file_description(params.dirfd));
-        if (!base_description->custody())
-            return EINVAL;
-        base = base_description->custody();
-    }
-
-    TRY(VirtualFileSystem::the().chown(credentials(), path->view(), params.uid, params.gid, *base, params.follow_symlinks ? 0 : O_NOFOLLOW_NOERROR));
+    CustodyBase base(params.dirfd, path->view());
+    TRY(VirtualFileSystem::chown(vfs_root_context(), credentials(), path->view(), params.uid, params.gid, base, params.follow_symlinks ? 0 : O_NOFOLLOW_NOERROR));
     return 0;
 }
 

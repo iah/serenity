@@ -6,13 +6,13 @@
 
 #include <Kernel/FileSystem/Plan9FS/FileSystem.h>
 #include <Kernel/FileSystem/Plan9FS/Inode.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<FileSystem>> Plan9FS::try_create(OpenFileDescription& file_description)
+ErrorOr<NonnullRefPtr<FileSystem>> Plan9FS::try_create(OpenFileDescription& file_description, FileSystemSpecificOptions const&)
 {
-    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Plan9FS(file_description)));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Plan9FS(file_description)));
 }
 
 Plan9FS::Plan9FS(OpenFileDescription& file_description)
@@ -21,7 +21,7 @@ Plan9FS::Plan9FS(OpenFileDescription& file_description)
 {
 }
 
-ErrorOr<void> Plan9FS::prepare_to_clear_last_mount()
+ErrorOr<void> Plan9FS::prepare_to_clear_last_mount(Inode&)
 {
     // FIXME: Do proper cleaning here.
     return {};
@@ -89,6 +89,12 @@ Plan9FS::ProtocolVersion Plan9FS::parse_protocol_version(StringView s) const
 Inode& Plan9FS::root_inode()
 {
     return *m_root_inode;
+}
+
+ErrorOr<void> Plan9FS::rename(Inode&, StringView, Inode&, StringView)
+{
+    // TODO
+    return ENOTIMPL;
 }
 
 Plan9FS::ReceiveCompletion::ReceiveCompletion(u16 tag)
@@ -327,7 +333,7 @@ size_t Plan9FS::adjust_buffer_size(size_t size) const
 void Plan9FS::thread_main()
 {
     dbgln("Plan9FS: Thread running");
-    do {
+    while (!Process::current().is_dying()) {
         auto result = read_and_dispatch_one_message();
         if (result.is_error()) {
             // If we fail to read, wake up everyone with an error.
@@ -342,7 +348,7 @@ void Plan9FS::thread_main()
             dbgln("Plan9FS: Thread terminating, error reading");
             return;
         }
-    } while (!m_thread_shutdown);
+    }
     dbgln("Plan9FS: Thread terminating");
 }
 
@@ -350,13 +356,13 @@ void Plan9FS::ensure_thread()
 {
     SpinlockLocker lock(m_thread_lock);
     if (!m_thread_running.exchange(true, AK::MemoryOrder::memory_order_acq_rel)) {
-        auto process_name = KString::try_create("Plan9FS"sv);
-        if (process_name.is_error())
-            TODO();
-        (void)Process::create_kernel_process(m_thread, process_name.release_value(), [&]() {
+        auto [_, thread] = Process::create_kernel_process("Plan9FS"sv, [&]() {
             thread_main();
             m_thread_running.store(false, AK::MemoryOrder::memory_order_release);
-        });
+            Process::current().sys$exit(0);
+            VERIFY_NOT_REACHED();
+        }).release_value_but_fixme_should_propagate_errors();
+        m_thread = move(thread);
     }
 }
 

@@ -10,7 +10,7 @@
 #include <LibGfx/Palette.h>
 
 namespace GUI {
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, GitCommitToken::Type type)
+static Gfx::TextAttributes style_for_token_type(Gfx::Palette const& palette, GitCommitToken::Type type)
 {
     switch (type) {
     case GitCommitToken::Type::Comment:
@@ -26,14 +26,12 @@ void GitCommitSyntaxHighlighter::rehighlight(Palette const& palette)
     GitCommitLexer lexer(text);
     auto tokens = lexer.lex();
 
-    Vector<GUI::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentSpan> spans;
     for (auto& token : tokens) {
-        GUI::TextDocumentSpan span;
+        Syntax::TextDocumentSpan span;
         span.range.set_start({ token.m_start.line, token.m_start.column });
         span.range.set_end({ token.m_end.line, token.m_end.column });
-        auto style = style_for_token_type(palette, token.m_type);
-        span.attributes.color = style.color;
-        span.attributes.bold = style.bold;
+        span.attributes = style_for_token_type(palette, token.m_type);
         span.is_skippable = false;
         span.data = static_cast<u64>(token.m_type);
         spans.append(span);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,33 +15,55 @@
 
 namespace Kernel {
 
-class VirtualFileSystem;
 class Mount {
-    friend class VirtualFileSystem;
+    AK_MAKE_NONCOPYABLE(Mount);
+    AK_MAKE_NONMOVABLE(Mount);
+    friend class VFSRootContext;
 
 public:
-    Mount(FileSystem&, Custody* host_custody, int flags);
-    Mount(Inode& source, Custody& host_custody, int flags);
+    struct Details {
+        NonnullRefPtr<FileSystem> guest_fs;
+        NonnullRefPtr<Inode> guest;
+    };
 
-    LockRefPtr<Inode const> host() const;
-    LockRefPtr<Inode> host();
+    // NOTE: This constructor is valid for VFSRootContext root inodes (as for the "/" directory)
+    Mount(NonnullRefPtr<Inode> source, int flags);
 
-    Inode const& guest() const { return *m_guest; }
-    Inode& guest() { return *m_guest; }
+    Mount(NonnullRefPtr<Inode> source, NonnullRefPtr<Custody> host_custody, int flags);
 
-    FileSystem const& guest_fs() const { return *m_guest_fs; }
-    FileSystem& guest_fs() { return *m_guest_fs; }
+    RefPtr<Inode const> host() const;
+    RefPtr<Inode> host();
+
+    RefPtr<Custody const> host_custody() const;
+    RefPtr<Custody> host_custody();
+
+    Inode const& guest() const { return *m_details.guest; }
+    Inode& guest() { return *m_details.guest; }
+
+    FileSystem const& guest_fs() const { return *m_details.guest_fs; }
+    FileSystem& guest_fs() { return *m_details.guest_fs; }
 
     ErrorOr<NonnullOwnPtr<KString>> absolute_path() const;
 
-    int flags() const { return m_flags; }
-    void set_flags(int flags) { m_flags = flags; }
+    int flags() const
+    {
+        return m_flags.with([](auto const& current_flags) -> int { return current_flags; });
+    }
+    void set_flags(int flags);
+
+    static void delete_mount_from_list(Mount&);
+
+    bool is_immutable() const { return m_immutable.was_set(); }
+
+    Details const& details() const { return m_details; }
 
 private:
-    NonnullLockRefPtr<Inode> m_guest;
-    NonnullLockRefPtr<FileSystem> m_guest_fs;
-    SpinlockProtected<RefPtr<Custody>, LockRank::None> m_host_custody;
-    int m_flags;
+    Details const m_details;
+
+    RefPtr<Custody> const m_host_custody;
+    SpinlockProtected<int, LockRank::None> m_flags { 0 };
+
+    SetOnce m_immutable;
 
     IntrusiveListNode<Mount> m_vfs_list_node;
 };

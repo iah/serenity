@@ -6,27 +6,27 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/CharacterData.h>
 
 namespace Web::DOM {
 
 class ProcessingInstruction final : public CharacterData {
     WEB_PLATFORM_OBJECT(ProcessingInstruction, CharacterData);
+    JS_DECLARE_ALLOCATOR(ProcessingInstruction);
 
 public:
     virtual ~ProcessingInstruction() override = default;
 
-    virtual DeprecatedFlyString node_name() const override { return m_target; }
+    virtual FlyString node_name() const override { return m_target; }
 
-    DeprecatedString const& target() const { return m_target; }
+    String const& target() const { return m_target; }
 
 private:
-    ProcessingInstruction(Document&, DeprecatedString const& data, DeprecatedString const& target);
+    ProcessingInstruction(Document&, String const& data, String const& target);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
-    DeprecatedString m_target;
+    String m_target;
 };
 
 template<>

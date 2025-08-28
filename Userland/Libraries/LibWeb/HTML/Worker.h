@@ -6,18 +6,11 @@
 
 #pragma once
 
-#include <AK/RefCounted.h>
-#include <AK/URLParser.h>
-#include <LibJS/Interpreter.h>
-#include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/Forward.h>
-#include <LibWeb/HTML/MessageEvent.h>
-#include <LibWeb/HTML/MessagePort.h>
-#include <LibWeb/HTML/Scripting/ClassicScript.h>
-#include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
-#include <LibWeb/HTML/Scripting/WorkerEnvironmentSettingsObject.h>
-#include <LibWeb/HTML/WorkerDebugConsoleClient.h>
-#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/HTML/AbstractWorker.h>
+#include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/WorkerAgent.h>
+#include <LibWeb/WebIDL/ExceptionOr.h>
 
 #define ENUMERATE_WORKER_EVENT_HANDLERS(E)  \
     E(onmessage, HTML::EventNames::message) \
@@ -25,19 +18,16 @@
 
 namespace Web::HTML {
 
-struct WorkerOptions {
-    String type { "classic"_string.release_value_but_fixme_should_propagate_errors() };
-    String credentials { "same-origin"_string.release_value_but_fixme_should_propagate_errors() };
-    String name { String {} };
-};
-
 // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-worker-interface
-class Worker : public DOM::EventTarget {
+class Worker
+    : public DOM::EventTarget
+    , public HTML::AbstractWorker {
     WEB_PLATFORM_OBJECT(Worker, DOM::EventTarget);
+    JS_DECLARE_ALLOCATOR(Worker);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> create(String const& script_url, WorkerOptions const options, DOM::Document& document);
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> construct_impl(JS::Realm& realm, String const& script_url, WorkerOptions const options)
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> create(String const& script_url, WorkerOptions const& options, DOM::Document& document);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Worker>> construct_impl(JS::Realm& realm, String const& script_url, WorkerOptions const& options)
     {
         auto& window = verify_cast<HTML::Window>(realm.global_object());
         return Worker::create(script_url, options, window.associated_document());
@@ -45,11 +35,11 @@ public:
 
     WebIDL::ExceptionOr<void> terminate();
 
-    void post_message(JS::Value message, JS::Value transfer);
+    WebIDL::ExceptionOr<void> post_message(JS::Value message, StructuredSerializeOptions const&);
+    WebIDL::ExceptionOr<void> post_message(JS::Value message, Vector<JS::Handle<JS::Object>> const& transfer);
 
     virtual ~Worker() = default;
 
-    MessagePort* implicit_message_port() { return m_implicit_port.ptr(); }
     JS::GCPtr<MessagePort> outside_message_port() { return m_outside_port; }
 
 #undef __ENUMERATE
@@ -60,38 +50,24 @@ public:
 #undef __ENUMERATE
 
 protected:
-    Worker(String const&, const WorkerOptions, DOM::Document&);
+    Worker(String const&, WorkerOptions const&, DOM::Document&);
+
+    // ^AbstractWorker
+    virtual DOM::EventTarget& this_event_target() override { return *this; }
 
 private:
-    static HTML::EventLoop& get_vm_event_loop(JS::VM& target_vm)
-    {
-        return static_cast<Bindings::WebEngineCustomData*>(target_vm.custom_data())->event_loop;
-    }
-
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     String m_script_url;
     WorkerOptions m_options;
 
     JS::GCPtr<DOM::Document> m_document;
-
-    Bindings::WebEngineCustomData m_custom_data;
-
-    NonnullRefPtr<JS::VM> m_worker_vm;
-    NonnullOwnPtr<JS::Interpreter> m_interpreter;
-    JS::GCPtr<WorkerEnvironmentSettingsObject> m_inner_settings;
-    JS::VM::InterpreterExecutionScope m_interpreter_scope;
-    RefPtr<WorkerDebugConsoleClient> m_console;
-
-    JS::NonnullGCPtr<MessagePort> m_implicit_port;
     JS::GCPtr<MessagePort> m_outside_port;
 
-    // NOTE: These are inside the worker VM.
-    JS::GCPtr<JS::Realm> m_worker_realm;
-    JS::GCPtr<JS::Object> m_worker_scope;
+    JS::GCPtr<WorkerAgent> m_agent;
 
-    void run_a_worker(AK::URL& url, EnvironmentSettingsObject& outside_settings, MessagePort& outside_port, WorkerOptions const& options);
+    void run_a_worker(URL::URL& url, EnvironmentSettingsObject& outside_settings, JS::GCPtr<MessagePort> outside_port, WorkerOptions const& options);
 };
 
 }

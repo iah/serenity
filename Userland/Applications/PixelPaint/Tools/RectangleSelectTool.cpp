@@ -62,7 +62,8 @@ void RectangleSelectTool::on_mouseup(Layer*, MouseEvent& event)
 
     m_editor->update();
 
-    auto rect_in_image = Gfx::IntRect::from_two_points(m_selection_start, m_selection_end);
+    auto rect_in_image = selection_rect();
+
     auto mask = Mask::full(rect_in_image);
 
     auto feathering = ((mask.bounding_rect().size().to_type<float>() * .5f) * m_edge_feathering).to_type<int>();
@@ -109,7 +110,7 @@ bool RectangleSelectTool::on_keydown(GUI::KeyEvent& key_event)
         m_moving_mode = MovingMode::MovingOrigin;
         return true;
     }
-    if (key_event.key() == KeyCode::Key_Control) {
+    if (key_event.key() == KeyCode::Key_LeftControl) {
         m_moving_mode = MovingMode::AroundCenter;
         return true;
     }
@@ -129,7 +130,7 @@ void RectangleSelectTool::on_keyup(GUI::KeyEvent& key_event)
 {
     if (key_event.key() == KeyCode::Key_Space && m_moving_mode == MovingMode::MovingOrigin)
         m_moving_mode = MovingMode::None;
-    else if (key_event.key() == KeyCode::Key_Control && m_moving_mode == MovingMode::AroundCenter)
+    else if (key_event.key() == KeyCode::Key_LeftControl && m_moving_mode == MovingMode::AroundCenter)
         m_moving_mode = MovingMode::None;
 }
 
@@ -141,73 +142,76 @@ void RectangleSelectTool::on_second_paint(Layer const*, GUI::PaintEvent& event)
     GUI::Painter painter(*m_editor);
     painter.add_clip_rect(event.rect());
 
-    auto rect_in_image = Gfx::IntRect::from_two_points(m_selection_start, m_selection_end);
+    auto rect_in_image = selection_rect();
+    if (rect_in_image.is_empty())
+        return;
+
     auto rect_in_editor = m_editor->content_to_frame_rect(rect_in_image);
 
     m_editor->draw_marching_ants(painter, rect_in_editor.to_rounded<int>());
 }
 
-ErrorOr<GUI::Widget*> RectangleSelectTool::get_properties_widget()
+NonnullRefPtr<GUI::Widget> RectangleSelectTool::get_properties_widget()
 {
     if (m_properties_widget) {
-        return m_properties_widget.ptr();
+        return *m_properties_widget.ptr();
     }
 
-    auto properties_widget = TRY(GUI::Widget::try_create());
-    (void)TRY(properties_widget->try_set_layout<GUI::VerticalBoxLayout>());
+    auto properties_widget = GUI::Widget::construct();
+    properties_widget->set_layout<GUI::VerticalBoxLayout>();
 
-    auto feather_container = TRY(properties_widget->try_add<GUI::Widget>());
-    feather_container->set_fixed_height(20);
-    (void)TRY(feather_container->try_set_layout<GUI::HorizontalBoxLayout>());
+    auto& feather_container = properties_widget->add<GUI::Widget>();
+    feather_container.set_fixed_height(20);
+    feather_container.set_layout<GUI::HorizontalBoxLayout>();
 
-    auto feather_label = TRY(feather_container->try_add<GUI::Label>());
-    feather_label->set_text("Feather:");
-    feather_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-    feather_label->set_fixed_size(80, 20);
+    auto& feather_label = feather_container.add<GUI::Label>();
+    feather_label.set_text("Feather:"_string);
+    feather_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    feather_label.set_fixed_size(80, 20);
 
     int const feather_slider_max = 100;
-    auto feather_slider = TRY(feather_container->try_add<GUI::ValueSlider>(Orientation::Horizontal, "%"_short_string));
-    feather_slider->set_range(0, feather_slider_max);
-    feather_slider->set_value((int)floorf(m_edge_feathering * (float)feather_slider_max));
+    auto& feather_slider = feather_container.add<GUI::ValueSlider>(Orientation::Horizontal, "%"_string);
+    feather_slider.set_range(0, feather_slider_max);
+    feather_slider.set_value((int)floorf(m_edge_feathering * (float)feather_slider_max));
 
-    feather_slider->on_change = [this](int value) {
+    feather_slider.on_change = [this](int value) {
         m_edge_feathering = (float)value / (float)feather_slider_max;
     };
-    set_primary_slider(feather_slider);
+    set_primary_slider(&feather_slider);
 
-    auto mode_container = TRY(properties_widget->try_add<GUI::Widget>());
-    mode_container->set_fixed_height(20);
-    (void)TRY(mode_container->try_set_layout<GUI::HorizontalBoxLayout>());
+    auto& mode_container = properties_widget->add<GUI::Widget>();
+    mode_container.set_fixed_height(20);
+    mode_container.set_layout<GUI::HorizontalBoxLayout>();
 
-    auto mode_label = TRY(mode_container->try_add<GUI::Label>());
-    mode_label->set_text("Mode:");
-    mode_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-    mode_label->set_fixed_size(80, 20);
+    auto& mode_label = mode_container.add<GUI::Label>();
+    mode_label.set_text("Mode:"_string);
+    mode_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    mode_label.set_fixed_size(80, 20);
 
     for (int i = 0; i < (int)Selection::MergeMode::__Count; i++) {
         switch ((Selection::MergeMode)i) {
         case Selection::MergeMode::Set:
-            TRY(m_merge_mode_names.try_append("Set"));
+            m_merge_mode_names.append("Set");
             break;
         case Selection::MergeMode::Add:
-            TRY(m_merge_mode_names.try_append("Add"));
+            m_merge_mode_names.append("Add");
             break;
         case Selection::MergeMode::Subtract:
-            TRY(m_merge_mode_names.try_append("Subtract"));
+            m_merge_mode_names.append("Subtract");
             break;
         case Selection::MergeMode::Intersect:
-            TRY(m_merge_mode_names.try_append("Intersect"));
+            m_merge_mode_names.append("Intersect");
             break;
         default:
             VERIFY_NOT_REACHED();
         }
     }
 
-    auto mode_combo = TRY(mode_container->try_add<GUI::ComboBox>());
-    mode_combo->set_only_allow_values_from_model(true);
-    mode_combo->set_model(*GUI::ItemListModel<DeprecatedString>::create(m_merge_mode_names));
-    mode_combo->set_selected_index((int)m_merge_mode);
-    mode_combo->on_change = [this](auto&&, GUI::ModelIndex const& index) {
+    auto& mode_combo = mode_container.add<GUI::ComboBox>();
+    mode_combo.set_only_allow_values_from_model(true);
+    mode_combo.set_model(*GUI::ItemListModel<ByteString>::create(m_merge_mode_names));
+    mode_combo.set_selected_index((int)m_merge_mode);
+    mode_combo.on_change = [this](auto&&, GUI::ModelIndex const& index) {
         VERIFY(index.row() >= 0);
         VERIFY(index.row() < (int)Selection::MergeMode::__Count);
 
@@ -215,12 +219,22 @@ ErrorOr<GUI::Widget*> RectangleSelectTool::get_properties_widget()
     };
 
     m_properties_widget = properties_widget;
-    return m_properties_widget.ptr();
+    return *m_properties_widget;
 }
 
 Gfx::IntPoint RectangleSelectTool::point_position_to_preferred_cell(Gfx::FloatPoint position) const
 {
     return position.to_rounded<int>();
+}
+
+Gfx::IntRect RectangleSelectTool::selection_rect() const
+{
+    auto image_rect = m_editor->image().rect();
+    auto unconstrained_selection_rect = Gfx::IntRect::from_two_points(m_selection_start, m_selection_end);
+    if (!unconstrained_selection_rect.intersects(image_rect))
+        return {};
+
+    return unconstrained_selection_rect.intersected(image_rect);
 }
 
 }

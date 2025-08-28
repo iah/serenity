@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2021, Stephan Unverwerth <s.unverwerth@serenityos.org>
  * Copyright (c) 2021-2022, Jesse Buhagiar <jooster669@gmail.com>
- * Copyright (c) 2022-2023, Jelle Raaijmakers <jelle@gmta.nl>
+ * Copyright (c) 2022-2024, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -106,7 +106,7 @@ public:
     GLContext(RefPtr<GPU::Driver> driver, NonnullOwnPtr<GPU::Device>, Gfx::Bitmap&);
     ~GLContext();
 
-    NonnullRefPtr<Gfx::Bitmap> frontbuffer() const { return m_frontbuffer; };
+    NonnullRefPtr<Gfx::Bitmap> frontbuffer() const { return m_frontbuffer; }
     void present();
 
     void gl_begin(GLenum mode);
@@ -148,6 +148,8 @@ public:
     GLboolean gl_is_list(GLuint list);
     void gl_flush();
     void gl_finish();
+    void gl_blend_color(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
+    void gl_blend_equation_separate(GLenum rgb_mode, GLenum alpha_mode);
     void gl_blend_func(GLenum src_factor, GLenum dst_factor);
     void gl_shade_model(GLenum mode);
     void gl_alpha_func(GLenum func, GLclampf ref);
@@ -242,12 +244,13 @@ public:
     void gl_get_program(GLuint program, GLenum pname, GLint* params);
 
 private:
+    void sync_clip_planes();
     void sync_device_config();
     void sync_device_sampler_config();
     void sync_device_texture_units();
     void sync_light_state();
+    void sync_matrices();
     void sync_stencil_configuration();
-    void sync_clip_planes();
 
     ErrorOr<ByteBuffer> build_extension_string();
 
@@ -298,10 +301,12 @@ private:
     Vector<FloatMatrix4x4> m_model_view_matrix_stack { FloatMatrix4x4::identity() };
     Vector<FloatMatrix4x4>* m_current_matrix_stack { &m_model_view_matrix_stack };
     FloatMatrix4x4* m_current_matrix { &m_current_matrix_stack->last() };
+    bool m_matrices_dirty { true };
 
     ALWAYS_INLINE void update_current_matrix(FloatMatrix4x4 const& new_matrix)
     {
         *m_current_matrix = new_matrix;
+        m_matrices_dirty = true;
 
         if (m_current_matrix_mode == GL_TEXTURE)
             m_texture_units_dirty = true;
@@ -330,8 +335,12 @@ private:
     GLenum m_culled_sides = GL_BACK;
 
     bool m_blend_enabled = false;
+    FloatVector4 m_blend_color { 0.f, 0.f, 0.f, 0.f };
     GLenum m_blend_source_factor = GL_ONE;
     GLenum m_blend_destination_factor = GL_ZERO;
+
+    GLenum m_blend_equation_rgb = GL_FUNC_ADD;
+    GLenum m_blend_equation_alpha = GL_FUNC_ADD;
 
     bool m_alpha_test_enabled = false;
     GLenum m_alpha_test_func = GL_ALWAYS;
@@ -466,6 +475,8 @@ private:
             decltype(&GLContext::gl_cull_face),
             decltype(&GLContext::gl_call_list),
             decltype(&GLContext::gl_call_lists),
+            decltype(&GLContext::gl_blend_color),
+            decltype(&GLContext::gl_blend_equation_separate),
             decltype(&GLContext::gl_blend_func),
             decltype(&GLContext::gl_shade_model),
             decltype(&GLContext::gl_alpha_func),

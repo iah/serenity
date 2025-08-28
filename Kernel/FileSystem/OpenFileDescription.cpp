@@ -8,17 +8,18 @@
 #include <AK/MemoryStream.h>
 #include <Kernel/API/POSIX/errno.h>
 #include <Kernel/Devices/BlockDevice.h>
+#include <Kernel/Devices/TTY/MasterPTY.h>
+#include <Kernel/Devices/TTY/TTY.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/FIFO.h>
 #include <Kernel/FileSystem/InodeFile.h>
 #include <Kernel/FileSystem/InodeWatcher.h>
+#include <Kernel/FileSystem/MountFile.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Net/Socket.h>
-#include <Kernel/Process.h>
-#include <Kernel/TTY/MasterPTY.h>
-#include <Kernel/TTY/TTY.h>
+#include <Kernel/Tasks/Process.h>
 #include <Kernel/UnixTypes.h>
 
 namespace Kernel {
@@ -53,15 +54,12 @@ OpenFileDescription::OpenFileDescription(File& file)
 OpenFileDescription::~OpenFileDescription()
 {
     m_file->detach(*this);
-    if (is_fifo())
-        static_cast<FIFO*>(m_file.ptr())->detach(fifo_direction());
     // FIXME: Should this error path be observed somehow?
     (void)m_file->close();
-    if (m_inode)
+    if (m_inode) {
         m_inode->detach(*this);
-
-    if (m_inode)
         m_inode->remove_flocks_for_description(*this);
+    }
 }
 
 ErrorOr<void> OpenFileDescription::attach()
@@ -71,7 +69,7 @@ ErrorOr<void> OpenFileDescription::attach()
     return m_file->attach(*this);
 }
 
-void OpenFileDescription::set_original_custody(Badge<VirtualFileSystem>, Custody& custody)
+void OpenFileDescription::set_original_custody(Custody& custody)
 {
     m_state.with([&](auto& state) { state.custody = custody; });
 }
@@ -202,14 +200,6 @@ bool OpenFileDescription::can_read() const
     return m_file->can_read(*this, offset());
 }
 
-ErrorOr<NonnullOwnPtr<KBuffer>> OpenFileDescription::read_entire_file()
-{
-    // HACK ALERT: (This entire function)
-    VERIFY(m_file->is_inode());
-    VERIFY(m_inode);
-    return m_inode->read_entire(this);
-}
-
 ErrorOr<size_t> OpenFileDescription::get_dir_entries(UserOrKernelBuffer& output_buffer, size_t size)
 {
     if (!is_directory())
@@ -240,7 +230,7 @@ ErrorOr<size_t> OpenFileDescription::get_dir_entries(UserOrKernelBuffer& output_
         return {};
     };
 
-    ErrorOr<void> result = VirtualFileSystem::the().traverse_directory_inode(*m_inode, [&flush_stream_to_output_buffer, &stream, this](auto& entry) -> ErrorOr<void> {
+    ErrorOr<void> result = m_inode->traverse_as_directory([&flush_stream_to_output_buffer, &stream, this](auto& entry) -> ErrorOr<void> {
         // FIXME: Double check the calculation, at least the type for the name length mismatches.
         size_t serialized_size = sizeof(ino_t) + sizeof(u8) + sizeof(size_t) + sizeof(char) * entry.name.length();
         if (serialized_size > TRY(stream.size()) - TRY(stream.tell()))
@@ -249,7 +239,7 @@ ErrorOr<size_t> OpenFileDescription::get_dir_entries(UserOrKernelBuffer& output_
         MUST(stream.write_value<u64>(entry.inode.index().value()));
         MUST(stream.write_value(m_inode->fs().internal_file_type_to_directory_entry_type(entry)));
         MUST(stream.write_value<u32>(entry.name.length()));
-        MUST(stream.write_entire_buffer(entry.name.bytes()));
+        MUST(stream.write_until_depleted(entry.name.bytes()));
         return {};
     });
 
@@ -290,11 +280,11 @@ bool OpenFileDescription::is_tty() const
     return m_file->is_tty();
 }
 
-const TTY* OpenFileDescription::tty() const
+TTY const* OpenFileDescription::tty() const
 {
     if (!is_tty())
         return nullptr;
-    return static_cast<const TTY*>(m_file.ptr());
+    return static_cast<TTY const*>(m_file.ptr());
 }
 
 TTY* OpenFileDescription::tty()
@@ -321,6 +311,25 @@ InodeWatcher* OpenFileDescription::inode_watcher()
     if (!is_inode_watcher())
         return nullptr;
     return static_cast<InodeWatcher*>(m_file.ptr());
+}
+
+bool OpenFileDescription::is_mount_file() const
+{
+    return m_file->is_mount_file();
+}
+
+MountFile const* OpenFileDescription::mount_file() const
+{
+    if (!is_mount_file())
+        return nullptr;
+    return static_cast<MountFile const*>(m_file.ptr());
+}
+
+MountFile* OpenFileDescription::mount_file()
+{
+    if (!is_mount_file())
+        return nullptr;
+    return static_cast<MountFile*>(m_file.ptr());
 }
 
 bool OpenFileDescription::is_master_pty() const
@@ -370,9 +379,9 @@ InodeMetadata OpenFileDescription::metadata() const
     return {};
 }
 
-ErrorOr<NonnullLockRefPtr<Memory::VMObject>> OpenFileDescription::vmobject_for_mmap(Process& process, Memory::VirtualRange const& range, u64& offset, bool shared)
+ErrorOr<File::VMObjectAndMemoryType> OpenFileDescription::vmobject_for_mmap(Process& process, Memory::VirtualRange const& range, u64& offset, bool shared)
 {
-    return m_file->vmobject_for_mmap(process, range, offset, shared);
+    return m_file->vmobject_and_memory_type_for_mmap(process, range, offset, shared);
 }
 
 ErrorOr<void> OpenFileDescription::truncate(u64 length)

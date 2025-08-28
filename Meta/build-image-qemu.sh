@@ -3,6 +3,10 @@ set -e
 
 SCRIPT_DIR="$(dirname "${0}")"
 
+# Prepend the QEMU and e2fsprogs toolchain directories so we pick up their tools from there
+PATH="$SCRIPT_DIR/../Toolchain/Local/qemu/bin:$PATH"
+PATH="$SCRIPT_DIR/../Toolchain/Local/e2fsprogs/bin:$PATH"
+
 . "${SCRIPT_DIR}/shell_include.sh"
 
 USE_FUSE2FS=0
@@ -12,7 +16,7 @@ if [ "$(id -u)" != 0 ]; then
         USE_FUSE2FS=1
     else
         set +e
-        ${SUDO} -- sh -c "\"$0\" $* || exit 42"
+        ${SUDO} -- "${SHELL}" -c "\"$0\" $* || exit 42"
         case $? in
             1)
                 die "this script needs to run as root"
@@ -29,30 +33,10 @@ else
     : "${SUDO_UID:=0}" "${SUDO_GID:=0}"
 fi
 
-# Prepend the toolchain qemu directory so we pick up QEMU from there
-PATH="$SCRIPT_DIR/../Toolchain/Local/qemu/bin:$PATH"
-
-# We depend on GNU coreutils du for the --apparent-size extension.
-# GNU coreutils is a build dependency.
-if command -v gdu > /dev/null 2>&1 && gdu --version | grep -q "GNU coreutils"; then
-    GNUDU="gdu"
-else
-    GNUDU="du"
-fi
-
-disk_usage() {
-    # shellcheck disable=SC2003,SC2307
-    expr "$(${GNUDU} -sk --apparent-size "$1" | cut -f1)"
-}
-
-inode_usage() {
-    find "$1" | wc -l
-}
-
-INODE_SIZE=128
+INODE_SIZE=256
 INODE_COUNT=$(($(inode_usage "$SERENITY_SOURCE_DIR/Base") + $(inode_usage Root)))
 INODE_COUNT=$((INODE_COUNT + 2000))  # Some additional inodes for toolchain files, could probably also be calculated
-DISK_SIZE_BYTES=$((($(disk_usage "$SERENITY_SOURCE_DIR/Base") + $(disk_usage Root)) * 1024))
+DISK_SIZE_BYTES=$((($(disk_usage "$SERENITY_SOURCE_DIR/Base") + $(disk_usage Root) ) * 1024 * 1024))
 DISK_SIZE_BYTES=$((DISK_SIZE_BYTES + (INODE_COUNT * INODE_SIZE)))
 
 if [ -z "$SERENITY_DISK_SIZE_BYTES" ]; then
@@ -69,6 +53,26 @@ else
         die "SERENITY_DISK_SIZE_BYTES is set to $SERENITY_DISK_SIZE_BYTES but required disk size is $DISK_SIZE_BYTES bytes"
     fi
     DISK_SIZE_BYTES="$SERENITY_DISK_SIZE_BYTES"
+fi
+
+if [ -n "$SERENITY_INODE_COUNT" ]; then
+    if [ "$INODE_COUNT" -gt "$SERENITY_INODE_COUNT" ]; then
+        die "SERENITY_INODE_COUNT is set to $SERENITY_INODE_COUNT but required inode count is roughly $INODE_COUNT"
+    fi
+    INODE_COUNT="$SERENITY_INODE_COUNT"
+fi
+
+nearest_power_of_2() {
+    local n=$1
+    local p=1
+    while [ $p -lt "$n" ]; do
+        p=$((p*2))
+    done
+    echo $p
+}
+if [ "$SERENITY_ARCH" = "aarch64" ] || [ "$SERENITY_BOOT_DRIVE" = "pci-sd" ]; then
+    # SD cards must have a size that is a power of 2. The Aarch64 port loads from an SD card.
+    DISK_SIZE_BYTES=$(nearest_power_of_2 "$DISK_SIZE_BYTES")
 fi
 
 USE_EXISTING=0
@@ -112,7 +116,7 @@ if [ $USE_EXISTING -ne 1 ]; then
     if [ "$(uname -s)" = "OpenBSD" ]; then
         VND=$(vnconfig _disk_image)
         (echo "e 0"; echo 83; echo n; echo 0; echo "*"; echo "quit") | fdisk -e "$VND"
-        newfs_ext2fs -D $INODE_SIZE -n $INODE_COUNT "/dev/r${VND}i" || die "could not create filesystem"
+        newfs_ext2fs -D "${INODE_SIZE}" -n "${INODE_COUNT}" "/dev/r${VND}i" || die "could not create filesystem"
     else
         "${MKE2FS_PATH}" -q -I "${INODE_SIZE}" -N "${INODE_COUNT}" _disk_image || die "could not create filesystem"
     fi
@@ -155,10 +159,8 @@ cleanup() {
             else
                 umount mnt || ( sleep 1 && sync && umount mnt )
             fi
-            rmdir mnt
-        else
-            rm -rf mnt
         fi
+        rm -rf mnt
 
         if [ "$(uname -s)" = "OpenBSD" ]; then
             vnconfig -u "$VND"
@@ -174,11 +176,7 @@ script_path=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
 "$script_path/build-root-filesystem.sh"
 
 if [ $use_genext2fs = 1 ]; then
-    # regenerate new image, since genext2fs is unable to reuse the previously written image.
-    # genext2fs is very slow in generating big images, so I use a smaller image here. size can be updated
-    # if it's not enough.
-    # not using "-I $INODE_SIZE" since it hangs. Serenity handles whatever default this uses instead.
-    genext2fs -B 4096 -b $((DISK_SIZE_BYTES / 4096)) -N $INODE_COUNT -d mnt _disk_image || die "try increasing image size (genext2fs -b)"
+    genext2fs -B 4096 -b $((DISK_SIZE_BYTES / 4096)) -N "${INODE_COUNT}" -d mnt _disk_image || die "try increasing image size (genext2fs -b)"
     # if using docker with shared mount, file is created as root, so make it writable for users
     chmod 0666 _disk_image
 fi

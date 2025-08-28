@@ -12,12 +12,13 @@ namespace JS {
 
 class FunctionPrototype final : public FunctionObject {
     JS_OBJECT(FunctionPrototype, FunctionObject);
+    JS_DECLARE_ALLOCATOR(FunctionPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~FunctionPrototype() override = default;
 
-    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, MarkedVector<Value> arguments_list) override;
+    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, ReadonlySpan<Value> arguments_list) override;
     virtual DeprecatedFlyString const& name() const override { return m_name; }
 
 private:

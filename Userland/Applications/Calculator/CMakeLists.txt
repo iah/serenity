@@ -4,18 +4,15 @@ serenity_component(
     TARGETS Calculator
 )
 
-compile_gml(CalculatorWindow.gml CalculatorGML.h calculator_gml)
+compile_gml(CalculatorWindow.gml CalculatorGML.cpp)
+
 set(SOURCES
     main.cpp
     Calculator.cpp
+    CalculatorGML.cpp
     CalculatorWidget.cpp
-    RoundingDialog.cpp
     Keypad.cpp
 )
 
-set(GENERATED_SOURCES
-    CalculatorGML.h
-)
-
 serenity_app(Calculator ICON app-calculator)
-target_link_libraries(Calculator PRIVATE LibCore LibCrypto LibGfx LibGUI LibMain)
+target_link_libraries(Calculator PRIVATE LibCore LibCrypto LibDesktop LibGfx LibGUI LibMain LibURL)

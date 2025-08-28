@@ -64,8 +64,16 @@ public:
         , m_size(size)
     {
     }
+
     ALWAYS_INLINE Span(void* values, size_t size)
         : m_values(reinterpret_cast<u8*>(values))
+        , m_size(size)
+    {
+    }
+
+    template<size_t size>
+    ALWAYS_INLINE constexpr Span(u8 (&values)[size])
+        : m_values(values)
         , m_size(size)
     {
     }
@@ -85,13 +93,22 @@ public:
         , m_size(size)
     {
     }
+
     ALWAYS_INLINE Span(void const* values, size_t size)
         : m_values(reinterpret_cast<u8 const*>(values))
         , m_size(size)
     {
     }
+
     ALWAYS_INLINE Span(char const* values, size_t size)
         : m_values(reinterpret_cast<u8 const*>(values))
+        , m_size(size)
+    {
+    }
+
+    template<size_t size>
+    ALWAYS_INLINE constexpr Span(u8 const (&values)[size])
+        : m_values(values)
         , m_size(size)
     {
     }
@@ -150,6 +167,16 @@ public:
         return { this->m_values, min(size(), length) };
     }
 
+    [[nodiscard]] Span align_to(size_t alignment) const
+    {
+        auto* start = reinterpret_cast<T*>(align_up_to((FlatPtr)data(), alignment));
+        auto* end = reinterpret_cast<T*>(align_down_to((FlatPtr)(data() + size()), alignment));
+        if (end < start)
+            return {};
+        size_t length = end - start;
+        return { start, length };
+    }
+
     [[nodiscard]] ALWAYS_INLINE constexpr T* offset(size_t start) const
     {
         VERIFY(start < this->m_size);
@@ -183,21 +210,44 @@ public:
         return size();
     }
 
-    [[nodiscard]] bool constexpr contains_slow(T const& value) const
+    template<typename V>
+    [[nodiscard]] constexpr bool contains_slow(V const& value) const
     {
         for (size_t i = 0; i < size(); ++i) {
-            if (at(i) == value)
+            if (Traits<RemoveReference<T>>::equals(at(i), value))
                 return true;
         }
         return false;
     }
 
-    [[nodiscard]] bool constexpr starts_with(ReadonlySpan<T> other) const
+    template<typename V>
+    [[nodiscard]] constexpr bool filled_with(V const& value) const
+    {
+        for (size_t i = 0; i < size(); ++i) {
+            if (!Traits<RemoveReference<T>>::equals(at(i), value))
+                return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] constexpr bool starts_with(ReadonlySpan<T> other) const
     {
         if (size() < other.size())
             return false;
 
         return TypedTransfer<T>::compare(data(), other.data(), other.size());
+    }
+
+    [[nodiscard]] constexpr size_t matching_prefix_length(ReadonlySpan<T> other) const
+    {
+        auto maximum_length = min(size(), other.size());
+
+        for (size_t i = 0; i < maximum_length; i++) {
+            if (data()[i] != other.data()[i])
+                return i;
+        }
+
+        return maximum_length;
     }
 
     [[nodiscard]] ALWAYS_INLINE constexpr T const& at(size_t index) const
@@ -237,6 +287,12 @@ public:
         return at(index);
     }
 
+    void reverse()
+    {
+        for (size_t i = 0; i < size() / 2; ++i)
+            AK::swap(at(i), at(size() - i - 1));
+    }
+
     [[nodiscard]] ALWAYS_INLINE constexpr T& operator[](size_t index)
     {
         return at(index);
@@ -257,7 +313,7 @@ public:
 };
 
 template<typename T>
-struct Traits<Span<T>> : public GenericTraits<Span<T>> {
+struct Traits<Span<T>> : public DefaultTraits<Span<T>> {
     static unsigned hash(Span<T> const& span)
     {
         unsigned hash = 0;
@@ -277,6 +333,20 @@ using ReadonlySpan = Span<T const>;
 using ReadonlyBytes = ReadonlySpan<u8>;
 using Bytes = Span<u8>;
 
+template<typename T>
+requires(IsTrivial<T>)
+ReadonlyBytes to_readonly_bytes(Span<T> span)
+{
+    return ReadonlyBytes { static_cast<void const*>(span.data()), span.size() * sizeof(T) };
+}
+
+template<typename T>
+requires(IsTrivial<T> && !IsConst<T>)
+Bytes to_bytes(Span<T> span)
+{
+    return Bytes { static_cast<void*>(span.data()), span.size() * sizeof(T) };
+}
+
 }
 
 #if USING_AK_GLOBALLY
@@ -284,4 +354,6 @@ using AK::Bytes;
 using AK::ReadonlyBytes;
 using AK::ReadonlySpan;
 using AK::Span;
+using AK::to_bytes;
+using AK::to_readonly_bytes;
 #endif

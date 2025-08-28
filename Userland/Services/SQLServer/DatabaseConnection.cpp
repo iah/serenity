@@ -20,8 +20,8 @@ static ErrorOr<NonnullRefPtr<SQL::Database>> find_or_create_database(StringView 
             return connection.value->database();
     }
 
-    auto database_file = DeprecatedString::formatted("{}/{}.db", database_path, database_name);
-    return SQL::Database::try_create(move(database_file));
+    auto database_file = ByteString::formatted("{}/{}.db", database_path, database_name);
+    return SQL::Database::create(move(database_file));
 }
 
 RefPtr<DatabaseConnection> DatabaseConnection::connection_for(SQL::ConnectionID connection_id)
@@ -32,24 +32,24 @@ RefPtr<DatabaseConnection> DatabaseConnection::connection_for(SQL::ConnectionID 
     return nullptr;
 }
 
-ErrorOr<NonnullRefPtr<DatabaseConnection>> DatabaseConnection::create(StringView database_path, DeprecatedString database_name, int client_id)
+ErrorOr<NonnullRefPtr<DatabaseConnection>> DatabaseConnection::create(StringView database_path, ByteString database_name, int client_id)
 {
     if (LexicalPath path(database_name); (path.title() != database_name) || (path.dirname() != "."))
         return Error::from_string_view("Invalid database name"sv);
 
     auto database = TRY(find_or_create_database(database_path, database_name));
-
-    if (auto result = database->open(); result.is_error()) {
-        warnln("Could not open database: {}", result.error().error_string());
-        return Error::from_string_view("Could not open database"sv);
+    if (!database->is_open()) {
+        if (auto result = database->open(); result.is_error()) {
+            warnln("Could not open database: {}", result.error().error_string());
+            return Error::from_string_view("Could not open database"sv);
+        }
     }
 
     return adopt_nonnull_ref_or_enomem(new (nothrow) DatabaseConnection(move(database), move(database_name), client_id));
 }
 
-DatabaseConnection::DatabaseConnection(NonnullRefPtr<SQL::Database> database, DeprecatedString database_name, int client_id)
-    : Object()
-    , m_database(move(database))
+DatabaseConnection::DatabaseConnection(NonnullRefPtr<SQL::Database> database, ByteString database_name, int client_id)
+    : m_database(move(database))
     , m_database_name(move(database_name))
     , m_connection_id(s_next_connection_id++)
     , m_client_id(client_id)

@@ -3,11 +3,14 @@
  * Copyright (c) 2022, networkException <networkexception@serenityos.org>
  * Copyright (c) 2023, Kenneth Myhra <kennethmyhra@serenityos.org>
  * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2024, Andreas Kling <andreas@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/CharacterTypes.h>
+#include <AK/FlyString.h>
+#include <AK/GenericLexer.h>
 #include <AK/String.h>
 #include <AK/Utf16View.h>
 #include <AK/Utf8View.h>
@@ -21,23 +24,30 @@ bool is_ascii_case_insensitive_match(StringView a, StringView b)
 {
     // A string A is an ASCII case-insensitive match for a string B,
     // if the ASCII lowercase of A is the ASCII lowercase of B.
+    return AK::StringUtils::equals_ignoring_ascii_case(a, b);
+}
 
-    Utf8View a_view { a };
-    Utf8View b_view { b };
+// https://infra.spec.whatwg.org/#normalize-newlines
+String normalize_newlines(String const& string)
+{
+    // To normalize newlines in a string, replace every U+000D CR U+000A LF code point pair with a single U+000A LF
+    // code point, and then replace every remaining U+000D CR code point with a U+000A LF code point.
+    if (!string.contains('\r'))
+        return string;
 
-    if (a_view.length() != b_view.length())
-        return false;
+    StringBuilder builder;
+    GenericLexer lexer { string };
 
-    auto b_iterator = b_view.begin();
-    for (auto a_char : a_view) {
-        auto b_char = *b_iterator;
-        ++b_iterator;
+    while (!lexer.is_eof()) {
+        builder.append(lexer.consume_until('\r'));
 
-        if (AK::to_ascii_lowercase(a_char) != AK::to_ascii_lowercase(b_char))
-            return false;
+        if (lexer.peek() == '\r') {
+            lexer.ignore(1 + static_cast<size_t>(lexer.peek(1) == '\n'));
+            builder.append('\n');
+        }
     }
 
-    return true;
+    return MUST(builder.to_string());
 }
 
 // https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace
@@ -101,7 +111,7 @@ ErrorOr<String> convert_to_scalar_value_string(StringView string)
     for (u32 code_point : utf8_view) {
         if (is_unicode_surrogate(code_point))
             code_point = 0xFFFD;
-        TRY(scalar_value_builder.try_append(code_point));
+        scalar_value_builder.append_code_point(code_point);
     }
     return scalar_value_builder.to_string();
 }
@@ -115,7 +125,7 @@ ErrorOr<String> to_ascii_lowercase(StringView string)
     auto utf8_view = Utf8View { string };
     for (u32 code_point : utf8_view) {
         code_point = AK::to_ascii_lowercase(code_point);
-        TRY(string_builder.try_append(code_point));
+        string_builder.append_code_point(code_point);
     }
     return string_builder.to_string();
 }
@@ -129,7 +139,7 @@ ErrorOr<String> to_ascii_uppercase(StringView string)
     auto utf8_view = Utf8View { string };
     for (u32 code_point : utf8_view) {
         code_point = AK::to_ascii_uppercase(code_point);
-        TRY(string_builder.try_append(code_point));
+        string_builder.append_code_point(code_point);
     }
     return string_builder.to_string();
 }

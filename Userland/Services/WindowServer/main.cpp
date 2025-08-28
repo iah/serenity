@@ -9,15 +9,15 @@
 #include "EventLoop.h"
 #include "Screen.h"
 #include "WindowManager.h"
-#include <Kernel/API/Graphics.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
 #include <signal.h>
+#include <sys/devices/gpu.h>
 
 namespace WindowServer {
 RefPtr<Core::ConfigFile> g_config;
@@ -25,7 +25,7 @@ RefPtr<Core::ConfigFile> g_config;
 
 ErrorOr<int> serenity_main(Main::Arguments)
 {
-    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc sigaction exec tty"));
+    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc getkeymap sigaction exec tty"));
     TRY(Core::System::unveil("/res", "r"));
     TRY(Core::System::unveil("/tmp", "cw"));
     TRY(Core::System::unveil("/etc/WindowServer.ini", "rwc"));
@@ -42,12 +42,16 @@ ErrorOr<int> serenity_main(Main::Arguments)
     act.sa_flags = SA_NOCLDWAIT;
     act.sa_handler = SIG_IGN;
     TRY(Core::System::sigaction(SIGCHLD, &act, nullptr));
-    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc exec tty"));
+    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc getkeymap exec tty"));
 
     WindowServer::g_config = TRY(Core::ConfigFile::open("/etc/WindowServer.ini", Core::ConfigFile::AllowWriting::Yes));
     auto theme_name = WindowServer::g_config->read_entry("Theme", "Name", "Default");
 
-    auto theme = TRY(Gfx::load_system_theme(DeprecatedString::formatted("/res/themes/{}.ini", theme_name)));
+    Optional<ByteString> custom_color_scheme_path = OptionalNone();
+    if (WindowServer::g_config->read_bool_entry("Theme", "LoadCustomColorScheme", false))
+        custom_color_scheme_path = WindowServer::g_config->read_entry("Theme", "CustomColorSchemePath");
+
+    auto theme = TRY(Gfx::load_system_theme(ByteString::formatted("/res/themes/{}.ini", theme_name), custom_color_scheme_path));
     Gfx::set_system_theme(theme);
     auto palette = Gfx::PaletteImpl::create_with_anonymous_buffer(theme);
 
@@ -69,13 +73,13 @@ ErrorOr<int> serenity_main(Main::Arguments)
 
     WindowServer::EventLoop loop;
 
-    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc exec"));
+    TRY(Core::System::pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc getkeymap exec"));
 
     // First check which screens are explicitly configured
     {
-        AK::HashTable<DeprecatedString> fb_devices_configured;
+        AK::HashTable<ByteString> fb_devices_configured;
         WindowServer::ScreenLayout screen_layout;
-        DeprecatedString error_msg;
+        ByteString error_msg;
 
         auto add_unconfigured_display_connector_devices = [&]() -> ErrorOr<void> {
             // Enumerate the /dev/gpu/connectorX devices and try to set up any ones we find that we haven't already used
@@ -84,8 +88,8 @@ ErrorOr<int> serenity_main(Main::Arguments)
                 auto path = di.next_path();
                 if (!path.starts_with("connector"sv))
                     continue;
-                auto full_path = DeprecatedString::formatted("/dev/gpu/{}", path);
-                if (!Core::DeprecatedFile::is_device(full_path))
+                auto full_path = ByteString::formatted("/dev/gpu/{}", path);
+                if (!FileSystem::is_device(full_path))
                     continue;
                 auto display_connector_fd = TRY(Core::System::open(full_path, O_RDWR | O_CLOEXEC));
                 if (int rc = graphics_connector_set_responsible(display_connector_fd); rc != 0)

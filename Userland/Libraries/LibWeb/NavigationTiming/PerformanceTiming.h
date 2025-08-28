@@ -12,6 +12,7 @@ namespace Web::NavigationTiming {
 
 class PerformanceTiming final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(PerformanceTiming, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(PerformanceTiming);
 
 public:
     using AllowOwnPtr = TrueType;
@@ -41,12 +42,9 @@ public:
     u64 load_event_end() { return 0; }
 
 private:
-    explicit PerformanceTiming(HTML::Window&);
+    explicit PerformanceTiming(JS::Realm&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-    virtual void visit_edges(Cell::Visitor&) override;
-
-    JS::GCPtr<HTML::Window> m_window;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

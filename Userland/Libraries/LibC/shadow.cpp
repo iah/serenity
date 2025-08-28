@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Vector.h>
 #include <errno.h>
@@ -17,15 +17,13 @@
 extern "C" {
 
 static FILE* s_stream = nullptr;
-static unsigned s_line_number = 0;
 static struct spwd s_shadow_entry;
 
-static DeprecatedString s_name;
-static DeprecatedString s_pwdp;
+static ByteString s_name;
+static ByteString s_pwdp;
 
 void setspent()
 {
-    s_line_number = 0;
     if (s_stream) {
         rewind(s_stream);
     } else {
@@ -38,7 +36,6 @@ void setspent()
 
 void endspent()
 {
-    s_line_number = 0;
     if (s_stream) {
         fclose(s_stream);
         s_stream = nullptr;
@@ -61,11 +58,11 @@ struct spwd* getspnam(char const* name)
     return nullptr;
 }
 
-static bool parse_shadow_entry(DeprecatedString const& line)
+static bool parse_shadow_entry(ByteString const& line)
 {
     auto parts = line.split_view(':', SplitBehavior::KeepEmpty);
     if (parts.size() != 9) {
-        dbgln("getspent(): Malformed entry on line {}", s_line_number);
+        dbgln("getspent(): Malformed entry ({})", line);
         return false;
     }
 
@@ -79,57 +76,57 @@ static bool parse_shadow_entry(DeprecatedString const& line)
     auto& expire_string = parts[7];
     auto& flag_string = parts[8];
 
-    auto lstchg = lstchg_string.to_int();
+    auto lstchg = lstchg_string.to_number<int>();
     if (!lstchg.has_value()) {
-        dbgln("getspent(): Malformed lstchg on line {}", s_line_number);
+        dbgln("getspent(): Malformed lstchg ({})", line);
         return false;
     }
 
     if (min_string.is_empty())
         min_string = "-1"sv;
-    auto min_value = min_string.to_int();
+    auto min_value = min_string.to_number<int>();
     if (!min_value.has_value()) {
-        dbgln("getspent(): Malformed min value on line {}", s_line_number);
+        dbgln("getspent(): Malformed min value ({})", line);
         return false;
     }
 
     if (max_string.is_empty())
         max_string = "-1"sv;
-    auto max_value = max_string.to_int();
+    auto max_value = max_string.to_number<int>();
     if (!max_value.has_value()) {
-        dbgln("getspent(): Malformed max value on line {}", s_line_number);
+        dbgln("getspent(): Malformed max value ({})", line);
         return false;
     }
 
     if (warn_string.is_empty())
         warn_string = "-1"sv;
-    auto warn = warn_string.to_int();
+    auto warn = warn_string.to_number<int>();
     if (!warn.has_value()) {
-        dbgln("getspent(): Malformed warn on line {}", s_line_number);
+        dbgln("getspent(): Malformed warn ({})", line);
         return false;
     }
 
     if (inact_string.is_empty())
         inact_string = "-1"sv;
-    auto inact = inact_string.to_int();
+    auto inact = inact_string.to_number<int>();
     if (!inact.has_value()) {
-        dbgln("getspent(): Malformed inact on line {}", s_line_number);
+        dbgln("getspent(): Malformed inact ({})", line);
         return false;
     }
 
     if (expire_string.is_empty())
         expire_string = "-1"sv;
-    auto expire = expire_string.to_int();
+    auto expire = expire_string.to_number<int>();
     if (!expire.has_value()) {
-        dbgln("getspent(): Malformed expire on line {}", s_line_number);
+        dbgln("getspent(): Malformed expire ({})", line);
         return false;
     }
 
     if (flag_string.is_empty())
         flag_string = "0"sv;
-    auto flag = flag_string.to_int();
+    auto flag = flag_string.to_number<int>();
     if (!flag.has_value()) {
-        dbgln("getspent(): Malformed flag on line {}", s_line_number);
+        dbgln("getspent(): Malformed flag ({})", line);
         return false;
     }
 
@@ -146,33 +143,37 @@ static bool parse_shadow_entry(DeprecatedString const& line)
     return true;
 }
 
+struct spwd* fgetspent(FILE* stream)
+{
+    while (true) {
+        if (!stream || feof(stream))
+            return nullptr;
+
+        if (ferror(stream)) {
+            dbgln("getspent(): Read error: {}", strerror(ferror(stream)));
+            return nullptr;
+        }
+
+        char buffer[1024];
+        char* s = fgets(buffer, sizeof(buffer), stream);
+
+        // Silently tolerate an empty line at the end.
+        if ((!s || !s[0]) && feof(stream))
+            return nullptr;
+
+        ByteString line(s, Chomp);
+        if (parse_shadow_entry(line))
+            return &s_shadow_entry;
+        // Otherwise, proceed to the next line.
+    }
+}
+
 struct spwd* getspent()
 {
     if (!s_stream)
         setspent();
 
-    while (true) {
-        if (!s_stream || feof(s_stream))
-            return nullptr;
-
-        if (ferror(s_stream)) {
-            dbgln("getspent(): Read error: {}", strerror(ferror(s_stream)));
-            return nullptr;
-        }
-
-        char buffer[1024];
-        ++s_line_number;
-        char* s = fgets(buffer, sizeof(buffer), s_stream);
-
-        // Silently tolerate an empty line at the end.
-        if ((!s || !s[0]) && feof(s_stream))
-            return nullptr;
-
-        DeprecatedString line(s, Chomp);
-        if (parse_shadow_entry(line))
-            return &s_shadow_entry;
-        // Otherwise, proceed to the next line.
-    }
+    return fgetspent(s_stream);
 }
 
 static void construct_spwd(struct spwd* sp, char* buf, struct spwd** result)

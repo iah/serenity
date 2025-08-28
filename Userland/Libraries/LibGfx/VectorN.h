@@ -9,7 +9,7 @@
 #pragma once
 
 #include <AK/Array.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Error.h>
 #include <AK/Math.h>
 #include <AK/StdLibExtras.h>
@@ -197,6 +197,17 @@ public:
         return result;
     }
 
+    template<ConvertibleTo<T> U>
+    constexpr bool operator==(VectorN<N, U> const& other) const
+    {
+        UNROLL_LOOP
+        for (auto i = 0u; i < N; ++i) {
+            if (m_data[i] != static_cast<T>(other.m_data[i]))
+                return false;
+        }
+        return true;
+    }
+
     [[nodiscard]] constexpr T dot(VectorN const& other) const
     {
         T result {};
@@ -262,14 +273,14 @@ public:
         return VectorN<3, T>(x(), y(), z());
     }
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const
+    [[nodiscard]] ByteString to_byte_string() const
     {
         if constexpr (N == 2)
-            return DeprecatedString::formatted("[{},{}]", x(), y());
+            return ByteString::formatted("[{},{}]", x(), y());
         else if constexpr (N == 3)
-            return DeprecatedString::formatted("[{},{},{}]", x(), y(), z());
+            return ByteString::formatted("[{},{},{}]", x(), y(), z());
         else
-            return DeprecatedString::formatted("[{},{},{},{}]", x(), y(), z(), w());
+            return ByteString::formatted("[{},{},{},{}]", x(), y(), z(), w());
     }
 
     template<typename U>
@@ -298,5 +309,29 @@ public:
 private:
     Array<T, N> m_data;
 };
+
+}
+
+namespace AK {
+
+template<size_t N, typename T>
+constexpr Gfx::VectorN<N, T> min(Gfx::VectorN<N, T> const& a, Gfx::VectorN<N, T> const& b)
+{
+    Gfx::VectorN<N, T> result;
+    UNROLL_LOOP
+    for (auto i = 0u; i < N; ++i)
+        result[i] = min(a[i], b[i]);
+    return result;
+}
+
+template<size_t N, typename T>
+constexpr Gfx::VectorN<N, T> max(Gfx::VectorN<N, T> const& a, Gfx::VectorN<N, T> const& b)
+{
+    Gfx::VectorN<N, T> result;
+    UNROLL_LOOP
+    for (auto i = 0u; i < N; ++i)
+        result[i] = max(a[i], b[i]);
+    return result;
+}
 
 }

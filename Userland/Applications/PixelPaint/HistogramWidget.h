@@ -22,6 +22,7 @@ public:
 private:
     HistogramWidget() = default;
 
+    virtual AK::StringView widget_config_name() const override { return "ShowHistogram"sv; }
     virtual void paint_event(GUI::PaintEvent&) override;
 
     ErrorOr<void> rebuild_histogram_data();
@@ -31,6 +32,8 @@ private:
         Vector<int> green;
         Vector<int> blue;
         Vector<int> brightness;
+        int max_brightness_frequency;
+        int max_color_frequency;
     };
     HistogramData m_data;
 };

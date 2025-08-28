@@ -34,10 +34,10 @@ public:
     u16 flags() const { return m_flags; }
 
 private:
-    const u8 m_bus;
-    const u8 m_source;
-    const u32 m_global_system_interrupt;
-    const u16 m_flags;
+    u8 const m_bus;
+    u8 const m_source;
+    u32 const m_global_system_interrupt;
+    u16 const m_flags;
 };
 
 class InterruptManagement {
@@ -48,8 +48,8 @@ public:
     static u8 acquire_mapped_interrupt_number(u8 original_irq);
     static u8 acquire_irq_number(u8 mapped_interrupt_vector);
 
-    virtual void switch_to_pic_mode();
-    virtual void switch_to_ioapic_mode();
+    void switch_to_pic_mode();
+    void switch_to_ioapic_mode();
 
     NonnullLockRefPtr<IRQController> get_responsible_irq_controller(u8 interrupt_vector);
     NonnullLockRefPtr<IRQController> get_responsible_irq_controller(IRQControllerType controller_type, u8 interrupt_vector);
@@ -67,12 +67,11 @@ protected:
 
 private:
     InterruptManagement();
-    PhysicalAddress search_for_madt();
+    ErrorOr<Optional<PhysicalAddress>> find_madt_physical_address();
     void locate_apic_data();
     Vector<NonnullLockRefPtr<IRQController>> m_interrupt_controllers;
     Vector<ISAInterruptOverrideMetadata> m_isa_interrupt_overrides;
-    Vector<PCIInterruptOverrideMetadata> m_pci_interrupt_overrides;
-    PhysicalAddress m_madt;
+    Optional<PhysicalAddress> m_madt_physical_address;
 };
 
 }

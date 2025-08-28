@@ -6,9 +6,9 @@
 
 #include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/ScopeGuard.h>
-#include <Kernel/Net/IPv4.h>
+#include <Kernel/Net/IP/IPv4.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
@@ -19,11 +19,7 @@
 
 extern "C" {
 
-#ifdef NO_TLS
-int h_errno;
-#else
 __thread int h_errno;
-#endif
 
 static hostent __gethostbyname_buffer;
 static in_addr_t __gethostbyname_address;
@@ -45,10 +41,17 @@ static constexpr u32 lookup_server_endpoint_magic = "LookupServer"sv.hash();
 static FILE* services_file = nullptr;
 static char const* services_path = "/etc/services";
 
-static bool fill_getserv_buffers(char const* line, ssize_t read);
+struct ServiceFileLine {
+    String name;
+    String protocol;
+    int port;
+    Vector<ByteBuffer> aliases;
+};
+
+static ErrorOr<Optional<ServiceFileLine>> parse_service_file_line(char const* line, ssize_t read);
 static servent __getserv_buffer;
-static DeprecatedString __getserv_name_buffer;
-static DeprecatedString __getserv_protocol_buffer;
+static ByteString __getserv_name_buffer;
+static ByteString __getserv_protocol_buffer;
 static int __getserv_port_buffer;
 static Vector<ByteBuffer> __getserv_alias_list_buffer;
 static Vector<char*> __getserv_alias_list;
@@ -61,7 +64,7 @@ static char const* protocols_path = "/etc/protocols";
 
 static bool fill_getproto_buffers(char const* line, ssize_t read);
 static protoent __getproto_buffer;
-static DeprecatedString __getproto_name_buffer;
+static ByteString __getproto_name_buffer;
 static Vector<ByteBuffer> __getproto_alias_list_buffer;
 static Vector<char*> __getproto_alias_list;
 static int __getproto_protocol_buffer;
@@ -89,33 +92,143 @@ static int connect_to_lookup_server()
     return fd;
 }
 
-static DeprecatedString gethostbyname_name_buffer;
+static ByteString gethostbyname_name_buffer;
 
 hostent* gethostbyname(char const* name)
 {
-    h_errno = 0;
+    struct hostent ret = {};
+    struct hostent* result = nullptr;
+    size_t buffer_size = 1024;
+    char* buffer = nullptr;
+
+    auto free_buffer_on_exit = ScopeGuard([buffer] {
+        if (buffer != nullptr)
+            free(buffer);
+    });
+
+    while (true) {
+        buffer = (char*)realloc(buffer, buffer_size);
+        if (buffer == nullptr) {
+            // NOTE: Since gethostbyname usually can't fail because of memory,
+            //       it has no way of representing OOM or allocation failure.
+            //       NO_RECOVERY is the next best thing.
+            h_errno = NO_RECOVERY;
+            return NULL;
+        }
+
+        int rc = gethostbyname_r(name, &ret, buffer, buffer_size, &result, &h_errno);
+        if (rc == ERANGE) {
+            buffer_size *= 2;
+            continue;
+        }
+
+        if (rc < 0)
+            return nullptr;
+
+        break;
+    }
+
+    gethostbyname_name_buffer = name;
+    __gethostbyname_buffer.h_name = const_cast<char*>(gethostbyname_name_buffer.characters());
+    __gethostbyname_alias_list_buffer[0] = nullptr;
+    __gethostbyname_buffer.h_aliases = __gethostbyname_alias_list_buffer;
+    __gethostbyname_buffer.h_addrtype = AF_INET;
+    memcpy(&__gethostbyname_address, result->h_addr_list[0], sizeof(in_addr_t));
+    __gethostbyname_address_list_buffer[0] = &__gethostbyname_address;
+    __gethostbyname_address_list_buffer[1] = nullptr;
+    __gethostbyname_buffer.h_addr_list = (char**)__gethostbyname_address_list_buffer;
+    __gethostbyname_buffer.h_length = result->h_length;
+
+    return &__gethostbyname_buffer;
+}
+
+int gethostbyname_r(char const* __restrict name, struct hostent* __restrict ret, char* buffer, size_t buffer_size, struct hostent** __restrict result, int* __restrict h_errnop)
+{
+    *h_errnop = 0;
+    *result = nullptr;
+    size_t buffer_offset = 0;
+    memset(buffer, 0, buffer_size);
+
+    auto add_string_to_buffer = [&](char const* data) -> Optional<char*> {
+        size_t data_lenth = strlen(data);
+
+        if (buffer_offset + data_lenth + 1 >= buffer_size)
+            return {};
+
+        auto* buffer_beginning = buffer + buffer_offset;
+
+        memcpy(buffer + buffer_offset, data, data_lenth);
+        buffer_offset += data_lenth;
+        buffer[buffer_offset++] = '\0';
+
+        buffer_offset += 8 - (buffer_offset % 8);
+
+        return buffer_beginning;
+    };
+
+    auto add_data_to_buffer = [&](void const* data, size_t size, size_t count = 1) -> Optional<void*> {
+        auto bytes = size * count;
+
+        if (buffer_offset + bytes >= buffer_size)
+            return {};
+
+        auto* buffer_beginning = buffer + buffer_offset;
+
+        memcpy(buffer + buffer_offset, data, bytes);
+        buffer_offset += bytes;
+
+        buffer_offset += 8 - (buffer_offset % 8);
+
+        return buffer_beginning;
+    };
+
+    auto add_ptr_to_buffer = [&](void* ptr) -> Optional<void*> {
+        return add_data_to_buffer(&ptr, sizeof(ptr));
+    };
+
+    auto populate_ret = [&](char const* name, in_addr_t address) -> int {
+        auto h_name = add_string_to_buffer(name);
+        if (!h_name.has_value())
+            return ERANGE;
+
+        ret->h_name = static_cast<char*>(h_name.value());
+
+        auto null_list_item = add_ptr_to_buffer(nullptr);
+        if (!null_list_item.has_value())
+            return ERANGE;
+
+        ret->h_aliases = static_cast<char**>(null_list_item.value());
+
+        auto address_item = add_data_to_buffer(&address, sizeof(address));
+        if (!address_item.has_value())
+            return ERANGE;
+
+        auto address_list = add_ptr_to_buffer(address_item.value());
+        if (!address_list.has_value())
+            return ERANGE;
+
+        if (!add_ptr_to_buffer(nullptr).has_value())
+            return ERANGE;
+
+        ret->h_addr_list = static_cast<char**>(address_list.value());
+
+        ret->h_addrtype = AF_INET;
+        ret->h_length = 4;
+
+        *result = ret;
+        return 0;
+    };
 
     auto ipv4_address = IPv4Address::from_string({ name, strlen(name) });
 
     if (ipv4_address.has_value()) {
-        gethostbyname_name_buffer = ipv4_address.value().to_deprecated_string();
-        __gethostbyname_buffer.h_name = const_cast<char*>(gethostbyname_name_buffer.characters());
-        __gethostbyname_alias_list_buffer[0] = nullptr;
-        __gethostbyname_buffer.h_aliases = __gethostbyname_alias_list_buffer;
-        __gethostbyname_buffer.h_addrtype = AF_INET;
-        new (&__gethostbyname_address) IPv4Address(ipv4_address.value());
-        __gethostbyname_address_list_buffer[0] = &__gethostbyname_address;
-        __gethostbyname_address_list_buffer[1] = nullptr;
-        __gethostbyname_buffer.h_addr_list = (char**)__gethostbyname_address_list_buffer;
-        __gethostbyname_buffer.h_length = 4;
-
-        return &__gethostbyname_buffer;
+        return populate_ret(ipv4_address.value().to_byte_string().characters(), ipv4_address.value().to_in_addr_t());
     }
 
     int fd = connect_to_lookup_server();
     if (fd < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     }
 
     auto close_fd_on_exit = ScopeGuard([fd] {
@@ -137,19 +250,19 @@ hostent* gethostbyname(char const* name)
         static_cast<u32>(name_length),
     };
     if (auto nsent = write(fd, &request_header, sizeof(request_header)); nsent < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     } else if (nsent != sizeof(request_header)) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
 
     if (auto nsent = write(fd, name, name_length); nsent < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     } else if (static_cast<size_t>(nsent) != name_length) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
 
     struct [[gnu::packed]] {
@@ -161,56 +274,47 @@ hostent* gethostbyname(char const* name)
     } response_header;
 
     if (auto nreceived = read(fd, &response_header, sizeof(response_header)); nreceived < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     } else if (nreceived != sizeof(response_header)) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
     if (response_header.endpoint_magic != lookup_server_endpoint_magic || response_header.message_id != 2) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
     if (response_header.code != 0) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
     if (response_header.addresses_count == 0) {
-        h_errno = HOST_NOT_FOUND;
-        return nullptr;
+        *h_errnop = HOST_NOT_FOUND;
+        return -HOST_NOT_FOUND;
     }
     i32 response_length;
     if (auto nreceived = read(fd, &response_length, sizeof(response_length)); nreceived < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     } else if (nreceived != sizeof(response_length)
-        || response_length != sizeof(__gethostbyname_address)) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        || response_length != sizeof(in_addr_t)) {
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
 
-    if (auto nreceived = read(fd, &__gethostbyname_address, response_length); nreceived < 0) {
-        h_errno = TRY_AGAIN;
-        return nullptr;
+    in_addr_t address;
+    if (auto nreceived = read(fd, &address, response_length); nreceived < 0) {
+        *h_errnop = TRY_AGAIN;
+        return -TRY_AGAIN;
     } else if (nreceived != response_length) {
-        h_errno = NO_RECOVERY;
-        return nullptr;
+        *h_errnop = NO_RECOVERY;
+        return -NO_RECOVERY;
     }
 
-    gethostbyname_name_buffer = name;
-    __gethostbyname_buffer.h_name = const_cast<char*>(gethostbyname_name_buffer.characters());
-    __gethostbyname_alias_list_buffer[0] = nullptr;
-    __gethostbyname_buffer.h_aliases = __gethostbyname_alias_list_buffer;
-    __gethostbyname_buffer.h_addrtype = AF_INET;
-    __gethostbyname_address_list_buffer[0] = &__gethostbyname_address;
-    __gethostbyname_address_list_buffer[1] = nullptr;
-    __gethostbyname_buffer.h_addr_list = (char**)__gethostbyname_address_list_buffer;
-    __gethostbyname_buffer.h_length = 4;
-
-    return &__gethostbyname_buffer;
+    return populate_ret(name, address);
 }
 
-static DeprecatedString gethostbyaddr_name_buffer;
+static ByteString gethostbyaddr_name_buffer;
 
 hostent* gethostbyaddr(void const* addr, socklen_t addr_size, int type)
 {
@@ -286,10 +390,13 @@ hostent* gethostbyaddr(void const* addr, socklen_t addr_size, int type)
         return nullptr;
     }
 
-    char* buffer;
-    auto string_impl = StringImpl::create_uninitialized(response_header.name_length, buffer);
+    ssize_t nreceived;
 
-    if (auto nreceived = read(fd, buffer, response_header.name_length); nreceived < 0) {
+    gethostbyaddr_name_buffer = ByteString::create_and_overwrite(response_header.name_length, [&](Bytes bytes) {
+        nreceived = read(fd, bytes.data(), bytes.size());
+    });
+
+    if (nreceived < 0) {
         h_errno = TRY_AGAIN;
         return nullptr;
     } else if (static_cast<u32>(nreceived) != response_header.name_length) {
@@ -297,8 +404,7 @@ hostent* gethostbyaddr(void const* addr, socklen_t addr_size, int type)
         return nullptr;
     }
 
-    gethostbyaddr_name_buffer = move(string_impl);
-    __gethostbyaddr_buffer.h_name = buffer;
+    __gethostbyaddr_buffer.h_name = const_cast<char*>(gethostbyaddr_name_buffer.characters());
     __gethostbyaddr_alias_list_buffer[0] = nullptr;
     __gethostbyaddr_buffer.h_aliases = __gethostbyaddr_alias_list_buffer;
     __gethostbyaddr_buffer.h_addrtype = AF_INET;
@@ -337,13 +443,22 @@ struct servent* getservent()
         }
     });
 
+    Optional<ServiceFileLine> service_file_line = {};
+
     // Read lines from services file until an actual service name is found.
     do {
         read = getline(&line, &len, services_file);
         service_file_offset += read;
-        if (read > 0 && (line[0] >= 65 && line[0] <= 122)) {
+
+        auto service_file_line_or_error = parse_service_file_line(line, read);
+        if (service_file_line_or_error.is_error())
+            return nullptr;
+
+        service_file_line = service_file_line_or_error.release_value();
+
+        if (service_file_line.has_value())
             break;
-        }
+
     } while (read != -1);
     if (read == -1) {
         fclose(services_file);
@@ -352,9 +467,15 @@ struct servent* getservent()
         return nullptr;
     }
 
-    servent* service_entry = nullptr;
-    if (!fill_getserv_buffers(line, read))
+    if (!service_file_line.has_value())
         return nullptr;
+
+    servent* service_entry = nullptr;
+
+    __getserv_name_buffer = service_file_line.value().name.to_byte_string();
+    __getserv_port_buffer = service_file_line.value().port;
+    __getserv_protocol_buffer = service_file_line.value().protocol.to_byte_string();
+    __getserv_alias_list_buffer = service_file_line.value().aliases;
 
     __getserv_buffer.s_name = const_cast<char*>(__getserv_name_buffer.characters());
     __getserv_buffer.s_port = htons(__getserv_port_buffer);
@@ -449,53 +570,53 @@ void endservent()
     services_file = nullptr;
 }
 
-// Fill the service entry buffer with the information contained
-// in the currently read line, returns true if successful,
-// false if failure occurs.
-static bool fill_getserv_buffers(char const* line, ssize_t read)
+static ErrorOr<Optional<ServiceFileLine>> parse_service_file_line(char const* line, ssize_t read)
 {
-    // Splitting the line by tab delimiter and filling the servent buffers name, port, and protocol members.
+    // If the line isn't a service (eg. empty or a comment)
+    if (read <= 0 || line[0] < 65 || line[0] > 122)
+        return { Optional<ServiceFileLine> {} };
+
     auto split_line = StringView(line, read).replace(" "sv, "\t"sv, ReplaceMode::All).split('\t');
 
-    // This indicates an incorrect file format.
-    // Services file entries should always at least contain
-    // name and port/protocol, separated by tabs.
-    if (split_line.size() < 2) {
-        warnln("getservent(): malformed services file");
-        return false;
-    }
-    __getserv_name_buffer = split_line[0];
+    if (split_line.size() < 2)
+        return Error::from_string_view("malformed service file"sv);
 
-    auto port_protocol_split = DeprecatedString(split_line[1]).split('/');
-    if (port_protocol_split.size() < 2) {
-        warnln("getservent(): malformed services file");
-        return false;
-    }
-    auto number = port_protocol_split[0].to_int();
-    if (!number.has_value())
-        return false;
+    auto name = TRY(String::from_byte_string(split_line[0]));
 
-    __getserv_port_buffer = number.value();
+    auto port_protocol = TRY(String::from_byte_string(split_line[1]));
+    auto port_protocol_split = TRY(port_protocol.split('/'));
 
-    // Remove any annoying whitespace at the end of the protocol.
-    __getserv_protocol_buffer = port_protocol_split[1].replace(" "sv, ""sv, ReplaceMode::All).replace("\t"sv, ""sv, ReplaceMode::All).replace("\n"sv, ""sv, ReplaceMode::All);
-    __getserv_alias_list_buffer.clear();
+    if (port_protocol_split.size() < 2)
+        return Error::from_string_view("malformed service file"sv);
 
-    // If there are aliases for the service, we will fill the alias list buffer.
+    auto port = port_protocol_split[0].to_number<int>();
+    if (!port.has_value())
+        return Error::from_string_view("port isn't a number"sv);
+
+    // Remove whitespace at the end of the protocol
+    auto protocol = TRY(port_protocol_split[1].replace(" "sv, ""sv, ReplaceMode::All));
+    protocol = TRY(protocol.replace("\t"sv, ""sv, ReplaceMode::All));
+    protocol = TRY(protocol.replace("\n"sv, ""sv, ReplaceMode::All));
+
+    Vector<ByteBuffer> aliases;
+
+    // If there are aliases for the service, we will fill the aliases list
     if (split_line.size() > 2 && !split_line[2].starts_with('#')) {
-
         for (size_t i = 2; i < split_line.size(); i++) {
             if (split_line[i].starts_with('#')) {
                 break;
             }
             auto alias = split_line[i].to_byte_buffer();
             if (alias.try_append("\0", sizeof(char)).is_error())
-                return false;
-            __getserv_alias_list_buffer.append(move(alias));
+                return Error::from_string_view("Failed to add null-byte to service alias"sv);
+
+            aliases.append(move(alias));
         }
     }
 
-    return true;
+    return ServiceFileLine {
+        name, protocol, port.value(), aliases
+    };
 }
 
 struct protoent* getprotoent()
@@ -633,7 +754,7 @@ void endprotoent()
 
 static bool fill_getproto_buffers(char const* line, ssize_t read)
 {
-    DeprecatedString string_line = DeprecatedString(line, read);
+    ByteString string_line = ByteString(line, read);
     auto split_line = string_line.replace(" "sv, "\t"sv, ReplaceMode::All).split('\t');
 
     // This indicates an incorrect file format. Protocols file entries should
@@ -644,7 +765,7 @@ static bool fill_getproto_buffers(char const* line, ssize_t read)
     }
     __getproto_name_buffer = split_line[0];
 
-    auto number = split_line[1].to_int();
+    auto number = split_line[1].to_number<int>();
     if (!number.has_value())
         return false;
 
@@ -682,9 +803,28 @@ int getaddrinfo(char const* __restrict node, char const* __restrict service, con
             node = "127.0.0.1";
     }
 
-    auto host_ent = gethostbyname(node);
-    if (!host_ent)
-        return EAI_FAIL;
+    size_t buffer_size = 1024;
+    char* buffer = nullptr;
+    int gethostbyname_errno = 0;
+    struct hostent ret = {};
+    struct hostent* host_ent = nullptr;
+
+    while (true) {
+        buffer = (char*)realloc(buffer, buffer_size);
+
+        if (buffer == nullptr)
+            return EAI_MEMORY;
+
+        int rc = gethostbyname_r(node, &ret, buffer, buffer_size, &host_ent, &gethostbyname_errno);
+        if (rc == ERANGE) {
+            buffer_size *= 2;
+            continue;
+        }
+
+        if (!host_ent)
+            return EAI_FAIL;
+        break;
+    }
 
     char const* proto = nullptr;
     if (hints && hints->ai_socktype) {
@@ -702,18 +842,58 @@ int getaddrinfo(char const* __restrict node, char const* __restrict service, con
 
     long port;
     int socktype;
-    servent* svc_ent = nullptr;
-    if (!hints || (hints->ai_flags & AI_NUMERICSERV) == 0) {
-        svc_ent = getservbyname(service, proto);
+
+    Optional<ServiceFileLine> service_file_line = {};
+
+    if ((!hints || (hints->ai_flags & AI_NUMERICSERV) == 0) && service) {
+        services_file = fopen(services_path, "r");
+        if (!services_file) {
+            return EAI_FAIL;
+        }
+
+        auto close_services_file_handler = ScopeGuard([&] {
+            fclose(services_file);
+        });
+
+        char* line = nullptr;
+        size_t length = 0;
+        ssize_t read;
+
+        while (true) {
+            do {
+                read = getline(&line, &length, services_file);
+
+                auto service_file_line_or_error = parse_service_file_line(line, read);
+                if (service_file_line_or_error.is_error())
+                    return EAI_SYSTEM;
+
+                service_file_line = service_file_line_or_error.release_value();
+
+                if (service_file_line.has_value())
+                    break;
+            } while (read != -1);
+
+            if (read == -1 || !service_file_line.has_value())
+                break;
+
+            if (service_file_line.value().name != service)
+                continue;
+
+            if (service_file_line.value().protocol != proto)
+                continue;
+
+            break;
+        }
     }
-    if (!svc_ent) {
+
+    if (!service_file_line.has_value()) {
         if (service) {
             char* end;
-            port = htons(strtol(service, &end, 10));
+            port = strtol(service, &end, 10);
             if (*end)
                 return EAI_FAIL;
         } else {
-            port = htons(0);
+            port = 0;
         }
 
         if (hints && hints->ai_socktype != 0)
@@ -721,8 +901,8 @@ int getaddrinfo(char const* __restrict node, char const* __restrict service, con
         else
             socktype = SOCK_STREAM;
     } else {
-        port = svc_ent->s_port;
-        socktype = strcmp(svc_ent->s_proto, "tcp") ? SOCK_STREAM : SOCK_DGRAM;
+        port = service_file_line.value().port;
+        socktype = service_file_line.value().protocol == "tcp" ? SOCK_STREAM : SOCK_DGRAM;
     }
 
     addrinfo* first_info = nullptr;
@@ -731,7 +911,7 @@ int getaddrinfo(char const* __restrict node, char const* __restrict service, con
     for (int host_index = 0; host_ent->h_addr_list[host_index]; host_index++) {
         sockaddr_in* sin = new sockaddr_in;
         sin->sin_family = AF_INET;
-        sin->sin_port = port;
+        sin->sin_port = htons(port);
         memcpy(&sin->sin_addr.s_addr, host_ent->h_addr_list[host_index], host_ent->h_length);
 
         addrinfo* info = new addrinfo;

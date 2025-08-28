@@ -8,15 +8,18 @@
 #include <AK/Find.h>
 #include <AK/Platform.h>
 #include <Kernel/Arch/Delay.h>
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/PCI/API.h>
+#include <Kernel/Bus/PCI/Driver.h>
 #include <Kernel/Bus/USB/UHCI/UHCIController.h>
+#include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/Bus/USB/USBRequest.h>
 #include <Kernel/Debug.h>
+#include <Kernel/Library/StdLib.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/Process.h>
 #include <Kernel/Sections.h>
-#include <Kernel/StdLib.h>
+#include <Kernel/Tasks/Process.h>
 #include <Kernel/Time/TimeManagement.h>
 
 static constexpr u8 RETRY_COUNTER_RELOAD = 3;
@@ -80,7 +83,6 @@ ErrorOr<void> UHCIController::initialize()
     dmesgln_pci(*this, "Interrupt line: {}", interrupt_number());
 
     TRY(spawn_async_poll_process());
-    TRY(spawn_port_process());
 
     TRY(reset());
     return start();
@@ -109,7 +111,8 @@ ErrorOr<void> UHCIController::reset()
     }
 
     // Let's allocate the physical page for the Frame List (which is 4KiB aligned)
-    m_framelist = TRY(MM.allocate_dma_buffer_page("UHCI Framelist"sv, Memory::Region::Access::Write));
+    // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
+    m_framelist = TRY(MM.allocate_dma_buffer_page("UHCI Framelist"sv, Memory::Region::Access::Write, Memory::MemoryType::IO));
     dbgln("UHCI: Allocated framelist at physical address {}", m_framelist->physical_page(0)->paddr());
     dbgln("UHCI: Framelist is at virtual address {}", m_framelist->vaddr());
     write_sofmod(64); // 1mS frame time
@@ -145,7 +148,8 @@ UNMAP_AFTER_INIT ErrorOr<void> UHCIController::create_structures()
     // Now the Transfer Descriptor pool
     m_transfer_descriptor_pool = TRY(UHCIDescriptorPool<TransferDescriptor>::try_create("Transfer Descriptor Pool"sv));
 
-    m_isochronous_transfer_pool = TRY(MM.allocate_dma_buffer_page("UHCI Isochronous Descriptor Pool"sv, Memory::Region::Access::ReadWrite));
+    // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
+    m_isochronous_transfer_pool = TRY(MM.allocate_dma_buffer_page("UHCI Isochronous Descriptor Pool"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO));
 
     // Set up the Isochronous Transfer Descriptor list
     m_iso_td_list.resize(UHCI_NUMBER_OF_ISOCHRONOUS_TDS);
@@ -265,6 +269,98 @@ ErrorOr<void> UHCIController::start()
 
     m_root_hub = TRY(UHCIRootHub::try_create(*this));
     TRY(m_root_hub->setup({}));
+    TRY(spawn_port_process());
+    return {};
+}
+
+u8 UHCIController::allocate_address()
+{
+    // FIXME: This can be smarter.
+    return m_next_device_index++;
+}
+
+ErrorOr<void> UHCIController::initialize_device(USB::Device& device)
+{
+    USBDeviceDescriptor dev_descriptor {};
+
+    // Send 8-bytes to get at least the `max_packet_size` from the device
+    constexpr u8 short_device_descriptor_length = 8;
+    auto transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_DEVICE << 8), 0, short_device_descriptor_length, &dev_descriptor));
+
+    // FIXME: This be "not equal to" instead of "less than", but control transfers report a higher transfer length than expected.
+    if (transfer_length < short_device_descriptor_length) {
+        dbgln("USB Device: Not enough bytes for short device descriptor. Expected {}, got {}.", short_device_descriptor_length, transfer_length);
+        return EIO;
+    }
+
+    if constexpr (UHCI_DEBUG) {
+        dbgln("USB Short Device Descriptor:");
+        dbgln("Descriptor length: {}", dev_descriptor.descriptor_header.length);
+        dbgln("Descriptor type: {}", dev_descriptor.descriptor_header.descriptor_type);
+
+        dbgln("Device Class: {:02x}", dev_descriptor.device_class);
+        dbgln("Device Sub-Class: {:02x}", dev_descriptor.device_sub_class);
+        dbgln("Device Protocol: {:02x}", dev_descriptor.device_protocol);
+        dbgln("Max Packet Size: {:02x} bytes", dev_descriptor.max_packet_size);
+    }
+
+    // Ensure that this is actually a valid device descriptor...
+    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+    device.set_max_packet_size<UHCIController>({}, dev_descriptor.max_packet_size);
+
+    transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_DEVICE << 8), 0, sizeof(USBDeviceDescriptor), &dev_descriptor));
+
+    // FIXME: This be "not equal to" instead of "less than", but control transfers report a higher transfer length than expected.
+    if (transfer_length < sizeof(USBDeviceDescriptor)) {
+        dbgln("USB Device: Unexpected device descriptor length. Expected {}, got {}.", sizeof(USBDeviceDescriptor), transfer_length);
+        return EIO;
+    }
+
+    // Ensure that this is actually a valid device descriptor...
+    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+
+    if constexpr (UHCI_DEBUG) {
+        dbgln("USB Device Descriptor for {:04x}:{:04x}", dev_descriptor.vendor_id, dev_descriptor.product_id);
+        dbgln("Device Class: {:02x}", dev_descriptor.device_class);
+        dbgln("Device Sub-Class: {:02x}", dev_descriptor.device_sub_class);
+        dbgln("Device Protocol: {:02x}", dev_descriptor.device_protocol);
+        dbgln("Max Packet Size: {:02x} bytes", dev_descriptor.max_packet_size);
+        dbgln("Number of configurations: {:02x}", dev_descriptor.num_configurations);
+    }
+
+    auto new_address = allocate_address();
+
+    // Attempt to set devices address on the bus
+    transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_HOST_TO_DEVICE, USB_REQUEST_SET_ADDRESS, new_address, 0, 0, nullptr));
+
+    // This has to be set after we send out the "Set Address" request because it might be sent to the root hub.
+    // The root hub uses the address to intercept requests to itself.
+    device.set_address<UHCIController>({}, new_address);
+
+    dbgln_if(USB_DEBUG, "USB Device: Set address to {}", new_address);
+
+    device.set_descriptor<UHCIController>({}, dev_descriptor);
+
+    // Fetch the configuration descriptors from the device
+    auto& configurations = device.configurations<UHCIController>({});
+    configurations.ensure_capacity(dev_descriptor.num_configurations);
+    for (u8 configuration = 0u; configuration < dev_descriptor.num_configurations; configuration++) {
+        USBConfigurationDescriptor configuration_descriptor;
+        transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_CONFIGURATION << 8u) | configuration, 0, sizeof(USBConfigurationDescriptor), &configuration_descriptor));
+
+        if constexpr (UHCI_DEBUG) {
+            dbgln("USB Configuration Descriptor {}", configuration);
+            dbgln("Total Length: {}", configuration_descriptor.total_length);
+            dbgln("Number of interfaces: {}", configuration_descriptor.number_of_interfaces);
+            dbgln("Configuration Value: {}", configuration_descriptor.configuration_value);
+            dbgln("Attributes Bitmap: {:08b}", configuration_descriptor.attributes_bitmap);
+            dbgln("Maximum Power: {}mA", configuration_descriptor.max_power_in_ma * 2u); // This value is in 2mA steps
+        }
+
+        TRY(configurations.try_empend(device, configuration_descriptor, configuration));
+        TRY(configurations.last().enumerate_interfaces());
+    }
+
     return {};
 }
 
@@ -278,7 +374,7 @@ TransferDescriptor* UHCIController::create_transfer_descriptor(Pipe& pipe, Packe
     u16 max_len = (data_len > 0) ? (data_len - 1) : 0x7ff;
     VERIFY(max_len <= 0x4FF || max_len == 0x7FF); // According to the datasheet, anything in the range of 0x500 to 0x7FE are illegal
 
-    td->set_token((max_len << TD_TOKEN_MAXLEN_SHIFT) | ((pipe.data_toggle() ? 1 : 0) << TD_TOKEN_DATA_TOGGLE_SHIFT) | (pipe.endpoint_address() << TD_TOKEN_ENDPOINT_SHIFT) | (pipe.device_address() << TD_TOKEN_DEVICE_ADDR_SHIFT) | (static_cast<u8>(direction)));
+    td->set_token((max_len << TD_TOKEN_MAXLEN_SHIFT) | ((pipe.data_toggle() ? 1 : 0) << TD_TOKEN_DATA_TOGGLE_SHIFT) | (pipe.endpoint_number() << TD_TOKEN_ENDPOINT_SHIFT) | (pipe.device().address() << TD_TOKEN_DEVICE_ADDR_SHIFT) | (static_cast<u8>(direction)));
     pipe.set_toggle(!pipe.data_toggle());
 
     if (pipe.type() == Pipe::Type::Isochronous) {
@@ -290,7 +386,7 @@ TransferDescriptor* UHCIController::create_transfer_descriptor(Pipe& pipe, Packe
     }
 
     // Set low-speed bit if the device connected to port is a low=speed device (probably unlikely...)
-    if (pipe.device_speed() == Pipe::DeviceSpeed::LowSpeed) {
+    if (pipe.device().speed() == USB::Device::DeviceSpeed::LowSpeed) {
         td->set_lowspeed();
     }
 
@@ -442,10 +538,10 @@ ErrorOr<size_t> UHCIController::submit_control_transfer(Transfer& transfer)
     Pipe& pipe = transfer.pipe(); // Short circuit the pipe related to this transfer
     bool direction_in = (transfer.request().request_type & USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST) == USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST;
 
-    dbgln_if(UHCI_DEBUG, "UHCI: Received control transfer for address {}. Root Hub is at address {}.", pipe.device_address(), m_root_hub->device_address());
+    dbgln_if(UHCI_DEBUG, "UHCI: Received control transfer for address {}. Root Hub is at address {}.", pipe.device().address(), m_root_hub->device_address());
 
     // Short-circuit the root hub.
-    if (pipe.device_address() == m_root_hub->device_address())
+    if (pipe.device().address() == m_root_hub->device_address())
         return m_root_hub->handle_control_transfer(transfer);
 
     TransferDescriptor* setup_td = create_transfer_descriptor(pipe, PacketID::SETUP, sizeof(USBRequestData));
@@ -520,7 +616,7 @@ ErrorOr<size_t> UHCIController::submit_bulk_transfer(Transfer& transfer)
     auto transfer_queue = TRY(create_transfer_queue(transfer));
     enqueue_qh(transfer_queue, m_bulk_qh_anchor);
 
-    dbgln_if(UHCI_DEBUG, "UHCI: Received bulk transfer for address {}. Root Hub is at address {}.", transfer.pipe().device_address(), m_root_hub->device_address());
+    dbgln_if(UHCI_DEBUG, "UHCI: Received bulk transfer for address {}. Root Hub is at address {}.", transfer.pipe().device().address(), m_root_hub->device_address());
 
     size_t transfer_size = 0;
     while (!transfer.complete()) {
@@ -538,7 +634,7 @@ ErrorOr<size_t> UHCIController::submit_bulk_transfer(Transfer& transfer)
 
 ErrorOr<void> UHCIController::submit_async_interrupt_transfer(NonnullLockRefPtr<Transfer> transfer, u16 ms_interval)
 {
-    dbgln_if(UHCI_DEBUG, "UHCI: Received interrupt transfer for address {}. Root Hub is at address {}.", transfer->pipe().device_address(), m_root_hub->device_address());
+    dbgln_if(UHCI_DEBUG, "UHCI: Received interrupt transfer for address {}. Root Hub is at address {}.", transfer->pipe().device().address(), m_root_hub->device_address());
 
     if (ms_interval == 0) {
         return EINVAL;
@@ -560,6 +656,11 @@ size_t UHCIController::poll_transfer_queue(QueueHead& transfer_queue)
 
     while (descriptor) {
         u32 status = descriptor->status();
+
+        if (status & TransferDescriptor::StatusBits::NAKReceived) {
+            transfer_still_in_progress = false;
+            break;
+        }
 
         if (status & TransferDescriptor::StatusBits::Active) {
             transfer_still_in_progress = true;
@@ -585,24 +686,22 @@ size_t UHCIController::poll_transfer_queue(QueueHead& transfer_queue)
 
 ErrorOr<void> UHCIController::spawn_port_process()
 {
-    LockRefPtr<Thread> usb_hotplug_thread;
-    (void)Process::create_kernel_process(usb_hotplug_thread, TRY(KString::try_create("UHCI Hot Plug Task"sv)), [&] {
-        for (;;) {
-            if (m_root_hub)
-                m_root_hub->check_for_port_updates();
-
-            (void)Thread::current()->sleep(Time::from_seconds(1));
+    TRY(Process::create_kernel_process("UHCI Hot Plug Task"sv, [&] {
+        while (!Process::current().is_dying()) {
+            m_root_hub->check_for_port_updates();
+            (void)Thread::current()->sleep(Duration::from_seconds(1));
         }
-    });
+        Process::current().sys$exit(0);
+        VERIFY_NOT_REACHED();
+    }));
     return {};
 }
 
 ErrorOr<void> UHCIController::spawn_async_poll_process()
 {
-    LockRefPtr<Thread> async_poll_thread;
-    (void)Process::create_kernel_process(async_poll_thread, TRY(KString::try_create("UHCI Async Poll Task"sv)), [&] {
+    TRY(Process::create_kernel_process("UHCI Async Poll Task"sv, [&] {
         u16 poll_interval_ms = 1024;
-        for (;;) {
+        while (!Process::current().is_dying()) {
             {
                 SpinlockLocker locker { m_async_lock };
                 for (OwnPtr<AsyncTransferHandle>& handle : m_active_async_transfers) {
@@ -618,13 +717,15 @@ ErrorOr<void> UHCIController::spawn_async_poll_process()
                     }
                 }
             }
-            (void)Thread::current()->sleep(Time::from_milliseconds(poll_interval_ms));
+            (void)Thread::current()->sleep(Duration::from_milliseconds(poll_interval_ms));
         }
-    });
+        Process::current().sys$exit(0);
+        VERIFY_NOT_REACHED();
+    }));
     return {};
 }
 
-bool UHCIController::handle_irq(RegisterState const&)
+bool UHCIController::handle_irq()
 {
     u32 status = read_usbsts();
 
@@ -679,7 +780,7 @@ void UHCIController::get_port_status(Badge<UHCIRootHub>, u8 port, HubStatus& hub
     // UHCI ports are always powered.
     hub_port_status.status |= PORT_STATUS_PORT_POWER;
 
-    dbgln_if(UHCI_DEBUG, "UHCI: get_port_status status=0x{:04x} change=0x{:04x}", hub_port_status.status, hub_port_status.change);
+    dbgln_if(UHCI_DEBUG, "UHCI: get_port_status status={:#04x} change={:#04x}", hub_port_status.status, hub_port_status.change);
 }
 
 void UHCIController::reset_port(u8 port)
@@ -801,13 +902,30 @@ ErrorOr<void> UHCIController::clear_port_feature(Badge<UHCIRootHub>, u8 port, Hu
         return EINVAL;
     }
 
-    dbgln_if(UHCI_DEBUG, "UHCI: clear_port_feature: writing 0x{:04x} to portsc{}.", port_data, port + 1);
+    dbgln_if(UHCI_DEBUG, "UHCI: clear_port_feature: writing {:#04x} to portsc{}.", port_data, port + 1);
 
     if (port == 0)
         write_portsc1(port_data);
     else
         write_portsc2(port_data);
 
+    return {};
+}
+
+PCI_DRIVER(UHCIDriver);
+
+ErrorOr<void> UHCIDriver::probe(PCI::DeviceIdentifier const& pci_device_identifier) const
+{
+    if (kernel_command_line().disable_usb() || kernel_command_line().disable_uhci_controller())
+        return EPERM;
+
+    if (pci_device_identifier.class_code() != PCI::ClassID::SerialBus
+        || pci_device_identifier.subclass_code() != PCI::SerialBus::SubclassID::USB
+        || pci_device_identifier.prog_if() != PCI::SerialBus::USBProgIf::UHCI)
+        return ENOTSUP;
+
+    auto controller = TRY(UHCIController::try_to_initialize(pci_device_identifier));
+    USB::USBManagement::the().add_controller(controller);
     return {};
 }
 

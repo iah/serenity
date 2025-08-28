@@ -5,17 +5,17 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/System.h>
+#include <LibCrypto/Checksum/IPv4Header.h>
 #include <LibMain/Main.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
-#include <serenity.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -25,7 +25,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio id inet unix"));
 
-    DeprecatedString host_name;
+    ByteString host_name;
     int max_hops = 30;
     int max_retries = 3;
     int echo_timeout = 5;
@@ -78,14 +78,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // 0: got ttl exhausted response
     // -1: error or no response
     auto try_reach_host = [&](int ttl) -> ErrorOr<int> {
-        Core::ElapsedTimer m_timer { true };
-        auto ttl_number = DeprecatedString::number(ttl);
+        Core::ElapsedTimer m_timer { Core::TimerType::Precise };
+        auto ttl_number = ByteString::number(ttl);
         for (auto i = 0; i < max_retries; i++) {
             icmp_request request {};
             request.header = { ICMP_ECHO, 0, 0, { { 0, 0 } } };
             bool fits = ttl_number.copy_characters_to_buffer(request.msg, sizeof(request.msg));
             VERIFY(fits);
-            request.header.checksum = internet_checksum(&request, sizeof(request));
+            request.header.checksum = Crypto::Checksum::IPv4Header({ &request, sizeof(request) }).digest();
 
             m_timer.start();
             TRY(Core::System::sendto(fd, &request, sizeof(request), 0, (sockaddr*)&host_address, sizeof(host_address)));
@@ -107,7 +107,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             auto response_time = m_timer.elapsed();
             auto* peer = gethostbyaddr(&peer_address.sin_addr, sizeof(peer_address.sin_addr), AF_INET);
 
-            DeprecatedString peer_name;
+            ByteString peer_name;
             if (peer) {
                 peer_name = peer->h_name;
             } else {

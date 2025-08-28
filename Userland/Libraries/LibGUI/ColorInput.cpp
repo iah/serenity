@@ -26,7 +26,7 @@ ColorInput::ColorInput()
             set_color_internal(parsed_color.value(), AllowCallback::Yes, false);
     };
 
-    REGISTER_STRING_PROPERTY("color_picker_title", color_picker_title, set_color_picker_title);
+    REGISTER_DEPRECATED_STRING_PROPERTY("color_picker_title", color_picker_title, set_color_picker_title);
     REGISTER_BOOL_PROPERTY("has_alpha_channel", has_alpha_channel, set_color_has_alpha_channel);
 }
 
@@ -43,7 +43,7 @@ void ColorInput::set_color_internal(Color color, AllowCallback allow_callback, b
         return;
     m_color = color;
     if (change_text)
-        set_text(m_color_has_alpha_channel ? color.to_deprecated_string() : color.to_deprecated_string_without_alpha(), AllowCallback::No);
+        set_text(m_color_has_alpha_channel ? color.to_byte_string() : color.to_byte_string_without_alpha(), AllowCallback::No);
     update();
     if (allow_callback == AllowCallback::Yes && on_change)
         on_change();
@@ -52,7 +52,7 @@ void ColorInput::set_color_internal(Color color, AllowCallback allow_callback, b
 void ColorInput::set_color(Color color, AllowCallback allow_callback)
 {
     set_color_internal(color, allow_callback, true);
-};
+}
 
 void ColorInput::mousedown_event(MouseEvent& event)
 {
@@ -71,9 +71,11 @@ void ColorInput::mouseup_event(MouseEvent& event)
         m_may_be_color_rect_click = false;
         if (is_color_rect_click) {
             auto dialog = GUI::ColorPicker::construct(m_color, window(), m_color_picker_title);
+            dialog->on_color_changed = [this](Gfx::Color color) {
+                set_color(color);
+            };
             dialog->set_color_has_alpha_channel(m_color_has_alpha_channel);
-            if (dialog->exec() == GUI::Dialog::ExecResult::OK)
-                set_color(dialog->color());
+            dialog->exec();
             event.accept();
             return;
         }

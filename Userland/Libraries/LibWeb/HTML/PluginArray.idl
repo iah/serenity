@@ -1,6 +1,7 @@
 #import <HTML/Plugin.idl>
 
-[Exposed=Window, LegacyUnenumerableNamedProperties, UseNewAKString]
+// https://html.spec.whatwg.org/#pluginarray
+[Exposed=Window, LegacyUnenumerableNamedProperties]
 interface PluginArray {
     undefined refresh();
     readonly attribute unsigned long length;

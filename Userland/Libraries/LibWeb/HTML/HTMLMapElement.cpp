@@ -4,10 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLMapElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/HTML/HTMLAreaElement.h>
 #include <LibWeb/HTML/HTMLMapElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLMapElement);
 
 HTMLMapElement::HTMLMapElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -16,12 +20,28 @@ HTMLMapElement::HTMLMapElement(DOM::Document& document, DOM::QualifiedName quali
 
 HTMLMapElement::~HTMLMapElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLMapElement::initialize(JS::Realm& realm)
+void HTMLMapElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLMapElementPrototype>(realm, "HTMLMapElement"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLMapElement);
+}
 
-    return {};
+void HTMLMapElement::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_areas);
+}
+
+// https://html.spec.whatwg.org/multipage/image-maps.html#dom-map-areas
+JS::NonnullGCPtr<DOM::HTMLCollection> HTMLMapElement::areas()
+{
+    // The areas attribute must return an HTMLCollection rooted at the map element, whose filter matches only area elements.
+    if (!m_areas) {
+        m_areas = DOM::HTMLCollection::create(*this, DOM::HTMLCollection::Scope::Descendants, [](Element const& element) {
+            return is<HTML::HTMLAreaElement>(element);
+        });
+    }
+    return *m_areas;
 }
 
 }

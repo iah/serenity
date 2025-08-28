@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Jakub Berkop <jakub.berkop@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -206,19 +207,51 @@ void Profile::rebuild_tree()
                 }
             }
         }
+        if (event.data.has<Event::FilesystemEventData>()) {
+            auto const& filesystem_event = event.data.get<Event::FilesystemEventData>();
+            auto const& path = filesystem_event.data.visit(
+                [&](Event::OpenEventData const& data) {
+                    return data.path;
+                },
+                [&](Event::CloseEventData const& data) {
+                    return data.path;
+                },
+                [&](Event::ReadvEventData const& data) {
+                    return data.path;
+                },
+                [&](Event::ReadEventData const& data) {
+                    return data.path;
+                },
+                [&](Event::PreadEventData const& data) {
+                    return data.path;
+                });
 
-        if (event.data.has<Event::ReadData>()) {
-            auto const& read_event = event.data.get<Event::ReadData>();
-            auto& event_node = m_file_event_nodes->find_or_create_node(read_event.path);
+            auto& event_node = m_file_event_nodes->find_or_create_node(path);
 
             event_node.for_each_parent_node([&](FileEventNode& node) {
-                node.increment_count();
+                auto const duration = filesystem_event.duration;
 
-                // Fixme: Currently events record 'timestamp' and 'start_timestamp' in ms resolution,
-                //        which results in most durations equal to zero. Increasing the resolution should
-                //        make the information more accurate.
-                auto const duration = event.timestamp - read_event.start_timestamp;
-                node.add_to_duration(duration);
+                filesystem_event.data.visit(
+                    [&](Event::OpenEventData const&) {
+                        node.open().duration += duration;
+                        node.open().count++;
+                    },
+                    [&](Event::CloseEventData const&) {
+                        node.close().duration += duration;
+                        node.close().count++;
+                    },
+                    [&](Event::ReadvEventData const&) {
+                        node.readv().duration += duration;
+                        node.readv().count++;
+                    },
+                    [&](Event::ReadEventData const&) {
+                        node.read().duration += duration;
+                        node.read().count++;
+                    },
+                    [&](Event::PreadEventData const&) {
+                        node.pread().duration += duration;
+                        node.pread().count++;
+                    });
             });
         }
     }
@@ -247,7 +280,7 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
         if (!debuginfo_file_or_error.is_error()) {
             auto debuginfo_file = debuginfo_file_or_error.release_value();
             auto debuginfo_image = ELF::Image(debuginfo_file->bytes());
-            g_kernel_debuginfo_object = { { debuginfo_file, move(debuginfo_image) } };
+            g_kernel_debuginfo_object = { { move(debuginfo_file), move(debuginfo_image) } };
         }
     }
 
@@ -256,10 +289,10 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
         return Error::from_string_literal("Malformed profile (strings is not an array)");
     auto const& strings = strings_value.value();
 
-    HashMap<FlatPtr, DeprecatedString> profile_strings;
+    HashMap<FlatPtr, ByteString> profile_strings;
     for (FlatPtr string_id = 0; string_id < strings.size(); ++string_id) {
         auto const& value = strings.at(string_id);
-        profile_strings.set(string_id, value.to_deprecated_string());
+        profile_strings.set(string_id, value.as_string());
     }
 
     auto events_value = object.get_array("events"sv);
@@ -284,29 +317,29 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
         event.pid = perf_event.get_i32("pid"sv).value_or(0);
         event.tid = perf_event.get_i32("tid"sv).value_or(0);
 
-        auto type_string = perf_event.get_deprecated_string("type"sv).value_or({});
+        auto type_string = perf_event.get_byte_string("type"sv).value_or({});
 
         if (type_string == "sample"sv) {
             event.data = Event::SampleData {};
-        } else if (type_string == "malloc"sv) {
+        } else if (type_string == "kmalloc"sv) {
             event.data = Event::MallocData {
                 .ptr = perf_event.get_addr("ptr"sv).value_or(0),
                 .size = perf_event.get_integer<size_t>("size"sv).value_or(0),
             };
-        } else if (type_string == "free"sv) {
+        } else if (type_string == "kfree"sv) {
             event.data = Event::FreeData {
                 .ptr = perf_event.get_addr("ptr"sv).value_or(0),
             };
         } else if (type_string == "signpost"sv) {
             auto string_id = perf_event.get_addr("arg1"sv).value_or(0);
             event.data = Event::SignpostData {
-                .string = profile_strings.get(string_id).value_or(DeprecatedString::formatted("Signpost #{}", string_id)),
+                .string = profile_strings.get(string_id).value_or(ByteString::formatted("Signpost #{}", string_id)),
                 .arg = perf_event.get_addr("arg2"sv).value_or(0),
             };
         } else if (type_string == "mmap"sv) {
             auto ptr = perf_event.get_addr("ptr"sv).value_or(0);
             auto size = perf_event.get_integer<size_t>("size"sv).value_or(0);
-            auto name = perf_event.get_deprecated_string("name"sv).value_or({});
+            auto name = perf_event.get_byte_string("name"sv).value_or({});
 
             event.data = Event::MmapData {
                 .ptr = ptr,
@@ -326,7 +359,7 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
             continue;
         } else if (type_string == "process_create"sv) {
             auto parent_pid = perf_event.get_integer<pid_t>("parent_pid"sv).value_or(0);
-            auto executable = perf_event.get_deprecated_string("executable"sv).value_or({});
+            auto executable = perf_event.get_byte_string("executable"sv).value_or({});
             event.data = Event::ProcessCreateData {
                 .parent_pid = parent_pid,
                 .executable = executable,
@@ -344,7 +377,7 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
             all_processes.append(move(sampled_process));
             continue;
         } else if (type_string == "process_exec"sv) {
-            auto executable = perf_event.get_deprecated_string("executable"sv).value_or({});
+            auto executable = perf_event.get_byte_string("executable"sv).value_or({});
             event.data = Event::ProcessExecData {
                 .executable = executable,
             };
@@ -385,15 +418,55 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
             if (it != current_processes.end())
                 it->value->handle_thread_exit(event.tid, event.serial);
             continue;
-        } else if (type_string == "read"sv) {
-            auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
-            event.data = Event::ReadData {
-                .fd = perf_event.get_integer<int>("fd"sv).value_or(0),
-                .size = perf_event.get_integer<size_t>("size"sv).value_or(0),
-                .path = profile_strings.get(string_index).value(),
-                .start_timestamp = perf_event.get_integer<size_t>("start_timestamp"sv).value_or(0),
-                .success = perf_event.get_bool("success"sv).value_or(false)
+        } else if (type_string == "filesystem"sv) {
+            Event::FilesystemEventData fsdata {
+                .duration = Duration::from_nanoseconds(perf_event.get_integer<u64>("durationNs"sv).value_or(0)),
+                .data = Event::OpenEventData {},
             };
+            auto const filesystem_event_type = perf_event.get("fs_event_type"sv).value_or("").as_string();
+            if (filesystem_event_type == "open"sv) {
+                auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
+                auto const filename = profile_strings.get(string_index).value_or("");
+                fsdata.data = Event::OpenEventData {
+                    .dirfd = perf_event.get_integer<int>("dirfd"sv).value_or(0),
+                    .path = filename,
+                    .options = perf_event.get_integer<int>("options"sv).value_or(0),
+                    .mode = perf_event.get_integer<u64>("mode"sv).value_or(0),
+                };
+            } else if (filesystem_event_type == "close"sv) {
+                auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
+                auto const filename = profile_strings.get(string_index).value_or("");
+                fsdata.data = Event::CloseEventData {
+                    .fd = perf_event.get_integer<int>("fd"sv).value_or(0),
+                    .path = filename,
+                };
+            } else if (filesystem_event_type == "readv"sv) {
+                auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
+                auto const filename = profile_strings.get(string_index).value();
+                fsdata.data = Event::ReadvEventData {
+                    .fd = perf_event.get_integer<int>("fd"sv).value_or(0),
+                    .path = filename,
+                };
+            } else if (filesystem_event_type == "read"sv) {
+                auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
+                auto const filename = profile_strings.get(string_index).value();
+                fsdata.data = Event::ReadEventData {
+                    .fd = perf_event.get_integer<int>("fd"sv).value_or(0),
+                    .path = filename,
+                };
+            } else if (filesystem_event_type == "pread"sv) {
+                auto const string_index = perf_event.get_addr("filename_index"sv).value_or(0);
+                auto const filename = profile_strings.get(string_index).value();
+                fsdata.data = Event::PreadEventData {
+                    .fd = perf_event.get_integer<int>("fd"sv).value_or(0),
+                    .path = filename,
+                    .buffer_ptr = perf_event.get_integer<FlatPtr>("buffer_ptr"sv).value_or(0),
+                    .size = perf_event.get_integer<size_t>("size"sv).value_or(0),
+                    .offset = perf_event.get_integer<off_t>("offset"sv).value_or(0),
+                };
+            }
+
+            event.data = fsdata;
         } else {
             dbgln("Unknown event type '{}'", type_string);
             VERIFY_NOT_REACHED();
@@ -406,16 +479,16 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
         auto const& stack_array = stack.value();
         for (ssize_t i = stack_array.values().size() - 1; i >= 0; --i) {
             auto const& frame = stack_array.at(i);
-            auto ptr = frame.to_number<u64>();
+            auto ptr = frame.as_integer<u64>();
             u32 offset = 0;
             DeprecatedFlyString object_name;
-            DeprecatedString symbol;
+            ByteString symbol;
 
             if (maybe_kernel_base.has_value() && ptr >= maybe_kernel_base.value()) {
                 if (g_kernel_debuginfo_object.has_value()) {
                     symbol = g_kernel_debuginfo_object->elf.symbolicate(ptr - maybe_kernel_base.value(), &offset);
                 } else {
-                    symbol = DeprecatedString::formatted("?? <{:p}>", ptr);
+                    symbol = ByteString::formatted("?? <{:p}>", ptr);
                 }
             } else {
                 auto it = current_processes.find(event.pid);
@@ -427,7 +500,7 @@ ErrorOr<NonnullOwnPtr<Profile>> Profile::load_from_perfcore_file(StringView path
                     object_name = library->name;
                     symbol = library->symbolicate(ptr, &offset);
                 } else {
-                    symbol = DeprecatedString::formatted("?? <{:p}>", ptr);
+                    symbol = ByteString::formatted("?? <{:p}>", ptr);
                 }
             }
 
@@ -608,7 +681,7 @@ ProfileNode::ProfileNode(Process const& process)
 {
 }
 
-ProfileNode::ProfileNode(Process const& process, DeprecatedFlyString const& object_name, DeprecatedString symbol, FlatPtr address, u32 offset, u64 timestamp, pid_t pid)
+ProfileNode::ProfileNode(Process const& process, DeprecatedFlyString const& object_name, ByteString symbol, FlatPtr address, u32 offset, u64 timestamp, pid_t pid)
     : m_process(process)
     , m_symbol(move(symbol))
     , m_pid(pid)
@@ -616,7 +689,7 @@ ProfileNode::ProfileNode(Process const& process, DeprecatedFlyString const& obje
     , m_offset(offset)
     , m_timestamp(timestamp)
 {
-    DeprecatedString object;
+    ByteString object;
     if (object_name.ends_with(": .text"sv)) {
         object = object_name.view().substring_view(0, object_name.length() - 7);
     } else {

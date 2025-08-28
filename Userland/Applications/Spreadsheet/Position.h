@@ -6,9 +6,9 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Types.h>
-#include <AK/URL.h>
+#include <LibURL/URL.h>
 
 namespace Spreadsheet {
 
@@ -37,8 +37,8 @@ struct Position {
         return row == other.row && column == other.column;
     }
 
-    DeprecatedString to_cell_identifier(Sheet const& sheet) const;
-    URL to_url(Sheet const& sheet) const;
+    ByteString to_cell_identifier(Sheet const& sheet) const;
+    URL::URL to_url(Sheet const& sheet) const;
 
     size_t column { 0 };
     size_t row { 0 };

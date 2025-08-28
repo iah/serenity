@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -25,8 +26,12 @@ enum class Type : u8 {
     None,
 };
 
-StringView char_for_piece(Type type);
-Chess::Type piece_for_char_promotion(StringView str);
+enum class Notation {
+    Algebraic,
+    FEN,
+};
+Optional<char> char_for_piece(Type, Notation);
+Type piece_from_char(char);
 
 enum class Color : u8 {
     White,
@@ -85,7 +90,10 @@ struct Square {
 
     bool in_bounds() const { return rank >= 0 && file >= 0 && rank < 8 && file < 8; }
     bool is_light() const { return (rank % 2) != (file % 2); }
-    DeprecatedString to_algebraic() const;
+
+    char file_char() const;
+    char rank_char() const;
+    ErrorOr<String> to_algebraic() const;
 };
 
 class Board;
@@ -109,9 +117,9 @@ struct Move {
     }
     bool operator==(Move const& other) const { return from == other.from && to == other.to && promote_to == other.promote_to; }
 
-    static Move from_algebraic(StringView algebraic, const Color turn, Board const& board);
-    DeprecatedString to_long_algebraic() const;
-    DeprecatedString to_algebraic() const;
+    static Move from_algebraic(StringView algebraic, Color const turn, Board const& board);
+    ErrorOr<String> to_long_algebraic() const;
+    ErrorOr<String> to_algebraic() const;
 };
 
 class Board {
@@ -130,7 +138,7 @@ public:
     bool apply_move(Move const&, Color color = Color::None);
     Optional<Move> const& last_move() const { return m_last_move; }
 
-    DeprecatedString to_fen() const;
+    ErrorOr<String> to_fen() const;
 
     enum class Result {
         CheckMate,
@@ -285,7 +293,7 @@ void Board::generate_moves(Callback callback, Color color) const
 }
 
 template<>
-struct AK::Traits<Chess::Piece> : public GenericTraits<Chess::Piece> {
+struct AK::Traits<Chess::Piece> : public DefaultTraits<Chess::Piece> {
     static unsigned hash(Chess::Piece const& piece)
     {
         return pair_int_hash(static_cast<u32>(piece.color), static_cast<u32>(piece.type));
@@ -293,7 +301,7 @@ struct AK::Traits<Chess::Piece> : public GenericTraits<Chess::Piece> {
 };
 
 template<>
-struct AK::Traits<Chess::Board> : public GenericTraits<Chess::Board> {
+struct AK::Traits<Chess::Board> : public DefaultTraits<Chess::Board> {
     static unsigned hash(Chess::Board const& chess)
     {
         unsigned hash = 0;

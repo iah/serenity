@@ -4,12 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/NodeIteratorPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NodeIterator.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::DOM {
+
+JS_DEFINE_ALLOCATOR(NodeIterator);
 
 NodeIterator::NodeIterator(Node& root)
     : PlatformObject(root.realm())
@@ -21,12 +24,10 @@ NodeIterator::NodeIterator(Node& root)
 
 NodeIterator::~NodeIterator() = default;
 
-JS::ThrowCompletionOr<void> NodeIterator::initialize(JS::Realm& realm)
+void NodeIterator::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::NodeIteratorPrototype>(realm, "NodeIterator"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(NodeIterator);
 }
 
 void NodeIterator::finalize()
@@ -38,12 +39,12 @@ void NodeIterator::finalize()
 void NodeIterator::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_filter.ptr());
-    visitor.visit(m_root.ptr());
-    visitor.visit(m_reference.node.ptr());
+    visitor.visit(m_filter);
+    visitor.visit(m_root);
+    visitor.visit(m_reference.node);
 
     if (m_traversal_pointer.has_value())
-        visitor.visit(m_traversal_pointer->node.ptr());
+        visitor.visit(m_traversal_pointer->node);
 }
 
 // https://dom.spec.whatwg.org/#dom-document-createnodeiterator
@@ -53,7 +54,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<NodeIterator>> NodeIterator::create(Node& r
     // 2. Set iterator’s root and iterator’s reference to root.
     // 3. Set iterator’s pointer before reference to true.
     auto& realm = root.realm();
-    auto iterator = MUST_OR_THROW_OOM(realm.heap().allocate<NodeIterator>(realm, root));
+    auto iterator = realm.heap().allocate<NodeIterator>(realm, root);
 
     // 4. Set iterator’s whatToShow to whatToShow.
     iterator->m_what_to_show = what_to_show;
@@ -141,7 +142,7 @@ JS::ThrowCompletionOr<NodeFilter::Result> NodeIterator::filter(Node& node)
 {
     // 1. If traverser’s active flag is set, then throw an "InvalidStateError" DOMException.
     if (m_active)
-        return throw_completion(WebIDL::InvalidStateError::create(realm(), "NodeIterator is already active"));
+        return throw_completion(WebIDL::InvalidStateError::create(realm(), "NodeIterator is already active"_string));
 
     // 2. Let n be node’s nodeType attribute value − 1.
     auto n = node.node_type() - 1;
@@ -159,7 +160,7 @@ JS::ThrowCompletionOr<NodeFilter::Result> NodeIterator::filter(Node& node)
 
     // 6. Let result be the return value of call a user object’s operation with traverser’s filter, "acceptNode", and « node ».
     //    If this throws an exception, then unset traverser’s active flag and rethrow the exception.
-    auto result = WebIDL::call_user_object_operation(m_filter->callback(), "acceptNode", {}, &node);
+    auto result = WebIDL::call_user_object_operation(m_filter->callback(), "acceptNode"_string, {}, &node);
     if (result.is_abrupt()) {
         m_active = false;
         return result;

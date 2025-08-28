@@ -30,17 +30,17 @@ public:
     virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return m_matches.size(); }
     virtual int column_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return Column::__Count; }
 
-    virtual DeprecatedString column_name(int column) const override
+    virtual ErrorOr<String> column_name(int column) const override
     {
         switch (column) {
         case Column::Filename:
-            return "Filename";
+            return "Filename"_string;
         case Column::Text:
-            return "Text";
+            return "Text"_string;
         case Column::Line:
-            return "Line";
+            return "Line"_string;
         case Column::Column:
-            return "Col";
+            return "Col"_string;
         default:
             VERIFY_NOT_REACHED();
         }
@@ -63,9 +63,9 @@ public:
             case Column::Text:
                 return match.content;
             case Column::Line:
-                return DeprecatedString::formatted("{}", match.line + 1);
+                return ByteString::formatted("{}", match.line + 1);
             case Column::Column:
-                return DeprecatedString::formatted("{}", match.column);
+                return ByteString::formatted("{}", match.column);
             }
         }
         return {};

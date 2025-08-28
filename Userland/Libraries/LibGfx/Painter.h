@@ -7,23 +7,42 @@
 #pragma once
 
 #include <AK/Forward.h>
+#include <AK/Memory.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Utf8View.h>
 #include <AK/Vector.h>
 #include <LibGfx/Color.h>
+#include <LibGfx/EdgeFlagPathRasterizer.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Gradients.h>
+#include <LibGfx/GrayscaleBitmap.h>
+#include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
+#include <LibGfx/ScalingMode.h>
 #include <LibGfx/Size.h>
 #include <LibGfx/TextAlignment.h>
 #include <LibGfx/TextDirection.h>
 #include <LibGfx/TextElision.h>
 #include <LibGfx/TextWrapping.h>
+#include <LibGfx/WindingRule.h>
 
 namespace Gfx {
+
+ALWAYS_INLINE static Color color_for_format(BitmapFormat format, ARGB32 value)
+{
+    switch (format) {
+    case BitmapFormat::BGRA8888:
+        return Color::from_argb(value);
+    case BitmapFormat::BGRx8888:
+        return Color::from_rgb(value);
+    // FIXME: Handle other formats
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
 
 class Painter {
 public:
@@ -31,20 +50,6 @@ public:
 
     explicit Painter(Gfx::Bitmap&);
     ~Painter() = default;
-
-    enum class LineStyle {
-        Solid,
-        Dotted,
-        Dashed,
-    };
-
-    enum class ScalingMode {
-        NearestFractional,
-        NearestNeighbor,
-        SmoothPixels,
-        BilinearBlend,
-        None,
-    };
 
     void clear_rect(IntRect const&, Color);
     void fill_rect(IntRect const&, Color);
@@ -55,7 +60,7 @@ public:
     void fill_rect_with_gradient(IntRect const&, Color gradient_start, Color gradient_end);
     void fill_rect_with_linear_gradient(IntRect const&, ReadonlySpan<ColorStop>, float angle, Optional<float> repeat_length = {});
     void fill_rect_with_conic_gradient(IntRect const&, ReadonlySpan<ColorStop>, IntPoint center, float start_angle, Optional<float> repeat_length = {});
-    void fill_rect_with_radial_gradient(IntRect const&, ReadonlySpan<ColorStop>, IntPoint center, IntSize size, Optional<float> repeat_length = {});
+    void fill_rect_with_radial_gradient(IntRect const&, ReadonlySpan<ColorStop>, IntPoint center, IntSize size, Optional<float> repeat_length = {}, Optional<float> rotation_angle = {});
     void fill_rect_with_rounded_corners(IntRect const&, Color, int radius);
     void fill_rect_with_rounded_corners(IntRect const&, Color, int top_left_radius, int top_right_radius, int bottom_right_radius, int bottom_left_radius);
     void fill_ellipse(IntRect const&, Color);
@@ -82,7 +87,7 @@ public:
     void blit(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect, float opacity = 1.0f, bool apply_alpha = true);
     void blit_dimmed(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect);
     void blit_brightened(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect);
-    void blit_filtered(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect, Function<Color(Color)>);
+    void blit_filtered(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect, Function<Color(Color)> const&, bool apply_alpha = true);
     void draw_tiled_bitmap(IntRect const& dst_rect, Gfx::Bitmap const&);
     void blit_offset(IntPoint, Gfx::Bitmap const&, IntRect const& src_rect, IntPoint);
     void blit_disabled(IntPoint, Gfx::Bitmap const&, IntRect const&, Palette const&);
@@ -109,6 +114,7 @@ public:
     void draw_glyph_or_emoji(IntPoint, Utf8CodePointIterator&, Font const&, Color);
     void draw_glyph(FloatPoint, u32, Color);
     void draw_glyph(FloatPoint, u32, Font const&, Color);
+    void draw_glyph_with_postscript_name(FloatPoint point, StringView name, Font const& font, Color color);
     void draw_glyph_or_emoji(FloatPoint, u32, Font const&, Color);
     void draw_glyph_or_emoji(FloatPoint, Utf8CodePointIterator&, Font const&, Color);
     void draw_circle_arc_intersecting(IntRect const&, IntPoint, int radius, Color, int thickness);
@@ -136,12 +142,19 @@ public:
 
     void stroke_path(Path const&, Color, int thickness);
 
-    enum class WindingRule {
-        Nonzero,
-        EvenOdd,
-    };
-    void fill_path(Path const&, Color, WindingRule rule = WindingRule::Nonzero);
-    void fill_path(Path const&, PaintStyle const& paint_style, WindingRule rule = WindingRule::Nonzero);
+    template<typename SampleMode = SampleAA>
+    void fill_path(Path const& path, Color color, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(*this, path, color, winding_rule);
+    }
+
+    template<typename SampleMode = SampleAA>
+    void fill_path(Path const& path, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(*this, path, paint_style, opacity, winding_rule);
+    }
 
     Font const& font() const
     {
@@ -167,7 +180,7 @@ public:
 
     IntPoint translation() const { return state().translation; }
 
-    Gfx::Bitmap* target() { return m_target.ptr(); }
+    [[nodiscard]] Gfx::Bitmap& target() { return *m_target; }
 
     void save() { m_state_stack.append(m_state_stack.last()); }
     void restore()
@@ -182,6 +195,9 @@ public:
 
 protected:
     friend GradientLine;
+    friend AntiAliasingPainter;
+    template<typename SubpixelSample>
+    friend class EdgeFlagPathRasterizer;
 
     IntRect to_physical(IntRect const& r) const { return r.translated(translation()) * scale(); }
     IntPoint to_physical(IntPoint p) const { return p.translated(translation()) * scale(); }
@@ -210,6 +226,7 @@ protected:
     Vector<State, 4> m_state_stack;
 
 private:
+    void draw_glyph_internal(FloatPoint point, GlyphRasterPosition const&, FloatPoint top_left, Glyph const& glyph, Color color);
     Vector<DirectionalRun> split_text_into_directional_runs(Utf8View const&, TextDirection initial_direction);
     bool text_contains_bidirectional_text(Utf8View const&, TextDirection);
     template<typename DrawGlyphFunction>
@@ -225,6 +242,6 @@ private:
     Painter& m_painter;
 };
 
-DeprecatedString parse_ampersand_string(StringView, Optional<size_t>* underline_offset = nullptr);
+ByteString parse_ampersand_string(StringView, Optional<size_t>* underline_offset = nullptr);
 
 }

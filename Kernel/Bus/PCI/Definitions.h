@@ -9,11 +9,14 @@
 #include <AK/Badge.h>
 #include <AK/DistinctNumeric.h>
 #include <AK/Function.h>
+#include <AK/RefCounted.h>
+#include <AK/Traits.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Locking/Spinlock.h>
-#include <Kernel/PhysicalAddress.h>
+#include <Kernel/Locking/SpinlockProtected.h>
+#include <Kernel/Memory/PhysicalAddress.h>
 
 namespace Kernel::PCI {
 
@@ -38,32 +41,39 @@ enum class BARSpaceType {
     Memory64BitSpace,
 };
 
-enum class RegisterOffset {
-    VENDOR_ID = 0x00,             // word
-    DEVICE_ID = 0x02,             // word
-    COMMAND = 0x04,               // word
-    STATUS = 0x06,                // word
-    REVISION_ID = 0x08,           // byte
-    PROG_IF = 0x09,               // byte
-    SUBCLASS = 0x0a,              // byte
-    CLASS = 0x0b,                 // byte
-    CACHE_LINE_SIZE = 0x0c,       // byte
-    LATENCY_TIMER = 0x0d,         // byte
-    HEADER_TYPE = 0x0e,           // byte
-    BIST = 0x0f,                  // byte
-    BAR0 = 0x10,                  // u32
-    BAR1 = 0x14,                  // u32
-    BAR2 = 0x18,                  // u32
-    SECONDARY_BUS = 0x19,         // byte
-    BAR3 = 0x1C,                  // u32
-    BAR4 = 0x20,                  // u32
-    BAR5 = 0x24,                  // u32
-    SUBSYSTEM_VENDOR_ID = 0x2C,   // u16
-    SUBSYSTEM_ID = 0x2E,          // u16
-    EXPANSION_ROM_POINTER = 0x30, // u32
-    CAPABILITIES_POINTER = 0x34,  // u8
-    INTERRUPT_LINE = 0x3C,        // byte
-    INTERRUPT_PIN = 0x3D,         // byte
+enum class RegisterOffset : u32 {
+    VENDOR_ID = 0x00,                               // word
+    DEVICE_ID = 0x02,                               // word
+    COMMAND = 0x04,                                 // word
+    STATUS = 0x06,                                  // word
+    REVISION_ID = 0x08,                             // byte
+    PROG_IF = 0x09,                                 // byte
+    SUBCLASS = 0x0a,                                // byte
+    CLASS = 0x0b,                                   // byte
+    CACHE_LINE_SIZE = 0x0c,                         // byte
+    LATENCY_TIMER = 0x0d,                           // byte
+    HEADER_TYPE = 0x0e,                             // byte
+    BIST = 0x0f,                                    // byte
+    BAR0 = 0x10,                                    // u32
+    BAR1 = 0x14,                                    // u32
+    BAR2 = 0x18,                                    // u32
+    SECONDARY_BUS = 0x19,                           // byte
+    SUBORDINATE_BUS = 0x1A,                         // byte
+    BAR3 = 0x1C,                                    // u32
+    BAR4 = 0x20,                                    // u32
+    MEMORY_BASE = 0x20,                             // u16
+    MEMORY_LIMIT = 0x22,                            // u16
+    BAR5 = 0x24,                                    // u32
+    PREFETCHABLE_MEMORY_BASE = 0x24,                // u16
+    PREFETCHABLE_MEMORY_LIMIT = 0x26,               // u16
+    PREFETCHABLE_MEMORY_BASE_UPPER_32_BITS = 0x28,  // u32
+    PREFETCHABLE_MEMORY_LIMIT_UPPER_32_BITS = 0x2C, // u32
+    SUBSYSTEM_VENDOR_ID = 0x2C,                     // u16
+    SUBSYSTEM_ID = 0x2E,                            // u16
+    EXPANSION_ROM_POINTER = 0x30,                   // u32
+    CAPABILITIES_POINTER = 0x34,                    // u8
+    INTERRUPT_LINE = 0x3C,                          // byte
+    INTERRUPT_PIN = 0x3D,                           // byte
 };
 
 enum class Limits {
@@ -78,23 +88,139 @@ static constexpr u16 value_port = 0xcfc;
 static constexpr size_t mmio_device_space_size = 4096;
 static constexpr u16 none_value = 0xffff;
 static constexpr size_t memory_range_per_bus = mmio_device_space_size * to_underlying(Limits::MaxFunctionsPerDevice) * to_underlying(Limits::MaxDevicesPerBus);
+static constexpr u64 bar_address_mask = ~0xfull;
+static constexpr u8 msi_control_offset = 2;
+static constexpr u16 msi_control_enable = 0x0001;
+static constexpr u8 msi_address_low_offset = 4;
+static constexpr u8 msi_address_high_or_data_offset = 8;
+static constexpr u8 msi_data_offset = 0xc;
+static constexpr u16 msi_address_format_mask = 0x80;
+static constexpr u8 msi_mmc_format_mask = 0xe;
+static constexpr u16 msix_control_table_mask = 0x07ff;
+static constexpr u8 msix_table_bir_mask = 0x7;
+static constexpr u16 msix_table_offset_mask = 0xfff8;
+static constexpr u16 msix_control_enable = 0x8000;
+
+// 2.2.1.1. Numerical Representation, https://www.devicetree.org/open-firmware/bindings/pci/pci2_1.pdf
+struct OpenFirmwareAddress {
+    enum class SpaceType : u32 {
+        ConfigurationSpace = 0,
+        IOSpace = 1,
+        Memory32BitSpace = 2,
+        Memory64BitSpace = 3,
+    };
+
+    // phys.hi cell
+    SpaceType space_type : 2; // s
+    u32 : 3;                  // 0
+    u32 aliased : 1;          // t
+    u32 prefetchable : 1;     // p
+    u32 non_relocatable : 1;  // n
+    u32 bus : 8;              // b
+    u32 function : 3;         // f
+    u32 device : 5;           // d
+    u32 register_ : 8;        // r
+
+    // phys.mid and phys.lo cell
+    BigEndian<u64> io_or_memory_space_address; // h+l
+
+    constexpr OpenFirmwareAddress operator&(OpenFirmwareAddress other) const
+    {
+        return OpenFirmwareAddress {
+            .space_type = static_cast<SpaceType>(to_underlying(space_type) & to_underlying(other.space_type)),
+            .aliased = static_cast<u32>(aliased & other.aliased),
+            .prefetchable = static_cast<u32>(prefetchable & other.prefetchable),
+            .non_relocatable = static_cast<u32>(non_relocatable & other.non_relocatable),
+            .bus = static_cast<u32>(bus & other.bus),
+            .function = static_cast<u32>(function & other.function),
+            .device = static_cast<u32>(device & other.device),
+            .register_ = static_cast<u32>(register_ & other.register_),
+            .io_or_memory_space_address = static_cast<u32>(io_or_memory_space_address & other.io_or_memory_space_address),
+        };
+    }
+
+    constexpr OpenFirmwareAddress& operator&=(OpenFirmwareAddress const& other)
+    {
+        *this = *this & other;
+        return *this;
+    }
+};
+static_assert(AssertSize<OpenFirmwareAddress, 3 * sizeof(u32)>());
 
 // Taken from https://pcisig.com/sites/default/files/files/PCI_Code-ID_r_1_11__v24_Jan_2019.pdf
 enum class ClassID {
-    MassStorage = 0x1,
-    Multimedia = 0x4,
-    Bridge = 0x6,
+    Legacy = 0x00,
+    MassStorage = 0x01,
+    Network = 0x02,
+    Display = 0x03,
+    Multimedia = 0x04,
+    Memory = 0x05,
+    Bridge = 0x06,
+    SimpleCommunication = 0x07,
+    Base = 0x08,
+    Input = 0x09,
+    DockingStation = 0x0A,
+    Processor = 0x0B,
+    SerialBus = 0x0C,
+    Wireless = 0x0D,
+    IntelligentIO = 0x0E,
+    SatelliteCommunication = 0x0F,
+    EncryptionDecryption = 0x10,
+    DataAcquisitionAndSignalProcessing = 0x11,
+    ProcessingAccelerator = 0x12,
+    NonEssentialInstrumentation = 0x13,
 };
 
+namespace Legacy {
+
+enum class SubclassID {
+    Any = 0x00,
+    VGACompatible = 0x01
+};
+
+}
 namespace MassStorage {
 
 enum class SubclassID {
-    IDEController = 0x1,
-    SATAController = 0x6,
-    NVMeController = 0x8,
+    SCSIController = 0x00,
+    IDEController = 0x01,
+    FloppyController = 0x02,
+    IPIController = 0x03,
+    RAIDController = 0x04,
+    ATAController = 0x05,
+    SATAController = 0x06,
+    SASController = 0x06,
+    NVMeController = 0x08 // Technically other non-volatile memory subsystems as well
 };
+
 enum class SATAProgIF {
     AHCI = 0x1,
+};
+
+}
+
+namespace Network {
+
+enum class SubclassID {
+    Ethernet = 0x00,
+    TokenRing = 0x01,
+    FDD = 0x02,
+    ATM = 0x03,
+    ISDN = 0x04,
+    WorldFlip = 0x05,
+    PICMG_2_14_MultiComputing = 0x06,
+    InfiniBand = 0x07,
+    HostFabric = 0x08,
+};
+
+}
+
+namespace Display {
+
+enum class SubclassID {
+    VGA = 0x00,
+    XGA = 0x01,
+    ThreeD = 0x02,
 };
 
 }
@@ -102,7 +228,10 @@ enum class SATAProgIF {
 namespace Multimedia {
 
 enum class SubclassID {
-    AudioController = 0x1,
+    Video = 0x00,
+    Audio = 0x01,
+    ComputerTelephony = 0x01,
+    HDACompatible = 0x3,
 };
 
 }
@@ -111,6 +240,55 @@ namespace Bridge {
 
 enum class SubclassID {
     PCI_TO_PCI = 0x4,
+};
+
+}
+
+namespace SimpleCommunication {
+
+enum class SubclassID {
+    SerialController = 0x00,
+};
+
+enum class SerialControllerProgIf {
+    GenericXTCompatible = 0x00,
+    CompatbileWith16450 = 0x01,
+    CompatbileWith16550 = 0x02,
+    CompatbileWith16650 = 0x03,
+    CompatbileWith16750 = 0x04,
+    CompatbileWith16850 = 0x05,
+    CompatbileWith16950 = 0x06,
+};
+
+}
+
+namespace Base {
+
+enum class SubclassID {
+    PIC = 0x00,
+    DMAController = 0x01,
+    Timer = 0x02,
+    RTCController = 0x03,
+    PCIHotplugController = 0x04,
+    SDHostController = 0x5,
+    IOMMU = 0x06
+};
+
+}
+
+namespace SerialBus {
+
+enum class SubclassID {
+    USB = 0x03,
+};
+
+enum class USBProgIf {
+    UHCI = 0x00,
+    OHCI = 0x10,
+    EHCI = 0x20,
+    xHCI = 0x30,
+    None = 0x80,
+    Device = 0xFE
 };
 
 }
@@ -227,16 +405,35 @@ public:
     u8 read8(size_t offset) const;
     u16 read16(size_t offset) const;
     u32 read32(size_t offset) const;
+    void write8(size_t offset, u8 value) const;
+    void write16(size_t offset, u16 value) const;
+    void write32(size_t offset, u32 value) const;
 
 private:
-    const Address m_address;
-    const CapabilityID m_id;
-    const u8 m_ptr;
+    Address const m_address;
+    CapabilityID const m_id;
+    u8 const m_ptr;
 };
 
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, ClassCode);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(ClassCode, ClassID)
+
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, SubclassCode);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Legacy::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, MassStorage::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Network::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Display::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Multimedia::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Bridge::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, SimpleCommunication::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, Base::SubclassID);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(SubclassCode, SerialBus::SubclassID);
+
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, ProgrammingInterface);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(ProgrammingInterface, MassStorage::SATAProgIF);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(ProgrammingInterface, SimpleCommunication::SerialControllerProgIf);
+AK_MAKE_DISTINCT_NUMERIC_COMPARABLE_TO_ENUM(ProgrammingInterface, SerialBus::USBProgIf);
+
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, RevisionID);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u16, SubsystemID);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u16, SubsystemVendorID);
@@ -305,6 +502,38 @@ protected:
     Vector<Capability> m_capabilities;
 };
 
+class MSIxInfo {
+public:
+    MSIxInfo(u16 table_size, u8 table_bar, u32 table_offset)
+        : table_size(table_size)
+        , table_bar(table_bar)
+        , table_offset(table_offset)
+    {
+    }
+
+    MSIxInfo() = default;
+
+    u16 table_size {};
+    u8 table_bar {};
+    u32 table_offset {};
+};
+
+class MSIInfo {
+public:
+    MSIInfo(bool message_address_64_bit_support, u8 count)
+        : message_address_64_bit_format(message_address_64_bit_support)
+        , count(count)
+    {
+    }
+
+    MSIInfo() = default;
+
+    bool message_address_64_bit_format { false };
+    u8 count {};
+};
+
+class Driver;
+
 class DeviceIdentifier
     : public RefCounted<DeviceIdentifier>
     , public EnumerableDeviceIdentifier {
@@ -313,33 +542,46 @@ class DeviceIdentifier
 public:
     static ErrorOr<NonnullRefPtr<DeviceIdentifier>> from_enumerable_identifier(EnumerableDeviceIdentifier const& other_identifier);
 
+    void initialize();
+    bool is_msix_capable() const { return m_msix_info.table_size > 0; }
+    u8 get_msix_table_bar() const { return m_msix_info.table_bar; }
+    u32 get_msix_table_offset() const { return m_msix_info.table_offset; }
+
+    bool is_msi_capable() const { return m_msi_info.count > 0; }
+    bool is_msi_64bit_address_format() { return m_msi_info.message_address_64_bit_format; }
+
     Spinlock<LockRank::None>& operation_lock() { return m_operation_lock; }
     Spinlock<LockRank::None>& operation_lock() const { return m_operation_lock; }
+
+    SpinlockProtected<Driver const*, LockRank::None>& driver(Badge<Access>) { return m_driver; }
 
     virtual ~DeviceIdentifier() = default;
 
 private:
     DeviceIdentifier(EnumerableDeviceIdentifier const& other_identifier)
         : EnumerableDeviceIdentifier(other_identifier.address(),
-            other_identifier.hardware_id(),
-            other_identifier.revision_id(),
-            other_identifier.class_code(),
-            other_identifier.subclass_code(),
-            other_identifier.prog_if(),
-            other_identifier.subsystem_id(),
-            other_identifier.subsystem_vendor_id(),
-            other_identifier.interrupt_line(),
-            other_identifier.interrupt_pin(),
-            other_identifier.capabilities())
+              other_identifier.hardware_id(),
+              other_identifier.revision_id(),
+              other_identifier.class_code(),
+              other_identifier.subclass_code(),
+              other_identifier.prog_if(),
+              other_identifier.subsystem_id(),
+              other_identifier.subsystem_vendor_id(),
+              other_identifier.interrupt_line(),
+              other_identifier.interrupt_pin(),
+              other_identifier.capabilities())
     {
     }
 
     mutable Spinlock<LockRank::None> m_operation_lock;
+    MSIxInfo m_msix_info {};
+    MSIInfo m_msi_info {};
+
+    SpinlockProtected<Driver const*, LockRank::None> m_driver;
 };
 
 class Domain;
 class Device;
-
 }
 
 template<>
@@ -360,4 +602,10 @@ struct AK::Formatter<Kernel::PCI::HardwareID> : Formatter<FormatString> {
             builder,
             "PCI::HardwareID [{:04x}:{:04x}]"sv, value.vendor_id, value.device_id);
     }
+};
+
+template<>
+class AK::Traits<Kernel::PCI::OpenFirmwareAddress> : public DefaultTraits<Kernel::PCI::OpenFirmwareAddress> {
+public:
+    static constexpr bool is_trivially_serializable() { return true; }
 };

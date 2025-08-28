@@ -11,6 +11,7 @@
 #include <AK/JsonObject.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
+#include <LibCore/MimeData.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
@@ -31,17 +32,27 @@
 #include <LibGfx/SystemTheme.h>
 #include <unistd.h>
 
-REGISTER_CORE_OBJECT(GUI, Widget)
+REGISTER_GUI_OBJECT(GUI, Widget)
 
 namespace GUI {
 
 Widget::Widget()
-    : Core::Object(nullptr)
-    , m_background_role(Gfx::ColorRole::Window)
+    : m_background_role(Gfx::ColorRole::Window)
     , m_foreground_role(Gfx::ColorRole::WindowText)
     , m_font(Gfx::FontDatabase::default_font())
     , m_palette(Application::the()->palette().impl())
 {
+    REGISTER_READONLY_STRING_PROPERTY("class_name", class_name);
+    REGISTER_DEPRECATED_STRING_PROPERTY("name", name, set_name);
+
+    register_property(
+        "address"sv, [this] { return FlatPtr(this); },
+        nullptr, nullptr);
+
+    register_property(
+        "parent"sv, [this] { return FlatPtr(this->parent()); },
+        nullptr, nullptr);
+
     REGISTER_RECT_PROPERTY("relative_rect", relative_rect, set_relative_rect);
     REGISTER_BOOL_PROPERTY("fill_with_background_color", fill_with_background_color, set_fill_with_background_color);
     REGISTER_BOOL_PROPERTY("visible", is_visible, set_visible);
@@ -72,129 +83,62 @@ Widget::Widget()
     REGISTER_INT_PROPERTY("x", x, set_x);
     REGISTER_INT_PROPERTY("y", y, set_y);
 
-    REGISTER_STRING_PROPERTY("font", m_font->family, set_font_family);
+    REGISTER_STRING_PROPERTY("font", font_family, set_font_family);
     REGISTER_INT_PROPERTY("font_size", m_font->presentation_size, set_font_size);
     REGISTER_FONT_WEIGHT_PROPERTY("font_weight", m_font->weight, set_font_weight);
 
     REGISTER_STRING_PROPERTY("title", title, set_title);
 
+    REGISTER_BOOL_PROPERTY("font_fixed_width", is_font_fixed_width, set_font_fixed_width)
     register_property(
-        "font_type", [this] { return m_font->is_fixed_width() ? "FixedWidth" : "Normal"; },
-        [this](auto& value) {
-            if (value.to_deprecated_string() == "FixedWidth") {
-                set_font_fixed_width(true);
-                return true;
+        "font_type"sv, [this] { return m_font->is_fixed_width() ? "FixedWidth" : "Normal"; },
+        [](JsonValue const& value) -> ErrorOr<bool> {
+            if (value.is_string()) {
+                auto string = value.as_string();
+                if (string == "FixedWidth")
+                    return true;
+                if (string == "Normal")
+                    return false;
             }
-            if (value.to_deprecated_string() == "Normal") {
-                set_font_fixed_width(false);
-                return true;
-            }
-            return false;
+            return Error::from_string_literal("\"FixedWidth\" or \"Normal\" is expected");
+        },
+        [this](auto const& value) { return set_font_fixed_width(value); });
+
+    REGISTER_ENUM_PROPERTY("focus_policy", focus_policy, set_focus_policy, GUI::FocusPolicy,
+        { GUI::FocusPolicy::ClickFocus, "ClickFocus" },
+        { GUI::FocusPolicy::NoFocus, "NoFocus" },
+        { GUI::FocusPolicy::TabFocus, "TabFocus" },
+        { GUI::FocusPolicy::StrongFocus, "StrongFocus" });
+
+    register_property(
+        "foreground_color"sv,
+        [this]() { return palette().color(foreground_role()).to_byte_string(); },
+        ::GUI::PropertyDeserializer<Color> {},
+        [this](Gfx::Color const& color) {
+            auto _palette = palette();
+            _palette.set_color(foreground_role(), color);
+            set_palette(_palette);
         });
 
     register_property(
-        "focus_policy", [this]() -> JsonValue {
-        auto policy = focus_policy();
-        if (policy == GUI::FocusPolicy::ClickFocus)
-            return "ClickFocus";
-        if (policy == GUI::FocusPolicy::NoFocus)
-            return "NoFocus";
-        if (policy == GUI::FocusPolicy::TabFocus)
-            return "TabFocus";
-        if (policy == GUI::FocusPolicy::StrongFocus)
-            return "StrongFocus";
-        return JsonValue(); },
-        [this](auto& value) {
-            if (!value.is_string())
-                return false;
-            if (value.as_string() == "ClickFocus") {
-                set_focus_policy(GUI::FocusPolicy::ClickFocus);
-                return true;
-            }
-            if (value.as_string() == "NoFocus") {
-                set_focus_policy(GUI::FocusPolicy::NoFocus);
-                return true;
-            }
-            if (value.as_string() == "TabFocus") {
-                set_focus_policy(GUI::FocusPolicy::TabFocus);
-                return true;
-            }
-            if (value.as_string() == "StrongFocus") {
-                set_focus_policy(GUI::FocusPolicy::StrongFocus);
-                return true;
-            }
-            return false;
+        "background_color"sv,
+        [this]() { return palette().color(background_role()).to_byte_string(); },
+        ::GUI::PropertyDeserializer<Color> {},
+        [this](Gfx::Color const& color) {
+            set_background_color(color);
         });
 
-    register_property(
-        "foreground_color", [this]() -> JsonValue { return palette().color(foreground_role()).to_deprecated_string(); },
-        [this](auto& value) {
-            auto c = Color::from_string(value.to_deprecated_string());
-            if (c.has_value()) {
-                auto _palette = palette();
-                _palette.set_color(foreground_role(), c.value());
-                set_palette(_palette);
-                return true;
-            }
-            return false;
-        });
-
-    register_property(
-        "background_color", [this]() -> JsonValue { return palette().color(background_role()).to_deprecated_string(); },
-        [this](auto& value) {
-            auto c = Color::from_string(value.to_deprecated_string());
-            if (c.has_value()) {
-                auto _palette = palette();
-                _palette.set_color(background_role(), c.value());
-                set_palette(_palette);
-                return true;
-            }
-            return false;
-        });
-
-    register_property(
-        "foreground_role", [this]() -> JsonValue { return Gfx::to_string(foreground_role()); },
-        [this](auto& value) {
-            if (!value.is_string())
-                return false;
-            auto str = value.as_string();
-            if (str == "NoRole") {
-                set_foreground_role(Gfx::ColorRole::NoRole);
-                return true;
-            }
+#define __ENUMERATE_COLOR_ROLE(role) \
+    {                                \
+        Gfx::ColorRole::role, #role  \
+    },
+    REGISTER_ENUM_PROPERTY("foreground_role", foreground_role, set_foreground_role, Gfx::ColorRole,
+        { Gfx::ColorRole::NoRole, "NoRole" },
+        ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE));
+    REGISTER_ENUM_PROPERTY("background_role", background_role, set_background_role, Gfx::ColorRole,
+        { Gfx::ColorRole::NoRole, "NoRole" },
+        ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE));
 #undef __ENUMERATE_COLOR_ROLE
-#define __ENUMERATE_COLOR_ROLE(role)               \
-    else if (str == #role)                         \
-    {                                              \
-        set_foreground_role(Gfx::ColorRole::role); \
-        return true;                               \
-    }
-            ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE)
-#undef __ENUMERATE_COLOR_ROLE
-            return false;
-        });
-
-    register_property(
-        "background_role", [this]() -> JsonValue { return Gfx::to_string(background_role()); },
-        [this](auto& value) {
-            if (!value.is_string())
-                return false;
-            auto str = value.as_string();
-            if (str == "NoRole") {
-                set_background_role(Gfx::ColorRole::NoRole);
-                return true;
-            }
-#undef __ENUMERATE_COLOR_ROLE
-#define __ENUMERATE_COLOR_ROLE(role)               \
-    else if (str == #role)                         \
-    {                                              \
-        set_background_role(Gfx::ColorRole::role); \
-        return true;                               \
-    }
-            ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE)
-#undef __ENUMERATE_COLOR_ROLE
-            return false;
-        });
 }
 
 Widget::~Widget() = default;
@@ -239,7 +183,7 @@ void Widget::child_event(Core::ChildEvent& event)
         }
         update();
     }
-    return Core::Object::child_event(event);
+    return Core::EventReceiver::child_event(event);
 }
 
 void Widget::set_relative_rect(Gfx::IntRect const& a_rect)
@@ -337,7 +281,7 @@ void Widget::event(Core::Event& event)
     case Event::AppletAreaRectChange:
         return applet_area_rect_change_event(static_cast<AppletAreaRectChangeEvent&>(event));
     default:
-        return Core::Object::event(event);
+        return Core::EventReceiver::event(event);
     }
 }
 
@@ -354,7 +298,7 @@ void Widget::handle_keydown_event(KeyEvent& event)
     }
 
     if (event.key() == KeyCode::Key_Menu) {
-        ContextMenuEvent c_event(window_relative_rect().bottom_right(), screen_relative_rect().bottom_right());
+        ContextMenuEvent c_event(window_relative_rect().bottom_right().translated(-1), screen_relative_rect().bottom_right().translated(-1));
         dispatch_event(c_event);
         return;
     }
@@ -404,11 +348,6 @@ void Widget::handle_paint_event(PaintEvent& event)
     if (app && app->hover_debugging_enabled() && this == window()->hovered_widget()) {
         Painter painter(*this);
         painter.draw_rect(rect(), Color::Red);
-    }
-
-    if (is_being_inspected()) {
-        Painter painter(*this);
-        painter.draw_rect(rect(), Color::Magenta);
     }
 }
 
@@ -594,9 +533,7 @@ void Widget::drag_move_event(DragEvent&)
 
 void Widget::drag_enter_event(DragEvent& event)
 {
-    StringBuilder builder;
-    builder.join(',', event.mime_types());
-    dbgln_if(DRAG_DEBUG, "{} {:p} DRAG ENTER @ {}, {}", class_name(), this, event.position(), builder.string_view());
+    dbgln_if(DRAG_DEBUG, "{} {:p} DRAG ENTER @ {}, {}", class_name(), this, event.position(), event.mime_data().formats());
 }
 
 void Widget::drag_leave_event(Event&)
@@ -813,7 +750,7 @@ void Widget::set_font(Gfx::Font const* font)
     update();
 }
 
-void Widget::set_font_family(DeprecatedString const& family)
+void Widget::set_font_family(String const& family)
 {
     set_font(Gfx::FontDatabase::the().get(family, m_font->presentation_size(), m_font->weight(), m_font->width(), m_font->slope()));
 }
@@ -834,6 +771,11 @@ void Widget::set_font_fixed_width(bool fixed_width)
         set_font(Gfx::FontDatabase::the().get(Gfx::FontDatabase::the().default_fixed_width_font().family(), m_font->presentation_size(), m_font->weight(), m_font->width(), m_font->slope()));
     else
         set_font(Gfx::FontDatabase::the().get(Gfx::FontDatabase::the().default_font().family(), m_font->presentation_size(), m_font->weight(), m_font->width(), m_font->slope()));
+}
+
+bool Widget::is_font_fixed_width()
+{
+    return font().is_fixed_width();
 }
 
 void Widget::set_min_size(UISize const& size)
@@ -1048,7 +990,7 @@ void Widget::set_palette(Palette& palette)
     update();
 }
 
-void Widget::set_title(DeprecatedString title)
+void Widget::set_title(String title)
 {
     m_title = move(title);
     layout_relevant_change_occurred();
@@ -1057,7 +999,7 @@ void Widget::set_title(DeprecatedString title)
         parent_widget()->update();
 }
 
-DeprecatedString Widget::title() const
+String Widget::title() const
 {
     return m_title;
 }
@@ -1074,19 +1016,16 @@ void Widget::set_foreground_role(ColorRole role)
     update();
 }
 
+void Widget::set_background_color(Gfx::Color color)
+{
+    auto _palette = palette();
+    _palette.set_color(background_role(), color);
+    set_palette(_palette);
+}
+
 Gfx::Palette Widget::palette() const
 {
     return Gfx::Palette(*m_palette);
-}
-
-void Widget::did_begin_inspection()
-{
-    update();
-}
-
-void Widget::did_end_inspection()
-{
-    update();
 }
 
 void Widget::set_grabbable_margins(Margins const& margins)
@@ -1106,7 +1045,7 @@ Gfx::IntRect Widget::relative_non_grabbable_rect() const
     return rect;
 }
 
-void Widget::set_tooltip(DeprecatedString tooltip)
+void Widget::set_tooltip(String tooltip)
 {
     m_tooltip = move(tooltip);
     if (Application::the()->tooltip_source_widget() == this)
@@ -1128,15 +1067,7 @@ Gfx::IntRect Widget::children_clip_rect() const
 
 void Widget::set_override_cursor(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor)
 {
-    auto const& are_cursors_the_same = [](auto const& a, auto const& b) {
-        if (a.template has<Gfx::StandardCursor>() != b.template has<Gfx::StandardCursor>())
-            return false;
-        if (a.template has<Gfx::StandardCursor>())
-            return a.template get<Gfx::StandardCursor>() == b.template get<Gfx::StandardCursor>();
-        return a.template get<NonnullRefPtr<Gfx::Bitmap const>>().ptr() == b.template get<NonnullRefPtr<Gfx::Bitmap const>>().ptr();
-    };
-
-    if (are_cursors_the_same(m_override_cursor, cursor))
+    if (m_override_cursor == cursor)
         return;
 
     m_override_cursor = move(cursor);
@@ -1147,7 +1078,7 @@ void Widget::set_override_cursor(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<
 
 ErrorOr<void> Widget::load_from_gml(StringView gml_string)
 {
-    return load_from_gml(gml_string, [](DeprecatedString const& class_name) -> ErrorOr<NonnullRefPtr<Core::Object>> {
+    return load_from_gml(gml_string, [](StringView class_name) -> ErrorOr<NonnullRefPtr<Core::EventReceiver>> {
         dbgln("Class '{}' not registered", class_name);
         return Error::from_string_literal("Class not registered");
     });
@@ -1178,16 +1109,16 @@ ErrorOr<void> Widget::load_from_gml_ast(NonnullRefPtr<GUI::GML::Node const> ast,
             return Error::from_string_literal("Invalid layout class name");
         }
 
-        auto& layout_class = *Core::ObjectClassRegistration::find("GUI::Layout"sv);
-        if (auto* registration = Core::ObjectClassRegistration::find(class_name)) {
+        auto& layout_class = *GUI::ObjectClassRegistration::find("GUI::Layout"sv);
+        if (auto* registration = GUI::ObjectClassRegistration::find(class_name)) {
             auto layout = TRY(registration->construct());
             if (!registration->is_derived_from(layout_class)) {
-                dbgln("Invalid layout class: '{}'", class_name.to_deprecated_string());
+                dbgln("Invalid layout class: '{}'", class_name.to_byte_string());
                 return Error::from_string_literal("Invalid layout class");
             }
             set_layout(static_ptr_cast<Layout>(layout));
         } else {
-            dbgln("Unknown layout class: '{}'", class_name.to_deprecated_string());
+            dbgln("Unknown layout class: '{}'", class_name.to_byte_string());
             return Error::from_string_literal("Unknown layout class");
         }
 
@@ -1196,7 +1127,7 @@ ErrorOr<void> Widget::load_from_gml_ast(NonnullRefPtr<GUI::GML::Node const> ast,
         });
     }
 
-    auto& widget_class = *Core::ObjectClassRegistration::find("GUI::Widget"sv);
+    auto& widget_class = *GUI::ObjectClassRegistration::find("GUI::Widget"sv);
     bool is_tab_widget = is<TabWidget>(*this);
     TRY(object.try_for_each_child_object([&](auto const& child_data) -> ErrorOr<void> {
         auto class_name = child_data.name();
@@ -1206,10 +1137,10 @@ ErrorOr<void> Widget::load_from_gml_ast(NonnullRefPtr<GUI::GML::Node const> ast,
             if (!this->layout()) {
                 return Error::from_string_literal("Specified GUI::Layout::Spacer in GML, but the parent has no Layout.");
             }
-            this->layout()->add_spacer();
+            add_spacer();
         } else {
-            RefPtr<Core::Object> child;
-            if (auto* registration = Core::ObjectClassRegistration::find(class_name)) {
+            RefPtr<Core::EventReceiver> child;
+            if (auto* registration = GUI::ObjectClassRegistration::find(class_name)) {
                 child = TRY(registration->construct());
                 if (!registration->is_derived_from(widget_class)) {
                     dbgln("Invalid widget class: '{}'", class_name);
@@ -1266,10 +1197,15 @@ bool Widget::is_visible_for_timer_purposes() const
     return is_visible() && Object::is_visible_for_timer_purposes();
 }
 
-ErrorOr<void> Widget::add_spacer()
+void Widget::add_spacer()
 {
     VERIFY(layout());
-    return layout()->try_add_spacer();
+    return layout()->add_spacer();
+}
+
+String Widget::font_family() const
+{
+    return m_font->family();
 }
 
 }

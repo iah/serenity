@@ -2,9 +2,9 @@
 #import <DOM/AbstractRange.idl>
 #import <Geometry/DOMRect.idl>
 
+// https://dom.spec.whatwg.org/#interface-range
 [Exposed=Window]
 interface Range : AbstractRange {
-
     constructor();
 
     readonly attribute Node commonAncestorContainer;
@@ -31,7 +31,7 @@ interface Range : AbstractRange {
     [CEReactions] undefined insertNode(Node node);
     [CEReactions] undefined surroundContents(Node newParent);
 
-    Range cloneRange();
+    [NewObject] Range cloneRange();
     undefined detach();
 
     boolean isPointInRange(Node node, unsigned long offset);
@@ -39,8 +39,13 @@ interface Range : AbstractRange {
 
     boolean intersectsNode(Node node);
 
-    DOMRect getBoundingClientRect();
+    // https://drafts.csswg.org/cssom-view/#extensions-to-the-range-interface
+    DOMRectList getClientRects();
+    [NewObject] DOMRect getBoundingClientRect();
 
     stringifier;
 
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-range-createcontextualfragment
+    // FIXME: [CEReactions, NewObject] DocumentFragment createContextualFragment((TrustedHTML or DOMString) string);
+    [CEReactions, NewObject] DocumentFragment createContextualFragment(DOMString string);
 };

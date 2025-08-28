@@ -2,24 +2,100 @@
  * Copyright (c) 2020, Emanuele Torre <torreemanuele6@gmail.com>
  * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2024, Gasim Gasimzada <gasim@gasimzada.net>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/MemoryStream.h>
+#include <AK/StringBuilder.h>
 #include <LibJS/Console.h>
 #include <LibJS/Print.h>
 #include <LibJS/Runtime/AbstractOperations.h>
+#include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/StringConstructor.h>
 #include <LibJS/Runtime/Temporal/Duration.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(Console);
+JS_DEFINE_ALLOCATOR(ConsoleClient);
 
 Console::Console(Realm& realm)
     : m_realm(realm)
 {
+}
+
+Console::~Console() = default;
+
+void Console::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_realm);
+    visitor.visit(m_client);
+}
+
+// 1.1.1. assert(condition, ...data), https://console.spec.whatwg.org/#assert
+ThrowCompletionOr<Value> Console::assert_()
+{
+    auto& vm = realm().vm();
+
+    // 1. If condition is true, return.
+    auto condition = vm.argument(0).to_boolean();
+    if (condition)
+        return js_undefined();
+
+    // 2. Let message be a string without any formatting specifiers indicating generically an assertion failure (such as "Assertion failed").
+    auto message = PrimitiveString::create(vm, "Assertion failed"_string);
+
+    // NOTE: Assemble `data` from the function arguments.
+    MarkedVector<Value> data { vm.heap() };
+    if (vm.argument_count() > 1) {
+        data.ensure_capacity(vm.argument_count() - 1);
+        for (size_t i = 1; i < vm.argument_count(); ++i) {
+            data.append(vm.argument(i));
+        }
+    }
+
+    // 3. If data is empty, append message to data.
+    if (data.is_empty()) {
+        data.append(message);
+    }
+    // 4. Otherwise:
+    else {
+        // 1. Let first be data[0].
+        auto& first = data[0];
+        // 2. If first is not a String, then prepend message to data.
+        if (!first.is_string()) {
+            data.prepend(message);
+        }
+        // 3. Otherwise:
+        else {
+            // 1. Let concat be the concatenation of message, U+003A (:), U+0020 SPACE, and first.
+            auto concat = TRY_OR_THROW_OOM(vm, String::formatted("{}: {}", message->utf8_string(), MUST(first.to_string(vm))));
+            // 2. Set data[0] to concat.
+            data[0] = PrimitiveString::create(vm, move(concat));
+        }
+    }
+
+    // 5. Perform Logger("assert", data).
+    if (m_client)
+        TRY(m_client->logger(LogLevel::Assert, data));
+    return js_undefined();
+}
+
+// 1.1.2. clear(), https://console.spec.whatwg.org/#clear
+Value Console::clear()
+{
+    // 1. Empty the appropriate group stack.
+    m_group_stack.clear();
+
+    // 2. If possible for the environment, clear the console. (Otherwise, do nothing.)
+    if (m_client)
+        m_client->clear();
+    return js_undefined();
 }
 
 // 1.1.3. debug(...data), https://console.spec.whatwg.org/#debug
@@ -66,27 +142,200 @@ ThrowCompletionOr<Value> Console::log()
     return js_undefined();
 }
 
-// 1.1.9. warn(...data), https://console.spec.whatwg.org/#warn
-ThrowCompletionOr<Value> Console::warn()
+// To [create table row] given tabularDataItem, rowIndex, list finalColumns, and optional list properties, perform the following steps:
+static ThrowCompletionOr<NonnullGCPtr<Object>> create_table_row(Realm& realm, Value row_index, Value tabular_data_item, Vector<Value>& final_columns, HashMap<PropertyKey, bool>& visited_columns, HashMap<PropertyKey, bool>& properties)
 {
-    // 1. Perform Logger("warn", data).
-    if (m_client) {
-        auto data = vm_arguments();
-        return m_client->logger(LogLevel::Warn, data);
+    auto& vm = realm.vm();
+
+    auto add_column = [&](PropertyKey const& column_name) -> Optional<Completion> {
+        // In order to not iterate over the final_columns to find if a column is
+        // already in the list, an additional hash map is used to identify
+        // if a column is already visited without needing to loop through the whole
+        // array.
+        if (!visited_columns.contains(column_name)) {
+            visited_columns.set(column_name, true);
+
+            if (column_name.is_string()) {
+                final_columns.append(PrimitiveString::create(vm, column_name.as_string()));
+            } else if (column_name.is_symbol()) {
+                final_columns.append(column_name.as_symbol());
+            } else if (column_name.is_number()) {
+                final_columns.append(Value(column_name.as_number()));
+            }
+        }
+
+        return {};
+    };
+
+    // 1. Let `row` be a new map
+    auto row = Object::create(realm, nullptr);
+
+    // 2. Set `row["(index)"]` to `rowIndex`
+    {
+        auto key = PropertyKey("(index)");
+        TRY(row->set(key, row_index, Object::ShouldThrowExceptions::No));
+
+        add_column(key);
     }
-    return js_undefined();
+
+    // 3. If `tabularDataItem` is a list, then:
+    if (TRY(tabular_data_item.is_array(vm))) {
+        auto& array = tabular_data_item.as_array();
+
+        // 3.1. Let `indices` be get the indices of `tabularDataItem`
+        auto& indices = array.indexed_properties();
+
+        // 3.2. For each `index` of `indices`
+        for (auto const& prop : indices) {
+            PropertyKey key(prop.index());
+
+            // 3.2.1. Let `value` be `tabularDataItem[index]`
+            Value value = TRY(array.get(key));
+
+            // 3.2.2. If `properties` is not empty and `properties` does not contain `index`, continue
+            if (properties.size() > 0 && !properties.contains(key)) {
+                continue;
+            }
+
+            // 3.2.3. Set `row[index]` to `value`
+            TRY(row->set(key, value, Object::ShouldThrowExceptions::No));
+
+            // 3.2.4. If `finalColumns` does not contain `index`, append `index` to `finalColumns`
+            add_column(key);
+        }
+    }
+    // 4. Otherwise, if `tabularDataItem` is a map, then:
+    else if (tabular_data_item.is_object()) {
+        auto& object = tabular_data_item.as_object();
+
+        // 4.1. For each `key` -> `value` of `tabularDataItem`
+        object.enumerate_object_properties([&](Value key_v) -> Optional<Completion> {
+            auto key = TRY(PropertyKey::from_value(vm, key_v));
+
+            // 4.1.1. If `properties` is not empty and `properties` does not contain `key`, continue
+            if (properties.size() > 0 && !properties.contains(key)) {
+                return {};
+            }
+
+            // 4.1.2. Set `row[key]` to `value`
+            TRY(row->set(key, TRY(object.get(key)), Object::ShouldThrowExceptions::No));
+
+            // 4.1.3. If `finalColumns` does not contain `key`, append `key` to `finalColumns`
+            add_column(key);
+
+            return {};
+        });
+    }
+    // 5. Otherwise,
+    else {
+        PropertyKey key("Value");
+        // 5.1. Set `row["Value"]` to `tabularDataItem`
+        TRY(row->set(key, tabular_data_item, Object::ShouldThrowExceptions::No));
+
+        // 5.2. If `finalColumns` does not contain "Value", append "Value" to `finalColumns`
+        add_column(key);
+    }
+
+    // 6. Return row
+    return row;
 }
 
-// 1.1.2. clear(), https://console.spec.whatwg.org/#clear
-Value Console::clear()
+// 1.1.7. table(tabularData, properties), https://console.spec.whatwg.org/#table, WIP
+ThrowCompletionOr<Value> Console::table()
 {
-    // 1. Empty the appropriate group stack.
-    m_group_stack.clear();
+    if (!m_client) {
+        return js_undefined();
+    }
 
-    // 2. If possible for the environment, clear the console. (Otherwise, do nothing.)
-    if (m_client)
-        m_client->clear();
-    return js_undefined();
+    auto& vm = realm().vm();
+
+    if (vm.argument_count() > 0) {
+        auto tabular_data = vm.argument(0);
+        auto properties_arg = vm.argument(1);
+
+        HashMap<PropertyKey, bool> properties;
+
+        if (TRY(properties_arg.is_array(vm))) {
+            auto& properties_array = properties_arg.as_array().indexed_properties();
+            auto* properties_storage = properties_array.storage();
+            for (auto const& col : properties_array) {
+                auto col_name = properties_storage->get(col.index()).value().value;
+                properties.set(TRY(PropertyKey::from_value(vm, col_name)), true);
+            }
+        }
+
+        // 1. Let `finalRows` be the new list, initially empty
+        Vector<Value> final_rows;
+
+        // 2. Let `finalColumns` be the new list, initially empty
+        Vector<Value> final_columns;
+
+        HashMap<PropertyKey, bool> visited_columns;
+
+        // 3. If `tabularData` is a list, then:
+        if (TRY(tabular_data.is_array(vm))) {
+            auto& array = tabular_data.as_array();
+
+            // 3.1. Let `indices` be get the indices of `tabularData`
+            auto& indices = array.indexed_properties();
+
+            // 3.2. For each `index` of `indices`
+            for (auto const& prop : indices) {
+                PropertyKey index(prop.index());
+
+                // 3.2.1. Let `value` be `tabularData[index]`
+                Value value = TRY(array.get(index));
+
+                // 3.2.2. Perform create table row with `value`, `key`, `finalColumns`, and `properties` that returns `row`
+                auto row = TRY(create_table_row(realm(), Value(index.as_number()), value, final_columns, visited_columns, properties));
+
+                // 3.2.3. Append `row` to `finalRows`
+                final_rows.append(row);
+            }
+
+        }
+        // 4. Otherwise, if `tabularData` is a map, then:
+        else if (tabular_data.is_object()) {
+            auto& object = tabular_data.as_object();
+
+            // 4.1. For each `key` -> `value` of `tabularData`
+            object.enumerate_object_properties([&](Value key) -> Optional<Completion> {
+                auto index = TRY(PropertyKey::from_value(vm, key));
+                auto value = TRY(object.get(index));
+
+                // 4.1.1. Perform create table row with `key`, `value`, `finalColumns`, and `properties` that returns `row`
+                auto row = TRY(create_table_row(realm(), key, value, final_columns, visited_columns, properties));
+
+                // 4.1.2. Append `row` to `finalRows`
+                final_rows.append(row);
+
+                return {};
+            });
+        }
+
+        // 5. If `finalRows` is not empty, then:
+        if (final_rows.size() > 0) {
+            auto table_rows = Array::create_from(realm(), final_rows);
+            auto table_cols = Array::create_from(realm(), final_columns);
+
+            // 5.1. Let `finalData` to be a new map:
+            auto final_data = Object::create(realm(), nullptr);
+
+            // 5.2. Set `finalData["rows"]` to `finalRows`
+            TRY(final_data->set(PropertyKey("rows"), table_rows, Object::ShouldThrowExceptions::No));
+
+            // 5.3. Set finalData["columns"] to finalColumns
+            TRY(final_data->set(PropertyKey("columns"), table_cols, Object::ShouldThrowExceptions::No));
+
+            // 5.4. Perform `Printer("table", finalData)`
+            MarkedVector<Value> args(vm.heap());
+            args.append(Value(final_data));
+            return m_client->printer(LogLevel::Table, args);
+        }
+    }
+
+    // 6. Otherwise, perform `Printer("log", tabularData)`
+    return m_client->printer(LogLevel::Log, vm_arguments());
 }
 
 // 1.1.8. trace(...data), https://console.spec.whatwg.org/#trace
@@ -97,15 +346,15 @@ ThrowCompletionOr<Value> Console::trace()
 
     auto& vm = realm().vm();
 
-    // 1. Let trace be some implementation-specific, potentially-interactive representation of the callstack from where this function was called.
+    // 1. Let trace be some implementation-defined, potentially-interactive representation of the callstack from where this function was called.
     Console::Trace trace;
     auto& execution_context_stack = vm.execution_context_stack();
     // NOTE: -2 to skip the console.trace() execution context
     for (ssize_t i = execution_context_stack.size() - 2; i >= 0; --i) {
         auto const& function_name = execution_context_stack[i]->function_name;
-        trace.stack.append(function_name.is_empty()
-                ? TRY_OR_THROW_OOM(vm, "<anonymous>"_string)
-                : TRY_OR_THROW_OOM(vm, String::from_deprecated_string(function_name)));
+        trace.stack.append((!function_name || function_name->is_empty())
+                ? "<anonymous>"_string
+                : function_name->utf8_string());
     }
 
     // 2. Optionally, let formattedData be the result of Formatter(data), and incorporate formattedData as a label for trace.
@@ -119,9 +368,40 @@ ThrowCompletionOr<Value> Console::trace()
     return m_client->printer(Console::LogLevel::Trace, trace);
 }
 
+// 1.1.9. warn(...data), https://console.spec.whatwg.org/#warn
+ThrowCompletionOr<Value> Console::warn()
+{
+    // 1. Perform Logger("warn", data).
+    if (m_client) {
+        auto data = vm_arguments();
+        return m_client->logger(LogLevel::Warn, data);
+    }
+    return js_undefined();
+}
+
+// 1.1.10. dir(item, options), https://console.spec.whatwg.org/#dir
+ThrowCompletionOr<Value> Console::dir()
+{
+    auto& vm = realm().vm();
+
+    // 1. Let object be item with generic JavaScript object formatting applied.
+    // NOTE: Generic formatting is performed by ConsoleClient::printer().
+    auto object = vm.argument(0);
+
+    // 2. Perform Printer("dir", « object », options).
+    if (m_client) {
+        MarkedVector<Value> printer_arguments { vm.heap() };
+        TRY_OR_THROW_OOM(vm, printer_arguments.try_append(object));
+
+        return m_client->printer(LogLevel::Dir, move(printer_arguments));
+    }
+
+    return js_undefined();
+}
+
 static ThrowCompletionOr<String> label_or_fallback(VM& vm, StringView fallback)
 {
-    return vm.argument_count() > 0
+    return vm.argument_count() > 0 && !vm.argument(0).is_undefined()
         ? vm.argument(0).to_string(vm)
         : TRY_OR_THROW_OOM(vm, String::from_utf8(fallback));
 }
@@ -187,60 +467,9 @@ ThrowCompletionOr<Value> Console::count_reset()
     return js_undefined();
 }
 
-// 1.1.1. assert(condition, ...data), https://console.spec.whatwg.org/#assert
-ThrowCompletionOr<Value> Console::assert_()
-{
-    auto& vm = realm().vm();
-
-    // 1. If condition is true, return.
-    auto condition = vm.argument(0).to_boolean();
-    if (condition)
-        return js_undefined();
-
-    // 2. Let message be a string without any formatting specifiers indicating generically an assertion failure (such as "Assertion failed").
-    auto message = MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Assertion failed"sv));
-
-    // NOTE: Assemble `data` from the function arguments.
-    MarkedVector<Value> data { vm.heap() };
-    if (vm.argument_count() > 1) {
-        data.ensure_capacity(vm.argument_count() - 1);
-        for (size_t i = 1; i < vm.argument_count(); ++i) {
-            data.append(vm.argument(i));
-        }
-    }
-
-    // 3. If data is empty, append message to data.
-    if (data.is_empty()) {
-        data.append(message);
-    }
-    // 4. Otherwise:
-    else {
-        // 1. Let first be data[0].
-        auto& first = data[0];
-        // 2. If Type(first) is not String, then prepend message to data.
-        if (!first.is_string()) {
-            data.prepend(message);
-        }
-        // 3. Otherwise:
-        else {
-            // 1. Let concat be the concatenation of message, U+003A (:), U+0020 SPACE, and first.
-            auto concat = TRY_OR_THROW_OOM(vm, String::formatted("{}: {}", TRY(message->utf8_string()), MUST(first.to_string(vm))));
-            // 2. Set data[0] to concat.
-            data[0] = PrimitiveString::create(vm, move(concat));
-        }
-    }
-
-    // 5. Perform Logger("assert", data).
-    if (m_client)
-        TRY(m_client->logger(LogLevel::Assert, data));
-    return js_undefined();
-}
-
 // 1.3.1. group(...data), https://console.spec.whatwg.org/#group
 ThrowCompletionOr<Value> Console::group()
 {
-    auto& vm = realm().vm();
-
     // 1. Let group be a new group.
     Group group;
 
@@ -253,7 +482,7 @@ ThrowCompletionOr<Value> Console::group()
     }
     // ... Otherwise, let groupLabel be an implementation-chosen label representing a group.
     else {
-        group_label = TRY_OR_THROW_OOM(vm, "Group"_string);
+        group_label = "Group"_string;
     }
 
     // 3. Incorporate groupLabel as a label for group.
@@ -275,8 +504,6 @@ ThrowCompletionOr<Value> Console::group()
 // 1.3.2. groupCollapsed(...data), https://console.spec.whatwg.org/#groupcollapsed
 ThrowCompletionOr<Value> Console::group_collapsed()
 {
-    auto& vm = realm().vm();
-
     // 1. Let group be a new group.
     Group group;
 
@@ -289,7 +516,7 @@ ThrowCompletionOr<Value> Console::group_collapsed()
     }
     // ... Otherwise, let groupLabel be an implementation-chosen label representing a group.
     else {
-        group_label = TRY_OR_THROW_OOM(vm, "Group"_string);
+        group_label = "Group"_string;
     }
 
     // 3. Incorporate groupLabel as a label for group.
@@ -485,16 +712,16 @@ void Console::report_exception(JS::Error const& exception, bool in_promise) cons
 ThrowCompletionOr<String> Console::value_vector_to_string(MarkedVector<Value> const& values)
 {
     auto& vm = realm().vm();
-    ThrowableStringBuilder builder(vm);
+    StringBuilder builder;
 
     for (auto const& item : values) {
         if (!builder.is_empty())
-            MUST_OR_THROW_OOM(builder.append(' '));
+            builder.append(' ');
 
-        MUST_OR_THROW_OOM(builder.append(TRY(item.to_string(vm))));
+        builder.append(TRY(item.to_string(vm)));
     }
 
-    return builder.to_string();
+    return MUST(builder.to_string());
 }
 
 ThrowCompletionOr<String> Console::format_time_since(Core::ElapsedTimer timer)
@@ -504,33 +731,45 @@ ThrowCompletionOr<String> Console::format_time_since(Core::ElapsedTimer timer)
     auto elapsed_ms = timer.elapsed_time().to_milliseconds();
     auto duration = TRY(Temporal::balance_duration(vm, 0, 0, 0, 0, elapsed_ms, 0, "0"_sbigint, "year"sv));
 
-    auto append = [&](ThrowableStringBuilder& builder, auto format, auto number) -> ThrowCompletionOr<void> {
+    auto append = [&](auto& builder, auto format, auto number) {
         if (!builder.is_empty())
-            MUST_OR_THROW_OOM(builder.append(' '));
-        MUST_OR_THROW_OOM(builder.appendff(format, number));
-        return {};
+            builder.append(' ');
+        builder.appendff(format, number);
     };
 
-    ThrowableStringBuilder builder(vm);
+    StringBuilder builder;
 
     if (duration.days > 0)
-        MUST_OR_THROW_OOM(append(builder, "{:.0} day(s)"sv, duration.days));
+        append(builder, "{:.0} day(s)"sv, duration.days);
     if (duration.hours > 0)
-        MUST_OR_THROW_OOM(append(builder, "{:.0} hour(s)"sv, duration.hours));
+        append(builder, "{:.0} hour(s)"sv, duration.hours);
     if (duration.minutes > 0)
-        MUST_OR_THROW_OOM(append(builder, "{:.0} minute(s)"sv, duration.minutes));
+        append(builder, "{:.0} minute(s)"sv, duration.minutes);
     if (duration.seconds > 0 || duration.milliseconds > 0) {
         double combined_seconds = duration.seconds + (0.001 * duration.milliseconds);
-        MUST_OR_THROW_OOM(append(builder, "{:.3} seconds"sv, combined_seconds));
+        append(builder, "{:.3} seconds"sv, combined_seconds);
     }
 
-    return builder.to_string();
+    return MUST(builder.to_string());
+}
+
+ConsoleClient::ConsoleClient(Console& console)
+    : m_console(console)
+{
+}
+
+ConsoleClient::~ConsoleClient() = default;
+
+void ConsoleClient::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_console);
 }
 
 // 2.1. Logger(logLevel, args), https://console.spec.whatwg.org/#logger
 ThrowCompletionOr<Value> ConsoleClient::logger(Console::LogLevel log_level, MarkedVector<Value> const& args)
 {
-    auto& vm = m_console.realm().vm();
+    auto& vm = m_console->realm().vm();
 
     // 1. If args is empty, return.
     if (args.is_empty())
@@ -562,7 +801,7 @@ ThrowCompletionOr<Value> ConsoleClient::logger(Console::LogLevel log_level, Mark
 // 2.2. Formatter(args), https://console.spec.whatwg.org/#formatter
 ThrowCompletionOr<MarkedVector<Value>> ConsoleClient::formatter(MarkedVector<Value> const& args)
 {
-    auto& realm = m_console.realm();
+    auto& realm = m_console->realm();
     auto& vm = realm.vm();
 
     // 1. If args’s size is 1, return args.
@@ -579,7 +818,7 @@ ThrowCompletionOr<MarkedVector<Value>> ConsoleClient::formatter(MarkedVector<Val
     auto find_specifier = [](StringView target) -> Optional<StringView> {
         size_t start_index = 0;
         while (start_index < target.length()) {
-            auto maybe_index = target.find('%');
+            auto maybe_index = target.find('%', start_index);
             if (!maybe_index.has_value())
                 return {};
 
@@ -615,28 +854,28 @@ ThrowCompletionOr<MarkedVector<Value>> ConsoleClient::formatter(MarkedVector<Val
 
         // 1. If specifier is %s, let converted be the result of Call(%String%, undefined, « current »).
         if (specifier == "%s"sv) {
-            converted = TRY(call(vm, realm.intrinsics().string_constructor(), js_undefined(), current));
+            converted = TRY(call(vm, *realm.intrinsics().string_constructor(), js_undefined(), current));
         }
         // 2. If specifier is %d or %i:
         else if (specifier.is_one_of("%d"sv, "%i"sv)) {
-            // 1. If Type(current) is Symbol, let converted be NaN
+            // 1. If current is a Symbol, let converted be NaN
             if (current.is_symbol()) {
                 converted = js_nan();
             }
             // 2. Otherwise, let converted be the result of Call(%parseInt%, undefined, « current, 10 »).
             else {
-                converted = TRY(call(vm, realm.intrinsics().parse_int_function(), js_undefined(), current, Value { 10 }));
+                converted = TRY(call(vm, *realm.intrinsics().parse_int_function(), js_undefined(), current, Value { 10 }));
             }
         }
         // 3. If specifier is %f:
         else if (specifier == "%f"sv) {
-            // 1. If Type(current) is Symbol, let converted be NaN
+            // 1. If current is a Symbol, let converted be NaN
             if (current.is_symbol()) {
                 converted = js_nan();
             }
             // 2. Otherwise, let converted be the result of Call(% parseFloat %, undefined, « current »).
             else {
-                converted = TRY(call(vm, realm.intrinsics().parse_float_function(), js_undefined(), current));
+                converted = TRY(call(vm, *realm.intrinsics().parse_float_function(), js_undefined(), current));
             }
         }
         // 4. If specifier is %o, optionally let converted be current with optimally useful formatting applied.
@@ -675,12 +914,12 @@ ThrowCompletionOr<MarkedVector<Value>> ConsoleClient::formatter(MarkedVector<Val
 ThrowCompletionOr<String> ConsoleClient::generically_format_values(MarkedVector<Value> const& values)
 {
     AllocatingMemoryStream stream;
-    auto& vm = m_console.realm().vm();
+    auto& vm = m_console->realm().vm();
     PrintContext ctx { vm, stream, true };
     bool first = true;
     for (auto const& value : values) {
         if (!first)
-            TRY_OR_THROW_OOM(vm, stream.write(" "sv.bytes()));
+            TRY_OR_THROW_OOM(vm, stream.write_until_depleted(" "sv.bytes()));
         TRY_OR_THROW_OOM(vm, JS::print(value, ctx));
         first = false;
     }

@@ -1,14 +1,20 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=libssh2
-version=1.10.0
-useconfigure=true
-files="https://www.libssh2.org/download/libssh2-${version}.tar.gz libssh2-${version}.tar.gz
-https://www.libssh2.org/download/libssh2-${version}.tar.gz.asc libssh2-${version}.tar.gz.asc"
-depends=("libgcrypt")
-auth_type="sig"
-auth_import_key="27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2"
-auth_opts=("libssh2-${version}.tar.gz.asc" "libssh2-${version}.tar.gz")
-configopts=("-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt" "-GNinja")
+port='libssh2'
+version='1.11.0'
+useconfigure='true'
+files=(
+    "https://www.libssh2.org/download/libssh2-${version}.tar.gz#3736161e41e2693324deb38c26cfdc3efe6209d634ba4258db1cecff6a5ad461"
+)
+depends=(
+    'openssl'
+    'zlib'
+)
+configopts=(
+    "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt" 
+    '-DCRYPTO_BACKEND=OpenSSL'
+    '-DENABLE_ZLIB_COMPRESSION=ON'
+    '-GNinja'
+)
 
 configure() {
     run cmake "${configopts[@]}" .

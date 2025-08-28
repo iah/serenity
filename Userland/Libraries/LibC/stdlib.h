@@ -7,7 +7,6 @@
 #pragma once
 
 #include <bits/wchar.h>
-#include <stddef.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
@@ -72,6 +71,8 @@ __attribute__((noreturn)) void _Exit(int status);
 #define RAND_MAX 32767
 int rand(void);
 void srand(unsigned seed);
+double drand48(void);
+void srand48(long seed);
 
 long int random(void);
 void srandom(unsigned seed);

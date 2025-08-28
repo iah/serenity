@@ -17,7 +17,7 @@ Filter::Filter(ImageEditor* editor)
     , m_update_timer(Core::Timer::create_single_shot(100, [&] {
         if (on_settings_change)
             on_settings_change();
-    }).release_value_but_fixme_should_propagate_errors())
+    }))
 {
     m_update_timer->set_active(false);
 }
@@ -25,13 +25,13 @@ Filter::Filter(ImageEditor* editor)
 ErrorOr<RefPtr<GUI::Widget>> Filter::get_settings_widget()
 {
     if (!m_settings_widget) {
-        auto settings_widget = TRY(GUI::Widget::try_create());
-        (void)TRY(settings_widget->try_set_layout<GUI::VerticalBoxLayout>());
+        auto settings_widget = GUI::Widget::construct();
+        settings_widget->set_layout<GUI::VerticalBoxLayout>();
 
-        auto name_label = TRY(settings_widget->try_add<GUI::Label>(filter_name()));
-        name_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
+        auto& name_label = settings_widget->add<GUI::Label>(TRY(String::from_utf8(filter_name())));
+        name_label.set_text_alignment(Gfx::TextAlignment::TopLeft);
 
-        (void)TRY(settings_widget->try_add<GUI::Widget>());
+        settings_widget->add<GUI::Widget>();
         m_settings_widget = settings_widget;
     }
 

@@ -10,7 +10,7 @@
 
 namespace Core {
 
-HashMap<DeprecatedString, int> s_overtaken_sockets {};
+HashMap<ByteString, int> s_overtaken_sockets {};
 bool s_overtaken_sockets_parsed { false };
 
 static void parse_sockets_from_system_server()
@@ -26,7 +26,8 @@ static void parse_sockets_from_system_server()
 
     for (auto const socket : StringView { sockets, strlen(sockets) }.split_view(';')) {
         auto params = socket.split_view(':');
-        s_overtaken_sockets.set(params[0].to_deprecated_string(), strtol(params[1].to_deprecated_string().characters(), nullptr, 10));
+        VERIFY(params.size() == 2);
+        s_overtaken_sockets.set(params[0].to_byte_string(), params[1].to_number<int>().value());
     }
 
     s_overtaken_sockets_parsed = true;
@@ -35,13 +36,13 @@ static void parse_sockets_from_system_server()
     unsetenv(socket_takeover);
 }
 
-ErrorOr<NonnullOwnPtr<Core::LocalSocket>> take_over_socket_from_system_server(DeprecatedString const& socket_path)
+ErrorOr<NonnullOwnPtr<Core::LocalSocket>> take_over_socket_from_system_server(ByteString const& socket_path)
 {
     if (!s_overtaken_sockets_parsed)
         parse_sockets_from_system_server();
 
     int fd;
-    if (socket_path.is_null()) {
+    if (socket_path.is_empty()) {
         // We want the first (and only) socket.
         VERIFY(s_overtaken_sockets.size() == 1);
         fd = s_overtaken_sockets.begin()->value;

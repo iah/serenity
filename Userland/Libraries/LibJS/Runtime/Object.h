@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,11 +8,11 @@
 #pragma once
 
 #include <AK/Badge.h>
-#include <AK/DeprecatedString.h>
 #include <AK/HashMap.h>
 #include <AK/StringView.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
+#include <LibJS/Heap/CellAllocator.h>
 #include <LibJS/Heap/MarkedVector.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/IndexedProperties.h>
@@ -40,13 +40,29 @@ struct PrivateElement {
     Value value;
 };
 
+// Non-standard: This is information optionally returned by object property access functions.
+//               It can be used to implement inline caches for property lookup.
+struct CacheablePropertyMetadata {
+    enum class Type {
+        NotCacheable,
+        OwnProperty,
+        InPrototypeChain,
+    };
+    Type type { Type::NotCacheable };
+    Optional<u32> property_offset;
+    GCPtr<Object const> prototype;
+};
+
 class Object : public Cell {
     JS_CELL(Object, Cell);
+    JS_DECLARE_ALLOCATOR(Object);
 
 public:
+    static NonnullGCPtr<Object> create_prototype(Realm&, Object* prototype);
     static NonnullGCPtr<Object> create(Realm&, Object* prototype);
+    static NonnullGCPtr<Object> create_with_premade_shape(Shape&);
 
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~Object();
 
     enum class PropertyKind {
@@ -61,6 +77,11 @@ public:
     };
 
     enum class ShouldThrowExceptions {
+        No,
+        Yes,
+    };
+
+    enum class MayInterfereWithIndexedPropertyAccess {
         No,
         Yes,
     };
@@ -90,7 +111,7 @@ public:
     ThrowCompletionOr<Value> get(PropertyKey const&) const;
     ThrowCompletionOr<void> set(PropertyKey const&, Value, ShouldThrowExceptions);
     ThrowCompletionOr<bool> create_data_property(PropertyKey const&, Value);
-    ThrowCompletionOr<void> create_method_property(PropertyKey const&, Value);
+    void create_method_property(PropertyKey const&, Value);
     ThrowCompletionOr<bool> create_data_property_or_throw(PropertyKey const&, Value);
     void create_non_enumerable_data_property_or_throw(PropertyKey const&, Value);
     ThrowCompletionOr<void> define_property_or_throw(PropertyKey const&, PropertyDescriptor const&);
@@ -100,7 +121,8 @@ public:
     ThrowCompletionOr<bool> set_integrity_level(IntegrityLevel);
     ThrowCompletionOr<bool> test_integrity_level(IntegrityLevel) const;
     ThrowCompletionOr<MarkedVector<Value>> enumerable_own_property_names(PropertyKind kind) const;
-    ThrowCompletionOr<void> copy_data_properties(VM&, Value source, HashTable<PropertyKey> const& seen_names);
+    ThrowCompletionOr<void> copy_data_properties(VM&, Value source, HashTable<PropertyKey> const& excluded_keys, HashTable<JS::Value> const& excluded_values = {});
+    ThrowCompletionOr<NonnullGCPtr<Object>> snapshot_own_properties(VM&, GCPtr<Object> prototype, HashTable<PropertyKey> const& excluded_keys = {}, HashTable<Value> const& excluded_values = {});
 
     PrivateElement* private_element_find(PrivateName const& name);
     ThrowCompletionOr<void> private_field_add(PrivateName const& name, Value value);
@@ -117,14 +139,24 @@ public:
     virtual ThrowCompletionOr<bool> internal_is_extensible() const;
     virtual ThrowCompletionOr<bool> internal_prevent_extensions();
     virtual ThrowCompletionOr<Optional<PropertyDescriptor>> internal_get_own_property(PropertyKey const&) const;
-    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const&, PropertyDescriptor const&);
+    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const&, PropertyDescriptor const&, Optional<PropertyDescriptor>* precomputed_get_own_property = nullptr);
     virtual ThrowCompletionOr<bool> internal_has_property(PropertyKey const&) const;
-    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const&, Value receiver) const;
-    virtual ThrowCompletionOr<bool> internal_set(PropertyKey const&, Value value, Value receiver);
+    enum class PropertyLookupPhase {
+        OwnProperty,
+        PrototypeChain,
+    };
+    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const&, Value receiver, CacheablePropertyMetadata* = nullptr, PropertyLookupPhase = PropertyLookupPhase::OwnProperty) const;
+    virtual ThrowCompletionOr<bool> internal_set(PropertyKey const&, Value value, Value receiver, CacheablePropertyMetadata* = nullptr);
     virtual ThrowCompletionOr<bool> internal_delete(PropertyKey const&);
     virtual ThrowCompletionOr<MarkedVector<Value>> internal_own_property_keys() const;
 
-    ThrowCompletionOr<bool> ordinary_set_with_own_descriptor(PropertyKey const&, Value, Value, Optional<PropertyDescriptor>);
+    // NOTE: Any subclass of Object that overrides property access slots ([[Get]], [[Set]] etc)
+    //       to customize access to indexed properties (properties where the name is a positive integer)
+    //       must return true for this, to opt out of optimizations that rely on assumptions that
+    //       might not hold when property access behaves differently.
+    bool may_interfere_with_indexed_property_access() const { return m_may_interfere_with_indexed_property_access; }
+
+    ThrowCompletionOr<bool> ordinary_set_with_own_descriptor(PropertyKey const&, Value, Value, Optional<PropertyDescriptor>, CacheablePropertyMetadata* = nullptr);
 
     // 10.4.7 Immutable Prototype Exotic Objects, https://tc39.es/ecma262/#sec-immutable-prototype-exotic-objects
 
@@ -149,22 +181,24 @@ public:
 
     Value get_without_side_effects(PropertyKey const&) const;
 
-    void define_direct_property(PropertyKey const& property_key, Value value, PropertyAttributes attributes) { storage_set(property_key, { value, attributes }); };
+    void define_direct_property(PropertyKey const& property_key, Value value, PropertyAttributes attributes) { storage_set(property_key, { value, attributes }); }
     void define_direct_accessor(PropertyKey const&, FunctionObject* getter, FunctionObject* setter, PropertyAttributes attributes);
 
     using IntrinsicAccessor = Value (*)(Realm&);
-    virtual void define_intrinsic_accessor(PropertyKey const&, PropertyAttributes attributes, IntrinsicAccessor accessor);
+    void define_intrinsic_accessor(PropertyKey const&, PropertyAttributes attributes, IntrinsicAccessor accessor);
 
-    void define_native_function(Realm&, PropertyKey const&, SafeFunction<ThrowCompletionOr<Value>(VM&)>, i32 length, PropertyAttributes attributes);
-    void define_native_accessor(Realm&, PropertyKey const&, SafeFunction<ThrowCompletionOr<Value>(VM&)> getter, SafeFunction<ThrowCompletionOr<Value>(VM&)> setter, PropertyAttributes attributes);
+    void define_native_function(Realm&, PropertyKey const&, ESCAPING Function<ThrowCompletionOr<Value>(VM&)>, i32 length, PropertyAttributes attributes, Optional<Bytecode::Builtin> builtin = {});
+    void define_native_accessor(Realm&, PropertyKey const&, ESCAPING Function<ThrowCompletionOr<Value>(VM&)> getter, ESCAPING Function<ThrowCompletionOr<Value>(VM&)> setter, PropertyAttributes attributes);
 
+    virtual bool is_dom_node() const { return false; }
     virtual bool is_function() const { return false; }
-    virtual bool is_typed_array() const { return false; }
     virtual bool is_string_object() const { return false; }
     virtual bool is_global_object() const { return false; }
     virtual bool is_proxy_object() const { return false; }
     virtual bool is_native_function() const { return false; }
     virtual bool is_ecmascript_function_object() const { return false; }
+    virtual bool is_iterator_record() const { return false; }
+    virtual bool is_array_iterator() const { return false; }
 
     // B.3.7 The [[IsHTMLDDA]] Internal Slot, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot
     virtual bool is_htmldda() const { return false; }
@@ -175,6 +209,7 @@ public:
     virtual void visit_edges(Cell::Visitor&) override;
 
     Value get_direct(size_t index) const { return m_storage[index]; }
+    void put_direct(size_t index, Value value) { m_storage[index] = value; }
 
     IndexedProperties const& indexed_properties() const { return m_indexed_properties; }
     IndexedProperties& indexed_properties() { return m_indexed_properties; }
@@ -183,23 +218,30 @@ public:
     Shape& shape() { return *m_shape; }
     Shape const& shape() const { return *m_shape; }
 
-    void ensure_shape_is_unique();
+    void convert_to_prototype_if_needed();
 
     template<typename T>
     bool fast_is() const = delete;
+
+    void set_prototype(Object*);
+
+    [[nodiscard]] bool has_magical_length_property() const { return m_has_magical_length_property; }
+
+    [[nodiscard]] bool is_typed_array() const { return m_is_typed_array; }
+    void set_is_typed_array() { m_is_typed_array = true; }
+
+    Object const* prototype() const { return shape().prototype(); }
 
 protected:
     enum class GlobalObjectTag { Tag };
     enum class ConstructWithoutPrototypeTag { Tag };
     enum class ConstructWithPrototypeTag { Tag };
 
-    Object(GlobalObjectTag, Realm&);
-    Object(ConstructWithoutPrototypeTag, Realm&);
-    Object(Realm&, Object* prototype);
-    Object(ConstructWithPrototypeTag, Object& prototype);
-    explicit Object(Shape&);
-
-    void set_prototype(Object*);
+    Object(GlobalObjectTag, Realm&, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
+    Object(ConstructWithoutPrototypeTag, Realm&, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
+    Object(Realm&, Object* prototype, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
+    Object(ConstructWithPrototypeTag, Object& prototype, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
+    explicit Object(Shape&, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
 
     // [[Extensible]]
     bool m_is_extensible { true };
@@ -207,13 +249,21 @@ protected:
     // [[ParameterMap]]
     bool m_has_parameter_map { false };
 
+    bool m_has_magical_length_property { false };
+
+    bool m_is_typed_array { false };
+
 private:
     void set_shape(Shape& shape) { m_shape = &shape; }
 
     Object* prototype() { return shape().prototype(); }
-    Object const* prototype() const { return shape().prototype(); }
 
-    Shape* m_shape { nullptr };
+    bool m_may_interfere_with_indexed_property_access { false };
+
+    // True if this object has lazily allocated intrinsic properties.
+    bool m_has_intrinsic_accessors { false };
+
+    GCPtr<Shape> m_shape;
     Vector<Value> m_storage;
     IndexedProperties m_indexed_properties;
     OwnPtr<Vector<PrivateElement>> m_private_elements; // [[PrivateElements]]

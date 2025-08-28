@@ -6,28 +6,28 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/RefPtr.h>
 #include <LibCore/Account.h>
 #include <LibCore/ElapsedTimer.h>
+#include <LibCore/EventReceiver.h>
 #include <LibCore/Notifier.h>
-#include <LibCore/Object.h>
 
-class Service final : public Core::Object {
+class Service final : public Core::EventReceiver {
     C_OBJECT_ABSTRACT(Service)
 
 public:
     static ErrorOr<NonnullRefPtr<Service>> try_create(Core::ConfigFile const& config, StringView name);
     ~Service();
 
-    bool is_enabled() const;
+    bool is_enabled_for_system_mode(StringView) const;
     ErrorOr<void> activate();
-    ErrorOr<void> did_exit(int exit_code);
+    // Note: This is a `status` as in POSIX's wait syscall, not an exit-code.
+    ErrorOr<void> did_exit(int status);
+
+    ErrorOr<void> setup_sockets();
 
     static Service* find_by_pid(pid_t);
-
-    // FIXME: Port to Core::Property
-    void save_to(JsonObject&);
 
 private:
     Service(Core::ConfigFile const&, StringView name);
@@ -36,11 +36,13 @@ private:
 
     ErrorOr<void> determine_account(int fd);
 
+    ErrorOr<void> change_privileges();
+
     /// SocketDescriptor describes the details of a single socket that was
     /// requested by a service.
     struct SocketDescriptor {
         /// The path of the socket.
-        DeprecatedString path;
+        ByteString path;
         /// File descriptor of the socket. -1 if the socket hasn't been opened.
         int fd { -1 };
         /// File permissions of the socket.
@@ -48,11 +50,11 @@ private:
     };
 
     // Path to the executable. By default this is /bin/{m_name}.
-    DeprecatedString m_executable_path;
+    ByteString m_executable_path;
     // Extra arguments, starting from argv[1], to pass when exec'ing.
-    DeprecatedString m_extra_arguments;
+    ByteString m_extra_arguments;
     // File path to open as stdio fds.
-    DeprecatedString m_stdio_file_path;
+    Optional<ByteString> m_stdio_file_path;
     int m_priority { 1 };
     // Whether we should re-launch it if it exits.
     bool m_keep_alive { false };
@@ -63,20 +65,21 @@ private:
     // Whether we should only spawn this service once somebody connects to the socket.
     bool m_lazy;
     // The name of the user we should run this service as.
-    DeprecatedString m_user;
+    Optional<ByteString> m_user;
     // The working directory in which to spawn the service.
-    DeprecatedString m_working_directory;
+    Optional<ByteString> m_working_directory;
     // System modes in which to run this service. By default, this is the graphical mode.
-    Vector<DeprecatedString> m_system_modes;
+    Vector<ByteString> m_system_modes;
     // Whether several instances of this service can run at once.
     bool m_multi_instance { false };
     // Environment variables to pass to the service.
-    DeprecatedString m_environment;
+    ByteString m_environment;
     // Socket descriptors for this service.
     Vector<SocketDescriptor> m_sockets;
 
     // The resolved user account to run this service as.
     Optional<Core::Account> m_account;
+    bool m_must_login { false };
 
     // For single-instance services, PID of the running instance of this service.
     pid_t m_pid { -1 };
@@ -89,7 +92,6 @@ private:
     int m_restart_attempts { 0 };
 
     ErrorOr<void> setup_socket(SocketDescriptor&);
-    ErrorOr<void> setup_sockets();
     void setup_notifier();
     ErrorOr<void> handle_socket_connection();
 };

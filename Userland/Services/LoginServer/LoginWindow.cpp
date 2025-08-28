@@ -7,7 +7,9 @@
 #include <LibGUI/Icon.h>
 #include <LibGUI/Widget.h>
 #include <Services/LoginServer/LoginWindow.h>
-#include <Services/LoginServer/LoginWindowGML.h>
+#include <Services/LoginServer/Widget.h>
+
+namespace LoginServer {
 
 LoginWindow::LoginWindow(GUI::Window* parent)
     : GUI::Window(parent)
@@ -20,11 +22,9 @@ LoginWindow::LoginWindow(GUI::Window* parent)
     set_closeable(false);
     set_icon(GUI::Icon::default_icon("ladyball"sv).bitmap_for_size(16));
 
-    auto widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
-    widget->load_from_gml(login_window_gml).release_value_but_fixme_should_propagate_errors();
+    auto widget = MUST(LoginServer::Widget::try_create());
+    set_main_widget(widget);
     m_banner = *widget->find_descendant_of_type_named<GUI::ImageWidget>("banner");
-    m_banner->load_from_file("/res/graphics/brand-banner.png"sv);
-    m_banner->set_auto_resize(true);
 
     m_username = *widget->find_descendant_of_type_named<GUI::TextBox>("username");
     m_username->set_focus(true);
@@ -39,10 +39,12 @@ LoginWindow::LoginWindow(GUI::Window* parent)
 
     m_fail_message = *widget->find_descendant_of_type_named<GUI::Label>("fail_message");
     m_username->on_change = [&] {
-        m_fail_message->set_text("");
+        m_fail_message->set_text({});
     };
     m_password->on_change = [&] {
         if (!m_password->text().is_empty())
-            m_fail_message->set_text("");
+            m_fail_message->set_text({});
     };
+}
+
 }

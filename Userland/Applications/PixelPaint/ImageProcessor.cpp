@@ -5,6 +5,7 @@
  */
 
 #include "ImageProcessor.h"
+#include "Layer.h"
 
 namespace PixelPaint {
 
@@ -16,11 +17,21 @@ FilterApplicationCommand::FilterApplicationCommand(NonnullRefPtr<Filter> filter,
 
 void FilterApplicationCommand::execute()
 {
-    m_filter->apply(m_target_layer->get_scratch_edited_bitmap(), m_target_layer->get_scratch_edited_bitmap());
+    if (m_target_layer->mask_type() == Layer::MaskType::EditingMask && m_target_layer->edit_mode() == Layer::EditMode::Content) {
+        auto unchanged_source = m_target_layer->get_scratch_edited_bitmap().clone().release_value_but_fixme_should_propagate_errors();
+
+        m_filter->apply(m_target_layer->get_scratch_edited_bitmap(), m_target_layer->get_scratch_edited_bitmap());
+
+        for (int y = 0; y < m_target_layer->content_bitmap().height(); y++)
+            for (int x = 0; x < m_target_layer->content_bitmap().width(); x++)
+                m_target_layer->content_bitmap().set_pixel(x, y, m_target_layer->modify_pixel_with_editing_mask(x, y, m_target_layer->content_bitmap().get_pixel(x, y), unchanged_source->get_pixel(x, y)));
+    } else {
+        m_filter->apply(m_target_layer->get_scratch_edited_bitmap(), m_target_layer->get_scratch_edited_bitmap());
+    }
+
     m_filter->m_editor->gui_event_loop().deferred_invoke([strong_this = NonnullRefPtr(*this)]() {
-        // HACK: we can't tell strong_this to not be const
-        (*const_cast<NonnullRefPtr<Layer>*>(&strong_this->m_target_layer))->did_modify_bitmap(strong_this->m_target_layer->rect());
-        strong_this->m_filter->m_editor->did_complete_action(DeprecatedString::formatted("Filter {}", strong_this->m_filter->filter_name()));
+        strong_this->m_target_layer->did_modify_bitmap(strong_this->m_target_layer->rect());
+        strong_this->m_filter->m_editor->did_complete_action(ByteString::formatted("Filter {}", strong_this->m_filter->filter_name()));
     });
 }
 

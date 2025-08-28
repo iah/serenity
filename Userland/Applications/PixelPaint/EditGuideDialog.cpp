@@ -13,17 +13,17 @@
 
 namespace PixelPaint {
 
-EditGuideDialog::EditGuideDialog(GUI::Window* parent_window, DeprecatedString const& offset, Guide::Orientation orientation)
+EditGuideDialog::EditGuideDialog(GUI::Window* parent_window, ByteString const& offset, Guide::Orientation orientation)
     : Dialog(parent_window)
     , m_offset(offset)
     , m_orientation(orientation)
 {
-    set_title("Create new Guide");
+    set_title("Create New Guide");
     set_icon(parent_window->icon());
     resize(200, 130);
     set_resizable(false);
 
-    auto main_widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto main_widget = set_main_widget<GUI::Widget>();
     main_widget->load_from_gml(edit_guide_dialog_gml).release_value_but_fixme_should_propagate_errors();
 
     auto horizontal_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("orientation_horizontal_radio");
@@ -80,7 +80,7 @@ Optional<float> EditGuideDialog::offset_as_pixel(ImageEditor const& editor)
 {
     float offset = 0;
     if (m_offset.ends_with('%')) {
-        auto percentage = m_offset.substring_view(0, m_offset.length() - 1).to_int();
+        auto percentage = m_offset.substring_view(0, m_offset.length() - 1).to_number<int>();
         if (!percentage.has_value())
             return {};
 
@@ -89,7 +89,7 @@ Optional<float> EditGuideDialog::offset_as_pixel(ImageEditor const& editor)
         else if (orientation() == PixelPaint::Guide::Orientation::Vertical)
             offset = editor.image().size().width() * ((double)percentage.value() / 100.0);
     } else {
-        auto parsed_int = m_offset.to_int();
+        auto parsed_int = m_offset.to_number<int>();
         if (!parsed_int.has_value())
             return {};
         offset = parsed_int.value();

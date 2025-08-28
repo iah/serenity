@@ -11,6 +11,8 @@
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
 #include <AK/Result.h>
+#include <AK/StackInfo.h>
+#include <AK/UFixedBigInt.h>
 #include <LibWasm/Types.h>
 
 // NOTE: Special case for Wasm::Result.
@@ -22,13 +24,13 @@ class Configuration;
 struct Interpreter;
 
 struct InstantiationError {
-    DeprecatedString error { "Unknown error" };
+    ByteString error { "Unknown error" };
 };
 struct LinkError {
     enum OtherErrors {
         InvalidImportedModule,
     };
-    Vector<DeprecatedString> missing_imports;
+    Vector<ByteString> missing_imports;
     Vector<OtherErrors> other_errors;
 };
 
@@ -49,6 +51,7 @@ public:
     };
     struct Func {
         FunctionAddress address;
+        RefPtr<Module> source_module; // null if host function.
     };
     struct Extern {
         ExternAddress address;
@@ -57,6 +60,10 @@ public:
     using RefType = Variant<Null, Func, Extern>;
     explicit Reference(RefType ref)
         : m_ref(move(ref))
+    {
+    }
+    explicit Reference()
+        : m_ref(Reference::Null { ValueType(ValueType::Kind::FunctionReference) })
     {
     }
 
@@ -69,50 +76,63 @@ private:
 class Value {
 public:
     Value()
-        : m_value(0)
-    {
-    }
-
-    using AnyValueType = Variant<i32, i64, float, double, Reference>;
-    explicit Value(AnyValueType value)
-        : m_value(move(value))
+        : m_value(u128())
     {
     }
 
     template<typename T>
-    requires(sizeof(T) == sizeof(u64)) explicit Value(ValueType type, T raw_value)
-        : m_value(0)
+    requires(sizeof(T) == sizeof(u64)) explicit Value(T raw_value)
+        : m_value(u128(bit_cast<i64>(raw_value), 0))
     {
-        switch (type.kind()) {
-        case ValueType::Kind::ExternReference:
-            m_value = Reference { Reference::Extern { { bit_cast<u64>(raw_value) } } };
-            break;
-        case ValueType::Kind::FunctionReference:
-            m_value = Reference { Reference::Func { { bit_cast<u64>(raw_value) } } };
-            break;
-        case ValueType::Kind::I32:
-            m_value = static_cast<i32>(bit_cast<i64>(raw_value));
-            break;
-        case ValueType::Kind::I64:
-            m_value = static_cast<i64>(bit_cast<u64>(raw_value));
-            break;
-        case ValueType::Kind::F32:
-            m_value = static_cast<float>(bit_cast<double>(raw_value));
-            break;
-        case ValueType::Kind::F64:
-            m_value = bit_cast<double>(raw_value);
-            break;
-        case ValueType::Kind::NullFunctionReference:
-            VERIFY(raw_value == 0);
-            m_value = Reference { Reference::Null { ValueType(ValueType::Kind::FunctionReference) } };
-            break;
-        case ValueType::Kind::NullExternReference:
-            VERIFY(raw_value == 0);
-            m_value = Reference { Reference::Null { ValueType(ValueType::Kind::ExternReference) } };
-            break;
-        default:
-            VERIFY_NOT_REACHED();
-        }
+    }
+
+    template<typename T>
+    requires(sizeof(T) == sizeof(u32)) explicit Value(T raw_value)
+        : m_value(u128(static_cast<i64>(bit_cast<i32>(raw_value)), 0))
+    {
+    }
+
+    template<typename T>
+    requires(sizeof(T) == sizeof(u8) && Signed<T>) explicit Value(T raw_value)
+        : m_value(u128(static_cast<i64>(bit_cast<i8>(raw_value)), 0))
+    {
+    }
+
+    template<typename T>
+    requires(sizeof(T) == sizeof(u8) && Unsigned<T>) explicit Value(T raw_value)
+        : m_value(u128(static_cast<u64>(bit_cast<u8>(raw_value)), 0))
+    {
+    }
+
+    template<typename T>
+    requires(sizeof(T) == sizeof(u16) && Signed<T>) explicit Value(T raw_value)
+        : m_value(u128(static_cast<i64>(bit_cast<i16>(raw_value)), 0))
+    {
+    }
+
+    template<typename T>
+    requires(sizeof(T) == sizeof(u16) && Unsigned<T>) explicit Value(T raw_value)
+        : m_value(u128(static_cast<u64>(bit_cast<u16>(raw_value)), 0))
+    {
+    }
+
+    explicit Value(Reference ref)
+    {
+        // Reference variant is encoded in the high storage of the u128:
+        // 0: funcref
+        // 1: externref
+        // 2: null funcref
+        // 3: null externref
+        ref.ref().visit(
+            [&](Reference::Func const& func) { m_value = u128(bit_cast<u64>(func.address), bit_cast<u64>(func.source_module.ptr())); },
+            [&](Reference::Extern const& func) { m_value = u128(bit_cast<u64>(func.address), 1); },
+            [&](Reference::Null const& null) { m_value = u128(0, null.type.kind() == ValueType::Kind::FunctionReference ? 2 : 3); });
+    }
+
+    template<SameAs<u128> T>
+    explicit Value(T raw_value)
+        : m_value(raw_value)
+    {
     }
 
     ALWAYS_INLINE Value(Value const& value) = default;
@@ -121,57 +141,49 @@ public:
     ALWAYS_INLINE Value& operator=(Value const& value) = default;
 
     template<typename T>
-    ALWAYS_INLINE Optional<T> to()
+    ALWAYS_INLINE T to() const
     {
-        Optional<T> result;
-        m_value.visit(
-            [&](auto value) {
-                if constexpr (IsSame<T, decltype(value)>)
-                    result = value;
-                else if constexpr (!IsFloatingPoint<T> && IsSame<decltype(value), MakeSigned<T>>)
-                    result = value;
-            },
-            [&](Reference const& value) {
-                if constexpr (IsSame<T, Reference>) {
-                    result = value;
-                } else if constexpr (IsSame<T, Reference::Func>) {
-                    if (auto ptr = value.ref().template get_pointer<Reference::Func>())
-                        result = *ptr;
-                } else if constexpr (IsSame<T, Reference::Extern>) {
-                    if (auto ptr = value.ref().template get_pointer<Reference::Extern>())
-                        result = *ptr;
-                } else if constexpr (IsSame<T, Reference::Null>) {
-                    if (auto ptr = value.ref().template get_pointer<Reference::Null>())
-                        result = *ptr;
-                }
-            });
-        return result;
+        static_assert(IsOneOf<T, u128, u64, i64, f32, f64, Reference> || IsIntegral<T>, "Unsupported type for Value::to()");
+
+        if constexpr (IsSame<T, u128>) {
+            return m_value;
+        }
+        if constexpr (IsOneOf<T, u64, i64>) {
+            return bit_cast<T>(m_value.low());
+        }
+        if constexpr (IsIntegral<T> && sizeof(T) < 8) {
+            return bit_cast<T>(static_cast<MakeUnsigned<T>>(m_value.low() & NumericLimits<MakeUnsigned<T>>::max()));
+        }
+        if constexpr (IsSame<T, f32>) {
+            u32 low = m_value.low() & 0xFFFFFFFF;
+            return bit_cast<f32>(low);
+        }
+        if constexpr (IsSame<T, f64>) {
+            return bit_cast<f64>(m_value.low());
+        }
+        if constexpr (IsSame<T, Reference>) {
+            switch (m_value.high() & 3) {
+            case 0:
+                return Reference { Reference::Func { bit_cast<FunctionAddress>(m_value.low()), bit_cast<Wasm::Module*>(m_value.high()) } };
+            case 1:
+                return Reference { Reference::Extern { bit_cast<ExternAddress>(m_value.low()) } };
+            case 2:
+                return Reference { Reference::Null { ValueType(ValueType::Kind::FunctionReference) } };
+            case 3:
+                return Reference { Reference::Null { ValueType(ValueType::Kind::ExternReference) } };
+            }
+        }
+        VERIFY_NOT_REACHED();
     }
 
-    ValueType type() const
-    {
-        return ValueType(m_value.visit(
-            [](i32) { return ValueType::Kind::I32; },
-            [](i64) { return ValueType::Kind::I64; },
-            [](float) { return ValueType::Kind::F32; },
-            [](double) { return ValueType::Kind::F64; },
-            [&](Reference const& type) {
-                return type.ref().visit(
-                    [](Reference::Func const&) { return ValueType::Kind::FunctionReference; },
-                    [](Reference::Null const& null_type) {
-                        return null_type.type.kind() == ValueType::ExternReference ? ValueType::Kind::NullExternReference : ValueType::Kind::NullFunctionReference;
-                    },
-                    [](Reference::Extern const&) { return ValueType::Kind::ExternReference; });
-            }));
-    }
     auto& value() const { return m_value; }
 
 private:
-    AnyValueType m_value;
+    u128 m_value;
 };
 
 struct Trap {
-    DeprecatedString reason;
+    ByteString reason;
 };
 
 // A variant of Result that does not include external reasons for error (JS::Completion, for now).
@@ -249,7 +261,7 @@ using ExternValue = Variant<FunctionAddress, TableAddress, MemoryAddress, Global
 
 class ExportInstance {
 public:
-    explicit ExportInstance(DeprecatedString name, ExternValue value)
+    explicit ExportInstance(ByteString name, ExternValue value)
         : m_name(move(name))
         , m_value(move(value))
     {
@@ -259,7 +271,7 @@ public:
     auto& value() const { return m_value; }
 
 private:
-    DeprecatedString m_name;
+    ByteString m_name;
     ExternValue m_value;
 };
 
@@ -312,44 +324,50 @@ private:
 
 class WasmFunction {
 public:
-    explicit WasmFunction(FunctionType const& type, ModuleInstance const& module, Module::Function const& code)
+    explicit WasmFunction(FunctionType const& type, ModuleInstance const& instance, Module const& module, CodeSection::Code const& code)
         : m_type(type)
-        , m_module(module)
+        , m_module(module.make_weak_ptr())
+        , m_module_instance(instance)
         , m_code(code)
     {
     }
 
     auto& type() const { return m_type; }
-    auto& module() const { return m_module; }
+    auto& module() const { return m_module_instance; }
     auto& code() const { return m_code; }
+    RefPtr<Module const> module_ref() const { return m_module.strong_ref(); }
 
 private:
     FunctionType m_type;
-    ModuleInstance const& m_module;
-    Module::Function const& m_code;
+    WeakPtr<Module const> m_module;
+    ModuleInstance const& m_module_instance;
+    CodeSection::Code const& m_code;
 };
 
 class HostFunction {
 public:
-    explicit HostFunction(AK::Function<Result(Configuration&, Vector<Value>&)> function, FunctionType const& type)
+    explicit HostFunction(AK::Function<Result(Configuration&, Vector<Value>&)> function, FunctionType const& type, ByteString name)
         : m_function(move(function))
         , m_type(type)
+        , m_name(move(name))
     {
     }
 
     auto& function() { return m_function; }
     auto& type() const { return m_type; }
+    auto& name() const { return m_name; }
 
 private:
     AK::Function<Result(Configuration&, Vector<Value>&)> m_function;
     FunctionType m_type;
+    ByteString m_name;
 };
 
 using FunctionInstance = Variant<WasmFunction, HostFunction>;
 
 class TableInstance {
 public:
-    explicit TableInstance(TableType const& type, Vector<Optional<Reference>> elements)
+    explicit TableInstance(TableType const& type, Vector<Reference> elements)
         : m_elements(move(elements))
         , m_type(type)
     {
@@ -359,14 +377,17 @@ public:
     auto& elements() { return m_elements; }
     auto& type() const { return m_type; }
 
-    bool grow(size_t size_to_grow, Reference const& fill_value)
+    bool grow(u32 size_to_grow, Reference const& fill_value)
     {
         if (size_to_grow == 0)
             return true;
-        auto new_size = m_elements.size() + size_to_grow;
+        size_t new_size = m_elements.size() + size_to_grow;
         if (auto max = m_type.limits().max(); max.has_value()) {
             if (max.value() < new_size)
                 return false;
+        }
+        if (new_size >= NumericLimits<u32>::max()) {
+            return false;
         }
         auto previous_size = m_elements.size();
         if (m_elements.try_resize(new_size).is_error())
@@ -377,8 +398,8 @@ public:
     }
 
 private:
-    Vector<Optional<Reference>> m_elements;
-    TableType const& m_type;
+    Vector<Reference> m_elements;
+    TableType m_type;
 };
 
 class MemoryInstance {
@@ -387,7 +408,7 @@ public:
     {
         MemoryInstance instance { type };
 
-        if (!instance.grow(type.limits().min() * Constants::page_size))
+        if (!instance.grow(type.limits().min() * Constants::page_size, GrowType::No))
             return Error::from_string_literal("Failed to grow to requested size");
 
         return { move(instance) };
@@ -398,7 +419,17 @@ public:
     auto& data() const { return m_data; }
     auto& data() { return m_data; }
 
-    bool grow(size_t size_to_grow)
+    enum class InhibitGrowCallback {
+        No,
+        Yes,
+    };
+
+    enum class GrowType {
+        No,
+        Yes,
+    };
+
+    bool grow(size_t size_to_grow, GrowType grow_type = GrowType::Yes, InhibitGrowCallback inhibit_callback = InhibitGrowCallback::No)
     {
         if (size_to_grow == 0)
             return true;
@@ -416,8 +447,24 @@ public:
         m_size = new_size;
         // The spec requires that we zero out everything on grow
         __builtin_memset(m_data.offset_pointer(previous_size), 0, size_to_grow);
+
+        // NOTE: This exists because wasm-js-api wants to execute code after a successful grow,
+        //       See [this issue](https://github.com/WebAssembly/spec/issues/1635) for more details.
+        if (inhibit_callback == InhibitGrowCallback::No && successful_grow_hook)
+            successful_grow_hook();
+
+        if (grow_type == GrowType::Yes) {
+            // Grow the memory's type. We do this when encountering a `memory.grow`.
+            //
+            // See relevant spec link:
+            // https://www.w3.org/TR/wasm-core-2/#growing-memories%E2%91%A0
+            m_type = MemoryType { Limits(m_type.limits().min() + size_to_grow / Constants::page_size, m_type.limits().max()) };
+        }
+
         return true;
     }
+
+    Function<void()> successful_grow_hook;
 
 private:
     explicit MemoryInstance(MemoryType const& type)
@@ -425,22 +472,23 @@ private:
     {
     }
 
-    MemoryType const& m_type;
+    MemoryType m_type;
     size_t m_size { 0 };
     ByteBuffer m_data;
 };
 
 class GlobalInstance {
 public:
-    explicit GlobalInstance(Value value, bool is_mutable)
+    explicit GlobalInstance(Value value, bool is_mutable, ValueType type)
         : m_mutable(is_mutable)
-        , m_value(move(value))
+        , m_value(value)
+        , m_type(type)
     {
     }
 
     auto is_mutable() const { return m_mutable; }
     auto& value() const { return m_value; }
-    GlobalType type() const { return { m_value.type(), is_mutable() }; }
+    GlobalType type() const { return { m_type, is_mutable() }; }
     void set_value(Value value)
     {
         VERIFY(is_mutable());
@@ -450,6 +498,7 @@ public:
 private:
     bool m_mutable { false };
     Value m_value;
+    ValueType m_type;
 };
 
 class DataInstance {
@@ -488,7 +537,7 @@ class Store {
 public:
     Store() = default;
 
-    Optional<FunctionAddress> allocate(ModuleInstance& module, Module::Function const& function);
+    Optional<FunctionAddress> allocate(ModuleInstance&, Module const&, CodeSection::Code const&, TypeIndex);
     Optional<FunctionAddress> allocate(HostFunction&&);
     Optional<TableAddress> allocate(TableType const&);
     Optional<MemoryAddress> allocate(MemoryType const&);
@@ -496,6 +545,7 @@ public:
     Optional<GlobalAddress> allocate(GlobalType const&, Value);
     Optional<ElementAddress> allocate(ValueType const&, Vector<Reference>);
 
+    Module const* get_module_for(FunctionAddress);
     FunctionInstance* get(FunctionAddress);
     TableInstance* get(TableAddress);
     MemoryInstance* get(MemoryAddress);
@@ -514,17 +564,20 @@ private:
 
 class Label {
 public:
-    explicit Label(size_t arity, InstructionPointer continuation)
+    explicit Label(size_t arity, InstructionPointer continuation, size_t stack_height)
         : m_arity(arity)
+        , m_stack_height(stack_height)
         , m_continuation(continuation)
     {
     }
 
     auto continuation() const { return m_continuation; }
     auto arity() const { return m_arity; }
+    auto stack_height() const { return m_stack_height; }
 
 private:
     size_t m_arity { 0 };
+    size_t m_stack_height { 0 };
     InstructionPointer m_continuation { 0 };
 };
 
@@ -543,34 +596,18 @@ public:
     auto& locals() { return m_locals; }
     auto& expression() const { return m_expression; }
     auto arity() const { return m_arity; }
+    auto label_index() const { return m_label_index; }
+    auto& label_index() { return m_label_index; }
 
 private:
     ModuleInstance const& m_module;
     Vector<Value> m_locals;
     Expression const& m_expression;
     size_t m_arity { 0 };
+    size_t m_label_index { 0 };
 };
 
-class Stack {
-public:
-    using EntryType = Variant<Value, Label, Frame>;
-    Stack() = default;
-
-    [[nodiscard]] ALWAYS_INLINE bool is_empty() const { return m_data.is_empty(); }
-    ALWAYS_INLINE void push(EntryType entry) { m_data.append(move(entry)); }
-    ALWAYS_INLINE auto pop() { return m_data.take_last(); }
-    ALWAYS_INLINE auto& peek() const { return m_data.last(); }
-    ALWAYS_INLINE auto& peek() { return m_data.last(); }
-
-    ALWAYS_INLINE auto size() const { return m_data.size(); }
-    ALWAYS_INLINE auto& entries() const { return m_data; }
-    ALWAYS_INLINE auto& entries() { return m_data; }
-
-private:
-    Vector<EntryType, 1024> m_data;
-};
-
-using InstantiationResult = AK::Result<NonnullOwnPtr<ModuleInstance>, InstantiationError>;
+using InstantiationResult = AK::ErrorOr<NonnullOwnPtr<ModuleInstance>, InstantiationError>;
 
 class AbstractMachine {
 public:
@@ -589,17 +626,18 @@ public:
     void enable_instruction_count_limit() { m_should_limit_instruction_count = true; }
 
 private:
-    Optional<InstantiationError> allocate_all_initial_phase(Module const&, ModuleInstance&, Vector<ExternValue>&, Vector<Value>& global_values);
+    Optional<InstantiationError> allocate_all_initial_phase(Module const&, ModuleInstance&, Vector<ExternValue>&, Vector<Value>& global_values, Vector<FunctionAddress>& own_functions);
     Optional<InstantiationError> allocate_all_final_phase(Module const&, ModuleInstance&, Vector<Vector<Reference>>& elements);
     Store m_store;
+    StackInfo m_stack_info;
     bool m_should_limit_instruction_count { false };
 };
 
 class Linker {
 public:
     struct Name {
-        DeprecatedString module;
-        DeprecatedString name;
+        ByteString module;
+        ByteString name;
         ImportSection::Import::ImportDesc type;
     };
 
@@ -620,7 +658,7 @@ public:
         return m_unresolved_imports;
     }
 
-    AK::Result<Vector<ExternValue>, LinkError> finish();
+    AK::ErrorOr<Vector<ExternValue>, LinkError> finish();
 
 private:
     void populate();
@@ -635,7 +673,7 @@ private:
 }
 
 template<>
-struct AK::Traits<Wasm::Linker::Name> : public AK::GenericTraits<Wasm::Linker::Name> {
+struct AK::Traits<Wasm::Linker::Name> : public AK::DefaultTraits<Wasm::Linker::Name> {
     static constexpr bool is_trivial() { return false; }
     static unsigned hash(Wasm::Linker::Name const& entry) { return pair_int_hash(entry.module.hash(), entry.name.hash()); }
     static bool equals(Wasm::Linker::Name const& a, Wasm::Linker::Name const& b) { return a.name == b.name && a.module == b.module; }

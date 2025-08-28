@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Error.h>
 #include <AK/Noncopyable.h>
 #include <LibSQL/Type.h>
@@ -74,6 +75,9 @@ enum class SQLErrorCode {
 };
 
 class [[nodiscard]] Result {
+    AK_MAKE_NONCOPYABLE(Result);
+    AK_MAKE_DEFAULT_MOVABLE(Result);
+
 public:
     ALWAYS_INLINE Result(SQLCommand command)
         : m_command(command)
@@ -86,7 +90,7 @@ public:
     {
     }
 
-    ALWAYS_INLINE Result(SQLCommand command, SQLErrorCode error, DeprecatedString error_message)
+    ALWAYS_INLINE Result(SQLCommand command, SQLErrorCode error, ByteString error_message)
         : m_command(command)
         , m_error(error)
         , m_error_message(move(error_message))
@@ -99,12 +103,9 @@ public:
     {
     }
 
-    Result(Result&&) = default;
-    Result& operator=(Result&&) = default;
-
     SQLCommand command() const { return m_command; }
     SQLErrorCode error() const { return m_error; }
-    DeprecatedString error_string() const;
+    ByteString error_string() const;
 
     // These are for compatibility with the TRY() macro in AK.
     [[nodiscard]] bool is_error() const { return m_error != SQLErrorCode::NoError; }
@@ -119,12 +120,10 @@ public:
     }
 
 private:
-    AK_MAKE_NONCOPYABLE(Result);
-
     SQLCommand m_command { SQLCommand::Unknown };
 
     SQLErrorCode m_error { SQLErrorCode::NoError };
-    Optional<DeprecatedString> m_error_message {};
+    Optional<ByteString> m_error_message {};
 };
 
 template<typename ValueType>

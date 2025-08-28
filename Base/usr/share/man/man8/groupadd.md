@@ -16,18 +16,12 @@ This program must be run as root.
 
 ## Options
 
-* `-g`, `--gid` _gid_: The group identifier for the new group. If not specified, an unused GID above `100` will be auto-generated.
-
-## Exit Values
-
-* 0 - Success
-* 1 - Couldn't update the group file
-* 3 - Invalid argument to option
-* 4 - GID already in use
+-   `-g`, `--gid` _gid_: The group identifier for the new group. If not specified, an unused GID above `100` will be auto-generated.
+-   `-U`, `--users` user-list: A comma-separated list of usernames to add as members of the new group
 
 ## Files
 
-* `/etc/group` - new group information (such GID) is appended to this file.
+-   `/etc/group` - new group information (such GID) is appended to this file.
 
 ## Examples
 
@@ -36,3 +30,8 @@ This program must be run as root.
 # groupadd maintainers
 ```
 
+## See Also
+
+-   [`useradd`(8)](help://man/8/useradd)
+-   [`groupdel`(8)](help://man/8/groupdel)
+-   [`groups`(1)](help://man/1/groups)

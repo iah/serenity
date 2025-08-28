@@ -6,8 +6,8 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
+#include <AK/String.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/PixelUnits.h>
 
@@ -33,19 +33,17 @@ public:
     bool is_max_content() const { return m_type == Type::MaxContent; }
     bool is_intrinsic_sizing_constraint() const { return is_min_content() || is_max_content(); }
 
-    CSSPixels to_px() const
-    {
-        return m_value;
-    }
-
     CSSPixels to_px_or_zero() const
     {
         if (!is_definite())
-            return 0.0f;
+            return 0;
         return m_value;
     }
 
-    DeprecatedString to_deprecated_string() const;
+    String to_string() const;
+
+    bool operator==(AvailableSize const& other) const = default;
+    bool operator<(AvailableSize const& other) const { return m_value < other.m_value; }
 
 private:
     AvailableSize(Type type, CSSPixels);
@@ -53,6 +51,33 @@ private:
     Type m_type {};
     CSSPixels m_value {};
 };
+
+inline bool operator>(CSSPixels left, AvailableSize const& right)
+{
+    if (right.is_max_content() || right.is_indefinite())
+        return false;
+    if (right.is_min_content())
+        return true;
+    return left > right.to_px_or_zero();
+}
+
+inline bool operator<(CSSPixels left, AvailableSize const& right)
+{
+    if (right.is_max_content() || right.is_indefinite())
+        return true;
+    if (right.is_min_content())
+        return false;
+    return left < right.to_px_or_zero();
+}
+
+inline bool operator<(AvailableSize const& left, CSSPixels right)
+{
+    if (left.is_min_content())
+        return true;
+    if (left.is_max_content() || left.is_indefinite())
+        return false;
+    return left.to_px_or_zero() < right;
+}
 
 class AvailableSpace {
 public:
@@ -62,10 +87,12 @@ public:
     {
     }
 
+    bool operator==(AvailableSpace const& other) const = default;
+
     AvailableSize width;
     AvailableSize height;
 
-    DeprecatedString to_deprecated_string() const;
+    String to_string() const;
 };
 
 }
@@ -74,7 +101,7 @@ template<>
 struct AK::Formatter<Web::Layout::AvailableSize> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::Layout::AvailableSize const& available_size)
     {
-        return Formatter<StringView>::format(builder, available_size.to_deprecated_string());
+        return Formatter<StringView>::format(builder, available_size.to_string());
     }
 };
 
@@ -82,6 +109,6 @@ template<>
 struct AK::Formatter<Web::Layout::AvailableSpace> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::Layout::AvailableSpace const& available_space)
     {
-        return Formatter<StringView>::format(builder, available_space.to_deprecated_string());
+        return Formatter<StringView>::format(builder, available_space.to_string());
     }
 };

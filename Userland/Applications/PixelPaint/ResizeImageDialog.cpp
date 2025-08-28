@@ -27,7 +27,7 @@ ResizeImageDialog::ResizeImageDialog(Gfx::IntSize suggested_size, GUI::Window* p
     resize(260, 228);
     set_icon(parent_window->icon());
 
-    auto main_widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto main_widget = set_main_widget<GUI::Widget>();
     main_widget->load_from_gml(resize_image_dialog_gml).release_value_but_fixme_should_propagate_errors();
 
     auto width_spinbox = main_widget->find_descendant_of_type_named<GUI::SpinBox>("width_spinbox");
@@ -69,33 +69,38 @@ ResizeImageDialog::ResizeImageDialog(Gfx::IntSize suggested_size, GUI::Window* p
     auto nearest_neighbor_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("nearest_neighbor_radio");
     auto smooth_pixels_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("smooth_pixels_radio");
     auto bilinear_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("bilinear_radio");
+    auto box_sampling_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("box_sampling_radio");
     auto resize_canvas_radio = main_widget->find_descendant_of_type_named<GUI::RadioButton>("resize_canvas");
 
     VERIFY(nearest_neighbor_radio);
     VERIFY(smooth_pixels_radio);
     VERIFY(bilinear_radio);
+    VERIFY(box_sampling_radio);
     VERIFY(resize_canvas_radio);
 
-    m_scaling_mode = Gfx::Painter::ScalingMode::NearestNeighbor;
-    if (bilinear_radio->is_checked()) {
-        m_scaling_mode = Gfx::Painter::ScalingMode::BilinearBlend;
-    }
+    m_scaling_mode = Gfx::ScalingMode::NearestNeighbor;
+    if (bilinear_radio->is_checked())
+        m_scaling_mode = Gfx::ScalingMode::BilinearBlend;
 
     nearest_neighbor_radio->on_checked = [this](bool is_checked) {
         if (is_checked)
-            m_scaling_mode = Gfx::Painter::ScalingMode::NearestNeighbor;
+            m_scaling_mode = Gfx::ScalingMode::NearestNeighbor;
     };
     smooth_pixels_radio->on_checked = [this](bool is_checked) {
         if (is_checked)
-            m_scaling_mode = Gfx::Painter::ScalingMode::SmoothPixels;
+            m_scaling_mode = Gfx::ScalingMode::SmoothPixels;
     };
     bilinear_radio->on_checked = [this](bool is_checked) {
         if (is_checked)
-            m_scaling_mode = Gfx::Painter::ScalingMode::BilinearBlend;
+            m_scaling_mode = Gfx::ScalingMode::BilinearBlend;
+    };
+    box_sampling_radio->on_checked = [this](bool is_checked) {
+        if (is_checked)
+            m_scaling_mode = Gfx::ScalingMode::BoxSampling;
     };
     resize_canvas_radio->on_checked = [this](bool is_checked) {
         if (is_checked)
-            m_scaling_mode = Gfx::Painter::ScalingMode::None;
+            m_scaling_mode = Gfx::ScalingMode::None;
     };
 
     auto ok_button = main_widget->find_descendant_of_type_named<GUI::Button>("ok_button");

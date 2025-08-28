@@ -21,8 +21,8 @@
 
 namespace Core {
 
-UDPServer::UDPServer(Object* parent)
-    : Object(parent)
+UDPServer::UDPServer(EventReceiver* parent)
+    : EventReceiver(parent)
 {
 #ifdef SOCK_NONBLOCK
     m_fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -55,8 +55,8 @@ bool UDPServer::bind(IPv4Address const& address, u16 port)
 
     m_bound = true;
 
-    m_notifier = Notifier::construct(m_fd, Notifier::Event::Read, this);
-    m_notifier->on_ready_to_read = [this] {
+    m_notifier = Notifier::construct(m_fd, Notifier::Type::Read, this);
+    m_notifier->on_activation = [this] {
         if (on_ready_to_receive)
             on_ready_to_receive();
     };

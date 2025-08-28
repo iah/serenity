@@ -6,14 +6,14 @@
 
 #include <AK/Base64.h>
 #include <AK/Format.h>
-#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
+#include <LibProtocol/RequestClient.h>
 #include <LibProtocol/WebSocket.h>
-#include <LibProtocol/WebSocketClient.h>
+#include <LibURL/URL.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
@@ -21,15 +21,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     Core::ArgsParser args_parser;
 
-    DeprecatedString origin;
-    DeprecatedString url_string;
+    ByteString origin;
+    ByteString url_string;
 
     args_parser.add_positional_argument(url_string, "URL to connect to", "url", Core::ArgsParser::Required::Yes);
     args_parser.add_option(origin, "URL to use as origin", "origin", 'o', "origin");
 
     args_parser.parse(arguments);
 
-    URL url(url_string);
+    URL::URL url(url_string);
 
     if (!url.is_valid()) {
         warnln("The given URL is not valid");
@@ -38,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     Core::EventLoop loop;
 
-    auto maybe_websocket_client = Protocol::WebSocketClient::try_create();
+    auto maybe_websocket_client = Protocol::RequestClient::try_create();
     if (maybe_websocket_client.is_error()) {
         warnln("Failed to connect to the websocket server: {}\n", maybe_websocket_client.error());
         return maybe_websocket_client.release_error();
@@ -47,7 +47,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     RefPtr<Line::Editor> editor = Line::Editor::construct();
     bool should_quit = false;
-    auto socket = websocket_client->connect(url, origin);
+    auto socket = websocket_client->websocket_connect(url, origin);
     if (!socket) {
         warnln("Failed to start socket for '{}'\n", url);
         return 1;
@@ -63,7 +63,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             outln("[Received binary data : {} bytes]", message.data.size());
             return;
         }
-        outln("[Received utf8 text] {}", DeprecatedString(ReadonlyBytes(message.data)));
+        outln("[Received utf8 text] {}", ByteString(ReadonlyBytes(message.data)));
     };
     socket->on_close = [&](auto code, auto message, bool was_clean) {
         outln("[Server {} closed connection : '{}' (code {})]",

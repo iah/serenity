@@ -12,9 +12,10 @@ namespace JS {
 
 class StringConstructor final : public NativeFunction {
     JS_OBJECT(StringConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(StringConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~StringConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

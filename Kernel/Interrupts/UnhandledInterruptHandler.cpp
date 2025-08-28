@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Interrupts/UnhandledInterruptHandler.h>
-#include <Kernel/Panic.h>
+#include <Kernel/Library/Panic.h>
 
 namespace Kernel {
 UnhandledInterruptHandler::UnhandledInterruptHandler(u8 interrupt_vector)
@@ -13,9 +13,9 @@ UnhandledInterruptHandler::UnhandledInterruptHandler(u8 interrupt_vector)
 {
 }
 
-bool UnhandledInterruptHandler::handle_interrupt(RegisterState const&)
+bool UnhandledInterruptHandler::handle_interrupt()
 {
-    PANIC("Interrupt: Unhandled vector {} was invoked for handle_interrupt(RegisterState&).", interrupt_number());
+    PANIC("Interrupt: Unhandled vector {} was invoked for handle_interrupt().", interrupt_number());
 }
 
 [[noreturn]] bool UnhandledInterruptHandler::eoi()

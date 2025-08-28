@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2022-2023, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2024, Jamie Mansfield <jmansfield@cadixdev.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,16 +10,21 @@
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/PromiseCapability.h>
+#include <LibJS/Runtime/TypedArray.h>
+#include <LibTextCodec/Decoder.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/HostDefined.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/DOMURL/URLSearchParams.h>
 #include <LibWeb/Fetch/Body.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
 #include <LibWeb/FileAPI/Blob.h>
+#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/Infra/JSON.h>
 #include <LibWeb/MimeSniff/MimeType.h>
 #include <LibWeb/Streams/ReadableStream.h>
 #include <LibWeb/WebIDL/Promise.h>
+#include <LibWeb/XHR/FormData.h>
 
 namespace Web::Fetch {
 
@@ -29,7 +35,7 @@ bool BodyMixin::is_unusable() const
 {
     // An object including the Body interface mixin is said to be unusable if its body is non-null and its body’s stream is disturbed or locked.
     auto const& body = body_impl();
-    return body.has_value() && (body->stream()->is_disturbed() || body->stream()->is_locked());
+    return body && (body->stream()->is_disturbed() || body->stream()->is_locked());
 }
 
 // https://fetch.spec.whatwg.org/#dom-body-body
@@ -37,7 +43,7 @@ JS::GCPtr<Streams::ReadableStream> BodyMixin::body() const
 {
     // The body getter steps are to return null if this’s body is null; otherwise this’s body’s stream.
     auto const& body = body_impl();
-    return body.has_value() ? body->stream().ptr() : nullptr;
+    return body ? body->stream().ptr() : nullptr;
 }
 
 // https://fetch.spec.whatwg.org/#dom-body-bodyused
@@ -45,7 +51,7 @@ bool BodyMixin::body_used() const
 {
     // The bodyUsed getter steps are to return true if this’s body is non-null and this’s body’s stream is disturbed; otherwise false.
     auto const& body = body_impl();
-    return body.has_value() && body->stream()->is_disturbed();
+    return body && body->stream()->is_disturbed();
 }
 
 // https://fetch.spec.whatwg.org/#dom-body-arraybuffer
@@ -66,6 +72,16 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> BodyMixin::blob() const
 
     // The blob() method steps are to return the result of running consume body with this and Blob.
     return consume_body(realm, *this, PackageDataType::Blob);
+}
+
+// https://fetch.spec.whatwg.org/#dom-body-bytes
+WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> BodyMixin::bytes() const
+{
+    auto& vm = Bindings::main_thread_vm();
+    auto& realm = *vm.current_realm();
+
+    // The bytes() method steps are to return the result of running consume body with this and Uint8Array.
+    return consume_body(realm, *this, PackageDataType::Uint8Array);
 }
 
 // https://fetch.spec.whatwg.org/#dom-body-formdata
@@ -110,8 +126,14 @@ WebIDL::ExceptionOr<JS::Value> package_data(JS::Realm& realm, ByteBuffer bytes, 
     case PackageDataType::Blob: {
         // Return a Blob whose contents are bytes and type attribute is mimeType.
         // NOTE: If extracting the mime type returns failure, other browsers set it to an empty string - not sure if that's spec'd.
-        auto mime_type_string = mime_type.has_value() ? TRY_OR_THROW_OOM(vm, mime_type->serialized()) : String {};
-        return TRY(FileAPI::Blob::create(realm, move(bytes), move(mime_type_string)));
+        auto mime_type_string = mime_type.has_value() ? mime_type->serialized() : String {};
+        return FileAPI::Blob::create(realm, move(bytes), move(mime_type_string));
+    }
+    case PackageDataType::Uint8Array: {
+        // Return the result of creating a Uint8Array from bytes in this’s relevant realm.
+        auto bytes_length = bytes.size();
+        auto array_buffer = JS::ArrayBuffer::create(realm, move(bytes));
+        return JS::Uint8Array::create(realm, bytes_length, *array_buffer);
     }
     case PackageDataType::FormData:
         // If mimeType’s essence is "multipart/form-data", then:
@@ -123,10 +145,14 @@ WebIDL::ExceptionOr<JS::Value> package_data(JS::Realm& realm, ByteBuffer bytes, 
         }
         // Otherwise, if mimeType’s essence is "application/x-www-form-urlencoded", then:
         else if (mime_type.has_value() && mime_type->essence() == "application/x-www-form-urlencoded"sv) {
-            // FIXME: 1. Let entries be the result of parsing bytes.
-            // FIXME: 2. If entries is failure, then throw a TypeError.
-            // FIXME: 3. Return a new FormData object whose entry list is entries.
-            return JS::js_null();
+            // 1. Let entries be the result of parsing bytes.
+            auto entries = DOMURL::url_decode(StringView { bytes });
+
+            // 2. If entries is failure, then throw a TypeError.
+            // FIXME: Spec bug? It doesn't seem possible to throw an error here.
+
+            // 3. Return a new FormData object whose entry list is entries.
+            return TRY(XHR::FormData::create(realm, entries));
         }
         // Otherwise, throw a TypeError.
         else {
@@ -135,9 +161,14 @@ WebIDL::ExceptionOr<JS::Value> package_data(JS::Realm& realm, ByteBuffer bytes, 
     case PackageDataType::JSON:
         // Return the result of running parse JSON from bytes on bytes.
         return Infra::parse_json_bytes_to_javascript_value(realm, bytes);
-    case PackageDataType::Text:
+    case PackageDataType::Text: {
         // Return the result of running UTF-8 decode on bytes.
-        return JS::PrimitiveString::create(vm, TRY_OR_THROW_OOM(vm, String::from_utf8(bytes)));
+        auto decoder = TextCodec::decoder_for("UTF-8"sv);
+        VERIFY(decoder.has_value());
+
+        auto utf8_text = MUST(TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, bytes));
+        return JS::PrimitiveString::create(vm, move(utf8_text));
+    }
     default:
         VERIFY_NOT_REACHED();
     }
@@ -148,8 +179,8 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> consume_body(JS::Realm& realm
 {
     // 1. If object is unusable, then return a promise rejected with a TypeError.
     if (object.is_unusable()) {
-        auto promise_capability = WebIDL::create_rejected_promise(realm, JS::TypeError::create(realm, "Body is unusable"sv).release_allocated_value_but_fixme_should_propagate_errors());
-        return JS::NonnullGCPtr { verify_cast<JS::Promise>(*promise_capability->promise().ptr()) };
+        WebIDL::SimpleException exception { WebIDL::SimpleExceptionType::TypeError, "Body is unusable"sv };
+        return WebIDL::create_rejected_promise_from_exception(realm, move(exception));
     }
 
     // 2. Let promise be a new promise.
@@ -157,37 +188,24 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> consume_body(JS::Realm& realm
 
     // 3. Let errorSteps given error be to reject promise with error.
     // NOTE: `promise` and `realm` is protected by JS::SafeFunction.
-    auto error_steps = [promise, &realm](JS::Object& error) {
-        // NOTE: Not part of the spec, but we need to have an execution context on the stack to call native functions.
-        //       (In this case, Promise's reject function)
-        auto& environment_settings_object = Bindings::host_defined_environment_settings_object(realm);
-        environment_settings_object.prepare_to_run_script();
-
-        WebIDL::reject_promise(realm, promise, &error);
-
-        // See above NOTE.
-        environment_settings_object.clean_up_after_running_script();
-    };
+    auto error_steps = JS::create_heap_function(realm.heap(), [promise, &realm](JS::Value error) {
+        // AD-HOC: An execution context is required for Promise's reject function.
+        HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
+        WebIDL::reject_promise(realm, promise, error);
+    });
 
     // 4. Let successSteps given a byte sequence data be to resolve promise with the result of running convertBytesToJSValue
     //    with data. If that threw an exception, then run errorSteps with that exception.
     // NOTE: `promise`, `realm` and `object` is protected by JS::SafeFunction.
     // FIXME: Refactor this to the new version of the spec introduced with https://github.com/whatwg/fetch/commit/464326e8eb6a602122c030cd40042480a3c0e265
-    auto success_steps = [promise, &realm, &object, type](ByteBuffer const& data) {
+    auto success_steps = JS::create_heap_function(realm.heap(), [promise, &realm, &object, type](ByteBuffer data) {
         auto& vm = realm.vm();
 
-        // NOTE: Not part of the spec, but we need to have an execution context on the stack to call native functions.
-        //       (In this case, Promise's reject function and JSON.parse)
-        auto& environment_settings_object = Bindings::host_defined_environment_settings_object(realm);
-        environment_settings_object.prepare_to_run_script();
-
-        ScopeGuard guard = [&]() {
-            // See above NOTE.
-            environment_settings_object.clean_up_after_running_script();
-        };
+        // AD-HOC: An execution context is required for Promise's reject function and JSON.parse.
+        HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
 
         auto value_or_error = Bindings::throw_dom_exception_if_needed(vm, [&]() -> WebIDL::ExceptionOr<JS::Value> {
-            return package_data(realm, data, type, TRY_OR_THROW_OOM(vm, object.mime_type_impl()));
+            return package_data(realm, data, type, object.mime_type_impl());
         });
 
         if (value_or_error.is_error()) {
@@ -198,16 +216,16 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> consume_body(JS::Realm& realm
         }
 
         WebIDL::resolve_promise(realm, promise, value_or_error.release_value());
-    };
+    });
 
     // 5. If object’s body is null, then run successSteps with an empty byte sequence.
     auto const& body = object.body_impl();
-    if (!body.has_value()) {
-        success_steps(ByteBuffer {});
+    if (!body) {
+        success_steps->function()(ByteBuffer {});
     }
     // 6. Otherwise, fully read object’s body given successSteps, errorSteps, and object’s relevant global object.
     else {
-        TRY(body->fully_read(realm, move(success_steps), move(error_steps), JS::NonnullGCPtr { HTML::relevant_global_object(object.as_platform_object()) }));
+        body->fully_read(realm, success_steps, error_steps, JS::NonnullGCPtr { HTML::relevant_global_object(object.as_platform_object()) });
     }
 
     // 7. Return promise.

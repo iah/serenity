@@ -10,8 +10,8 @@
 #include <Kernel/API/Unveil.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/KLexicalPath.h>
-#include <Kernel/Process.h>
+#include <Kernel/Library/KLexicalPath.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -101,19 +101,16 @@ ErrorOr<FlatPtr> Process::sys$unveil(Userspace<Syscall::SC_unveil_params const*>
     if (!params.path.characters || !params.permissions.characters)
         return EINVAL;
 
-    if (params.permissions.length > 5)
-        return EINVAL;
-
     auto path = TRY(get_syscall_path_argument(params.path));
 
     if (path->is_empty() || !path->view().starts_with('/'))
         return EINVAL;
 
-    auto permissions = TRY(try_copy_kstring_from_user(params.permissions));
+    auto permissions = TRY(get_syscall_string_fixed_buffer<5>(params.permissions));
 
     // Let's work out permissions first...
     unsigned new_permissions = 0;
-    for (char const permission : permissions->view()) {
+    for (char const permission : permissions.representable_view()) {
         switch (permission) {
         case 'r':
             new_permissions |= UnveilAccess::Read;
@@ -142,7 +139,10 @@ ErrorOr<FlatPtr> Process::sys$unveil(Userspace<Syscall::SC_unveil_params const*>
     // If this case is encountered, the parent node of the path is returned and the custody of that inode is used instead.
     RefPtr<Custody> parent_custody; // Parent inode in case of ENOENT
     OwnPtr<KString> new_unveiled_path;
-    auto custody_or_error = VirtualFileSystem::the().resolve_path_without_veil(credentials(), path->view(), VirtualFileSystem::the().root_custody(), &parent_custody);
+    auto vfs_root_context_root_custody = Process::current().vfs_root_context()->root_custody().with([](auto& custody) -> NonnullRefPtr<Custody> {
+        return custody;
+    });
+    auto custody_or_error = VirtualFileSystem::resolve_path_without_veil(vfs_root_context(), credentials(), path->view(), vfs_root_context_root_custody, &parent_custody);
     if (!custody_or_error.is_error()) {
         new_unveiled_path = TRY(custody_or_error.value()->try_serialize_absolute_path());
     } else if (custody_or_error.error().code() == ENOENT && parent_custody && (new_permissions & UnveilAccess::CreateOrRemove)) {

@@ -12,19 +12,20 @@
 #include <LibFileSystemAccessClient/Client.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
+#include <LibGUI/DynamicWidgetContainer.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Statusbar.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/Painter.h>
 #include <LibMain/Main.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio thread recvfd sendfd rpath unix wpath cpath"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     Config::pledge_domain("PixelPaint");
+    app->set_config_domain("PixelPaint"_string);
 
     StringView image_file;
     Core::ArgsParser args_parser;
@@ -35,6 +36,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/tmp/session/%sid/portal/clipboard", "rw"));
     TRY(Core::System::unveil("/tmp/session/%sid/portal/filesystemaccess", "rw"));
     TRY(Core::System::unveil("/tmp/session/%sid/portal/image", "rw"));
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/launch", "rw"));
     TRY(Core::System::unveil("/etc/FileIconProvider.ini", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
@@ -44,26 +46,26 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto window = GUI::Window::construct();
     window->set_title("Pixel Paint");
-    window->resize(800, 520);
+    window->restore_size_and_position("PixelPaint"sv, "Window"sv, { { 800, 520 } });
+    window->save_size_and_position_on_close("PixelPaint"sv, "Window"sv);
     window->set_icon(app_icon.bitmap_for_size(16));
 
-    auto main_widget = TRY(window->set_main_widget<PixelPaint::MainWidget>());
+    auto main_widget = window->set_main_widget<PixelPaint::MainWidget>();
 
     TRY(main_widget->initialize_menubar(*window));
 
     window->on_close_request = [&]() -> GUI::Window::CloseRequestDecision {
-        if (main_widget->request_close())
+        if (main_widget->request_close()) {
+            GUI::DynamicWidgetContainer::close_all_detached_windows();
             return GUI::Window::CloseRequestDecision::Close;
+        }
         return GUI::Window::CloseRequestDecision::StayOpen;
     };
 
     auto& statusbar = *main_widget->find_descendant_of_type_named<GUI::Statusbar>("statusbar");
 
     app->on_action_enter = [&statusbar](GUI::Action& action) {
-        auto text = action.status_tip();
-        if (text.is_empty())
-            text = Gfx::parse_ampersand_string(action.text());
-        statusbar.set_override_text(move(text));
+        statusbar.set_override_text(action.status_tip());
     };
 
     app->on_action_leave = [&statusbar](GUI::Action&) {
@@ -74,9 +76,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (!image_file.is_empty()) {
         auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window, image_file);
-        if (response.is_error())
-            return 1;
-        main_widget->open_image(response.release_value());
+        if (!response.is_error())
+            main_widget->open_image(response.release_value());
+        else
+            TRY(main_widget->create_default_image());
     } else {
         TRY(main_widget->create_default_image());
     }

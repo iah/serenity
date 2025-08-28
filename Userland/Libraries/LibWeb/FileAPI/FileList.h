@@ -9,20 +9,27 @@
 
 #include <AK/Vector.h>
 #include <LibJS/Heap/GCPtr.h>
-#include <LibWeb/Bindings/LegacyPlatformObject.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/FileAPI/File.h>
+#include <LibWeb/WebIDL/Types.h>
 
 namespace Web::FileAPI {
 
-class FileList : public Bindings::LegacyPlatformObject {
-    WEB_PLATFORM_OBJECT(FileList, Bindings::LegacyPlatformObject);
+class FileList
+    : public Bindings::PlatformObject
+    , public Bindings::Serializable {
+    WEB_PLATFORM_OBJECT(FileList, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(FileList);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<FileList>> create(JS::Realm&, Vector<JS::NonnullGCPtr<File>>&&);
+    [[nodiscard]] static JS::NonnullGCPtr<FileList> create(JS::Realm&);
+
+    void add_file(JS::NonnullGCPtr<File> file) { m_files.append(file); }
+
     virtual ~FileList() override;
 
     // https://w3c.github.io/FileAPI/#dfn-length
-    unsigned long length() const { return m_files.size(); }
+    WebIDL::UnsignedLong length() const { return m_files.size(); }
 
     // https://w3c.github.io/FileAPI/#dfn-item
     File* item(size_t index)
@@ -36,27 +43,17 @@ public:
         return index < m_files.size() ? m_files[index].ptr() : nullptr;
     }
 
-    virtual bool is_supported_property_index(u32 index) const override;
-    virtual WebIDL::ExceptionOr<JS::Value> item_value(size_t index) const override;
+    virtual Optional<JS::Value> item_value(size_t index) const override;
+
+    virtual StringView interface_name() const override { return "FileList"sv; }
+    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::SerializationRecord& serialized, bool for_storage, HTML::SerializationMemory&) override;
+    virtual WebIDL::ExceptionOr<void> deserialization_steps(ReadonlySpan<u32> const& serialized, size_t& position, HTML::DeserializationMemory&) override;
 
 private:
-    FileList(JS::Realm&, Vector<JS::NonnullGCPtr<File>>&&);
+    explicit FileList(JS::Realm&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
-
-    // ^Bindings::LegacyPlatformObject
-    virtual bool supports_indexed_properties() const override { return true; }
-    virtual bool supports_named_properties() const override { return false; }
-    virtual bool has_indexed_property_setter() const override { return false; }
-    virtual bool has_named_property_setter() const override { return false; }
-    virtual bool has_named_property_deleter() const override { return false; }
-    virtual bool has_legacy_override_built_ins_interface_extended_attribute() const override { return false; }
-    virtual bool has_legacy_unenumerable_named_properties_interface_extended_attribute() const override { return false; }
-    virtual bool has_global_interface_extended_attribute() const override { return false; }
-    virtual bool indexed_property_setter_has_identifier() const override { return false; }
-    virtual bool named_property_setter_has_identifier() const override { return false; }
-    virtual bool named_property_deleter_has_identifier() const override { return false; }
 
     Vector<JS::NonnullGCPtr<File>> m_files;
 };

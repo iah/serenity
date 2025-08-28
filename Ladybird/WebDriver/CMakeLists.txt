@@ -5,15 +5,14 @@ set(SOURCES
     ${WEBDRIVER_SOURCE_DIR}/Session.cpp
     ${WEBDRIVER_SOURCE_DIR}/WebContentConnection.cpp
     ../Utilities.cpp
-    ../HelperProcess.cpp
     main.cpp
 )
 
-qt_add_executable(WebDriver ${SOURCES})
+add_executable(WebDriver ${SOURCES})
 
 target_include_directories(WebDriver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_include_directories(WebDriver PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
 target_include_directories(WebDriver PRIVATE ${SERENITY_SOURCE_DIR}/Userland)
 target_include_directories(WebDriver PRIVATE ${SERENITY_SOURCE_DIR}/Userland/Services)
-target_link_libraries(WebDriver PRIVATE Qt::Core Qt::Network LibCore LibGfx LibIPC LibJS LibMain LibWeb LibWebSocket)
+target_link_libraries(WebDriver PRIVATE LibCore LibFileSystem LibGfx LibIPC LibJS LibMain LibWeb LibWebSocket LibWebView)
 add_dependencies(WebDriver headless-browser)

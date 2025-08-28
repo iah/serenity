@@ -10,7 +10,7 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImageDecoder.h>
+#include <LibGfx/ImageFormats/ImageDecoder.h>
 
 REGISTER_WIDGET(GUI, ImageWidget)
 
@@ -20,9 +20,7 @@ ImageWidget::ImageWidget(StringView)
     : m_timer(Core::Timer::try_create().release_value_but_fixme_should_propagate_errors())
 
 {
-    set_frame_thickness(0);
-    set_frame_shadow(Gfx::FrameShadow::Plain);
-    set_frame_shape(Gfx::FrameShape::NoFrame);
+    set_frame_style(Gfx::FrameStyle::NoFrame);
     set_auto_resize(true);
 
     REGISTER_BOOL_PROPERTY("auto_resize", auto_resize, set_auto_resize);
@@ -44,27 +42,30 @@ void ImageWidget::set_bitmap(Gfx::Bitmap const* bitmap)
 
 void ImageWidget::set_auto_resize(bool value)
 {
+    if (m_auto_resize == value)
+        return;
     m_auto_resize = value;
-
-    if (m_bitmap)
+    if (m_bitmap && m_auto_resize)
         set_fixed_size(m_bitmap->size());
 }
 
 // Same as ImageViewer::ViewWidget::animate(), you probably want to keep any changes in sync
 void ImageWidget::animate()
 {
-    m_current_frame_index = (m_current_frame_index + 1) % m_image_decoder->frame_count();
+    auto first_animated_frame_index = m_image_decoder->first_animated_frame_index();
+    auto total_animated_frames = m_image_decoder->frame_count() - first_animated_frame_index;
+    m_current_frame_index = (m_current_frame_index + 1) % total_animated_frames;
 
-    auto current_frame = m_image_decoder->frame(m_current_frame_index).release_value_but_fixme_should_propagate_errors();
+    auto current_frame = m_image_decoder->frame(first_animated_frame_index + m_current_frame_index).release_value_but_fixme_should_propagate_errors();
     set_bitmap(current_frame.image);
 
     if (current_frame.duration != m_timer->interval()) {
         m_timer->restart(current_frame.duration);
     }
 
-    if (m_current_frame_index == m_image_decoder->frame_count() - 1) {
+    if (m_current_frame_index == total_animated_frames - 1) {
         ++m_loops_completed;
-        if (m_loops_completed > 0 && m_loops_completed == m_image_decoder->loop_count()) {
+        if (m_image_decoder->loop_count() > 0 && m_loops_completed == m_image_decoder->loop_count()) {
             m_timer->stop();
         }
     }
@@ -78,7 +79,7 @@ void ImageWidget::load_from_file(StringView path)
 
     auto& mapped_file = *file_or_error.value();
     auto mime_type = Core::guess_mime_type_based_on_filename(path);
-    m_image_decoder = Gfx::ImageDecoder::try_create_for_raw_bytes(mapped_file.bytes(), mime_type);
+    m_image_decoder = MUST(Gfx::ImageDecoder::try_create_for_raw_bytes(mapped_file.bytes(), mime_type));
     VERIFY(m_image_decoder);
 
     auto frame = m_image_decoder->frame(0).release_value_but_fixme_should_propagate_errors();

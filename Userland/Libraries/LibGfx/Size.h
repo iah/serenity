@@ -32,7 +32,7 @@ public:
     }
 
     template<typename U>
-    explicit constexpr Size(Size<U> const& other)
+    requires(IsConstructible<T, U>) explicit constexpr Size(Size<U> const& other)
         : m_width(other.width())
         , m_height(other.height())
     {
@@ -58,21 +58,21 @@ public:
     ALWAYS_INLINE constexpr void scale_by(T dboth) { scale_by(dboth, dboth); }
     ALWAYS_INLINE constexpr void scale_by(Point<T> const& s) { scale_by(s.x(), s.y()); }
 
-    [[nodiscard]] constexpr Size scaled_by(T dx, T dy) const
+    [[nodiscard]] constexpr Size scaled(T dx, T dy) const
     {
         Size<T> size = *this;
         size.scale_by(dx, dy);
         return size;
     }
 
-    [[nodiscard]] constexpr Size scaled_by(T dboth) const
+    [[nodiscard]] constexpr Size scaled(T dboth) const
     {
         Size<T> size = *this;
         size.scale_by(dboth);
         return size;
     }
 
-    [[nodiscard]] constexpr Size scaled_by(Point<T> const& s) const
+    [[nodiscard]] constexpr Size scaled(Point<T> const& s) const
     {
         Size<T> size = *this;
         size.scale_by(s);
@@ -146,6 +146,15 @@ public:
         return *this;
     }
 
+    [[nodiscard]] Size<T> operator/(T factor) const { return { m_width / factor, m_height / factor }; }
+
+    Size<T>& operator/=(T factor)
+    {
+        m_width /= factor;
+        m_height /= factor;
+        return *this;
+    }
+
     [[nodiscard]] constexpr T primary_size_for_orientation(Orientation orientation) const
     {
         return orientation == Orientation::Vertical ? height() : width();
@@ -181,7 +190,7 @@ public:
         return Size<U>(*this);
     }
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const;
+    [[nodiscard]] ByteString to_byte_string() const;
 
     template<Integral I>
     [[nodiscard]] Size<I> to_rounded() const
@@ -220,3 +229,12 @@ template<>
 ErrorOr<Gfx::IntSize> decode(Decoder&);
 
 }
+
+template<typename T>
+struct AK::Traits<Gfx::Size<T>> : public AK::DefaultTraits<Gfx::Size<T>> {
+    static constexpr bool is_trivial() { return false; }
+    static unsigned hash(Gfx::Size<T> const& size)
+    {
+        return pair_int_hash(AK::Traits<T>::hash(size.width()), AK::Traits<T>::hash(size.height()));
+    }
+};

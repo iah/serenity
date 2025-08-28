@@ -11,18 +11,17 @@
 #include <AK/MemoryStream.h>
 #include <AK/NumericLimits.h>
 #include <AudioServer/ConnectionFromClient.h>
+#include <AudioServer/ConnectionFromManagerClient.h>
 #include <AudioServer/Mixer.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Timer.h>
 #include <pthread.h>
 #include <sys/ioctl.h>
 
 namespace AudioServer {
 
-Mixer::Mixer(NonnullRefPtr<Core::ConfigFile> config)
-    // FIXME: Allow AudioServer to use other audio channels as well
-    : m_device(Core::DeprecatedFile::construct("/dev/audio/0", this))
+Mixer::Mixer(NonnullRefPtr<Core::ConfigFile> config, OwnPtr<Core::File> device)
+    : m_device(move(device))
     , m_sound_thread(Threading::Thread::construct(
           [this] {
               mix();
@@ -31,11 +30,6 @@ Mixer::Mixer(NonnullRefPtr<Core::ConfigFile> config)
           "AudioServer[mixer]"sv))
     , m_config(move(config))
 {
-    if (!m_device->open(Core::OpenMode::WriteOnly)) {
-        dbgln("Can't open audio device: {}", m_device->error_string());
-        return;
-    }
-
     m_muted = m_config->read_bool_entry("Master", "Mute", false);
     m_main_volume = static_cast<double>(m_config->read_num_entry("Master", "Volume", 100)) / 100.0;
 
@@ -45,6 +39,7 @@ Mixer::Mixer(NonnullRefPtr<Core::ConfigFile> config)
 NonnullRefPtr<ClientAudioStream> Mixer::create_queue(ConnectionFromClient& client)
 {
     auto queue = adopt_ref(*new ClientAudioStream(client));
+    queue->set_sample_rate(audiodevice_get_sample_rate());
     {
         Threading::MutexLocker const locker(m_pending_mutex);
         m_pending_mixing.append(*queue);
@@ -78,18 +73,20 @@ void Mixer::mix()
 
         // Mix the buffers together into the output
         for (auto& queue : active_mix_queues) {
-            if (!queue->client()) {
+            if (!queue->client().has_value()) {
                 queue->clear();
                 continue;
             }
             queue->volume().advance_time();
 
+            // FIXME: Perform sample extraction and mixing in two separate loops so they can be more easily vectorized.
             for (auto& mixed_sample : mixed_buffer) {
-                Audio::Sample sample;
-                if (!queue->get_next_sample(sample))
+                auto sample_or_error = queue->get_next_sample(audiodevice_get_sample_rate());
+                if (sample_or_error.is_error())
                     break;
                 if (queue->is_muted())
                     continue;
+                auto sample = sample_or_error.release_value();
                 sample.log_multiply(SAMPLE_HEADROOM);
                 sample.log_multiply(static_cast<float>(queue->volume()));
                 mixed_sample += sample;
@@ -98,7 +95,8 @@ void Mixer::mix()
 
         // Even though it's not realistic, the user expects no sound at 0%.
         if (m_muted || m_main_volume < 0.01) {
-            m_device->write(m_zero_filled_buffer.data(), static_cast<int>(m_zero_filled_buffer.size()));
+            if (m_device)
+                m_device->write_until_depleted(m_zero_filled_buffer).release_value_but_fixme_should_propagate_errors();
         } else {
             FixedMemoryStream stream { m_stream_buffer.span() };
 
@@ -116,7 +114,9 @@ void Mixer::mix()
 
             auto buffered_bytes = MUST(stream.tell());
             VERIFY(buffered_bytes == m_stream_buffer.size());
-            m_device->write(m_stream_buffer.data(), static_cast<int>(buffered_bytes));
+            if (m_device)
+                m_device->write_until_depleted({ m_stream_buffer.data(), buffered_bytes })
+                    .release_value_but_fixme_should_propagate_errors();
         }
     }
 }
@@ -133,7 +133,7 @@ void Mixer::set_main_volume(double volume)
     m_config->write_num_entry("Master", "Volume", static_cast<int>(volume * 100));
     request_setting_sync();
 
-    ConnectionFromClient::for_each([&](ConnectionFromClient& client) {
+    ConnectionFromManagerClient::for_each([&](auto& client) {
         client.did_change_main_mix_volume({}, main_volume());
     });
 }
@@ -147,25 +147,40 @@ void Mixer::set_muted(bool muted)
     m_config->write_bool_entry("Master", "Mute", m_muted);
     request_setting_sync();
 
-    ConnectionFromClient::for_each([muted](ConnectionFromClient& client) {
+    ConnectionFromManagerClient::for_each([muted](auto& client) {
         client.did_change_main_mix_muted_state({}, muted);
     });
 }
 
 int Mixer::audiodevice_set_sample_rate(u32 sample_rate)
 {
+    if (!m_device)
+        return ENOENT;
+
     int code = ioctl(m_device->fd(), SOUNDCARD_IOCTL_SET_SAMPLE_RATE, sample_rate);
     if (code != 0)
         dbgln("Error while setting sample rate to {}: ioctl error: {}", sample_rate, strerror(errno));
+    // Note that the effective sample rate may be different depending on device restrictions.
+    // Therefore, we delete our cache, but for efficency don't immediately read the sample rate back.
+    m_cached_sample_rate = {};
     return code;
 }
 
 u32 Mixer::audiodevice_get_sample_rate() const
 {
+    if (m_cached_sample_rate.has_value())
+        return m_cached_sample_rate.value();
+
+    // We pretend that a non-existent device has a common sample rate (instead of returning something like 0 that would break clients).
+    if (!m_device)
+        return 44100;
+
     u32 sample_rate = 0;
     int code = ioctl(m_device->fd(), SOUNDCARD_IOCTL_GET_SAMPLE_RATE, &sample_rate);
     if (code != 0)
         dbgln("Error while getting sample rate: ioctl error: {}", strerror(errno));
+    else
+        m_cached_sample_rate = sample_rate;
     return sample_rate;
 }
 
@@ -178,15 +193,9 @@ void Mixer::request_setting_sync()
                 if (auto result = m_config->sync(); result.is_error())
                     dbgln("Failed to write audio mixer config: {}", result.error());
             },
-            this)
-                                   .release_value_but_fixme_should_propagate_errors();
+            this);
         m_config_write_timer->start();
     }
-}
-
-ClientAudioStream::ClientAudioStream(ConnectionFromClient& client)
-    : m_client(client)
-{
 }
 
 }

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2023, Tim Ledbetter <timledbetter@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,23 +8,15 @@
 #include "UCIEndpoint.h"
 #include <AK/ByteBuffer.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <LibCore/EventLoop.h>
 
 namespace Chess::UCI {
 
-Endpoint::Endpoint(NonnullRefPtr<Core::IODevice> in, NonnullRefPtr<Core::IODevice> out)
-    : m_in(in)
-    , m_out(out)
-    , m_in_notifier(Core::Notifier::construct(in->fd(), Core::Notifier::Read))
-{
-    set_in_notifier();
-}
-
 void Endpoint::send_command(Command const& command)
 {
-    dbgln_if(UCI_DEBUG, "{} Sent UCI Command: {}", class_name(), DeprecatedString(command.to_deprecated_string().characters(), Chomp));
-    m_out->write(command.to_deprecated_string());
+    auto command_string = command.to_string().release_value_but_fixme_should_propagate_errors();
+    dbgln_if(UCI_DEBUG, "{} Sent UCI Command: {}", class_name(), command_string);
+    m_out->write_until_depleted(command_string.bytes()).release_value_but_fixme_should_propagate_errors();
 }
 
 void Endpoint::event(Core::Event& event)
@@ -53,54 +46,87 @@ void Endpoint::event(Core::Event& event)
         return handle_bestmove(static_cast<BestMoveCommand const&>(event));
     case Command::Type::Info:
         return handle_info(static_cast<InfoCommand const&>(event));
+    case Command::Type::Quit:
+        return handle_quit();
+    case Command::Type::UCINewGame:
+        return handle_ucinewgame();
     default:
+        EventReceiver::event(event);
         break;
     }
 }
 
+void Endpoint::custom_event(Core::CustomEvent& custom_event)
+{
+    if (custom_event.custom_type() == EndpointEventType::UnexpectedEof)
+        handle_unexpected_eof();
+}
+
 void Endpoint::set_in_notifier()
 {
-    m_in_notifier = Core::Notifier::construct(m_in->fd(), Core::Notifier::Read);
-    m_in_notifier->on_ready_to_read = [this] {
-        while (m_in->can_read_line())
-            Core::EventLoop::current().post_event(*this, read_command());
+    m_in_notifier = Core::Notifier::construct(m_in_fd.value(), Core::Notifier::Type::Read);
+    m_in_notifier->on_activation = [this] {
+        if (!m_in->can_read_line().release_value_but_fixme_should_propagate_errors()) {
+            Core::EventLoop::current().post_event(*this, make<Core::CustomEvent>(EndpointEventType::UnexpectedEof));
+            m_in_notifier->set_enabled(false);
+            return;
+        }
+        auto buffer = ByteBuffer::create_zeroed(4096).release_value_but_fixme_should_propagate_errors();
+
+        while (m_in->can_read_line().release_value_but_fixme_should_propagate_errors()) {
+            auto line = m_in->read_line(buffer).release_value_but_fixme_should_propagate_errors().trim_whitespace();
+            if (line.is_empty())
+                continue;
+
+            auto maybe_command = read_command(line);
+            if (maybe_command.is_error()) {
+                dbgln_if(UCI_DEBUG, "{} Error while parsing UCI command: {}, error: {}", class_name(), maybe_command.error(), line);
+                if (on_command_read_error)
+                    on_command_read_error(move(line), maybe_command.release_error());
+
+                continue;
+            }
+
+            Core::EventLoop::current().post_event(*this, maybe_command.release_value());
+        }
     };
 }
 
-NonnullOwnPtr<Command> Endpoint::read_command()
+ErrorOr<NonnullOwnPtr<Command>> Endpoint::read_command(StringView line) const
 {
-    DeprecatedString line(ReadonlyBytes(m_in->read_line(4096).bytes()), Chomp);
-
     dbgln_if(UCI_DEBUG, "{} Received UCI Command: {}", class_name(), line);
 
     if (line == "uci") {
-        return make<UCICommand>(UCICommand::from_string(line));
+        return UCICommand::from_string(line);
     } else if (line.starts_with("debug"sv)) {
-        return make<DebugCommand>(DebugCommand::from_string(line));
+        return DebugCommand::from_string(line);
     } else if (line.starts_with("isready"sv)) {
-        return make<IsReadyCommand>(IsReadyCommand::from_string(line));
+        return IsReadyCommand::from_string(line);
     } else if (line.starts_with("setoption"sv)) {
-        return make<SetOptionCommand>(SetOptionCommand::from_string(line));
+        return SetOptionCommand::from_string(line);
     } else if (line.starts_with("position"sv)) {
-        return make<PositionCommand>(PositionCommand::from_string(line));
+        return PositionCommand::from_string(line);
     } else if (line.starts_with("go"sv)) {
-        return make<GoCommand>(GoCommand::from_string(line));
+        return GoCommand::from_string(line);
     } else if (line.starts_with("stop"sv)) {
-        return make<StopCommand>(StopCommand::from_string(line));
+        return StopCommand::from_string(line);
     } else if (line.starts_with("id"sv)) {
-        return make<IdCommand>(IdCommand::from_string(line));
+        return IdCommand::from_string(line);
     } else if (line.starts_with("uciok"sv)) {
-        return make<UCIOkCommand>(UCIOkCommand::from_string(line));
+        return UCIOkCommand::from_string(line);
     } else if (line.starts_with("readyok"sv)) {
-        return make<ReadyOkCommand>(ReadyOkCommand::from_string(line));
+        return ReadyOkCommand::from_string(line);
     } else if (line.starts_with("bestmove"sv)) {
-        return make<BestMoveCommand>(BestMoveCommand::from_string(line));
+        return BestMoveCommand::from_string(line);
     } else if (line.starts_with("info"sv)) {
-        return make<InfoCommand>(InfoCommand::from_string(line));
+        return InfoCommand::from_string(line);
+    } else if (line.starts_with("quit"sv)) {
+        return QuitCommand::from_string(line);
+    } else if (line.starts_with("ucinewgame"sv)) {
+        return UCINewGameCommand::from_string(line);
     }
 
-    dbgln("command line: {}", line);
-    VERIFY_NOT_REACHED();
+    return Error::from_string_literal("Unknown command");
 }
 
 };

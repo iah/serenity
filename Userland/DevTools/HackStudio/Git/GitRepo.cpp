@@ -9,7 +9,7 @@
 
 namespace HackStudio {
 
-GitRepo::CreateResult GitRepo::try_to_create(DeprecatedString const& repository_root)
+GitRepo::CreateResult GitRepo::try_to_create(ByteString const& repository_root)
 {
     if (!git_is_installed()) {
         return { CreateResult::Type::GitProgramNotFound, nullptr };
@@ -21,17 +21,17 @@ GitRepo::CreateResult GitRepo::try_to_create(DeprecatedString const& repository_
     return { CreateResult::Type::Success, adopt_ref(*new GitRepo(repository_root)) };
 }
 
-RefPtr<GitRepo> GitRepo::initialize_repository(DeprecatedString const& repository_root)
+RefPtr<GitRepo> GitRepo::initialize_repository(ByteString const& repository_root)
 {
     auto res = command_wrapper({ "init" }, repository_root);
-    if (res.is_null())
+    if (!res.has_value())
         return {};
 
     VERIFY(git_repo_exists(repository_root));
     return adopt_ref(*new GitRepo(repository_root));
 }
 
-Vector<DeprecatedString> GitRepo::unstaged_files() const
+Vector<ByteString> GitRepo::unstaged_files() const
 {
     auto modified = modified_files();
     auto untracked = untracked_files();
@@ -39,95 +39,95 @@ Vector<DeprecatedString> GitRepo::unstaged_files() const
     return modified;
 }
 //
-Vector<DeprecatedString> GitRepo::staged_files() const
+Vector<ByteString> GitRepo::staged_files() const
 {
     auto raw_result = command({ "diff", "--cached", "--name-only" });
-    if (raw_result.is_null())
+    if (!raw_result.has_value())
         return {};
-    return parse_files_list(raw_result);
+    return parse_files_list(*raw_result);
 }
 
-Vector<DeprecatedString> GitRepo::modified_files() const
+Vector<ByteString> GitRepo::modified_files() const
 {
     auto raw_result = command({ "ls-files", "--modified", "--exclude-standard" });
-    if (raw_result.is_null())
+    if (!raw_result.has_value())
         return {};
-    return parse_files_list(raw_result);
+    return parse_files_list(*raw_result);
 }
 
-Vector<DeprecatedString> GitRepo::untracked_files() const
+Vector<ByteString> GitRepo::untracked_files() const
 {
     auto raw_result = command({ "ls-files", "--others", "--exclude-standard" });
-    if (raw_result.is_null())
+    if (!raw_result.has_value())
         return {};
-    return parse_files_list(raw_result);
+    return parse_files_list(*raw_result);
 }
 
-Vector<DeprecatedString> GitRepo::parse_files_list(DeprecatedString const& raw_result)
+Vector<ByteString> GitRepo::parse_files_list(ByteString const& raw_result)
 {
     auto lines = raw_result.split('\n');
-    Vector<DeprecatedString> files;
+    Vector<ByteString> files;
     for (auto const& line : lines) {
         files.empend(line);
     }
     return files;
 }
 
-DeprecatedString GitRepo::command(Vector<DeprecatedString> const& command_parts) const
+Optional<ByteString> GitRepo::command(Vector<ByteString> const& command_parts) const
 {
     return command_wrapper(command_parts, m_repository_root);
 }
 
-DeprecatedString GitRepo::command_wrapper(Vector<DeprecatedString> const& command_parts, DeprecatedString const& chdir)
+Optional<ByteString> GitRepo::command_wrapper(Vector<ByteString> const& command_parts, ByteString const& chdir)
 {
-    auto result = Core::command("git", command_parts, LexicalPath(chdir));
+    auto const result = Core::command("git", command_parts, LexicalPath(chdir));
     if (result.is_error() || result.value().exit_code != 0)
         return {};
-    return result.value().output;
+    return ByteString(result.value().output.bytes());
 }
 
 bool GitRepo::git_is_installed()
 {
-    return !command_wrapper({ "--help" }, "/").is_null();
+    return command_wrapper({ "--help" }, "/").has_value();
 }
 
-bool GitRepo::git_repo_exists(DeprecatedString const& repo_root)
+bool GitRepo::git_repo_exists(ByteString const& repo_root)
 {
-    return !command_wrapper({ "status" }, repo_root).is_null();
+    return command_wrapper({ "status" }, repo_root).has_value();
 }
 
-bool GitRepo::stage(DeprecatedString const& file)
+bool GitRepo::stage(ByteString const& file)
 {
-    return !command({ "add", file }).is_null();
+    return command({ "add", file }).has_value();
 }
 
-bool GitRepo::unstage(DeprecatedString const& file)
+bool GitRepo::unstage(ByteString const& file)
 {
-    return !command({ "reset", "HEAD", "--", file }).is_null();
+    return command({ "reset", "HEAD", "--", file }).has_value();
 }
 
-bool GitRepo::commit(DeprecatedString const& message)
+bool GitRepo::commit(ByteString const& message)
 {
-    return !command({ "commit", "-m", message }).is_null();
+    return command({ "commit", "-m", message }).has_value();
 }
 
-Optional<DeprecatedString> GitRepo::original_file_content(DeprecatedString const& file) const
+Optional<ByteString> GitRepo::original_file_content(ByteString const& file) const
 {
-    return command({ "show", DeprecatedString::formatted("HEAD:{}", file) });
+    return command({ "show", ByteString::formatted("HEAD:{}", file) });
 }
 
-Optional<DeprecatedString> GitRepo::unstaged_diff(DeprecatedString const& file) const
+Optional<ByteString> GitRepo::unstaged_diff(ByteString const& file) const
 {
-    return command({ "diff", file.characters() });
+    return command({ "diff", "-U0", file.characters() });
 }
 
-bool GitRepo::is_tracked(DeprecatedString const& file) const
+bool GitRepo::is_tracked(ByteString const& file) const
 {
     auto res = command({ "ls-files", file });
-    if (res.is_null())
+    if (!res.has_value())
         return false;
 
-    return !res.is_empty();
+    return !res->is_empty();
 }
 
 }

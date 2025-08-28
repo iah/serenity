@@ -17,7 +17,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath recvfd sendfd unix"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     Config::pledge_domain("Calendar");
 
@@ -33,7 +33,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto app_icon = GUI::Icon::default_icon("app-calendar"sv);
 
     auto window = TRY(GUI::SettingsWindow::create("Calendar Settings", GUI::SettingsWindow::ShowDefaultsButton::Yes));
-    (void)TRY(window->add_tab<CalendarSettingsWidget>("Calendar"sv, "Calendar"sv));
+    (void)TRY(window->add_tab<CalendarSettings::CalendarSettingsWidget>("Calendar"_string, "Calendar"sv));
     window->set_icon(app_icon.bitmap_for_size(16));
     window->set_active_tab(selected_tab);
 

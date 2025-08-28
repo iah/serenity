@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <LibCrypto/BigInt/SignedBigInteger.h>
 
 namespace Crypto {
@@ -14,7 +14,7 @@ namespace Crypto {
 class BigFraction {
     // FIXME Make the whole API more error-friendly. This includes:
     //   - Propagating errors from BigIntegers
-    //   - Returns errors from both BigFraction(StringView) and BigFraction(numerator, denominator);
+    //   - Returns errors from BigFraction(numerator, denominator);
     //   - Duplicate fallible operators with a error-friendly version
 
 public:
@@ -27,8 +27,9 @@ public:
     BigFraction& operator=(Crypto::BigFraction const&) = default;
     BigFraction& operator=(Crypto::BigFraction&&) = default;
 
-    explicit BigFraction(StringView);
     explicit BigFraction(double);
+
+    static ErrorOr<BigFraction> from_string(StringView);
 
     BigFraction operator+(BigFraction const&) const;
     BigFraction operator-(BigFraction const&) const;
@@ -54,8 +55,11 @@ public:
     //      - m_denominator = 10000
     BigFraction rounded(unsigned rounding_threshold) const;
 
-    DeprecatedString to_deprecated_string(unsigned rounding_threshold) const;
+    ByteString to_byte_string(unsigned rounding_threshold) const;
     double to_double() const;
+
+    Crypto::SignedBigInteger const& numerator() const& { return m_numerator; }
+    Crypto::UnsignedBigInteger const& denominator() const& { return m_denominator; }
 
 private:
     void reduce();

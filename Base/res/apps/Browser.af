@@ -1,7 +1,8 @@
 [App]
-Name=Browser
+Name=&Browser
 Executable=/bin/Browser
-Category=Internet
+Arguments=--new-window
+Category=&Internet
 
 [Launcher]
 FileTypes=html,htm

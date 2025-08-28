@@ -13,9 +13,10 @@ namespace JS {
 
 class ObjectConstructor final : public NativeFunction {
     JS_OBJECT(ObjectConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(ObjectConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ObjectConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -34,6 +35,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(get_own_property_names);
     JS_DECLARE_NATIVE_FUNCTION(get_own_property_symbols);
     JS_DECLARE_NATIVE_FUNCTION(get_prototype_of);
+    JS_DECLARE_NATIVE_FUNCTION(group_by);
     JS_DECLARE_NATIVE_FUNCTION(set_prototype_of);
     JS_DECLARE_NATIVE_FUNCTION(is_extensible);
     JS_DECLARE_NATIVE_FUNCTION(is_frozen);

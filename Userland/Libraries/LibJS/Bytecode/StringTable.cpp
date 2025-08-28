@@ -8,17 +8,13 @@
 
 namespace JS::Bytecode {
 
-StringTableIndex StringTable::insert(DeprecatedString string)
+StringTableIndex StringTable::insert(ByteString string)
 {
-    for (size_t i = 0; i < m_strings.size(); i++) {
-        if (m_strings[i] == string)
-            return i;
-    }
     m_strings.append(move(string));
     return m_strings.size() - 1;
 }
 
-DeprecatedString const& StringTable::get(StringTableIndex index) const
+ByteString const& StringTable::get(StringTableIndex index) const
 {
     return m_strings[index.value()];
 }

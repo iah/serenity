@@ -4,10 +4,14 @@
 [Exposed=Window]
 interface HTMLMetaElement : HTMLElement {
 
-    [Reflect] attribute DOMString name;
-    [Reflect] attribute DOMString content;
-    [Reflect=http-equiv] attribute DOMString httpEquiv;
+    [HTMLConstructor] constructor();
 
-    [Reflect] attribute DOMString scheme;
+    [CEReactions, Reflect] attribute DOMString name;
+    [CEReactions, Reflect=http-equiv] attribute DOMString httpEquiv;
+    [CEReactions, Reflect] attribute DOMString content;
+    [CEReactions, Reflect] attribute DOMString media;
+
+    // Obsolete
+    [CEReactions, Reflect] attribute DOMString scheme;
 
 };

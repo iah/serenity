@@ -1,7 +1,8 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=libffi
-version=3.4.2
-useconfigure=true
-use_fresh_config_sub=true
-files="https://github.com/libffi/libffi/releases/download/v${version}/libffi-${version}.tar.gz libffi-${version}.tar.gz 540fb721619a6aba3bdeef7d940d8e9e0e6d2c193595bc243241b77ff9e93620"
-auth_type=sha256
+port='libffi'
+version='3.4.5'
+useconfigure='true'
+use_fresh_config_sub='true'
+files=(
+    "https://github.com/libffi/libffi/releases/download/v${version}/libffi-${version}.tar.gz#96fff4e589e3b239d888d9aa44b3ff30693c2ba1617f953925a70ddebcc102b2"
+)

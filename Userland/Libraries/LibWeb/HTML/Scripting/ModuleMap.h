@@ -1,40 +1,43 @@
 /*
- * Copyright (c) 2022, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2022-2023, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/URL.h>
+#include <LibJS/Heap/Cell.h>
+#include <LibJS/Heap/HeapFunction.h>
+#include <LibURL/URL.h>
 #include <LibWeb/HTML/Scripting/ModuleScript.h>
 
 namespace Web::HTML {
 
 class ModuleLocationTuple {
 public:
-    ModuleLocationTuple(AK::URL url, DeprecatedString type)
+    ModuleLocationTuple(URL::URL url, ByteString type)
         : m_url(move(url))
         , m_type(move(type))
     {
     }
 
-    AK::URL const& url() const { return m_url; };
-    DeprecatedString const& type() const { return m_type; }
+    URL::URL const& url() const { return m_url; }
+    ByteString const& type() const { return m_type; }
 
     bool operator==(ModuleLocationTuple const& other) const
     {
         return other.url() == m_url && other.type() == m_type;
-    };
+    }
 
 private:
-    AK::URL m_url;
-    DeprecatedString m_type;
+    URL::URL m_url;
+    ByteString m_type;
 };
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#module-map
-class ModuleMap {
-    AK_MAKE_NONCOPYABLE(ModuleMap);
+class ModuleMap final : public JS::Cell {
+    JS_CELL(ModuleMap, JS::Cell);
+    JS_DECLARE_ALLOCATOR(ModuleMap);
 
 public:
     ModuleMap() = default;
@@ -48,23 +51,29 @@ public:
 
     struct Entry {
         EntryType type;
-        JavaScriptModuleScript* module_script;
+        JS::GCPtr<JavaScriptModuleScript> module_script;
     };
 
-    bool is_fetching(AK::URL const& url, DeprecatedString const& type) const;
-    bool is_failed(AK::URL const& url, DeprecatedString const& type) const;
+    using CallbackFunction = JS::NonnullGCPtr<JS::HeapFunction<void(Entry)>>;
 
-    bool is(AK::URL const& url, DeprecatedString const& type, EntryType) const;
+    bool is_fetching(URL::URL const& url, ByteString const& type) const;
+    bool is_failed(URL::URL const& url, ByteString const& type) const;
 
-    Optional<Entry> get(AK::URL const& url, DeprecatedString const& type) const;
+    bool is(URL::URL const& url, ByteString const& type, EntryType) const;
 
-    AK::HashSetResult set(AK::URL const& url, DeprecatedString const& type, Entry);
+    Optional<Entry> get(URL::URL const& url, ByteString const& type) const;
 
-    void wait_for_change(AK::URL const& url, DeprecatedString const& type, Function<void(Entry)> callback);
+    AK::HashSetResult set(URL::URL const& url, ByteString const& type, Entry);
+
+    void wait_for_change(JS::Heap&, URL::URL const& url, ByteString const& type, Function<void(Entry)> callback);
 
 private:
+    virtual void visit_edges(JS::Cell::Visitor&) override;
+
     HashMap<ModuleLocationTuple, Entry> m_values;
-    HashMap<ModuleLocationTuple, Vector<Function<void(Entry)>>> m_callbacks;
+    HashMap<ModuleLocationTuple, Vector<CallbackFunction>> m_callbacks;
+
+    bool m_firing_callbacks { false };
 };
 
 }
@@ -72,10 +81,10 @@ private:
 namespace AK {
 
 template<>
-struct Traits<Web::HTML::ModuleLocationTuple> : public GenericTraits<Web::HTML::ModuleLocationTuple> {
+struct Traits<Web::HTML::ModuleLocationTuple> : public DefaultTraits<Web::HTML::ModuleLocationTuple> {
     static unsigned hash(Web::HTML::ModuleLocationTuple const& tuple)
     {
-        return pair_int_hash(tuple.url().to_deprecated_string().hash(), tuple.type().hash());
+        return pair_int_hash(tuple.url().to_byte_string().hash(), tuple.type().hash());
     }
 };
 

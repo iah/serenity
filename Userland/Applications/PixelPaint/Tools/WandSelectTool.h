@@ -23,7 +23,7 @@ public:
 
     virtual void on_mousedown(Layer*, MouseEvent& event) override;
     virtual bool on_keydown(GUI::KeyEvent&) override;
-    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual NonnullRefPtr<GUI::Widget> get_properties_widget() override;
     virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() override { return Gfx::StandardCursor::Crosshair; }
 
 private:
@@ -31,7 +31,7 @@ private:
 
     int m_threshold { 0 };
     RefPtr<GUI::Widget> m_properties_widget;
-    Vector<DeprecatedString> m_merge_mode_names {};
+    Vector<ByteString> m_merge_mode_names {};
     Selection::MergeMode m_merge_mode { Selection::MergeMode::Set };
 };
 

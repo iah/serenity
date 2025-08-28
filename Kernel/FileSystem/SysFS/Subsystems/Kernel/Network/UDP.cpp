@@ -7,8 +7,8 @@
 #include <AK/JsonObjectSerializer.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Kernel/Network/UDP.h>
 #include <Kernel/Net/UDPSocket.h>
-#include <Kernel/Process.h>
 #include <Kernel/Sections.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -17,9 +17,9 @@ UNMAP_AFTER_INIT SysFSNetworkUDPStats::SysFSNetworkUDPStats(SysFSDirectory const
 {
 }
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<SysFSNetworkUDPStats> SysFSNetworkUDPStats::must_create(SysFSDirectory const& parent_directory)
+UNMAP_AFTER_INIT NonnullRefPtr<SysFSNetworkUDPStats> SysFSNetworkUDPStats::must_create(SysFSDirectory const& parent_directory)
 {
-    return adopt_lock_ref_if_nonnull(new (nothrow) SysFSNetworkUDPStats(parent_directory)).release_nonnull();
+    return adopt_ref_if_nonnull(new (nothrow) SysFSNetworkUDPStats(parent_directory)).release_nonnull();
 }
 
 ErrorOr<void> SysFSNetworkUDPStats::try_generate(KBufferBuilder& builder)

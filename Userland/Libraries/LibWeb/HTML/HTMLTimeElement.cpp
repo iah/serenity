@@ -4,22 +4,23 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTimeElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLTimeElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTimeElement);
 
 HTMLTimeElement::HTMLTimeElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
 }
 
-JS::ThrowCompletionOr<void> HTMLTimeElement::initialize(JS::Realm& realm)
+void HTMLTimeElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTimeElementPrototype>(realm, "HTMLTimeElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTimeElement);
 }
 
 HTMLTimeElement::~HTMLTimeElement() = default;

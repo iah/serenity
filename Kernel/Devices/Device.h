@@ -14,12 +14,14 @@
 // There are two main subclasses:
 //   - BlockDevice (random access)
 //   - CharacterDevice (sequential)
+#include <AK/CircularQueue.h>
 #include <AK/DoublyLinkedList.h>
 #include <AK/Error.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
+#include <Kernel/API/DeviceEvent.h>
+#include <Kernel/API/DeviceFileTypes.h>
 #include <Kernel/Devices/AsyncDeviceRequest.h>
-#include <Kernel/FileSystem/DeviceFileTypes.h>
 #include <Kernel/FileSystem/File.h>
 #include <Kernel/FileSystem/SysFS/Registry.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/DeviceIdentifiers/DeviceComponent.h>
@@ -29,6 +31,7 @@
 
 namespace Kernel {
 
+struct BaseDevices;
 class Device : public File {
 protected:
     enum class State {
@@ -44,9 +47,6 @@ public:
 
     virtual ErrorOr<NonnullOwnPtr<KString>> pseudo_path(OpenFileDescription const&) const override;
     virtual ErrorOr<NonnullRefPtr<OpenFileDescription>> open(int options) override;
-
-    UserID uid() const { return m_uid; }
-    GroupID gid() const { return m_gid; }
 
     virtual bool is_device() const override { return true; }
     virtual void will_be_destroyed() override;
@@ -66,10 +66,24 @@ public:
         return request;
     }
 
+    static SpinlockProtected<CircularQueue<DeviceEvent, 100>, LockRank::None>& event_queue();
+    static BaseDevices* base_devices();
+    static void after_inserting_device(Badge<Device>, Device&);
+    static void before_device_removal(Badge<Device>, Device&);
+    static void run_by_type_and_major_minor_numbers(DeviceNodeType type, MajorNumber major, MinorNumber minor, Function<void(RefPtr<Device>)> const& callback);
+
+    static void initialize_base_devices();
+
+    template<typename DeviceType, typename... Args>
+    static inline ErrorOr<NonnullRefPtr<DeviceType>> try_create_device(Args&&... args)
+    {
+        auto device = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) DeviceType(forward<Args>(args)...)));
+        TRY(static_ptr_cast<Device>(device)->after_inserting());
+        return device;
+    }
+
 protected:
     Device(MajorNumber major, MinorNumber minor);
-    void set_uid(UserID uid) { m_uid = uid; }
-    void set_gid(GroupID gid) { m_gid = gid; }
 
     void after_inserting_add_to_device_management();
     void before_will_be_destroyed_remove_from_device_management();
@@ -83,10 +97,24 @@ protected:
     virtual void before_will_be_destroyed_remove_from_device_identifier_directory() = 0;
 
 private:
+    template<typename T>
+    static inline void add_device_to_map(HashMap<u64, T*>& map, Device& device)
+    {
+        u64 device_id = encoded_device(device.major(), device.minor());
+
+        if (map.contains(device_id)) {
+            dbgln("Already registered {},{}: {}", device.major(), device.minor(), device.class_name());
+            VERIFY_NOT_REACHED();
+        }
+        auto result = map.set(device_id, static_cast<T*>(&device));
+        if (result != AK::HashSetResult::InsertedNewEntry) {
+            dbgln("Failed to register {},{}: {}", device.major(), device.minor(), device.class_name());
+            VERIFY_NOT_REACHED();
+        }
+    }
+
     MajorNumber const m_major { 0 };
     MinorNumber const m_minor { 0 };
-    UserID m_uid { 0 };
-    GroupID m_gid { 0 };
 
     State m_state { State::Normal };
 
@@ -96,10 +124,10 @@ private:
 protected:
     // FIXME: This pointer will be eventually removed after all nodes in /sys/dev/block/ and
     // /sys/dev/char/ are symlinks.
-    LockRefPtr<SysFSDeviceComponent> m_sysfs_component;
+    RefPtr<SysFSDeviceComponent> m_sysfs_component;
 
-    LockRefPtr<SysFSSymbolicLinkDeviceComponent> m_symlink_sysfs_component;
-    LockRefPtr<SysFSDirectory> m_sysfs_device_directory;
+    RefPtr<SysFSSymbolicLinkDeviceComponent> m_symlink_sysfs_component;
+    RefPtr<SysFSDirectory> m_sysfs_device_directory;
 };
 
 }

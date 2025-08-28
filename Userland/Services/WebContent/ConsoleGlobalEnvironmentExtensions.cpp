@@ -15,28 +15,29 @@
 
 namespace WebContent {
 
+JS_DEFINE_ALLOCATOR(ConsoleGlobalEnvironmentExtensions);
+
 ConsoleGlobalEnvironmentExtensions::ConsoleGlobalEnvironmentExtensions(JS::Realm& realm, Web::HTML::Window& window)
     : Object(realm, nullptr)
     , m_window_object(window)
 {
 }
 
-JS::ThrowCompletionOr<void> ConsoleGlobalEnvironmentExtensions::initialize(JS::Realm& realm)
+void ConsoleGlobalEnvironmentExtensions::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     define_native_accessor(realm, "$0", $0_getter, nullptr, 0);
     define_native_accessor(realm, "$_", $__getter, nullptr, 0);
     define_native_function(realm, "$", $_function, 2, JS::default_attributes);
     define_native_function(realm, "$$", $$_function, 2, JS::default_attributes);
-
-    return {};
 }
 
 void ConsoleGlobalEnvironmentExtensions::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_window_object);
+    visitor.visit(m_most_recent_result);
 }
 
 static JS::ThrowCompletionOr<ConsoleGlobalEnvironmentExtensions*> get_console(JS::VM& vm)
@@ -70,7 +71,7 @@ JS_DEFINE_NATIVE_FUNCTION(ConsoleGlobalEnvironmentExtensions::$_function)
     auto* console_global_object = TRY(get_console(vm));
     auto& window = *console_global_object->m_window_object;
 
-    auto selector = TRY(vm.argument(0).to_deprecated_string(vm));
+    auto selector = TRY(vm.argument(0).to_byte_string(vm));
 
     if (vm.argument_count() > 1) {
         auto element_value = vm.argument(1);
@@ -94,7 +95,7 @@ JS_DEFINE_NATIVE_FUNCTION(ConsoleGlobalEnvironmentExtensions::$$_function)
     auto* console_global_object = TRY(get_console(vm));
     auto& window = *console_global_object->m_window_object;
 
-    auto selector = TRY(vm.argument(0).to_deprecated_string(vm));
+    auto selector = TRY(vm.argument(0).to_byte_string(vm));
 
     Web::DOM::ParentNode* element = &window.associated_document();
 
@@ -113,8 +114,7 @@ JS_DEFINE_NATIVE_FUNCTION(ConsoleGlobalEnvironmentExtensions::$$_function)
 
     auto array = TRY(JS::Array::create(*vm.current_realm(), node_list->length()));
     for (auto i = 0u; i < node_list->length(); ++i) {
-        // NOTE: NodeList::item_value cannot fail.
-        TRY(array->create_data_property_or_throw(i, MUST(node_list->item_value(i))));
+        TRY(array->create_data_property_or_throw(i, *node_list->item_value(i)));
     }
 
     return array;

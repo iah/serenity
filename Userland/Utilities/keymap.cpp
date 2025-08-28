@@ -1,10 +1,12 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2025, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ConfigFile.h>
@@ -13,9 +15,9 @@
 #include <LibMain/Main.h>
 #include <stdio.h>
 
-int set_keymap(DeprecatedString const& keymap);
+int set_keymap(ByteString const& keymap);
 
-int set_keymap(DeprecatedString const& keymap)
+int set_keymap(ByteString const& keymap)
 {
     auto character_map = Keyboard::CharacterMap::load_from_file(keymap);
     if (character_map.is_error()) {
@@ -38,8 +40,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/res/keymaps", "r"));
     TRY(Core::System::unveil("/etc/Keyboard.ini", "rwc"));
 
-    DeprecatedString mapping;
-    DeprecatedString mappings;
+    ByteString mapping;
+    ByteString mappings;
     Core::ArgsParser args_parser;
     args_parser.add_option(mapping, "The mapping to be used", "set-keymap", 'm', "keymap");
     args_parser.add_option(mappings, "Comma separated list of enabled mappings", "set-keymaps", 's', "keymaps");
@@ -71,7 +73,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
         }
 
-        auto keymaps = DeprecatedString::join(',', mappings_vector);
+        auto keymaps = ByteString::join(',', mappings_vector);
         mapper_config->write_entry("Mapping", "Keymaps", keymaps);
         TRY(mapper_config->sync());
     }
@@ -89,8 +91,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         if (!keymaps_vector.find(mapping).is_end()) {
             int rc = set_keymap(mapping);
-            if (rc == 0)
+            if (rc == 0) {
+                mapper_config->write_entry("Mapping", "ActiveKeymap", mapping);
                 return rc;
+            }
         } else {
             warnln("Keymap '{}' is not in list of configured keymaps ({})", mapping, keymaps);
         }

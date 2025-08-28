@@ -7,48 +7,77 @@
 #pragma once
 
 #include <AK/Badge.h>
-#include <AK/DeprecatedString.h>
+#include <AK/String.h>
+#include <LibJS/Bytecode/Executable.h>
+#include <LibJS/Bytecode/ScopedOperand.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Heap/Handle.h>
 
 namespace JS::Bytecode {
 
 struct UnwindInfo {
-    Executable const* executable;
-    BasicBlock const* handler;
-    BasicBlock const* finalizer;
+    JS::GCPtr<Executable const> executable;
+    JS::GCPtr<Environment> lexical_environment;
+
+    bool handler_called { false };
 };
 
 class BasicBlock {
     AK_MAKE_NONCOPYABLE(BasicBlock);
 
 public:
-    static NonnullOwnPtr<BasicBlock> create(DeprecatedString name, size_t size = 4 * KiB);
+    static NonnullOwnPtr<BasicBlock> create(u32 index, String name);
     ~BasicBlock();
 
-    void seal();
+    u32 index() const { return m_index; }
 
-    void dump(Executable const&) const;
-    ReadonlyBytes instruction_stream() const { return ReadonlyBytes { m_buffer, m_buffer_size }; }
-    size_t size() const { return m_buffer_size; }
+    ReadonlyBytes instruction_stream() const { return m_buffer.span(); }
+    u8* data() { return m_buffer.data(); }
+    u8 const* data() const { return m_buffer.data(); }
+    size_t size() const { return m_buffer.size(); }
 
-    void* next_slot() { return m_buffer + m_buffer_size; }
-    bool can_grow(size_t additional_size) const { return m_buffer_size + additional_size <= m_buffer_capacity; }
+    void rewind()
+    {
+        m_buffer.resize_and_keep_capacity(m_last_instruction_start_offset);
+        m_terminated = false;
+    }
+
     void grow(size_t additional_size);
 
-    void terminate(Badge<Generator>, Instruction const* terminator) { m_terminator = terminator; }
-    bool is_terminated() const { return m_terminator != nullptr; }
-    Instruction const* terminator() const { return m_terminator; }
+    void terminate(Badge<Generator>) { m_terminated = true; }
+    bool is_terminated() const { return m_terminated; }
 
-    DeprecatedString const& name() const { return m_name; }
+    String const& name() const { return m_name; }
+
+    void set_handler(BasicBlock const& handler) { m_handler = &handler; }
+    void set_finalizer(BasicBlock const& finalizer) { m_finalizer = &finalizer; }
+
+    BasicBlock const* handler() const { return m_handler; }
+    BasicBlock const* finalizer() const { return m_finalizer; }
+
+    auto const& source_map() const { return m_source_map; }
+    void add_source_map_entry(size_t bytecode_offset, SourceRecord const& source_record) { m_source_map.set(bytecode_offset, source_record); }
+
+    [[nodiscard]] bool has_resolved_this() const { return m_has_resolved_this; }
+    void set_has_resolved_this() { m_has_resolved_this = true; }
+
+    [[nodiscard]] size_t last_instruction_start_offset() const { return m_last_instruction_start_offset; }
+    void set_last_instruction_start_offset(size_t offset) { m_last_instruction_start_offset = offset; }
 
 private:
-    BasicBlock(DeprecatedString name, size_t size);
+    explicit BasicBlock(u32 index, String name);
 
-    u8* m_buffer { nullptr };
-    Instruction const* m_terminator { nullptr };
-    size_t m_buffer_capacity { 0 };
-    size_t m_buffer_size { 0 };
-    DeprecatedString m_name;
+    u32 m_index { 0 };
+    Vector<u8> m_buffer;
+    BasicBlock const* m_handler { nullptr };
+    BasicBlock const* m_finalizer { nullptr };
+    String m_name;
+    bool m_terminated { false };
+    bool m_has_resolved_this { false };
+
+    HashMap<size_t, SourceRecord> m_source_map;
+
+    size_t m_last_instruction_start_offset { 0 };
 };
 
 }

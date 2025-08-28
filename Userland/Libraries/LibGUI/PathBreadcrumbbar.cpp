@@ -9,8 +9,8 @@
 
 #include "PathBreadcrumbbar.h"
 #include <AK/LexicalPath.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/MimeData.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Breadcrumbbar.h>
 #include <LibGUI/FileIconProvider.h>
@@ -23,11 +23,11 @@ namespace GUI {
 
 ErrorOr<NonnullRefPtr<PathBreadcrumbbar>> PathBreadcrumbbar::try_create()
 {
-    auto location_text_box = TRY(TextBox::try_create());
-    auto breadcrumbbar = TRY(Breadcrumbbar::try_create());
+    auto location_text_box = TextBox::construct();
+    auto breadcrumbbar = Breadcrumbbar::construct();
 
     auto path_breadcrumbbar = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) PathBreadcrumbbar(*location_text_box, *breadcrumbbar)));
-    (void)TRY(path_breadcrumbbar->try_set_layout<GUI::VerticalBoxLayout>());
+    path_breadcrumbbar->set_layout<GUI::VerticalBoxLayout>();
     TRY(path_breadcrumbbar->try_add_child(location_text_box));
     TRY(path_breadcrumbbar->try_add_child(breadcrumbbar));
 
@@ -49,7 +49,7 @@ PathBreadcrumbbar::PathBreadcrumbbar(NonnullRefPtr<GUI::TextBox> location_text_b
     };
 
     m_location_text_box->on_return_pressed = [&] {
-        if (Core::DeprecatedFile::is_directory(m_location_text_box->text())) {
+        if (FileSystem::is_directory(m_location_text_box->text())) {
             set_current_path(m_location_text_box->text());
             hide_location_text_box();
         }
@@ -69,7 +69,7 @@ PathBreadcrumbbar::PathBreadcrumbbar(NonnullRefPtr<GUI::TextBox> location_text_b
     };
 
     m_breadcrumbbar->on_segment_drag_enter = [&](size_t, GUI::DragEvent& event) {
-        if (event.mime_types().contains_slow("text/uri-list"))
+        if (event.mime_data().has_urls())
             event.accept();
     };
 
@@ -87,7 +87,7 @@ PathBreadcrumbbar::PathBreadcrumbbar(NonnullRefPtr<GUI::TextBox> location_text_b
 
 PathBreadcrumbbar::~PathBreadcrumbbar() = default;
 
-void PathBreadcrumbbar::set_current_path(DeprecatedString const& new_path)
+void PathBreadcrumbbar::set_current_path(ByteString const& new_path)
 {
     if (new_path == m_current_path)
         return;
@@ -104,13 +104,13 @@ void PathBreadcrumbbar::set_current_path(DeprecatedString const& new_path)
         // If the path change was because the directory we were in was deleted,
         // remove the breadcrumbs for it.
         if ((new_segment_index + 1 < m_breadcrumbbar->segment_count())
-            && !Core::DeprecatedFile::is_directory(m_breadcrumbbar->segment_data(new_segment_index + 1))) {
+            && !FileSystem::is_directory(m_breadcrumbbar->segment_data(new_segment_index + 1))) {
             m_breadcrumbbar->remove_end_segments(new_segment_index + 1);
         }
     } else {
         m_breadcrumbbar->clear_segments();
 
-        m_breadcrumbbar->append_segment("/", GUI::FileIconProvider::icon_for_path("/").bitmap_for_size(16), "/", "/");
+        m_breadcrumbbar->append_segment("/", GUI::FileIconProvider::icon_for_path("/"sv).bitmap_for_size(16), "/", "/"_string);
         StringBuilder builder;
 
         for (auto& part : lexical_path.parts()) {
@@ -118,7 +118,7 @@ void PathBreadcrumbbar::set_current_path(DeprecatedString const& new_path)
             builder.append('/');
             builder.append(part);
 
-            m_breadcrumbbar->append_segment(part, GUI::FileIconProvider::icon_for_path(builder.string_view()).bitmap_for_size(16), builder.string_view(), builder.string_view());
+            m_breadcrumbbar->append_segment(part, GUI::FileIconProvider::icon_for_path(builder.string_view()).bitmap_for_size(16), builder.string_view(), MUST(builder.to_string()));
         }
 
         m_breadcrumbbar->set_selected_segment(m_breadcrumbbar->segment_count() - 1);

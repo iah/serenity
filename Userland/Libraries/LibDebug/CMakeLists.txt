@@ -7,11 +7,9 @@ set(SOURCES
     Dwarf/CompilationUnit.cpp
     Dwarf/DIE.cpp
     Dwarf/DwarfInfo.cpp
-    Dwarf/Expression.cpp
     Dwarf/LineProgram.cpp
     ProcessInspector.cpp
-    StackFrameUtils.cpp
 )
 
 serenity_lib(LibDebug debug)
-target_link_libraries(LibDebug PRIVATE LibCore LibRegex)
+target_link_libraries(LibDebug PRIVATE LibCore LibELF LibFileSystem LibRegex)

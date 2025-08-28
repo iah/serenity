@@ -19,12 +19,10 @@ This is a roughly categorized list of pages relating to SerenityOS and its subpr
 
 -   [GitHub Organization](https://github.com/SerenityOS) and [GitHub Repositories](https://github.com/orgs/SerenityOS/repositories)
 -   [Changelog](https://changelog.serenityos.org/)
--   [Issues Found by OSS-Fuzz Continous Fuzzing](https://bugs.chromium.org/p/oss-fuzz/issues/list?q=label:Proj-serenity)
--   [Azure CI Overview](https://dev.azure.com/SerenityOS/SerenityOS/_build)
--   [SonarCloud Static Analysis](https://sonarcloud.io/project/overview?id=SerenityOS_serenity)
--   [libjs.dev](https://libjs.dev/)
-    -   [Try LibJS Online!](https://libjs.dev/repl/)
--   [Compiler Explorer](https://serenity.godbolt.org/): Select "Lagom trunk" under "Libraries" and add the compiler option `-std=c++20`
+-   [Issues Found by OSS-Fuzz Continuous Fuzzing](https://bugs.chromium.org/p/oss-fuzz/issues/list?q=label:Proj-serenity)
+-   [LibJS website](https://serenityos.github.io/libjs-website/)
+    -   [Try LibJS Online!](https://serenityos.github.io/libjs-website/repl/)
+-   [Compiler Explorer](https://serenity.godbolt.org/): Select "Lagom trunk" under "Libraries" and add the compiler option `-std=c++23`
 
 ## Related Projects
 
@@ -32,7 +30,7 @@ This is a roughly categorized list of pages relating to SerenityOS and its subpr
 
 ## Social
 
--   [Discord Server](https://discord.gg/serenityos)
+-   [Discord Server](https://serenityos.org/discord)
 -   [serenityos.social](https://serenityos.social/), unofficial Mastodon instance run by [networkException](https://serenityos.social/@networkexception) and [Linus Groh](https://serenityos.social/@linusg)
 -   [Map of Developers and Users](https://usermap.serenityos.org/)
 -   YouTube Channels
@@ -59,8 +57,8 @@ This is a roughly categorized list of pages relating to SerenityOS and its subpr
 -   [Emoji Table](https://emoji.serenityos.net/)
     -   [Emoji Statistics](https://emoji.serenityos.net/chart.emoji.serenityos)
 -   [Flags](https://flags.serenityos.net/)
--   [test262](https://libjs.dev/test262/) (JavaScript Spec Tests)
--   [Wasm Spec Tests](https://libjs.dev/wasm/)
+-   [test262](https://serenityos.github.io/libjs-website/test262/) (JavaScript Spec Tests)
+-   [Wasm Spec Tests](https://serenityos.github.io/libjs-website/wasm/)
 -   [Test Performance](https://github.com/alimpfard/random-serenity-statistics/tree/main/view/benchmarks/x86_64)
 -   [serenityos.social Statistics](https://grafana.serenityos.social/public)
 

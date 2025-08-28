@@ -11,14 +11,26 @@
 #include <LibCore/ConfigFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/Process.h>
+#include <LibCore/StandardPaths.h>
 #include <LibDesktop/AppFile.h>
+#include <LibFileSystem/FileSystem.h>
+#include <LibGUI/MessageBox.h>
 
 namespace Desktop {
 
+ByteString AppFile::app_file_path_for_app(StringView app_name)
+{
+    return ByteString::formatted("{}/{}.af", APP_FILES_DIRECTORY, app_name);
+}
+
+bool AppFile::exists_for_app(StringView app_name)
+{
+    return FileSystem::exists(app_file_path_for_app(app_name));
+}
+
 NonnullRefPtr<AppFile> AppFile::get_for_app(StringView app_name)
 {
-    auto path = DeprecatedString::formatted("{}/{}.af", APP_FILES_DIRECTORY, app_name);
-    return open(path);
+    return open(app_file_path_for_app(app_name));
 }
 
 NonnullRefPtr<AppFile> AppFile::open(StringView path)
@@ -35,7 +47,7 @@ void AppFile::for_each(Function<void(NonnullRefPtr<AppFile>)> callback, StringVi
         auto name = di.next_path();
         if (!name.ends_with(".af"sv))
             continue;
-        auto path = DeprecatedString::formatted("{}/{}", directory, name);
+        auto path = ByteString::formatted("{}/{}", directory, name);
         auto af = AppFile::open(path);
         if (!af->is_valid())
             continue;
@@ -58,36 +70,49 @@ bool AppFile::validate() const
     return true;
 }
 
-DeprecatedString AppFile::name() const
+ByteString AppFile::name() const
+{
+    auto name = m_config->read_entry("App", "Name").trim_whitespace().replace("&"sv, ""sv);
+    VERIFY(!name.is_empty());
+    return name;
+}
+
+ByteString AppFile::menu_name() const
 {
     auto name = m_config->read_entry("App", "Name").trim_whitespace();
     VERIFY(!name.is_empty());
     return name;
 }
 
-DeprecatedString AppFile::executable() const
+ByteString AppFile::executable() const
 {
     auto executable = m_config->read_entry("App", "Executable").trim_whitespace();
     VERIFY(!executable.is_empty());
     return executable;
 }
 
-DeprecatedString AppFile::description() const
+Vector<ByteString> AppFile::arguments() const
+{
+    auto arguments = m_config->read_entry("App", "Arguments").trim_whitespace();
+    return arguments.split(' ');
+}
+
+ByteString AppFile::description() const
 {
     return m_config->read_entry("App", "Description").trim_whitespace();
 }
 
-DeprecatedString AppFile::category() const
+ByteString AppFile::category() const
 {
     return m_config->read_entry("App", "Category").trim_whitespace();
 }
 
-DeprecatedString AppFile::working_directory() const
+ByteString AppFile::working_directory() const
 {
     return m_config->read_entry("App", "WorkingDirectory").trim_whitespace();
 }
 
-DeprecatedString AppFile::icon_path() const
+ByteString AppFile::icon_path() const
 {
     return m_config->read_entry("App", "IconPath").trim_whitespace();
 }
@@ -117,9 +142,9 @@ bool AppFile::exclude_from_system_menu() const
     return m_config->read_bool_entry("App", "ExcludeFromSystemMenu", false);
 }
 
-Vector<DeprecatedString> AppFile::launcher_mime_types() const
+Vector<ByteString> AppFile::launcher_mime_types() const
 {
-    Vector<DeprecatedString> mime_types;
+    Vector<ByteString> mime_types;
     for (auto& entry : m_config->read_entry("Launcher", "MimeTypes").split(',')) {
         entry = entry.trim_whitespace();
         if (!entry.is_empty())
@@ -128,9 +153,9 @@ Vector<DeprecatedString> AppFile::launcher_mime_types() const
     return mime_types;
 }
 
-Vector<DeprecatedString> AppFile::launcher_file_types() const
+Vector<ByteString> AppFile::launcher_file_types() const
 {
-    Vector<DeprecatedString> file_types;
+    Vector<ByteString> file_types;
     for (auto& entry : m_config->read_entry("Launcher", "FileTypes").split(',')) {
         entry = entry.trim_whitespace();
         if (!entry.is_empty())
@@ -139,9 +164,9 @@ Vector<DeprecatedString> AppFile::launcher_file_types() const
     return file_types;
 }
 
-Vector<DeprecatedString> AppFile::launcher_protocols() const
+Vector<ByteString> AppFile::launcher_protocols() const
 {
-    Vector<DeprecatedString> protocols;
+    Vector<ByteString> protocols;
     for (auto& entry : m_config->read_entry("Launcher", "Protocols").split(',')) {
         entry = entry.trim_whitespace();
         if (!entry.is_empty())
@@ -150,16 +175,62 @@ Vector<DeprecatedString> AppFile::launcher_protocols() const
     return protocols;
 }
 
-bool AppFile::spawn(ReadonlySpan<StringView> arguments) const
+ErrorOr<void> AppFile::spawn(ReadonlySpan<StringView> user_arguments) const
 {
     if (!is_valid())
-        return false;
+        return Error::from_string_literal("AppFile is invalid");
 
-    auto pid = Core::Process::spawn(executable(), arguments, working_directory());
-    if (pid.is_error())
-        return false;
+    Vector<StringView> args;
 
-    return true;
+    auto arguments = AppFile::arguments();
+    for (auto const& argument : arguments)
+        args.append(argument);
+
+    args.extend(Vector(user_arguments));
+
+    TRY(Core::Process::spawn(executable(), args, working_directory()));
+    return {};
+}
+
+ErrorOr<void> AppFile::spawn_with_escalation(ReadonlySpan<StringView> user_arguments) const
+{
+    if (!is_valid())
+        return Error::from_string_literal("AppFile is invalid");
+
+    StringView exe;
+    Vector<StringView, 2> args;
+
+    auto executable = AppFile::executable();
+    auto arguments = AppFile::arguments();
+
+    for (auto const& argument : arguments)
+        args.append(argument);
+
+    // FIXME: These single quotes won't be enough for executables with single quotes in their name.
+    auto pls_with_executable = ByteString::formatted("/bin/pls '{}'", executable);
+    if (run_in_terminal() && !requires_root()) {
+        exe = "/bin/Terminal"sv;
+        args = { "-e"sv, executable };
+    } else if (!run_in_terminal() && requires_root()) {
+        exe = "/bin/Escalator"sv;
+        args = { executable };
+    } else if (run_in_terminal() && requires_root()) {
+        exe = "/bin/Terminal"sv;
+        args = { "-e"sv, pls_with_executable };
+    } else {
+        exe = executable;
+    }
+    args.extend(user_arguments);
+
+    TRY(Core::Process::spawn(exe, args.span(),
+        working_directory().is_empty() ? Core::StandardPaths::home_directory() : working_directory()));
+    return {};
+}
+
+void AppFile::spawn_with_escalation_or_show_error(GUI::Window& window, ReadonlySpan<StringView> arguments) const
+{
+    if (auto result = spawn_with_escalation(arguments); result.is_error())
+        GUI::MessageBox::show_error(&window, ByteString::formatted("Failed to spawn {} with escalation: {}", executable(), result.error()));
 }
 
 }

@@ -1,22 +1,24 @@
 /*
  * Copyright (c) 2020, Emanuel Sprung <emanuel.sprung@gmail.com>
+ * Copyright (c) 2023, Karol Kosek <krkk@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <LibRegex/Regex.h>
+#include <LibURL/URL.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -24,6 +26,12 @@ enum class BinaryFileMode {
     Binary,
     Text,
     Skip,
+};
+
+enum class ExitStatus {
+    SomethingMatched = 0,
+    NoLinesMatched = 1,
+    ErrorOccurred = 2, // NOTE: `-q` flag also silences errors.
 };
 
 template<typename... Ts>
@@ -38,7 +46,7 @@ void fail(StringView format, Ts... args)
 constexpr StringView ere_special_characters = ".^$*+?()[{\\|"sv;
 constexpr StringView basic_special_characters = ".^$*[\\"sv;
 
-static DeprecatedString escape_characters(StringView string, StringView characters)
+static ByteString escape_characters(StringView string, StringView characters)
 {
     StringBuilder builder;
     for (auto ch : string) {
@@ -47,28 +55,86 @@ static DeprecatedString escape_characters(StringView string, StringView characte
 
         builder.append(ch);
     }
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
+}
+
+static ByteString& hostname()
+{
+    static ByteString s_hostname;
+    if (s_hostname.is_empty()) {
+        auto result = Core::System::gethostname();
+        if (result.is_error())
+            s_hostname = "localhost";
+        else
+            s_hostname = result.release_value();
+    }
+    return s_hostname;
+}
+
+enum class PrintType {
+    Path = 1 << 0,
+    LineNumbers = 1 << 1,
+};
+AK_ENUM_BITWISE_OPERATORS(PrintType)
+
+static void append_formatted_path(StringBuilder& builder, StringView path, Optional<size_t> line_number, PrintType print_type, bool with_hyperlinks, bool with_color)
+{
+    if (path == '-') {
+        path = "(standard input)"sv;
+        with_hyperlinks = false;
+    }
+
+    if (with_hyperlinks) {
+        auto full_path_or_error = FileSystem::real_path(path);
+        if (!full_path_or_error.is_error()) {
+            auto fullpath = full_path_or_error.release_value();
+            auto url = URL::create_with_file_scheme(fullpath, {}, hostname());
+            if (has_flag(print_type, PrintType::LineNumbers) && line_number.has_value())
+                url.set_query(MUST(String::formatted("line_number={}", *line_number)));
+            builder.appendff("\033]8;;{}\033\\", url.serialize());
+        }
+    }
+    if (has_flag(print_type, PrintType::Path)) {
+        if (with_color)
+            builder.appendff("\033[34m{}\033[39m", path);
+        else
+            builder.append(path);
+    }
+    if (has_flag(print_type, PrintType::LineNumbers) && line_number.has_value()) {
+        if (has_flag(print_type, PrintType::Path))
+            builder.append(':');
+
+        if (with_color)
+            builder.appendff("\033[35m{}\033[39m", *line_number);
+        else
+            builder.appendff("{}", *line_number);
+    }
+    if (with_hyperlinks)
+        builder.append("\033]8;;\033\\"sv);
 }
 
 ErrorOr<int> serenity_main(Main::Arguments args)
 {
     TRY(Core::System::pledge("stdio rpath"));
 
-    DeprecatedString program_name = AK::LexicalPath::basename(args.strings[0]);
+    ByteString program_name = AK::LexicalPath::basename(args.strings[0]);
 
-    Vector<DeprecatedString> files;
+    Vector<ByteString> files;
 
     bool recursive = (program_name == "rgrep"sv);
     bool use_ere = (program_name == "egrep"sv);
     bool fixed_strings = (program_name == "fgrep"sv);
-    Vector<DeprecatedString> patterns;
+    Vector<ByteString> patterns;
+    StringView pattern_file;
     BinaryFileMode binary_mode { BinaryFileMode::Binary };
     bool case_insensitive = false;
     bool line_numbers = false;
     bool invert_match = false;
     bool quiet_mode = false;
     bool suppress_errors = false;
-    bool colored_output = isatty(STDOUT_FILENO);
+    bool is_a_tty = isatty(STDOUT_FILENO) == 1;
+    bool colored_output = is_a_tty;
+    bool disable_hyperlinks = !is_a_tty;
     bool count_lines = false;
 
     size_t matched_line_count = 0;
@@ -85,6 +151,17 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         .value_name = "Pattern",
         .accept_value = [&](StringView str) {
             patterns.append(str);
+            return true;
+        },
+    });
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Read patterns from a file",
+        .long_name = "file",
+        .short_name = 'f',
+        .value_name = "File",
+        .accept_value = [&](StringView str) {
+            pattern_file = str;
             return true;
         },
     });
@@ -109,26 +186,8 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             return true;
         },
     });
-    args_parser.add_option(Core::ArgsParser::Option {
-        .argument_mode = Core::ArgsParser::OptionArgumentMode::None,
-        .help_string = "Treat binary files as text (same as --binary-mode text)",
-        .long_name = "text",
-        .short_name = 'a',
-        .accept_value = [&](auto) {
-            binary_mode = BinaryFileMode::Text;
-            return true;
-        },
-    });
-    args_parser.add_option(Core::ArgsParser::Option {
-        .argument_mode = Core::ArgsParser::OptionArgumentMode::None,
-        .help_string = "Ignore binary files (same as --binary-mode skip)",
-        .long_name = nullptr,
-        .short_name = 'I',
-        .accept_value = [&](auto) {
-            binary_mode = BinaryFileMode::Skip;
-            return true;
-        },
-    });
+    args_parser.add_option(binary_mode, BinaryFileMode::Text, "Treat binary files as text (same as --binary-mode text)", "text", 'a');
+    args_parser.add_option(binary_mode, BinaryFileMode::Skip, "Ignore binary files (same as --binary-mode skip)", nullptr, 'I');
     args_parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
         .help_string = "When to use colored output for the matching text ([auto], never, always)",
@@ -145,16 +204,30 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             return true;
         },
     });
+    args_parser.add_option(disable_hyperlinks, "Disable hyperlinks", "no-hyperlinks");
     args_parser.add_option(count_lines, "Output line count instead of line contents", "count", 'c');
     args_parser.add_positional_argument(files, "File(s) to process", "file", Core::ArgsParser::Required::No);
     args_parser.parse(args);
+
+    if (!pattern_file.is_empty()) {
+        auto file = TRY(Core::File::open(pattern_file, Core::File::OpenMode::Read));
+        auto buffered_file = TRY(Core::InputBufferedFile::create(move(file)));
+        auto buffer = TRY(ByteBuffer::create_uninitialized(PAGE_SIZE));
+        while (!buffered_file->is_eof()) {
+            auto next_pattern = TRY(buffered_file->read_line_with_resize(buffer));
+            // Empty lines represent a valid pattern, but the trailing newline
+            // should be ignored.
+            if (next_pattern.is_empty() && buffered_file->is_eof())
+                break;
+            patterns.append(next_pattern.to_byte_string());
+        }
+    }
 
     // mock grep behavior: if -e is omitted, use first positional argument as pattern
     if (patterns.size() == 0 && files.size())
         patterns.append(files.take_first());
 
     auto user_has_specified_files = !files.is_empty();
-    auto user_specified_multiple_files = files.size() >= 2;
 
     PosixOptions options {};
     if (case_insensitive)
@@ -164,7 +237,7 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         for (auto& re : regular_expressions) {
             if (re.parser_result.error != regex::Error::NoError) {
                 warnln("regex parse error: {}", regex::get_error_string(re.parser_result.error));
-                return 1;
+                return ExitStatus::ErrorOccurred;
             }
         }
 
@@ -187,18 +260,27 @@ ErrorOr<int> serenity_main(Main::Arguments args)
                 }
 
                 if (is_binary && binary_mode == BinaryFileMode::Binary) {
-                    outln(colored_output ? "binary file \x1B[34m{}\x1B[0m matches"sv : "binary file {} matches"sv, filename);
+                    StringBuilder filename_builder;
+                    append_formatted_path(filename_builder, filename, {}, PrintType::Path, !disable_hyperlinks, colored_output);
+                    outln("binary file {} matches"sv, filename_builder.string_view());
                 } else {
-                    if ((result.matches.size() || invert_match) && print_filename)
-                        out(colored_output ? "\x1B[34m{}:\x1B[0m"sv : "{}:"sv, filename);
-                    if ((result.matches.size() || invert_match) && line_numbers)
-                        out(colored_output ? "\x1B[35m{}:\x1B[0m"sv : "{}:"sv, line_number);
+                    PrintType print_type { 0 };
+                    if (print_filename)
+                        print_type |= PrintType::Path;
+                    if (line_numbers)
+                        print_type |= PrintType::LineNumbers;
+
+                    if ((result.matches.size() || invert_match) && has_any_flag(print_type, PrintType::Path | PrintType::LineNumbers)) {
+                        StringBuilder filename_builder;
+                        append_formatted_path(filename_builder, filename, line_number, print_type, !disable_hyperlinks, colored_output);
+                        out("{}:"sv, filename_builder.string_view());
+                    }
 
                     for (auto& match : result.matches) {
                         auto pre_match_length = match.global_offset - last_printed_char_pos;
                         out(colored_output ? "{}\x1B[32m{}\x1B[0m"sv : "{}{}"sv,
                             pre_match_length > 0 ? StringView(&str[last_printed_char_pos], pre_match_length) : ""sv,
-                            match.view.to_deprecated_string());
+                            match.view.to_byte_string());
                         last_printed_char_pos = match.global_offset + match.view.length();
                     }
                     auto remaining_length = str.length() - last_printed_char_pos;
@@ -211,44 +293,54 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             return false;
         };
 
-        bool did_match_something = false;
+        auto exit_status = ExitStatus::NoLinesMatched;
 
-        auto handle_file = [&matches, binary_mode, count_lines, quiet_mode,
-                               user_specified_multiple_files, &matched_line_count, &did_match_something](StringView filename, bool print_filename) -> ErrorOr<void> {
-            auto file = TRY(Core::File::open(filename, Core::File::OpenMode::Read));
-            auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+        auto handle_file = [&matches, binary_mode, count_lines, quiet_mode, disable_hyperlinks, colored_output,
+                               &matched_line_count, &exit_status](StringView filename, bool print_filename) -> ErrorOr<void> {
+            auto file = TRY(Core::File::open_file_or_standard_stream(filename, Core::File::OpenMode::Read));
+            auto buffered_file = TRY(Core::InputBufferedFile::create(move(file)));
 
-            for (size_t line_number = 1; TRY(buffered_file->can_read_line()); ++line_number) {
-                Array<u8, PAGE_SIZE> buffer;
-                auto line = TRY(buffered_file->read_line(buffer));
+            auto buffer = TRY(ByteBuffer::create_uninitialized(PAGE_SIZE));
+            for (size_t line_number = 1; !buffered_file->is_eof(); ++line_number) {
+                auto line = TRY(buffered_file->read_line_with_resize(buffer));
+                if (line.is_empty() && buffered_file->is_eof())
+                    break;
 
                 auto is_binary = line.contains('\0');
 
                 auto matched = matches(line, filename, line_number, print_filename, is_binary);
-                did_match_something = did_match_something || matched;
-                if (matched && is_binary && binary_mode == BinaryFileMode::Binary)
-                    break;
+                if (matched) {
+                    if (exit_status == ExitStatus::NoLinesMatched)
+                        exit_status = ExitStatus::SomethingMatched;
+                    if (is_binary && binary_mode == BinaryFileMode::Binary)
+                        break;
+                }
             }
 
             if (count_lines && !quiet_mode) {
-                if (user_specified_multiple_files)
-                    outln("{}:{}", filename, matched_line_count);
-                else
-                    outln("{}", matched_line_count);
+                if (print_filename) {
+                    StringBuilder filename_builder;
+                    append_formatted_path(filename_builder, filename, {}, PrintType::Path, !disable_hyperlinks, colored_output);
+                    out("{}:", filename_builder.string_view());
+                }
+                outln("{}", matched_line_count);
                 matched_line_count = 0;
             }
 
             return {};
         };
 
-        auto add_directory = [&handle_file, user_has_specified_files, suppress_errors](DeprecatedString base, Optional<DeprecatedString> recursive, auto handle_directory) -> void {
+        auto add_directory = [&handle_file, &exit_status, user_has_specified_files, suppress_errors](ByteString base, Optional<ByteString> recursive, auto handle_directory) -> void {
             Core::DirIterator it(recursive.value_or(base), Core::DirIterator::Flags::SkipDots);
             while (it.has_next()) {
                 auto path = it.next_full_path();
-                if (!Core::DeprecatedFile::is_directory(path)) {
-                    auto key = user_has_specified_files ? path.view() : path.substring_view(base.length() + 1, path.length() - base.length() - 1);
-                    if (auto result = handle_file(key, true); result.is_error() && !suppress_errors)
+                if (!FileSystem::is_directory(path)) {
+                    // Remove leading './' when `grep -r` was run without any specified paths.
+                    auto key = user_has_specified_files ? path.view() : path.substring_view(base.length() + 1);
+                    if (auto result = handle_file(key, true); result.is_error() && !suppress_errors) {
                         warnln("Failed with file {}: {}", key, result.release_error());
+                        exit_status = ExitStatus::ErrorOccurred;
+                    }
 
                 } else {
                     handle_directory(base, path, handle_directory);
@@ -256,56 +348,28 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             }
         };
 
-        if (!files.size() && !recursive) {
-            char* line = nullptr;
-            size_t line_len = 0;
-            ssize_t nread = 0;
-            ScopeGuard free_line = [line] { free(line); };
-            size_t line_number = 0;
-            while ((nread = getline(&line, &line_len, stdin)) != -1) {
-                VERIFY(nread > 0);
-                if (line[nread - 1] == '\n')
-                    --nread;
-                // Human-readable indexes start at 1, so it's fine to increment already.
-                line_number += 1;
-                StringView line_view(line, nread);
-                bool is_binary = line_view.contains('\0');
+        if (recursive) {
+            if (!user_has_specified_files)
+                files.append("."sv);
 
-                if (is_binary && binary_mode == BinaryFileMode::Skip)
-                    return 1;
-
-                auto matched = matches(line_view, "stdin"sv, line_number, false, is_binary);
-                did_match_something = did_match_something || matched;
-                if (matched && is_binary && binary_mode == BinaryFileMode::Binary)
-                    break;
+            for (auto& filename : files) {
+                add_directory(filename, {}, add_directory);
             }
-
-            if (count_lines && !quiet_mode)
-                outln("{}", matched_line_count);
         } else {
-            if (recursive) {
-                if (user_has_specified_files) {
-                    for (auto& filename : files) {
-                        add_directory(filename, {}, add_directory);
-                    }
-                } else {
-                    add_directory(".", {}, add_directory);
-                }
+            if (!user_has_specified_files)
+                files.append("-"sv);
 
-            } else {
-                bool print_filename { files.size() > 1 };
-                for (auto& filename : files) {
-                    auto result = handle_file(filename, print_filename);
-                    if (result.is_error()) {
-                        if (!suppress_errors)
-                            warnln("Failed with file {}: {}", filename, result.release_error());
-                        return 1;
-                    }
+            bool print_filename { files.size() > 1 };
+            for (auto& filename : files) {
+                auto result = handle_file(filename, print_filename);
+                if (result.is_error() && !suppress_errors) {
+                    warnln("Failed with file {}: {}", filename, result.release_error());
+                    exit_status = ExitStatus::ErrorOccurred;
                 }
             }
         }
 
-        return did_match_something ? 0 : 1;
+        return exit_status;
     };
 
     if (use_ere) {
@@ -314,14 +378,13 @@ ErrorOr<int> serenity_main(Main::Arguments args)
             auto escaped_pattern = (fixed_strings) ? escape_characters(pattern, ere_special_characters) : pattern;
             regular_expressions.append(Regex<PosixExtended>(escaped_pattern, options));
         }
-        return grep_logic(regular_expressions);
+        return to_underlying(grep_logic(regular_expressions));
     }
 
     Vector<Regex<PosixBasic>> regular_expressions;
     for (auto pattern : patterns) {
         auto escaped_pattern = (fixed_strings) ? escape_characters(pattern, basic_special_characters) : pattern;
-        dbgln("'{}'", escaped_pattern);
         regular_expressions.append(Regex<PosixBasic>(escaped_pattern, options));
     }
-    return grep_logic(regular_expressions);
+    return to_underlying(grep_logic(regular_expressions));
 }

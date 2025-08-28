@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,7 +9,6 @@
 #define REFPTR_SCRUB_BYTE 0xe0
 
 #include <AK/Assertions.h>
-#include <AK/Atomic.h>
 #include <AK/Error.h>
 #include <AK/Format.h>
 #include <AK/Forward.h>
@@ -64,23 +63,23 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr(NonnullRefPtr<U> const& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr(NonnullRefPtr<U> const& other)
         : m_ptr(const_cast<T*>(static_cast<T const*>(other.ptr())))
     {
         m_ptr->ref();
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr(NonnullRefPtr<U>&& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr(NonnullRefPtr<U>&& other)
         : m_ptr(static_cast<T*>(&other.leak_ref()))
     {
     }
 
     template<typename U>
-    RefPtr(RefPtr<U>&& other)
     requires(IsConvertible<U*, T*>)
+    RefPtr(RefPtr<U>&& other)
         : m_ptr(static_cast<T*>(other.leak_ref()))
     {
     }
@@ -132,8 +131,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(RefPtr<U>&& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr& operator=(RefPtr<U>&& other)
     {
         RefPtr tmp { move(other) };
         swap(tmp);
@@ -141,8 +140,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U>&& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U>&& other)
     {
         RefPtr tmp { move(other) };
         swap(tmp);
@@ -157,8 +156,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U> const& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U> const& other)
     {
         RefPtr tmp { other };
         swap(tmp);
@@ -173,8 +172,8 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(RefPtr<U> const& other)
     requires(IsConvertible<U*, T*>)
+    ALWAYS_INLINE RefPtr& operator=(RefPtr<U> const& other)
     {
         RefPtr tmp { other };
         swap(tmp);
@@ -220,8 +219,8 @@ public:
 
     ALWAYS_INLINE void clear()
     {
-        unref_if_not_null(m_ptr);
-        m_ptr = nullptr;
+        auto* ptr = exchange(m_ptr, nullptr);
+        unref_if_not_null(ptr);
     }
 
     bool operator!() const { return !m_ptr; }
@@ -262,8 +261,8 @@ public:
     bool operator==(NonnullRefPtr<U> const& other) const { return as_ptr() == other.m_ptr; }
 
     template<typename RawPtr>
-    bool operator==(RawPtr other) const
     requires(IsPointer<RawPtr>)
+    bool operator==(RawPtr other) const
     {
         return as_ptr() == other;
     }
@@ -294,7 +293,7 @@ struct Formatter<RefPtr<T>> : Formatter<T const*> {
 };
 
 template<typename T>
-struct Traits<RefPtr<T>> : public GenericTraits<RefPtr<T>> {
+struct Traits<RefPtr<T>> : public DefaultTraits<RefPtr<T>> {
     using PeekType = T*;
     using ConstPeekType = T const*;
     static unsigned hash(RefPtr<T> const& p) { return ptr_hash(p.ptr()); }
@@ -314,8 +313,8 @@ inline RefPtr<T> static_ptr_cast(RefPtr<U> const& ptr)
 }
 
 template<typename T, typename U>
-inline void swap(RefPtr<T>& a, RefPtr<U>& b)
 requires(IsConvertible<U*, T*>)
+inline void swap(RefPtr<T>& a, RefPtr<U>& b)
 {
     a.swap(b);
 }

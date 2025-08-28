@@ -13,9 +13,10 @@ namespace JS {
 
 class ShadowRealmPrototype final : public PrototypeObject<ShadowRealmPrototype, ShadowRealm> {
     JS_PROTOTYPE_OBJECT(ShadowRealmPrototype, ShadowRealm, ShadowRealm);
+    JS_DECLARE_ALLOCATOR(ShadowRealmPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ShadowRealmPrototype() override = default;
 
 private:

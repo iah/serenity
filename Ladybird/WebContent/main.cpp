@@ -1,129 +1,223 @@
 /*
- * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#define AK_DONT_REPLACE_STD
-
-#include "../EventLoopPluginQt.h"
-#include "../FontPluginQt.h"
-#include "../ImageCodecPluginLadybird.h"
-#include "../RequestManagerQt.h"
-#include "../Utilities.h"
-#include "../WebSocketClientManagerLadybird.h"
 #include <AK/LexicalPath.h>
+#include <Ladybird/FontPlugin.h>
+#include <Ladybird/ImageCodecPlugin.h>
+#include <Ladybird/Utilities.h>
+#include <LibAudio/Loader.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/LocalServer.h>
+#include <LibCore/Process.h>
+#include <LibCore/Resource.h>
 #include <LibCore/System.h>
 #include <LibCore/SystemServerTakeover.h>
 #include <LibIPC/ConnectionFromClient.h>
+#include <LibJS/Bytecode/Interpreter.h>
 #include <LibMain/Main.h>
+#include <LibProtocol/RequestClient.h>
+#include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/Loader/ContentFilter.h>
-#include <LibWeb/Loader/FrameLoader.h>
+#include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/PermissionsPolicy/AutoplayAllowlist.h>
+#include <LibWeb/Platform/AudioCodecPluginAgnostic.h>
+#include <LibWeb/Platform/EventLoopPluginSerenity.h>
 #include <LibWeb/WebSockets/WebSocket.h>
-#include <QGuiApplication>
-#include <QSocketNotifier>
-#include <QTimer>
+#include <LibWebView/RequestServerAdapter.h>
+#include <LibWebView/WebSocketClientAdapter.h>
 #include <WebContent/ConnectionFromClient.h>
-#include <WebContent/PageHost.h>
+#include <WebContent/PageClient.h>
 #include <WebContent/WebDriverConnection.h>
 
+#if defined(AK_OS_MACOS)
+#    include <LibCore/Platform/ProcessStatisticsMach.h>
+#endif
+
 static ErrorOr<void> load_content_filters();
+static ErrorOr<void> load_autoplay_allowlist();
+static ErrorOr<void> initialize_lagom_networking(int request_server_socket);
 
-extern DeprecatedString s_serenity_resource_root;
+namespace JS {
+extern bool g_log_all_js_exceptions;
+}
 
-struct DeferredInvokerQt final : IPC::DeferredInvoker {
-    virtual ~DeferredInvokerQt() = default;
-    virtual void schedule(Function<void()> callback) override
-    {
-        QTimer::singleShot(0, move(callback));
-    }
-};
+namespace Web::WebIDL {
+extern bool g_enable_idl_tracing;
+}
 
-template<typename ClientType>
-static void proxy_socket_through_notifier(ClientType& client, QSocketNotifier& notifier)
-{
-    notifier.setSocket(client.socket().fd().value());
-    notifier.setEnabled(true);
-
-    QObject::connect(&notifier, &QSocketNotifier::activated, [&client]() mutable {
-        client.socket().notifier()->on_ready_to_read();
-    });
-
-    client.set_deferred_invoker(make<DeferredInvokerQt>());
+namespace Web::Fetch::Fetching {
+extern bool g_http_cache_enabled;
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    // NOTE: This is only used for the Core::Socket inside the IPC connection.
-    // FIXME: Refactor things so we can get rid of this somehow.
-    Core::EventLoop event_loop;
+    AK::set_rich_debug_enabled(true);
 
-    QGuiApplication app(arguments.argc, arguments.argv);
+    Core::EventLoop event_loop;
 
     platform_init();
 
-    Web::Platform::EventLoopPlugin::install(*new Ladybird::EventLoopPluginQt);
-    Web::Platform::ImageCodecPlugin::install(*new Ladybird::ImageCodecPluginLadybird);
+    Web::Platform::EventLoopPlugin::install(*new Web::Platform::EventLoopPluginSerenity);
+    Web::Platform::ImageCodecPlugin::install(*new Ladybird::ImageCodecPlugin);
 
-    Web::ResourceLoader::initialize(RequestManagerQt::create());
-    Web::WebSockets::WebSocketClientManager::initialize(Ladybird::WebSocketClientManagerLadybird::create());
+    Web::Platform::AudioCodecPlugin::install_creation_hook([](auto loader) {
+#if defined(AK_OS_MACOS) || defined(HAVE_PULSEAUDIO)
+        return Web::Platform::AudioCodecPluginAgnostic::create(move(loader));
+#else
+        (void)loader;
+        return Error::from_string_literal("Don't know how to initialize audio in this configuration!");
+#endif
+    });
 
-    Web::FrameLoader::set_default_favicon_path(DeprecatedString::formatted("{}/res/icons/16x16/app-browser.png", s_serenity_resource_root));
+    StringView command_line {};
+    StringView executable_path {};
+    StringView mach_server_name {};
+    Vector<ByteString> certificates;
+    int request_server_socket { -1 };
+    bool is_layout_test_mode = false;
+    bool expose_internals_object = false;
+    bool use_gpu_painting = false;
+    bool use_experimental_cpu_transform_support = false;
+    bool wait_for_debugger = false;
+    bool log_all_js_exceptions = false;
+    bool enable_idl_tracing = false;
+    bool enable_http_cache = false;
 
-    Web::Platform::FontPlugin::install(*new Ladybird::FontPluginQt);
+    Core::ArgsParser args_parser;
+    args_parser.add_option(command_line, "Chrome process command line", "command-line", 0, "command_line");
+    args_parser.add_option(executable_path, "Chrome process executable path", "executable-path", 0, "executable_path");
+    args_parser.add_option(request_server_socket, "File descriptor of the socket for the RequestServer connection", "request-server-socket", 'r', "request_server_socket");
+    args_parser.add_option(is_layout_test_mode, "Is layout test mode", "layout-test-mode");
+    args_parser.add_option(expose_internals_object, "Expose internals object", "expose-internals-object");
+    args_parser.add_option(use_gpu_painting, "Enable GPU painting", "use-gpu-painting");
+    args_parser.add_option(use_experimental_cpu_transform_support, "Enable experimental CPU transform support", "experimental-cpu-transforms");
+    args_parser.add_option(wait_for_debugger, "Wait for debugger", "wait-for-debugger");
+    args_parser.add_option(mach_server_name, "Mach server name", "mach-server-name", 0, "mach_server_name");
+    args_parser.add_option(log_all_js_exceptions, "Log all JavaScript exceptions", "log-all-js-exceptions");
+    args_parser.add_option(enable_idl_tracing, "Enable IDL tracing", "enable-idl-tracing");
+    args_parser.add_option(enable_http_cache, "Enable HTTP cache", "enable-http-cache");
 
-    Web::FrameLoader::set_error_page_url(DeprecatedString::formatted("file://{}/res/html/error.html", s_serenity_resource_root));
+    args_parser.parse(arguments);
+
+    if (wait_for_debugger) {
+        Core::Process::wait_for_debugger_and_break();
+    }
+
+    // Layout test mode implies internals object is exposed
+    if (is_layout_test_mode)
+        expose_internals_object = true;
+
+    Web::set_chrome_process_command_line(command_line);
+    Web::set_chrome_process_executable_path(executable_path);
+    if (use_gpu_painting) {
+        WebContent::PageClient::set_use_gpu_painter();
+    }
+
+    if (use_experimental_cpu_transform_support) {
+        WebContent::PageClient::set_use_experimental_cpu_transform_support();
+    }
+
+    if (enable_http_cache) {
+        Web::Fetch::Fetching::g_http_cache_enabled = true;
+    }
+
+#if defined(AK_OS_MACOS)
+    if (!mach_server_name.is_empty()) {
+        Core::Platform::register_with_mach_server(mach_server_name);
+    }
+#endif
+
+    TRY(initialize_lagom_networking(request_server_socket));
+
+    Web::HTML::Window::set_internals_object_exposed(expose_internals_object);
+
+    Web::Platform::FontPlugin::install(*new Ladybird::FontPlugin(is_layout_test_mode));
+
+    TRY(Web::Bindings::initialize_main_thread_vm(Web::HTML::EventLoop::Type::Window));
+
+    if (log_all_js_exceptions) {
+        JS::g_log_all_js_exceptions = true;
+    }
+
+    if (enable_idl_tracing) {
+        Web::WebIDL::g_enable_idl_tracing = true;
+    }
 
     auto maybe_content_filter_error = load_content_filters();
     if (maybe_content_filter_error.is_error())
         dbgln("Failed to load content filters: {}", maybe_content_filter_error.error());
 
-    int webcontent_fd_passing_socket { -1 };
-    DeprecatedString webdriver_content_ipc_path;
-
-    Core::ArgsParser args_parser;
-    args_parser.add_option(webcontent_fd_passing_socket, "File descriptor of the passing socket for the WebContent connection", "webcontent-fd-passing-socket", 'c', "webcontent_fd_passing_socket");
-    args_parser.add_option(webdriver_content_ipc_path, "Path to WebDriver IPC for WebContent", "webdriver-content-path", 0, "path");
-    args_parser.parse(arguments);
-
-    VERIFY(webcontent_fd_passing_socket >= 0);
+    auto maybe_autoplay_allowlist_error = load_autoplay_allowlist();
+    if (maybe_autoplay_allowlist_error.is_error())
+        dbgln("Failed to load autoplay allowlist: {}", maybe_autoplay_allowlist_error.error());
 
     auto webcontent_socket = TRY(Core::take_over_socket_from_system_server("WebContent"sv));
     auto webcontent_client = TRY(WebContent::ConnectionFromClient::try_create(move(webcontent_socket)));
-    webcontent_client->set_fd_passing_socket(TRY(Core::LocalSocket::adopt_fd(webcontent_fd_passing_socket)));
 
-    QSocketNotifier webcontent_notifier(QSocketNotifier::Type::Read);
-    proxy_socket_through_notifier(*webcontent_client, webcontent_notifier);
-
-    QSocketNotifier webdriver_notifier(QSocketNotifier::Type::Read);
-    RefPtr<WebContent::WebDriverConnection> webdriver_client;
-    if (!webdriver_content_ipc_path.is_empty()) {
-        webdriver_client = TRY(WebContent::WebDriverConnection::connect(webcontent_client->page_host(), webdriver_content_ipc_path));
-        proxy_socket_through_notifier(*webdriver_client, webdriver_notifier);
-    }
-
-    return app.exec();
+    return event_loop.exec();
 }
 
 static ErrorOr<void> load_content_filters()
 {
-    auto file_or_error = Core::File::open(DeprecatedString::formatted("{}/home/anon/.config/BrowserContentFilters.txt", s_serenity_resource_root), Core::File::OpenMode::Read);
-    if (file_or_error.is_error())
-        file_or_error = Core::File::open(DeprecatedString::formatted("{}/res/ladybird/BrowserContentFilters.txt", s_serenity_resource_root), Core::File::OpenMode::Read);
-    if (file_or_error.is_error())
-        return file_or_error.release_error();
-    auto file = file_or_error.release_value();
-    auto ad_filter_list = TRY(Core::BufferedFile::create(move(file)));
     auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
+
+    auto resource = TRY(Core::Resource::load_from_uri("resource://ladybird/BrowserContentFilters.txt"sv));
+    auto ad_filter_list = TRY(InputBufferedSeekable<FixedMemoryStream>::create(make<FixedMemoryStream>(resource->data())));
+
+    Vector<String> patterns;
+
     while (TRY(ad_filter_list->can_read_line())) {
         auto line = TRY(ad_filter_list->read_line(buffer));
-        if (!line.is_empty()) {
-            Web::ContentFilter::the().add_pattern(line);
-        }
+        if (line.is_empty())
+            continue;
+
+        auto pattern = TRY(String::from_utf8(line));
+        TRY(patterns.try_append(move(pattern)));
     }
+
+    auto& content_filter = Web::ContentFilter::the();
+    TRY(content_filter.set_patterns(patterns));
+
+    return {};
+}
+
+static ErrorOr<void> load_autoplay_allowlist()
+{
+    auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
+
+    auto resource = TRY(Core::Resource::load_from_uri("resource://ladybird/BrowserAutoplayAllowlist.txt"sv));
+    auto allowlist = TRY(InputBufferedSeekable<FixedMemoryStream>::create(make<FixedMemoryStream>(resource->data())));
+
+    Vector<String> origins;
+
+    while (TRY(allowlist->can_read_line())) {
+        auto line = TRY(allowlist->read_line(buffer));
+        if (line.is_empty())
+            continue;
+
+        auto domain = TRY(String::from_utf8(line));
+        TRY(origins.try_append(move(domain)));
+    }
+
+    auto& autoplay_allowlist = Web::PermissionsPolicy::AutoplayAllowlist::the();
+    TRY(autoplay_allowlist.enable_for_origins(origins));
+
+    return {};
+}
+
+ErrorOr<void> initialize_lagom_networking(int request_server_socket)
+{
+    auto socket = TRY(Core::LocalSocket::adopt_fd(request_server_socket));
+    TRY(socket->set_blocking(true));
+
+    auto new_client = TRY(try_make_ref_counted<Protocol::RequestClient>(move(socket)));
+
+    Web::ResourceLoader::initialize(TRY(WebView::RequestServerAdapter::try_create(move(new_client))));
     return {};
 }

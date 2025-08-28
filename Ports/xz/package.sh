@@ -1,10 +1,19 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=xz
-version=5.2.5
-useconfigure=true
-configopts=("--disable-static" "--enable-shared")
-use_fresh_config_sub=true
-config_sub_paths=("build-aux/config.sub")
-files="https://tukaani.org/xz/xz-${version}.tar.gz xz-${version}.tar.gz f6f4910fd033078738bd82bfba4f49219d03b17eb0794eb91efbae419f4aba10"
-auth_type=sha256
-depends=("zlib" "libiconv")
+port='xz'
+version='5.6.2'
+depends=(
+    'libiconv'
+    'zlib'
+)
+files=(
+    "https://tukaani.org/xz/xz-${version}.tar.gz#8bfd20c0e1d86f0402f2497cfa71c6ab62d4cd35fd704276e3140bfb71414519"
+)
+useconfigure='true'
+use_fresh_config_sub='true'
+config_sub_paths=(
+    'build-aux/config.sub'
+)
+configopts=(
+    '--disable-static'
+    '--enable-shared'
+)

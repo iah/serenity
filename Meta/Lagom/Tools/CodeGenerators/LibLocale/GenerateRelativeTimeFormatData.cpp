@@ -5,7 +5,7 @@
  */
 
 #include "../LibUnicode/GeneratorUtil.h" // FIXME: Move this somewhere common.
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <AK/HashMap.h>
 #include <AK/JsonObject.h>
@@ -15,7 +15,7 @@
 #include <AK/SourceGenerator.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DirIterator.h>
+#include <LibCore/Directory.h>
 #include <LibLocale/Locale.h>
 #include <LibLocale/RelativeTimeFormat.h>
 
@@ -39,9 +39,9 @@ struct RelativeTimeFormat {
             && (pattern == other.pattern);
     }
 
-    DeprecatedString time_unit;
-    DeprecatedString style;
-    DeprecatedString plurality;
+    ByteString time_unit;
+    ByteString style;
+    ByteString plurality;
     size_t tense_or_number { 0 };
     size_t pattern { 0 };
 };
@@ -61,7 +61,7 @@ struct AK::Formatter<RelativeTimeFormat> : Formatter<FormatString> {
 };
 
 template<>
-struct AK::Traits<RelativeTimeFormat> : public GenericTraits<RelativeTimeFormat> {
+struct AK::Traits<RelativeTimeFormat> : public DefaultTraits<RelativeTimeFormat> {
     static unsigned hash(RelativeTimeFormat const& format) { return format.hash(); }
 };
 
@@ -73,10 +73,10 @@ struct CLDR {
     UniqueStringStorage unique_strings;
     UniqueStorage<RelativeTimeFormat> unique_formats;
 
-    HashMap<DeprecatedString, LocaleData> locales;
+    HashMap<ByteString, LocaleData> locales;
 };
 
-static ErrorOr<void> parse_date_fields(DeprecatedString locale_dates_path, CLDR& cldr, LocaleData& locale)
+static ErrorOr<void> parse_date_fields(ByteString locale_dates_path, CLDR& cldr, LocaleData& locale)
 {
     LexicalPath date_fields_path(move(locale_dates_path));
     date_fields_path = date_fields_path.append("dateFields.json"sv);
@@ -135,11 +135,9 @@ static ErrorOr<void> parse_date_fields(DeprecatedString locale_dates_path, CLDR&
     return {};
 }
 
-static ErrorOr<void> parse_all_locales(DeprecatedString dates_path, CLDR& cldr)
+static ErrorOr<void> parse_all_locales(ByteString dates_path, CLDR& cldr)
 {
-    auto dates_iterator = TRY(path_to_dir_iterator(move(dates_path)));
-
-    auto remove_variants_from_path = [&](DeprecatedString path) -> ErrorOr<DeprecatedString> {
+    auto remove_variants_from_path = [&](ByteString path) -> ErrorOr<ByteString> {
         auto parsed_locale = TRY(CanonicalLanguageID::parse(cldr.unique_strings, LexicalPath::basename(path)));
 
         StringBuilder builder;
@@ -149,21 +147,22 @@ static ErrorOr<void> parse_all_locales(DeprecatedString dates_path, CLDR& cldr)
         if (auto region = cldr.unique_strings.get(parsed_locale.region); !region.is_empty())
             builder.appendff("-{}", region);
 
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     };
 
-    while (dates_iterator.has_next()) {
-        auto dates_path = TRY(next_path_from_dir_iterator(dates_iterator));
+    TRY(Core::Directory::for_each_entry(TRY(String::formatted("{}/main", dates_path)), Core::DirIterator::SkipParentAndBaseDir, [&](auto& entry, auto& directory) -> ErrorOr<IterationDecision> {
+        auto dates_path = LexicalPath::join(directory.path().string(), entry.name).string();
         auto language = TRY(remove_variants_from_path(dates_path));
 
         auto& locale = cldr.locales.ensure(language);
         TRY(parse_date_fields(move(dates_path), cldr, locale));
-    }
+        return IterationDecision::Continue;
+    }));
 
     return {};
 }
 
-static ErrorOr<void> generate_unicode_locale_header(Core::BufferedFile& file, CLDR&)
+static ErrorOr<void> generate_unicode_locale_header(Core::InputBufferedFile& file, CLDR&)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -180,11 +179,11 @@ namespace Locale {
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
-static ErrorOr<void> generate_unicode_locale_implementation(Core::BufferedFile& file, CLDR& cldr)
+static ErrorOr<void> generate_unicode_locale_implementation(Core::InputBufferedFile& file, CLDR& cldr)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -226,9 +225,9 @@ struct RelativeTimeFormatImpl {
 
     cldr.unique_formats.generate(generator, "RelativeTimeFormatImpl"sv, "s_relative_time_formats"sv, 10);
 
-    auto append_list = [&](DeprecatedString name, auto const& list) {
+    auto append_list = [&](ByteString name, auto const& list) {
         generator.set("name", name);
-        generator.set("size", DeprecatedString::number(list.size()));
+        generator.set("size", ByteString::number(list.size()));
 
         generator.append(R"~~~(
 static constexpr Array<@relative_time_format_index_type@, @size@> @name@ { {)~~~");
@@ -236,7 +235,7 @@ static constexpr Array<@relative_time_format_index_type@, @size@> @name@ { {)~~~
         bool first = true;
         for (auto index : list) {
             generator.append(first ? " "sv : ", "sv);
-            generator.append(DeprecatedString::number(index));
+            generator.append(ByteString::number(index));
             first = false;
         }
 
@@ -246,7 +245,7 @@ static constexpr Array<@relative_time_format_index_type@, @size@> @name@ { {)~~~
     generate_mapping(generator, cldr.locales, cldr.unique_formats.type_that_fits(), "s_locale_relative_time_formats"sv, "s_number_systems_digits_{}"sv, nullptr, [&](auto const& name, auto const& value) { append_list(name, value.time_units); });
 
     generator.append(R"~~~(
-ErrorOr<Vector<RelativeTimeFormat>> get_relative_time_format_patterns(StringView locale, TimeUnit time_unit, StringView tense_or_number, Style style)
+Vector<RelativeTimeFormat> get_relative_time_format_patterns(StringView locale, TimeUnit time_unit, StringView tense_or_number, Style style)
 {
     Vector<RelativeTimeFormat> formats;
 
@@ -267,7 +266,7 @@ ErrorOr<Vector<RelativeTimeFormat>> get_relative_time_format_patterns(StringView
         if (decode_string(locale_format.tense_or_number) != tense_or_number)
             continue;
 
-        TRY(formats.try_append(locale_format.to_relative_time_format()));
+        formats.append(locale_format.to_relative_time_format());
     }
 
     return formats;
@@ -276,7 +275,7 @@ ErrorOr<Vector<RelativeTimeFormat>> get_relative_time_format_patterns(StringView
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 

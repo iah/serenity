@@ -11,14 +11,14 @@
 #include <LibEDID/EDID.h>
 
 #ifdef KERNEL
-#    include <Kernel/StdLib.h>
+#    include <Kernel/Library/StdLib.h>
 #else
 #    include <AK/ScopeGuard.h>
-#    include <Kernel/API/Graphics.h>
 #    include <fcntl.h>
+#    include <sys/devices/gpu.h>
 #    include <unistd.h>
 
-#    ifdef ENABLE_PNP_IDS_DATA
+#    if ENABLE_PNP_IDS_DATA
 #        include <LibEDID/PnpIDs.h>
 #    endif
 #endif
@@ -227,7 +227,7 @@ ErrorOr<Parser> Parser::from_display_connector_device(int display_connector_fd)
     return from_bytes(move(edid_byte_buffer));
 }
 
-ErrorOr<Parser> Parser::from_display_connector_device(DeprecatedString const& display_connector_device)
+ErrorOr<Parser> Parser::from_display_connector_device(ByteString const& display_connector_device)
 {
     int display_connector_fd = open(display_connector_device.characters(), O_RDWR | O_CLOEXEC);
     if (display_connector_fd < 0) {
@@ -314,7 +314,7 @@ ErrorOr<void> Parser::parse()
 #ifdef KERNEL
     m_version = TRY(Kernel::KString::formatted("1.{}", (int)m_revision));
 #else
-    m_version = DeprecatedString::formatted("1.{}", (int)m_revision);
+    m_version = ByteString::formatted("1.{}", (int)m_revision);
 #endif
 
     u8 checksum = 0x0;
@@ -420,12 +420,12 @@ StringView Parser::legacy_manufacturer_id() const
 }
 
 #ifndef KERNEL
-DeprecatedString Parser::manufacturer_name() const
+ByteString Parser::manufacturer_name() const
 {
     if (!m_legacy_manufacturer_id_valid)
         return "Unknown";
     auto manufacturer_id = legacy_manufacturer_id();
-#    ifdef ENABLE_PNP_IDS_DATA
+#    if ENABLE_PNP_IDS_DATA
     if (auto pnp_id_data = PnpIDs::find_by_manufacturer_id(manufacturer_id); pnp_id_data.has_value())
         return pnp_id_data.value().manufacturer_name;
 #    endif
@@ -998,9 +998,9 @@ ErrorOr<IterationDecision> Parser::for_each_display_descriptor(Function<Iteratio
 }
 
 #ifndef KERNEL
-DeprecatedString Parser::display_product_name() const
+ByteString Parser::display_product_name() const
 {
-    DeprecatedString product_name;
+    ByteString product_name;
     auto result = for_each_display_descriptor([&](u8 descriptor_tag, Definitions::DisplayDescriptor const& display_descriptor) {
         if (descriptor_tag != (u8)Definitions::DisplayDescriptorTag::DisplayProductName)
             return IterationDecision::Continue;
@@ -1011,7 +1011,7 @@ DeprecatedString Parser::display_product_name() const
                 break;
             str.append((char)byte);
         }
-        product_name = str.to_deprecated_string();
+        product_name = str.to_byte_string();
         return IterationDecision::Break;
     });
     if (result.is_error()) {
@@ -1021,9 +1021,9 @@ DeprecatedString Parser::display_product_name() const
     return product_name;
 }
 
-DeprecatedString Parser::display_product_serial_number() const
+ByteString Parser::display_product_serial_number() const
 {
-    DeprecatedString product_name;
+    ByteString product_name;
     auto result = for_each_display_descriptor([&](u8 descriptor_tag, Definitions::DisplayDescriptor const& display_descriptor) {
         if (descriptor_tag != (u8)Definitions::DisplayDescriptorTag::DisplayProductSerialNumber)
             return IterationDecision::Continue;
@@ -1034,7 +1034,7 @@ DeprecatedString Parser::display_product_serial_number() const
                 break;
             str.append((char)byte);
         }
-        product_name = str.to_deprecated_string();
+        product_name = str.to_byte_string();
         return IterationDecision::Break;
     });
     if (result.is_error()) {
@@ -1083,18 +1083,24 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
     }));
 
     size_t detailed_timing_index = 0;
-    TRY(for_each_detailed_timing([&](auto& detailed_timing, auto) {
+    auto detailed_timing_result = for_each_detailed_timing([&](auto& detailed_timing, auto) {
         bool is_preferred = detailed_timing_index++ == 0;
         add_resolution(detailed_timing.horizontal_addressable_pixels(), detailed_timing.vertical_addressable_lines(), detailed_timing.refresh_rate(), is_preferred);
         return IterationDecision::Continue;
-    }));
+    });
 
-    TRY(for_each_short_video_descriptor([&](unsigned, bool, VIC::Details const& vic_details) {
+    if (detailed_timing_result.is_error())
+        dbgln("Failed to process detailed timing data: {}", detailed_timing_result.error());
+
+    auto short_video_descriptor_result = for_each_short_video_descriptor([&](unsigned, bool, VIC::Details const& vic_details) {
         add_resolution(vic_details.horizontal_pixels, vic_details.vertical_lines, vic_details.refresh_rate_hz());
         return IterationDecision::Continue;
-    }));
+    });
 
-    TRY(for_each_coordinated_video_timing([&](auto& coordinated_video_timing) {
+    if (short_video_descriptor_result.is_error())
+        dbgln("Failed to process short video descriptors: {}", short_video_descriptor_result.error());
+
+    auto coordinated_video_timings_result = for_each_coordinated_video_timing([&](auto& coordinated_video_timing) {
         if (auto* dmt = DMT::find_timing_by_cvt(coordinated_video_timing.cvt_code())) {
             add_resolution(dmt->horizontal_pixels, dmt->vertical_lines, dmt->vertical_frequency_hz());
         } else {
@@ -1103,7 +1109,10 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
             dbgln("TODO: Decode CVT code: {:02x},{:02x},{:02x}", cvt.bytes[0], cvt.bytes[1], cvt.bytes[2]);
         }
         return IterationDecision::Continue;
-    }));
+    });
+
+    if (coordinated_video_timings_result.is_error())
+        dbgln("Failed to process coordinated video timing results: {}", coordinated_video_timings_result.error());
 
     quick_sort(resolutions, [&](auto& info1, auto& info2) {
         if (info1.width < info2.width)
@@ -1112,6 +1121,7 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
             return true;
         return false;
     });
+
     for (auto& res : resolutions) {
         if (res.refresh_rates.size() > 1)
             quick_sort(res.refresh_rates);

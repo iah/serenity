@@ -1,17 +1,17 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2024, Tim Flynn <trflynn89@serenityos.org>
  * Copyright (c) 2022, Alex Major
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/StandardPaths.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
 #include <LibSQL/AST/Lexer.h>
@@ -19,10 +19,15 @@
 #include <LibSQL/SQLClient.h>
 #include <unistd.h>
 
+#if !defined(AK_OS_SERENITY)
+#    include <LibCore/Process.h>
+#endif
+
 class SQLRepl {
 public:
-    explicit SQLRepl(Core::EventLoop& loop, DeprecatedString const& database_name, NonnullRefPtr<SQL::SQLClient> sql_client)
-        : m_sql_client(move(sql_client))
+    explicit SQLRepl(Core::EventLoop& loop, ByteString const& database_name, NonnullRefPtr<SQL::SQLClient> sql_client)
+        : m_history_path(ByteString::formatted("{}/.sql-history", Core::StandardPaths::home_directory()))
+        , m_sql_client(move(sql_client))
         , m_loop(loop)
     {
         m_editor = Line::Editor::construct();
@@ -85,7 +90,7 @@ public:
         m_sql_client->on_next_result = [](auto result) {
             StringBuilder builder;
             builder.join(", "sv, result.values);
-            outln("{}", builder.to_deprecated_string());
+            outln("{}", builder.to_byte_string());
         };
 
         m_sql_client->on_results_exhausted = [this](auto result) {
@@ -107,7 +112,7 @@ public:
         m_editor->save_history(m_history_path);
     }
 
-    void connect(DeprecatedString const& database_name)
+    void connect(ByteString const& database_name)
     {
         if (!m_database_name.is_empty()) {
             m_sql_client->disconnect(m_connection_id);
@@ -124,13 +129,13 @@ public:
         }
     }
 
-    void source_file(DeprecatedString file_name)
+    void source_file(ByteString file_name)
     {
         m_input_file_chain.append(move(file_name));
         m_quit_when_files_read = false;
     }
 
-    void read_file(DeprecatedString file_name)
+    void read_file(ByteString file_name)
     {
         m_input_file_chain.append(move(file_name));
         m_quit_when_files_read = true;
@@ -143,20 +148,20 @@ public:
     }
 
 private:
-    DeprecatedString m_history_path { DeprecatedString::formatted("{}/.sql-history", Core::StandardPaths::home_directory()) };
+    ByteString m_history_path;
     RefPtr<Line::Editor> m_editor { nullptr };
     int m_repl_line_level { 0 };
     bool m_keep_running { true };
-    DeprecatedString m_database_name {};
+    ByteString m_database_name {};
     NonnullRefPtr<SQL::SQLClient> m_sql_client;
     SQL::ConnectionID m_connection_id { 0 };
     Core::EventLoop& m_loop;
-    OwnPtr<Core::BufferedFile> m_input_file { nullptr };
+    OwnPtr<Core::InputBufferedFile> m_input_file { nullptr };
     bool m_quit_when_files_read { false };
-    Vector<DeprecatedString> m_input_file_chain {};
+    Vector<ByteString> m_input_file_chain {};
     Array<u8, 4096> m_buffer {};
 
-    Optional<DeprecatedString> get_line()
+    Optional<ByteString> get_line()
     {
         if (!m_input_file && !m_input_file_chain.is_empty()) {
             auto file_name = m_input_file_chain.take_first();
@@ -166,7 +171,7 @@ private:
                 return {};
             }
 
-            auto buffered_file_or_error = Core::BufferedFile::create(file_or_error.release_value());
+            auto buffered_file_or_error = Core::InputBufferedFile::create(file_or_error.release_value());
             if (buffered_file_or_error.is_error()) {
                 warnln("Input file {} could not be buffered: {}", file_name, buffered_file_or_error.error());
                 return {};
@@ -188,7 +193,7 @@ private:
             }
             return line.release_value();
             // If the last file is exhausted but m_quit_when_files_read is false
-            // we fall through to the standard reading from the editor behaviour
+            // we fall through to the standard reading from the editor behavior
         }
         auto line_result = m_editor->get_line(prompt_for_level(m_repl_line_level));
         if (line_result.is_error())
@@ -196,7 +201,7 @@ private:
         return line_result.value();
     }
 
-    DeprecatedString read_next_piece()
+    ByteString read_next_piece()
     {
         StringBuilder piece;
 
@@ -250,12 +255,12 @@ private:
                 m_repl_line_level = last_token_ended_statement ? 0 : (m_repl_line_level > 0 ? m_repl_line_level : 1);
         } while ((m_repl_line_level > 0) || piece.is_empty());
 
-        return piece.to_deprecated_string();
+        return piece.to_byte_string();
     }
 
     void read_sql()
     {
-        DeprecatedString piece = read_next_piece();
+        ByteString piece = read_next_piece();
 
         // m_keep_running can be set to false when the file we are reading
         // from is exhausted...
@@ -286,9 +291,9 @@ private:
             m_loop.quit(0);
             return;
         }
-    };
+    }
 
-    static DeprecatedString prompt_for_level(int level)
+    static ByteString prompt_for_level(int level)
     {
         static StringBuilder prompt_builder;
         prompt_builder.clear();
@@ -297,7 +302,7 @@ private:
         for (auto i = 0; i < level; ++i)
             prompt_builder.append("    "sv);
 
-        return prompt_builder.to_deprecated_string();
+        return prompt_builder.to_byte_string();
     }
 
     bool handle_command(StringView command)
@@ -334,11 +339,11 @@ private:
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    DeprecatedString database_name(getlogin());
-    DeprecatedString file_to_source;
-    DeprecatedString file_to_read;
+    ByteString database_name(getlogin());
+    ByteString file_to_source;
+    ByteString file_to_read;
     bool suppress_sqlrc = false;
-    auto sqlrc_path = DeprecatedString::formatted("{}/.sqlrc", Core::StandardPaths::home_directory());
+    auto sqlrc_path = ByteString::formatted("{}/.sqlrc", Core::StandardPaths::home_directory());
 #if !defined(AK_OS_SERENITY)
     StringView sql_server_path;
 #endif
@@ -350,7 +355,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(file_to_source, "File to source", "source", 's', "file");
     args_parser.add_option(suppress_sqlrc, "Don't read ~/.sqlrc", "no-sqlrc", 'n');
 #if !defined(AK_OS_SERENITY)
-    args_parser.add_option(sql_server_path, "Path to SQLServer to launch if needed", "sql-server-path", 's', "path");
+    args_parser.add_option(sql_server_path, "Path to SQLServer to launch if needed", "sql-server-path", 'p', "path");
 #endif
     args_parser.parse(arguments);
 
@@ -360,12 +365,16 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto sql_client = TRY(SQL::SQLClient::try_create());
 #else
     VERIFY(!sql_server_path.is_empty());
-    auto sql_client = TRY(SQL::SQLClient::launch_server_and_create_client({ TRY(String::from_utf8(sql_server_path)) }));
+
+    auto [_, sql_client] = TRY(Core::IPCProcess::spawn_singleton<SQL::SQLClient>({
+        .name = "SQLServer"sv,
+        .executable = sql_server_path,
+    }));
 #endif
 
     SQLRepl repl(loop, database_name, move(sql_client));
 
-    if (!suppress_sqlrc && Core::DeprecatedFile::exists(sqlrc_path))
+    if (!suppress_sqlrc && FileSystem::exists(sqlrc_path))
         repl.source_file(sqlrc_path);
     if (!file_to_source.is_empty())
         repl.source_file(file_to_source);

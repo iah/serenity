@@ -20,16 +20,16 @@ public:
 
     virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return m_items.size(); }
     virtual int column_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return 1; }
-    virtual DeprecatedString column_name(int) const override { return "Item"; }
+    virtual ErrorOr<String> column_name(int) const override { return "Item"_string; }
 
     virtual GUI::Variant data(GUI::ModelIndex const&, GUI::ModelRole = GUI::ModelRole::Display) const override;
-    virtual TriState data_matches(GUI::ModelIndex const&, GUI::Variant const&) const override;
+    virtual GUI::Model::MatchResult data_matches(GUI::ModelIndex const&, GUI::Variant const&) const override;
     virtual void invalidate() override;
     virtual GUI::ModelIndex index(int row, int column = 0, GUI::ModelIndex const& parent = GUI::ModelIndex()) const override;
 
     Function<void()> on_invalidate;
 
-    void add_item(DeprecatedString const& item);
+    void add_item(ByteString const& item);
     void remove_item(GUI::ModelIndex const&);
 
 private:
@@ -37,5 +37,5 @@ private:
     {
     }
 
-    Vector<DeprecatedString> m_items;
+    Vector<ByteString> m_items;
 };

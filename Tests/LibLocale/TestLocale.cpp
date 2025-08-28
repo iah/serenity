@@ -104,11 +104,11 @@ template<typename LHS, typename RHS>
 TEST_CASE(parse_unicode_locale_id)
 {
     auto fail = [](StringView locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         EXPECT(!locale_id.has_value());
     };
     auto pass = [](StringView locale, Optional<StringView> expected_language, Optional<StringView> expected_script, Optional<StringView> expected_region, Vector<StringView> expected_variants) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
 
         EXPECT_EQ(locale_id->language_id.language, expected_language);
@@ -145,11 +145,11 @@ TEST_CASE(parse_unicode_locale_id_with_unicode_locale_extension)
     };
 
     auto fail = [](StringView locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         EXPECT(!locale_id.has_value());
     };
     auto pass = [](StringView locale, LocaleExtension const& expected_extension) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
         EXPECT_EQ(locale_id->extensions.size(), 1u);
 
@@ -209,11 +209,11 @@ TEST_CASE(parse_unicode_locale_id_with_transformed_extension)
     };
 
     auto fail = [](StringView locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         EXPECT(!locale_id.has_value());
     };
     auto pass = [](StringView locale, TransformedExtension const& expected_extension) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
         EXPECT_EQ(locale_id->extensions.size(), 1u);
 
@@ -280,11 +280,11 @@ TEST_CASE(parse_unicode_locale_id_with_other_extension)
     };
 
     auto fail = [](StringView locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         EXPECT(!locale_id.has_value());
     };
     auto pass = [](StringView locale, OtherExtension const& expected_extension) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
         EXPECT_EQ(locale_id->extensions.size(), 1u);
 
@@ -314,11 +314,11 @@ TEST_CASE(parse_unicode_locale_id_with_other_extension)
 TEST_CASE(parse_unicode_locale_id_with_private_use_extension)
 {
     auto fail = [](StringView locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         EXPECT(!locale_id.has_value());
     };
     auto pass = [](StringView locale, Vector<StringView> const& expected_extension) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
         EXPECT(compare_vectors(locale_id->private_use_extensions, expected_extension));
     };
@@ -338,10 +338,10 @@ TEST_CASE(parse_unicode_locale_id_with_private_use_extension)
 TEST_CASE(canonicalize_unicode_locale_id)
 {
     auto test = [](StringView locale, StringView expected_canonical_locale) {
-        auto locale_id = MUST(Locale::parse_unicode_locale_id(locale));
+        auto locale_id = Locale::parse_unicode_locale_id(locale);
         VERIFY(locale_id.has_value());
 
-        auto canonical_locale = MUST(Locale::canonicalize_unicode_locale_id(*locale_id));
+        auto canonical_locale = Locale::canonicalize_unicode_locale_id(*locale_id);
         EXPECT_EQ(*canonical_locale, expected_canonical_locale);
     };
 
@@ -517,4 +517,76 @@ TEST_CASE(supports_locale_aliases)
     EXPECT(Locale::is_locale_available("zh-Hant"sv));
     EXPECT(Locale::is_locale_available("zh-TW"sv));
     EXPECT(Locale::is_locale_available("zh-Hant-TW"sv));
+}
+
+TEST_CASE(locale_mappings_en)
+{
+    auto language = Locale::get_locale_language_mapping("en"sv, "en"sv);
+    EXPECT(language.has_value());
+    EXPECT_EQ(*language, "English"sv);
+
+    language = Locale::get_locale_language_mapping("en"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!language.has_value());
+
+    auto territory = Locale::get_locale_territory_mapping("en"sv, "US"sv);
+    EXPECT(territory.has_value());
+    EXPECT_EQ(*territory, "United States"sv);
+
+    territory = Locale::get_locale_territory_mapping("en"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!territory.has_value());
+
+    auto script = Locale::get_locale_script_mapping("en"sv, "Latn"sv);
+    EXPECT(script.has_value());
+    EXPECT_EQ(*script, "Latin"sv);
+
+    script = Locale::get_locale_script_mapping("en"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!script.has_value());
+}
+
+TEST_CASE(locale_mappings_fr)
+{
+    auto language = Locale::get_locale_language_mapping("fr"sv, "en"sv);
+    EXPECT(language.has_value());
+    EXPECT_EQ(*language, "anglais"sv);
+
+    language = Locale::get_locale_language_mapping("fr"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!language.has_value());
+
+    auto territory = Locale::get_locale_territory_mapping("fr"sv, "US"sv);
+    EXPECT(territory.has_value());
+    EXPECT_EQ(*territory, "États-Unis"sv);
+
+    territory = Locale::get_locale_territory_mapping("fr"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!territory.has_value());
+
+    auto script = Locale::get_locale_script_mapping("fr"sv, "Latn"sv);
+    EXPECT(script.has_value());
+    EXPECT_EQ(*script, "latin"sv);
+
+    script = Locale::get_locale_script_mapping("fr"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!script.has_value());
+}
+
+TEST_CASE(locale_mappings_root)
+{
+    auto language = Locale::get_locale_language_mapping("und"sv, "en"sv);
+    EXPECT(language.has_value());
+    EXPECT_EQ(*language, "en"sv);
+
+    language = Locale::get_locale_language_mapping("und"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!language.has_value());
+
+    auto territory = Locale::get_locale_territory_mapping("und"sv, "US"sv);
+    EXPECT(territory.has_value());
+    EXPECT_EQ(*territory, "US"sv);
+
+    territory = Locale::get_locale_territory_mapping("und"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!territory.has_value());
+
+    auto script = Locale::get_locale_script_mapping("und"sv, "Latn"sv);
+    EXPECT(script.has_value());
+    EXPECT_EQ(*script, "Latn"sv);
+
+    script = Locale::get_locale_script_mapping("und"sv, "i-defintely-don't-exist"sv);
+    EXPECT(!script.has_value());
 }

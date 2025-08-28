@@ -161,21 +161,21 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(speed, "Speed (default = 1)", "speed", 's', "number");
     args_parser.parse(arguments);
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio recvfd sendfd rpath"));
 
     auto window = TRY(Desktop::Screensaver::create_window("Starfield"sv, "app-starfield"sv));
 
-    auto starfield_window = TRY(window->set_main_widget<Starfield>(refresh_rate));
-    starfield_window->set_fill_with_background_color(false);
-    starfield_window->set_override_cursor(Gfx::StandardCursor::Hidden);
-    starfield_window->update();
+    auto starfield_widget = window->set_main_widget<Starfield>(refresh_rate);
+    starfield_widget->set_fill_with_background_color(false);
+    starfield_widget->set_override_cursor(Gfx::StandardCursor::Hidden);
+    starfield_widget->update();
     window->show();
 
-    TRY(starfield_window->create_stars(window->width(), window->height(), star_count));
-    starfield_window->set_speed(speed);
-    starfield_window->update();
+    TRY(starfield_widget->create_stars(window->width(), window->height(), star_count));
+    starfield_widget->set_speed(speed);
+    starfield_widget->update();
 
     window->move_to_front();
     window->set_cursor(Gfx::StandardCursor::Hidden);

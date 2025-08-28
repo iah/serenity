@@ -13,7 +13,7 @@
 
 namespace JS {
 
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, TokenType type)
+static Gfx::TextAttributes style_for_token_type(Gfx::Palette const& palette, TokenType type)
 {
     switch (Token::category(type)) {
     case TokenCategory::Invalid:
@@ -27,9 +27,9 @@ static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, Token
     case TokenCategory::Operator:
         return { palette.syntax_operator() };
     case TokenCategory::Keyword:
-        return { palette.syntax_keyword(), true };
+        return { palette.syntax_keyword(), {}, true };
     case TokenCategory::ControlKeyword:
-        return { palette.syntax_control_keyword(), true };
+        return { palette.syntax_control_keyword(), {}, true };
     case TokenCategory::Identifier:
         return { palette.syntax_identifier() };
     default:
@@ -54,34 +54,32 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
 
     Lexer lexer(text);
 
-    Vector<GUI::TextDocumentSpan> spans;
-    Vector<GUI::TextDocumentFoldingRegion> folding_regions;
-    GUI::TextPosition position { 0, 0 };
-    GUI::TextPosition start { 0, 0 };
+    Vector<Syntax::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentFoldingRegion> folding_regions;
+    Syntax::TextPosition position { 0, 0 };
+    Syntax::TextPosition start { 0, 0 };
 
-    auto advance_position = [&position](char ch) {
-        if (ch == '\n') {
+    auto advance_position = [&position](u32 code_point) {
+        if (code_point == '\n') {
             position.set_line(position.line() + 1);
             position.set_column(0);
         } else
             position.set_column(position.column() + 1);
     };
 
-    auto append_token = [&](StringView str, Token const& token, bool is_trivia) {
+    auto append_token = [&](Utf8View str, Token const& token, bool is_trivia) {
         if (str.is_empty())
             return;
 
         start = position;
-        for (size_t i = 0; i < str.length(); ++i)
-            advance_position(str[i]);
+        for (auto code_point : str)
+            advance_position(code_point);
 
-        GUI::TextDocumentSpan span;
+        Syntax::TextDocumentSpan span;
         span.range.set_start(start);
         span.range.set_end({ position.line(), position.column() });
-        auto type = is_trivia ? TokenType::Invalid : token.type();
-        auto style = style_for_token_type(palette, type);
-        span.attributes.color = style.color;
-        span.attributes.bold = style.bold;
+        auto type = is_trivia ? TokenType::Trivia : token.type();
+        span.attributes = style_for_token_type(palette, type);
         span.is_skippable = is_trivia;
         span.data = static_cast<u64>(type);
         spans.append(span);
@@ -96,16 +94,16 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
 
     struct TokenData {
         Token token;
-        GUI::TextRange range;
+        Syntax::TextRange range;
     };
     Vector<TokenData> folding_region_start_tokens;
 
     bool was_eof = false;
     for (auto token = lexer.next(); !was_eof; token = lexer.next()) {
-        append_token(token.trivia(), token, true);
+        append_token(Utf8View(token.trivia()), token, true);
 
         auto token_start_position = position;
-        append_token(token.value(), token, false);
+        append_token(Utf8View(token.value()), token, false);
 
         if (token.type() == TokenType::Eof)
             was_eof = true;
@@ -117,7 +115,7 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         } else if (token.type() == TokenType::CurlyClose) {
             if (!folding_region_start_tokens.is_empty()) {
                 auto curly_open = folding_region_start_tokens.take_last();
-                GUI::TextDocumentFoldingRegion region;
+                Syntax::TextDocumentFoldingRegion region;
                 region.range.set_start(curly_open.range.end());
                 region.range.set_end(token_start_position);
                 folding_regions.append(region);

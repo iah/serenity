@@ -14,8 +14,10 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(CollatorConstructor);
+
 // 10.1.2 InitializeCollator ( collator, locales, options ), https://tc39.es/ecma402/#sec-initializecollator
-static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collator, Value locales_value, Value options_value)
+static ThrowCompletionOr<NonnullGCPtr<Collator>> initialize_collator(VM& vm, Collator& collator, Value locales_value, Value options_value)
 {
     // 1. Let requestedLocales be ? CanonicalizeLocaleList(locales).
     auto requested_locales = TRY(canonicalize_locale_list(vm, locales_value));
@@ -27,7 +29,7 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
     auto usage = TRY(get_option(vm, *options, vm.names.usage, OptionType::String, { "sort"sv, "search"sv }, "sort"sv));
 
     // 4. Set collator.[[Usage]] to usage.
-    collator.set_usage(TRY(usage.as_string().utf8_string_view()));
+    collator.set_usage(usage.as_string().utf8_string_view());
 
     // 5. If usage is "sort", then
     //     a. Let localeData be %Collator%.[[SortLocaleData]].
@@ -49,11 +51,11 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
     // 11. If collation is not undefined, then
     if (!collation.is_undefined()) {
         // a. If collation does not match the Unicode Locale Identifier type nonterminal, throw a RangeError exception.
-        if (!::Locale::is_type_identifier(TRY(collation.as_string().utf8_string_view())))
+        if (!::Locale::is_type_identifier(collation.as_string().utf8_string_view()))
             return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, collation, "collation"sv);
 
         // 12. Set opt.[[co]] to collation.
-        opt.co = TRY(collation.as_string().utf8_string());
+        opt.co = collation.as_string().utf8_string();
     }
 
     // 13. Let numeric be ? GetOption(options, "numeric", boolean, empty, undefined).
@@ -63,19 +65,19 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
     //     a. Let numeric be ! ToString(numeric).
     // 15. Set opt.[[kn]] to numeric.
     if (!numeric.is_undefined())
-        opt.kn = MUST_OR_THROW_OOM(numeric.to_string(vm));
+        opt.kn = MUST(numeric.to_string(vm));
 
     // 16. Let caseFirst be ? GetOption(options, "caseFirst", string, « "upper", "lower", "false" », undefined).
     // 17. Set opt.[[kf]] to caseFirst.
     auto case_first = TRY(get_option(vm, *options, vm.names.caseFirst, OptionType::String, { "upper"sv, "lower"sv, "false"sv }, Empty {}));
     if (!case_first.is_undefined())
-        opt.kf = TRY(case_first.as_string().utf8_string());
+        opt.kf = case_first.as_string().utf8_string();
 
     // 18. Let relevantExtensionKeys be %Collator%.[[RelevantExtensionKeys]].
     auto relevant_extension_keys = Collator::relevant_extension_keys();
 
     // 19. Let r be ResolveLocale(%Collator%.[[AvailableLocales]], requestedLocales, opt, relevantExtensionKeys, localeData).
-    auto result = MUST_OR_THROW_OOM(resolve_locale(vm, requested_locales, opt, relevant_extension_keys));
+    auto result = resolve_locale(requested_locales, opt, relevant_extension_keys);
 
     // 20. Set collator.[[Locale]] to r.[[locale]].
     collator.set_locale(move(result.locale));
@@ -83,12 +85,12 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
     // 21. Let collation be r.[[co]].
     // 22. If collation is null, let collation be "default".
     // 23. Set collator.[[Collation]] to collation.
-    collator.set_collation(result.co.has_value() ? result.co.release_value() : TRY_OR_THROW_OOM(vm, "default"_string));
+    collator.set_collation(result.co.has_value() ? result.co.release_value() : "default"_string);
 
     // 24. If relevantExtensionKeys contains "kn", then
     if (relevant_extension_keys.span().contains_slow("kn"sv) && result.kn.has_value()) {
         // a. Set collator.[[Numeric]] to SameValue(r.[[kn]], "true").
-        collator.set_numeric(same_value(PrimitiveString::create(vm, result.kn.release_value()), MUST_OR_THROW_OOM(PrimitiveString::create(vm, "true"sv))));
+        collator.set_numeric(same_value(PrimitiveString::create(vm, result.kn.release_value()), PrimitiveString::create(vm, "true"_string)));
     }
 
     // 25. If relevantExtensionKeys contains "kf", then
@@ -105,19 +107,19 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
         // a. If usage is "sort", then
         if (collator.usage() == Collator::Usage::Sort) {
             // i. Let sensitivity be "variant".
-            sensitivity = MUST_OR_THROW_OOM(PrimitiveString::create(vm, "variant"sv));
+            sensitivity = PrimitiveString::create(vm, "variant"_string);
         }
         // b. Else,
         else {
             // i. Let dataLocale be r.[[dataLocale]].
             // ii. Let dataLocaleData be localeData.[[<dataLocale>]].
             // iii. Let sensitivity be dataLocaleData.[[sensitivity]].
-            sensitivity = MUST_OR_THROW_OOM(PrimitiveString::create(vm, "base"sv));
+            sensitivity = PrimitiveString::create(vm, "base"_string);
         }
     }
 
     // 28. Set collator.[[Sensitivity]] to sensitivity.
-    collator.set_sensitivity(TRY(sensitivity.as_string().utf8_string_view()));
+    collator.set_sensitivity(sensitivity.as_string().utf8_string_view());
 
     // 29. Let ignorePunctuation be ? GetOption(options, "ignorePunctuation", boolean, empty, false).
     auto ignore_punctuation = TRY(get_option(vm, *options, vm.names.ignorePunctuation, OptionType::Boolean, {}, false));
@@ -126,18 +128,18 @@ static ThrowCompletionOr<Collator*> initialize_collator(VM& vm, Collator& collat
     collator.set_ignore_punctuation(ignore_punctuation.as_bool());
 
     // 31. Return collator.
-    return &collator;
+    return collator;
 }
 
 // 10.1 The Intl.Collator Constructor, https://tc39.es/ecma402/#sec-the-intl-collator-constructor
 CollatorConstructor::CollatorConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Collator.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Collator.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> CollatorConstructor::initialize(Realm& realm)
+void CollatorConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -147,8 +149,6 @@ ThrowCompletionOr<void> CollatorConstructor::initialize(Realm& realm)
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.supportedLocalesOf, supported_locales_of, 1, attr);
-
-    return {};
 }
 
 // 10.1.1 Intl.Collator ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sec-intl.collator
@@ -176,7 +176,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> CollatorConstructor::construct(FunctionO
     auto collator = TRY(ordinary_create_from_constructor<Collator>(vm, new_target, &Intrinsics::intl_collator_prototype));
 
     // 6. Return ? InitializeCollator(collator, locales, options).
-    return *TRY(initialize_collator(vm, collator, locales, options));
+    return TRY(initialize_collator(vm, collator, locales, options));
 }
 
 // 10.2.2 Intl.Collator.supportedLocalesOf ( locales [ , options ] ), https://tc39.es/ecma402/#sec-intl.collator.supportedlocalesof

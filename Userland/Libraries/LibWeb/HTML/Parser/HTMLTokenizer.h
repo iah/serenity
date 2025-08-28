@@ -12,6 +12,7 @@
 #include <AK/StringView.h>
 #include <AK/Types.h>
 #include <AK/Utf8View.h>
+#include <LibJS/Heap/GCPtr.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/Parser/HTMLToken.h>
 
@@ -102,7 +103,7 @@ namespace Web::HTML {
 class HTMLTokenizer {
 public:
     explicit HTMLTokenizer();
-    explicit HTMLTokenizer(StringView input, DeprecatedString const& encoding);
+    explicit HTMLTokenizer(StringView input, ByteString const& encoding);
 
     enum class State {
 #define __ENUMERATE_TOKENIZER_STATE(state) state,
@@ -110,7 +111,11 @@ public:
 #undef __ENUMERATE_TOKENIZER_STATE
     };
 
-    Optional<HTMLToken> next_token();
+    enum class StopAtInsertionPoint {
+        No,
+        Yes,
+    };
+    Optional<HTMLToken> next_token(StopAtInsertionPoint = StopAtInsertionPoint::No);
 
     void set_parser(Badge<HTMLParser>, HTMLParser& parser) { m_parser = &parser; }
 
@@ -123,9 +128,9 @@ public:
     void set_blocked(bool b) { m_blocked = b; }
     bool is_blocked() const { return m_blocked; }
 
-    DeprecatedString source() const { return m_decoded_input; }
+    ByteString source() const { return m_decoded_input; }
 
-    void insert_input_at_insertion_point(DeprecatedString const& input);
+    void insert_input_at_insertion_point(StringView input);
     void insert_eof();
     bool is_eof_inserted();
 
@@ -153,7 +158,7 @@ private:
     bool consume_next_if_match(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive);
     void create_new_token(HTMLToken::Type);
     bool current_end_tag_token_is_appropriate() const;
-    DeprecatedString consume_current_builder();
+    String consume_current_builder();
 
     static char const* state_name(State state)
     {
@@ -176,14 +181,14 @@ private:
     void restore_to(Utf8CodePointIterator const& new_iterator);
     HTMLToken::Position nth_last_position(size_t n = 0);
 
-    HTMLParser* m_parser { nullptr };
+    JS::GCPtr<HTMLParser> m_parser;
 
     State m_state { State::Data };
     State m_return_state { State::Data };
 
     Vector<u32> m_temporary_buffer;
 
-    DeprecatedString m_decoded_input;
+    ByteString m_decoded_input;
 
     struct InsertionPoint {
         size_t position { 0 };
@@ -199,7 +204,7 @@ private:
     HTMLToken m_current_token;
     StringBuilder m_current_builder;
 
-    Optional<DeprecatedString> m_last_emitted_start_tag_name;
+    Optional<ByteString> m_last_emitted_start_tag_name;
 
     bool m_explicit_eof_inserted { false };
     bool m_has_emitted_eof { false };

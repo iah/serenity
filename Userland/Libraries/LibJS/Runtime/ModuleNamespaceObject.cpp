@@ -10,8 +10,10 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(ModuleNamespaceObject);
+
 ModuleNamespaceObject::ModuleNamespaceObject(Realm& realm, Module* module, Vector<DeprecatedFlyString> exports)
-    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
+    : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype(), MayInterfereWithIndexedPropertyAccess::Yes)
     , m_module(module)
     , m_exports(move(exports))
 {
@@ -22,14 +24,13 @@ ModuleNamespaceObject::ModuleNamespaceObject(Realm& realm, Module* module, Vecto
     });
 }
 
-ThrowCompletionOr<void> ModuleNamespaceObject::initialize(Realm& realm)
+void ModuleNamespaceObject::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    auto& vm = this->vm();
+    Base::initialize(realm);
 
     // 28.3.1 @@toStringTag, https://tc39.es/ecma262/#sec-@@tostringtag
-    define_direct_property(*vm().well_known_symbol_to_string_tag(), MUST_OR_THROW_OOM(PrimitiveString::create(vm(), "Module"sv)), 0);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "Module"_string), 0);
 }
 
 // 10.4.6.1 [[GetPrototypeOf]] ( ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-getprototypeof
@@ -81,11 +82,11 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> ModuleNamespaceObject::internal_
 }
 
 // 10.4.6.6 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-defineownproperty-p-desc
-ThrowCompletionOr<bool> ModuleNamespaceObject::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& descriptor)
+ThrowCompletionOr<bool> ModuleNamespaceObject::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& descriptor, Optional<PropertyDescriptor>* precomputed_get_own_property)
 {
     // 1. If Type(P) is Symbol, return ! OrdinaryDefineOwnProperty(O, P, Desc).
     if (property_key.is_symbol())
-        return MUST(Object::internal_define_own_property(property_key, descriptor));
+        return MUST(Object::internal_define_own_property(property_key, descriptor, precomputed_get_own_property));
 
     // 2. Let current be ? O.[[GetOwnProperty]](P).
     auto current = TRY(internal_get_own_property(property_key));
@@ -136,14 +137,14 @@ ThrowCompletionOr<bool> ModuleNamespaceObject::internal_has_property(PropertyKey
 }
 
 // 10.4.6.8 [[Get]] ( P, Receiver ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-get-p-receiver
-ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& property_key, Value receiver) const
+ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& property_key, Value receiver, CacheablePropertyMetadata* cacheable_metadata, PropertyLookupPhase phase) const
 {
     auto& vm = this->vm();
 
     // 1. If Type(P) is Symbol, then
     if (property_key.is_symbol()) {
         // a. Return ! OrdinaryGet(O, P, Receiver).
-        return MUST(Object::internal_get(property_key, receiver));
+        return MUST(Object::internal_get(property_key, receiver, cacheable_metadata, phase));
     }
 
     // 2. Let exports be O.[[Exports]].
@@ -160,7 +161,7 @@ ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& 
     VERIFY(binding.is_valid());
 
     // 7. Let targetModule be binding.[[Module]].
-    auto* target_module = binding.module;
+    auto target_module = binding.module;
 
     // 8. Assert: targetModule is not undefined.
     VERIFY(target_module);
@@ -183,7 +184,7 @@ ThrowCompletionOr<Value> ModuleNamespaceObject::internal_get(PropertyKey const& 
 }
 
 // 10.4.6.9 [[Set]] ( P, V, Receiver ), https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-set-p-v-receiver
-ThrowCompletionOr<bool> ModuleNamespaceObject::internal_set(PropertyKey const&, Value, Value)
+ThrowCompletionOr<bool> ModuleNamespaceObject::internal_set(PropertyKey const&, Value, Value, CacheablePropertyMetadata*)
 {
     // 1. Return false.
     return false;
@@ -225,6 +226,12 @@ ThrowCompletionOr<MarkedVector<Value>> ModuleNamespaceObject::internal_own_prope
     exports.extend(symbol_keys);
 
     return exports;
+}
+
+void ModuleNamespaceObject::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_module);
 }
 
 }

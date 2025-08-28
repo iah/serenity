@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
 #include <AK/DateConstants.h>
-#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <Kernel/API/TimePage.h>
@@ -13,6 +13,7 @@
 #include <assert.h>
 #include <bits/pthread_cancel.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,14 +79,37 @@ int settimeofday(struct timeval* __restrict__ tv, void* __restrict__)
     return clock_settime(CLOCK_REALTIME, &ts);
 }
 
-int utimes(char const* pathname, const struct timeval times[2])
+int utimes(char const* pathname, struct timeval const times[2])
 {
-    if (!times) {
+    if (!times)
         return utime(pathname, nullptr);
-    }
     // FIXME: implement support for tv_usec in the utime (or a new) syscall
     utimbuf buf = { times[0].tv_sec, times[1].tv_sec };
     return utime(pathname, &buf);
+}
+
+// Not in POSIX, originated in BSD but also supported on Linux.
+// https://man.netbsd.org/NetBSD-6.0/lutimes.2
+int lutimes(char const* pathname, struct timeval const times[2])
+{
+    if (!times)
+        return utimensat(AT_FDCWD, pathname, nullptr, AT_SYMLINK_NOFOLLOW);
+    timespec ts[2];
+    TIMEVAL_TO_TIMESPEC(&times[0], &ts[0]);
+    TIMEVAL_TO_TIMESPEC(&times[1], &ts[1]);
+    return utimensat(AT_FDCWD, pathname, ts, AT_SYMLINK_NOFOLLOW);
+}
+
+// Not in POSIX, originated in BSD but also supported on Linux.
+// https://man.netbsd.org/NetBSD-6.0/futimes.2
+int futimes(int fd, struct timeval const times[2])
+{
+    if (!times)
+        return utimensat(fd, nullptr, nullptr, 0);
+    timespec ts[2];
+    TIMEVAL_TO_TIMESPEC(&times[0], &ts[0]);
+    TIMEVAL_TO_TIMESPEC(&times[1], &ts[1]);
+    return utimensat(fd, nullptr, ts, 0);
 }
 
 char* ctime(time_t const* t)
@@ -118,7 +142,7 @@ static struct tm* time_to_tm(struct tm* tm, time_t t, StringView time_zone)
         return nullptr;
     }
 
-    if (auto offset = TimeZone::get_time_zone_offset(time_zone, AK::Time::from_seconds(t)); offset.has_value()) {
+    if (auto offset = TimeZone::get_time_zone_offset(time_zone, AK::UnixDateTime::from_seconds_since_epoch(t)); offset.has_value()) {
         tm->tm_isdst = offset->in_dst == TimeZone::InDST::Yes;
         t += offset->seconds;
     }
@@ -172,12 +196,12 @@ static time_t tm_to_time(struct tm* tm, StringView time_zone)
     auto timestamp = ((days_since_epoch * 24 + tm->tm_hour) * 60 + tm->tm_min) * 60 + tm->tm_sec;
 
     if (tm->tm_isdst < 0) {
-        if (auto offset = TimeZone::get_time_zone_offset(time_zone, AK::Time::from_seconds(timestamp)); offset.has_value())
+        if (auto offset = TimeZone::get_time_zone_offset(time_zone, AK::UnixDateTime::from_seconds_since_epoch(timestamp)); offset.has_value())
             timestamp -= offset->seconds;
     } else {
         auto index = tm->tm_isdst == 0 ? 0 : 1;
 
-        if (auto offsets = TimeZone::get_named_time_zone_offsets(time_zone, AK::Time::from_seconds(timestamp)); offsets.has_value())
+        if (auto offsets = TimeZone::get_named_time_zone_offsets(time_zone, AK::UnixDateTime::from_seconds_since_epoch(timestamp)); offsets.has_value())
             timestamp -= offsets->at(index).seconds;
     }
 
@@ -390,7 +414,7 @@ size_t strftime(char* destination, size_t max_size, char const* format, const st
             return 0;
     }
 
-    auto str = builder.to_deprecated_string();
+    auto str = builder.to_byte_string();
     bool fits = str.copy_characters_to_buffer(destination, max_size);
     return fits ? str.length() : 0;
 }
@@ -408,7 +432,7 @@ void tzset()
         tzname[1] = const_cast<char*>(__utc);
     };
 
-    if (auto offsets = TimeZone::get_named_time_zone_offsets(__tzname, AK::Time::now_realtime()); offsets.has_value()) {
+    if (auto offsets = TimeZone::get_named_time_zone_offsets(__tzname, AK::UnixDateTime::now()); offsets.has_value()) {
         if (!offsets->at(0).name.copy_characters_to_buffer(__tzname_standard, TZNAME_MAX))
             return set_default_values();
         if (!offsets->at(1).name.copy_characters_to_buffer(__tzname_daylight, TZNAME_MAX))

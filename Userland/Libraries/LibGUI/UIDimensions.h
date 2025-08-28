@@ -8,6 +8,7 @@
 
 #include <AK/JsonValue.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/Size.h>
 #include <initializer_list>
@@ -148,10 +149,27 @@ public:
         VERIFY_NOT_REACHED();
     }
 
+    /// The returned source code, if any, can be used to construct this UIDimension in C++.
+    ErrorOr<String> as_cpp_source() const
+    {
+        String value_source = {};
+        if (is_int())
+            value_source = String::number(m_value);
+        else if (is_shrink())
+            value_source = "GUI::SpecialDimension::Shrink"_string;
+        else if (is_grow())
+            value_source = "GUI::SpecialDimension::Grow"_string;
+        else if (is_opportunistic_grow())
+            value_source = "GUI::SpecialDimension::OpportunisticGrow"_string;
+        else if (is_fit())
+            value_source = "GUI::SpecialDimension::Fit"_string;
+        return String::formatted("GUI::UIDimension {{ {} }}", value_source);
+    }
+
     [[nodiscard]] static Optional<UIDimension> construct_from_json_value(AK::JsonValue const value)
     {
         if (value.is_string()) {
-            DeprecatedString value_literal = value.as_string();
+            ByteString value_literal = value.as_string();
             if (value_literal == "shrink")
                 return UIDimension { SpecialDimension::Shrink };
             else if (value_literal == "grow")
@@ -162,12 +180,13 @@ public:
                 return UIDimension { SpecialDimension::Fit };
             else
                 return {};
-        } else {
-            int value_int = value.to_i32();
+        } else if (value.is_integer<i32>()) {
+            auto value_int = value.as_integer<i32>();
             if (value_int < 0)
                 return {};
             return UIDimension(value_int);
         }
+        return {};
     }
 
 private:
@@ -186,6 +205,11 @@ public:
 
     UISize(Gfx::IntSize size)
         : UISize(size.width(), size.height())
+    {
+    }
+
+    UISize(Array<i64, 2> size)
+        : UISize(size[0], size[1])
     {
     }
 
@@ -272,58 +296,44 @@ inline auto clamp<GUI::UIDimension>(GUI::UIDimension const& input, GUI::UIDimens
 
 }
 
-#define REGISTER_UI_DIMENSION_PROPERTY(property_name, getter, setter)         \
-    register_property(                                                        \
-        property_name,                                                        \
-        [this] {                                                              \
-            return this->getter().as_json_value();                            \
-        },                                                                    \
-        [this](auto& value) {                                                 \
-            auto result = GUI::UIDimension::construct_from_json_value(value); \
-            if (result.has_value())                                           \
-                this->setter(result.value());                                 \
-            return result.has_value();                                        \
-        });
+#define REGISTER_UI_DIMENSION_PROPERTY(property_name, getter, setter) \
+    register_property(                                                \
+        property_name##sv,                                            \
+        [this] {                                                      \
+            return this->getter().as_json_value();                    \
+        },                                                            \
+        ::GUI::PropertyDeserializer<::GUI::UIDimension> {},           \
+        [this](auto const& value) { return setter(value); });
 
 #define REGISTER_READONLY_UI_DIMENSION_PROPERTY(property_name, getter) \
     register_property(                                                 \
-        property_name,                                                 \
+        property_name##sv,                                             \
         [this] {                                                       \
             return this->getter().as_json_value();                     \
-        });
+        },                                                             \
+        nullptr, nullptr);
 
-#define REGISTER_UI_SIZE_PROPERTY(property_name, getter, setter)               \
-    register_property(                                                         \
-        property_name,                                                         \
-        [this] {                                                               \
-            auto size = this->getter();                                        \
-            JsonObject size_object;                                            \
-            size_object.set("width"sv, size.width().as_json_value());          \
-            size_object.set("height"sv, size.height().as_json_value());        \
-            return size_object;                                                \
-        },                                                                     \
-        [this](auto& value) {                                                  \
-            if (!value.is_object())                                            \
-                return false;                                                  \
-            auto result_width = GUI::UIDimension::construct_from_json_value(   \
-                value.as_object().get("width"sv).value_or({}));                \
-            auto result_height = GUI::UIDimension::construct_from_json_value(  \
-                value.as_object().get("height"sv).value_or({}));               \
-            if (result_width.has_value() && result_height.has_value()) {       \
-                GUI::UISize size(result_width.value(), result_height.value()); \
-                setter(size);                                                  \
-                return true;                                                   \
-            }                                                                  \
-            return false;                                                      \
-        });
+#define REGISTER_UI_SIZE_PROPERTY(property_name, getter, setter)        \
+    register_property(                                                  \
+        property_name##sv,                                              \
+        [this] {                                                        \
+            auto size = this->getter();                                 \
+            JsonObject size_object;                                     \
+            size_object.set("width"sv, size.width().as_json_value());   \
+            size_object.set("height"sv, size.height().as_json_value()); \
+            return size_object;                                         \
+        },                                                              \
+        ::GUI::PropertyDeserializer<::GUI::UISize> {},                  \
+        [this](auto const& value) { return setter(value); });
 
 #define REGISTER_READONLY_UI_SIZE_PROPERTY(property_name, getter)     \
     register_property(                                                \
-        property_name,                                                \
+        property_name##sv,                                            \
         [this] {                                                      \
             auto size = this->getter();                               \
             JsonObject size_object;                                   \
             size_object.set("width", size.width().as_json_value());   \
             size_object.set("height", size.height().as_json_value()); \
             return size_object;                                       \
-        });
+        },                                                            \
+        nullptr, nullptr);

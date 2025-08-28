@@ -1,0 +1,49 @@
+import("//Meta/gn/build/libs/pulse/enable.gni")
+
+executable("WebContent") {
+  configs += [ "//Ladybird:ladybird_config" ]
+  include_dirs = [
+    "//Userland/Services",
+    "//Ladybird",
+  ]
+  deps = [
+    "//AK",
+    "//Meta/gn/build/libs/pulse",
+    "//Userland/Libraries/LibCore",
+    "//Userland/Libraries/LibFileSystem",
+    "//Userland/Libraries/LibGfx",
+    "//Userland/Libraries/LibIPC",
+    "//Userland/Libraries/LibImageDecoderClient",
+    "//Userland/Libraries/LibJS",
+    "//Userland/Libraries/LibMain",
+    "//Userland/Libraries/LibProtocol",
+    "//Userland/Libraries/LibSQL",
+    "//Userland/Libraries/LibURL",
+    "//Userland/Libraries/LibWeb",
+    "//Userland/Libraries/LibWebSocket",
+    "//Userland/Libraries/LibWebView",
+    "//Userland/Libraries/LibWebView:WebContentClientEndpoint",
+    "//Userland/Libraries/LibWebView:WebContentServerEndpoint",
+    "//Userland/Libraries/LibWebView:WebDriverClientEndpoint",
+    "//Userland/Libraries/LibWebView:WebDriverServerEndpoint",
+  ]
+  sources = [
+    "//Ladybird/FontPlugin.cpp",
+    "//Ladybird/HelperProcess.cpp",
+    "//Ladybird/ImageCodecPlugin.cpp",
+    "//Ladybird/Utilities.cpp",
+    "//Userland/Services/WebContent/ConnectionFromClient.cpp",
+    "//Userland/Services/WebContent/ConsoleGlobalEnvironmentExtensions.cpp",
+    "//Userland/Services/WebContent/PageClient.cpp",
+    "//Userland/Services/WebContent/PageHost.cpp",
+    "//Userland/Services/WebContent/WebContentConsoleClient.cpp",
+    "//Userland/Services/WebContent/WebDriverConnection.cpp",
+    "main.cpp",
+  ]
+
+  if (current_os == "linux" || current_os == "mac") {
+    cflags_cc = [ "-DHAS_ACCELERATED_GRAPHICS" ]
+    deps += [ "//Userland/Libraries/LibAccelGfx" ]
+  }
+  output_dir = "$root_out_dir/libexec"
+}

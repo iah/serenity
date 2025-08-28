@@ -14,13 +14,18 @@
 namespace Kernel {
 
 enum class HardwareTimerType {
-    i8253 = 0x1,                   /* PIT */
-    RTC = 0x2,                     /* Real Time Clock */
-    HighPrecisionEventTimer = 0x3, /* also known as IA-PC HPET */
-    LocalAPICTimer = 0x4,          /* Local APIC */
-#if ARCH(AARCH64)
-    RPiTimer = 0x5
-#endif
+    // x86
+    i8253,                   // PIT
+    RTC,                     // Real Time Clock
+    HighPrecisionEventTimer, // also known as IA-PC HPET
+    LocalAPICTimer,          // Local APIC
+
+    // AArch64
+    RPiTimer,
+    ARMv8Timer,
+
+    // RISC-V
+    RISCVTimer,
 };
 
 template<typename InterruptHandlerType>
@@ -38,14 +43,13 @@ public:
 
     virtual StringView model() const = 0;
     virtual HardwareTimerType timer_type() const = 0;
-    virtual Function<void(RegisterState const&)> set_callback(Function<void(RegisterState const&)>) = 0;
+    virtual Function<void()> set_callback(Function<void()>) = 0;
 
     virtual bool is_periodic() const = 0;
     virtual bool is_periodic_capable() const = 0;
     virtual void set_periodic() = 0;
     virtual void set_non_periodic() = 0;
     virtual void disable() = 0;
-    virtual u32 frequency() const = 0;
     virtual bool can_query_raw() const { return false; }
     virtual u64 current_raw() const { return 0; }
     virtual u64 raw_to_ns(u64) const { return 0; }
@@ -75,7 +79,7 @@ public:
         return model();
     }
 
-    virtual Function<void(RegisterState const&)> set_callback(Function<void(RegisterState const&)> callback) override
+    virtual Function<void()> set_callback(Function<void()> callback) override
     {
         disable_irq();
         auto previous_callback = move(m_callback);
@@ -84,20 +88,20 @@ public:
         return previous_callback;
     }
 
-    virtual u32 frequency() const override { return (u32)m_frequency; }
+    virtual size_t ticks_per_second() const override { return m_frequency; }
 
 protected:
-    HardwareTimer(u8 irq_number, Function<void(RegisterState const&)> callback = nullptr)
+    HardwareTimer(u8 irq_number, Function<void()> callback = nullptr)
         : IRQHandler(irq_number)
         , m_callback(move(callback))
     {
     }
 
-    virtual bool handle_irq(RegisterState const& regs) override
+    virtual bool handle_irq() override
     {
         // Note: if we have an IRQ on this line, it's going to be the timer always
         if (m_callback) {
-            m_callback(regs);
+            m_callback();
             return true;
         }
         return false;
@@ -106,7 +110,7 @@ protected:
     u64 m_frequency { OPTIMAL_TICKS_PER_SECOND_RATE };
 
 private:
-    Function<void(RegisterState const&)> m_callback;
+    Function<void()> m_callback;
 };
 
 template<>
@@ -124,7 +128,7 @@ public:
         return model();
     }
 
-    virtual Function<void(RegisterState const&)> set_callback(Function<void(RegisterState const&)> callback) override
+    virtual Function<void()> set_callback(Function<void()> callback) override
     {
         auto previous_callback = move(m_callback);
         m_callback = move(callback);
@@ -133,25 +137,23 @@ public:
 
     virtual size_t sharing_devices_count() const override { return 0; }
     virtual bool is_shared_handler() const override { return false; }
-    virtual bool is_sharing_with_others() const override { return false; }
     virtual HandlerType type() const override { return HandlerType::IRQHandler; }
     virtual StringView controller() const override { return {}; }
     virtual bool eoi() override;
-
-    virtual u32 frequency() const override { return (u32)m_frequency; }
+    virtual size_t ticks_per_second() const override { return m_frequency; }
 
 protected:
-    HardwareTimer(u8 irq_number, Function<void(RegisterState const&)> callback = nullptr)
+    HardwareTimer(u8 irq_number, Function<void()> callback = nullptr)
         : GenericInterruptHandler(irq_number)
         , m_callback(move(callback))
     {
     }
 
-    virtual bool handle_interrupt(RegisterState const& regs) override
+    virtual bool handle_interrupt() override
     {
         // Note: if we have an IRQ on this line, it's going to be the timer always
         if (m_callback) {
-            m_callback(regs);
+            m_callback();
             return true;
         }
         return false;
@@ -160,7 +162,7 @@ protected:
     u64 m_frequency { OPTIMAL_TICKS_PER_SECOND_RATE };
 
 private:
-    Function<void(RegisterState const&)> m_callback;
+    Function<void()> m_callback;
 };
 
 }

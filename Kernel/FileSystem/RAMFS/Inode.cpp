@@ -1,12 +1,14 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * Copyright (c) 2022-2023, Liav A. <liavalb@hotmail.co.il>
+ * Copyright (c) 2022-2024, Liav A. <liavalb@hotmail.co.il>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/FileSystem/RAMBackedFileType.h>
+#include <Kernel/FileSystem/RAMFS/FileSystem.h>
 #include <Kernel/FileSystem/RAMFS/Inode.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -32,14 +34,14 @@ RAMFSInode::RAMFSInode(RAMFS& fs)
 
 RAMFSInode::~RAMFSInode() = default;
 
-ErrorOr<NonnullLockRefPtr<RAMFSInode>> RAMFSInode::try_create(RAMFS& fs, InodeMetadata const& metadata, LockWeakPtr<RAMFSInode> parent)
+ErrorOr<NonnullRefPtr<RAMFSInode>> RAMFSInode::try_create(RAMFS& fs, InodeMetadata const& metadata, LockWeakPtr<RAMFSInode> parent)
 {
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) RAMFSInode(fs, metadata, move(parent)));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) RAMFSInode(fs, metadata, move(parent)));
 }
 
-ErrorOr<NonnullLockRefPtr<RAMFSInode>> RAMFSInode::try_create_root(RAMFS& fs)
+ErrorOr<NonnullRefPtr<RAMFSInode>> RAMFSInode::try_create_root(RAMFS& fs)
 {
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) RAMFSInode(fs));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) RAMFSInode(fs));
 }
 
 InodeMetadata RAMFSInode::metadata() const
@@ -56,36 +58,16 @@ ErrorOr<void> RAMFSInode::traverse_as_directory(Function<ErrorOr<void>(FileSyste
     if (!is_directory())
         return ENOTDIR;
 
-    TRY(callback({ "."sv, identifier(), 0 }));
+    TRY(callback({ "."sv, identifier(), to_underlying(RAMBackedFileType::Directory) }));
     if (m_root_directory_inode) {
-        TRY(callback({ ".."sv, identifier(), 0 }));
+        TRY(callback({ ".."sv, identifier(), to_underlying(RAMBackedFileType::Directory) }));
     } else if (auto parent = m_parent.strong_ref()) {
-        TRY(callback({ ".."sv, parent->identifier(), 0 }));
+        TRY(callback({ ".."sv, parent->identifier(), to_underlying(RAMBackedFileType::Directory) }));
     }
 
     for (auto& child : m_children) {
-        TRY(callback({ child.name->view(), child.inode->identifier(), 0 }));
+        TRY(callback({ child.name->view(), child.inode->identifier(), to_underlying(ram_backed_file_type_from_mode(child.inode->metadata().mode)) }));
     }
-    return {};
-}
-
-ErrorOr<void> RAMFSInode::replace_child(StringView name, Inode& new_child)
-{
-    MutexLocker locker(m_inode_lock);
-    VERIFY(is_directory());
-    VERIFY(new_child.fsid() == fsid());
-
-    auto* child = find_child_by_name(name);
-    if (!child)
-        return ENOENT;
-
-    auto old_child = child->inode;
-    child->inode = static_cast<RAMFSInode&>(new_child);
-
-    old_child->did_delete_self();
-
-    // TODO: Emit a did_replace_child event.
-
     return {};
 }
 
@@ -234,7 +216,7 @@ ErrorOr<void> RAMFSInode::truncate_to_block_index(size_t block_index)
     return {};
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> RAMFSInode::lookup(StringView name)
+ErrorOr<NonnullRefPtr<Inode>> RAMFSInode::lookup(StringView name)
 {
     MutexLocker locker(m_inode_lock, Mutex::Mode::Shared);
     VERIFY(is_directory());
@@ -243,7 +225,7 @@ ErrorOr<NonnullLockRefPtr<Inode>> RAMFSInode::lookup(StringView name)
         return *this;
     if (name == "..") {
         if (auto parent = m_parent.strong_ref())
-            return parent.release_nonnull();
+            return *parent;
         return ENOENT;
     }
 
@@ -292,7 +274,7 @@ ErrorOr<void> RAMFSInode::chown(UserID uid, GroupID gid)
     return {};
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> RAMFSInode::create_child(StringView name, mode_t mode, dev_t dev, UserID uid, GroupID gid)
+ErrorOr<NonnullRefPtr<Inode>> RAMFSInode::create_child(StringView name, mode_t mode, dev_t dev, UserID uid, GroupID gid)
 {
     MutexLocker locker(m_inode_lock);
     auto now = kgettimeofday();
@@ -359,9 +341,9 @@ ErrorOr<void> RAMFSInode::remove_child(StringView name)
     return {};
 }
 
-ErrorOr<void> RAMFSInode::truncate(u64 size)
+ErrorOr<void> RAMFSInode::truncate_locked(u64 size)
 {
-    MutexLocker locker(m_inode_lock);
+    VERIFY(m_inode_lock.is_locked());
     VERIFY(!is_directory());
 
     u64 block_index = size / DataBlock::block_size + ((size % DataBlock::block_size == 0) ? 0 : 1);
@@ -378,10 +360,11 @@ ErrorOr<void> RAMFSInode::truncate(u64 size)
     }
     m_metadata.size = size;
     set_metadata_dirty(true);
+    did_modify_contents();
     return {};
 }
 
-ErrorOr<void> RAMFSInode::update_timestamps(Optional<Time> atime, Optional<Time> ctime, Optional<Time> mtime)
+ErrorOr<void> RAMFSInode::update_timestamps(Optional<UnixDateTime> atime, Optional<UnixDateTime> ctime, Optional<UnixDateTime> mtime)
 {
     MutexLocker locker(m_inode_lock);
 

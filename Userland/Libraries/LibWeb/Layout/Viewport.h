@@ -8,29 +8,39 @@
 
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Layout/BlockContainer.h>
-#include <LibWeb/Selection/Selection.h>
 
 namespace Web::Layout {
 
 class Viewport final : public BlockContainer {
     JS_CELL(Viewport, BlockContainer);
+    JS_DECLARE_ALLOCATOR(Viewport);
 
 public:
     explicit Viewport(DOM::Document&, NonnullRefPtr<CSS::StyleProperties>);
     virtual ~Viewport() override;
 
+    struct TextPosition {
+        JS::NonnullGCPtr<DOM::Text> dom_node;
+        size_t start_offset { 0 };
+    };
+    struct TextBlock {
+        String text;
+        Vector<TextPosition> positions;
+    };
+    Vector<TextBlock> const& text_blocks();
+
     const DOM::Document& dom_node() const { return static_cast<const DOM::Document&>(*Node::dom_node()); }
 
-    void paint_all_phases(PaintContext&);
-
-    JS::GCPtr<Selection::Selection> selection() const;
-
-    void build_stacking_context_tree_if_needed();
-    void recompute_selection_states();
+    virtual void visit_edges(Visitor&) override;
 
 private:
-    void build_stacking_context_tree();
+    virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
+
+    void update_text_blocks();
+
     virtual bool is_viewport() const override { return true; }
+
+    Optional<Vector<TextBlock>> m_text_blocks;
 };
 
 template<>

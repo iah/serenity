@@ -15,34 +15,37 @@ REGISTER_WIDGET(SystemMonitor, ProcessFileDescriptorMapWidget)
 
 namespace SystemMonitor {
 
-ProcessFileDescriptorMapWidget::ProcessFileDescriptorMapWidget()
+ErrorOr<NonnullRefPtr<ProcessFileDescriptorMapWidget>> ProcessFileDescriptorMapWidget::try_create()
 {
-    set_layout<GUI::VerticalBoxLayout>(4);
-    m_table_view = add<GUI::TableView>();
+    auto widget = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProcessFileDescriptorMapWidget()));
+    widget->set_layout<GUI::VerticalBoxLayout>(4);
+    widget->m_table_view = widget->add<GUI::TableView>();
 
     Vector<GUI::JsonArrayModel::FieldSpec> pid_fds_fields;
-    pid_fds_fields.empend("fd", "FD", Gfx::TextAlignment::CenterRight);
-    pid_fds_fields.empend("class", "Class", Gfx::TextAlignment::CenterLeft);
-    pid_fds_fields.empend("offset", "Offset", Gfx::TextAlignment::CenterRight);
-    pid_fds_fields.empend("absolute_path", "Path", Gfx::TextAlignment::CenterLeft);
-    pid_fds_fields.empend("Access", Gfx::TextAlignment::CenterLeft, [](auto& object) {
+    TRY(pid_fds_fields.try_empend("fd", "FD"_string, Gfx::TextAlignment::CenterRight));
+    TRY(pid_fds_fields.try_empend("class", "Class"_string, Gfx::TextAlignment::CenterLeft));
+    TRY(pid_fds_fields.try_empend("offset", "Offset"_string, Gfx::TextAlignment::CenterRight));
+    TRY(pid_fds_fields.try_empend("absolute_path", "Path"_string, Gfx::TextAlignment::CenterLeft));
+    TRY(pid_fds_fields.try_empend("Access"_string, Gfx::TextAlignment::CenterLeft, [](auto& object) {
         return object.get_bool("seekable"sv).value_or(false) ? "Seekable" : "Sequential";
-    });
-    pid_fds_fields.empend("Blocking", Gfx::TextAlignment::CenterLeft, [](auto& object) {
+    }));
+    TRY(pid_fds_fields.try_empend("Blocking"_string, Gfx::TextAlignment::CenterLeft, [](auto& object) {
         return object.get_bool("blocking"sv).value_or(false) ? "Blocking" : "Nonblocking";
-    });
-    pid_fds_fields.empend("On exec", Gfx::TextAlignment::CenterLeft, [](auto& object) {
+    }));
+    TRY(pid_fds_fields.try_empend("On exec"_string, Gfx::TextAlignment::CenterLeft, [](auto& object) {
         return object.get_bool("cloexec"sv).value_or(false) ? "Close" : "Keep";
-    });
-    pid_fds_fields.empend("Can read", Gfx::TextAlignment::CenterLeft, [](auto& object) {
+    }));
+    TRY(pid_fds_fields.try_empend("Can read"_string, Gfx::TextAlignment::CenterLeft, [](auto& object) {
         return object.get_bool("can_read"sv).value_or(false) ? "Yes" : "No";
-    });
-    pid_fds_fields.empend("Can write", Gfx::TextAlignment::CenterLeft, [](auto& object) {
+    }));
+    TRY(pid_fds_fields.try_empend("Can write"_string, Gfx::TextAlignment::CenterLeft, [](auto& object) {
         return object.get_bool("can_write"sv).value_or(false) ? "Yes" : "No";
-    });
+    }));
 
-    m_model = GUI::JsonArrayModel::create({}, move(pid_fds_fields));
-    m_table_view->set_model(MUST(GUI::SortingProxyModel::create(*m_model)));
+    widget->m_model = GUI::JsonArrayModel::create({}, move(pid_fds_fields));
+    widget->m_table_view->set_model(TRY(GUI::SortingProxyModel::create(*widget->m_model)));
+
+    return widget;
 }
 
 void ProcessFileDescriptorMapWidget::set_pid(pid_t pid)
@@ -50,7 +53,7 @@ void ProcessFileDescriptorMapWidget::set_pid(pid_t pid)
     if (m_pid == pid)
         return;
     m_pid = pid;
-    m_model->set_json_path(DeprecatedString::formatted("/proc/{}/fds", m_pid));
+    m_model->set_json_path(ByteString::formatted("/proc/{}/fds", m_pid));
 }
 
 }

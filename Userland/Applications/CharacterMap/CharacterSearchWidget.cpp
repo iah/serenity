@@ -12,8 +12,8 @@
 
 struct SearchResult {
     u32 code_point;
-    DeprecatedString code_point_string;
-    DeprecatedString display_text;
+    ByteString code_point_string;
+    ByteString display_text;
 };
 
 class CharacterSearchModel final : public GUI::Model {
@@ -62,7 +62,7 @@ CharacterSearchWidget::CharacterSearchWidget()
     m_search_input->on_up_pressed = [this] { m_results_table->move_cursor(GUI::AbstractView::CursorMovement::Up, GUI::AbstractView::SelectionUpdate::Set); };
     m_search_input->on_down_pressed = [this] { m_results_table->move_cursor(GUI::AbstractView::CursorMovement::Down, GUI::AbstractView::SelectionUpdate::Set); };
 
-    m_search_input->on_change = Core::debounce([this] { search(); }, 100);
+    m_search_input->on_change = Core::debounce(100, [this] { search(); });
 
     m_results_table->horizontal_scrollbar().set_visible(false);
     m_results_table->set_column_headers_visible(false);
@@ -93,7 +93,7 @@ void CharacterSearchWidget::search()
         StringBuilder builder;
         builder.append_code_point(code_point);
 
-        model.add_result({ code_point, builder.to_deprecated_string(), move(display_name) });
+        model.add_result({ code_point, builder.to_byte_string(), move(display_name) });
 
         // Stop when we reach 250 results.
         // This is already too many for the search to be useful, and means we don't spend forever recalculating the column size.

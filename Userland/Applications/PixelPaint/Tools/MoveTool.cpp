@@ -78,19 +78,19 @@ void MoveTool::on_mousemove(Layer* layer, MouseEvent& event)
         switch (m_resize_anchor_location.value()) {
         case ResizeAnchorLocation::TopLeft:
             scaling_origin = rect_being_moved.top_left();
-            opposite_corner = rect_being_moved.bottom_right().translated(1, 1);
+            opposite_corner = rect_being_moved.bottom_right();
             break;
         case ResizeAnchorLocation::BottomRight:
-            scaling_origin = rect_being_moved.bottom_right().translated(1, 1);
+            scaling_origin = rect_being_moved.bottom_right();
             opposite_corner = rect_being_moved.top_left();
             break;
         case ResizeAnchorLocation::BottomLeft:
-            scaling_origin = rect_being_moved.bottom_left().translated(0, 1);
-            opposite_corner = rect_being_moved.top_right().translated(1, 0);
+            scaling_origin = rect_being_moved.bottom_left();
+            opposite_corner = rect_being_moved.top_right();
             break;
         case ResizeAnchorLocation::TopRight:
-            scaling_origin = rect_being_moved.top_right().translated(1, 0);
-            opposite_corner = rect_being_moved.bottom_left().translated(0, 1);
+            scaling_origin = rect_being_moved.top_right();
+            opposite_corner = rect_being_moved.bottom_left();
             break;
         }
         scaling_origin.translate_by(delta);
@@ -124,9 +124,9 @@ void MoveTool::on_mouseup(Layer* layer, MouseEvent& event)
         return;
 
     if (m_scaling) {
-        auto resized_or_error = m_editor->active_layer()->resize(m_new_layer_rect, Gfx::Painter::ScalingMode::BilinearBlend);
-        if (resized_or_error.is_error())
-            GUI::MessageBox::show_error(m_editor->window(), MUST(String::formatted("Failed to resize layer: {}", resized_or_error.error().string_literal())));
+        auto scaled_layer_or_error = m_editor->active_layer()->scale(m_new_layer_rect, Gfx::ScalingMode::BilinearBlend);
+        if (scaled_layer_or_error.is_error())
+            GUI::MessageBox::show_error(m_editor->window(), MUST(String::formatted("Failed to resize layer: {}", scaled_layer_or_error.release_error())));
         else
             m_editor->layers_did_change();
     }
@@ -140,10 +140,10 @@ void MoveTool::on_mouseup(Layer* layer, MouseEvent& event)
 
 bool MoveTool::on_keydown(GUI::KeyEvent& event)
 {
-    if (event.key() == Key_Shift)
+    if (event.key() == Key_LeftShift)
         m_keep_aspect_ratio = true;
 
-    if (event.key() == Key_Alt)
+    if (event.key() == Key_LeftAlt)
         toggle_selection_mode();
 
     if (m_scaling)
@@ -182,10 +182,10 @@ bool MoveTool::on_keydown(GUI::KeyEvent& event)
 
 void MoveTool::on_keyup(GUI::KeyEvent& event)
 {
-    if (event.key() == Key_Shift)
+    if (event.key() == Key_LeftShift)
         m_keep_aspect_ratio = false;
 
-    if (event.key() == Key_Alt)
+    if (event.key() == Key_LeftAlt)
         toggle_selection_mode();
 }
 
@@ -199,7 +199,7 @@ void MoveTool::on_second_paint(Layer const* layer, GUI::PaintEvent& event)
     if (m_scaling && (!m_cached_preview_bitmap.is_null() || !update_cached_preview_bitmap(layer).is_error())) {
         Gfx::PainterStateSaver saver(painter);
         painter.add_clip_rect(m_editor->content_rect());
-        painter.draw_scaled_bitmap(rect_in_editor, *m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), 1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+        painter.draw_scaled_bitmap(rect_in_editor, *m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), 1.0f, Gfx::ScalingMode::BilinearBlend);
     }
     painter.draw_rect_with_thickness(rect_in_editor, Color::Black, 3);
     painter.draw_rect_with_thickness(rect_in_editor, Color::White, 1);
@@ -233,9 +233,9 @@ Array<Gfx::IntRect, 4> MoveTool::resize_anchor_rects(Gfx::IntRect layer_rect_in_
 {
     return Array {
         resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.top_left(), resize_anchor_size),
-        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.top_right().translated(1, 0), resize_anchor_size),
-        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.bottom_left().translated(0, 1), resize_anchor_size),
-        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.bottom_right().translated(1), resize_anchor_size)
+        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.top_right(), resize_anchor_size),
+        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.bottom_left(), resize_anchor_size),
+        resize_anchor_rect_from_position(layer_rect_in_frame_coordinates.bottom_right(), resize_anchor_size)
     };
 }
 
@@ -247,7 +247,7 @@ ErrorOr<void> MoveTool::update_cached_preview_bitmap(Layer const* layer)
 
     m_cached_preview_bitmap = TRY(Gfx::Bitmap::create(source_bitmap.format(), preview_bitmap_size));
     GUI::Painter preview_painter(*m_cached_preview_bitmap);
-    preview_painter.draw_scaled_bitmap(m_cached_preview_bitmap->rect(), source_bitmap, source_bitmap.rect(), 0.8f, Gfx::Painter::ScalingMode::BilinearBlend);
+    preview_painter.draw_scaled_bitmap(m_cached_preview_bitmap->rect(), source_bitmap, source_bitmap.rect(), 0.8f, Gfx::ScalingMode::BilinearBlend);
     Gfx::ContrastFilter preview_filter(0.5f);
     preview_filter.apply(*m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), *m_cached_preview_bitmap, m_cached_preview_bitmap->rect());
     return {};
@@ -265,11 +265,11 @@ Optional<ResizeAnchorLocation const> MoveTool::resize_anchor_location_from_curso
 
     if (cursor_within_resize_anchor_rect(layer_rect.top_left()))
         return ResizeAnchorLocation::TopLeft;
-    if (cursor_within_resize_anchor_rect(layer_rect.top_right().translated(1, 0)))
+    if (cursor_within_resize_anchor_rect(layer_rect.top_right()))
         return ResizeAnchorLocation::TopRight;
-    if (cursor_within_resize_anchor_rect(layer_rect.bottom_left().translated(0, 1)))
+    if (cursor_within_resize_anchor_rect(layer_rect.bottom_left()))
         return ResizeAnchorLocation::BottomLeft;
-    if (cursor_within_resize_anchor_rect(layer_rect.bottom_right().translated(1)))
+    if (cursor_within_resize_anchor_rect(layer_rect.bottom_right()))
         return ResizeAnchorLocation::BottomRight;
     return {};
 }
@@ -289,24 +289,24 @@ Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> MoveTool::cursor(
     return Gfx::StandardCursor::Move;
 }
 
-ErrorOr<GUI::Widget*> MoveTool::get_properties_widget()
+NonnullRefPtr<GUI::Widget> MoveTool::get_properties_widget()
 {
     if (!m_properties_widget) {
-        auto properties_widget = TRY(GUI::Widget::try_create());
-        (void)TRY(properties_widget->try_set_layout<GUI::VerticalBoxLayout>());
+        auto properties_widget = GUI::Widget::construct();
+        properties_widget->set_layout<GUI::VerticalBoxLayout>();
 
-        auto selection_mode_container = TRY(properties_widget->try_add<GUI::Widget>());
-        (void)TRY(selection_mode_container->try_set_layout<GUI::HorizontalBoxLayout>());
-        selection_mode_container->set_fixed_height(46);
-        auto selection_mode_label = TRY(selection_mode_container->try_add<GUI::Label>("Selection Mode:"));
-        selection_mode_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-        selection_mode_label->set_fixed_size(80, 40);
+        auto& selection_mode_container = properties_widget->add<GUI::Widget>();
+        selection_mode_container.set_layout<GUI::HorizontalBoxLayout>();
+        selection_mode_container.set_fixed_height(46);
+        auto& selection_mode_label = selection_mode_container.add<GUI::Label>("Selection Mode:"_string);
+        selection_mode_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        selection_mode_label.set_fixed_size(80, 40);
 
-        auto mode_radio_container = TRY(selection_mode_container->try_add<GUI::Widget>());
-        (void)TRY(mode_radio_container->try_set_layout<GUI::VerticalBoxLayout>());
-        m_selection_mode_foreground = TRY(mode_radio_container->try_add<GUI::RadioButton>(TRY("Foreground"_string)));
+        auto& mode_radio_container = selection_mode_container.add<GUI::Widget>();
+        mode_radio_container.set_layout<GUI::VerticalBoxLayout>();
+        m_selection_mode_foreground = mode_radio_container.add<GUI::RadioButton>("Foreground"_string);
 
-        m_selection_mode_active = TRY(mode_radio_container->try_add<GUI::RadioButton>(TRY("Active Layer"_string)));
+        m_selection_mode_active = mode_radio_container.add<GUI::RadioButton>("Active Layer"_string);
 
         m_selection_mode_foreground->on_checked = [this](bool) {
             m_layer_selection_mode = LayerSelectionMode::ForegroundLayer;
@@ -319,7 +319,7 @@ ErrorOr<GUI::Widget*> MoveTool::get_properties_widget()
         m_properties_widget = properties_widget;
     }
 
-    return m_properties_widget.ptr();
+    return *m_properties_widget;
 }
 
 void MoveTool::toggle_selection_mode()

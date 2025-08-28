@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Till Mayer <till.mayer@web.de>
+ * Copyright (c) 2023, David Ganz <david.g.ganz@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -51,6 +52,8 @@ public:
     bool is_allowed_to_push(Card const&, size_t stack_size = 1, MovementRule movement_rule = MovementRule::Alternating) const;
     ErrorOr<void> add_all_grabbed_cards(Gfx::IntPoint click_location, Vector<NonnullRefPtr<Card>>& grabbed, MovementRule movement_rule = MovementRule::Alternating);
 
+    void update_disabled_cards(MovementRule);
+
     bool preview_card(Gfx::IntPoint click_location);
     void clear_card_preview();
 
@@ -79,7 +82,7 @@ private:
         case Type::Waste:
             return { 0, 0, 1, 0 };
         case Type::Play:
-            return { 20, 0, 1, 0 };
+            return { 15, 0, 1, 0 };
         default:
             return {};
         }
@@ -137,6 +140,6 @@ struct AK::Formatter<Cards::CardStack> : Formatter<FormatString> {
             first_card = false;
         }
 
-        return Formatter<FormatString>::format(builder, "{:<10} {:>16}: {}"sv, type, stack.bounding_box(), cards.to_deprecated_string());
+        return Formatter<FormatString>::format(builder, "{:<10} {:>16}: {}"sv, type, stack.bounding_box(), cards.to_byte_string());
     }
 };

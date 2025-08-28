@@ -12,9 +12,10 @@ namespace JS::Temporal {
 
 class PlainDateConstructor final : public NativeFunction {
     JS_OBJECT(PlainDateConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(PlainDateConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PlainDateConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

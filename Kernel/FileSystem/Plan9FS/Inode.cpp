@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/FileSystem/Plan9FS/Inode.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -14,9 +14,9 @@ Plan9FSInode::Plan9FSInode(Plan9FS& fs, u32 fid)
 {
 }
 
-ErrorOr<NonnullLockRefPtr<Plan9FSInode>> Plan9FSInode::try_create(Plan9FS& fs, u32 fid)
+ErrorOr<NonnullRefPtr<Plan9FSInode>> Plan9FSInode::try_create(Plan9FS& fs, u32 fid)
 {
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) Plan9FSInode(fs, fid));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) Plan9FSInode(fs, fid));
 }
 
 Plan9FSInode::~Plan9FSInode()
@@ -94,12 +94,6 @@ ErrorOr<size_t> Plan9FSInode::read_bytes_locked(off_t offset, size_t size, UserO
     size_t nread = min(data.length(), size);
     TRY(buffer.write(data.characters_without_null_termination(), nread));
     return nread;
-}
-
-ErrorOr<void> Plan9FSInode::replace_child(StringView, Inode&)
-{
-    // TODO
-    return ENOTIMPL;
 }
 
 ErrorOr<size_t> Plan9FSInode::write_bytes_locked(off_t offset, size_t size, UserOrKernelBuffer const& data, OpenFileDescription*)
@@ -245,7 +239,7 @@ ErrorOr<void> Plan9FSInode::traverse_as_directory(Function<ErrorOr<void>(FileSys
     return ENOTIMPL;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> Plan9FSInode::lookup(StringView name)
+ErrorOr<NonnullRefPtr<Inode>> Plan9FSInode::lookup(StringView name)
 {
     u32 newfid = fs().allocate_fid();
     Plan9FSMessage message { fs(), Plan9FSMessage::Type::Twalk };
@@ -254,7 +248,7 @@ ErrorOr<NonnullLockRefPtr<Inode>> Plan9FSInode::lookup(StringView name)
     return TRY(Plan9FSInode::try_create(fs(), newfid));
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> Plan9FSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
+ErrorOr<NonnullRefPtr<Inode>> Plan9FSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
 {
     // TODO
     return ENOTIMPL;
@@ -284,8 +278,9 @@ ErrorOr<void> Plan9FSInode::chown(UserID, GroupID)
     return ENOTIMPL;
 }
 
-ErrorOr<void> Plan9FSInode::truncate(u64 new_size)
+ErrorOr<void> Plan9FSInode::truncate_locked(u64 new_size)
 {
+    VERIFY(m_inode_lock.is_locked());
     if (fs().m_remote_protocol_version >= Plan9FS::ProtocolVersion::v9P2000L) {
         Plan9FSMessage message { fs(), Plan9FSMessage::Type::Tsetattr };
         SetAttrMask valid = SetAttrMask::Size;

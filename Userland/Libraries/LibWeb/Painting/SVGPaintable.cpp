@@ -7,6 +7,7 @@
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Painting/SVGPaintable.h>
+#include <LibWeb/SVG/SVGMaskElement.h>
 
 namespace Web::Painting {
 
@@ -20,28 +21,12 @@ Layout::SVGBox const& SVGPaintable::layout_box() const
     return static_cast<Layout::SVGBox const&>(layout_node());
 }
 
-void SVGPaintable::before_children_paint(PaintContext& context, PaintPhase phase) const
-{
-    PaintableBox::before_children_paint(context, phase);
-    if (phase != PaintPhase::Foreground)
-        return;
-    context.svg_context().save();
-}
-
-void SVGPaintable::after_children_paint(PaintContext& context, PaintPhase phase) const
-{
-    PaintableBox::after_children_paint(context, phase);
-    if (phase != PaintPhase::Foreground)
-        return;
-    context.svg_context().restore();
-}
-
 CSSPixelRect SVGPaintable::compute_absolute_rect() const
 {
     if (auto* svg_svg_box = layout_box().first_ancestor_of_type<Layout::SVGSVGBox>()) {
-        CSSPixelRect rect { effective_offset(), content_size() };
-        for (Layout::Box const* ancestor = svg_svg_box; ancestor && ancestor->paintable(); ancestor = ancestor->paintable()->containing_block())
-            rect.translate_by(ancestor->paint_box()->effective_offset());
+        CSSPixelRect rect { offset(), content_size() };
+        for (Layout::Box const* ancestor = svg_svg_box; ancestor; ancestor = ancestor->containing_block())
+            rect.translate_by(ancestor->paintable_box()->offset());
         return rect;
     }
     return PaintableBox::compute_absolute_rect();

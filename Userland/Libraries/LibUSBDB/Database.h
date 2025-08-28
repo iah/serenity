@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/HashMap.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/RefCounted.h>
@@ -52,18 +52,18 @@ struct Class {
 
 class Database : public RefCounted<Database> {
 public:
-    static RefPtr<Database> open(DeprecatedString const& filename);
-    static RefPtr<Database> open() { return open("/res/usb.ids"); };
+    static RefPtr<Database> open(ByteString const& filename);
+    static RefPtr<Database> open() { return open("/res/usb.ids"); }
 
-    const StringView get_vendor(u16 vendor_id) const;
-    const StringView get_device(u16 vendor_id, u16 device_id) const;
-    const StringView get_interface(u16 vendor_id, u16 device_id, u16 interface_id) const;
-    const StringView get_class(u8 class_id) const;
-    const StringView get_subclass(u8 class_id, u8 subclass_id) const;
-    const StringView get_protocol(u8 class_id, u8 subclass_id, u8 protocol_id) const;
+    StringView const get_vendor(u16 vendor_id) const;
+    StringView const get_device(u16 vendor_id, u16 device_id) const;
+    StringView const get_interface(u16 vendor_id, u16 device_id, u16 interface_id) const;
+    StringView const get_class(u8 class_id) const;
+    StringView const get_subclass(u8 class_id, u8 subclass_id) const;
+    StringView const get_protocol(u8 class_id, u8 subclass_id, u8 protocol_id) const;
 
 private:
-    explicit Database(NonnullRefPtr<Core::MappedFile> file)
+    explicit Database(NonnullOwnPtr<Core::MappedFile> file)
         : m_file(move(file))
     {
     }
@@ -76,7 +76,7 @@ private:
         ClassMode,
     };
 
-    NonnullRefPtr<Core::MappedFile> m_file;
+    NonnullOwnPtr<Core::MappedFile> m_file;
     StringView m_view {};
     HashMap<int, NonnullOwnPtr<Vendor>> m_vendors;
     HashMap<int, NonnullOwnPtr<Class>> m_classes;

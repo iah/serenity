@@ -21,7 +21,7 @@ ScriptEditor::ScriptEditor()
     set_ruler_visible(true);
 }
 
-void ScriptEditor::new_script_with_temp_name(DeprecatedString name)
+void ScriptEditor::new_script_with_temp_name(ByteString name)
 {
     set_name(name);
 }
@@ -37,12 +37,12 @@ ErrorOr<void> ScriptEditor::open_script_from_file(LexicalPath const& file_path)
     return {};
 }
 
-static ErrorOr<void> save_text_to_file(StringView filename, DeprecatedString text)
+static ErrorOr<void> save_text_to_file(StringView filename, ByteString text)
 {
     auto file = TRY(Core::File::open(filename, Core::File::OpenMode::Write));
 
     if (!text.is_empty())
-        TRY(file->write_entire_buffer(text.bytes()));
+        TRY(file->write_until_depleted(text.bytes()));
 
     return {};
 }
@@ -72,7 +72,7 @@ ErrorOr<bool> ScriptEditor::save_as()
 
     auto parent = static_cast<GUI::TabWidget*>(parent_widget());
     if (parent)
-        parent->set_tab_title(*this, lexical_path.title());
+        parent->set_tab_title(*this, String::from_utf8(lexical_path.title()).release_value_but_fixme_should_propagate_errors());
 
     document().set_unmodified();
     return true;

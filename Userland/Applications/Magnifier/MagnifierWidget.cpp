@@ -100,42 +100,28 @@ void MagnifierWidget::paint_event(GUI::PaintEvent& event)
         return;
 
     GUI::Painter painter(*this);
+    auto frame_inner_rect = this->frame_inner_rect();
+    auto bitmap_rect = Gfx::IntRect { frame_inner_rect.top_left(), m_grabbed_bitmap->rect().size() * m_scale_factor };
+    painter.add_clip_rect(frame_inner_rect);
 
     if (m_pause_capture)
-        painter.fill_rect(frame_inner_rect(), Gfx::Color::Black);
-
-    // We have to clip the source rect for cases when the currently captured image is larger than the inner_rect
-    int horizontal_clip = (frame_inner_rect().width() + m_scale_factor - 1) / m_scale_factor;
-    int vertical_clip = (frame_inner_rect().height() + m_scale_factor - 1) / m_scale_factor;
+        painter.fill_rect(frame_inner_rect, Gfx::Color::Black);
 
     if (m_grabbed_bitmap)
-        painter.draw_scaled_bitmap(
-            frame_inner_rect().intersected(Gfx::IntRect { { 0, 0 }, m_grabbed_bitmap->rect().size() } * m_scale_factor),
-            *m_grabbed_bitmap,
-            m_grabbed_bitmap->rect().intersected({ 0, 0, horizontal_clip, vertical_clip }),
-            1.0,
-            Gfx::Painter::ScalingMode::NearestFractional);
+        painter.draw_scaled_bitmap(bitmap_rect, *m_grabbed_bitmap, m_grabbed_bitmap->rect(), 1.0, Gfx::ScalingMode::NearestNeighbor);
 
     if (m_show_grid) {
+        int start_y = bitmap_rect.top();
+        int start_x = bitmap_rect.left();
 
-        auto grid_rect = frame_inner_rect();
-        if (m_grabbed_bitmap)
-            grid_rect = frame_inner_rect().intersected({ 0,
-                0,
-                m_grabbed_bitmap->rect().width() * m_scale_factor,
-                m_grabbed_bitmap->rect().height() * m_scale_factor });
+        int end_y = bitmap_rect.bottom();
+        int end_x = bitmap_rect.right();
 
-        int start_y = grid_rect.top(),
-            start_x = grid_rect.left();
+        for (int current_y = start_y; current_y < end_y; current_y += m_scale_factor)
+            painter.draw_line({ start_x, current_y }, { end_x - 1, current_y }, m_grid_color);
 
-        int end_y = grid_rect.bottom(),
-            end_x = grid_rect.right();
-
-        for (int current_y = start_y; current_y <= end_y; current_y += m_scale_factor)
-            painter.draw_line({ start_x, current_y }, { end_x, current_y }, m_grid_color);
-
-        for (int current_x = start_y; current_x <= end_x; current_x += m_scale_factor)
-            painter.draw_line({ current_x, start_y }, { current_x, end_y }, m_grid_color);
+        for (int current_x = start_y; current_x < end_x; current_x += m_scale_factor)
+            painter.draw_line({ current_x, start_y }, { current_x, end_y - 1 }, m_grid_color);
     }
 }
 
@@ -146,15 +132,15 @@ void MagnifierWidget::second_paint_event(GUI::PaintEvent&)
 
     GUI::Painter painter(*this);
 
-    auto target = painter.target();
-    auto bitmap_clone_or_error = target->clone();
+    auto& target = painter.target();
+    auto bitmap_clone_or_error = target.clone();
     if (bitmap_clone_or_error.is_error())
         return;
 
     auto clone = bitmap_clone_or_error.release_value();
-    auto rect = target->rect();
+    auto rect = target.rect();
 
-    m_color_filter->apply(*target, rect, *clone, rect);
+    m_color_filter->apply(target, rect, *clone, rect);
 }
 
 void MagnifierWidget::mousemove_event(GUI::MouseEvent& event)

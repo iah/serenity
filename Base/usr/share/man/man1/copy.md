@@ -14,8 +14,8 @@ $ copy [options...] [text...]
 
 ## Options
 
-* `-t type`, `--type type`: MIME type of data stored in clipboard. The default type is `text/plain`.
-* `-c`, `--clear`: Clear the clipboard instead of copying.
+-   `-t type`, `--type type`: MIME type of data stored in clipboard. The default type is `text/plain`.
+-   `-c`, `--clear`: Clear the clipboard instead of copying.
 
 ## Examples
 
@@ -26,3 +26,7 @@ $ cat image.png | copy -t image/png
 # Place text 'foo' in clipboard
 $ copy foo
 ```
+
+## See also
+
+-   [`clipboard`(5)](help://man/5/clipboard)

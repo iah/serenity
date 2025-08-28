@@ -48,6 +48,23 @@
             {"type": "GLubyte const*", "name": "bitmap"}
         ]
     },
+    "BlendColor": {
+        "arguments": [
+            {"type": "GLclampf", "name": ["red", "green", "blue", "alpha"]}
+        ]
+    },
+    "BlendEquation": {
+        "arguments": [
+            {"type": "GLenum", "name": "mode"},
+            {"expression": "mode"}
+        ],
+        "implementation": "blend_equation_separate"
+    },
+    "BlendEquationSeparate": {
+        "arguments": [
+            {"type": "GLenum", "name": ["modeRGB", "modeAlpha"]}
+        ]
+    },
     "BlendFunc": {
         "arguments": [
             {"type": "GLenum", "name": ["sfactor", "dfactor"]}
@@ -468,6 +485,15 @@
         ],
         "implementation": "get_program"
     },
+    "GetShaderInfoLog": {
+        "arguments": [
+            {"type": "GLuint", "name": "shader"},
+            {"type": "GLsizei", "name": "maxLength"},
+            {"type": "GLsizei*", "name": "length"},
+            {"type": "GLchar*", "name": "infoLog"}
+        ],
+        "unimplemented": true
+    },
     "GetShaderiv": {
         "arguments": [
             {"type": "GLuint", "name": "shader"},
@@ -505,6 +531,13 @@
                 "iv!": {"implementation": "get_tex_parameter_integerv"}
             }
         }
+    },
+    "GetUniformLocation": {
+        "arguments": [
+            {"type": "GLuint", "name": "program"},
+            {"type": "GLchar const*", "name": "name"}
+        ],
+        "unimplemented": true
     },
     "Hint": {
         "arguments": [
@@ -554,9 +587,25 @@
         "arguments": [
             {"type": "GLenum", "name": "pname"},
             {"name": "param"},
+            {"name": ["y", "z", "w"]}
+        ],
+        "variants": {
+            "argument_counts": [1],
+            "argument_defaults": ["0.f", "0.f", "0.f", "0.f"],
+            "types": {
+                "f": {},
+                "i": {}
+            }
+        }
+    },
+    "LightModel_v": {
+        "arguments": [
+            {"type": "GLenum", "name": "pname"},
+            {"name": "param"},
             {"type": "GLenum", "expression": "@variant_gl_type@"}
         ],
         "implementation": "light_modelv",
+        "name": "LightModel",
         "variants": {
             "argument_counts": [1],
             "pointer_argument": "params",
@@ -565,22 +614,6 @@
                 "iv": {}
             }
         }
-    },
-    "LightModelf": {
-        "arguments": [
-            {"type": "GLenum", "name": "pname"},
-            {"type": "GLfloat", "name": "x"},
-            {"name": ["y", "z", "w"], "expression": "0.f"}
-        ],
-        "implementation": "light_model"
-    },
-    "LightModeli": {
-        "arguments": [
-            {"type": "GLenum", "name": "pname"},
-            {"type": "GLint", "name": "x", "cast_to": "GLfloat"},
-            {"name": ["y", "z", "w"], "expression": "0.f"}
-        ],
-        "implementation": "light_model"
     },
     "LineWidth": {
         "arguments": [
@@ -1134,6 +1167,40 @@
             "types": {
                 "d": {},
                 "f": {}
+            }
+        }
+    },
+    "Uniform": {
+        "arguments": [
+            {"type": "GLint", "name": "location"},
+            {"name": ["v0", "v1", "v2", "v3"]}
+        ],
+        "unimplemented": true,
+        "variants": {
+            "argument_counts": [1, 2, 3, 4],
+            "argument_defaults": ["0.", "0.", "0.", "0."],
+            "types": {
+                "f": {},
+                "i": {},
+                "ui": {}
+            }
+        }
+    },
+    "Uniform_v": {
+        "arguments": [
+            {"type": "GLint", "name": "location"},
+            {"type": "GLsizei", "name": "count"},
+            {"name": "value"}
+        ],
+        "name": "Uniform",
+        "unimplemented": true,
+        "variants": {
+            "argument_counts": [1, 2, 3, 4],
+            "pointer_argument": "value",
+            "types": {
+                "fv": {},
+                "iv": {},
+                "uiv": {}
             }
         }
     },

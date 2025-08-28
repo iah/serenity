@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
 #include <AK/HashMap.h>
 #include <AK/QuickSort.h>
 #include <AK/Vector.h>
@@ -13,12 +14,11 @@
 #include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
-#include <ctype.h>
 
 struct Line {
     StringView key;
     long int numeric_key;
-    DeprecatedString line;
+    ByteString line;
     bool numeric;
 
     bool operator<(Line const& other) const
@@ -41,8 +41,8 @@ private:
 };
 
 template<>
-struct AK::Traits<Line> : public GenericTraits<Line> {
-    static unsigned hash(Line l)
+struct AK::Traits<Line> : public DefaultTraits<Line> {
+    static unsigned hash(Line const& l)
     {
         if (l.numeric)
             return l.numeric_key;
@@ -55,25 +55,29 @@ struct Options {
     size_t key_field { 0 };
     bool unique { false };
     bool numeric { false };
-    StringView separator { "\0", 1 };
-    Vector<DeprecatedString> files;
+    bool reverse { false };
+    bool zero_terminated { false };
+    StringView separator {};
+    Vector<ByteString> files;
 };
 
-static ErrorOr<void> load_file(Options options, StringView filename, Vector<Line>& lines, HashTable<Line>& seen)
+static ErrorOr<void> load_file(Options const& options, StringView filename, StringView line_delimiter, Vector<Line>& lines, HashTable<Line>& seen)
 {
-    auto file = TRY(Core::BufferedFile::create(
+    auto file = TRY(Core::InputBufferedFile::create(
         TRY(Core::File::open_file_or_standard_stream(filename, Core::File::OpenMode::Read))));
 
-    // FIXME: Unlimited line length
     auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
-    while (TRY(file->can_read_line())) {
-        DeprecatedString line = TRY(file->read_line(buffer));
+    while (!file->is_eof()) {
+        ByteString line { TRY(file->read_until_with_resize(buffer, line_delimiter)) };
+        // Ensure any trailing delimiter is ignored.
+        if (line.is_empty() && file->is_eof())
+            break;
 
         StringView key = line;
         if (options.key_field != 0) {
-            auto split = (options.separator[0])
-                ? line.split_view(options.separator[0])
-                : line.split_view(isspace);
+            auto split = (!options.separator.is_empty())
+                ? key.split_view(options.separator)
+                : key.split_view_if(is_ascii_space);
             if (options.key_field - 1 >= split.size()) {
                 key = ""sv;
             } else {
@@ -81,7 +85,7 @@ static ErrorOr<void> load_file(Options options, StringView filename, Vector<Line
             }
         }
 
-        Line l = { key, key.to_int().value_or(0), line, options.numeric };
+        Line l = { key, key.to_number<int>().value_or(0), line, options.numeric };
 
         if (!options.unique || !seen.contains(l)) {
             lines.append(l);
@@ -104,25 +108,34 @@ ErrorOr<int> serenity_main([[maybe_unused]] Main::Arguments arguments)
     args_parser.add_option(options.unique, "Don't emit duplicate lines", "unique", 'u');
     args_parser.add_option(options.numeric, "treat the key field as a number", "numeric", 'n');
     args_parser.add_option(options.separator, "The separator to split fields by", "sep", 't', "char");
+    args_parser.add_option(options.reverse, "Sort in reverse order", "reverse", 'r');
+    args_parser.add_option(options.zero_terminated, "Use '\\0' as the line delimiter instead of a newline", "zero-terminated", 'z');
     args_parser.add_positional_argument(options.files, "Files to sort", "file", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
+    auto line_delimiter = options.zero_terminated ? "\0"sv : "\n"sv;
     Vector<Line> lines;
     HashTable<Line> seen;
 
     if (options.files.size() == 0) {
-        TRY(load_file(options, "-"sv, lines, seen));
+        TRY(load_file(options, "-"sv, line_delimiter, lines, seen));
     } else {
         for (auto& file : options.files) {
-            TRY(load_file(options, file, lines, seen));
+            TRY(load_file(options, file, line_delimiter, lines, seen));
         }
     }
 
     quick_sort(lines);
 
-    for (auto& line : lines) {
-        outln("{}", line.line);
-    }
+    auto print_lines = [line_delimiter](auto const& lines) {
+        for (auto& line : lines)
+            out("{}{}", line.line, line_delimiter);
+    };
+
+    if (options.reverse)
+        print_lines(lines.in_reverse());
+    else
+        print_lines(lines);
 
     return 0;
 }

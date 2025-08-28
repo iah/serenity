@@ -13,49 +13,6 @@
 
 namespace GUI {
 
-Variant::Variant(JsonValue const& value)
-{
-    *this = value;
-}
-
-Variant& Variant::operator=(JsonValue const& value)
-{
-    if (value.is_null())
-        return *this;
-
-    if (value.is_i32()) {
-        set(value.as_i32());
-        return *this;
-    }
-
-    if (value.is_u32()) {
-        set(value.as_u32());
-        return *this;
-    }
-
-    if (value.is_i64()) {
-        set(value.as_i64());
-        return *this;
-    }
-
-    if (value.is_u64()) {
-        set(value.as_u64());
-        return *this;
-    }
-
-    if (value.is_string()) {
-        set(value.as_string());
-        return *this;
-    }
-
-    if (value.is_bool()) {
-        set(Detail::Boolean { value.as_bool() });
-        return *this;
-    }
-
-    VERIFY_NOT_REACHED();
-}
-
 bool Variant::operator==(Variant const& other) const
 {
     return visit([&]<typename T>(T const& own_value) {
@@ -65,13 +22,13 @@ bool Variant::operator==(Variant const& other) const
                     return own_value == other_value;
                 else if constexpr (IsSame<T, GUI::Icon>)
                     return &own_value.impl() == &other_value.impl();
-                // FIXME: Figure out if this silly behaviour is actually used anywhere, then get rid of it.
+                // FIXME: Figure out if this silly behavior is actually used anywhere, then get rid of it.
                 else
-                    return to_deprecated_string() == other.to_deprecated_string();
+                    return to_byte_string() == other.to_byte_string();
             },
             [&](auto const&) {
-                // FIXME: Figure out if this silly behaviour is actually used anywhere, then get rid of it.
-                return to_deprecated_string() == other.to_deprecated_string();
+                // FIXME: Figure out if this silly behavior is actually used anywhere, then get rid of it.
+                return to_byte_string() == other.to_byte_string();
             });
     });
 }
@@ -91,12 +48,12 @@ bool Variant::operator<(Variant const& other) const
                     return own_value->name() < other_value->name();
                 else if constexpr (requires { own_value < other_value; })
                     return own_value < other_value;
-                // FIXME: Figure out if this silly behaviour is actually used anywhere, then get rid of it.
+                // FIXME: Figure out if this silly behavior is actually used anywhere, then get rid of it.
                 else
-                    return to_deprecated_string() < other.to_deprecated_string();
+                    return to_byte_string() < other.to_byte_string();
             },
             [&](auto const&) -> bool {
-                return to_deprecated_string() < other.to_deprecated_string(); // FIXME: Figure out if this silly behaviour is actually used anywhere, then get rid of it.
+                return to_byte_string() < other.to_byte_string(); // FIXME: Figure out if this silly behavior is actually used anywhere, then get rid of it.
             });
     });
 }

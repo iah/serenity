@@ -10,18 +10,20 @@
 #include <AK/HashMap.h>
 #include <AK/SourceGenerator.h>
 #include <AK/StringBuilder.h>
+#include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibMain/Main.h>
 #include <ctype.h>
 #include <stdio.h>
 
+namespace {
 struct Parameter {
-    Vector<DeprecatedString> attributes;
-    DeprecatedString type;
-    DeprecatedString name;
+    Vector<ByteString> attributes;
+    ByteString type;
+    ByteString name;
 };
 
-static DeprecatedString pascal_case(DeprecatedString const& identifier)
+static ByteString pascal_case(ByteString const& identifier)
 {
     StringBuilder builder;
     bool was_new_word = true;
@@ -36,48 +38,48 @@ static DeprecatedString pascal_case(DeprecatedString const& identifier)
         } else
             builder.append(ch);
     }
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 struct Message {
-    DeprecatedString name;
+    ByteString name;
     bool is_synchronous { false };
     Vector<Parameter> inputs;
     Vector<Parameter> outputs;
 
-    DeprecatedString response_name() const
+    ByteString response_name() const
     {
         StringBuilder builder;
         builder.append(pascal_case(name));
         builder.append("Response"sv);
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
 };
 
 struct Endpoint {
-    Vector<DeprecatedString> includes;
-    DeprecatedString name;
+    Vector<ByteString> includes;
+    ByteString name;
     u32 magic;
     Vector<Message> messages;
 };
 
-static bool is_primitive_type(DeprecatedString const& type)
+static bool is_primitive_type(ByteString const& type)
 {
     return type.is_one_of("u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "size_t", "bool", "double", "float", "int", "unsigned", "unsigned int");
 }
 
-static bool is_simple_type(DeprecatedString const& type)
+static bool is_simple_type(ByteString const& type)
 {
     // Small types that it makes sense just to pass by value.
-    return type.is_one_of("Gfx::Color", "Gfx::IntPoint", "Gfx::FloatPoint", "Gfx::IntSize", "Gfx::FloatSize", "Core::File::OpenMode");
+    return type.is_one_of("AK::CaseSensitivity", "AK::Duration", "Gfx::Color", "Web::DevicePixels", "Gfx::IntPoint", "Gfx::FloatPoint", "Web::DevicePixelPoint", "Gfx::IntSize", "Gfx::FloatSize", "Web::DevicePixelSize", "Core::File::OpenMode", "Web::Cookie::Source", "Web::EventResult", "Web::HTML::AllowMultipleFiles", "Web::HTML::AudioPlayState", "Web::HTML::HistoryHandlingBehavior", "WebView::PageInfoType");
 }
 
-static bool is_primitive_or_simple_type(DeprecatedString const& type)
+static bool is_primitive_or_simple_type(ByteString const& type)
 {
     return is_primitive_type(type) || is_simple_type(type);
 }
 
-static DeprecatedString message_name(DeprecatedString const& endpoint, DeprecatedString const& message, bool is_response)
+static ByteString message_name(ByteString const& endpoint, ByteString const& message, bool is_response)
 {
     StringBuilder builder;
     builder.append("Messages::"sv);
@@ -86,7 +88,7 @@ static DeprecatedString message_name(DeprecatedString const& endpoint, Deprecate
     builder.append(pascal_case(message));
     if (is_response)
         builder.append("Response"sv);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 Vector<Endpoint> parse(ByteBuffer const& file_contents)
@@ -108,8 +110,39 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
             lexer.ignore_until('\n');
     };
 
-    auto parse_parameter = [&](Vector<Parameter>& storage) {
-        for (;;) {
+    auto parse_parameter_type = [&]() {
+        ByteString parameter_type = lexer.consume_until([](char ch) { return ch == '<' || isspace(ch); });
+        if (lexer.peek() == '<') {
+            lexer.consume();
+
+            StringBuilder builder;
+            builder.append(parameter_type);
+            builder.append('<');
+            auto nesting_level = 1;
+            while (nesting_level > 0) {
+                auto inner_type = lexer.consume_until([](char ch) { return ch == '<' || ch == '>'; });
+                if (lexer.is_eof()) {
+                    warnln("Unexpected EOF when parsing parameter type");
+                    VERIFY_NOT_REACHED();
+                }
+                builder.append(inner_type);
+                if (lexer.peek() == '<') {
+                    nesting_level++;
+                } else if (lexer.peek() == '>') {
+                    nesting_level--;
+                }
+
+                builder.append(lexer.consume());
+            }
+
+            parameter_type = builder.to_byte_string();
+        }
+
+        return parameter_type;
+    };
+
+    auto parse_parameter = [&](Vector<Parameter>& storage, StringView message_name) {
+        for (auto parameter_index = 1;; ++parameter_index) {
             Parameter parameter;
             if (lexer.is_eof()) {
                 warnln("EOF when parsing parameter");
@@ -132,9 +165,11 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
                     consume_whitespace();
                 }
             }
-            // FIXME: This is not entirely correct. Types can have spaces, for example `HashMap<int, DeprecatedString>`.
-            //        Maybe we should use LibCpp::Parser for parsing types.
-            parameter.type = lexer.consume_until([](char ch) { return isspace(ch); });
+            parameter.type = parse_parameter_type();
+            if (parameter.type.ends_with(',') || parameter.type.ends_with(')')) {
+                warnln("Parameter {} of method: {} must be named", parameter_index, message_name);
+                VERIFY_NOT_REACHED();
+            }
             VERIFY(!lexer.is_eof());
             consume_whitespace();
             parameter.name = lexer.consume_until([](char ch) { return isspace(ch) || ch == ',' || ch == ')'; });
@@ -147,10 +182,10 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
         }
     };
 
-    auto parse_parameters = [&](Vector<Parameter>& storage) {
+    auto parse_parameters = [&](Vector<Parameter>& storage, StringView message_name) {
         for (;;) {
             consume_whitespace();
-            parse_parameter(storage);
+            parse_parameter(storage, message_name);
             consume_whitespace();
             if (lexer.consume_specific(','))
                 continue;
@@ -165,7 +200,7 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
         message.name = lexer.consume_until([](char ch) { return isspace(ch) || ch == '('; });
         consume_whitespace();
         assert_specific('(');
-        parse_parameters(message.inputs);
+        parse_parameters(message.inputs, message.name);
         assert_specific(')');
         consume_whitespace();
         assert_specific('=');
@@ -182,7 +217,7 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
 
         if (message.is_synchronous) {
             assert_specific('(');
-            parse_parameters(message.outputs);
+            parse_parameters(message.outputs, message.name);
             assert_specific(')');
         }
 
@@ -202,7 +237,7 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
     };
 
     auto parse_include = [&] {
-        DeprecatedString include;
+        ByteString include;
         consume_whitespace();
         include = lexer.consume_while([](char ch) { return ch != '\n'; });
         consume_whitespace();
@@ -225,10 +260,10 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
         consume_whitespace();
         parse_includes();
         consume_whitespace();
-        lexer.consume_specific("endpoint");
+        lexer.consume_specific("endpoint"sv);
         consume_whitespace();
         endpoints.last().name = lexer.consume_while([](char ch) { return !isspace(ch); });
-        endpoints.last().magic = Traits<DeprecatedString>::hash(endpoints.last().name);
+        endpoints.last().magic = Traits<ByteString>::hash(endpoints.last().name);
         consume_whitespace();
         assert_specific('{');
         parse_messages();
@@ -242,22 +277,22 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
     return endpoints;
 }
 
-HashMap<DeprecatedString, int> build_message_ids_for_endpoint(SourceGenerator generator, Endpoint const& endpoint)
+HashMap<ByteString, int> build_message_ids_for_endpoint(SourceGenerator generator, Endpoint const& endpoint)
 {
-    HashMap<DeprecatedString, int> message_ids;
+    HashMap<ByteString, int> message_ids;
 
     generator.appendln("\nenum class MessageID : i32 {");
     for (auto const& message : endpoint.messages) {
 
         message_ids.set(message.name, message_ids.size() + 1);
         generator.set("message.pascal_name", pascal_case(message.name));
-        generator.set("message.id", DeprecatedString::number(message_ids.size()));
+        generator.set("message.id", ByteString::number(message_ids.size()));
 
         generator.appendln("    @message.pascal_name@ = @message.id@,");
         if (message.is_synchronous) {
             message_ids.set(message.response_name(), message_ids.size() + 1);
             generator.set("message.pascal_name", pascal_case(message.response_name()));
-            generator.set("message.id", DeprecatedString::number(message_ids.size()));
+            generator.set("message.id", ByteString::number(message_ids.size()));
 
             generator.appendln("    @message.pascal_name@ = @message.id@,");
         }
@@ -266,14 +301,14 @@ HashMap<DeprecatedString, int> build_message_ids_for_endpoint(SourceGenerator ge
     return message_ids;
 }
 
-DeprecatedString constructor_for_message(DeprecatedString const& name, Vector<Parameter> const& parameters)
+ByteString constructor_for_message(ByteString const& name, Vector<Parameter> const& parameters)
 {
     StringBuilder builder;
     builder.append(name);
 
     if (parameters.is_empty()) {
         builder.append("() {}"sv);
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
     builder.append('(');
     for (size_t i = 0; i < parameters.size(); ++i) {
@@ -290,10 +325,10 @@ DeprecatedString constructor_for_message(DeprecatedString const& name, Vector<Pa
             builder.append(", "sv);
     }
     builder.append(" {}"sv);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
-void do_message(SourceGenerator message_generator, DeprecatedString const& name, Vector<Parameter> const& parameters, DeprecatedString const& response_type = {})
+void do_message(SourceGenerator message_generator, ByteString const& name, Vector<Parameter> const& parameters, ByteString const& response_type = {})
 {
     auto pascal_name = pascal_case(name);
     message_generator.set("message.name", name);
@@ -305,7 +340,7 @@ void do_message(SourceGenerator message_generator, DeprecatedString const& name,
 class @message.pascal_name@ final : public IPC::Message {
 public:)~~~");
 
-    if (!response_type.is_null())
+    if (!response_type.is_empty())
         message_generator.appendln(R"~~~(
    typedef class @message.response_type@ ResponseType;)~~~");
 
@@ -338,9 +373,9 @@ public:)~~~");
     static i32 static_message_id() { return (int)MessageID::@message.pascal_name@; }
     virtual const char* message_name() const override { return "@endpoint.name@::@message.pascal_name@"; }
 
-    static ErrorOr<NonnullOwnPtr<@message.pascal_name@>> decode(Stream& stream, Core::LocalSocket& socket)
+    static ErrorOr<NonnullOwnPtr<@message.pascal_name@>> decode(Stream& stream, Queue<IPC::File>& files)
     {
-        IPC::Decoder decoder { stream, socket };)~~~");
+        IPC::Decoder decoder { stream, files };)~~~");
 
     for (auto const& parameter : parameters) {
         auto parameter_generator = message_generator.fork();
@@ -371,7 +406,7 @@ public:)~~~");
             builder.append(", "sv);
     }
 
-    message_generator.set("message.constructor_call_parameters", builder.to_deprecated_string());
+    message_generator.set("message.constructor_call_parameters", builder.to_byte_string());
     message_generator.appendln(R"~~~(
         return make<@message.pascal_name@>(@message.constructor_call_parameters@);
     })~~~");
@@ -426,17 +461,17 @@ private:
 
 void do_message_for_proxy(SourceGenerator message_generator, Endpoint const& endpoint, Message const& message)
 {
-    auto do_implement_proxy = [&](DeprecatedString const& name, Vector<Parameter> const& parameters, bool is_synchronous, bool is_try) {
-        DeprecatedString return_type = "void";
+    auto do_implement_proxy = [&](ByteString const& name, Vector<Parameter> const& parameters, bool is_synchronous, bool is_try) {
+        ByteString return_type = "void";
         if (is_synchronous) {
             if (message.outputs.size() == 1)
                 return_type = message.outputs[0].type;
             else if (!message.outputs.is_empty())
                 return_type = message_name(endpoint.name, message.name, true);
         }
-        DeprecatedString inner_return_type = return_type;
+        ByteString inner_return_type = return_type;
         if (is_try)
-            return_type = DeprecatedString::formatted("IPC::IPCErrorOr<{}>", return_type);
+            return_type = ByteString::formatted("IPC::IPCErrorOr<{}>", return_type);
 
         message_generator.set("message.name", message.name);
         message_generator.set("message.pascal_name", pascal_case(message.name));
@@ -508,8 +543,10 @@ void do_message_for_proxy(SourceGenerator message_generator, Endpoint const& end
             message_generator.append(";");
         } else if (is_try) {
             message_generator.append(R"~~~();
-        if (!result)
-            return IPC::ErrorCode::PeerDisconnected;)~~~");
+        if (!result) {
+            m_connection.shutdown();
+            return IPC::ErrorCode::PeerDisconnected;
+        })~~~");
             if (inner_return_type != "void") {
                 message_generator.appendln(R"~~~(
         return move(*result);)~~~");
@@ -535,14 +572,14 @@ void do_message_for_proxy(SourceGenerator message_generator, Endpoint const& end
 void build_endpoint(SourceGenerator generator, Endpoint const& endpoint)
 {
     generator.set("endpoint.name", endpoint.name);
-    generator.set("endpoint.magic", DeprecatedString::number(endpoint.magic));
+    generator.set("endpoint.magic", ByteString::number(endpoint.magic));
 
     generator.appendln("\nnamespace Messages::@endpoint.name@ {");
 
-    HashMap<DeprecatedString, int> message_ids = build_message_ids_for_endpoint(generator.fork(), endpoint);
+    HashMap<ByteString, int> message_ids = build_message_ids_for_endpoint(generator.fork(), endpoint);
 
     for (auto const& message : endpoint.messages) {
-        DeprecatedString response_name;
+        ByteString response_name;
         if (message.is_synchronous) {
             response_name = message.response_name();
             do_message(generator.fork(), response_name, message.outputs);
@@ -584,7 +621,7 @@ public:
 
     static u32 static_magic() { return @endpoint.magic@; }
 
-    static ErrorOr<NonnullOwnPtr<IPC::Message>> decode_message(ReadonlyBytes buffer, [[maybe_unused]] Core::LocalSocket& socket)
+    static ErrorOr<NonnullOwnPtr<IPC::Message>> decode_message(ReadonlyBytes buffer, [[maybe_unused]] Queue<IPC::File>& files)
     {
         FixedMemoryStream stream { buffer };
         auto message_endpoint_magic = TRY(stream.read_value<u32>());)~~~");
@@ -605,7 +642,7 @@ public:
         switch (message_id) {)~~~");
 
     for (auto const& message : endpoint.messages) {
-        auto do_decode_message = [&](DeprecatedString const& name) {
+        auto do_decode_message = [&](ByteString const& name) {
             auto message_generator = generator.fork();
 
             message_generator.set("message.name", name);
@@ -613,7 +650,7 @@ public:
 
             message_generator.append(R"~~~(
         case (int)Messages::@endpoint.name@::MessageID::@message.pascal_name@:
-            return TRY(Messages::@endpoint.name@::@message.pascal_name@::decode(stream, socket));)~~~");
+            return TRY(Messages::@endpoint.name@::@message.pascal_name@::decode(stream, files));)~~~");
         };
 
         do_decode_message(message.name);
@@ -643,13 +680,13 @@ public:
     virtual ~@endpoint.name@Stub() override { }
 
     virtual u32 magic() const override { return @endpoint.magic@; }
-    virtual DeprecatedString name() const override { return "@endpoint.name@"; }
+    virtual ByteString name() const override { return "@endpoint.name@"; }
 
     virtual ErrorOr<OwnPtr<IPC::MessageBuffer>> handle(const IPC::Message& message) override
     {
         switch (message.message_id()) {)~~~");
     for (auto const& message : endpoint.messages) {
-        auto do_handle_message = [&](DeprecatedString const& name, Vector<Parameter> const& parameters, bool returns_something) {
+        auto do_handle_message = [&](ByteString const& name, Vector<Parameter> const& parameters, bool returns_something) {
             auto message_generator = generator.fork();
 
             StringBuilder argument_generator;
@@ -665,7 +702,7 @@ public:
             message_generator.set("message.pascal_name", pascal_case(name));
             message_generator.set("message.response_type", pascal_case(message.response_name()));
             message_generator.set("handler_name", name);
-            message_generator.set("arguments", argument_generator.to_deprecated_string());
+            message_generator.set("arguments", argument_generator.to_byte_string());
             message_generator.appendln(R"~~~(
         case (int)Messages::@endpoint.name@::MessageID::@message.pascal_name@: {)~~~");
             if (returns_something) {
@@ -703,8 +740,8 @@ public:
     for (auto const& message : endpoint.messages) {
         auto message_generator = generator.fork();
 
-        auto do_handle_message_decl = [&](DeprecatedString const& name, Vector<Parameter> const& parameters, bool is_response) {
-            DeprecatedString return_type = "void";
+        auto do_handle_message_decl = [&](ByteString const& name, Vector<Parameter> const& parameters, bool is_response) {
+            ByteString return_type = "void";
             if (message.is_synchronous && !message.outputs.is_empty() && !is_response)
                 return_type = message_name(endpoint.name, message.name, true);
             message_generator.set("message.complex_return_type", return_type);
@@ -713,7 +750,7 @@ public:
             message_generator.appendln(R"~~~(
     virtual @message.complex_return_type@ @handler_name@()~~~");
 
-            auto make_argument_type = [](DeprecatedString const& type) {
+            auto make_argument_type = [](ByteString const& type) {
                 StringBuilder builder;
 
                 bool const_ref = !is_primitive_or_simple_type(type);
@@ -722,7 +759,7 @@ public:
                 if (const_ref)
                     builder.append(" const&"sv);
 
-                return builder.to_deprecated_string();
+                return builder.to_byte_string();
             };
 
             for (size_t i = 0; i < parameters.size(); ++i) {
@@ -749,8 +786,8 @@ public:
 private:
 };
 
-#if defined(AK_COMPILER_CLANG)
-#pragma clang diagnostic pop
+#if defined(AK_COMPILER_CLANG) || __GNUC__ >= 15
+#pragma GCC diagnostic pop
 #endif)~~~");
 }
 
@@ -774,29 +811,35 @@ void build(StringBuilder& builder, Vector<Endpoint> const& endpoints)
 #include <AK/Utf8View.h>
 #include <LibIPC/Connection.h>
 #include <LibIPC/Decoder.h>
-#include <LibIPC/Dictionary.h>
 #include <LibIPC/Encoder.h>
 #include <LibIPC/File.h>
 #include <LibIPC/Message.h>
 #include <LibIPC/Stub.h>
 
-#if defined(AK_COMPILER_CLANG)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdefaulted-function-deleted"
-#endif)~~~");
+#if defined(AK_COMPILER_CLANG) || __GNUC__ >= 15
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdefaulted-function-deleted"
+#endif
+)~~~");
 
     for (auto const& endpoint : endpoints)
         build_endpoint(generator.fork(), endpoint);
 }
+} // end anonymous namespace
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    if (arguments.argc != 2) {
-        outln("usage: {} <IPC endpoint definition file>", arguments.strings[0]);
-        return 1;
-    }
+    StringView ipc_file;
+    StringView output_file = "-"sv;
 
-    auto file = TRY(Core::File::open(arguments.strings[1], Core::File::OpenMode::Read));
+    Core::ArgsParser parser;
+    parser.add_positional_argument(ipc_file, "IPC endpoint definition file", "input");
+    parser.add_option(output_file, "Place to write file", "output", 'o', "output-file");
+    parser.parse(arguments);
+
+    auto output = TRY(Core::File::open_file_or_standard_stream(output_file, Core::File::OpenMode::Write));
+
+    auto file = TRY(Core::File::open(ipc_file, Core::File::OpenMode::Read));
 
     auto file_contents = TRY(file->read_until_eof());
 
@@ -805,7 +848,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     StringBuilder builder;
     build(builder, endpoints);
 
-    outln("{}", builder.string_view());
+    TRY(output->write_until_depleted(builder.string_view().bytes()));
 
     if constexpr (GENERATE_DEBUG) {
         for (auto& endpoint : endpoints) {

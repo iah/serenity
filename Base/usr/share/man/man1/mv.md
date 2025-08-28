@@ -15,8 +15,9 @@ $ mv [options...] <source...> <destination>
 
 ## Options
 
-* `-f`, `--force`: Do not prompt before overwriting (not implemented for now)
-* `-v`, `--verbose`: Display all moved files
+-   `-f`, `--force`: Do not prompt before overwriting (not implemented for now)
+-   `-n`, `--no-clobber`: Do not overwrite existing files
+-   `-v`, `--verbose`: Display all moved files
 
 ## Examples
 
@@ -25,3 +26,7 @@ $ mv bin /usr
 $ mv *.cpp /usr/src
 $ mv old.txt new.txt
 ```
+
+## See also
+
+-   [`cp`(1)](help://man/1/cp)

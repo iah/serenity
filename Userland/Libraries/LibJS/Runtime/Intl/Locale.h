@@ -20,19 +20,21 @@ namespace JS::Intl {
 
 class Locale final : public Object {
     JS_OBJECT(Locale, Object);
+    JS_DECLARE_ALLOCATOR(Locale);
 
 public:
-    static ThrowCompletionOr<NonnullGCPtr<Locale>> create(Realm&, ::Locale::LocaleID);
+    static NonnullGCPtr<Locale> create(Realm&, ::Locale::LocaleID);
 
     static constexpr auto relevant_extension_keys()
     {
         // 14.2.2 Internal slots, https://tc39.es/ecma402/#sec-intl.locale-internal-slots
-        // The value of the [[RelevantExtensionKeys]] internal slot is « "ca", "co", "hc", "kf", "kn", "nu" ».
+        // 1.3.2 Internal slots, https://tc39.es/proposal-intl-locale-info/#sec-intl.locale-internal-slots
+        // The value of the [[RelevantExtensionKeys]] internal slot is « "ca", "co", "fw", "hc", "kf", "kn", "nu" ».
         // If %Collator%.[[RelevantExtensionKeys]] does not contain "kf", then remove "kf" from %Locale%.[[RelevantExtensionKeys]].
         // If %Collator%.[[RelevantExtensionKeys]] does not contain "kn", then remove "kn" from %Locale%.[[RelevantExtensionKeys]].
 
         // FIXME: We do not yet have an Intl.Collator object. For now, we behave as if "kf" and "kn" exist, as test262 depends on it.
-        return AK::Array { "ca"sv, "co"sv, "hc"sv, "kf"sv, "kn"sv, "nu"sv };
+        return AK::Array { "ca"sv, "co"sv, "fw"sv, "hc"sv, "kf"sv, "kn"sv, "nu"sv };
     }
 
     virtual ~Locale() override = default;
@@ -52,6 +54,10 @@ public:
     String const& collation() const { return m_collation.value(); }
     void set_collation(String collation) { m_collation = move(collation); }
 
+    bool has_first_day_of_week() const { return m_first_day_of_week.has_value(); }
+    u8 first_day_of_week() const { return m_first_day_of_week.value(); }
+    void set_first_day_of_week(u8 first_day_of_week) { m_first_day_of_week = first_day_of_week; }
+
     bool has_hour_cycle() const { return m_hour_cycle.has_value(); }
     String const& hour_cycle() const { return m_hour_cycle.value(); }
     void set_hour_cycle(String hour_cycle) { m_hour_cycle = move(hour_cycle); }
@@ -70,6 +76,7 @@ private:
     Optional<String> m_calendar;         // [[Calendar]]
     Optional<String> m_case_first;       // [[CaseFirst]]
     Optional<String> m_collation;        // [[Collation]]
+    Optional<u8> m_first_day_of_week;    // [[FirstDayOfWeek]]
     Optional<String> m_hour_cycle;       // [[HourCycle]]
     Optional<String> m_numbering_system; // [[NumberingSystem]]
     bool m_numeric { false };            // [[Numeric]]
@@ -82,12 +89,14 @@ struct WeekInfo {
     Vector<u8> weekend;    // [[Weekend]]
 };
 
-ThrowCompletionOr<NonnullGCPtr<Array>> calendars_of_locale(VM&, Locale const&);
-ThrowCompletionOr<NonnullGCPtr<Array>> collations_of_locale(VM&, Locale const& locale);
-ThrowCompletionOr<NonnullGCPtr<Array>> hour_cycles_of_locale(VM&, Locale const& locale);
-ThrowCompletionOr<NonnullGCPtr<Array>> numbering_systems_of_locale(VM&, Locale const&);
-ThrowCompletionOr<NonnullGCPtr<Array>> time_zones_of_locale(VM&, StringView region);
-ThrowCompletionOr<StringView> character_direction_of_locale(VM&, Locale const&);
-ThrowCompletionOr<WeekInfo> week_info_of_locale(VM&, Locale const&);
+NonnullGCPtr<Array> calendars_of_locale(VM&, Locale const&);
+NonnullGCPtr<Array> collations_of_locale(VM&, Locale const& locale);
+NonnullGCPtr<Array> hour_cycles_of_locale(VM&, Locale const& locale);
+NonnullGCPtr<Array> numbering_systems_of_locale(VM&, Locale const&);
+NonnullGCPtr<Array> time_zones_of_locale(VM&, StringView region);
+StringView character_direction_of_locale(Locale const&);
+Optional<u8> weekday_to_number(StringView);
+StringView weekday_to_string(StringView);
+WeekInfo week_info_of_locale(Locale const&);
 
 }

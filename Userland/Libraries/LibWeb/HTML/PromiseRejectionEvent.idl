@@ -1,6 +1,7 @@
 #import <DOM/Event.idl>
 
-[Exposed=(Window,Worker), UseNewAKString]
+// https://html.spec.whatwg.org/#promiserejectionevent
+[Exposed=(Window,Worker)]
 interface PromiseRejectionEvent : Event {
     constructor(DOMString type, PromiseRejectionEventInit eventInitDict);
 

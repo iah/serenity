@@ -15,13 +15,13 @@ class Workbook {
 public:
     Workbook(Vector<NonnullRefPtr<Sheet>>&& sheets, GUI::Window& parent_window);
 
-    ErrorOr<void, DeprecatedString> open_file(String const& filename, Core::File&);
-    ErrorOr<void> write_to_file(String const& filename, Core::File&);
+    ErrorOr<void, ByteString> open_file(ByteString const& filename, Core::File&);
+    ErrorOr<void> write_to_file(ByteString const& filename, Core::File&);
 
-    ErrorOr<bool, DeprecatedString> import_file(String const& filename, Core::File&);
+    ErrorOr<bool, ByteString> import_file(ByteString const& filename, Core::File&);
 
-    DeprecatedString const& current_filename() const { return m_current_filename; }
-    bool set_filename(DeprecatedString const& filename);
+    ByteString const& current_filename() const { return m_current_filename; }
+    bool set_filename(ByteString const& filename);
     bool dirty() { return m_dirty; }
     void set_dirty(bool dirty) { m_dirty = dirty; }
 
@@ -44,13 +44,13 @@ public:
 private:
     Vector<NonnullRefPtr<Sheet>> m_sheets;
     NonnullRefPtr<JS::VM> m_vm;
-    NonnullOwnPtr<JS::Interpreter> m_interpreter;
-    JS::VM::InterpreterExecutionScope m_interpreter_scope;
-    WorkbookObject* m_workbook_object { nullptr };
-    JS::ExecutionContext m_main_execution_context;
+    NonnullOwnPtr<JS::ExecutionContext> m_root_execution_context;
+
+    JS::GCPtr<WorkbookObject> m_workbook_object;
+    NonnullOwnPtr<JS::ExecutionContext> m_main_execution_context;
     GUI::Window& m_parent_window;
 
-    DeprecatedString m_current_filename;
+    ByteString m_current_filename;
     bool m_dirty { false };
 };
 

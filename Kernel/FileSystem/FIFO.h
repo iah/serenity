@@ -6,11 +6,11 @@
 
 #pragma once
 
-#include <Kernel/DoubleBuffer.h>
 #include <Kernel/FileSystem/File.h>
+#include <Kernel/Library/DoubleBuffer.h>
 #include <Kernel/Locking/Mutex.h>
+#include <Kernel/Tasks/WaitQueue.h>
 #include <Kernel/UnixTypes.h>
-#include <Kernel/WaitQueue.h>
 
 namespace Kernel {
 
@@ -24,7 +24,7 @@ public:
         Writer
     };
 
-    static ErrorOr<NonnullLockRefPtr<FIFO>> try_create(UserID);
+    static ErrorOr<NonnullRefPtr<FIFO>> try_create(UserID);
     virtual ~FIFO() override;
 
     UserID uid() const { return m_uid; }
@@ -32,17 +32,12 @@ public:
     ErrorOr<NonnullRefPtr<OpenFileDescription>> open_direction(Direction);
     ErrorOr<NonnullRefPtr<OpenFileDescription>> open_direction_blocking(Direction);
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Woverloaded-virtual"
-    void attach(Direction);
-    void detach(Direction);
-#pragma GCC diagnostic pop
-
 private:
     // ^File
     virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override;
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
     virtual ErrorOr<struct stat> stat() const override;
+    virtual void detach(OpenFileDescription&) override;
     virtual bool can_read(OpenFileDescription const&, u64) const override;
     virtual bool can_write(OpenFileDescription const&, u64) const override;
     virtual ErrorOr<NonnullOwnPtr<KString>> pseudo_path(OpenFileDescription const&) const override;

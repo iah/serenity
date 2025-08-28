@@ -1,6 +1,7 @@
 #import <HTML/MimeType.idl>
 
-[Exposed=Window, LegacyUnenumerableNamedProperties, UseNewAKString]
+// https://html.spec.whatwg.org/#plugin
+[Exposed=Window, LegacyUnenumerableNamedProperties]
 interface Plugin {
     readonly attribute DOMString name;
     readonly attribute DOMString description;

@@ -55,14 +55,18 @@ TEST_CASE(should_get_groups_by_index)
 
 TEST_CASE(should_convert_to_string)
 {
-    EXPECT_EQ("102:304:506:708:90a:b0c:d0e:f10"sv, IPv6Address({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }).to_deprecated_string());
-    EXPECT_EQ("::"sv, IPv6Address().to_deprecated_string());
-    EXPECT_EQ("::1"sv, IPv6Address({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }).to_deprecated_string());
-    EXPECT_EQ("1::"sv, IPv6Address({ 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }).to_deprecated_string());
-    EXPECT_EQ("102:0:506:708:900::10"sv, IPv6Address({ 1, 2, 0, 0, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 16 }).to_deprecated_string());
-    EXPECT_EQ("102:0:506:708:900::"sv, IPv6Address({ 1, 2, 0, 0, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0 }).to_deprecated_string());
-    EXPECT_EQ("::304:506:708:90a:b0c:d0e:f10"sv, IPv6Address({ 0, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }).to_deprecated_string());
-    EXPECT_EQ("102:304::708:90a:b0c:d0e:f10"sv, IPv6Address({ 1, 2, 3, 4, 0, 0, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }).to_deprecated_string());
+    auto to_string = [&](IPv6Address::in6_addr_t const& data) -> String {
+        return MUST(IPv6Address(data).to_string());
+    };
+
+    EXPECT_EQ("102:304:506:708:90a:b0c:d0e:f10"sv, to_string({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }));
+    EXPECT_EQ("::"sv, MUST(IPv6Address().to_string()));
+    EXPECT_EQ("::1"sv, to_string({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }));
+    EXPECT_EQ("1::"sv, to_string({ 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+    EXPECT_EQ("102:0:506:708:900::10"sv, to_string({ 1, 2, 0, 0, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 16 }));
+    EXPECT_EQ("102:0:506:708:900::"sv, to_string({ 1, 2, 0, 0, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0 }));
+    EXPECT_EQ("::304:506:708:90a:b0c:d0e:f10"sv, to_string({ 0, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }));
+    EXPECT_EQ("102:304::708:90a:b0c:d0e:f10"sv, to_string({ 1, 2, 3, 4, 0, 0, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }));
 }
 
 TEST_CASE(should_make_ipv6_address_from_string)
@@ -86,7 +90,7 @@ TEST_CASE(ipv4_mapped_ipv6)
     IPv6Address mapped_address(ipv4_address_to_map);
     EXPECT(mapped_address.is_ipv4_mapped());
     EXPECT_EQ(ipv4_address_to_map, mapped_address.ipv4_mapped_address().value());
-    EXPECT_EQ("::ffff:192.168.0.1"sv, mapped_address.to_deprecated_string());
+    EXPECT_EQ("::ffff:192.168.0.1"sv, MUST(mapped_address.to_string()));
     EXPECT_EQ(IPv4Address(192, 168, 1, 9), IPv6Address::from_string("::FFFF:192.168.1.9"sv).value().ipv4_mapped_address().value());
     EXPECT(!IPv6Address::from_string("::abcd:192.168.1.9"sv).has_value());
 }
@@ -105,14 +109,61 @@ TEST_CASE(should_make_empty_optional_from_out_of_range_values)
     EXPECT(!addr.has_value());
 }
 
-TEST_CASE(should_compare)
+TEST_CASE(should_only_compare_bytes_from_address)
 {
     constexpr IPv6Address addr_a({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
     constexpr IPv6Address addr_b({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17 });
+    constexpr IPv6Address addr_c({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17 });
 
     static_assert(addr_a != addr_b);
     static_assert(addr_a == addr_a);
+    static_assert(addr_b == addr_c);
 
     EXPECT(addr_a != addr_b);
     EXPECT(addr_a == addr_a);
+    EXPECT(addr_b == addr_c);
+}
+
+TEST_CASE(subnets)
+{
+    constexpr IPv6Address loopback({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 });
+    constexpr IPv6Address lla({ 0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0xab, 0xcd, 0xef, 0x8b, 0xcd, 0xaf, 0xf2, 0xd0 });
+    constexpr IPv6Address ula({ 0xfd, 0x00, 0, 0, 0, 0, 0, 0, 0x65, 0xc9, 0xae, 0x8b, 0xcd, 0xaf, 0xf2, 0xd0 });
+    constexpr IPv6Address documentation({ 0x20, 0x01, 0xdb, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x42 });
+    constexpr IPv6Address broadcast({ 0xff, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 });
+    constexpr IPv6Address all_routers({ 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2 });
+
+    EXPECT(loopback.is_loopback());
+    EXPECT(!all_routers.is_loopback());
+
+    EXPECT(lla.is_link_local());
+    EXPECT(ula.is_unique_local());
+    EXPECT(!lla.is_unique_local());
+    EXPECT(!ula.is_link_local());
+    EXPECT(!documentation.is_unique_local());
+    EXPECT(!documentation.is_link_local());
+    EXPECT(!broadcast.is_unique_local());
+    EXPECT(!broadcast.is_link_local());
+    EXPECT(!all_routers.is_unique_local());
+    EXPECT(!all_routers.is_link_local());
+
+    EXPECT(lla.is_unicast());
+    EXPECT(ula.is_unicast());
+    EXPECT(loopback.is_unicast());
+    EXPECT(documentation.is_unicast());
+    EXPECT(broadcast.is_multicast());
+    EXPECT(all_routers.is_multicast());
+
+    EXPECT(!loopback.is_in_subnet(lla, 64));
+    EXPECT(lla.is_in_subnet(lla.network(64), 64));
+    EXPECT(ula.is_in_subnet(ula.network(128), 128));
+    EXPECT(loopback.is_in_subnet(loopback, 128));
+    EXPECT(documentation.is_in_subnet(documentation, 128));
+    EXPECT(broadcast.is_in_subnet(broadcast, 128));
+    EXPECT(all_routers.is_in_subnet(all_routers, 128));
+    EXPECT(!ula.is_in_subnet(lla, 64));
+    // Not sensible networks per IETF!
+    EXPECT(lla.is_in_subnet(ula.network(4), 4));
+    EXPECT(broadcast.is_in_subnet(all_routers.network(12), 12));
+    EXPECT(!documentation.is_in_subnet(lla, 4));
 }

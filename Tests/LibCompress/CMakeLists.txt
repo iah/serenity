@@ -2,6 +2,10 @@ set(TEST_SOURCES
     TestBrotli.cpp
     TestDeflate.cpp
     TestGzip.cpp
+    TestLzma.cpp
+    TestLzw.cpp
+    TestPackBits.cpp
+    TestXz.cpp
     TestZlib.cpp
 )
 
@@ -10,3 +14,4 @@ foreach(source IN LISTS TEST_SOURCES)
 endforeach()
 
 install(DIRECTORY brotli-test-files DESTINATION usr/Tests/LibCompress)
+install(DIRECTORY deflate-test-files DESTINATION usr/Tests/LibCompress)

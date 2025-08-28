@@ -9,11 +9,11 @@
 
 #include <AK/Concepts.h>
 #include <AK/Vector.h>
-#include <Kernel/VirtualAddress.h>
-#include <LibC/elf.h>
+#include <Kernel/Memory/VirtualAddress.h>
+#include <LibELF/ELFABI.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
 namespace ELF {
@@ -44,7 +44,7 @@ public:
 
     class Symbol {
     public:
-        Symbol(Image const& image, unsigned index, const ElfW(Sym) & sym)
+        Symbol(Image const& image, unsigned index, Elf_Sym const& sym)
             : m_image(image)
             , m_sym(sym)
             , m_index(index)
@@ -72,7 +72,7 @@ public:
 
     private:
         Image const& m_image;
-        const ElfW(Sym) & m_sym;
+        Elf_Sym const& m_sym;
         unsigned const m_index;
     };
 
@@ -98,11 +98,11 @@ public:
         bool is_writable() const { return flags() & PF_W; }
         bool is_executable() const { return flags() & PF_X; }
         char const* raw_data() const { return m_image.raw_data(m_program_header.p_offset); }
-        ElfW(Phdr) raw_header() const { return m_program_header; }
+        Elf_Phdr raw_header() const { return m_program_header; }
 
     private:
         Image const& m_image;
-        const ElfW(Phdr) & m_program_header;
+        Elf_Phdr const& m_program_header;
         unsigned m_program_header_index { 0 };
     };
 
@@ -125,7 +125,6 @@ public:
         FlatPtr address() const { return m_section_header.sh_addr; }
         char const* raw_data() const { return m_image.raw_data(m_section_header.sh_offset); }
         ReadonlyBytes bytes() const { return { raw_data(), size() }; }
-        Optional<RelocationSection> relocations() const;
         auto flags() const { return m_section_header.sh_flags; }
         bool is_writable() const { return flags() & SHF_WRITE; }
         bool is_executable() const { return flags() & PF_X; }
@@ -133,7 +132,7 @@ public:
     protected:
         friend class RelocationSection;
         Image const& m_image;
-        const ElfW(Shdr) & m_section_header;
+        Elf_Shdr const& m_section_header;
         unsigned m_section_index;
     };
 
@@ -148,13 +147,16 @@ public:
 
         template<VoidFunction<Image::Relocation&> F>
         void for_each_relocation(F) const;
+
+        bool addend_used() const { return type() == SHT_RELA; }
     };
 
     class Relocation {
     public:
-        Relocation(Image const& image, const ElfW(Rel) & rel)
+        Relocation(Image const& image, Elf_Rela const& rel, bool addend_used)
             : m_image(image)
             , m_rel(rel)
+            , m_addend_used(addend_used)
         {
         }
 
@@ -171,9 +173,17 @@ public:
             return m_image.symbol(symbol_index());
         }
 
+        bool addend_used() const { return m_addend_used; }
+        unsigned addend() const
+        {
+            VERIFY(m_addend_used);
+            return m_rel.r_addend;
+        }
+
     private:
         Image const& m_image;
-        const ElfW(Rel) & m_rel;
+        Elf_Rela const& m_rel;
+        bool m_addend_used;
     };
 
     unsigned symbol_count() const;
@@ -211,25 +221,29 @@ public:
     bool is_dynamic() const { return header().e_type == ET_DYN; }
 
     VirtualAddress entry() const { return VirtualAddress(header().e_entry); }
+    Elf64_Quarter machine() const { return header().e_machine; }
     FlatPtr base_address() const { return (FlatPtr)m_buffer; }
     size_t size() const { return m_size; }
 
-    static Optional<StringView> object_file_type_to_string(ElfW(Half) type);
-    static Optional<StringView> object_machine_type_to_string(ElfW(Half) type);
+    unsigned char elf_class() const { return header().e_ident[EI_CLASS]; }
+    unsigned char byte_order() const { return header().e_ident[EI_DATA]; }
+
+    static Optional<StringView> object_file_type_to_string(Elf_Half type);
+    static Optional<StringView> object_machine_type_to_string(Elf_Half type);
     static Optional<StringView> object_abi_type_to_string(Elf_Byte type);
 
     bool has_symbols() const { return symbol_count(); }
 #ifndef KERNEL
     Optional<Symbol> find_demangled_function(StringView name) const;
-    DeprecatedString symbolicate(FlatPtr address, u32* offset = nullptr) const;
+    ByteString symbolicate(FlatPtr address, u32* offset = nullptr) const;
 #endif
     Optional<Image::Symbol> find_symbol(FlatPtr address, u32* offset = nullptr) const;
 
 private:
     char const* raw_data(unsigned offset) const;
-    const ElfW(Ehdr) & header() const;
-    const ElfW(Shdr) & section_header(unsigned) const;
-    const ElfW(Phdr) & program_header_internal(unsigned) const;
+    Elf_Ehdr const& header() const;
+    Elf_Shdr const& section_header(unsigned) const;
+    Elf_Phdr const& program_header_internal(unsigned) const;
     StringView table_string(unsigned offset) const;
     StringView section_header_table_string(unsigned offset) const;
     StringView section_index_to_string(unsigned index) const;
@@ -246,7 +260,7 @@ private:
     struct SortedSymbol {
         FlatPtr address;
         StringView name;
-        DeprecatedString demangled_name;
+        ByteString demangled_name;
         Optional<Image::Symbol> symbol;
     };
 

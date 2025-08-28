@@ -10,8 +10,9 @@
 
 namespace JS {
 
-class ObjectEnvironment : public Environment {
+class ObjectEnvironment final : public Environment {
     JS_ENVIRONMENT(ObjectEnvironment, Environment);
+    JS_DECLARE_ALLOCATOR(ObjectEnvironment);
 
 public:
     enum class IsWithEnvironment {
@@ -31,7 +32,7 @@ public:
     virtual Object* with_base_object() const override
     {
         if (is_with_environment())
-            return &m_binding_object;
+            return m_binding_object;
         return nullptr;
     }
 
@@ -46,7 +47,7 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    Object& m_binding_object;
+    NonnullGCPtr<Object> m_binding_object;
     bool m_with_environment { false };
 };
 

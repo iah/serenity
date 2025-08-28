@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class LocalePrototype final : public PrototypeObject<LocalePrototype, Locale> {
     JS_PROTOTYPE_OBJECT(LocalePrototype, Locale, Intl.Locale);
+    JS_DECLARE_ALLOCATOR(LocalePrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~LocalePrototype() override = default;
 
 private:
@@ -27,21 +28,22 @@ private:
 
     JS_DECLARE_NATIVE_FUNCTION(base_name);
     JS_DECLARE_NATIVE_FUNCTION(calendar);
-    JS_DECLARE_NATIVE_FUNCTION(calendars);
     JS_DECLARE_NATIVE_FUNCTION(case_first);
     JS_DECLARE_NATIVE_FUNCTION(collation);
-    JS_DECLARE_NATIVE_FUNCTION(collations);
+    JS_DECLARE_NATIVE_FUNCTION(first_day_of_week);
     JS_DECLARE_NATIVE_FUNCTION(hour_cycle);
-    JS_DECLARE_NATIVE_FUNCTION(hour_cycles);
     JS_DECLARE_NATIVE_FUNCTION(numbering_system);
-    JS_DECLARE_NATIVE_FUNCTION(numbering_systems);
     JS_DECLARE_NATIVE_FUNCTION(numeric);
     JS_DECLARE_NATIVE_FUNCTION(language);
     JS_DECLARE_NATIVE_FUNCTION(script);
     JS_DECLARE_NATIVE_FUNCTION(region);
-    JS_DECLARE_NATIVE_FUNCTION(time_zones);
-    JS_DECLARE_NATIVE_FUNCTION(text_info);
-    JS_DECLARE_NATIVE_FUNCTION(week_info);
+    JS_DECLARE_NATIVE_FUNCTION(get_calendars);
+    JS_DECLARE_NATIVE_FUNCTION(get_collations);
+    JS_DECLARE_NATIVE_FUNCTION(get_hour_cycles);
+    JS_DECLARE_NATIVE_FUNCTION(get_numbering_systems);
+    JS_DECLARE_NATIVE_FUNCTION(get_time_zones);
+    JS_DECLARE_NATIVE_FUNCTION(get_text_info);
+    JS_DECLARE_NATIVE_FUNCTION(get_week_info);
 };
 
 }

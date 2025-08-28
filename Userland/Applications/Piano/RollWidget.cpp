@@ -10,6 +10,7 @@
 #include "RollWidget.h"
 #include "TrackManager.h"
 #include <AK/IntegralMath.h>
+#include <LibDSP/Music.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Scrollbar.h>
@@ -92,6 +93,7 @@ void RollWidget::paint_event(GUI::PaintEvent& event)
                 else
                     background_painter.fill_rect(rect, Color::White);
 
+                rect.shrink(0, 1, 1, 0);
                 background_painter.draw_line(rect.top_right(), rect.bottom_right(), Color::Black);
                 background_painter.draw_line(rect.bottom_left(), rect.bottom_right(), Color::Black);
             }
@@ -127,7 +129,7 @@ void RollWidget::paint_event(GUI::PaintEvent& event)
             int distance_to_next_x = next_x_pos - x_pos;
             Gfx::IntRect rect(x_pos, y_pos, distance_to_next_x, note_height);
 
-            if (m_track_manager.keyboard()->is_pressed(note))
+            if (static_cast<size_t>(note) < DSP::note_frequencies.size() && m_track_manager.keyboard()->is_pressed(note))
                 painter.fill_rect(rect, note_pressed_color.with_alpha(128));
         }
     }
@@ -161,7 +163,7 @@ void RollWidget::paint_event(GUI::PaintEvent& event)
         painter.draw_text(note_name_rect, note_name, Gfx::TextAlignment::CenterLeft);
         note_name_rect.translate_by(Gfx::FontDatabase::default_font().width(note_name) + 2, 0);
         if (note % notes_per_octave == 0)
-            painter.draw_text(note_name_rect, DeprecatedString::formatted("{}", note / notes_per_octave + 1), Gfx::TextAlignment::CenterLeft);
+            painter.draw_text(note_name_rect, ByteString::formatted("{}", note / notes_per_octave + 1), Gfx::TextAlignment::CenterLeft);
     }
 
     int x = m_roll_width * (static_cast<double>(m_track_manager.transport()->time()) / roll_length);
@@ -235,8 +237,8 @@ void RollWidget::mousemove_event(GUI::MouseEvent& event)
         int const x_start = get_note_for_x(m_mousedown_event.value().x());
         int const x_end = get_note_for_x(event.x());
 
-        const u32 on_sample = round(roll_length * (static_cast<double>(min(x_start, x_end)) / m_num_notes));
-        const u32 off_sample = round(roll_length * (static_cast<double>(max(x_start, x_end) + 1) / m_num_notes)) - 1;
+        u32 const on_sample = round(roll_length * (static_cast<double>(min(x_start, x_end)) / m_num_notes));
+        u32 const off_sample = round(roll_length * (static_cast<double>(max(x_start, x_end) + 1) / m_num_notes)) - 1;
         auto const note = RollNote { on_sample, off_sample, get_pitch_for_y(m_mousedown_event.value().y()), 127 };
 
         m_track_manager.current_track()->set_note(note);

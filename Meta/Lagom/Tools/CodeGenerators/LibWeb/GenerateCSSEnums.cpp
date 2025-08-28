@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -17,15 +17,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     StringView generated_header_path;
     StringView generated_implementation_path;
-    StringView identifiers_json_path;
+    StringView json_path;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(generated_header_path, "Path to the Enums header file to generate", "generated-header-path", 'h', "generated-header-path");
     args_parser.add_option(generated_implementation_path, "Path to the Enums implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
-    args_parser.add_option(identifiers_json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
+    args_parser.add_option(json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
     args_parser.parse(arguments);
 
-    auto json = TRY(read_entire_file_as_json(identifiers_json_path));
+    auto json = TRY(read_entire_file_as_json(json_path));
     VERIFY(json.is_object());
     auto enums_data = json.as_object();
 
@@ -50,7 +50,7 @@ ErrorOr<void> generate_header_file(JsonObject& enums_data, Core::File& file)
 
 namespace Web::CSS {
 
-enum class ValueID;
+enum class Keyword;
 
 )~~~");
 
@@ -65,19 +65,19 @@ enum class ValueID;
         // Find the smallest possible type to use.
         auto member_max_value = members.size() - 1;
         if (NumericLimits<u8>::max() >= member_max_value) {
-            enum_generator.set("enum_type", "u8");
+            enum_generator.set("enum_type", "u8"_string);
         } else if (NumericLimits<u16>::max() >= member_max_value) {
-            enum_generator.set("enum_type", "u16");
+            enum_generator.set("enum_type", "u16"_string);
         } else if (NumericLimits<u32>::max() >= member_max_value) {
-            enum_generator.set("enum_type", "u32");
+            enum_generator.set("enum_type", "u32"_string);
         } else {
-            enum_generator.set("enum_type", "u64");
+            enum_generator.set("enum_type", "u64"_string);
         }
 
         enum_generator.appendln("enum class @name:titlecase@ : @enum_type@ {");
 
         for (auto& member : members.values()) {
-            auto member_name = member.to_deprecated_string();
+            auto member_name = member.as_string();
             // Don't include aliases in the enum.
             if (member_name.contains('='))
                 continue;
@@ -87,15 +87,15 @@ enum class ValueID;
         }
 
         enum_generator.appendln("};");
-        enum_generator.appendln("Optional<@name:titlecase@> value_id_to_@name:snakecase@(ValueID);");
-        enum_generator.appendln("ValueID to_value_id(@name:titlecase@);");
+        enum_generator.appendln("Optional<@name:titlecase@> keyword_to_@name:snakecase@(Keyword);");
+        enum_generator.appendln("Keyword to_keyword(@name:titlecase@);");
         enum_generator.appendln("StringView to_string(@name:titlecase@);");
         enum_generator.append("\n");
     });
 
     generator.appendln("}");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
@@ -106,12 +106,12 @@ ErrorOr<void> generate_implementation_file(JsonObject& enums_data, Core::File& f
 
     generator.append(R"~~~(
 #include <LibWeb/CSS/Enums.h>
-#include <LibWeb/CSS/ValueID.h>
+#include <LibWeb/CSS/Keyword.h>
 
 namespace Web::CSS {
 )~~~");
 
-    enums_data.for_each_member([&](auto& name, auto& value) {
+    enums_data.for_each_member([&](auto& name, auto& value) -> void {
         VERIFY(value.is_array());
         auto& members = value.as_array();
 
@@ -120,13 +120,13 @@ namespace Web::CSS {
         enum_generator.set("name:snakecase", snake_casify(name));
 
         enum_generator.append(R"~~~(
-Optional<@name:titlecase@> value_id_to_@name:snakecase@(ValueID value_id)
+Optional<@name:titlecase@> keyword_to_@name:snakecase@(Keyword keyword)
 {
-    switch (value_id) {)~~~");
+    switch (keyword) {)~~~");
 
         for (auto& member : members.values()) {
             auto member_generator = enum_generator.fork();
-            auto member_name = member.to_deprecated_string();
+            auto member_name = member.as_string();
             if (member_name.contains('=')) {
                 auto parts = member_name.split_view('=');
                 member_generator.set("valueid:titlecase", title_casify(parts[0]));
@@ -136,7 +136,7 @@ Optional<@name:titlecase@> value_id_to_@name:snakecase@(ValueID value_id)
                 member_generator.set("member:titlecase", title_casify(member_name));
             }
             member_generator.append(R"~~~(
-    case ValueID::@valueid:titlecase@:
+    case Keyword::@valueid:titlecase@:
         return @name:titlecase@::@member:titlecase@;)~~~");
         }
 
@@ -148,20 +148,20 @@ Optional<@name:titlecase@> value_id_to_@name:snakecase@(ValueID value_id)
 )~~~");
 
         enum_generator.append(R"~~~(
-ValueID to_value_id(@name:titlecase@ @name:snakecase@_value)
+Keyword to_keyword(@name:titlecase@ @name:snakecase@_value)
 {
     switch (@name:snakecase@_value) {)~~~");
 
         for (auto& member : members.values()) {
             auto member_generator = enum_generator.fork();
-            auto member_name = member.to_deprecated_string();
+            auto member_name = member.as_string();
             if (member_name.contains('='))
                 continue;
             member_generator.set("member:titlecase", title_casify(member_name));
 
             member_generator.append(R"~~~(
     case @name:titlecase@::@member:titlecase@:
-        return ValueID::@member:titlecase@;)~~~");
+        return Keyword::@member:titlecase@;)~~~");
         }
 
         enum_generator.append(R"~~~(
@@ -178,7 +178,7 @@ StringView to_string(@name:titlecase@ value)
 
         for (auto& member : members.values()) {
             auto member_generator = enum_generator.fork();
-            auto member_name = member.to_deprecated_string();
+            auto member_name = member.as_string();
             if (member_name.contains('='))
                 continue;
             member_generator.set("member:css", member_name);
@@ -199,6 +199,6 @@ StringView to_string(@name:titlecase@ value)
 
     generator.appendln("}");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }

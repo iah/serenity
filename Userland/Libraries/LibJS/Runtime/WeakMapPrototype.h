@@ -13,9 +13,10 @@ namespace JS {
 
 class WeakMapPrototype final : public PrototypeObject<WeakMapPrototype, WeakMap> {
     JS_PROTOTYPE_OBJECT(WeakMapPrototype, WeakMap, WeakMap);
+    JS_DECLARE_ALLOCATOR(WeakMapPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~WeakMapPrototype() override = default;
 
 private:

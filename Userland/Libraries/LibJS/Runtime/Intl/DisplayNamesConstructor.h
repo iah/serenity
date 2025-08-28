@@ -12,9 +12,10 @@ namespace JS::Intl {
 
 class DisplayNamesConstructor final : public NativeFunction {
     JS_OBJECT(DisplayNamesConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DisplayNamesConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DisplayNamesConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

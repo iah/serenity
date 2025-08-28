@@ -7,7 +7,7 @@
 
 #include <AK/Assertions.h>
 #include <AK/Types.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibTest/TestCase.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -136,7 +136,7 @@ TEST_CASE(mmap_directory)
 {
     int fd = open("/tmp", O_RDONLY | O_DIRECTORY);
     VERIFY(fd >= 0);
-    auto* ptr = mmap(nullptr, 4096, PROT_READ, MAP_FILE | MAP_SHARED, fd, 0);
+    auto* ptr = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, fd, 0);
     EXPECT_EQ(ptr, MAP_FAILED);
     if (ptr != MAP_FAILED) {
         warnln("Boo! mmap() of a directory succeeded!");
@@ -217,11 +217,8 @@ TEST_CASE(unlink_symlink)
         perror("symlink");
     }
 
-    auto target_or_error = Core::DeprecatedFile::read_link("/tmp/linky");
-    EXPECT(!target_or_error.is_error());
-
-    auto target = target_or_error.release_value();
-    EXPECT_EQ(target, "/proc/2/foo");
+    auto target = TRY_OR_FAIL(FileSystem::read_link("/tmp/linky"sv));
+    EXPECT_EQ(target, "/proc/2/foo"sv);
 
     rc = unlink("/tmp/linky");
     EXPECT(rc >= 0);

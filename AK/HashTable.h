@@ -9,6 +9,7 @@
 
 #include <AK/Concepts.h>
 #include <AK/Error.h>
+#include <AK/ReverseIterator.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Traits.h>
 #include <AK/Types.h>
@@ -92,6 +93,30 @@ private:
     BucketType* m_bucket { nullptr };
 };
 
+template<typename OrderedHashTableType, typename T, typename BucketType>
+class ReverseOrderedHashTableIterator {
+    friend OrderedHashTableType;
+
+public:
+    bool operator==(ReverseOrderedHashTableIterator const& other) const { return m_bucket == other.m_bucket; }
+    bool operator!=(ReverseOrderedHashTableIterator const& other) const { return m_bucket != other.m_bucket; }
+    T& operator*() { return *m_bucket->slot(); }
+    T* operator->() { return m_bucket->slot(); }
+    void operator++() { m_bucket = m_bucket->previous; }
+    void operator--() { m_bucket = m_bucket->next; }
+
+private:
+    ReverseOrderedHashTableIterator(BucketType* bucket)
+        : m_bucket(bucket)
+    {
+    }
+
+    BucketType* m_bucket { nullptr };
+};
+
+// A set datastructure based on a hash table with closed hashing.
+// HashTable can optionally provide ordered iteration when IsOrdered = true.
+// For a (more commonly required) map datastructure with key-value entries, see HashMap.
 template<typename T, typename TraitsForT, bool IsOrdered>
 class HashTable {
     static constexpr size_t grow_capacity_at_least = 8;
@@ -255,8 +280,8 @@ public:
     }
 
     using ConstIterator = Conditional<IsOrdered,
-        OrderedHashTableIterator<const HashTable, const T, BucketType const>,
-        HashTableIterator<const HashTable, const T, BucketType const>>;
+        OrderedHashTableIterator<HashTable const, T const, BucketType const>,
+        HashTableIterator<HashTable const, T const, BucketType const>>;
 
     [[nodiscard]] ConstIterator begin() const
     {
@@ -274,6 +299,42 @@ public:
     {
         return ConstIterator(nullptr, nullptr);
     }
+
+    using ReverseIterator = Conditional<IsOrdered,
+        ReverseOrderedHashTableIterator<HashTable, T, BucketType>,
+        void>;
+
+    [[nodiscard]] ReverseIterator rbegin()
+    requires(IsOrdered)
+    {
+        return ReverseIterator(m_collection_data.tail);
+    }
+
+    [[nodiscard]] ReverseIterator rend()
+    requires(IsOrdered)
+    {
+        return ReverseIterator(nullptr);
+    }
+
+    auto in_reverse() { return ReverseWrapper::in_reverse(*this); }
+
+    using ReverseConstIterator = Conditional<IsOrdered,
+        ReverseOrderedHashTableIterator<HashTable const, T const, BucketType const>,
+        void>;
+
+    [[nodiscard]] ReverseConstIterator rbegin() const
+    requires(IsOrdered)
+    {
+        return ReverseConstIterator(m_collection_data.tail);
+    }
+
+    [[nodiscard]] ReverseConstIterator rend() const
+    requires(IsOrdered)
+    {
+        return ReverseConstIterator(nullptr);
+    }
+
+    auto in_reverse() const { return ReverseWrapper::in_reverse(*this); }
 
     void clear()
     {
@@ -304,9 +365,9 @@ public:
         return write_value(forward<U>(value), existing_entry_behavior);
     }
     template<typename U = T>
-    HashSetResult set(U&& value, HashSetExistingEntryBehavior existing_entry_behaviour = HashSetExistingEntryBehavior::Replace)
+    HashSetResult set(U&& value, HashSetExistingEntryBehavior existing_entry_behavior = HashSetExistingEntryBehavior::Replace)
     {
-        return MUST(try_set(forward<U>(value), existing_entry_behaviour));
+        return MUST(try_set(forward<U>(value), existing_entry_behavior));
     }
 
     template<typename TUnaryPredicate>
@@ -317,7 +378,9 @@ public:
 
     [[nodiscard]] Iterator find(T const& value)
     {
-        return find(TraitsForT::hash(value), [&](auto& other) { return TraitsForT::equals(value, other); });
+        if (is_empty())
+            return end();
+        return find(TraitsForT::hash(value), [&](auto& entry) { return TraitsForT::equals(entry, value); });
     }
 
     template<typename TUnaryPredicate>
@@ -328,31 +391,41 @@ public:
 
     [[nodiscard]] ConstIterator find(T const& value) const
     {
-        return find(TraitsForT::hash(value), [&](auto& other) { return TraitsForT::equals(value, other); });
+        if (is_empty())
+            return end();
+        return find(TraitsForT::hash(value), [&](auto& entry) { return TraitsForT::equals(entry, value); });
     }
     // FIXME: Support for predicates, while guaranteeing that the predicate call
     //        does not call a non trivial constructor each time invoked
     template<Concepts::HashCompatible<T> K>
     requires(IsSame<TraitsForT, Traits<T>>) [[nodiscard]] Iterator find(K const& value)
     {
-        return find(Traits<K>::hash(value), [&](auto& other) { return Traits<T>::equals(other, value); });
+        if (is_empty())
+            return end();
+        return find(Traits<K>::hash(value), [&](auto& entry) { return Traits<T>::equals(entry, value); });
     }
 
     template<Concepts::HashCompatible<T> K, typename TUnaryPredicate>
     requires(IsSame<TraitsForT, Traits<T>>) [[nodiscard]] Iterator find(K const& value, TUnaryPredicate predicate)
     {
+        if (is_empty())
+            return end();
         return find(Traits<K>::hash(value), move(predicate));
     }
 
     template<Concepts::HashCompatible<T> K>
     requires(IsSame<TraitsForT, Traits<T>>) [[nodiscard]] ConstIterator find(K const& value) const
     {
-        return find(Traits<K>::hash(value), [&](auto& other) { return Traits<T>::equals(other, value); });
+        if (is_empty())
+            return end();
+        return find(Traits<K>::hash(value), [&](auto& entry) { return Traits<T>::equals(entry, value); });
     }
 
     template<Concepts::HashCompatible<T> K, typename TUnaryPredicate>
     requires(IsSame<TraitsForT, Traits<T>>) [[nodiscard]] ConstIterator find(K const& value, TUnaryPredicate predicate) const
     {
+        if (is_empty())
+            return end();
         return find(Traits<K>::hash(value), move(predicate));
     }
 
@@ -421,6 +494,15 @@ public:
         T element = move(*m_collection_data.head->slot());
         delete_bucket(*m_collection_data.head);
         return element;
+    }
+
+    [[nodiscard]] Vector<T> values() const
+    {
+        Vector<T> list;
+        list.ensure_capacity(size());
+        for (auto& value : *this)
+            list.unchecked_append(value);
+        return list;
     }
 
 private:
@@ -659,7 +741,7 @@ private:
         // that we can still probe for buckets with collisions, and we automatically optimize the
         // probe lengths. To do so, we shift the following buckets up until we reach a free bucket,
         // or a bucket with a probe length of 0 (the ideal index for that bucket).
-        auto update_bucket_neighbours = [&](BucketType* bucket) {
+        auto update_bucket_neighbors = [&](BucketType* bucket) {
             if constexpr (IsOrdered) {
                 if (bucket->previous)
                     bucket->previous->next = bucket;
@@ -690,8 +772,12 @@ private:
 
             auto* shift_to_bucket = &m_buckets[shift_to_index];
             *shift_to_bucket = move(*shift_from_bucket);
+            if constexpr (IsOrdered) {
+                shift_from_bucket->previous = nullptr;
+                shift_from_bucket->next = nullptr;
+            }
             shift_to_bucket->state = bucket_state_for_probe_length(shift_from_probe_length - 1);
-            update_bucket_neighbours(shift_to_bucket);
+            update_bucket_neighbors(shift_to_bucket);
 
             if (++shift_to_index == m_capacity) [[unlikely]]
                 shift_to_index = 0;

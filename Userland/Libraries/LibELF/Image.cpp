@@ -16,7 +16,7 @@
 #include <LibELF/Validation.h>
 
 #ifdef KERNEL
-#    include <Kernel/StdLib.h>
+#    include <Kernel/Library/StdLib.h>
 #else
 #    include <string.h>
 #endif
@@ -121,21 +121,15 @@ unsigned Image::program_header_count() const
 
 bool Image::parse()
 {
-    if (m_size < sizeof(ElfW(Ehdr)) || !validate_elf_header(header(), m_size, m_verbose_logging)) {
+    if (m_size < sizeof(Elf_Ehdr) || !validate_elf_header(header(), m_size, m_verbose_logging)) {
         if (m_verbose_logging)
             dbgln("ELF::Image::parse(): ELF Header not valid");
         m_valid = false;
         return false;
     }
 
-    auto result_or_error = validate_program_headers(header(), m_size, { m_buffer, m_size }, nullptr, m_verbose_logging);
-    if (result_or_error.is_error()) {
-        if (m_verbose_logging)
-            dbgln("ELF::Image::parse(): Failed validating ELF Program Headers");
-        m_valid = false;
-        return false;
-    }
-    if (!result_or_error.value()) {
+    [[maybe_unused]] Optional<Elf_Phdr> interpreter_path_program_header {};
+    if (!validate_program_headers(header(), m_size, { m_buffer, m_size }, interpreter_path_program_header, nullptr, m_verbose_logging)) {
         if (m_verbose_logging)
             dbgln("ELF::Image::parse(): ELF Program Headers not valid");
         m_valid = false;
@@ -175,7 +169,7 @@ StringView Image::table_string(unsigned table_index, unsigned offset) const
             dbgln("SHENANIGANS! Image::table_string() computed offset outside image.");
         return {};
     }
-    size_t max_length = min(m_size - computed_offset, (size_t)PAGE_SIZE);
+    size_t max_length = min(m_size - computed_offset, (size_t)SERENITY_PAGE_SIZE);
     size_t length = strnlen(raw_data(sh.sh_offset + offset), max_length);
     return { raw_data(sh.sh_offset + offset), length };
 }
@@ -198,31 +192,31 @@ char const* Image::raw_data(unsigned offset) const
     return reinterpret_cast<char const*>(m_buffer) + offset;
 }
 
-const ElfW(Ehdr) & Image::header() const
+Elf_Ehdr const& Image::header() const
 {
-    VERIFY(m_size >= sizeof(ElfW(Ehdr)));
-    return *reinterpret_cast<const ElfW(Ehdr)*>(raw_data(0));
+    VERIFY(m_size >= sizeof(Elf_Ehdr));
+    return *reinterpret_cast<Elf_Ehdr const*>(raw_data(0));
 }
 
-const ElfW(Phdr) & Image::program_header_internal(unsigned index) const
+Elf_Phdr const& Image::program_header_internal(unsigned index) const
 {
     VERIFY(m_valid);
     VERIFY(index < header().e_phnum);
-    return *reinterpret_cast<const ElfW(Phdr)*>(raw_data(header().e_phoff + (index * sizeof(ElfW(Phdr)))));
+    return *reinterpret_cast<Elf_Phdr const*>(raw_data(header().e_phoff + (index * sizeof(Elf_Phdr))));
 }
 
-const ElfW(Shdr) & Image::section_header(unsigned index) const
+Elf_Shdr const& Image::section_header(unsigned index) const
 {
     VERIFY(m_valid);
     VERIFY(index < header().e_shnum);
-    return *reinterpret_cast<const ElfW(Shdr)*>(raw_data(header().e_shoff + (index * header().e_shentsize)));
+    return *reinterpret_cast<Elf_Shdr const*>(raw_data(header().e_shoff + (index * header().e_shentsize)));
 }
 
 Image::Symbol Image::symbol(unsigned index) const
 {
     VERIFY(m_valid);
     VERIFY(index < symbol_count());
-    auto* raw_syms = reinterpret_cast<const ElfW(Sym)*>(raw_data(section(m_symbol_table_section_index).offset()));
+    auto* raw_syms = reinterpret_cast<Elf_Sym const*>(raw_data(section(m_symbol_table_section_index).offset()));
     return Symbol(*this, index, raw_syms[index]);
 }
 
@@ -243,22 +237,9 @@ Image::ProgramHeader Image::program_header(unsigned index) const
 Image::Relocation Image::RelocationSection::relocation(unsigned index) const
 {
     VERIFY(index < relocation_count());
-    auto* rels = reinterpret_cast<const ElfW(Rel)*>(m_image.raw_data(offset()));
-    return Relocation(m_image, rels[index]);
-}
-
-Optional<Image::RelocationSection> Image::Section::relocations() const
-{
-    StringBuilder builder;
-    builder.append(".rel"sv);
-    builder.append(name());
-
-    auto relocation_section = m_image.lookup_section(builder.string_view());
-    if (!relocation_section.has_value())
-        return {};
-
-    dbgln_if(ELF_IMAGE_DEBUG, "Found relocations for {} in {}", name(), relocation_section.value().name());
-    return static_cast<RelocationSection>(relocation_section.value());
+    unsigned offset_in_section = index * entry_size();
+    auto relocation_address = bit_cast<Elf_Rela*>(m_image.raw_data(offset() + offset_in_section));
+    return Relocation(m_image, *relocation_address, addend_used());
 }
 
 Optional<Image::Section> Image::lookup_section(StringView name) const
@@ -272,7 +253,7 @@ Optional<Image::Section> Image::lookup_section(StringView name) const
     return {};
 }
 
-Optional<StringView> Image::object_file_type_to_string(ElfW(Half) type)
+Optional<StringView> Image::object_file_type_to_string(Elf_Half type)
 {
     switch (type) {
     case ET_NONE:
@@ -290,7 +271,7 @@ Optional<StringView> Image::object_file_type_to_string(ElfW(Half) type)
     }
 }
 
-Optional<StringView> Image::object_machine_type_to_string(ElfW(Half) type)
+Optional<StringView> Image::object_machine_type_to_string(Elf_Half type)
 {
     switch (type) {
     case ET_NONE:
@@ -386,22 +367,25 @@ Optional<Image::Symbol> Image::find_demangled_function(StringView name) const
 
 Image::SortedSymbol* Image::find_sorted_symbol(FlatPtr address) const
 {
+    if (symbol_count() == 0)
+        return nullptr;
+
     if (m_sorted_symbols.is_empty())
         sort_symbols();
 
-    size_t index = 0;
-    binary_search(m_sorted_symbols, nullptr, &index, [&address](auto, auto& candidate) {
-        if (address < candidate.address)
-            return -1;
-        else if (address > candidate.address)
+    auto maybe_index = upper_bound(m_sorted_symbols, address, [address](auto, auto const& candidate) {
+        if (address >= candidate.address)
             return 1;
-        else
-            return 0;
+        return -1;
     });
-    // FIXME: The error path here feels strange, index == 0 means error but what about symbol #0?
-    if (index == 0)
+
+    if (!maybe_index.has_value())
+        return &m_sorted_symbols.last();
+
+    if (maybe_index.value() == 0)
         return nullptr;
-    return &m_sorted_symbols[index];
+
+    return &m_sorted_symbols[maybe_index.value() - 1];
 }
 
 Optional<Image::Symbol> Image::find_symbol(FlatPtr address, u32* out_offset) const
@@ -421,7 +405,17 @@ Optional<Image::Symbol> Image::find_symbol(FlatPtr address, u32* out_offset) con
 NEVER_INLINE void Image::sort_symbols() const
 {
     m_sorted_symbols.ensure_capacity(symbol_count());
-    for_each_symbol([this](auto const& symbol) {
+    bool const is_aarch64_or_riscv = header().e_machine == EM_AARCH64 || header().e_machine == EM_RISCV;
+    for_each_symbol([this, is_aarch64_or_riscv](auto const& symbol) {
+        // The AArch64 and RISC-V ABIs mark the boundaries of literal pools in a function with $x/$d.
+        // https://github.com/ARM-software/abi-aa/blob/2023q1-release/aaelf64/aaelf64.rst#mapping-symbols
+        // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#mapping-symbol
+        // Skip them so we don't accidentally print these instead of function names.
+        if (is_aarch64_or_riscv && (symbol.name().starts_with("$x"sv) || symbol.name().starts_with("$d"sv)))
+            return;
+        // STT_SECTION has the same address as the first function in the section, but shows up as the empty string.
+        if (symbol.type() == STT_SECTION)
+            return;
         m_sorted_symbols.append({ symbol.value(), symbol.name(), {}, symbol });
     });
     quick_sort(m_sorted_symbols, [](auto& a, auto& b) {
@@ -429,7 +423,7 @@ NEVER_INLINE void Image::sort_symbols() const
     });
 }
 
-DeprecatedString Image::symbolicate(FlatPtr address, u32* out_offset) const
+ByteString Image::symbolicate(FlatPtr address, u32* out_offset) const
 {
     auto symbol_count = this->symbol_count();
     if (!symbol_count) {
@@ -446,14 +440,14 @@ DeprecatedString Image::symbolicate(FlatPtr address, u32* out_offset) const
     }
 
     auto& demangled_name = symbol->demangled_name;
-    if (demangled_name.is_null())
+    if (demangled_name.is_empty())
         demangled_name = demangle(symbol->name);
 
     if (out_offset) {
         *out_offset = address - symbol->address;
         return demangled_name;
     }
-    return DeprecatedString::formatted("{} +{:#x}", demangled_name, address - symbol->address);
+    return ByteString::formatted("{} +{:#x}", demangled_name, address - symbol->address);
 }
 #endif
 

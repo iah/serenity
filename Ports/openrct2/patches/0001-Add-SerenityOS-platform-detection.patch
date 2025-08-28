@@ -9,7 +9,7 @@ We teach OpenRCT2 about the name of our platform.
  1 file changed, 3 insertions(+)
 
 diff --git a/src/openrct2/Version.h b/src/openrct2/Version.h
-index 0e5d83aaf2cf0b0e2562065cab6c7b1526a0f1e9..428552a4f78cc9d21a15f4641144fe65b6c751e4 100644
+index 14c26ea19956318a1a82d21d69a63c6a2cebdbe6..07df815d073a4e623ac9ae5ff01936e1055a9891 100644
 --- a/src/openrct2/Version.h
 +++ b/src/openrct2/Version.h
 @@ -70,6 +70,9 @@

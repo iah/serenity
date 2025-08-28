@@ -8,9 +8,9 @@
 #include "RegexParser.h"
 #include "RegexDebug.h"
 #include <AK/AnyOf.h>
+#include <AK/ByteString.h>
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <AK/GenericLexer.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
@@ -75,7 +75,7 @@ ALWAYS_INLINE Token Parser::consume(TokenType type, Error error)
     return consume();
 }
 
-ALWAYS_INLINE bool Parser::consume(DeprecatedString const& str)
+ALWAYS_INLINE bool Parser::consume(ByteString const& str)
 {
     size_t potentially_go_back { 1 };
     for (auto ch : str) {
@@ -179,6 +179,8 @@ ALWAYS_INLINE void Parser::reset()
 
 Parser::Result Parser::parse(Optional<AllOptions> regex_options)
 {
+    ByteCode::reset_checkpoint_serial_id();
+
     reset();
     if (regex_options.has_value())
         m_parser_state.regex_options = regex_options.value();
@@ -205,7 +207,7 @@ ALWAYS_INLINE bool Parser::match_ordinary_characters()
     // NOTE: This method must not be called during bracket and repetition parsing!
     // FIXME: Add assertion for that?
     auto type = m_parser_state.current_token.type();
-    return (type == TokenType::Char
+    return ((type == TokenType::Char && m_parser_state.current_token.value() != "\\"sv) // NOTE: Backslash will only be matched as 'char' if it does not form a valid escape.
         || type == TokenType::Comma
         || type == TokenType::Slash
         || type == TokenType::EqualSign
@@ -413,7 +415,7 @@ bool PosixBasicParser::parse_simple_re(ByteCode& bytecode, size_t& match_length_
             size_t value = 0;
             while (match(TokenType::Char)) {
                 auto c = m_parser_state.current_token.value().substring_view(0, 1);
-                auto c_value = c.to_uint();
+                auto c_value = c.to_number<unsigned>();
                 if (!c_value.has_value())
                     break;
                 value *= 10;
@@ -529,8 +531,23 @@ bool PosixBasicParser::parse_one_char_or_collation_element(ByteCode& bytecode, s
         back(2);
     }
 
+    if (match(TokenType::Char)) {
+        auto ch = consume().value()[0];
+        if (ch == '\\') {
+            if (m_parser_state.regex_options.has_flag_set(AllFlags::Extra))
+                return set_error(Error::InvalidPattern);
+
+            // This was \<ORD_CHAR>, the spec does not define any behaviour for this but glibc regex ignores it - and so do we.
+            return true;
+        }
+
+        bytecode.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)ch } });
+        match_length_minimum += 1;
+        return true;
+    }
+
     // None of these are special in BRE.
-    if (match(TokenType::Char) || match(TokenType::Questionmark) || match(TokenType::RightParen) || match(TokenType::HyphenMinus)
+    if (match(TokenType::Questionmark) || match(TokenType::RightParen) || match(TokenType::HyphenMinus)
         || match(TokenType::Circumflex) || match(TokenType::RightCurly) || match(TokenType::Comma) || match(TokenType::Colon)
         || match(TokenType::Dollar) || match(TokenType::EqualSign) || match(TokenType::LeftCurly) || match(TokenType::LeftParen)
         || match(TokenType::Pipe) || match(TokenType::Slash) || match(TokenType::RightBracket) || match(TokenType::RightParen)) {
@@ -598,7 +615,7 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_repetition_symbol(ByteCode& byteco
             number_builder.append(consume().value());
         }
 
-        auto maybe_minimum = number_builder.to_deprecated_string().to_uint();
+        auto maybe_minimum = number_builder.to_byte_string().to_number<unsigned>();
         if (!maybe_minimum.has_value())
             return set_error(Error::InvalidBraceContent);
 
@@ -627,7 +644,7 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_repetition_symbol(ByteCode& byteco
             number_builder.append(consume().value());
         }
         if (!number_builder.is_empty()) {
-            auto value = number_builder.to_deprecated_string().to_uint();
+            auto value = number_builder.to_byte_string().to_number<unsigned>();
             if (!value.has_value() || minimum > value.value() || *value > s_maximum_repetition_count)
                 return set_error(Error::InvalidBraceContent);
 
@@ -719,6 +736,14 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_sub_expression(ByteCode& stack, si
 
             should_parse_repetition_symbol = true;
             break;
+        }
+
+        if (m_parser_state.current_token.value() == "\\"sv) {
+            if (m_parser_state.regex_options.has_flag_set(AllFlags::Extra))
+                return set_error(Error::InvalidPattern);
+
+            consume();
+            continue;
         }
 
         if (match_repetition_symbol())
@@ -1181,7 +1206,7 @@ StringView ECMA262Parser::read_digits_as_string(ReadDigitsInitialZeroState initi
 
         if (hex && !AK::StringUtils::convert_to_uint_from_hex(c).has_value())
             break;
-        if (!hex && !c.to_uint().has_value())
+        if (!hex && !c.to_number<unsigned>().has_value())
             break;
 
         offset += consume().value().length();
@@ -1201,7 +1226,7 @@ Optional<unsigned> ECMA262Parser::read_digits(ECMA262Parser::ReadDigitsInitialZe
         return {};
     if (hex)
         return AK::StringUtils::convert_to_uint_from_hex(str);
-    return str.to_uint();
+    return str.to_number<unsigned>();
 }
 
 bool ECMA262Parser::parse_quantifier(ByteCode& stack, size_t& match_length_minimum, ParseFlags flags)
@@ -1279,7 +1304,7 @@ bool ECMA262Parser::parse_interval_quantifier(Optional<u64>& repeat_min, Optiona
     auto low_bound_string = read_digits_as_string();
     chars_consumed += low_bound_string.length();
 
-    auto low_bound = low_bound_string.to_uint<u64>();
+    auto low_bound = low_bound_string.to_number<u64>();
 
     if (!low_bound.has_value()) {
         if (!m_should_use_browser_extended_grammar && done())
@@ -1295,7 +1320,7 @@ bool ECMA262Parser::parse_interval_quantifier(Optional<u64>& repeat_min, Optiona
         consume();
         ++chars_consumed;
         auto high_bound_string = read_digits_as_string();
-        auto high_bound = high_bound_string.to_uint<u64>();
+        auto high_bound = high_bound_string.to_number<u64>();
         if (high_bound.has_value()) {
             repeat_max = high_bound.value();
             chars_consumed += high_bound_string.length();
@@ -1562,7 +1587,7 @@ bool ECMA262Parser::parse_character_escape(Vector<CompareTypeAndValuePair>& comp
 bool ECMA262Parser::parse_atom_escape(ByteCode& stack, size_t& match_length_minimum, ParseFlags flags)
 {
     if (auto escape_str = read_digits_as_string(ReadDigitsInitialZeroState::Disallow); !escape_str.is_empty()) {
-        if (auto escape = escape_str.to_uint(); escape.has_value()) {
+        if (auto escape = escape_str.to_number<unsigned>(); escape.has_value()) {
             // See if this is a "back"-reference (we've already parsed the group it refers to)
             auto maybe_length = m_parser_state.capture_group_minimum_lengths.get(escape.value());
             if (maybe_length.has_value()) {
@@ -1603,9 +1628,14 @@ bool ECMA262Parser::parse_atom_escape(ByteCode& stack, size_t& match_length_mini
             set_error(Error::InvalidNameForCaptureGroup);
             return false;
         }
-        match_length_minimum += maybe_capture_group->minimum_length;
+        auto maybe_length = m_parser_state.capture_group_minimum_lengths.get(maybe_capture_group.value());
+        if (!maybe_length.has_value()) {
+            set_error(Error::InvalidNameForCaptureGroup);
+            return false;
+        }
+        match_length_minimum += maybe_length.value();
 
-        stack.insert_bytecode_compare_values({ { CharacterCompareType::Reference, (ByteCodeValueType)maybe_capture_group->group_index } });
+        stack.insert_bytecode_compare_values({ { CharacterCompareType::Reference, (ByteCodeValueType)maybe_capture_group.value() } });
         return true;
     }
 
@@ -1752,10 +1782,12 @@ bool ECMA262Parser::parse_character_class(ByteCode& stack, size_t& match_length_
 
     Vector<CompareTypeAndValuePair> compares;
 
+    auto uses_explicit_or_semantics = false;
     if (match(TokenType::Circumflex)) {
         // Negated charclass
         consume();
         compares.empend(CompareTypeAndValuePair { CharacterCompareType::Inverse, 0 });
+        uses_explicit_or_semantics = true;
     }
 
     // ClassContents :: [empty]
@@ -1774,6 +1806,11 @@ bool ECMA262Parser::parse_character_class(ByteCode& stack, size_t& match_length_
     // ClassContents :: [+UnicodeSetsMode] ClassSetExpression
     if (flags.unicode_sets && !parse_class_set_expression(compares))
         return false;
+
+    if (uses_explicit_or_semantics && compares.size() > 2) {
+        compares.insert(1, CompareTypeAndValuePair { CharacterCompareType::Or, 0 });
+        compares.empend(CompareTypeAndValuePair { CharacterCompareType::EndAndOr, 0 });
+    }
 
     match_length_minimum += 1;
     stack.insert_bytecode_compare_values(move(compares));
@@ -1935,6 +1972,11 @@ bool ECMA262Parser::parse_nonempty_class_ranges(Vector<CompareTypeAndValuePair>&
             }
 
             set_error(Error::InvalidPattern);
+            return {};
+        }
+
+        if (match(TokenType::Eof)) {
+            set_error(Error::MismatchingBracket);
             return {};
         }
 
@@ -2201,6 +2243,11 @@ Optional<u32> ECMA262Parser::parse_class_set_character()
         "&&"sv, "!!"sv, "##"sv, "$$"sv, "%%"sv, "**"sv, "++"sv, ",,"sv, ".."sv, "::"sv, ";;"sv, "<<"sv, "=="sv, ">>"sv, "??"sv, "@@"sv, "^^"sv, "``"sv, "~~"sv
     };
 
+    if (done()) {
+        set_error(Error::InvalidPattern);
+        return {};
+    }
+
     auto start_position = tell();
     ArmedScopeGuard restore { [&] { back(tell() - start_position + 1); } };
 
@@ -2344,7 +2391,12 @@ bool ECMA262Parser::parse_nested_class(Vector<regex::CompareTypeAndValuePair>& c
         if (match(TokenType::RightBracket)) {
             consume();
             // Should only have at most an 'Inverse' (after an 'Or')
-            VERIFY(compares.size() <= 2);
+            if (m_parser_state.regex_options.has_flag_set(regex::AllFlags::UnicodeSets)) {
+                // In unicode sets mode, we can have an additional 'And'/'Or' before the 'Inverse'.
+                VERIFY(compares.size() <= 3);
+            } else {
+                VERIFY(compares.size() <= 2);
+            }
             compares.append(CompareTypeAndValuePair { CharacterCompareType::EndAndOr, 0 });
             return true;
         }
@@ -2431,9 +2483,9 @@ DeprecatedFlyString ECMA262Parser::read_capture_group_specifier(bool take_starti
 {
     static auto id_start_category = Unicode::property_from_string("ID_Start"sv);
     static auto id_continue_category = Unicode::property_from_string("ID_Continue"sv);
-    static constexpr const u32 REPLACEMENT_CHARACTER = 0xFFFD;
-    constexpr const u32 ZERO_WIDTH_NON_JOINER { 0x200C };
-    constexpr const u32 ZERO_WIDTH_JOINER { 0x200D };
+    static constexpr u32 const REPLACEMENT_CHARACTER = 0xFFFD;
+    constexpr u32 const ZERO_WIDTH_NON_JOINER { 0x200C };
+    constexpr u32 const ZERO_WIDTH_JOINER { 0x200D };
 
     if (take_starting_angle_bracket && !consume("<"))
         return {};
@@ -2530,7 +2582,7 @@ DeprecatedFlyString ECMA262Parser::read_capture_group_specifier(bool take_starti
         builder.append_code_point(code_point);
     }
 
-    DeprecatedFlyString name = builder.to_deprecated_string();
+    DeprecatedFlyString name = builder.to_byte_string();
     if (!hit_end || name.is_empty())
         set_error(Error::InvalidNameForCaptureGroup);
 
@@ -2630,6 +2682,8 @@ bool ECMA262Parser::parse_capture_group(ByteCode& stack, size_t& match_length_mi
                 return false;
             }
 
+            m_parser_state.named_capture_groups.set(name, group_index);
+
             ByteCode capture_group_bytecode;
             size_t length = 0;
             enter_capture_group_scope();
@@ -2649,7 +2703,6 @@ bool ECMA262Parser::parse_capture_group(ByteCode& stack, size_t& match_length_mi
             match_length_minimum += length;
 
             m_parser_state.capture_group_minimum_lengths.set(group_index, length);
-            m_parser_state.named_capture_groups.set(name, { group_index, length });
             return true;
         }
 
@@ -2695,17 +2748,22 @@ size_t ECMA262Parser::ensure_total_number_of_capturing_parenthesis()
     while (!lexer.is_eof()) {
         switch (lexer.peek()) {
         case '\\':
-            lexer.consume(2);
+            lexer.consume(min(lexer.tell_remaining(), 2));
             continue;
         case '[':
             while (!lexer.is_eof()) {
                 if (lexer.consume_specific('\\')) {
+                    if (lexer.is_eof())
+                        break;
                     lexer.consume();
                     continue;
                 }
                 if (lexer.consume_specific(']')) {
                     break;
                 }
+
+                if (lexer.is_eof())
+                    break;
                 lexer.consume();
             }
             break;

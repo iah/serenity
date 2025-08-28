@@ -18,6 +18,7 @@ public:
     };
 
     static Framebuffer& the();
+    static void initialize();
 
     bool initialized() const { return m_initialized; }
     u16 width() const { return m_width; }

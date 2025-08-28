@@ -29,6 +29,8 @@
 // The fractional part in the lower 32 bits stores fractional bits times 2 ** 32.
 using NtpTimestamp = uint64_t;
 
+using AK::convert_between_host_and_network_endian;
+
 struct [[gnu::packed]] NtpPacket {
     uint8_t li_vn_mode;
     uint8_t stratum;
@@ -76,7 +78,7 @@ static timeval timeval_from_ntp_timestamp(NtpTimestamp const& ntp_timestamp)
     return t;
 }
 
-static DeprecatedString format_ntp_timestamp(NtpTimestamp ntp_timestamp)
+static ByteString format_ntp_timestamp(NtpTimestamp ntp_timestamp)
 {
     char buffer[28]; // YYYY-MM-DDTHH:MM:SS.UUUUUUZ is 27 characters long.
     timeval t = timeval_from_ntp_timestamp(ntp_timestamp);
@@ -107,7 +109,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // Leap seconds smearing NTP servers:
     // - time.facebook.com , https://engineering.fb.com/production-engineering/ntp-service/ , sine-smears over 18 hours
     // - time.google.com , https://developers.google.com/time/smear , linear-smears over 24 hours
-    DeprecatedString host = "time.google.com"sv;
+    ByteString host = "time.google.com"sv;
     Core::ArgsParser args_parser;
     args_parser.add_option(adjust_time, "Gradually adjust system time (requires root)", "adjust", 'a');
     args_parser.add_option(set_time, "Immediately set system time (requires root)", "set", 's');
@@ -146,20 +148,22 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         5, 0
     };
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        perror("setsockopt");
-        return 1;
+        perror("setsockopt(SO_RCVTIMEO)");
+        warnln("Continuing without a timeout");
     }
 
+#ifdef SO_TIMESTAMP
     int enable = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &enable, sizeof(enable)) < 0) {
         perror("setsockopt");
         return 1;
     }
+#endif
 
     sockaddr_in peer_address;
     memset(&peer_address, 0, sizeof(peer_address));
     peer_address.sin_family = AF_INET;
-    peer_address.sin_port = htons(123);
+    peer_address.sin_port = convert_between_host_and_network_endian<short>(123);
     peer_address.sin_addr.s_addr = *(in_addr_t const*)hostent->h_addr_list[0];
 
     NtpPacket packet;
@@ -208,12 +212,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
+#ifdef SO_TIMESTAMP
     cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
     VERIFY(cmsg->cmsg_level == SOL_SOCKET);
     VERIFY(cmsg->cmsg_type == SCM_TIMESTAMP);
-    VERIFY(!CMSG_NXTHDR(&msg, cmsg));
+    AK_IGNORE_DIAGNOSTIC("-Wsign-compare", VERIFY(!CMSG_NXTHDR(&msg, cmsg)));
     timeval kernel_receive_time;
     memcpy(&kernel_receive_time, CMSG_DATA(cmsg), sizeof(kernel_receive_time));
+#endif
 
     // Checks 3 and 4 from end of section 5 of rfc4330.
     if (packet.version_number() != 3 && packet.version_number() != 4) {
@@ -238,12 +244,16 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     NtpTimestamp origin_timestamp = ntp_timestamp_from_timeval(local_transmit_time);
-    NtpTimestamp receive_timestamp = be64toh(packet.receive_timestamp);
-    NtpTimestamp transmit_timestamp = be64toh(packet.transmit_timestamp);
+    NtpTimestamp receive_timestamp = convert_between_host_and_network_endian(packet.receive_timestamp);
+    NtpTimestamp transmit_timestamp = convert_between_host_and_network_endian(packet.transmit_timestamp);
+#ifdef SO_TIMESTAMP
     NtpTimestamp destination_timestamp = ntp_timestamp_from_timeval(kernel_receive_time);
 
     timeval kernel_to_userspace_latency;
     timersub(&userspace_receive_time, &kernel_receive_time, &kernel_to_userspace_latency);
+#else
+    NtpTimestamp destination_timestamp = ntp_timestamp_from_timeval(userspace_receive_time);
+#endif
 
     if (set_time) {
         // FIXME: Do all the time filtering described in 5905, or at least correct for time of flight.
@@ -262,25 +272,27 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         outln("Stratum: {}", packet.stratum);
         outln("Poll: {}", packet.stratum);
         outln("Precision: {}", packet.precision);
-        outln("Root delay: {:x}", ntohl(packet.root_delay));
-        outln("Root dispersion: {:x}", ntohl(packet.root_dispersion));
+        outln("Root delay: {:x}", convert_between_host_and_network_endian(packet.root_delay));
+        outln("Root dispersion: {:x}", convert_between_host_and_network_endian(packet.root_dispersion));
 
-        u32 ref_id = ntohl(packet.reference_id);
+        u32 ref_id = convert_between_host_and_network_endian(packet.reference_id);
         out("Reference ID: {:x}", ref_id);
         if (packet.stratum == 1) {
             out(" ('{:c}{:c}{:c}{:c}')", (ref_id & 0xff000000) >> 24, (ref_id & 0xff0000) >> 16, (ref_id & 0xff00) >> 8, ref_id & 0xff);
         }
         outln();
 
-        outln("Reference timestamp:   {:#016x} ({})", be64toh(packet.reference_timestamp), format_ntp_timestamp(be64toh(packet.reference_timestamp)).characters());
+        outln("Reference timestamp:   {:#016x} ({})", convert_between_host_and_network_endian(packet.reference_timestamp), format_ntp_timestamp(convert_between_host_and_network_endian(packet.reference_timestamp)).characters());
         outln("Origin timestamp:      {:#016x} ({})", origin_timestamp, format_ntp_timestamp(origin_timestamp).characters());
         outln("Receive timestamp:     {:#016x} ({})", receive_timestamp, format_ntp_timestamp(receive_timestamp).characters());
         outln("Transmit timestamp:    {:#016x} ({})", transmit_timestamp, format_ntp_timestamp(transmit_timestamp).characters());
         outln("Destination timestamp: {:#016x} ({})", destination_timestamp, format_ntp_timestamp(destination_timestamp).characters());
 
+#ifdef SO_TIMESTAMP
         // When the system isn't under load, user-space t and packet_t are identical. If a shell with `yes` is running, it can be as high as 30ms in this program,
         // which gets user-space time immediately after the recvmsg() call. In programs that have an event loop reading from multiple sockets, it could be higher.
         outln("Receive latency: {}.{:06} s", (i64)kernel_to_userspace_latency.tv_sec, (int)kernel_to_userspace_latency.tv_usec);
+#endif
     }
 
     // Parts of the "Clock Filter" computations, https://tools.ietf.org/html/rfc5905#section-10
@@ -306,7 +318,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     outln("Offset: {}", offset_s);
 
     if (adjust_time) {
-        long delta_us = static_cast<long>(round(offset_s * 1'000'000));
+        long delta_us = lround(offset_s * 1'000'000);
         timeval delta_timeval;
         delta_timeval.tv_sec = delta_us / 1'000'000;
         delta_timeval.tv_usec = delta_us % 1'000'000;

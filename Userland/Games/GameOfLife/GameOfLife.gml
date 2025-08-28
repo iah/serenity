@@ -1,4 +1,4 @@
-@GUI::Widget {
+@GameOfLife::MainWidget {
     layout: @GUI::VerticalBoxLayout {}
 
     @GUI::ToolbarContainer {
@@ -34,7 +34,7 @@
             @GUI::VerticalSeparator {}
 
             @GUI::Label {
-                text: "Update Speed: "
+                text: "Speed: "
                 autosize: true
             }
 
@@ -61,5 +61,6 @@
 
     @GUI::Statusbar {
         name: "statusbar"
+        segment_count: 2
     }
 }

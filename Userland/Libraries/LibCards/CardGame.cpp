@@ -23,7 +23,7 @@ ErrorOr<NonnullRefPtr<GUI::Action>> make_cards_settings_action(GUI::Window* pare
             GUI::Process::spawn_or_show_error(parent, "/bin/GamesSettings"sv, Array { "--open-tab", "cards" });
         },
         parent);
-    action->set_status_tip("Open the Game Settings for Cards");
+    action->set_status_tip("Open the Game Settings for Cards"_string);
     return action;
 }
 
@@ -112,7 +112,7 @@ void CardGame::dump_layout() const
         dbgln("{}", stack);
 }
 
-void CardGame::config_string_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, DeprecatedString const& value)
+void CardGame::config_string_did_change(StringView domain, StringView group, StringView key, StringView value)
 {
     if (domain == "Games" && group == "Cards") {
         if (key == "BackgroundColor") {
@@ -121,7 +121,12 @@ void CardGame::config_string_did_change(DeprecatedString const& domain, Deprecat
             return;
         }
         if (key == "CardBackImage") {
-            CardPainter::the().set_background_image_path(value);
+            CardPainter::the().set_back_image_path(String::from_utf8(value).release_value_but_fixme_should_propagate_errors());
+            update();
+            return;
+        }
+        if (key == "CardFrontImages") {
+            CardPainter::the().set_front_images_set_name(String::from_utf8(value).release_value_but_fixme_should_propagate_errors());
             update();
             return;
         }

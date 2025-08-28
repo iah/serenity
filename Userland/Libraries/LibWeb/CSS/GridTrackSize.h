@@ -7,24 +7,24 @@
 #pragma once
 
 #include <AK/Vector.h>
-#include <LibWeb/CSS/Length.h>
-#include <LibWeb/CSS/Percentage.h>
+#include <LibWeb/CSS/PercentageOr.h>
+#include <LibWeb/Layout/AvailableSpace.h>
 
 namespace Web::CSS {
 
 class GridSize {
 public:
     enum class Type {
-        Length,
-        Percentage,
+        LengthPercentage,
         FlexibleLength,
+        FitContent,
         MaxContent,
         MinContent,
     };
 
-    GridSize(Length);
-    GridSize(Percentage);
-    GridSize(float);
+    GridSize(Type, LengthPercentage);
+    GridSize(LengthPercentage);
+    GridSize(Flex);
     GridSize(Type);
     GridSize();
     ~GridSize();
@@ -33,45 +33,54 @@ public:
 
     Type type() const { return m_type; }
 
-    bool is_length() const { return m_type == Type::Length; }
-    bool is_percentage() const { return m_type == Type::Percentage; }
+    bool is_auto(Layout::AvailableSize const&) const;
+    bool is_fixed(Layout::AvailableSize const&) const;
     bool is_flexible_length() const { return m_type == Type::FlexibleLength; }
+    bool is_fit_content() const { return m_type == Type::FitContent; }
     bool is_max_content() const { return m_type == Type::MaxContent; }
     bool is_min_content() const { return m_type == Type::MinContent; }
 
-    Length length() const;
-    Percentage percentage() const { return m_percentage; }
-    float flexible_length() const { return m_flexible_length; }
+    LengthPercentage length_percentage() const { return m_value.get<LengthPercentage>(); }
+    double flex_factor() const { return m_value.get<Flex>().to_fr(); }
 
     // https://www.w3.org/TR/css-grid-2/#layout-algorithm
     // An intrinsic sizing function (min-content, max-content, auto, fit-content()).
-    // FIXME: Add missing properties once implemented.
-    bool is_intrinsic_track_sizing() const
-    {
-        return (m_type == Type::Length && m_length.is_auto()) || m_type == Type::MaxContent || m_type == Type::MinContent;
-    }
+    bool is_intrinsic(Layout::AvailableSize const&) const;
 
     bool is_definite() const
     {
-        return (m_type == Type::Length && !m_length.is_auto()) || is_percentage();
+        return type() == Type::LengthPercentage && !length_percentage().is_auto();
     }
 
-    ErrorOr<String> to_string() const;
+    Size css_size() const;
+
+    String to_string() const;
     bool operator==(GridSize const& other) const
     {
         return m_type == other.type()
-            && m_length == other.length()
-            && m_percentage == other.percentage()
-            && m_flexible_length == other.flexible_length();
+            && m_value == other.m_value;
     }
 
 private:
     Type m_type;
-    // Length includes a RefPtr<CalculatedStyleValue> member, but we can't include the header StyleValue.h as it includes
-    // this file already. To break the cyclic dependency, we must initialize m_length in the constructor.
-    Length m_length;
-    Percentage m_percentage { Percentage(0) };
-    float m_flexible_length { 0 };
+    Variant<Empty, LengthPercentage, Flex> m_value;
+};
+
+class GridFitContent {
+public:
+    GridFitContent(GridSize);
+    GridFitContent();
+
+    GridSize max_grid_size() const& { return m_max_grid_size; }
+
+    String to_string() const;
+    bool operator==(GridFitContent const& other) const
+    {
+        return m_max_grid_size == other.m_max_grid_size;
+    }
+
+private:
+    GridSize m_max_grid_size;
 };
 
 class GridMinMax {
@@ -82,7 +91,7 @@ public:
     GridSize min_grid_size() const& { return m_min_grid_size; }
     GridSize max_grid_size() const& { return m_max_grid_size; }
 
-    ErrorOr<String> to_string() const;
+    String to_string() const;
     bool operator==(GridMinMax const& other) const
     {
         return m_min_grid_size == other.min_grid_size()
@@ -94,25 +103,28 @@ private:
     GridSize m_max_grid_size;
 };
 
+struct GridLineNames {
+    Vector<String> names;
+
+    String to_string() const;
+    bool operator==(GridLineNames const& other) const { return names == other.names; }
+};
+
 class GridTrackSizeList {
 public:
-    GridTrackSizeList(Vector<CSS::ExplicitGridTrack> track_list, Vector<Vector<String>> line_names);
+    GridTrackSizeList(Vector<Variant<ExplicitGridTrack, GridLineNames>>&& list);
     GridTrackSizeList();
 
-    static GridTrackSizeList make_auto();
+    static GridTrackSizeList make_none();
 
-    Vector<CSS::ExplicitGridTrack> track_list() const { return m_track_list; }
-    Vector<Vector<String>> line_names() const { return m_line_names; }
+    Vector<CSS::ExplicitGridTrack> track_list() const;
+    Vector<Variant<ExplicitGridTrack, GridLineNames>> list() const { return m_list; }
 
-    ErrorOr<String> to_string() const;
-    bool operator==(GridTrackSizeList const& other) const
-    {
-        return m_line_names == other.line_names() && m_track_list == other.track_list();
-    }
+    String to_string() const;
+    bool operator==(GridTrackSizeList const& other) const;
 
 private:
-    Vector<CSS::ExplicitGridTrack> m_track_list;
-    Vector<Vector<String>> m_line_names;
+    Vector<Variant<ExplicitGridTrack, GridLineNames>> m_list;
 };
 
 class GridRepeat {
@@ -137,7 +149,7 @@ public:
     GridTrackSizeList grid_track_size_list() const& { return m_grid_track_size_list; }
     Type type() const& { return m_type; }
 
-    ErrorOr<String> to_string() const;
+    String to_string() const;
     bool operator==(GridRepeat const& other) const
     {
         if (m_type != other.type())
@@ -156,13 +168,22 @@ private:
 class ExplicitGridTrack {
 public:
     enum class Type {
+        FitContent,
         MinMax,
         Repeat,
         Default,
     };
+    ExplicitGridTrack(CSS::GridFitContent);
     ExplicitGridTrack(CSS::GridRepeat);
     ExplicitGridTrack(CSS::GridMinMax);
     ExplicitGridTrack(CSS::GridSize);
+
+    bool is_fit_content() const { return m_type == Type::FitContent; }
+    GridFitContent fit_content() const
+    {
+        VERIFY(is_fit_content());
+        return m_grid_fit_content;
+    }
 
     bool is_repeat() const { return m_type == Type::Repeat; }
     GridRepeat repeat() const
@@ -187,9 +208,11 @@ public:
 
     Type type() const { return m_type; }
 
-    ErrorOr<String> to_string() const;
+    String to_string() const;
     bool operator==(ExplicitGridTrack const& other) const
     {
+        if (is_fit_content() && other.is_fit_content())
+            return m_grid_fit_content == other.fit_content();
         if (is_repeat() && other.is_repeat())
             return m_grid_repeat == other.repeat();
         if (is_minmax() && other.is_minmax())
@@ -201,6 +224,7 @@ public:
 
 private:
     Type m_type;
+    GridFitContent m_grid_fit_content;
     GridRepeat m_grid_repeat;
     GridMinMax m_grid_minmax;
     GridSize m_grid_size;

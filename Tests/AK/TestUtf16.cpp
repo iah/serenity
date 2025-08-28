@@ -53,7 +53,7 @@ TEST_CASE(decode_utf8)
 TEST_CASE(encode_utf8)
 {
     {
-        auto utf8_string = MUST("Привет, мир! 😀 γειά σου κόσμος こんにちは世界"_string);
+        auto utf8_string = "Привет, мир! 😀 γειά σου κόσμος こんにちは世界"_string;
         auto string = MUST(AK::utf8_to_utf16(utf8_string));
         Utf16View view { string };
         EXPECT_EQ(MUST(view.to_utf8(Utf16View::AllowInvalidCodeUnits::Yes)), utf8_string);
@@ -87,6 +87,44 @@ TEST_CASE(decode_utf16)
         EXPECT_EQ(code_point, expected[i++]);
     }
     EXPECT_EQ(i, expected.size());
+}
+
+TEST_CASE(utf16_code_unit_length_from_utf8)
+{
+    EXPECT_EQ(AK::utf16_code_unit_length_from_utf8(""sv), 0uz);
+    EXPECT_EQ(AK::utf16_code_unit_length_from_utf8("abc"sv), 3uz);
+    EXPECT_EQ(AK::utf16_code_unit_length_from_utf8("😀"sv), 2uz);
+    EXPECT_EQ(AK::utf16_code_unit_length_from_utf8("Привет, мир! 😀 γειά σου κόσμος こんにちは世界"sv), 39uz);
+}
+
+TEST_CASE(utf16_literal)
+{
+    {
+        Utf16View view { u"" };
+        EXPECT(view.validate());
+        EXPECT_EQ(view.length_in_code_units(), 0u);
+    }
+    {
+        Utf16View view { u"a" };
+        EXPECT(view.validate());
+        EXPECT_EQ(view.length_in_code_units(), 1u);
+        EXPECT_EQ(view.code_unit_at(0), 0x61u);
+    }
+    {
+        Utf16View view { u"abc" };
+        EXPECT(view.validate());
+        EXPECT_EQ(view.length_in_code_units(), 3u);
+        EXPECT_EQ(view.code_unit_at(0), 0x61u);
+        EXPECT_EQ(view.code_unit_at(1), 0x62u);
+        EXPECT_EQ(view.code_unit_at(2), 0x63u);
+    }
+    {
+        Utf16View view { u"🙃" };
+        EXPECT(view.validate());
+        EXPECT_EQ(view.length_in_code_units(), 2u);
+        EXPECT_EQ(view.code_unit_at(0), 0xd83du);
+        EXPECT_EQ(view.code_unit_at(1), 0xde43u);
+    }
 }
 
 TEST_CASE(iterate_utf16)
@@ -279,4 +317,30 @@ TEST_CASE(substring_view)
         EXPECT_EQ(MUST(view.to_utf8(Utf16View::AllowInvalidCodeUnits::Yes)), "\xed\xa0\xbd"sv);
         EXPECT_EQ(MUST(view.to_utf8(Utf16View::AllowInvalidCodeUnits::No)), "\ufffd"sv);
     }
+}
+
+TEST_CASE(starts_with)
+{
+    EXPECT(Utf16View {}.starts_with(u""));
+    EXPECT(!Utf16View {}.starts_with(u" "));
+
+    EXPECT(Utf16View { u"a" }.starts_with(u""));
+    EXPECT(Utf16View { u"a" }.starts_with(u"a"));
+    EXPECT(!Utf16View { u"a" }.starts_with(u"b"));
+    EXPECT(!Utf16View { u"a" }.starts_with(u"ab"));
+
+    EXPECT(Utf16View { u"abc" }.starts_with(u""));
+    EXPECT(Utf16View { u"abc" }.starts_with(u"a"));
+    EXPECT(Utf16View { u"abc" }.starts_with(u"ab"));
+    EXPECT(Utf16View { u"abc" }.starts_with(u"abc"));
+    EXPECT(!Utf16View { u"abc" }.starts_with(u"b"));
+    EXPECT(!Utf16View { u"abc" }.starts_with(u"bc"));
+
+    auto emoji = Utf16View { u"😀🙃" };
+
+    EXPECT(emoji.starts_with(u""));
+    EXPECT(emoji.starts_with(u"😀"));
+    EXPECT(emoji.starts_with(u"😀🙃"));
+    EXPECT(!emoji.starts_with(u"a"));
+    EXPECT(!emoji.starts_with(u"🙃"));
 }

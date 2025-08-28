@@ -17,9 +17,9 @@
 namespace HackStudio {
 
 struct Match {
-    DeprecatedString filename;
+    ByteString filename;
     GUI::TextRange range;
-    DeprecatedString text;
+    ByteString text;
 };
 
 class SearchResultsModel final : public GUI::Model {
@@ -39,15 +39,15 @@ public:
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_matches.size(); }
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
 
-    virtual DeprecatedString column_name(int column) const override
+    virtual ErrorOr<String> column_name(int column) const override
     {
         switch (column) {
         case Column::Filename:
-            return "Filename";
+            return "Filename"_string;
         case Column::Location:
-            return "#";
+            return "#"_string;
         case Column::MatchedText:
-            return "Text";
+            return "Text"_string;
         default:
             VERIFY_NOT_REACHED();
         }
@@ -105,7 +105,7 @@ static RefPtr<SearchResultsModel> find_in_files(StringView text)
             builder.append(file.document().text_in_range(range));
             builder.append(0x02);
             builder.append(right_part);
-            matches.append({ file.name(), range, builder.to_deprecated_string() });
+            matches.append({ file.name(), range, builder.to_byte_string() });
         }
     });
 
@@ -122,13 +122,13 @@ FindInFilesWidget::FindInFilesWidget()
 
     m_textbox = top_container.add<GUI::TextBox>();
 
-    m_button = top_container.add<GUI::Button>("Find in files"_string.release_value_but_fixme_should_propagate_errors());
-    m_button->set_fixed_width(100);
+    m_button = top_container.add<GUI::Button>("Find"_string);
+    m_button->set_fixed_width(50);
 
     m_result_view = add<GUI::TableView>();
 
     m_result_view->on_activation = [](auto& index) {
-        auto& match = *(const Match*)index.internal_data();
+        auto& match = *(Match const*)index.internal_data();
         open_file(match.filename);
         current_editor().set_selection(match.range);
         current_editor().set_focus(true);

@@ -107,9 +107,9 @@ void StorageWidget::clear_cookies()
     m_cookies_model->clear_items();
 }
 
-void StorageWidget::set_local_storage_entries(OrderedHashMap<DeprecatedString, DeprecatedString> entries)
+void StorageWidget::set_local_storage_entries(OrderedHashMap<String, String> entries)
 {
-    m_local_storage_model->set_items(entries);
+    m_local_storage_model->set_items(move(entries));
 }
 
 void StorageWidget::clear_local_storage_entries()
@@ -117,9 +117,9 @@ void StorageWidget::clear_local_storage_entries()
     m_local_storage_model->clear_items();
 }
 
-void StorageWidget::set_session_storage_entries(OrderedHashMap<DeprecatedString, DeprecatedString> entries)
+void StorageWidget::set_session_storage_entries(OrderedHashMap<String, String> entries)
 {
-    m_session_storage_model->set_items(entries);
+    m_session_storage_model->set_items(move(entries));
 }
 
 void StorageWidget::clear_session_storage_entries()
@@ -130,7 +130,7 @@ void StorageWidget::clear_session_storage_entries()
 void StorageWidget::delete_cookie(Web::Cookie::Cookie cookie)
 {
     // Delete cookie by making its expiry time in the past.
-    cookie.expiry_time = Time::from_seconds(0);
+    cookie.expiry_time = UnixDateTime::earliest();
     if (on_update_cookie)
         on_update_cookie(move(cookie));
 }

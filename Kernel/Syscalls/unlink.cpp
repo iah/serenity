@@ -6,7 +6,7 @@
 
 #include <AK/StringView.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -19,20 +19,12 @@ ErrorOr<FlatPtr> Process::sys$unlink(int dirfd, Userspace<char const*> user_path
     if (flags & ~AT_REMOVEDIR)
         return Error::from_errno(EINVAL);
 
-    RefPtr<Custody> base;
-    if (dirfd == AT_FDCWD) {
-        base = current_directory();
-    } else {
-        auto base_description = TRY(open_file_description(dirfd));
-        if (!base_description->custody())
-            return Error::from_errno(EINVAL);
-        base = base_description->custody();
-    }
+    CustodyBase base(dirfd, path->view());
 
     if (flags & AT_REMOVEDIR)
-        TRY(VirtualFileSystem::the().rmdir(credentials(), path->view(), *base));
+        TRY(VirtualFileSystem::rmdir(vfs_root_context(), credentials(), path->view(), base));
     else
-        TRY(VirtualFileSystem::the().unlink(credentials(), path->view(), *base));
+        TRY(VirtualFileSystem::unlink(vfs_root_context(), credentials(), path->view(), base));
     return 0;
 }
 

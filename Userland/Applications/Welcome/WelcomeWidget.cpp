@@ -7,7 +7,6 @@
 #include "WelcomeWidget.h"
 #include <AK/Random.h>
 #include <AK/String.h>
-#include <Applications/Welcome/WelcomeWindowGML.h>
 #include <LibConfig/Client.h>
 #include <LibCore/StandardPaths.h>
 #include <LibGUI/Application.h>
@@ -19,9 +18,13 @@
 #include <LibGUI/Process.h>
 #include <LibGfx/Palette.h>
 
-ErrorOr<NonnullRefPtr<WelcomeWidget>> WelcomeWidget::try_create()
+namespace Welcome {
+
+static String tips_file_path = "/usr/share/Welcome/tips.txt"_string;
+
+ErrorOr<NonnullRefPtr<WelcomeWidget>> WelcomeWidget::create()
 {
-    auto welcome_widget = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) WelcomeWidget()));
+    auto welcome_widget = TRY(WelcomeWidget::try_create());
     TRY(welcome_widget->create_widgets());
 
     return welcome_widget;
@@ -29,14 +32,13 @@ ErrorOr<NonnullRefPtr<WelcomeWidget>> WelcomeWidget::try_create()
 
 ErrorOr<void> WelcomeWidget::create_widgets()
 {
-    TRY(load_from_gml(welcome_window_gml));
-
     m_banner_widget = find_descendant_of_type_named<GUI::Widget>("welcome_banner");
-    m_banner_font = TRY(Gfx::BitmapFont::try_load_from_file("/res/fonts/MarietaRegular24.font"sv));
+    m_banner_font = TRY(Gfx::BitmapFont::try_load_from_uri("resource://fonts/MarietaRegular24.font"sv));
 
     m_web_view = find_descendant_of_type_named<WebView::OutOfProcessWebView>("web_view");
+    m_web_view->use_native_user_style_sheet();
     auto path = TRY(String::formatted("{}/README.md", Core::StandardPaths::home_directory()));
-    m_web_view->load(URL::create_with_file_scheme(path.to_deprecated_string()));
+    m_web_view->load(URL::create_with_file_scheme(path.to_byte_string()));
 
     m_tip_label = find_descendant_of_type_named<GUI::Label>("tip_label");
     m_tip_frame = find_descendant_of_type_named<GUI::Frame>("tip_frame");
@@ -50,7 +52,7 @@ ErrorOr<void> WelcomeWidget::create_widgets()
         m_tip_index++;
         if (m_tip_index >= m_tips.size())
             m_tip_index = 0;
-        m_tip_label->set_text(m_tips[m_tip_index].to_deprecated_string());
+        m_tip_label->set_text(m_tips[m_tip_index]);
     };
 
     m_help_button = find_descendant_of_type_named<GUI::Button>("help_button");
@@ -80,9 +82,8 @@ ErrorOr<void> WelcomeWidget::create_widgets()
     };
 
     if (auto result = open_and_parse_tips_file(); result.is_error()) {
-        auto path = TRY(String::formatted("{}/tips.txt", Core::StandardPaths::documents_directory()));
-        auto error = TRY(String::formatted("Opening \"{}\" failed: {}", path, result.error()));
-        m_tip_label->set_text(error.to_deprecated_string());
+        auto error = TRY(String::formatted("Opening \"{}\" failed: {}", tips_file_path, result.error()));
+        m_tip_label->set_text(error);
         warnln(error);
     }
 
@@ -93,9 +94,8 @@ ErrorOr<void> WelcomeWidget::create_widgets()
 
 ErrorOr<void> WelcomeWidget::open_and_parse_tips_file()
 {
-    auto path = TRY(String::formatted("{}/tips.txt", Core::StandardPaths::documents_directory()));
-    auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
-    auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+    auto file = TRY(Core::File::open(tips_file_path, Core::File::OpenMode::Read));
+    auto buffered_file = TRY(Core::InputBufferedFile::create(move(file)));
     Array<u8, PAGE_SIZE> buffer;
 
     while (TRY(buffered_file->can_read_line())) {
@@ -114,7 +114,7 @@ void WelcomeWidget::set_random_tip()
         return;
 
     m_tip_index = get_random_uniform(m_tips.size());
-    m_tip_label->set_text(m_tips[m_tip_index].to_deprecated_string());
+    m_tip_label->set_text(m_tips[m_tip_index]);
 }
 
 void WelcomeWidget::paint_event(GUI::PaintEvent& event)
@@ -128,4 +128,6 @@ void WelcomeWidget::paint_event(GUI::PaintEvent& event)
     painter.draw_text(rect, "Serenity"sv, m_banner_font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().base_text());
     rect.set_x(rect.x() + static_cast<int>(ceilf(m_banner_font->bold_variant().width("Serenity"sv))));
     painter.draw_text(rect, "OS"sv, m_banner_font->bold_variant(), Gfx::TextAlignment::CenterLeft, palette().tray_text());
+}
+
 }

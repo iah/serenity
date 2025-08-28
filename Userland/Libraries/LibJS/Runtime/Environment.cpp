@@ -9,14 +9,15 @@
 
 namespace JS {
 
-Environment::Environment(Environment* outer_environment)
-    : m_outer_environment(outer_environment)
+Environment::Environment(Environment* outer_environment, IsDeclarative is_declarative)
+    : m_declarative(is_declarative == IsDeclarative::Yes)
+    , m_outer_environment(outer_environment)
 {
 }
 
 void Environment::visit_edges(Visitor& visitor)
 {
-    Cell::visit_edges(visitor);
+    Base::visit_edges(visitor);
     visitor.visit(m_outer_environment);
 }
 

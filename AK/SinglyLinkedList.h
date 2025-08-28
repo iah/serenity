@@ -47,7 +47,7 @@ public:
     {
         m_removed = true;
         list.remove(*this);
-    };
+    }
 
 private:
     friend ListType;
@@ -205,7 +205,7 @@ public:
     Iterator begin() { return Iterator(m_head); }
     Iterator end() { return {}; }
 
-    using ConstIterator = SinglyLinkedListIterator<const SinglyLinkedList, T const>;
+    using ConstIterator = SinglyLinkedListIterator<SinglyLinkedList const, T const>;
     friend ConstIterator;
     ConstIterator begin() const { return ConstIterator(m_head); }
     ConstIterator end() const { return {}; }
@@ -224,12 +224,12 @@ public:
 
     ConstIterator find(T const& value) const
     {
-        return find_if([&](auto& other) { return Traits<T>::equals(value, other); });
+        return find_if([&](auto& entry) { return Traits<T>::equals(entry, value); });
     }
 
     Iterator find(T const& value)
     {
-        return find_if([&](auto& other) { return Traits<T>::equals(value, other); });
+        return find_if([&](auto& entry) { return Traits<T>::equals(entry, value); });
     }
 
     template<typename U = T>

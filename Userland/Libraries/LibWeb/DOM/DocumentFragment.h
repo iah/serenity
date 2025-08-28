@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/NonElementParentNode.h>
 #include <LibWeb/DOM/ParentNode.h>
@@ -17,13 +16,14 @@ class DocumentFragment
     : public ParentNode
     , public NonElementParentNode<DocumentFragment> {
     WEB_PLATFORM_OBJECT(DocumentFragment, ParentNode);
+    JS_DECLARE_ALLOCATOR(DocumentFragment);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> construct_impl(JS::Realm& realm);
 
     virtual ~DocumentFragment() override = default;
 
-    virtual DeprecatedFlyString node_name() const override { return "#document-fragment"; }
+    virtual FlyString node_name() const override { return "#document-fragment"_fly_string; }
 
     Element* host() { return m_host.ptr(); }
     Element const* host() const { return m_host.ptr(); }
@@ -33,7 +33,7 @@ public:
 protected:
     explicit DocumentFragment(Document& document);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
 private:

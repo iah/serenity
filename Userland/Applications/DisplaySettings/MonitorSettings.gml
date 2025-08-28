@@ -35,7 +35,7 @@
         layout: @GUI::VerticalBoxLayout {
             margins: [14, 14, 4]
         }
-        title: "Screen Settings"
+        title: "Screen settings"
 
         @GUI::Widget {
             preferred_height: "fit"
@@ -54,7 +54,6 @@
             @GUI::Label {
                 name: "display_dpi"
                 text: "96 dpi"
-                text_alignment: "CenterMiddle"
                 fixed_width: 50
             }
         }

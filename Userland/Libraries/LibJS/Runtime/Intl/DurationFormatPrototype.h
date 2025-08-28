@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class DurationFormatPrototype final : public PrototypeObject<DurationFormatPrototype, DurationFormat> {
     JS_PROTOTYPE_OBJECT(DurationFormatPrototype, DurationFormat, Intl.DurationFormat);
+    JS_DECLARE_ALLOCATOR(DurationFormatPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DurationFormatPrototype() override = default;
 
 private:

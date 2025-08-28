@@ -7,6 +7,7 @@
 #pragma once
 
 #include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/DOM/HTMLCollection.h>
 #include <LibWeb/HTML/FormAssociatedElement.h>
 #include <LibWeb/HTML/HTMLElement.h>
 
@@ -16,18 +17,21 @@ class HTMLFieldSetElement final
     : public HTMLElement
     , public FormAssociatedElement {
     WEB_PLATFORM_OBJECT(HTMLFieldSetElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLFieldSetElement);
     FORM_ASSOCIATED_ELEMENT(HTMLElement, HTMLFieldSetElement)
 
 public:
     virtual ~HTMLFieldSetElement() override;
 
-    DeprecatedString const& type() const
+    String const& type() const
     {
-        static DeprecatedString fieldset = "fieldset";
+        static String const fieldset = "fieldset"_string;
         return fieldset;
     }
 
     bool is_disabled() const;
+
+    JS::GCPtr<DOM::HTMLCollection> const& elements();
 
     // ^FormAssociatedElement
     // https://html.spec.whatwg.org/multipage/forms.html#category-listed
@@ -41,7 +45,10 @@ public:
 private:
     HTMLFieldSetElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    JS::GCPtr<DOM::HTMLCollection> m_elements;
 };
 
 }

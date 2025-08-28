@@ -17,14 +17,15 @@ class WeakMap final
     : public Object
     , public WeakContainer {
     JS_OBJECT(WeakMap, Object);
+    JS_DECLARE_ALLOCATOR(WeakMap);
 
 public:
     static NonnullGCPtr<WeakMap> create(Realm&);
 
     virtual ~WeakMap() override = default;
 
-    HashMap<Cell*, Value> const& values() const { return m_values; };
-    HashMap<Cell*, Value>& values() { return m_values; };
+    HashMap<GCPtr<Cell>, Value> const& values() const { return m_values; }
+    HashMap<GCPtr<Cell>, Value>& values() { return m_values; }
 
     virtual void remove_dead_cells(Badge<Heap>) override;
 
@@ -33,7 +34,7 @@ private:
 
     void visit_edges(Visitor&) override;
 
-    HashMap<Cell*, Value> m_values; // This stores Cell pointers instead of Object pointers to aide with sweeping
+    HashMap<GCPtr<Cell>, Value> m_values; // This stores Cell pointers instead of Object pointers to aide with sweeping
 };
 
 }

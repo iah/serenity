@@ -6,7 +6,7 @@
  */
 
 #include <AK/Debug.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGUI/HeaderView.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/Painter.h>
@@ -185,7 +185,7 @@ void TreeView::traverse_in_paint_order(Callback callback) const
         if (index.is_valid()) {
             auto& metadata = ensure_metadata_for_index(index);
             int x_offset = tree_column_x_offset + horizontal_padding() + indent_level * indent_width_in_pixels();
-            auto node_text = index.data().to_deprecated_string();
+            auto node_text = index.data().to_byte_string();
             Gfx::IntRect rect = {
                 x_offset, y_offset,
                 static_cast<int>(ceilf(icon_size() + icon_spacing() + text_padding() + font_for_index(index)->width(node_text) + text_padding())), row_height()
@@ -317,7 +317,7 @@ void TreeView::paint_event(PaintEvent& event)
                         }
                     } else {
                         auto text_alignment = cell_index.data(ModelRole::TextAlignment).to_text_alignment(Gfx::TextAlignment::CenterLeft);
-                        draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_deprecated_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
+                        draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_byte_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
                     }
                 }
             } else {
@@ -327,7 +327,7 @@ void TreeView::paint_event(PaintEvent& event)
                 Gfx::IntRect icon_rect = { rect.x(), rect.y(), icon_size(), icon_size() };
                 icon_rect.center_vertically_within(rect);
                 Gfx::IntRect background_rect = {
-                    icon_rect.right() + 1 + icon_spacing(), rect.y(),
+                    icon_rect.right() + icon_spacing(), rect.y(),
                     min(rect.width(), column_width - indent_width) - icon_size() - icon_spacing(), rect.height()
                 };
                 Gfx::IntRect text_rect = background_rect.shrunken(text_padding() * 2, 0);
@@ -347,7 +347,7 @@ void TreeView::paint_event(PaintEvent& event)
                 }
                 auto display_data = index.data();
                 if (display_data.is_string() || display_data.is_u32() || display_data.is_i32() || display_data.is_u64() || display_data.is_i64() || display_data.is_bool() || display_data.is_float())
-                    draw_item_text(painter, index, is_selected_row, text_rect, display_data.to_deprecated_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::Right);
+                    draw_item_text(painter, index, is_selected_row, text_rect, display_data.to_byte_string(), font_for_index(index), Gfx::TextAlignment::CenterLeft, Gfx::TextElision::Right);
 
                 if (selection_behavior() == SelectionBehavior::SelectItems && is_focused() && index == cursor_index()) {
                     painter.draw_rect(background_rect, palette().color(background_role()));
@@ -414,7 +414,10 @@ void TreeView::scroll_into_view(ModelIndex const& a_index, bool, bool scroll_ver
 
 void TreeView::model_did_update(unsigned flags)
 {
-    m_view_metadata.clear();
+    if (flags == Model::UpdateFlag::InvalidateAllIndices) {
+        m_view_metadata.clear();
+    }
+
     AbstractTableView::model_did_update(flags);
 }
 
@@ -533,7 +536,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
     if (!cursor_index().is_valid())
         set_cursor(model.index(0, model.tree_column(), cursor_index()), SelectionUpdate::Set);
 
-    auto find_last_index_in_tree = [&](const ModelIndex tree_index) -> ModelIndex {
+    auto find_last_index_in_tree = [&](ModelIndex const tree_index) -> ModelIndex {
         auto last_index = tree_index;
         size_t row_count = model.row_count(last_index);
         while (row_count > 0) {
@@ -552,7 +555,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
         return last_index;
     };
 
-    auto step_up = [&](const ModelIndex current_index) -> ModelIndex {
+    auto step_up = [&](ModelIndex const current_index) -> ModelIndex {
         // Traverse into parent index if we're at the top of our subtree
         if (current_index.row() == 0) {
             auto parent_index = current_index.parent();
@@ -573,7 +576,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate selection_up
         return find_last_index_in_tree(previous_index);
     };
 
-    auto step_down = [&](const ModelIndex current_index) -> ModelIndex {
+    auto step_down = [&](ModelIndex const current_index) -> ModelIndex {
         if (!current_index.is_valid())
             return current_index;
 
@@ -670,7 +673,7 @@ void TreeView::auto_resize_column(int column)
 
     auto& model = *this->model();
 
-    int header_width = column_header().font().width(model.column_name(column));
+    int header_width = column_header().font().width(model.column_name(column).release_value_but_fixme_should_propagate_errors());
     if (column == m_key_column && model.is_column_sortable(column))
         header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
     int column_width = header_width;
@@ -684,7 +687,7 @@ void TreeView::auto_resize_column(int column)
         } else if (cell_data.is_bitmap()) {
             cell_width = cell_data.as_bitmap().width();
         } else if (cell_data.is_valid()) {
-            cell_width = font().width(cell_data.to_deprecated_string());
+            cell_width = font().width(cell_data.to_byte_string());
         }
         if (is_empty && cell_width > 0)
             is_empty = false;
@@ -715,7 +718,7 @@ void TreeView::update_column_sizes()
             continue;
         if (!column_header().is_section_visible(column))
             continue;
-        int header_width = column_header().font().width(model.column_name(column));
+        int header_width = column_header().font().width(model.column_name(column).release_value_but_fixme_should_propagate_errors());
         if (column == m_key_column && model.is_column_sortable(column))
             header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
         int column_width = header_width;
@@ -727,7 +730,7 @@ void TreeView::update_column_sizes()
             } else if (cell_data.is_bitmap()) {
                 cell_width = cell_data.as_bitmap().width();
             } else if (cell_data.is_valid()) {
-                cell_width = font().width(cell_data.to_deprecated_string());
+                cell_width = font().width(cell_data.to_byte_string());
             }
             column_width = max(column_width, cell_width);
             return IterationDecision::Continue;
@@ -736,7 +739,7 @@ void TreeView::update_column_sizes()
         set_column_width(column, max(this->column_width(column), column_width));
     }
 
-    int tree_column_header_width = column_header().font().width(model.column_name(tree_column));
+    int tree_column_header_width = column_header().font().width(model.column_name(tree_column).release_value_but_fixme_should_propagate_errors());
     if (tree_column == m_key_column && model.is_column_sortable(tree_column))
         tree_column_header_width += HeaderView::sorting_arrow_width + HeaderView::sorting_arrow_offset;
     int tree_column_width = tree_column_header_width;
@@ -744,7 +747,7 @@ void TreeView::update_column_sizes()
         auto cell_data = model.index(index.row(), tree_column, index.parent()).data();
         int cell_width = 0;
         if (cell_data.is_valid()) {
-            cell_width = font().width(cell_data.to_deprecated_string());
+            cell_width = font().width(cell_data.to_byte_string());
             cell_width += horizontal_padding() * 2 + indent_level * indent_width_in_pixels() + icon_size() / 2 + text_padding() * 2;
         }
         tree_column_width = max(tree_column_width, cell_width);

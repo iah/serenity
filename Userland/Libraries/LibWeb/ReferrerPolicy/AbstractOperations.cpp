@@ -1,39 +1,73 @@
 /*
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2024, Jamie Mansfield <jmansfield@cadixdev.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/URL.h>
+#include <LibURL/URL.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/URL.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/ReferrerPolicy/AbstractOperations.h>
 #include <LibWeb/ReferrerPolicy/ReferrerPolicy.h>
 #include <LibWeb/SecureContexts/AbstractOperations.h>
-#include <LibWeb/URL/URL.h>
 
 namespace Web::ReferrerPolicy {
 
+// https://w3c.github.io/webappsec-referrer-policy/#parse-referrer-policy-from-header
+ReferrerPolicy parse_a_referrer_policy_from_a_referrer_policy_header(Fetch::Infrastructure::Response const& response)
+{
+    // 1. Let policy-tokens be the result of extracting header list values given `Referrer-Policy` and response’s header list.
+    auto policy_tokens_or_failure = Fetch::Infrastructure::extract_header_list_values("Referrer-Policy"sv.bytes(), response.header_list());
+    auto policy_tokens = policy_tokens_or_failure.has<Vector<ByteBuffer>>() ? policy_tokens_or_failure.get<Vector<ByteBuffer>>() : Vector<ByteBuffer> {};
+
+    // 2. Let policy be the empty string.
+    auto policy = ReferrerPolicy::EmptyString;
+
+    // 3. For each token in policy-tokens, if token is a referrer policy and token is not the empty string, then set policy to token.
+    for (auto token : policy_tokens) {
+        auto referrer_policy = from_string(token);
+        if (referrer_policy.has_value() && referrer_policy.value() != ReferrerPolicy::EmptyString)
+            policy = referrer_policy.release_value();
+    }
+
+    // 4. Return policy.
+    return policy;
+}
+
+// https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect
+void set_request_referrer_policy_on_redirect(Fetch::Infrastructure::Request& request, Fetch::Infrastructure::Response const& response)
+{
+    // 1. Let policy be the result of executing § 8.1 Parse a referrer policy from a Referrer-Policy header on
+    //    actualResponse.
+    auto policy = parse_a_referrer_policy_from_a_referrer_policy_header(response);
+
+    // 2. If policy is not the empty string, then set request’s referrer policy to policy.
+    if (policy != ReferrerPolicy::EmptyString)
+        request.set_referrer_policy(policy);
+}
+
 // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
-Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request const& request)
+Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request const& request)
 {
     // 1. Let policy be request’s referrer policy.
     auto const& policy = request.referrer_policy();
 
     // 2. Let environment be request’s client.
-    auto* environment = request.client();
+    auto environment = request.client();
 
     // 3. Switch on request’s referrer:
     auto referrer_source = request.referrer().visit(
         // "client"
-        [&](Fetch::Infrastructure::Request::Referrer referrer) -> Optional<AK::URL> {
+        [&](Fetch::Infrastructure::Request::Referrer referrer) -> Optional<URL::URL> {
             // Note: If request’s referrer is "no-referrer", Fetch will not call into this algorithm.
             VERIFY(referrer == Fetch::Infrastructure::Request::Referrer::Client);
 
             // FIXME: Add a const global_object() getter to ESO
-            auto& global_object = const_cast<HTML::EnvironmentSettingsObject*>(environment)->global_object();
+            auto& global_object = const_cast<HTML::EnvironmentSettingsObject&>(*environment).global_object();
 
             // 1. If environment’s global object is a Window object, then
             if (is<HTML::Window>(global_object)) {
@@ -56,7 +90,7 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
             }
         },
         // a URL
-        [&](AK::URL const& url) -> Optional<AK::URL> {
+        [&](URL::URL const& url) -> Optional<URL::URL> {
             // Let referrerSource be request’s referrer.
             return url;
         });
@@ -82,8 +116,8 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
 
     // 8. Execute the statements corresponding to the value of policy:
     // Note: If request’s referrer policy is the empty string, Fetch will not call into this algorithm.
-    VERIFY(policy.has_value());
-    switch (*policy) {
+    VERIFY(policy != ReferrerPolicy::EmptyString);
+    switch (policy) {
     // "no-referrer"
     case ReferrerPolicy::NoReferrer:
         // Return no referrer
@@ -112,7 +146,7 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
     case ReferrerPolicy::StrictOriginWhenCrossOrigin:
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
-        if (referrer_url.has_value() && URL::url_origin(*referrer_url).is_same_origin(URL::url_origin(request.current_url())))
+        if (referrer_url.has_value() && referrer_url->origin().is_same_origin(request.current_url().origin()))
             return referrer_url;
 
         // 2. If referrerURL is a potentially trustworthy URL and request’s current URL is not a potentially
@@ -130,7 +164,7 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
         if (referrer_url.has_value()
-            && URL::url_origin(*referrer_url).is_same_origin(URL::url_origin(request.current_url()))) {
+            && referrer_url->origin().is_same_origin(request.current_url().origin())) {
             return referrer_url;
         }
 
@@ -141,7 +175,7 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
         if (referrer_url.has_value()
-            && URL::url_origin(*referrer_url).is_same_origin(URL::url_origin(request.current_url()))) {
+            && referrer_url->origin().is_same_origin(request.current_url().origin())) {
             return referrer_url;
         }
 
@@ -164,7 +198,8 @@ Optional<AK::URL> determine_requests_referrer(Fetch::Infrastructure::Request con
     }
 }
 
-Optional<AK::URL> strip_url_for_use_as_referrer(Optional<AK::URL> url, OriginOnly origin_only)
+// https://w3c.github.io/webappsec-referrer-policy/#strip-url
+Optional<URL::URL> strip_url_for_use_as_referrer(Optional<URL::URL> url, OriginOnly origin_only)
 {
     // 1. If url is null, return no referrer.
     if (!url.has_value())

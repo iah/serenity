@@ -16,6 +16,12 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Model.h>
 
+namespace FileSystemAccessServer {
+
+class ConnectionFromClient;
+
+}
+
 namespace GUI {
 
 class FilePicker final
@@ -31,17 +37,19 @@ public:
         Save
     };
 
-    static Optional<DeprecatedString> get_open_filepath(Window* parent_window, DeprecatedString const& window_title = {}, StringView path = Core::StandardPaths::home_directory(), bool folder = false, ScreenPosition screen_position = Dialog::ScreenPosition::CenterWithinParent, Optional<Vector<FileTypeFilter>> allowed_file_types = {});
-    static Optional<DeprecatedString> get_save_filepath(Window* parent_window, DeprecatedString const& title, DeprecatedString const& extension, StringView path = Core::StandardPaths::home_directory(), ScreenPosition screen_position = Dialog::ScreenPosition::CenterWithinParent);
+    static Optional<ByteString> get_open_filepath(Window* parent_window, ByteString const& window_title = {}, StringView path = Core::StandardPaths::home_directory(), bool folder = false, ScreenPosition screen_position = Dialog::ScreenPosition::CenterWithinParent, Optional<Vector<FileTypeFilter>> allowed_file_types = {});
+    static Optional<ByteString> get_save_filepath(Window* parent_window, ByteString const& title, ByteString const& extension, StringView path = Core::StandardPaths::home_directory(), ScreenPosition screen_position = Dialog::ScreenPosition::CenterWithinParent);
+
+    static ErrorOr<Optional<String>> get_filepath(Badge<FileSystemAccessServer::ConnectionFromClient>, i32 window_server_client_id, i32 parent_window_id, Mode, StringView window_title, StringView file_basename = {}, StringView path = Core::StandardPaths::home_directory(), Optional<Vector<FileTypeFilter>> = {});
 
     virtual ~FilePicker() override;
 
-    DeprecatedString const& selected_file() const { return m_selected_file; }
+    Optional<ByteString> const& selected_file() const { return m_selected_file; }
 
 private:
     void on_file_return();
 
-    void set_path(DeprecatedString const&);
+    void set_path(ByteString const&);
 
     // ^GUI::ModelClient
     virtual void model_did_update(unsigned) override;
@@ -54,24 +62,24 @@ private:
         case Mode::Open:
         case Mode::OpenMultiple:
         case Mode::OpenFolder:
-            return "Open"_short_string;
+            return "Open"_string;
         case Mode::Save:
-            return "Save"_short_string;
+            return "Save"_string;
         default:
-            return "OK"_short_string;
+            return "OK"_string;
         }
     }
 
     struct CommonLocationButton {
-        DeprecatedString path;
+        ByteString path;
         size_t tray_item_index { 0 };
     };
 
     RefPtr<MultiView> m_view;
     NonnullRefPtr<FileSystemModel> m_model;
-    DeprecatedString m_selected_file;
+    Optional<ByteString> m_selected_file;
 
-    Vector<DeprecatedString> m_allowed_file_types_names;
+    Vector<ByteString> m_allowed_file_types_names;
     Optional<Vector<FileTypeFilter>> m_allowed_file_types;
 
     RefPtr<GUI::Label> m_error_label;

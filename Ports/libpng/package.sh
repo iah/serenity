@@ -1,9 +1,15 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=libpng
-version=1.6.37
-useconfigure=true
-configopts=("--disable-static" "--enable-shared")
-use_fresh_config_sub=true
-files="https://download.sourceforge.net/libpng/libpng-${version}.tar.gz libpng-${version}.tar.gz daeb2620d829575513e35fecc83f0d3791a620b9b93d800b763542ece9390fb4"
-auth_type=sha256
-depends=("zlib")
+port='libpng'
+version='1.6.43'
+useconfigure='true'
+configopts=(
+    '--disable-static'
+    '--enable-shared'
+)
+use_fresh_config_sub='true'
+files=(
+    "https://download.sourceforge.net/libpng/libpng-${version}.tar.gz#e804e465d4b109b5ad285a8fb71f0dd3f74f0068f91ce3cdfde618180c174925"
+)
+depends=(
+    'zlib'
+)

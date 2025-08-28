@@ -16,7 +16,7 @@ test("invalid values", () => {
     });
 });
 
-test("automatic removal of garbage-collected values", () => {
+test.xfail("automatic removal of garbage-collected values", () => {
     const weakSet = new WeakSet();
     const objectItem = { a: 1 };
 

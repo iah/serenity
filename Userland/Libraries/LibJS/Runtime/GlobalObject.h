@@ -15,11 +15,12 @@ namespace JS {
 
 class GlobalObject : public Object {
     JS_OBJECT(GlobalObject, Object);
+    JS_DECLARE_ALLOCATOR(GlobalObject);
 
     friend class Intrinsics;
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~GlobalObject() override;
 
 protected:
@@ -42,7 +43,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(unescape);
 };
 
-Object& set_default_global_bindings(Realm&);
+void set_default_global_bindings(Realm&);
 
 template<>
 inline bool Object::fast_is<GlobalObject>() const { return is_global_object(); }

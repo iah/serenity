@@ -2,7 +2,7 @@ set(TEST_SOURCES
     TestSqlBtreeIndex.cpp
     TestSqlDatabase.cpp
     TestSqlExpressionParser.cpp
-    TestSqlHashIndex.cpp
+    TestSqlHeap.cpp
     TestSqlStatementExecution.cpp
     TestSqlStatementParser.cpp
     TestSqlValueAndTuple.cpp

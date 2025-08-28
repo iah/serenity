@@ -1,291 +1,329 @@
 /*
  * Copyright (c) 2021, Kyle Pereira <kyle@xylepereira.me>
+ * Copyright (c) 2023, Caoimhe Byrne <caoimhebyrne06@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "SpiceAgent.h"
-#include "ConnectionToClipboardServer.h"
-#include <AK/DeprecatedString.h>
-#include <LibGfx/BMPLoader.h>
-#include <LibGfx/BMPWriter.h>
-#include <LibGfx/Bitmap.h>
-#include <LibGfx/JPEGLoader.h>
-#include <LibGfx/PNGLoader.h>
-#include <LibGfx/PNGWriter.h>
-#include <memory.h>
-#include <unistd.h>
+#include <AK/Debug.h>
+#include <LibGUI/Clipboard.h>
+#include <LibGfx/ImageFormats/ImageDecoder.h>
+#include <LibGfx/ImageFormats/PNGWriter.h>
 
-SpiceAgent::SpiceAgent(int fd, ConnectionToClipboardServer& connection)
-    : m_fd(fd)
-    , m_clipboard_connection(connection)
+namespace SpiceAgent {
+
+ErrorOr<NonnullOwnPtr<SpiceAgent>> SpiceAgent::create(StringView device_path)
 {
-    m_notifier = Core::Notifier::construct(fd, Core::Notifier::Read);
-    m_notifier->on_ready_to_read = [this] {
-        on_message_received();
-    };
-    m_clipboard_connection.on_data_changed = [this] {
-        if (m_just_set_clip) {
-            m_just_set_clip = false;
-            return;
-        }
-        auto mime = m_clipboard_connection.get_clipboard_data().mime_type();
-        Optional<ClipboardType> type = mime_type_to_clipboard_type(mime);
-        if (!type.has_value())
-            return;
-
-        auto grab_buffer = ClipboardGrab::make_buffer({ *type });
-        send_message(grab_buffer);
-    };
-    auto buffer = AnnounceCapabilities::make_buffer(true, { Capability::ClipboardByDemand });
-    send_message(buffer);
+    auto device = TRY(Core::File::open(device_path, Core::File::OpenMode::ReadWrite | Core::File::OpenMode::DontCreate | Core::File::OpenMode::Nonblocking));
+    return try_make<SpiceAgent>(move(device), Vector { Capability::ClipboardByDemand });
 }
 
-Optional<SpiceAgent::ClipboardType> SpiceAgent::mime_type_to_clipboard_type(DeprecatedString const& mime)
+SpiceAgent::SpiceAgent(NonnullOwnPtr<Core::File> spice_device, Vector<Capability> const& capabilities)
+    : m_spice_device(move(spice_device))
+    , m_capabilities(capabilities)
 {
-    if (mime == "text/plain")
-        return ClipboardType::Text;
-    else if (mime == "image/jpeg")
-        return ClipboardType::JPEG;
-    else if (mime == "image/bmp")
-        return ClipboardType::BMP;
-    else if (mime == "image/png" || mime == "image/x-serenityos")
-        return ClipboardType::PNG;
-    else
+    m_notifier = Core::Notifier::construct(
+        m_spice_device->fd(),
+        Core::Notifier::Type::Read);
+
+    m_notifier->on_activation = [this] {
+        auto result = read_chunks();
+        if (result.is_error() && result.error().code() != EAGAIN) {
+            dbgln("Failed to read chunk(s): {}", result.release_error());
+        }
+    };
+}
+
+ErrorOr<void> SpiceAgent::start()
+{
+    // The server usually requests this from us anyways, but there's no harm in sending it.
+    auto capabilities_message = AnnounceCapabilitiesMessage(false, m_capabilities);
+    TRY(this->send_message(capabilities_message));
+
+    GUI::Clipboard::the().on_change = [this](auto const& mime_type) {
+        auto result = this->on_clipboard_update(String::from_byte_string(mime_type).release_value_but_fixme_should_propagate_errors());
+        if (result.is_error()) {
+            dbgln("Failed to inform the spice server of a clipboard update: {}", result.release_error());
+        }
+    };
+
+    return {};
+}
+
+ErrorOr<void> SpiceAgent::on_clipboard_update(String const& mime_type)
+{
+    // NOTE: If we indicate that we don't support clipboard by demand, the spice server will ignore our messages,
+    //       but it will do some ugly debug logging.. so let's just not send anything instead.
+    if (!m_capabilities.contains_slow(Capability::ClipboardByDemand)) {
         return {};
+    }
+
+    // If we just copied something to the clipboard, we shouldn't do anything here.
+    if (m_clipboard_dirty) {
+        m_clipboard_dirty = false;
+        return {};
+    }
+
+    // If the clipboard has just been cleared, we shouldn't send anything.
+    if (mime_type.is_empty()) {
+        return {};
+    }
+
+    // Notify the spice server about new content being available.
+    auto clipboard_data_type = TRY(clipboard_data_type_from_mime_type(mime_type));
+    auto message = ClipboardGrabMessage({ clipboard_data_type });
+    TRY(this->send_message(message));
+
+    return {};
 }
 
-void SpiceAgent::on_message_received()
+ErrorOr<void> SpiceAgent::send_clipboard_contents(ClipboardDataType data_type)
 {
-    ChunkHeader header {};
-    read_n(&header, sizeof(header));
-    auto buffer = ByteBuffer::create_uninitialized(header.size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
-    read_n(buffer.data(), buffer.size());
-    auto* message = reinterpret_cast<Message*>(buffer.data());
-    switch (message->type) {
-    case (u32)MessageType::AnnounceCapabilities: {
-        auto* capabilities_message = reinterpret_cast<AnnounceCapabilities*>(message->data);
-        if (capabilities_message->request) {
-            auto capabilities_buffer = AnnounceCapabilities::make_buffer(false, { Capability::ClipboardByDemand });
-            send_message(capabilities_buffer);
-        }
+    auto data_and_type = GUI::Clipboard::the().fetch_data_and_type();
+    auto requested_mime_type = TRY(clipboard_data_type_to_mime_type(data_type));
+
+    // We have an exception for `image/x-serenityos`, where we treat it as a PNG when talking to the spice server.
+    auto is_serenity_image = data_and_type.mime_type == "image/x-serenityos" && data_type == ClipboardDataType::PNG;
+    if (!is_serenity_image && requested_mime_type.to_byte_string() != data_and_type.mime_type) {
+        // If the requested mime type doesn't match what's on the clipboard, we won't send anything back.
+        return Error::from_string_literal("Requested mime type doesn't match the clipboard's contents!");
+    }
+
+    // If the mime type is `image/x-serenityos`, we need to encode the image that's on the clipboard as a PNG.
+    auto clipboard_data = data_and_type.data;
+    if (is_serenity_image) {
+        auto bitmap = data_and_type.as_bitmap();
+        clipboard_data = TRY(Gfx::PNGWriter::encode(*bitmap));
+    }
+
+    auto message = ClipboardMessage(data_type, move(clipboard_data));
+    TRY(this->send_message(move(message)));
+
+    return {};
+}
+
+ErrorOr<void> SpiceAgent::on_chunk_received(Bytes chunk_buffer)
+{
+    auto stream = FixedMemoryStream(chunk_buffer);
+    if (!m_message.header.has_value()) {
+        // Read the header (the chunk must at least contain the header).
+        m_message.header = MUST(stream.read_value<MessageHeader>());
+        m_message.buffer.resize(m_message.header->data_size());
+        m_message.recv_offset = 0;
+    }
+
+    // Read message data. Most messages are one chunk, but some, such as file transfers, can be
+    // split over multiple chunks. In that case, we wait until we've received all the chunks.
+    Bytes result = TRY(stream.read_some(Bytes(m_message.buffer).slice(m_message.recv_offset)));
+    m_message.recv_offset += result.size();
+    if (m_message.recv_offset < m_message.header->data_size())
+        return {};
+
+    ScopeGuard cleanup_message = [&] {
+        m_message.buffer.trim(0, true);
+        m_message.recv_offset = 0;
+        m_message.header = {};
+    };
+    TRY(on_message_received(*m_message.header, m_message.buffer));
+    return {};
+}
+
+ErrorOr<void> SpiceAgent::on_message_received(MessageHeader const& header, Bytes data_buffer)
+{
+    auto stream = FixedMemoryStream(data_buffer);
+    switch (header.type()) {
+    case Message::Type::AnnounceCapabilities: {
+        auto message = TRY(AnnounceCapabilitiesMessage::read_from_stream(stream));
+        if (!message.is_request())
+            return {};
+
+        dbgln("The spice server has requested our capabilities");
+
+        auto capabilities_message = AnnounceCapabilitiesMessage(false, m_capabilities);
+        TRY(this->send_message(capabilities_message));
+
         break;
     }
-    case (u32)MessageType::ClipboardRequest: {
-        auto* request_message = reinterpret_cast<ClipboardRequest*>(message->data);
-        auto clipboard = m_clipboard_connection.get_clipboard_data();
-        auto& mime = clipboard.mime_type();
-        ByteBuffer backing_byte_buffer;
-        ReadonlyBytes bytes;
-        if (mime == "image/x-serenityos") {
-            auto bitmap = m_clipboard_connection.get_bitmap();
-            backing_byte_buffer = MUST(Gfx::PNGWriter::encode(*bitmap));
-            bytes = backing_byte_buffer;
-        } else {
-            auto data = clipboard.data();
-            bytes = { data.data<void>(), data.size() };
-        }
-        auto clipboard_buffer = Clipboard::make_buffer((ClipboardType)request_message->type, bytes);
-        send_message(clipboard_buffer);
+
+    case Message::Type::ClipboardGrab: {
+        auto message = TRY(ClipboardGrabMessage::read_from_stream(stream));
+        if (message.types().is_empty())
+            break;
+
+        auto data_type = message.types().first();
+        if (data_type == ClipboardDataType::None)
+            break;
+
+        dbgln_if(SPICE_AGENT_DEBUG, "The spice server has notified us of new clipboard data of type: {}", data_type);
+        dbgln_if(SPICE_AGENT_DEBUG, "Sending a request for data of type: {}", data_type);
+
+        auto request_message = ClipboardRequestMessage(data_type);
+        TRY(this->send_message(request_message));
+
         break;
     }
-    case (u32)MessageType::ClipboardGrab: {
-        auto* grab_message = reinterpret_cast<ClipboardGrab*>(message->data);
-        auto found_type = ClipboardType::None;
-        for (size_t i = 0; i < (message->size / 4); i++) {
-            auto type = (ClipboardType)grab_message->types[i];
-            if (found_type == ClipboardType::None) {
-                found_type = static_cast<ClipboardType>(type);
-            } else if (found_type == ClipboardType::Text) {
-                switch (type) {
-                case ClipboardType::PNG:
-                case ClipboardType::BMP:
-                case ClipboardType::JPEG:
-                    found_type = type;
-                    break;
-                default:
-                    break;
-                }
-            }
-        }
-        if (found_type == ClipboardType::None)
-            return;
 
-        auto request_buffer = ClipboardRequest::make_buffer(found_type);
-        send_message(request_buffer);
+    case Message::Type::Clipboard: {
+        auto message = TRY(ClipboardMessage::read_from_stream(stream));
+        if (message.data_type() == ClipboardDataType::None)
+            break;
+
+        TRY(this->did_receive_clipboard_message(message));
+
         break;
     }
-    case (u32)MessageType::Clipboard: {
-        auto* clipboard_message = reinterpret_cast<Clipboard*>(message->data);
-        auto type = (ClipboardType)clipboard_message->type;
-        auto data_buffer = ByteBuffer::create_uninitialized(message->size - sizeof(u32)).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
 
-        auto const total_bytes = message->size - sizeof(Clipboard);
-        auto bytes_copied = header.size - sizeof(Message) - sizeof(Clipboard);
-        memcpy(data_buffer.data(), clipboard_message->data, bytes_copied);
+    case Message::Type::ClipboardRequest: {
+        dbgln("The spice server has requsted our clipboard's contents");
 
-        while (bytes_copied < total_bytes) {
-            ChunkHeader next_header;
-            read_n(&next_header, sizeof(ChunkHeader));
-            read_n(data_buffer.data() + bytes_copied, next_header.size);
-            bytes_copied += next_header.size;
-        }
+        auto message = TRY(ClipboardRequestMessage::read_from_stream(stream));
+        TRY(this->send_clipboard_contents(message.data_type()));
 
-        m_just_set_clip = true;
-        if (type == ClipboardType::Text) {
-            auto anon_buffer_or_error = Core::AnonymousBuffer::create_with_size(data_buffer.size());
-            VERIFY(!anon_buffer_or_error.is_error());
-            auto anon_buffer = anon_buffer_or_error.release_value();
-            memcpy(anon_buffer.data<void>(), data_buffer.data(), data_buffer.size());
-            m_clipboard_connection.async_set_clipboard_data(anon_buffer, "text/plain", {});
-            return;
-        } else {
-            ErrorOr<Gfx::ImageFrameDescriptor> frame_or_error = Gfx::ImageFrameDescriptor {};
-            if (type == ClipboardType::PNG) {
-                if (Gfx::PNGImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
-                    auto png_decoder = Gfx::PNGImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
-                    if (png_decoder->initialize())
-                        frame_or_error = png_decoder->frame(0);
-                }
-            } else if (type == ClipboardType::BMP) {
-                if (Gfx::BMPImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
-                    auto bmp_decoder = Gfx::BMPImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
-                    if (bmp_decoder->initialize())
-                        frame_or_error = bmp_decoder->frame(0);
-                }
-            } else if (type == ClipboardType::JPEG) {
-                if (Gfx::JPEGImageDecoderPlugin::sniff({ data_buffer.data(), data_buffer.size() })) {
-                    auto jpeg_decoder = Gfx::JPEGImageDecoderPlugin::create({ data_buffer.data(), data_buffer.size() }).release_value_but_fixme_should_propagate_errors();
-                    if (jpeg_decoder->initialize())
-                        frame_or_error = jpeg_decoder->frame(0);
-                }
-            } else {
-                dbgln("Unknown clipboard type: {}", (u32)type);
-                return;
-            }
-            auto const& bitmap = frame_or_error.value().image;
-            m_clipboard_connection.set_bitmap(*bitmap);
-        }
         break;
     }
+
+    case Message::Type::FileTransferStatus: {
+        auto message = TRY(FileTransferStatusMessage::read_from_stream(stream));
+        dbgln("File transfer {} has been cancelled: {}", message.id(), message.status());
+
+        m_file_transfer_operations.remove(message.id());
+
+        break;
+    }
+
+    // Received when the user drags a file onto the virtual machine.
+    case Message::Type::FileTransferStart: {
+        auto message = TRY(FileTransferStartMessage::read_from_stream(stream));
+        auto operation = TRY(FileTransferOperation::create(message));
+
+        // Tell the operation to start the file transfer.
+        TRY(operation->begin_transfer(*this));
+        m_file_transfer_operations.set(message.id(), operation);
+
+        break;
+    }
+
+    // Received when the server has data related to a file transfer for us.
+    case Message::Type::FileTransferData: {
+        auto message = TRY(FileTransferDataMessage::read_from_stream(stream));
+        auto optional_operation = m_file_transfer_operations.get(message.id());
+        if (!optional_operation.has_value()) {
+            return Error::from_string_literal("Attempt to supply data to a file transfer operation which doesn't exist!");
+        }
+
+        // Inform the operation that we have received new data.
+        auto* operation = optional_operation.release_value();
+        auto result = operation->on_data_received(message);
+        if (result.is_error()) {
+            // We can also discard of this transfer operation, since it will be cancelled by the server after our status message.
+            m_file_transfer_operations.remove(message.id());
+
+            // Inform the server that the operation has failed
+            auto status_message = FileTransferStatusMessage(message.id(), FileTransferStatus::Error);
+            TRY(this->send_message(status_message));
+
+            return result.release_error();
+        }
+
+        // The maximum amount of data that a FileTransferData message can hold is 65536.
+        // If it's less than 65536, this is the only (or last) message in relation to this transfer.
+        // Otherwise, we must wait for more data to be received.
+        auto transfer_is_complete = message.contents().size() < file_transfer_buffer_threshold;
+        if (!transfer_is_complete) {
+            return {};
+        }
+
+        // The transfer is now complete, let's write the data to the file!
+        TRY(operation->complete_transfer(*this));
+        m_file_transfer_operations.remove(message.id());
+
+        break;
+    }
+
+    // We ignore certain messages to prevent it from clogging up the logs.
+    case Message::Type::MonitorsConfig:
+        dbgln_if(SPICE_AGENT_DEBUG, "Ignored message: {}", header);
+        break;
+
+    case Message::Type::Disconnected:
+        dbgln_if(SPICE_AGENT_DEBUG, "Spice server disconnected");
+        if (on_disconnected_from_spice_server)
+            on_disconnected_from_spice_server();
+        break;
+
     default:
-        dbgln("Unhandled message type {}", message->type);
+        dbgln("Unknown message received: {}", header);
+        break;
     }
+
+    return {};
 }
 
-void SpiceAgent::read_n(void* dest, size_t n)
+ErrorOr<void> SpiceAgent::did_receive_clipboard_message(ClipboardMessage& message)
 {
-    size_t bytes_read = 0;
-    while (bytes_read < n) {
-        int nread = read(m_fd, (u8*)dest + bytes_read, n - bytes_read);
-        if (nread > 0) {
-            bytes_read += nread;
-        } else if (errno == EAGAIN) {
-            continue;
-        } else {
-            dbgln("Failed to read: {}", errno);
-            return;
+    dbgln_if(SPICE_AGENT_DEBUG, "Attempting to parse clipboard data of type: {}", message.data_type());
+
+    switch (message.data_type()) {
+    case ClipboardDataType::Text: {
+        // The default mime_type for set_data is `text/plain`.
+        GUI::Clipboard::the().set_data(message.contents());
+        break;
+    }
+
+    // For the image formats, let's try to find a decoder from LibGfx.
+    case ClipboardDataType::PNG:
+    case ClipboardDataType::BMP:
+    case ClipboardDataType::JPG:
+    case ClipboardDataType::TIFF: {
+        auto mime_type = TRY(clipboard_data_type_to_mime_type(message.data_type()));
+
+        // FIXME: It should be trivial to make `try_create_for_raw_bytes` take a `StringView` instead of a direct `ByteString`.
+        auto decoder = TRY(Gfx::ImageDecoder::try_create_for_raw_bytes(message.contents(), mime_type.to_byte_string()));
+        if (!decoder || (decoder->frame_count() == 0)) {
+            return Error::from_string_literal("Failed to find a suitable decoder for a pasted image!");
         }
+
+        auto frame = TRY(decoder->frame(0));
+        GUI::Clipboard::the().set_bitmap(*frame.image);
+
+        break;
     }
+
+    default:
+        return Error::from_string_literal("Unsupported clipboard data type!");
+    }
+
+    m_clipboard_dirty = true;
+    return {};
 }
 
-void SpiceAgent::send_message(ByteBuffer const& buffer)
+ErrorOr<void> SpiceAgent::read_chunks()
 {
-    size_t bytes_written = 0;
-    while (bytes_written < buffer.size()) {
-        int result = write(m_fd, buffer.data() + bytes_written, buffer.size() - bytes_written);
-        if (result < 0) {
-            dbgln("Failed to write: {}", errno);
-            return;
+    while (!m_spice_device->is_eof()) {
+        if (m_chunk.buffer.is_empty()) {
+            // Cautiously, try to read the chunk header. If it's (somehow) incomplete, wait.
+            Bytes result = TRY(m_spice_device->read_some(Bytes(m_chunk.header).slice(m_chunk.recv_offset)));
+            m_chunk.recv_offset += result.size();
+            if (m_chunk.recv_offset < sizeof(ChunkHeader))
+                return {};
+            auto header = bit_cast<ChunkHeader>(m_chunk.header);
+            m_chunk.buffer.resize(header.size());
+            m_chunk.recv_offset = 0;
         }
-        bytes_written += result;
+
+        // Read chunk data, notify chunk receipt once the buffer is full.
+        Bytes result = TRY(m_spice_device->read_some(Bytes(m_chunk.buffer).slice(m_chunk.recv_offset)));
+        m_chunk.recv_offset += result.size();
+        if (m_chunk.recv_offset < m_chunk.buffer.size())
+            return {};
+
+        ScopeGuard cleanup_chunk = [&] {
+            m_chunk.buffer.trim(0, true);
+            m_chunk.recv_offset = 0;
+        };
+        TRY(on_chunk_received(m_chunk.buffer));
     }
+    return {};
 }
-
-SpiceAgent::Message* SpiceAgent::initialize_headers(u8* data, size_t additional_data_size, MessageType type)
-{
-    new (data) ChunkHeader {
-        (u32)Port::Client,
-        (u32)(sizeof(Message) + additional_data_size)
-    };
-
-    auto* message = new (data + sizeof(ChunkHeader)) Message {
-        AGENT_PROTOCOL,
-        (u32)type,
-        0,
-        (u32)additional_data_size
-    };
-    return message;
-}
-
-ByteBuffer SpiceAgent::AnnounceCapabilities::make_buffer(bool request, Vector<Capability> const& capabilities)
-{
-    size_t required_size = sizeof(ChunkHeader) + sizeof(Message) + sizeof(AnnounceCapabilities);
-    auto buffer = ByteBuffer::create_uninitialized(required_size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
-    u8* data = buffer.data();
-
-    auto* message = initialize_headers(data, sizeof(AnnounceCapabilities), MessageType::AnnounceCapabilities);
-
-    auto* announce_message = new (message->data) AnnounceCapabilities {
-        request,
-        {}
-    };
-
-    for (auto& cap : capabilities) {
-        announce_message->caps[0] |= (1 << (u32)cap);
-    }
-
-    return buffer;
-}
-
-ByteBuffer SpiceAgent::ClipboardGrab::make_buffer(Vector<ClipboardType> const& types)
-{
-    VERIFY(types.size() > 0);
-    size_t variable_data_size = sizeof(u32) * types.size();
-    size_t required_size = sizeof(ChunkHeader) + sizeof(Message) + variable_data_size;
-    auto buffer = ByteBuffer::create_uninitialized(required_size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
-    u8* data = buffer.data();
-
-    auto* message = initialize_headers(data, variable_data_size, MessageType::ClipboardGrab);
-
-    auto* grab_message = new (message->data) ClipboardGrab {};
-
-    for (auto i = 0u; i < types.size(); i++) {
-        grab_message->types[i] = (u32)types[i];
-    }
-
-    return buffer;
-}
-
-ByteBuffer SpiceAgent::Clipboard::make_buffer(ClipboardType type, ReadonlyBytes contents)
-{
-    size_t data_size = sizeof(Clipboard) + contents.size();
-    size_t required_size = sizeof(ChunkHeader) + sizeof(Message) + data_size;
-    auto buffer = ByteBuffer::create_uninitialized(required_size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
-    u8* data = buffer.data();
-
-    auto* message = initialize_headers(data, data_size, MessageType::Clipboard);
-
-    auto* clipboard_message = new (message->data) Clipboard {
-        .type = (u32)type
-    };
-
-    memcpy(clipboard_message->data, contents.data(), contents.size());
-
-    return buffer;
-}
-
-ByteBuffer SpiceAgent::ClipboardRequest::make_buffer(ClipboardType type)
-{
-    size_t data_size = sizeof(ClipboardRequest);
-    size_t required_size = sizeof(ChunkHeader) + sizeof(Message) + data_size;
-    auto buffer = ByteBuffer::create_uninitialized(required_size).release_value_but_fixme_should_propagate_errors(); // FIXME: Handle possible OOM situation.
-    u8* data = buffer.data();
-
-    auto* message = initialize_headers(data, data_size, MessageType::ClipboardRequest);
-    new (message->data) ClipboardRequest {
-        .type = (u32)type
-    };
-
-    return buffer;
-}
+};

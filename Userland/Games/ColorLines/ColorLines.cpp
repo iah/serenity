@@ -17,7 +17,7 @@
 
 ColorLines::BitmapArray ColorLines::build_marble_color_bitmaps()
 {
-    auto marble_bitmap = MUST(Gfx::Bitmap::load_from_file("/res/icons/colorlines/colorlines.png"sv));
+    auto marble_bitmap = MUST(Gfx::Bitmap::load_from_file("/res/graphics/colorlines/colorlines.png"sv));
     float constexpr hue_degrees[Marble::number_of_colors] = {
         0,   // Red
         45,  // Brown/Yellow
@@ -56,7 +56,7 @@ ColorLines::ColorLines(StringView app_name)
     , m_board { make<MarbleBoard>() }
     , m_marble_bitmaps { build_marble_color_bitmaps() }
     , m_trace_bitmaps { build_marble_trace_bitmaps() }
-    , m_score_font { Gfx::BitmapFont::load_from_file("/res/fonts/MarietaBold24.font") }
+    , m_score_font { Gfx::BitmapFont::load_from_uri("resource://fonts/MarietaBold24.font"sv) }
 {
     VERIFY(m_marble_bitmaps.size() == Marble::number_of_colors);
     set_font(Gfx::FontDatabase::default_fixed_width_font().bold_variant());
@@ -179,7 +179,7 @@ void ColorLines::paint_event(GUI::PaintEvent& event)
 
     auto paint_cell = [&](GUI::Painter& painter, Gfx::IntRect rect, int color, int animation_frame) {
         painter.draw_rect(rect, Color::Black);
-        rect.shrink(0, 1, 1, 0);
+        rect.shrink(0, 2, 2, 0);
         painter.draw_line(rect.bottom_left(), rect.top_left(), Color::White);
         painter.draw_line(rect.top_left(), rect.top_right(), Color::White);
         painter.draw_line(rect.top_right(), rect.bottom_right(), Color::DarkGray);
@@ -189,13 +189,12 @@ void ColorLines::paint_event(GUI::PaintEvent& event)
         painter.draw_line(rect.top_left(), rect.top_right(), Color::LightGray);
         painter.draw_line(rect.top_right(), rect.bottom_right(), Color::MidGray);
         painter.draw_line(rect.bottom_right(), rect.bottom_left(), Color::MidGray);
-        rect.shrink(1, 1, 1, 1);
         painter.fill_rect(rect, tile_color);
         rect.shrink(1, 1, 1, 1);
         if (color >= 0 && color < Marble::number_of_colors) {
             auto const source_rect = Gfx::IntRect { animation_frame * marble_pixel_size, 0, marble_pixel_size, marble_pixel_size };
             painter.draw_scaled_bitmap(rect, *m_marble_bitmaps[color], source_rect,
-                1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+                1.0f, Gfx::ScalingMode::BilinearBlend);
         }
     };
 
@@ -222,7 +221,7 @@ void ColorLines::paint_event(GUI::PaintEvent& event)
     auto const high_score_text = MUST(String::formatted("{:05}"sv, m_high_score));
     text_width = m_score_font->width(high_score_text);
     auto const high_score_text_rect = Gfx::IntRect {
-        frame_inner_rect().top_right().translated(-(text_margin + text_width), text_margin),
+        frame_inner_rect().top_right().translated(-(text_margin + text_width) - 1, text_margin),
         Gfx::IntSize { text_width, font().pixel_size_rounded_up() }
     };
     painter.draw_text(high_score_text_rect, high_score_text, Gfx::TextAlignment::CenterLeft, text_color);
@@ -321,7 +320,7 @@ void ColorLines::paint_event(GUI::PaintEvent& event)
                 return 2;
             };
             painter.draw_scaled_bitmap(destination_rect, *m_trace_bitmaps[get_direction_bitmap_index()], source_rect,
-                1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+                1.0f, Gfx::ScalingMode::BilinearBlend);
         }
     }
 }

@@ -7,7 +7,7 @@
 #include <AK/StringView.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -18,7 +18,7 @@ ErrorOr<FlatPtr> Process::sys$realpath(Userspace<Syscall::SC_realpath_params con
     auto params = TRY(copy_typed_from_user(user_params));
 
     auto path = TRY(get_syscall_path_argument(params.path));
-    auto custody = TRY(VirtualFileSystem::the().resolve_path(credentials(), path->view(), current_directory()));
+    auto custody = TRY(VirtualFileSystem::resolve_path(vfs_root_context(), credentials(), path->view(), current_directory()));
     auto absolute_path = TRY(custody->try_serialize_absolute_path());
 
     size_t ideal_size = absolute_path->length() + 1;
@@ -26,6 +26,6 @@ ErrorOr<FlatPtr> Process::sys$realpath(Userspace<Syscall::SC_realpath_params con
     TRY(copy_to_user(params.buffer.data, absolute_path->characters(), size_to_copy));
     // Note: we return the whole size here, not the copied size.
     return ideal_size;
-};
+}
 
 }

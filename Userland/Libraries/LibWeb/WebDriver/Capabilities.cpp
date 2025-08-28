@@ -9,7 +9,7 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/Optional.h>
-#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Loader/UserAgent.h>
 #include <LibWeb/WebDriver/Capabilities.h>
 #include <LibWeb/WebDriver/TimeoutsConfiguration.h>
 
@@ -45,6 +45,33 @@ static Response deserialize_as_an_unhandled_prompt_behavior(JsonValue value)
     return value;
 }
 
+// https://w3c.github.io/webdriver/#dfn-deserialize-as-a-proxy
+static ErrorOr<JsonObject, Error> deserialize_as_a_proxy(JsonValue parameter)
+{
+    // 1. If parameter is not a JSON Object return an error with error code invalid argument.
+    if (!parameter.is_object())
+        return Error::from_code(ErrorCode::InvalidArgument, "Capability proxy must be an object"sv);
+
+    // 2. Let proxy be a new, empty proxy configuration object.
+    JsonObject proxy;
+
+    // 3. For each enumerable own property in parameter run the following substeps:
+    TRY(parameter.as_object().try_for_each_member([&](auto const& key, JsonValue const& value) -> ErrorOr<void, Error> {
+        // 1. Let key be the name of the property.
+        // 2. Let value be the result of getting a property named name from capability.
+
+        // FIXME: 3. If there is no matching key for key in the proxy configuration table return an error with error code invalid argument.
+        // FIXME: 4. If value is not one of the valid values for that key, return an error with error code invalid argument.
+
+        // 5. Set a property key to value on proxy.
+        proxy.set(key, value);
+
+        return {};
+    }));
+
+    return proxy;
+}
+
 static Response deserialize_as_ladybird_options(JsonValue value)
 {
     if (!value.is_object())
@@ -77,7 +104,7 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
     JsonObject result;
 
     // 3. For each enumerable own property in capability, run the following substeps:
-    TRY(capability.as_object().try_for_each_member([&](auto const& name, auto const& value) -> ErrorOr<void, Error> {
+    TRY(capability.as_object().try_for_each_member([&](auto const& name, JsonValue const& value) -> ErrorOr<void, Error> {
         // a. Let name be the name of the property.
         // b. Let value be the result of getting a property named name from capability.
 
@@ -100,10 +127,10 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
         // -> name equals "browserName"
         // -> name equals "browserVersion"
         // -> name equals "platformName"
-        else if (name.is_one_of("browserName"sv, "browser_version"sv, "platformName"sv)) {
+        else if (name.is_one_of("browserName"sv, "browserVersion"sv, "platformName"sv)) {
             // If value is not a string return an error with error code invalid argument. Otherwise, let deserialized be set to value.
             if (!value.is_string())
-                return Error::from_code(ErrorCode::InvalidArgument, DeprecatedString::formatted("Capability {} must be a string", name));
+                return Error::from_code(ErrorCode::InvalidArgument, ByteString::formatted("Capability {} must be a string", name));
             deserialized = value;
         }
 
@@ -113,8 +140,11 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
             deserialized = TRY(deserialize_as_a_page_load_strategy(value));
         }
 
-        // FIXME: -> name equals "proxy"
-        // FIXME:     Let deserialized be the result of trying to deserialize as a proxy with argument value.
+        // -> name equals "proxy"
+        else if (name == "proxy"sv) {
+            // Let deserialized be the result of trying to deserialize as a proxy with argument value.
+            deserialized = TRY(deserialize_as_a_proxy(value));
+        }
 
         // -> name equals "strictFileInteractability"
         else if (name == "strictFileInteractability"sv) {
@@ -140,6 +170,16 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
         // FIXME: -> name is the name of an additional WebDriver capability
         // FIXME:     Let deserialized be the result of trying to run the additional capability deserialization algorithm for the extension capability corresponding to name, with argument value.
 
+        // https://w3c.github.io/webdriver-bidi/#type-session-CapabilityRequest
+        else if (name == "webSocketUrl"sv) {
+            // 1. If value is not a boolean, return error with code invalid argument.
+            if (!value.is_bool())
+                return Error::from_code(ErrorCode::InvalidArgument, "Capability webSocketUrl must be a boolean"sv);
+
+            // 2. Return success with data value.
+            deserialized = value;
+        }
+
         // -> name is the key of an extension capability
         //     If name is known to the implementation, let deserialized be the result of trying to deserialize value in an implementation-specific way. Otherwise, let deserialized be set to value.
         else if (name == "serenity:ladybird"sv) {
@@ -149,7 +189,7 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
         // -> The remote end is an endpoint node
         else {
             // Return an error with error code invalid argument.
-            return Error::from_code(ErrorCode::InvalidArgument, DeprecatedString::formatted("Unrecognized capability: {}", name));
+            return Error::from_code(ErrorCode::InvalidArgument, ByteString::formatted("Unrecognized capability: {}", name));
         }
 
         // d. If deserialized is not null, set a property on result with name name and value deserialized.
@@ -192,7 +232,7 @@ static ErrorOr<JsonObject, Error> merge_capabilities(JsonObject const& primary, 
 
         // d. If primary value is not undefined, return an error with error code invalid argument.
         if (primary_value.has_value())
-            return Error::from_code(ErrorCode::InvalidArgument, DeprecatedString::formatted("Unable to merge capability {}", name));
+            return Error::from_code(ErrorCode::InvalidArgument, ByteString::formatted("Unable to merge capability {}", name));
 
         // e. Set a property on result with name name and value value.
         result.set(name, value);
@@ -267,27 +307,27 @@ static JsonValue match_capabilities(JsonObject const& capabilities)
         // -> "browserName"
         if (name == "browserName"sv) {
             // If value is not a string equal to the "browserName" entry in matched capabilities, return success with data null.
-            if (value.as_string() != matched_capabilities.get_deprecated_string(name).value())
-                return AK::Error::from_string_view("browserName"sv);
+            if (value.as_string() != matched_capabilities.get_byte_string(name).value())
+                return AK::Error::from_string_literal("browserName");
         }
         // -> "browserVersion"
         else if (name == "browserVersion"sv) {
             // Compare value to the "browserVersion" entry in matched capabilities using an implementation-defined comparison algorithm. The comparison is to accept a value that places constraints on the version using the "<", "<=", ">", and ">=" operators.
             // If the two values do not match, return success with data null.
-            if (!matches_browser_version(value.as_string(), matched_capabilities.get_deprecated_string(name).value()))
-                return AK::Error::from_string_view("browserVersion"sv);
+            if (!matches_browser_version(value.as_string(), matched_capabilities.get_byte_string(name).value()))
+                return AK::Error::from_string_literal("browserVersion");
         }
         // -> "platformName"
         else if (name == "platformName"sv) {
             // If value is not a string equal to the "platformName" entry in matched capabilities, return success with data null.
-            if (!matches_platform_name(value.as_string(), matched_capabilities.get_deprecated_string(name).value()))
-                return AK::Error::from_string_view("platformName"sv);
+            if (!matches_platform_name(value.as_string(), matched_capabilities.get_byte_string(name).value()))
+                return AK::Error::from_string_literal("platformName");
         }
         // -> "acceptInsecureCerts"
         else if (name == "acceptInsecureCerts"sv) {
             // If value is true and the endpoint node does not support insecure TLS certificates, return success with data null.
             if (value.as_bool())
-                return AK::Error::from_string_view("acceptInsecureCerts"sv);
+                return AK::Error::from_string_literal("acceptInsecureCerts");
         }
         // -> "proxy"
         else if (name == "proxy"sv) {
@@ -297,6 +337,17 @@ static JsonValue match_capabilities(JsonObject const& capabilities)
         else {
             // FIXME: If name is the name of an additional WebDriver capability which defines a matched capability serialization algorithm, let match value be the result of running the matched capability serialization algorithm for capability name with argument value.
             // FIXME: Otherwise, if name is the key of an extension capability, let match value be the result of trying implementation-specific steps to match on name with value. If the match is not successful, return success with data null.
+
+            // https://w3c.github.io/webdriver-bidi/#type-session-CapabilityRequest
+            if (name == "webSocketUrl"sv) {
+                // 1. If value is false, return success with data null.
+                if (!value.as_bool())
+                    return AK::Error::from_string_literal("webSocketUrl");
+
+                // 2. Return success with data value.
+                // FIXME: Remove this when we support BIDI communication.
+                return AK::Error::from_string_literal("webSocketUrl");
+            }
         }
 
         // c. Set a property on matched capabilities with name name and value match value.
@@ -347,7 +398,7 @@ Response process_capabilities(JsonValue const& parameters)
         all_first_match_capabilities = capabilities->as_array();
     } else {
         // a. If all first match capabilities is undefined, set the value to a JSON List with a single entry of an empty JSON Object.
-        all_first_match_capabilities.append(JsonObject {});
+        all_first_match_capabilities.must_append(JsonObject {});
     }
 
     // 4. Let validated first match capabilities be an empty JSON List.
@@ -360,7 +411,7 @@ Response process_capabilities(JsonValue const& parameters)
         auto validated_capabilities = TRY(validate_capabilities(first_match_capabilities));
 
         // b. Append validated capabilities to validated first match capabilities.
-        validated_first_match_capabilities.append(move(validated_capabilities));
+        validated_first_match_capabilities.must_append(move(validated_capabilities));
         return {};
     }));
 
@@ -374,7 +425,7 @@ Response process_capabilities(JsonValue const& parameters)
         auto merged = TRY(merge_capabilities(required_capabilities, first_match_capabilities.as_object()));
 
         // b. Append merged to merged capabilities.
-        merged_capabilities.append(move(merged));
+        merged_capabilities.must_append(move(merged));
         return {};
     }));
 

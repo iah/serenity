@@ -8,6 +8,7 @@
 
 #include "Certificate.h"
 #include <AK/IPv4Address.h>
+#include <AK/Queue.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/Socket.h>
@@ -40,55 +41,6 @@ inline void print_buffer(u8 const* buffer, size_t size)
 
 class Socket;
 
-#define ENUMERATE_ALERT_DESCRIPTIONS                        \
-    ENUMERATE_ALERT_DESCRIPTION(CloseNotify, 0)             \
-    ENUMERATE_ALERT_DESCRIPTION(UnexpectedMessage, 10)      \
-    ENUMERATE_ALERT_DESCRIPTION(BadRecordMAC, 20)           \
-    ENUMERATE_ALERT_DESCRIPTION(DecryptionFailed, 21)       \
-    ENUMERATE_ALERT_DESCRIPTION(RecordOverflow, 22)         \
-    ENUMERATE_ALERT_DESCRIPTION(DecompressionFailure, 30)   \
-    ENUMERATE_ALERT_DESCRIPTION(HandshakeFailure, 40)       \
-    ENUMERATE_ALERT_DESCRIPTION(NoCertificate, 41)          \
-    ENUMERATE_ALERT_DESCRIPTION(BadCertificate, 42)         \
-    ENUMERATE_ALERT_DESCRIPTION(UnsupportedCertificate, 43) \
-    ENUMERATE_ALERT_DESCRIPTION(CertificateRevoked, 44)     \
-    ENUMERATE_ALERT_DESCRIPTION(CertificateExpired, 45)     \
-    ENUMERATE_ALERT_DESCRIPTION(CertificateUnknown, 46)     \
-    ENUMERATE_ALERT_DESCRIPTION(IllegalParameter, 47)       \
-    ENUMERATE_ALERT_DESCRIPTION(UnknownCA, 48)              \
-    ENUMERATE_ALERT_DESCRIPTION(AccessDenied, 49)           \
-    ENUMERATE_ALERT_DESCRIPTION(DecodeError, 50)            \
-    ENUMERATE_ALERT_DESCRIPTION(DecryptError, 51)           \
-    ENUMERATE_ALERT_DESCRIPTION(ExportRestriction, 60)      \
-    ENUMERATE_ALERT_DESCRIPTION(ProtocolVersion, 70)        \
-    ENUMERATE_ALERT_DESCRIPTION(InsufficientSecurity, 71)   \
-    ENUMERATE_ALERT_DESCRIPTION(InternalError, 80)          \
-    ENUMERATE_ALERT_DESCRIPTION(InappropriateFallback, 86)  \
-    ENUMERATE_ALERT_DESCRIPTION(UserCanceled, 90)           \
-    ENUMERATE_ALERT_DESCRIPTION(NoRenegotiation, 100)       \
-    ENUMERATE_ALERT_DESCRIPTION(UnsupportedExtension, 110)  \
-    ENUMERATE_ALERT_DESCRIPTION(NoError, 255)
-
-enum class AlertDescription : u8 {
-#define ENUMERATE_ALERT_DESCRIPTION(name, value) name = value,
-    ENUMERATE_ALERT_DESCRIPTIONS
-#undef ENUMERATE_ALERT_DESCRIPTION
-};
-
-constexpr static StringView alert_name(AlertDescription descriptor)
-{
-#define ENUMERATE_ALERT_DESCRIPTION(name, value) \
-    case AlertDescription::name:                 \
-        return #name##sv;
-
-    switch (descriptor) {
-        ENUMERATE_ALERT_DESCRIPTIONS
-    }
-
-    return "Unknown"sv;
-#undef ENUMERATE_ALERT_DESCRIPTION
-}
-
 enum class Error : i8 {
     NoError = 0,
     UnknownError = -1,
@@ -113,37 +65,6 @@ enum class Error : i8 {
     OutOfMemory = -23,
 };
 
-enum class AlertLevel : u8 {
-    Warning = 0x01,
-    Critical = 0x02
-};
-
-enum HandshakeType {
-    HelloRequest = 0x00,
-    ClientHello = 0x01,
-    ServerHello = 0x02,
-    HelloVerifyRequest = 0x03,
-    CertificateMessage = 0x0b,
-    ServerKeyExchange = 0x0c,
-    CertificateRequest = 0x0d,
-    ServerHelloDone = 0x0e,
-    CertificateVerify = 0x0f,
-    ClientKeyExchange = 0x10,
-    Finished = 0x14
-};
-
-enum class HandshakeExtension : u16 {
-    ServerName = 0x00,
-    EllipticCurves = 0x0a,
-    ECPointFormats = 0x0b,
-    SignatureAlgorithms = 0x0d,
-    ApplicationLayerProtocolNegotiation = 0x10,
-};
-
-enum class NameType : u8 {
-    HostName = 0x00,
-};
-
 enum class WritePacketStage {
     Initial = 0,
     ClientHandshake = 1,
@@ -164,25 +85,33 @@ enum ClientVerificationStaus {
     VerificationNeeded,
 };
 
-enum class ECCurveType : u8 {
-    NamedCurve = 3,
-};
-
 // Note for the 16 iv length instead of 8:
 // 4 bytes of fixed IV, 8 random (nonce) bytes, 4 bytes for counter
 // GCM specifically asks us to transmit only the nonce, the counter is zero
 // and the fixed IV is derived from the premaster key.
-#define ENUMERATE_CIPHERS(C)                                                                                                                              \
-    C(true, CipherSuite::RSA_WITH_AES_128_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA1, 16, false)                \
-    C(true, CipherSuite::RSA_WITH_AES_256_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA1, 16, false)                \
-    C(true, CipherSuite::RSA_WITH_AES_128_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA256, 16, false)           \
-    C(true, CipherSuite::RSA_WITH_AES_256_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA256, 16, false)           \
-    C(true, CipherSuite::RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)             \
-    C(true, CipherSuite::RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)             \
-    C(true, CipherSuite::DHE_RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::DHE_RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)     \
-    C(true, CipherSuite::DHE_RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::DHE_RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)     \
-    C(true, CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true) \
-    C(true, CipherSuite::ECDHE_RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)
+//
+// The cipher suite list below is ordered based on the recommendations from Mozilla.
+// When changing the supported cipher suites, please consult the webpage below for
+// the preferred order.
+//
+// https://wiki.mozilla.org/Security/Server_Side_TLS
+#define ENUMERATE_CIPHERS(C)                                                                                                                                      \
+    C(true, CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::ECDHE_ECDSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true) \
+    C(true, CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)     \
+    C(true, CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::ECDHE_ECDSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true) \
+    C(true, CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)     \
+    C(true, CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::DHE_RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)         \
+    C(true, CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::DHE_RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)         \
+    C(true, CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, KeyExchangeAlgorithm::ECDHE_ECDSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA1, 16, false)    \
+    C(true, CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA1, 16, false)        \
+    C(true, CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, KeyExchangeAlgorithm::ECDHE_ECDSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA1, 16, false)    \
+    C(true, CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA, KeyExchangeAlgorithm::ECDHE_RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA1, 16, false)        \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)                 \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)                 \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA256, 16, false)               \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA256, 16, false)               \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA1, 16, false)                    \
+    C(true, CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA1, 16, false)
 
 constexpr KeyExchangeAlgorithm get_key_exchange_algorithm(CipherSuite suite)
 {
@@ -240,17 +169,21 @@ struct Options {
         return move(*this);                  \
     }
 
-    OPTION_WITH_DEFAULTS(Version, version, Version::V12)
+    OPTION_WITH_DEFAULTS(ProtocolVersion, version, ProtocolVersion::VERSION_1_2)
     OPTION_WITH_DEFAULTS(Vector<SignatureAndHashAlgorithm>, supported_signature_algorithms,
         { HashAlgorithm::SHA512, SignatureAlgorithm::RSA },
         { HashAlgorithm::SHA384, SignatureAlgorithm::RSA },
         { HashAlgorithm::SHA256, SignatureAlgorithm::RSA },
-        { HashAlgorithm::SHA1, SignatureAlgorithm::RSA });
-    OPTION_WITH_DEFAULTS(Vector<NamedCurve>, elliptic_curves,
-        NamedCurve::x25519,
-        NamedCurve::secp256r1,
-        NamedCurve::x448)
-    OPTION_WITH_DEFAULTS(Vector<ECPointFormat>, supported_ec_point_formats, ECPointFormat::Uncompressed)
+        { HashAlgorithm::SHA1, SignatureAlgorithm::RSA },
+        { HashAlgorithm::SHA256, SignatureAlgorithm::ECDSA },
+        { HashAlgorithm::SHA384, SignatureAlgorithm::ECDSA },
+        { HashAlgorithm::INTRINSIC, SignatureAlgorithm::ED25519 });
+    OPTION_WITH_DEFAULTS(Vector<SupportedGroup>, elliptic_curves,
+        SupportedGroup::X25519,
+        SupportedGroup::SECP256R1,
+        SupportedGroup::SECP384R1,
+        SupportedGroup::X448)
+    OPTION_WITH_DEFAULTS(Vector<ECPointFormat>, supported_ec_point_formats, ECPointFormat::UNCOMPRESSED)
 
     OPTION_WITH_DEFAULTS(bool, use_sni, true)
     OPTION_WITH_DEFAULTS(bool, use_compression, false)
@@ -260,8 +193,47 @@ struct Options {
     OPTION_WITH_DEFAULTS(Function<void(AlertDescription)>, alert_handler, [](auto) {})
     OPTION_WITH_DEFAULTS(Function<void()>, finish_callback, [] {})
     OPTION_WITH_DEFAULTS(Function<Vector<Certificate>()>, certificate_provider, [] { return Vector<Certificate> {}; })
+    OPTION_WITH_DEFAULTS(bool, enable_extended_master_secret, true)
 
 #undef OPTION_WITH_DEFAULTS
+};
+
+class SegmentedBuffer {
+public:
+    [[nodiscard]] size_t size() const { return m_size; }
+    [[nodiscard]] bool is_empty() const { return m_size == 0; }
+    void transfer(Bytes dest, size_t size)
+    {
+        VERIFY(size <= dest.size());
+        size_t transferred = 0;
+        while (transferred < size) {
+            auto& buffer = m_buffers.head();
+            size_t to_transfer = min(buffer.size() - m_offset_into_current_buffer, size - transferred);
+            memcpy(dest.offset(transferred), buffer.data() + m_offset_into_current_buffer, to_transfer);
+            transferred += to_transfer;
+            m_offset_into_current_buffer += to_transfer;
+            if (m_offset_into_current_buffer >= buffer.size()) {
+                m_buffers.dequeue();
+                m_offset_into_current_buffer = 0;
+            }
+            m_size -= to_transfer;
+        }
+    }
+
+    AK::ErrorOr<void> try_append(ReadonlyBytes data)
+    {
+        if (Checked<size_t>::addition_would_overflow(m_size, data.size()))
+            return AK::Error::from_errno(EOVERFLOW);
+
+        m_size += data.size();
+        m_buffers.enqueue(TRY(ByteBuffer::copy(data)));
+        return {};
+    }
+
+private:
+    size_t m_size { 0 };
+    Queue<ByteBuffer> m_buffers;
+    size_t m_offset_into_current_buffer { 0 };
 };
 
 struct Context {
@@ -299,18 +271,20 @@ struct Context {
     u64 local_sequence_number { 0 };
 
     ConnectionStatus connection_status { ConnectionStatus::Disconnected };
+    bool should_expect_successful_read { false };
     u8 critical_error { 0 };
     Error error_code { Error::NoError };
 
     ByteBuffer tls_buffer;
 
-    ByteBuffer application_buffer;
+    SegmentedBuffer application_buffer;
 
     bool is_child { false };
 
     struct {
         // Server Name Indicator
-        DeprecatedString SNI; // I hate your existence
+        ByteString SNI; // I hate your existence
+        bool extended_master_secret { false };
     } extensions;
 
     u8 request_client_certificate { 0 };
@@ -326,9 +300,9 @@ struct Context {
     // message flags
     u8 handshake_messages[11] { 0 };
     ByteBuffer user_data;
-    HashMap<DeprecatedString, Certificate> root_certificates;
+    HashMap<ByteString, Certificate> root_certificates;
 
-    Vector<DeprecatedString> alpn;
+    Vector<ByteString> alpn;
     StringView negotiated_alpn;
 
     size_t send_retries { 0 };
@@ -360,12 +334,12 @@ public:
     /// The amount of bytes read can be smaller than the size of the buffer.
     /// Returns either the bytes that were read, or an errno in the case of
     /// failure.
-    virtual ErrorOr<Bytes> read(Bytes) override;
+    virtual ErrorOr<Bytes> read_some(Bytes) override;
 
     /// Tries to write the entire contents of the buffer. It is possible for
     /// less than the full buffer to be written. Returns either the amount of
     /// bytes written into the stream, or an errno in the case of failure.
-    virtual ErrorOr<size_t> write(ReadonlyBytes) override;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) override;
 
     virtual bool is_eof() const override { return m_context.application_buffer.is_empty() && (m_context.connection_finished || underlying_stream().is_eof()); }
 
@@ -383,8 +357,11 @@ public:
 
     virtual void set_notifications_enabled(bool enabled) override { underlying_stream().set_notifications_enabled(enabled); }
 
-    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(DeprecatedString const& host, u16 port, Options = {});
-    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(DeprecatedString const& host, Core::Socket& underlying_stream, Options = {});
+    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(ByteString const& host, u16 port, Options = {});
+    static ErrorOr<NonnullOwnPtr<TLSv12>> connect(ByteString const& host, Core::Socket& underlying_stream, Options = {});
+
+    static Coroutine<ErrorOr<NonnullOwnPtr<TLSv12>>> async_connect(ByteString const& host, u16 port, Options = {});
+    static Coroutine<ErrorOr<NonnullOwnPtr<TLSv12>>> async_connect(ByteString const& host, Core::Socket& underlying_stream, Options = {});
 
     using StreamVariantType = Variant<OwnPtr<Core::Socket>, Core::Socket*>;
     explicit TLSv12(StreamVariantType, Options);
@@ -419,16 +396,12 @@ public:
         }
     }
 
-    bool supports_version(Version v) const
+    bool supports_version(ProtocolVersion v) const
     {
-        return v == Version::V12;
+        return v == ProtocolVersion::VERSION_1_2;
     }
 
     void alert(AlertLevel, AlertDescription);
-
-    bool can_read_line() const { return m_context.application_buffer.size() && memchr(m_context.application_buffer.data(), '\n', m_context.application_buffer.size()); }
-    bool can_read() const { return m_context.application_buffer.size() > 0; }
-    DeprecatedString read_line(size_t max_size);
 
     Function<void(AlertDescription)> on_tls_error;
     Function<void()> on_tls_finished;
@@ -446,7 +419,7 @@ private:
     void update_packet(ByteBuffer& packet);
     void update_hash(ReadonlyBytes in, size_t header_size);
 
-    void write_packet(ByteBuffer& packet);
+    void write_packet(ByteBuffer& packet, bool immediately = false);
 
     ByteBuffer build_client_key_exchange();
     ByteBuffer build_server_key_exchange();
@@ -472,7 +445,9 @@ private:
     ssize_t handle_certificate(ReadonlyBytes);
     ssize_t handle_server_key_exchange(ReadonlyBytes);
     ssize_t handle_dhe_rsa_server_key_exchange(ReadonlyBytes);
+    ssize_t handle_ecdhe_server_key_exchange(ReadonlyBytes, u8& server_public_key_length);
     ssize_t handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes);
+    ssize_t handle_ecdhe_ecdsa_server_key_exchange(ReadonlyBytes);
     ssize_t handle_server_hello_done(ReadonlyBytes);
     ssize_t handle_certificate_verify(ReadonlyBytes);
     ssize_t handle_handshake_payload(ReadonlyBytes);
@@ -481,6 +456,7 @@ private:
     void pseudorandom_function(Bytes output, ReadonlyBytes secret, u8 const* label, size_t label_length, ReadonlyBytes seed, ReadonlyBytes seed_b);
 
     ssize_t verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer);
+    ssize_t verify_ecdsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer);
 
     size_t key_length() const
     {

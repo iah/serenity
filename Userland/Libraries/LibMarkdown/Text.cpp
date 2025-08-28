@@ -34,6 +34,11 @@ void Text::EmphasisNode::render_for_terminal(StringBuilder& builder) const
     }
 }
 
+void Text::EmphasisNode::render_for_raw_print(StringBuilder& builder) const
+{
+    child->render_for_raw_print(builder);
+}
+
 size_t Text::EmphasisNode::terminal_length() const
 {
     return child->terminal_length();
@@ -62,6 +67,11 @@ void Text::CodeNode::render_for_terminal(StringBuilder& builder) const
     builder.append("\e[22m"sv);
 }
 
+void Text::CodeNode::render_for_raw_print(StringBuilder& builder) const
+{
+    code->render_for_raw_print(builder);
+}
+
 size_t Text::CodeNode::terminal_length() const
 {
     return code->terminal_length();
@@ -85,6 +95,10 @@ void Text::BreakNode::render_for_terminal(StringBuilder&) const
 {
 }
 
+void Text::BreakNode::render_for_raw_print(StringBuilder&) const
+{
+}
+
 size_t Text::BreakNode::terminal_length() const
 {
     return 0;
@@ -102,6 +116,11 @@ RecursionDecision Text::BreakNode::walk(Visitor& visitor) const
 void Text::TextNode::render_to_html(StringBuilder& builder) const
 {
     builder.append(escape_html_entities(text));
+}
+
+void Text::TextNode::render_for_raw_print(StringBuilder& builder) const
+{
+    builder.append(text);
 }
 
 void Text::TextNode::render_for_terminal(StringBuilder& builder) const
@@ -158,6 +177,11 @@ void Text::LinkNode::render_to_html(StringBuilder& builder) const
     }
 }
 
+void Text::LinkNode::render_for_raw_print(StringBuilder& builder) const
+{
+    text->render_for_raw_print(builder);
+}
+
 void Text::LinkNode::render_for_terminal(StringBuilder& builder) const
 {
     bool is_linked = href.contains("://"sv);
@@ -195,6 +219,13 @@ void Text::MultiNode::render_to_html(StringBuilder& builder) const
 {
     for (auto& child : children) {
         child->render_to_html(builder);
+    }
+}
+
+void Text::MultiNode::render_for_raw_print(StringBuilder& builder) const
+{
+    for (auto& child : children) {
+        child->render_for_raw_print(builder);
     }
 }
 
@@ -236,6 +267,11 @@ void Text::StrikeThroughNode::render_to_html(StringBuilder& builder) const
     builder.append("</del>"sv);
 }
 
+void Text::StrikeThroughNode::render_for_raw_print(StringBuilder& builder) const
+{
+    striked_text->render_for_raw_print(builder);
+}
+
 void Text::StrikeThroughNode::render_for_terminal(StringBuilder& builder) const
 {
     builder.append("\e[9m"sv);
@@ -262,18 +298,25 @@ size_t Text::terminal_length() const
     return m_node->terminal_length();
 }
 
-DeprecatedString Text::render_to_html() const
+ByteString Text::render_to_html() const
 {
     StringBuilder builder;
     m_node->render_to_html(builder);
-    return builder.to_deprecated_string().trim(" \n\t"sv);
+    return builder.to_byte_string().trim(" \n\t"sv);
 }
 
-DeprecatedString Text::render_for_terminal() const
+ByteString Text::render_for_raw_print() const
+{
+    StringBuilder builder;
+    m_node->render_for_raw_print(builder);
+    return builder.to_byte_string().trim(" \n\t"sv);
+}
+
+ByteString Text::render_for_terminal() const
 {
     StringBuilder builder;
     m_node->render_for_terminal(builder);
-    return builder.to_deprecated_string().trim(" \n\t"sv);
+    return builder.to_byte_string().trim(" \n\t"sv);
 }
 
 RecursionDecision Text::walk(Visitor& visitor) const
@@ -323,7 +366,7 @@ Vector<Text::Token> Text::tokenize(StringView str)
             return;
 
         tokens.append({
-            current_token.to_deprecated_string(),
+            current_token.to_byte_string(),
             left_flanking,
             right_flanking,
             punct_before,
@@ -396,6 +439,10 @@ Vector<Text::Token> Text::tokenize(StringView str)
             expect("]("sv);
         } else if (has(")"sv)) {
             expect(")"sv);
+        } else if (has(">"sv)) {
+            expect(">"sv);
+        } else if (has("<"sv)) {
+            expect("<"sv);
         } else {
             current_token.append(ch);
         }
@@ -600,7 +647,7 @@ NonnullOwnPtr<Text::Node> Text::parse_link(Vector<Token>::ConstIterator& tokens)
 
         auto width_string = dimensions.substring_view(1, *dimension_seperator - 1);
         if (!width_string.is_empty()) {
-            auto width = width_string.to_int();
+            auto width = width_string.to_number<int>();
             if (!width.has_value())
                 return false;
             image_width = width;
@@ -609,7 +656,7 @@ NonnullOwnPtr<Text::Node> Text::parse_link(Vector<Token>::ConstIterator& tokens)
         auto height_start = *dimension_seperator + 1;
         if (height_start < dimensions.length()) {
             auto height_string = dimensions.substring_view(height_start);
-            auto height = height_string.to_int();
+            auto height = height_string.to_number<int>();
             if (!height.has_value())
                 return false;
             image_height = height;
@@ -620,14 +667,34 @@ NonnullOwnPtr<Text::Node> Text::parse_link(Vector<Token>::ConstIterator& tokens)
     };
 
     StringBuilder address;
+
+    auto next = tokens + 1;
+    bool is_escaped = !next.is_end() && *next == "<"sv;
+    // Don't add the angle bracket to the address.
+    if (is_escaped)
+        tokens++;
+
     for (auto iterator = tokens + 1; !iterator.is_end(); ++iterator) {
         // FIXME: What to do if there's multiple dimension tokens?
         if (is_image && !address.is_empty() && parse_image_dimensions(iterator->data))
             continue;
 
-        if (*iterator == ")"sv) {
+        if (is_escaped && *iterator == ">"sv) {
+            // Will match the below statement in the next iteration.
+            is_escaped = false;
+            continue;
+        }
+
+        if (!is_escaped && *iterator == ")"sv) {
             tokens = iterator;
-            return make<LinkNode>(is_image, move(link_text), address.to_deprecated_string().trim_whitespace(), image_width, image_height);
+
+            ByteString href = address.to_byte_string().trim_whitespace();
+
+            // Add file:// if the link is an absolute path otherwise it will be assumed relative.
+            if (AK::StringUtils::starts_with(href, "/"sv, CaseSensitivity::CaseSensitive))
+                href = ByteString::formatted("file://{}", href);
+
+            return make<LinkNode>(is_image, move(link_text), move(href), image_width, image_height);
         }
 
         address.append(iterator->data);

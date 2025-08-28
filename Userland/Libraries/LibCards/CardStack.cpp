@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Till Mayer <till.mayer@web.de>
+ * Copyright (c) 2023, David Ganz <david.g.ganz@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -34,6 +35,8 @@ void CardStack::clear()
 
 void CardStack::paint(GUI::Painter& painter, Gfx::Color background_color)
 {
+    auto background_markings_color = (background_color.luminosity() > 64) ? Color(0, 0, 0, 128) : Color(255, 255, 255, 128);
+
     auto draw_background_if_empty = [&]() {
         size_t number_of_moving_cards = 0;
         for (auto const& card : m_stack)
@@ -45,7 +48,7 @@ void CardStack::paint(GUI::Painter& painter, Gfx::Color background_color)
             return false;
 
         auto paint_rect = m_base;
-        painter.fill_rect_with_rounded_corners(paint_rect, background_color.darkened(0.5), Card::card_radius);
+        painter.fill_rect_with_rounded_corners(paint_rect, background_markings_color, Card::card_radius);
         paint_rect.shrink(2, 2);
 
         if (m_highlighted) {
@@ -61,7 +64,8 @@ void CardStack::paint(GUI::Painter& painter, Gfx::Color background_color)
     switch (m_type) {
     case Type::Stock:
         if (draw_background_if_empty()) {
-            painter.fill_rect(m_base.shrunken(Card::width / 4, Card::height / 4), background_color.lightened(1.5));
+            auto stock_highlight_color = (background_color.luminosity() < 196) ? Color(255, 255, 255, 128) : Color(0, 0, 0, 64);
+            painter.fill_rect(m_base.shrunken(Card::width / 4, Card::height / 4), stock_highlight_color);
             painter.fill_rect(m_base.shrunken(Card::width / 2, Card::height / 2), background_color);
         }
         break;
@@ -69,7 +73,7 @@ void CardStack::paint(GUI::Painter& painter, Gfx::Color background_color)
         if (draw_background_if_empty()) {
             for (int y = 0; y < (m_base.height() - 4) / 8; ++y) {
                 for (int x = 0; x < (m_base.width() - 4) / 5; ++x) {
-                    painter.draw_rect({ 4 + m_base.x() + x * 5, 4 + m_base.y() + y * 8, 1, 1 }, background_color.darkened(0.5));
+                    painter.draw_rect({ 4 + m_base.x() + x * 5, 4 + m_base.y() + y * 8, 1, 1 }, background_markings_color);
                 }
             }
         }
@@ -200,6 +204,57 @@ ErrorOr<void> CardStack::add_all_grabbed_cards(Gfx::IntPoint click_location, Vec
     }
 
     return {};
+}
+
+void CardStack::update_disabled_cards(MovementRule movement_rule)
+{
+    if (m_stack.is_empty())
+        return;
+
+    for (auto& card : m_stack)
+        card->set_disabled(false);
+
+    Optional<size_t> last_valid_card = {};
+    uint8_t last_rank;
+    Color last_color;
+    for (size_t idx = m_stack.size(); idx > 0; idx--) {
+        auto i = idx - 1;
+        auto card = m_stack[i];
+        if (card->is_upside_down()) {
+            if (!last_valid_card.has_value())
+                last_valid_card = i + 1;
+            break;
+        }
+
+        if (i != m_stack.size() - 1) {
+            bool color_valid;
+            switch (movement_rule) {
+            case MovementRule::Alternating:
+                color_valid = card->color() != last_color;
+                break;
+            case MovementRule::Same:
+                color_valid = card->color() == last_color;
+                break;
+            case MovementRule::Any:
+                color_valid = true;
+                break;
+            }
+
+            if (!color_valid || to_underlying(card->rank()) != last_rank + 1) {
+                last_valid_card = i + 1;
+                break;
+            }
+        }
+
+        last_rank = to_underlying(card->rank());
+        last_color = card->color();
+    }
+
+    if (!last_valid_card.has_value())
+        return;
+
+    for (size_t i = 0; i < last_valid_card.value(); i++)
+        m_stack[i]->set_disabled(true);
 }
 
 bool CardStack::is_allowed_to_push(Card const& card, size_t stack_size, MovementRule movement_rule) const

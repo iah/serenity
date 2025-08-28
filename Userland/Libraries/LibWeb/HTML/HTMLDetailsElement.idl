@@ -4,6 +4,9 @@
 [Exposed=Window]
 interface HTMLDetailsElement : HTMLElement {
 
-    [Reflect] attribute boolean open;
+    [HTMLConstructor] constructor();
+
+    [CEReactions, Reflect] attribute DOMString name;
+    [CEReactions, Reflect] attribute boolean open;
 
 };

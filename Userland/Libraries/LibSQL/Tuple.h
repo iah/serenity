@@ -27,15 +27,15 @@ namespace SQL {
 class Tuple {
 public:
     Tuple();
-    explicit Tuple(NonnullRefPtr<TupleDescriptor> const&, u32 pointer = 0);
+    explicit Tuple(NonnullRefPtr<TupleDescriptor> const&, Block::Index = 0);
     Tuple(NonnullRefPtr<TupleDescriptor> const&, Serializer&);
     Tuple(Tuple const&);
     virtual ~Tuple() = default;
 
     Tuple& operator=(Tuple const&);
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const;
-    explicit operator DeprecatedString() const { return to_deprecated_string(); }
+    [[nodiscard]] ByteString to_byte_string() const;
+    explicit operator ByteString() const { return to_byte_string(); }
 
     bool operator<(Tuple const& other) const { return compare(other) < 0; }
     bool operator<=(Tuple const& other) const { return compare(other) <= 0; }
@@ -45,19 +45,18 @@ public:
     bool operator>=(Tuple const& other) const { return compare(other) >= 0; }
 
     [[nodiscard]] bool is_null() const { return m_data.is_empty(); }
-    [[nodiscard]] bool has(DeprecatedString const& name) const { return index_of(name).has_value(); }
+    [[nodiscard]] bool has(ByteString const& name) const { return index_of(name).has_value(); }
 
     Value const& operator[](size_t ix) const { return m_data[ix]; }
     Value& operator[](size_t ix) { return m_data[ix]; }
-    Value const& operator[](DeprecatedString const& name) const;
-    Value& operator[](DeprecatedString const& name);
+    Value const& operator[](ByteString const& name) const;
+    Value& operator[](ByteString const& name);
     void append(Value const&);
     Tuple& operator+=(Value const&);
     void extend(Tuple const&);
-    [[nodiscard]] bool is_compatible(Tuple const&) const;
 
-    [[nodiscard]] u32 pointer() const { return m_pointer; }
-    void set_pointer(u32 ptr) { m_pointer = ptr; }
+    [[nodiscard]] Block::Index block_index() const { return m_block_index; }
+    void set_block_index(Block::Index index) { m_block_index = index; }
 
     [[nodiscard]] size_t size() const { return m_data.size(); }
     [[nodiscard]] virtual size_t length() const;
@@ -78,7 +77,7 @@ protected:
 private:
     NonnullRefPtr<TupleDescriptor> m_descriptor;
     Vector<Value> m_data;
-    u32 m_pointer { 2 * sizeof(u32) };
+    Block::Index m_block_index { 0 };
 
     friend Serializer;
 };

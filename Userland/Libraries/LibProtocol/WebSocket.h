@@ -8,7 +8,7 @@
 
 #include <AK/Badge.h>
 #include <AK/ByteBuffer.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Function.h>
 #include <AK/RefCounted.h>
 #include <AK/WeakPtr.h>
@@ -17,13 +17,13 @@
 
 namespace Protocol {
 
-class WebSocketClient;
+class RequestClient;
 
 class WebSocket : public RefCounted<WebSocket> {
 public:
     struct CertificateAndKey {
-        DeprecatedString certificate;
-        DeprecatedString key;
+        ByteString certificate;
+        ByteString key;
     };
 
     struct Message {
@@ -44,7 +44,7 @@ public:
         Closed = 3,
     };
 
-    static NonnullRefPtr<WebSocket> create_from_id(Badge<WebSocketClient>, WebSocketClient& client, i32 connection_id)
+    static NonnullRefPtr<WebSocket> create_from_id(Badge<RequestClient>, RequestClient& client, i32 connection_id)
     {
         return adopt_ref(*new WebSocket(client, connection_id));
     }
@@ -53,27 +53,27 @@ public:
 
     ReadyState ready_state();
 
-    DeprecatedString subprotocol_in_use();
+    ByteString subprotocol_in_use();
 
     void send(ByteBuffer binary_or_text_message, bool is_text);
     void send(StringView text_message);
-    void close(u16 code = 1005, DeprecatedString reason = {});
+    void close(u16 code = 1005, ByteString reason = {});
 
     Function<void()> on_open;
     Function<void(Message)> on_message;
     Function<void(Error)> on_error;
-    Function<void(u16 code, DeprecatedString reason, bool was_clean)> on_close;
+    Function<void(u16 code, ByteString reason, bool was_clean)> on_close;
     Function<CertificateAndKey()> on_certificate_requested;
 
-    void did_open(Badge<WebSocketClient>);
-    void did_receive(Badge<WebSocketClient>, ByteBuffer, bool);
-    void did_error(Badge<WebSocketClient>, i32);
-    void did_close(Badge<WebSocketClient>, u16, DeprecatedString, bool);
-    void did_request_certificates(Badge<WebSocketClient>);
+    void did_open(Badge<RequestClient>);
+    void did_receive(Badge<RequestClient>, ByteBuffer, bool);
+    void did_error(Badge<RequestClient>, i32);
+    void did_close(Badge<RequestClient>, u16, ByteString, bool);
+    void did_request_certificates(Badge<RequestClient>);
 
 private:
-    explicit WebSocket(WebSocketClient&, i32 connection_id);
-    WeakPtr<WebSocketClient> m_client;
+    explicit WebSocket(RequestClient&, i32 connection_id);
+    WeakPtr<RequestClient> m_client;
     int m_connection_id { -1 };
 };
 

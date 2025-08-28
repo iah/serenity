@@ -7,10 +7,11 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Concepts.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Forward.h>
 #include <AK/NumericLimits.h>
+#include <AK/Queue.h>
 #include <AK/StdLibExtras.h>
 #include <AK/String.h>
 #include <AK/Try.h>
@@ -22,6 +23,8 @@
 #include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 #include <LibIPC/Message.h>
+#include <LibURL/Origin.h>
+#include <LibURL/URL.h>
 
 namespace IPC {
 
@@ -34,9 +37,9 @@ inline ErrorOr<T> decode(Decoder&)
 
 class Decoder {
 public:
-    Decoder(Stream& stream, Core::LocalSocket& socket)
+    Decoder(Stream& stream, Queue<IPC::File>& files)
         : m_stream(stream)
-        , m_socket(socket)
+        , m_files(files)
     {
     }
 
@@ -52,18 +55,18 @@ public:
 
     ErrorOr<void> decode_into(Bytes bytes)
     {
-        TRY(m_stream.read_entire_buffer(bytes));
+        TRY(m_stream.read_until_filled(bytes));
         return {};
     }
 
     ErrorOr<size_t> decode_size();
 
     Stream& stream() { return m_stream; }
-    Core::LocalSocket& socket() { return m_socket; }
+    Queue<IPC::File>& files() { return m_files; }
 
 private:
     Stream& m_stream;
-    Core::LocalSocket& m_socket;
+    Queue<IPC::File>& m_files;
 };
 
 template<Arithmetic T>
@@ -85,7 +88,7 @@ template<>
 ErrorOr<String> decode(Decoder&);
 
 template<>
-ErrorOr<DeprecatedString> decode(Decoder&);
+ErrorOr<ByteString> decode(Decoder&);
 
 template<>
 ErrorOr<ByteBuffer> decode(Decoder&);
@@ -94,19 +97,34 @@ template<>
 ErrorOr<JsonValue> decode(Decoder&);
 
 template<>
-ErrorOr<Time> decode(Decoder&);
+ErrorOr<Duration> decode(Decoder&);
 
 template<>
-ErrorOr<URL> decode(Decoder&);
+ErrorOr<UnixDateTime> decode(Decoder&);
 
 template<>
-ErrorOr<Dictionary> decode(Decoder&);
+ErrorOr<URL::URL> decode(Decoder&);
+
+template<>
+ErrorOr<URL::Origin> decode(Decoder&);
 
 template<>
 ErrorOr<File> decode(Decoder&);
 
 template<>
 ErrorOr<Empty> decode(Decoder&);
+
+template<Concepts::Array T>
+ErrorOr<T> decode(Decoder& decoder)
+{
+    T array {};
+    auto size = TRY(decoder.decode_size());
+    if (size != array.size())
+        return Error::from_string_literal("Array size mismatch");
+    for (size_t i = 0; i < array.size(); ++i)
+        array[i] = TRY(decoder.decode<typename T::ValueType>());
+    return array;
+}
 
 template<Concepts::Vector T>
 ErrorOr<T> decode(Decoder& decoder)
@@ -118,7 +136,7 @@ ErrorOr<T> decode(Decoder& decoder)
 
     for (size_t i = 0; i < size; ++i) {
         auto value = TRY(decoder.decode<typename T::ValueType>());
-        vector.template unchecked_append(move(value));
+        vector.unchecked_append(move(value));
     }
 
     return vector;

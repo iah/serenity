@@ -17,8 +17,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "SerenityOS")
 endif()
 
 # Check for toolchain mismatch, user might need to rebuild toolchain
-set(GCC_VERSION "12.2.0")
-set(LLVM_VERSION "15.0.3")
+set(GCC_VERSION "15.1.0")
+set(LLVM_VERSION "20.1.0")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(EXPECTED_COMPILER_VERSION "${GCC_VERSION}")
 else()
@@ -49,20 +49,13 @@ if (NOT HACKSTUDIO_BUILD)
 
     # Host tools, required to generate files for the build
     find_package(Lagom CONFIG REQUIRED)
-
-    if (ENABLE_JAKT)
-        find_package(Jakt CONFIG REQUIRED
-            HINTS "${Lagom_DIR}/.."
-        )
-    endif()
-
 endif()
 
 # Meta target to run all code-gen steps in the build.
 add_custom_target(all_generated)
 
 add_custom_target(run
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_ARCH=${SERENITY_ARCH}" "${SerenityOS_SOURCE_DIR}/Meta/run.sh"
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "${SerenityOS_SOURCE_DIR}/Meta/run.sh"
     USES_TERMINAL
 )
 
@@ -73,13 +66,9 @@ add_custom_target(run
 # out forcing re-builds when they might not want them.
 add_custom_target(setup-and-run
     COMMAND ${CMAKE_MAKE_PROGRAM} install
-    COMMAND ${CMAKE_MAKE_PROGRAM} image
+    COMMAND ${CMAKE_MAKE_PROGRAM} qemu-image
     COMMAND ${CMAKE_MAKE_PROGRAM} run
     USES_TERMINAL
-)
-
-add_custom_target(image
-    DEPENDS qemu-image
 )
 
 add_custom_target(qemu-image
@@ -87,21 +76,47 @@ add_custom_target(qemu-image
     BYPRODUCTS "${CMAKE_BINARY_DIR}/_disk_image"
     USES_TERMINAL
 )
-add_custom_target(grub-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub.sh"
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_disk_image
+
+add_custom_target(uefi-image
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-uefi.sh"
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/uefi_disk_image
     USES_TERMINAL
 )
-add_custom_target(limine-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-limine.sh"
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/limine_disk_image
-    USES_TERMINAL
-)
-add_custom_target(extlinux-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-extlinux.sh"
-    BYPRODUCTS "${CMAKE_BINARY_DIR}/extlinux_disk_image"
-    USES_TERMINAL
-)
+
+if("${SERENITY_ARCH}" STREQUAL "x86_64")
+    add_custom_target(grub-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(grub-uefi-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub-uefi.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_uefi_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(limine-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-limine.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/limine_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(extlinux-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-extlinux.sh"
+        BYPRODUCTS "${CMAKE_BINARY_DIR}/extlinux_disk_image"
+        USES_TERMINAL
+    )
+elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
+    add_custom_target(raspberry-pi-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-raspberry-pi.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/raspberry_pi_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(raspberry-pi-4-edk2-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-raspberry-pi.sh" "rpi4-edk2"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/raspberry_pi_4_uefi_disk_image
+        USES_TERMINAL
+    )
+endif()
+
 add_custom_target(install-native-partition
     COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-native-partition.sh"
     USES_TERMINAL
@@ -171,8 +186,6 @@ add_link_options(LINKER:-z,text)
 add_link_options(LINKER:--no-allow-shlib-undefined)
 
 add_compile_definitions(SANITIZE_PTRS)
-set(CMAKE_CXX_FLAGS_STATIC "${CMAKE_CXX_FLAGS} -static")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pie -fpic")
 
 if (ENABLE_COMPILETIME_FORMAT_CHECK)
     add_compile_definitions(ENABLE_COMPILETIME_FORMAT_CHECK)
@@ -187,7 +200,6 @@ add_link_options(-Wno-unused-command-line-argument)
 
 include_directories(.)
 include_directories(Userland/Libraries)
-include_directories(Userland/Libraries/LibC)
 include_directories(Userland/Libraries/LibCrypt)
 include_directories(Userland/Libraries/LibSystem)
 include_directories(Userland/Services)
@@ -197,18 +209,13 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland/Services)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland/Libraries)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland)
 
-# FIXME: vptr sanitizing requires.. intense ABI wrangling of std::type_info
-#     And would be better served by porting ubsan_type_hash_itanium.cpp from compiler-rt
-if (ENABLE_UNDEFINED_SANITIZER)
-    add_compile_options(-fsanitize=undefined -fno-sanitize=vptr)
-    add_link_options(-fsanitize=undefined -fno-sanitize=vptr)
-endif()
+include(jakt)
 
-add_custom_target(components ALL)
 option(BUILD_EVERYTHING "Build all optional components" ON)
 
 include(utils)
 include(flac_spec_tests)
+include(download_raspberry_pi_dtb)
 
 serenity_component(
     Tests
@@ -221,19 +228,36 @@ if (HACKSTUDIO_BUILD)
     return()
 endif()
 
+add_library(GenericClangPlugin INTERFACE)
+add_library(JSClangPlugin INTERFACE)
+if (ENABLE_CLANG_PLUGINS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
+    target_link_libraries(GenericClangPlugin INTERFACE Lagom::GenericClangPlugin)
+    target_link_libraries(JSClangPlugin INTERFACE Lagom::JSClangPlugin)
+endif()
+
 add_subdirectory(AK)
 add_subdirectory(Kernel)
+
+# FIXME: vptr sanitizing requires.. intense ABI wrangling of std::type_info
+#        And would be better served by porting ubsan_type_hash_itanium.cpp from compiler-rt
+if (ENABLE_UNDEFINED_SANITIZER)
+    add_compile_options(-fsanitize=undefined -fno-sanitize=vptr)
+    add_link_options(-fsanitize=undefined -fno-sanitize=vptr)
+
+    if (UNDEFINED_BEHAVIOR_IS_FATAL)
+        add_compile_options(-fno-sanitize-recover=undefined)
+    endif()
+endif()
 
 if (ENABLE_MOLD_LINKER)
     add_link_options(-fuse-ld=mold)
 endif()
 
-if(NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$" OR ENABLE_MOLD_LINKER)
-        add_link_options(LINKER:--pack-dyn-relocs=relr)
-    else()
-        add_link_options(LINKER:-z,pack-relative-relocs)
-    endif()
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$" OR ENABLE_MOLD_LINKER)
+    add_link_options(LINKER:--pack-dyn-relocs=relr)
+elseif("${SERENITY_ARCH}" STREQUAL "x86_64")
+    # The BFD linker only supports RELR relocations on x86 and POWER.
+    add_link_options(LINKER:-z,pack-relative-relocs)
 endif()
 
 add_subdirectory(Userland)
@@ -250,17 +274,21 @@ export_components("${CMAKE_BINARY_DIR}/components.ini")
 # https://gitlab.kitware.com/cmake/cmake/-/issues/23054
 
 set(PCI_IDS_FILE pci.ids)
-set(PCI_IDS_URL https://pci-ids.ucw.cz/v2.2/${PCI_IDS_FILE})
-set(PCI_IDS_INSTALL_PATH ${CMAKE_INSTALL_DATAROOTDIR}/${PCI_IDS_FILE})
+set(PCI_IDS_URL "https://pci-ids.ucw.cz/v2.2/${PCI_IDS_FILE}")
+set(PCI_IDS_DOWNLOAD_PATH "${SERENITY_CACHE_DIR}/${PCI_IDS_FILE}")
+set(PCI_IDS_INSTALL_PATH "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}")
 
-if(ENABLE_PCI_IDS_DOWNLOAD AND NOT EXISTS ${CMAKE_STAGING_PREFIX}/${PCI_IDS_INSTALL_PATH} )
-    download_file("${PCI_IDS_URL}" "${CMAKE_STAGING_PREFIX}/${PCI_IDS_INSTALL_PATH}")
+if (ENABLE_PCI_IDS_DOWNLOAD AND NOT EXISTS "${PCI_IDS_INSTALL_PATH}/${PCI_IDS_FILE}")
+    download_file("${PCI_IDS_URL}" "${PCI_IDS_DOWNLOAD_PATH}")
+    install(FILES "${PCI_IDS_DOWNLOAD_PATH}" DESTINATION "${PCI_IDS_INSTALL_PATH}")
 endif()
 
 set(USB_IDS_FILE usb.ids)
-set(USB_IDS_URL http://www.linux-usb.org/${USB_IDS_FILE})
-set(USB_IDS_INSTALL_PATH ${CMAKE_INSTALL_DATAROOTDIR}/${USB_IDS_FILE})
+set(USB_IDS_URL "http://www.linux-usb.org/${USB_IDS_FILE}")
+set(USB_IDS_DOWNLOAD_PATH "${SERENITY_CACHE_DIR}/${USB_IDS_FILE}")
+set(USB_IDS_INSTALL_PATH "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}")
 
-if(ENABLE_USB_IDS_DOWNLOAD AND NOT EXISTS "${CMAKE_STAGING_PREFIX}/${USB_IDS_INSTALL_PATH}")
-    download_file("${USB_IDS_URL}" "${CMAKE_STAGING_PREFIX}/${USB_IDS_INSTALL_PATH}")
+if (ENABLE_USB_IDS_DOWNLOAD AND NOT EXISTS "${USB_IDS_INSTALL_PATH}/${USB_IDS_FILE}")
+    download_file("${USB_IDS_URL}" "${USB_IDS_DOWNLOAD_PATH}")
+    install(FILES "${USB_IDS_DOWNLOAD_PATH}" DESTINATION "${USB_IDS_INSTALL_PATH}")
 endif()

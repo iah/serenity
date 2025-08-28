@@ -6,60 +6,99 @@
 
 #include "GridTrackSize.h"
 #include <AK/String.h>
-#include <LibWeb/CSS/Length.h>
-#include <LibWeb/CSS/Percentage.h>
-#include <LibWeb/CSS/StyleValue.h>
+#include <LibWeb/CSS/Size.h>
 
 namespace Web::CSS {
 
-GridSize::GridSize(Length length)
-    : m_type(Type::Length)
-    , m_length(length)
+GridSize::GridSize(Type type, LengthPercentage length_percentage)
+    : m_value(move(length_percentage))
+{
+    VERIFY(type == Type::FitContent);
+    m_type = type;
+}
+
+GridSize::GridSize(LengthPercentage length_percentage)
+    : m_type(Type::LengthPercentage)
+    , m_value(move(length_percentage))
 {
 }
 
-GridSize::GridSize(Percentage percentage)
-    : m_type(Type::Percentage)
-    , m_length { Length::make_px(0) }
-    , m_percentage(percentage)
-{
-}
-
-GridSize::GridSize(float flexible_length)
+GridSize::GridSize(Flex flex_factor)
     : m_type(Type::FlexibleLength)
-    , m_length { Length::make_px(0) }
-    , m_flexible_length(flexible_length)
+    , m_value(move(flex_factor))
 {
 }
 
 GridSize::GridSize(Type type)
-    : m_length { Length::make_auto() }
+    : m_value { Empty() }
 {
     VERIFY(type == Type::MinContent || type == Type::MaxContent);
     m_type = type;
 }
 
 GridSize::GridSize()
-    : m_length { Length::make_auto() }
+    : m_type(Type::LengthPercentage)
+    , m_value { Length::make_auto() }
 {
 }
 
 GridSize::~GridSize() = default;
+
+bool GridSize::is_auto(Layout::AvailableSize const& available_size) const
+{
+    if (m_type == Type::LengthPercentage) {
+        auto& length_percentage = m_value.get<LengthPercentage>();
+        if (length_percentage.contains_percentage())
+            return !available_size.is_definite();
+        return length_percentage.is_auto();
+    }
+
+    return false;
+}
+
+bool GridSize::is_fixed(Layout::AvailableSize const& available_size) const
+{
+    if (m_type == Type::LengthPercentage) {
+        auto& length_percentage = m_value.get<LengthPercentage>();
+        if (length_percentage.contains_percentage())
+            return available_size.is_definite();
+        return !length_percentage.is_auto();
+    }
+
+    return false;
+}
+
+bool GridSize::is_intrinsic(Layout::AvailableSize const& available_size) const
+{
+    return is_auto(available_size) || is_max_content() || is_min_content() || is_fit_content();
+}
 
 GridSize GridSize::make_auto()
 {
     return GridSize(CSS::Length::make_auto());
 }
 
-ErrorOr<String> GridSize::to_string() const
+Size GridSize::css_size() const
+{
+    VERIFY(m_type == Type::LengthPercentage || m_type == Type::FitContent);
+    auto& length_percentage = m_value.get<LengthPercentage>();
+    if (length_percentage.is_auto())
+        return CSS::Size::make_auto();
+    if (length_percentage.is_length())
+        return CSS::Size::make_length(length_percentage.length());
+    if (length_percentage.is_calculated())
+        return CSS::Size::make_calculated(length_percentage.calculated());
+    return CSS::Size::make_percentage(length_percentage.percentage());
+}
+
+String GridSize::to_string() const
 {
     switch (m_type) {
-    case Type::Length:
-        return m_length.to_string();
-    case Type::Percentage:
-        return m_percentage.to_string();
+    case Type::LengthPercentage:
+    case Type::FitContent:
+        return m_value.get<LengthPercentage>().to_string();
     case Type::FlexibleLength:
-        return String::formatted("{}fr", m_flexible_length);
+        return m_value.get<Flex>().to_string();
     case Type::MaxContent:
         return "max-content"_string;
     case Type::MinContent:
@@ -68,26 +107,36 @@ ErrorOr<String> GridSize::to_string() const
     VERIFY_NOT_REACHED();
 }
 
-Length GridSize::length() const
-{
-    return m_length;
-}
-
 GridMinMax::GridMinMax(GridSize min_grid_size, GridSize max_grid_size)
     : m_min_grid_size(min_grid_size)
     , m_max_grid_size(max_grid_size)
 {
 }
 
-ErrorOr<String> GridMinMax::to_string() const
+String GridMinMax::to_string() const
 {
     StringBuilder builder;
     builder.append("minmax("sv);
-    builder.appendff("{}", TRY(m_min_grid_size.to_string()));
+    builder.appendff("{}", m_min_grid_size.to_string());
     builder.append(", "sv);
-    builder.appendff("{}", TRY(m_max_grid_size.to_string()));
+    builder.appendff("{}", m_max_grid_size.to_string());
     builder.append(")"sv);
-    return builder.to_string();
+    return MUST(builder.to_string());
+}
+
+GridFitContent::GridFitContent(GridSize max_grid_size)
+    : m_max_grid_size(max_grid_size)
+{
+}
+
+GridFitContent::GridFitContent()
+    : m_max_grid_size(GridSize::make_auto())
+{
+}
+
+String GridFitContent::to_string() const
+{
+    return MUST(String::formatted("fit-content({})", m_max_grid_size.to_string()));
 }
 
 GridRepeat::GridRepeat(GridTrackSizeList grid_track_size_list, int repeat_count)
@@ -107,7 +156,7 @@ GridRepeat::GridRepeat()
 {
 }
 
-ErrorOr<String> GridRepeat::to_string() const
+String GridRepeat::to_string() const
 {
     StringBuilder builder;
     builder.append("repeat("sv);
@@ -125,9 +174,15 @@ ErrorOr<String> GridRepeat::to_string() const
         VERIFY_NOT_REACHED();
     }
     builder.append(", "sv);
-    builder.appendff("{}", TRY(m_grid_track_size_list.to_string()));
+    builder.appendff("{}", m_grid_track_size_list.to_string());
     builder.append(")"sv);
-    return builder.to_string();
+    return MUST(builder.to_string());
+}
+
+ExplicitGridTrack::ExplicitGridTrack(CSS::GridFitContent grid_fit_content)
+    : m_type(Type::FitContent)
+    , m_grid_fit_content(grid_fit_content)
+{
 }
 
 ExplicitGridTrack::ExplicitGridTrack(CSS::GridMinMax grid_minmax)
@@ -148,9 +203,11 @@ ExplicitGridTrack::ExplicitGridTrack(CSS::GridSize grid_size)
 {
 }
 
-ErrorOr<String> ExplicitGridTrack::to_string() const
+String ExplicitGridTrack::to_string() const
 {
     switch (m_type) {
+    case Type::FitContent:
+        return m_grid_fit_content.to_string();
     case Type::MinMax:
         return m_grid_minmax.to_string();
     case Type::Repeat:
@@ -162,50 +219,67 @@ ErrorOr<String> ExplicitGridTrack::to_string() const
     }
 }
 
-GridTrackSizeList::GridTrackSizeList(Vector<CSS::ExplicitGridTrack> track_list, Vector<Vector<String>> line_names)
-    : m_track_list(track_list)
-    , m_line_names(line_names)
+String GridLineNames::to_string() const
+{
+    StringBuilder builder;
+    builder.append("["sv);
+    builder.join(' ', names);
+    builder.append("]"sv);
+    return MUST(builder.to_string());
+}
+
+GridTrackSizeList::GridTrackSizeList(Vector<Variant<ExplicitGridTrack, GridLineNames>>&& list)
+    : m_list(move(list))
 {
 }
 
 GridTrackSizeList::GridTrackSizeList()
-    : m_track_list({})
-    , m_line_names({})
 {
 }
 
-GridTrackSizeList GridTrackSizeList::make_auto()
+GridTrackSizeList GridTrackSizeList::make_none()
 {
     return GridTrackSizeList();
 }
 
-ErrorOr<String> GridTrackSizeList::to_string() const
+String GridTrackSizeList::to_string() const
 {
-    StringBuilder builder;
-    auto print_line_names = [&](size_t index) -> void {
-        builder.append("["sv);
-        for (size_t y = 0; y < m_line_names[index].size(); ++y) {
-            builder.append(m_line_names[index][y]);
-            if (y != m_line_names[index].size() - 1)
-                builder.append(" "sv);
-        }
-        builder.append("]"sv);
-    };
+    if (m_list.is_empty())
+        return "auto"_string;
 
-    for (size_t i = 0; i < m_track_list.size(); ++i) {
-        if (m_line_names[i].size() > 0) {
-            print_line_names(i);
+    StringBuilder builder;
+    for (auto const& line_definition_or_name : m_list) {
+        if (!builder.is_empty())
             builder.append(" "sv);
+        if (line_definition_or_name.has<ExplicitGridTrack>()) {
+            builder.append(line_definition_or_name.get<ExplicitGridTrack>().to_string());
+        } else if (line_definition_or_name.has<GridLineNames>()) {
+            auto const& line_names = line_definition_or_name.get<GridLineNames>();
+            builder.append(line_names.to_string());
         }
-        builder.append(TRY(m_track_list[i].to_string()));
-        if (i < m_track_list.size() - 1)
-            builder.append(" "sv);
     }
-    if (m_line_names[m_track_list.size()].size() > 0) {
-        builder.append(" "sv);
-        print_line_names(m_track_list.size());
+    return MUST(builder.to_string());
+}
+
+Vector<ExplicitGridTrack> GridTrackSizeList::track_list() const
+{
+    Vector<ExplicitGridTrack> track_list;
+    for (auto const& line_definition_or_name : m_list) {
+        if (line_definition_or_name.has<ExplicitGridTrack>())
+            track_list.append(line_definition_or_name.get<ExplicitGridTrack>());
     }
-    return builder.to_string();
+    return track_list;
+}
+
+bool GridTrackSizeList::operator==(GridTrackSizeList const& other) const
+{
+    if (m_list.size() != other.m_list.size())
+        return false;
+    for (size_t i = 0; i < m_list.size(); ++i) {
+        if (m_list[i] != other.m_list[i])
+            return false;
+    }
+    return true;
 }
 
 }

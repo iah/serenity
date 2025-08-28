@@ -13,8 +13,14 @@
 
 namespace GUI {
 
-CoverWizardPage::CoverWizardPage()
-    : AbstractWizardPage()
+ErrorOr<NonnullRefPtr<CoverWizardPage>> CoverWizardPage::create(StringView title, StringView subtitle)
+{
+    auto page = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) CoverWizardPage()));
+    TRY(page->build(TRY(String::from_utf8(title)), TRY(String::from_utf8(subtitle))));
+    return page;
+}
+
+ErrorOr<void> CoverWizardPage::build(String title, String subtitle)
 {
     set_fill_with_background_color(true);
     set_background_role(Gfx::ColorRole::Base);
@@ -26,23 +32,25 @@ CoverWizardPage::CoverWizardPage()
     m_content_widget = add<Widget>();
     m_content_widget->set_layout<VerticalBoxLayout>(20);
 
-    m_header_label = m_content_widget->add<Label>();
-    m_header_label->set_font(Gfx::FontDatabase::the().get("Pebbleton", 14, 700, Gfx::FontWidth::Normal, 0));
+    m_header_label = m_content_widget->add<Label>(move(title));
+    m_header_label->set_font(Gfx::FontDatabase::the().get("Pebbleton"_fly_string, 14, 700, Gfx::FontWidth::Normal, 0));
     m_header_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
     m_header_label->set_fixed_height(48);
 
-    m_body_label = m_content_widget->add<Label>();
+    m_body_label = m_content_widget->add<Label>(move(subtitle));
     m_body_label->set_text_alignment(Gfx::TextAlignment::TopLeft);
+
+    return {};
 }
 
-void CoverWizardPage::set_header_text(DeprecatedString const& text)
+void CoverWizardPage::set_header_text(String text)
 {
-    m_header_label->set_text(text);
+    m_header_label->set_text(move(text));
 }
 
-void CoverWizardPage::set_body_text(DeprecatedString const& text)
+void CoverWizardPage::set_body_text(String text)
 {
-    m_body_label->set_text(text);
+    m_body_label->set_text(move(text));
 }
 
 }

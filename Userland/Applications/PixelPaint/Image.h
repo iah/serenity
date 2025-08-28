@@ -11,6 +11,7 @@
 #include "Selection.h"
 #include <AK/HashTable.h>
 #include <AK/JsonObjectSerializer.h>
+#include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Result.h>
@@ -18,8 +19,8 @@
 #include <LibGUI/Forward.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/Painter.h>
 #include <LibGfx/Rect.h>
+#include <LibGfx/ScalingMode.h>
 #include <LibGfx/Size.h>
 
 namespace PixelPaint {
@@ -48,7 +49,7 @@ public:
     static ErrorOr<NonnullRefPtr<Image>> create_from_pixel_paint_json(JsonObject const&);
     static ErrorOr<NonnullRefPtr<Image>> create_from_bitmap(NonnullRefPtr<Gfx::Bitmap> const&);
 
-    static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> decode_bitmap(ReadonlyBytes);
+    static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> decode_bitmap(ReadonlyBytes, Optional<StringView> guessed_mime_type);
 
     // This generates a new Bitmap with the final image (all layers composed according to their attributes.)
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> compose_bitmap(Gfx::BitmapFormat format) const;
@@ -65,6 +66,7 @@ public:
     Gfx::IntRect rect() const { return { {}, m_size }; }
 
     void add_layer(NonnullRefPtr<Layer>);
+    void insert_layer(NonnullRefPtr<Layer>, size_t index);
     ErrorOr<NonnullRefPtr<Image>> take_snapshot() const;
     ErrorOr<void> restore_snapshot(Image const&);
 
@@ -98,7 +100,7 @@ public:
     ErrorOr<void> flip(Gfx::Orientation orientation);
     ErrorOr<void> rotate(Gfx::RotationDirection direction);
     ErrorOr<void> crop(Gfx::IntRect const& rect);
-    ErrorOr<void> resize(Gfx::IntSize new_size, Gfx::Painter::ScalingMode scaling_mode);
+    ErrorOr<void> resize(Gfx::IntSize new_size, Gfx::ScalingMode scaling_mode);
 
     Optional<Gfx::IntRect> nonempty_content_bounding_rect() const;
 
@@ -134,16 +136,16 @@ private:
 
 class ImageUndoCommand : public GUI::Command {
 public:
-    ImageUndoCommand(Image&, DeprecatedString action_text);
+    ImageUndoCommand(Image&, ByteString action_text);
 
     virtual void undo() override;
     virtual void redo() override;
-    virtual DeprecatedString action_text() const override { return m_action_text; }
+    virtual ByteString action_text() const override { return m_action_text; }
 
 private:
     RefPtr<Image> m_snapshot;
     Image& m_image;
-    DeprecatedString m_action_text;
+    ByteString m_action_text;
 };
 
 }

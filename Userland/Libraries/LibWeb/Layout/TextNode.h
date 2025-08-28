@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Utf8View.h>
+#include <LibLocale/Segmenter.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/Layout/Node.h>
 
@@ -16,6 +17,7 @@ class LineBoxFragment;
 
 class TextNode final : public Node {
     JS_CELL(TextNode, Node);
+    JS_DECLARE_ALLOCATOR(TextNode);
 
 public:
     TextNode(DOM::Document&, DOM::Text&);
@@ -23,39 +25,52 @@ public:
 
     const DOM::Text& dom_node() const { return static_cast<const DOM::Text&>(*Node::dom_node()); }
 
-    DeprecatedString const& text_for_rendering() const { return m_text_for_rendering; }
+    String const& text_for_rendering() const;
 
     struct Chunk {
         Utf8View view;
+        NonnullRefPtr<Gfx::Font> font;
         size_t start { 0 };
         size_t length { 0 };
         bool has_breaking_newline { false };
         bool is_all_whitespace { false };
+        Gfx::GlyphRun::TextType text_type;
     };
 
     class ChunkIterator {
     public:
-        ChunkIterator(StringView text, bool wrap_lines, bool respect_linebreaks, bool is_generated_empty_string);
+        ChunkIterator(TextNode const&, bool wrap_lines, bool respect_linebreaks);
+
         Optional<Chunk> next();
+        Optional<Chunk> peek(size_t);
 
     private:
-        Optional<Chunk> try_commit_chunk(Utf8View::Iterator const& start, Utf8View::Iterator const& end, bool has_breaking_newline) const;
+        Optional<Chunk> next_without_peek();
+        Optional<Chunk> try_commit_chunk(size_t start, size_t end, bool has_breaking_newline, Gfx::Font const&, Gfx::GlyphRun::TextType) const;
 
         bool const m_wrap_lines;
         bool const m_respect_linebreaks;
-        bool m_should_emit_one_empty_chunk { false };
         Utf8View m_utf8_view;
-        Utf8View::Iterator m_iterator;
+        Gfx::FontCascadeList const& m_font_cascade_list;
+
+        Locale::Segmenter& m_grapheme_segmenter;
+        size_t m_current_index { 0 };
+
+        Vector<Chunk> m_peek_queue;
     };
 
-    void compute_text_for_rendering(bool collapse);
+    void invalidate_text_for_rendering();
+    void compute_text_for_rendering();
+
+    Locale::Segmenter& grapheme_segmenter() const;
 
     virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
 
 private:
     virtual bool is_text_node() const final { return true; }
 
-    DeprecatedString m_text_for_rendering;
+    Optional<String> m_text_for_rendering;
+    mutable OwnPtr<Locale::Segmenter> m_grapheme_segmenter;
 };
 
 template<>

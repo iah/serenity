@@ -9,7 +9,7 @@
 
 #include <AK/BinarySearch.h>
 #include <AK/ByteBuffer.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
@@ -21,8 +21,8 @@
 #include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/EventReceiver.h>
 #include <LibCore/Notifier.h>
-#include <LibCore/Object.h>
 #include <LibLine/KeyCallbackMachine.h>
 #include <LibLine/Span.h>
 #include <LibLine/StringMetrics.h>
@@ -36,13 +36,15 @@
 
 namespace Line {
 
+static constexpr u32 ctrl(char c) { return c & 0x3f; }
+
 struct KeyBinding {
     Vector<Key> keys;
     enum class Kind {
         InternalFunction,
         Insertion,
     } kind { Kind::InternalFunction };
-    DeprecatedString binding;
+    ByteString binding;
 };
 
 struct Configuration {
@@ -67,7 +69,7 @@ struct Configuration {
     };
 
     struct DefaultTextEditor {
-        DeprecatedString command;
+        ByteString command;
     };
 
     Configuration()
@@ -97,7 +99,7 @@ struct Configuration {
     SignalHandler m_signal_mode { SignalHandler::WithSignalHandlers };
     OperationMode operation_mode { OperationMode::Unset };
     Vector<KeyBinding> keybindings;
-    DeprecatedString m_default_text_editor {};
+    ByteString m_default_text_editor {};
     bool enable_bracketed_paste { false };
 };
 
@@ -105,9 +107,13 @@ struct Configuration {
     M(clear_screen)                            \
     M(cursor_left_character)                   \
     M(cursor_left_word)                        \
+    M(cursor_left_nonspace_word)               \
     M(cursor_right_character)                  \
     M(cursor_right_word)                       \
+    M(cursor_right_nonspace_word)              \
     M(enter_search)                            \
+    M(search_character_backwards)              \
+    M(search_character_forwards)               \
     M(erase_character_backwards)               \
     M(erase_character_forwards)                \
     M(erase_to_beginning)                      \
@@ -122,8 +128,10 @@ struct Configuration {
     M(transpose_characters)                    \
     M(transpose_words)                         \
     M(insert_last_words)                       \
+    M(insert_last_erased)                      \
     M(erase_alnum_word_backwards)              \
     M(erase_alnum_word_forwards)               \
+    M(erase_spaces)                            \
     M(capitalize_word)                         \
     M(lowercase_word)                          \
     M(uppercase_word)                          \
@@ -132,7 +140,7 @@ struct Configuration {
 #define EDITOR_INTERNAL_FUNCTION(name) \
     [](auto& editor) { editor.name();  return false; }
 
-class Editor : public Core::Object {
+class Editor : public Core::EventReceiver {
     C_OBJECT(Editor);
 
 public:
@@ -144,15 +152,15 @@ public:
 
     ~Editor();
 
-    Result<DeprecatedString, Error> get_line(DeprecatedString const& prompt);
+    Result<ByteString, Error> get_line(ByteString const& prompt);
 
     void initialize();
 
     void refetch_default_termios();
 
-    void add_to_history(DeprecatedString const& line);
-    bool load_history(DeprecatedString const& path);
-    bool save_history(DeprecatedString const& path);
+    void add_to_history(ByteString const& line);
+    bool load_history(ByteString const& path);
+    bool save_history(ByteString const& path);
     auto const& history() const { return m_history; }
     bool is_history_dirty() const { return m_history_dirty; }
 
@@ -161,7 +169,7 @@ public:
     void register_key_input_callback(Key key, Function<bool(Editor&)> callback) { register_key_input_callback(Vector<Key> { key }, move(callback)); }
 
     static StringMetrics actual_rendered_string_metrics(StringView, RedBlackTree<u32, Optional<Style::Mask>> const& masks = {}, Optional<size_t> maximum_line_width = {});
-    static StringMetrics actual_rendered_string_metrics(Utf32View const&, RedBlackTree<u32, Optional<Style::Mask>> const& masks = {});
+    static StringMetrics actual_rendered_string_metrics(Utf32View const&, RedBlackTree<u32, Optional<Style::Mask>> const& masks = {}, Optional<size_t> maximum_line_width = {});
 
     Function<Vector<CompletionSuggestion>(Editor const&)> on_tab_complete;
     Function<void(Utf32View, Editor&)> on_paste;
@@ -194,11 +202,11 @@ public:
     }
     Vector<u32, 1024> const& buffer() const { return m_buffer; }
     u32 buffer_at(size_t pos) const { return m_buffer.at(pos); }
-    DeprecatedString line() const { return line(m_buffer.size()); }
-    DeprecatedString line(size_t up_to_index) const;
+    ByteString line() const { return line(m_buffer.size()); }
+    ByteString line(size_t up_to_index) const;
 
     // Only makes sense inside a character_input callback or on_* callback.
-    void set_prompt(DeprecatedString const& prompt)
+    void set_prompt(ByteString const& prompt)
     {
         if (m_cached_prompt_valid)
             m_old_prompt_metrics = m_cached_prompt_metrics;
@@ -208,10 +216,11 @@ public:
     }
 
     void clear_line();
-    void insert(DeprecatedString const&);
+    void insert(ByteString const&);
     void insert(StringView);
+    void insert(Utf8View&);
     void insert(Utf32View const&);
-    void insert(const u32);
+    void insert(u32 const);
     void stylize(Span const&, Style const&);
     void strip_styles(bool strip_anchored = false);
 
@@ -240,7 +249,7 @@ public:
 
     bool is_editing() const { return m_is_editing; }
 
-    const Utf32View buffer_view() const { return { m_buffer.data(), m_buffer.size() }; }
+    Utf32View const buffer_view() const { return { m_buffer.data(), m_buffer.size() }; }
 
     auto prohibit_input()
     {
@@ -265,9 +274,6 @@ private:
         Exit = 0,
         Retry
     };
-
-    // FIXME: Port to Core::Property
-    void save_to(JsonObject&);
 
     ErrorOr<void> try_update_once();
     void handle_interrupt_event();
@@ -318,7 +324,7 @@ private:
         m_prompt_lines_at_suggestion_initiation = 0;
         m_refresh_needed = true;
         m_input_error.clear();
-        m_returned_line = DeprecatedString::empty();
+        m_returned_line = ByteString::empty();
         m_chars_touched_in_the_middle = 0;
         m_drawn_end_of_line_offset = 0;
         m_drawn_spans = {};
@@ -420,7 +426,7 @@ private:
     ByteBuffer m_pending_chars;
     Vector<char, 512> m_incomplete_data;
     Optional<Error> m_input_error;
-    DeprecatedString m_returned_line;
+    ByteString m_returned_line;
 
     size_t m_cursor { 0 };
     size_t m_drawn_cursor { 0 };
@@ -442,12 +448,13 @@ private:
     // Exact position before our prompt in the terminal.
     size_t m_origin_row { 0 };
     size_t m_origin_column { 0 };
+    bool m_expected_origin_changed { false };
     bool m_has_origin_reset_scheduled { false };
 
     OwnPtr<SuggestionDisplay> m_suggestion_display;
     Vector<u32, 32> m_remembered_suggestion_static_data;
 
-    DeprecatedString m_new_prompt;
+    ByteString m_new_prompt;
 
     SuggestionManager m_suggestion_manager;
 
@@ -471,13 +478,14 @@ private:
 
     // FIXME: This should be something more take_first()-friendly.
     struct HistoryEntry {
-        DeprecatedString entry;
+        ByteString entry;
         time_t timestamp;
     };
     Vector<HistoryEntry> m_history;
     size_t m_history_cursor { 0 };
     size_t m_history_capacity { 1024 };
     bool m_history_dirty { false };
+    static ErrorOr<Vector<HistoryEntry>> try_load_history(StringView path);
 
     enum class InputState {
         Free,
@@ -505,6 +513,7 @@ private:
     RefPtr<Core::Notifier> m_notifier;
 
     Vector<u32> m_paste_buffer;
+    Vector<u32> m_last_erased;
 
     bool m_initialized { false };
     bool m_refresh_needed { false };

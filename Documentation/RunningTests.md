@@ -79,7 +79,7 @@ For completeness, a basic on-target test run will need the SerenityOS image buil
 cmake -GNinja -S Meta/CMake/Superbuild -B Build/superbuild-x86_64
 cmake --build Build/superbuild-x86_64
 cd Build/x86_64
-ninja install && ninja image && ninja run
+ninja install && ninja qemu-image && ninja run
 ```
 
 In the initial terminal, one can easily run the test runner script:
@@ -106,7 +106,7 @@ SystemModes=self-test
 ```
 
 `/dev/ttyS0` is used as stdio because that serial port is connected when qemu is run with `-display none` and
-`-nographic`, and output to it will show up in the stdout of the qemu window. Separately, the CI run script redirects
+`-serial stdio`, and output to it will show up in the stdout of the qemu window. Separately, the CI run script redirects
 the serial debug output to `./debug.log` so that both stdout of the tests and the dbgln from the kernel/tests can be
 captured.
 

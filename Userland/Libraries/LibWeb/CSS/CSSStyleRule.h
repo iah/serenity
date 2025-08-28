@@ -8,39 +8,45 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
-#include <LibWeb/CSS/CSSRule.h>
+#include <LibWeb/CSS/CSSGroupingRule.h>
 #include <LibWeb/CSS/CSSStyleDeclaration.h>
 #include <LibWeb/CSS/Selector.h>
 
 namespace Web::CSS {
 
-class CSSStyleRule final : public CSSRule {
-    WEB_PLATFORM_OBJECT(CSSStyleRule, CSSRule);
+class CSSStyleRule final : public CSSGroupingRule {
+    WEB_PLATFORM_OBJECT(CSSStyleRule, CSSGroupingRule);
+    JS_DECLARE_ALLOCATOR(CSSStyleRule);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSStyleRule>> create(JS::Realm&, Vector<NonnullRefPtr<Selector>>&&, CSSStyleDeclaration&);
+    [[nodiscard]] static JS::NonnullGCPtr<CSSStyleRule> create(JS::Realm&, SelectorList&&, PropertyOwningCSSStyleDeclaration&, CSSRuleList&);
 
     virtual ~CSSStyleRule() override = default;
 
-    Vector<NonnullRefPtr<Selector>> const& selectors() const { return m_selectors; }
-    CSSStyleDeclaration const& declaration() const { return m_declaration; }
+    SelectorList const& selectors() const { return m_selectors; }
+    SelectorList const& absolutized_selectors() const;
+    PropertyOwningCSSStyleDeclaration const& declaration() const { return m_declaration; }
 
-    virtual Type type() const override { return Type::Style; };
+    virtual Type type() const override { return Type::Style; }
 
-    DeprecatedString selector_text() const;
+    String selector_text() const;
     void set_selector_text(StringView);
 
     CSSStyleDeclaration* style();
 
+    [[nodiscard]] FlyString const& qualified_layer_name() const { return parent_layer_internal_qualified_name(); }
+
 private:
-    CSSStyleRule(JS::Realm&, Vector<NonnullRefPtr<Selector>>&&, CSSStyleDeclaration&);
+    CSSStyleRule(JS::Realm&, SelectorList&&, PropertyOwningCSSStyleDeclaration&, CSSRuleList&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
-    virtual DeprecatedString serialized() const override;
+    virtual void clear_caches() override;
+    virtual String serialized() const override;
 
-    Vector<NonnullRefPtr<Selector>> m_selectors;
-    CSSStyleDeclaration& m_declaration;
+    SelectorList m_selectors;
+    mutable Optional<SelectorList> m_cached_absolutized_selectors;
+    JS::NonnullGCPtr<PropertyOwningCSSStyleDeclaration> m_declaration;
 };
 
 template<>

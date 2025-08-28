@@ -37,23 +37,24 @@ public:
 
     Layer* active_layer() { return m_active_layer; }
     void set_active_layer(Layer*);
+    Gfx::IntRect active_layer_visible_rect();
 
     ErrorOr<void> add_new_layer_from_selection();
     Tool* active_tool() { return m_active_tool; }
     void set_active_tool(Tool*);
     void update_tool_cursor();
 
-    void did_complete_action(DeprecatedString action_text);
+    void did_complete_action(ByteString action_text);
     bool undo();
     bool redo();
 
     auto& undo_stack() { return m_undo_stack; }
 
-    DeprecatedString const& path() const { return m_path; }
-    void set_path(DeprecatedString);
+    ByteString const& path() const { return m_path; }
+    void set_path(ByteString);
 
-    DeprecatedString const& title() const { return m_title; }
-    void set_title(DeprecatedString);
+    String const& title() const { return m_title; }
+    void set_title(String);
 
     void add_guide(NonnullRefPtr<Guide> guide) { m_guides.append(guide); }
     void remove_guide(Guide const& guide)
@@ -82,12 +83,14 @@ public:
 
     Function<void(Layer*)> on_active_layer_change;
 
-    Function<void(DeprecatedString const&)> on_title_change;
+    Function<void(String const&)> on_title_change;
 
     Function<void(Gfx::IntPoint)> on_image_mouse_position_change;
 
     Function<void(void)> on_leave;
     Function<void(bool modified)> on_modified_change;
+
+    Function<void(ByteString const& filename)> on_file_saved;
 
     bool request_close();
 
@@ -118,14 +121,16 @@ public:
 
     Core::EventLoop& gui_event_loop() { return m_gui_event_loop; }
 
+    void set_status_info_to_color_at_mouse_position(Gfx::IntPoint position, bool sample_all_layers);
     void set_editor_color_to_color_at_mouse_position(GUI::MouseEvent const& event, bool sample_all_layers);
 
-    void set_modified(DeprecatedString action_text);
+    void set_modified(ByteString action_text);
     void set_unmodified();
     void update_modified();
-    Function<void(DeprecatedString)> on_appended_status_info_change;
-    DeprecatedString appended_status_info() { return m_appended_status_info; };
-    void set_appended_status_info(DeprecatedString);
+    Function<void(ByteString)> on_appended_status_info_change;
+    ByteString appended_status_info() { return m_appended_status_info; }
+    void set_appended_status_info(ByteString);
+    ByteString generate_unique_layer_name(ByteString const& original_layer_name);
 
 private:
     explicit ImageEditor(NonnullRefPtr<Image>);
@@ -161,12 +166,14 @@ private:
 
     void paint_selection(Gfx::Painter&);
 
+    Optional<Color> color_from_position(Gfx::IntPoint position, bool sample_all_layers);
+
     NonnullRefPtr<Image> m_image;
     RefPtr<Layer> m_active_layer;
     GUI::UndoStack m_undo_stack;
 
-    DeprecatedString m_path;
-    DeprecatedString m_title;
+    ByteString m_path;
+    String m_title;
 
     Vector<NonnullRefPtr<Guide>> m_guides;
     bool m_show_guides { true };
@@ -197,7 +204,7 @@ private:
     void draw_marching_ants_pixel(Gfx::Painter&, int x, int y) const;
 
     Core::EventLoop& m_gui_event_loop;
-    DeprecatedString m_appended_status_info;
+    ByteString m_appended_status_info;
 };
 
 }

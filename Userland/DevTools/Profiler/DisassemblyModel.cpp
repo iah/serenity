@@ -12,10 +12,11 @@
 #include "Profile.h"
 #include <LibCore/MappedFile.h>
 #include <LibDebug/DebugInfo.h>
+#include <LibDisassembly/Architecture.h>
+#include <LibDisassembly/Disassembler.h>
+#include <LibDisassembly/ELFSymbolProvider.h>
 #include <LibELF/Image.h>
 #include <LibSymbolication/Symbolication.h>
-#include <LibX86/Disassembler.h>
-#include <LibX86/ELFSymbolProvider.h>
 #include <stdio.h>
 
 namespace Profiler {
@@ -29,7 +30,8 @@ static ELF::Image* try_load_kernel_binary()
     auto kernel_binary_or_error = Core::MappedFile::map("/boot/Kernel"sv);
     if (!kernel_binary_or_error.is_error()) {
         auto kernel_binary = kernel_binary_or_error.release_value();
-        s_kernel_binary = { { kernel_binary, ELF::Image(kernel_binary->bytes()) } };
+        auto image = ELF::Image(kernel_binary->bytes());
+        s_kernel_binary = { { move(kernel_binary), image } };
         return &s_kernel_binary->elf;
     }
     return nullptr;
@@ -50,7 +52,7 @@ DisassemblyModel::DisassemblyModel(Profile& profile, ProfileNode& node)
         if (elf == nullptr)
             return;
         if (g_kernel_debug_info == nullptr)
-            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, DeprecatedString::empty(), base_address);
+            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, ByteString::empty(), base_address);
         debug_info = g_kernel_debug_info.ptr();
     } else {
         auto const& process = node.process();
@@ -92,9 +94,9 @@ DisassemblyModel::DisassemblyModel(Profile& profile, ProfileNode& node)
     auto symbol_offset_from_function_start = node.address() - base_address - symbol->value();
     auto view = symbol.value().raw_data().substring_view(symbol_offset_from_function_start);
 
-    X86::ELFSymbolProvider symbol_provider(*elf, base_address);
-    X86::SimpleInstructionStream stream((u8 const*)view.characters_without_null_termination(), view.length());
-    X86::Disassembler disassembler(stream);
+    Disassembly::ELFSymbolProvider symbol_provider(*elf, base_address);
+    Disassembly::SimpleInstructionStream stream((u8 const*)view.characters_without_null_termination(), view.length());
+    Disassembly::Disassembler disassembler(stream, Disassembly::architecture_from_elf_machine(elf->machine()).value_or(Disassembly::host_architecture()));
 
     size_t offset_into_symbol = 0;
     FlatPtr last_instruction_offset = 0;
@@ -113,16 +115,17 @@ DisassemblyModel::DisassemblyModel(Profile& profile, ProfileNode& node)
             break;
         FlatPtr address_in_profiled_program = node.address() + offset_into_symbol;
 
-        auto disassembly = insn.value().to_deprecated_string(address_in_profiled_program, &symbol_provider);
+        auto disassembly = insn.value()->to_byte_string(address_in_profiled_program, symbol_provider);
 
-        StringView instruction_bytes = view.substring_view(offset_into_symbol, insn.value().length());
+        auto length = insn.value()->length();
+        StringView instruction_bytes = view.substring_view(offset_into_symbol, length);
         u32 samples_at_this_instruction = m_node.events_per_address().get(address_in_profiled_program).value_or(0);
         float percent = ((float)samples_at_this_instruction / (float)m_node.event_count()) * 100.0f;
         auto source_position = debug_info->get_source_position_with_inlines(address_in_profiled_program - base_address).release_value_but_fixme_should_propagate_errors();
 
-        m_instructions.append({ insn.value(), disassembly, instruction_bytes, address_in_profiled_program, samples_at_this_instruction, percent, source_position });
+        m_instructions.append({ insn.release_value(), disassembly, instruction_bytes, address_in_profiled_program, samples_at_this_instruction, percent, source_position });
 
-        offset_into_symbol += insn.value().length();
+        offset_into_symbol += length;
     }
 }
 
@@ -131,22 +134,21 @@ int DisassemblyModel::row_count(GUI::ModelIndex const&) const
     return m_instructions.size();
 }
 
-DeprecatedString DisassemblyModel::column_name(int column) const
+ErrorOr<String> DisassemblyModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleCount:
-        return m_profile.show_percentages() ? "% Samples" : "# Samples";
+        return m_profile.show_percentages() ? "% Samples"_string : "# Samples"_string;
     case Column::Address:
-        return "Address";
+        return "Address"_string;
     case Column::InstructionBytes:
-        return "Insn Bytes";
+        return "Insn Bytes"_string;
     case Column::Disassembly:
-        return "Disassembly";
+        return "Disassembly"_string;
     case Column::SourceLocation:
-        return "Source Location";
+        return "Source Location"_string;
     default:
         VERIFY_NOT_REACHED();
-        return {};
     }
 }
 
@@ -200,14 +202,14 @@ GUI::Variant DisassemblyModel::data(GUI::ModelIndex const& index, GUI::ModelRole
         }
 
         if (index.column() == Column::Address)
-            return DeprecatedString::formatted("{:p}", insn.address);
+            return ByteString::formatted("{:p}", insn.address);
 
         if (index.column() == Column::InstructionBytes) {
             StringBuilder builder;
             for (auto ch : insn.bytes) {
                 builder.appendff("{:02x} ", (u8)ch);
             }
-            return builder.to_deprecated_string();
+            return builder.to_byte_string();
         }
 
         if (index.column() == Column::Disassembly)
@@ -229,7 +231,7 @@ GUI::Variant DisassemblyModel::data(GUI::ModelIndex const& index, GUI::ModelRole
                 auto const& entry = insn.source_position_with_inlines.source_position.value();
                 builder.appendff("{}:{}", entry.file_path, entry.line_number);
             }
-            return builder.to_deprecated_string();
+            return builder.to_byte_string();
         }
 
         return {};

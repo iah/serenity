@@ -14,16 +14,16 @@
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <AK/Try.h>
-#include <AK/URL.h>
 #include <Applications/FileManager/FileManagerWindowGML.h>
 #include <LibConfig/Client.h>
 #include <LibConfig/Listener.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Process.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibDesktop/Launcher.h>
+#include <LibFileSystem/FileSystem.h>
+#include <LibFileSystem/TempFile.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/ActionGroup.h>
 #include <LibGUI/Application.h>
@@ -48,6 +48,7 @@
 #include <LibGUI/Window.h>
 #include <LibGfx/Palette.h>
 #include <LibMain/Main.h>
+#include <LibURL/URL.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -58,15 +59,15 @@
 using namespace FileManager;
 
 static ErrorOr<int> run_in_desktop_mode();
-static ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, DeprecatedString const& entry_focused_on_init);
-static void do_copy(Vector<DeprecatedString> const& selected_file_paths, FileOperation file_operation);
-static void do_paste(DeprecatedString const& target_directory, GUI::Window* window);
-static void do_create_link(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window);
-static void do_create_archive(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window);
-static void do_set_wallpaper(DeprecatedString const& file_path, GUI::Window* window);
-static void do_unzip_archive(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window);
-static void show_properties(DeprecatedString const& container_dir_path, DeprecatedString const& path, Vector<DeprecatedString> const& selected, GUI::Window* window);
-static bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView const& directory_view, DeprecatedString const& full_path, RefPtr<GUI::Action>& default_action, Vector<NonnullRefPtr<LauncherHandler>>& current_file_launch_handlers);
+static ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString const& entry_focused_on_init);
+static void do_copy(Vector<ByteString> const& selected_file_paths, FileOperation file_operation);
+static void do_paste(ByteString const& target_directory, GUI::Window* window);
+static void do_create_link(Vector<ByteString> const& selected_file_paths, GUI::Window* window);
+static void do_create_archive(Vector<ByteString> const& selected_file_paths, GUI::Window* window);
+static void do_set_wallpaper(ByteString const& file_path, GUI::Window* window);
+static void do_unzip_archive(Vector<ByteString> const& selected_file_paths, GUI::Window* window);
+static void show_properties(ByteString const& container_dir_path, ByteString const& path, Vector<ByteString> const& selected, GUI::Window* window);
+static bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView const& directory_view, ByteString const& full_path, RefPtr<GUI::Action>& default_action, Vector<NonnullRefPtr<LauncherHandler>>& current_file_launch_handlers);
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
@@ -81,18 +82,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool is_desktop_mode { false };
     bool is_selection_mode { false };
     bool ignore_path_resolution { false };
-    DeprecatedString initial_location;
+    ByteString initial_location;
     args_parser.add_option(is_desktop_mode, "Run in desktop mode", "desktop", 'd');
     args_parser.add_option(is_selection_mode, "Show entry in parent folder", "select", 's');
     args_parser.add_option(ignore_path_resolution, "Use raw path, do not resolve real path", "raw", 'r');
     args_parser.add_positional_argument(initial_location, "Path to open", "path", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio thread recvfd sendfd cpath rpath wpath fattr proc exec unix"));
 
-    Config::pledge_domains({ "FileManager", "WindowManager" });
+    Config::pledge_domains({ "FileManager", "WindowManager", "Maps" });
     Config::monitor_domain("FileManager");
     Config::monitor_domain("WindowManager");
 
@@ -105,16 +106,43 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // 3. the user's home directory
     // 4. the root directory
 
+    LexicalPath path(initial_location);
     if (!initial_location.is_empty()) {
-        if (!ignore_path_resolution)
-            initial_location = Core::DeprecatedFile::real_path_for(initial_location);
+        if (auto error_or_path = FileSystem::real_path(initial_location); !ignore_path_resolution && !error_or_path.is_error())
+            initial_location = error_or_path.release_value();
 
-        if (!Core::DeprecatedFile::is_directory(initial_location))
+        if (!FileSystem::is_directory(initial_location)) {
+            // We want to extract zips to a temporary directory when FileManager is launched with a .zip file as its first argument
+            if (path.has_extension(".zip"sv)) {
+                auto temp_directory = FileSystem::TempFile::create_temp_directory();
+                if (temp_directory.is_error()) {
+                    dbgln("Failed to create temporary directory during zip extraction: {}", temp_directory.error());
+
+                    GUI::MessageBox::show_error(app->active_window(), "Failed to create temporary directory!"sv);
+                    return -1;
+                }
+
+                auto temp_directory_path = temp_directory.value()->path();
+                auto result = Core::Process::spawn("/bin/unzip"sv, Array { "-d"sv, temp_directory_path, initial_location });
+
+                if (result.is_error()) {
+                    dbgln("Failed to extract {} to {}: {}", initial_location, temp_directory_path, result.error());
+
+                    auto message = TRY(String::formatted("Failed to extract {} to {}", initial_location, temp_directory_path));
+                    GUI::MessageBox::show_error(app->active_window(), message);
+
+                    return -1;
+                }
+
+                return run_in_windowed_mode(temp_directory_path.to_byte_string(), path.basename());
+            }
+
             is_selection_mode = true;
+        }
     }
 
-    if (initial_location.is_empty())
-        initial_location = Core::DeprecatedFile::current_working_directory();
+    if (auto error_or_cwd = FileSystem::current_working_directory(); initial_location.is_empty() && !error_or_cwd.is_error())
+        initial_location = error_or_cwd.release_value();
 
     if (initial_location.is_empty())
         initial_location = Core::StandardPaths::home_directory();
@@ -122,9 +150,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (initial_location.is_empty())
         initial_location = "/";
 
-    DeprecatedString focused_entry;
+    ByteString focused_entry;
     if (is_selection_mode) {
-        LexicalPath path(initial_location);
         initial_location = path.dirname();
         focused_entry = path.basename();
     }
@@ -132,7 +159,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     return run_in_windowed_mode(initial_location, focused_entry);
 }
 
-void do_copy(Vector<DeprecatedString> const& selected_file_paths, FileOperation file_operation)
+void do_copy(Vector<ByteString> const& selected_file_paths, FileOperation file_operation)
 {
     VERIFY(!selected_file_paths.is_empty());
 
@@ -144,17 +171,17 @@ void do_copy(Vector<DeprecatedString> const& selected_file_paths, FileOperation 
         auto url = URL::create_with_file_scheme(path);
         copy_text.appendff("{}\n", url);
     }
-    GUI::Clipboard::the().set_data(copy_text.to_deprecated_string().bytes(), "text/uri-list");
+    GUI::Clipboard::the().set_data(copy_text.string_view().bytes(), "text/uri-list");
 }
 
-void do_paste(DeprecatedString const& target_directory, GUI::Window* window)
+void do_paste(ByteString const& target_directory, GUI::Window* window)
 {
     auto data_and_type = GUI::Clipboard::the().fetch_data_and_type();
     if (data_and_type.mime_type != "text/uri-list") {
         dbgln("Cannot paste clipboard type {}", data_and_type.mime_type);
         return;
     }
-    auto copied_lines = DeprecatedString::copy(data_and_type.data).split('\n');
+    auto copied_lines = ByteString::copy(data_and_type.data).split('\n');
     if (copied_lines.is_empty()) {
         dbgln("No files to paste");
         return;
@@ -166,16 +193,16 @@ void do_paste(DeprecatedString const& target_directory, GUI::Window* window)
         copied_lines.remove(0);
     }
 
-    Vector<DeprecatedString> source_paths;
+    Vector<ByteString> source_paths;
     for (auto& uri_as_string : copied_lines) {
         if (uri_as_string.is_empty())
             continue;
-        URL url = uri_as_string;
+        URL::URL url = uri_as_string;
         if (!url.is_valid() || url.scheme() != "file") {
             dbgln("Cannot paste URI {}", uri_as_string);
             continue;
         }
-        source_paths.append(url.path());
+        source_paths.append(URL::percent_decode(url.serialize_path()));
     }
 
     if (!source_paths.is_empty()) {
@@ -184,19 +211,19 @@ void do_paste(DeprecatedString const& target_directory, GUI::Window* window)
     }
 }
 
-void do_create_link(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window)
+void do_create_link(Vector<ByteString> const& selected_file_paths, GUI::Window* window)
 {
     auto path = selected_file_paths.first();
-    auto destination = DeprecatedString::formatted("{}/{}", Core::StandardPaths::desktop_directory(), LexicalPath::basename(path));
-    if (auto result = Core::DeprecatedFile::link_file(destination, path); result.is_error()) {
-        GUI::MessageBox::show(window, DeprecatedString::formatted("Could not create desktop shortcut:\n{}", result.error()), "File Manager"sv,
+    auto destination = ByteString::formatted("{}/{}", Core::StandardPaths::desktop_directory(), LexicalPath::basename(path));
+    if (auto result = FileSystem::link_file(destination, path); result.is_error()) {
+        GUI::MessageBox::show(window, ByteString::formatted("Could not create desktop shortcut:\n{}", result.error()), "File Manager"sv,
             GUI::MessageBox::Type::Error);
     }
 }
 
-void do_create_archive(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window)
+void do_create_archive(Vector<ByteString> const& selected_file_paths, GUI::Window* window)
 {
-    DeprecatedString archive_name;
+    String archive_name;
     if (GUI::InputBox::show(window, archive_name, "Enter name:"sv, "Create Archive"sv) != GUI::InputBox::ExecResult::OK)
         return;
 
@@ -210,10 +237,10 @@ void do_create_archive(Vector<DeprecatedString> const& selected_file_paths, GUI:
         path_builder.append(".zip"sv);
     } else {
         path_builder.append(archive_name);
-        if (!archive_name.ends_with(".zip"sv))
+        if (!AK::StringUtils::ends_with(archive_name, ".zip"sv, CaseSensitivity::CaseSensitive))
             path_builder.append(".zip"sv);
     }
-    auto output_path = path_builder.to_deprecated_string();
+    auto output_path = path_builder.to_byte_string();
 
     pid_t zip_pid = fork();
     if (zip_pid < 0) {
@@ -222,7 +249,7 @@ void do_create_archive(Vector<DeprecatedString> const& selected_file_paths, GUI:
     }
 
     if (!zip_pid) {
-        Vector<DeprecatedString> relative_paths;
+        Vector<ByteString> relative_paths;
         Vector<char const*> arg_list;
         arg_list.append("/bin/zip");
         arg_list.append("-r");
@@ -246,13 +273,14 @@ void do_create_archive(Vector<DeprecatedString> const& selected_file_paths, GUI:
     }
 }
 
-void do_set_wallpaper(DeprecatedString const& file_path, GUI::Window* window)
+void do_set_wallpaper(ByteString const& file_path, GUI::Window* window)
 {
     auto show_error = [&] {
-        GUI::MessageBox::show(window, DeprecatedString::formatted("Failed to set {} as wallpaper.", file_path), "Failed to set wallpaper"sv, GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(window, ByteString::formatted("Failed to set {} as wallpaper.", file_path), "Failed to set wallpaper"sv, GUI::MessageBox::Type::Error);
     };
 
-    auto bitmap_or_error = Gfx::Bitmap::load_from_file(file_path);
+    constexpr auto scale_factor = 1;
+    auto bitmap_or_error = Gfx::Bitmap::load_from_file(file_path, scale_factor, GUI::Desktop::the().rect().size());
     if (bitmap_or_error.is_error()) {
         show_error();
         return;
@@ -262,10 +290,10 @@ void do_set_wallpaper(DeprecatedString const& file_path, GUI::Window* window)
         show_error();
 }
 
-void do_unzip_archive(Vector<DeprecatedString> const& selected_file_paths, GUI::Window* window)
+void do_unzip_archive(Vector<ByteString> const& selected_file_paths, GUI::Window* window)
 {
-    DeprecatedString archive_file_path = selected_file_paths.first();
-    DeprecatedString output_directory_path = archive_file_path.substring(0, archive_file_path.length() - 4);
+    ByteString archive_file_path = selected_file_paths.first();
+    ByteString output_directory_path = archive_file_path.substring(0, archive_file_path.length() - 4);
 
     pid_t unzip_pid = fork();
     if (unzip_pid < 0) {
@@ -288,7 +316,7 @@ void do_unzip_archive(Vector<DeprecatedString> const& selected_file_paths, GUI::
     }
 }
 
-void show_properties(DeprecatedString const& container_dir_path, DeprecatedString const& path, Vector<DeprecatedString> const& selected, GUI::Window* window)
+void show_properties(ByteString const& container_dir_path, ByteString const& path, Vector<ByteString> const& selected, GUI::Window* window)
 {
     ErrorOr<RefPtr<PropertiesWindow>> properties_or_error = nullptr;
     if (selected.is_empty()) {
@@ -310,7 +338,7 @@ void show_properties(DeprecatedString const& container_dir_path, DeprecatedStrin
     properties->show();
 }
 
-bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView const& directory_view, DeprecatedString const& full_path, RefPtr<GUI::Action>& default_action, Vector<NonnullRefPtr<LauncherHandler>>& current_file_launch_handlers)
+bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView const& directory_view, ByteString const& full_path, RefPtr<GUI::Action>& default_action, Vector<NonnullRefPtr<LauncherHandler>>& current_file_launch_handlers)
 {
     current_file_launch_handlers = directory_view.get_launch_handlers(full_path);
 
@@ -321,9 +349,9 @@ bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView c
             directory_view.launch(URL::create_with_file_scheme(full_path), launcher_handler);
         });
         if (default_file_handler->details().launcher_type == Desktop::Launcher::LauncherType::Application)
-            file_open_action->set_text(DeprecatedString::formatted("Run {}", file_open_action->text()));
+            file_open_action->set_text(ByteString::formatted("Run {}", file_open_action->text()));
         else
-            file_open_action->set_text(DeprecatedString::formatted("Open in {}", file_open_action->text()));
+            file_open_action->set_text(ByteString::formatted("Open in {}", file_open_action->text()));
 
         default_action = file_open_action;
 
@@ -335,11 +363,11 @@ bool add_launch_handler_actions_to_menu(RefPtr<GUI::Menu>& menu, DirectoryView c
 
     if (current_file_launch_handlers.size() > 1) {
         added_open_menu_items = true;
-        auto& file_open_with_menu = menu->add_submenu("Open with");
+        auto file_open_with_menu = menu->add_submenu("Open with"_string);
         for (auto& handler : current_file_launch_handlers) {
             if (handler == default_file_handler)
                 continue;
-            file_open_with_menu.add_action(handler->create_launch_action([&, full_path = move(full_path)](auto& launcher_handler) {
+            file_open_with_menu->add_action(handler->create_launch_action([&, full_path = move(full_path)](auto& launcher_handler) {
                 directory_view.launch(URL::create_with_file_scheme(full_path), launcher_handler);
             }));
         }
@@ -352,13 +380,16 @@ ErrorOr<int> run_in_desktop_mode()
 {
     (void)Core::Process::set_name("FileManager (Desktop)"sv, Core::Process::SetThreadName::Yes);
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title("Desktop Manager");
     window->set_window_type(GUI::WindowType::Desktop);
     window->set_has_alpha_channel(true);
 
-    auto desktop_widget = TRY(window->set_main_widget<FileManager::DesktopWidget>());
-    TRY(desktop_widget->try_set_layout<GUI::VerticalBoxLayout>());
+    auto desktop_icon = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/desktop.png"sv));
+    window->set_icon(desktop_icon);
+
+    auto desktop_widget = window->set_main_widget<FileManager::DesktopWidget>();
+    desktop_widget->set_layout<GUI::VerticalBoxLayout>();
 
     auto directory_view = TRY(desktop_widget->try_add<DirectoryView>(DirectoryView::Mode::Desktop));
     directory_view->set_name("directory_view");
@@ -428,8 +459,8 @@ ErrorOr<int> run_in_desktop_mode()
 
     auto properties_action = GUI::CommonActions::make_properties_action(
         [&](auto&) {
-            DeprecatedString path = directory_view->path();
-            Vector<DeprecatedString> selected = directory_view->selected_file_paths();
+            ByteString path = directory_view->path();
+            Vector<ByteString> selected = directory_view->selected_file_paths();
 
             show_properties(path, path, selected, directory_view->window());
         },
@@ -442,11 +473,11 @@ ErrorOr<int> run_in_desktop_mode()
         window);
     paste_action->set_enabled(GUI::Clipboard::the().fetch_mime_type() == "text/uri-list" && access(directory_view->path().characters(), W_OK) == 0);
 
-    GUI::Clipboard::the().on_change = [&](DeprecatedString const& data_type) {
+    GUI::Clipboard::the().on_change = [&](ByteString const& data_type) {
         paste_action->set_enabled(data_type == "text/uri-list" && access(directory_view->path().characters(), W_OK) == 0);
     };
 
-    auto desktop_view_context_menu = TRY(GUI::Menu::try_create("Directory View"));
+    auto desktop_view_context_menu = GUI::Menu::construct("Directory View"_string);
 
     auto file_manager_action = GUI::Action::create("Open in File &Manager", {}, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv)), [&](auto&) {
         auto paths = directory_view->selected_file_paths();
@@ -456,7 +487,7 @@ ErrorOr<int> run_in_desktop_mode()
         }
 
         for (auto& path : paths) {
-            if (Core::DeprecatedFile::is_directory(path))
+            if (FileSystem::is_directory(path))
                 Desktop::Launcher::open(URL::create_with_file_scheme(path));
         }
     });
@@ -464,13 +495,13 @@ ErrorOr<int> run_in_desktop_mode()
     auto open_terminal_action = GUI::Action::create("Open in &Terminal", {}, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-terminal.png"sv)), [&](auto&) {
         auto paths = directory_view->selected_file_paths();
         if (paths.is_empty()) {
-            spawn_terminal(directory_view->path());
+            spawn_terminal(window, directory_view->path());
             return;
         }
 
         for (auto& path : paths) {
-            if (Core::DeprecatedFile::is_directory(path)) {
-                spawn_terminal(path);
+            if (FileSystem::is_directory(path)) {
+                spawn_terminal(window, path);
             }
         }
     });
@@ -479,27 +510,27 @@ ErrorOr<int> run_in_desktop_mode()
         Desktop::Launcher::open(URL::create_with_file_scheme("/bin/DisplaySettings"));
     });
 
-    TRY(desktop_view_context_menu->try_add_action(directory_view->mkdir_action()));
-    TRY(desktop_view_context_menu->try_add_action(directory_view->touch_action()));
-    TRY(desktop_view_context_menu->try_add_action(paste_action));
-    TRY(desktop_view_context_menu->try_add_separator());
-    TRY(desktop_view_context_menu->try_add_action(file_manager_action));
-    TRY(desktop_view_context_menu->try_add_action(open_terminal_action));
-    TRY(desktop_view_context_menu->try_add_separator());
-    TRY(desktop_view_context_menu->try_add_action(display_properties_action));
+    desktop_view_context_menu->add_action(directory_view->mkdir_action());
+    desktop_view_context_menu->add_action(directory_view->touch_action());
+    desktop_view_context_menu->add_action(paste_action);
+    desktop_view_context_menu->add_separator();
+    desktop_view_context_menu->add_action(file_manager_action);
+    desktop_view_context_menu->add_action(open_terminal_action);
+    desktop_view_context_menu->add_separator();
+    desktop_view_context_menu->add_action(display_properties_action);
 
-    auto desktop_context_menu = TRY(GUI::Menu::try_create("Directory View Directory"));
+    auto desktop_context_menu = GUI::Menu::construct("Directory View Directory"_string);
 
-    TRY(desktop_context_menu->try_add_action(file_manager_action));
-    TRY(desktop_context_menu->try_add_action(open_terminal_action));
-    TRY(desktop_context_menu->try_add_separator());
-    TRY(desktop_context_menu->try_add_action(cut_action));
-    TRY(desktop_context_menu->try_add_action(copy_action));
-    TRY(desktop_context_menu->try_add_action(paste_action));
-    TRY(desktop_context_menu->try_add_action(directory_view->delete_action()));
-    TRY(desktop_context_menu->try_add_action(directory_view->rename_action()));
-    TRY(desktop_context_menu->try_add_separator());
-    TRY(desktop_context_menu->try_add_action(properties_action));
+    desktop_context_menu->add_action(file_manager_action);
+    desktop_context_menu->add_action(open_terminal_action);
+    desktop_context_menu->add_separator();
+    desktop_context_menu->add_action(cut_action);
+    desktop_context_menu->add_action(copy_action);
+    desktop_context_menu->add_action(paste_action);
+    desktop_context_menu->add_action(directory_view->delete_action());
+    desktop_context_menu->add_action(directory_view->rename_action());
+    desktop_context_menu->add_separator();
+    desktop_context_menu->add_action(properties_action);
 
     RefPtr<GUI::Menu> file_context_menu;
     Vector<NonnullRefPtr<LauncherHandler>> current_file_handlers;
@@ -511,7 +542,7 @@ ErrorOr<int> run_in_desktop_mode()
             if (node.is_directory()) {
                 desktop_context_menu->popup(event.screen_position(), file_manager_action);
             } else {
-                file_context_menu = GUI::Menu::construct("Directory View File");
+                file_context_menu = GUI::Menu::construct("Directory View File"_string);
 
                 bool added_open_menu_items = add_launch_handler_actions_to_menu(file_context_menu, directory_view, node.full_path(), file_context_menu_action_default_action, current_file_handlers);
                 if (added_open_menu_items)
@@ -542,50 +573,34 @@ ErrorOr<int> run_in_desktop_mode()
             desktop_view_context_menu->popup(event.screen_position());
         }
     };
-
     struct BackgroundWallpaperListener : Config::Listener {
-        virtual void config_string_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, DeprecatedString const& value) override
+        virtual void config_string_did_change(StringView domain, StringView group, StringView key, StringView value) override
         {
-            if (domain == "WindowManager" && group == "Background" && key == "Wallpaper") {
-                if (value.is_empty()) {
-                    GUI::Desktop::the().set_wallpaper(nullptr, {});
-                    return;
-                }
-                auto wallpaper_bitmap_or_error = Gfx::Bitmap::load_from_file(value);
-                if (wallpaper_bitmap_or_error.is_error())
-                    dbgln("Failed to load wallpaper bitmap from path: {}", wallpaper_bitmap_or_error.error());
-                else
-                    GUI::Desktop::the().set_wallpaper(wallpaper_bitmap_or_error.release_value(), {});
-            }
+            if (domain == "WindowManager" && group == "Background" && key == "Wallpaper")
+                GUI::Desktop::the().apply_wallpaper(nullptr, value);
         }
     } wallpaper_listener;
 
-    auto selected_wallpaper = Config::read_string("WindowManager"sv, "Background"sv, "Wallpaper"sv, ""sv);
-    RefPtr<Gfx::Bitmap> wallpaper_bitmap {};
-    if (!selected_wallpaper.is_empty()) {
-        wallpaper_bitmap = TRY(Gfx::Bitmap::load_from_file(selected_wallpaper));
-    }
     // This sets the wallpaper at startup, even if there is no wallpaper, the
     // desktop should still show the background color. It's fine to pass a
     // nullptr to Desktop::set_wallpaper.
-    GUI::Desktop::the().set_wallpaper(wallpaper_bitmap, {});
+    GUI::Desktop::the().load_current_wallpaper();
+
+    // Update wallpaper if desktop resolution changes.
+    GUI::Desktop::the().on_receive_screen_rects([&](auto&) {
+        GUI::Desktop::the().load_current_wallpaper();
+    });
 
     window->show();
     return GUI::Application::the()->exec();
 }
 
-ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, DeprecatedString const& entry_focused_on_init)
+ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString const& entry_focused_on_init)
 {
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title("File Manager");
 
-    auto left = Config::read_i32("FileManager"sv, "Window"sv, "Left"sv, 150);
-    auto top = Config::read_i32("FileManager"sv, "Window"sv, "Top"sv, 75);
-    auto width = Config::read_i32("FileManager"sv, "Window"sv, "Width"sv, 640);
-    auto height = Config::read_i32("FileManager"sv, "Window"sv, "Height"sv, 480);
-    auto was_maximized = Config::read_bool("FileManager"sv, "Window"sv, "Maximized"sv, false);
-
-    auto widget = TRY(window->set_main_widget<GUI::Widget>());
+    auto widget = window->set_main_widget<GUI::Widget>();
     TRY(widget->load_from_gml(file_manager_window_gml));
 
     auto& toolbar_container = *widget->find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
@@ -619,10 +634,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
     auto& statusbar = *widget->find_descendant_of_type_named<GUI::Statusbar>("statusbar");
 
     GUI::Application::the()->on_action_enter = [&statusbar](GUI::Action& action) {
-        auto text = action.status_tip();
-        if (text.is_empty())
-            text = Gfx::parse_ampersand_string(action.text());
-        statusbar.set_override_text(move(text));
+        statusbar.set_override_text(action.status_tip());
     };
 
     GUI::Application::the()->on_action_leave = [&statusbar](GUI::Action&) {
@@ -631,9 +643,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
     auto& progressbar = *widget->find_descendant_of_type_named<GUI::Progressbar>("progressbar");
     progressbar.set_format(GUI::Progressbar::Format::ValueSlashMax);
-    progressbar.set_frame_shape(Gfx::FrameShape::Panel);
-    progressbar.set_frame_shadow(Gfx::FrameShadow::Sunken);
-    progressbar.set_frame_thickness(1);
+    progressbar.set_frame_style(Gfx::FrameStyle::SunkenPanel);
 
     auto refresh_tree_view = [&] {
         directories_model->invalidate();
@@ -660,9 +670,9 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         directory_view->refresh();
     };
 
-    auto directory_context_menu = TRY(GUI::Menu::try_create("Directory View Directory"));
-    auto directory_view_context_menu = TRY(GUI::Menu::try_create("Directory View"));
-    auto tree_view_directory_context_menu = TRY(GUI::Menu::try_create("Tree View Directory"));
+    auto directory_context_menu = GUI::Menu::construct("Directory View Directory"_string);
+    auto directory_view_context_menu = GUI::Menu::construct("Directory View"_string);
+    auto tree_view_directory_context_menu = GUI::Menu::construct("Tree View Directory"_string);
 
     auto open_parent_directory_action = GUI::Action::create("Open &Parent Directory", { Mod_Alt, Key_Up }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/open-parent-directory.png"sv)), [&](GUI::Action const&) {
         directory_view->open_parent_directory();
@@ -743,7 +753,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
     view_type_action_group->add_action(directory_view->view_as_columns_action());
 
     auto tree_view_selected_file_paths = [&] {
-        Vector<DeprecatedString> paths;
+        Vector<ByteString> paths;
         auto& view = tree_view;
         view.selection().for_each_index([&](GUI::ModelIndex const& index) {
             paths.append(directories_model->full_path(index));
@@ -781,20 +791,36 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         window);
     copy_action->set_enabled(false);
 
+    auto copy_path_action = GUI::Action::create(
+        "Copy Path", [&](GUI::Action const&) {
+            Vector<ByteString> selected_paths;
+            if (directory_view->active_widget()->is_focused()) {
+                selected_paths = directory_view->selected_file_paths();
+            } else if (tree_view.is_focused()) {
+                selected_paths = tree_view_selected_file_paths();
+            }
+            VERIFY(!selected_paths.is_empty());
+
+            StringBuilder joined_paths_builder;
+            joined_paths_builder.join('\n', selected_paths.span());
+            GUI::Clipboard::the().set_plain_text(joined_paths_builder.string_view());
+        },
+        window);
+
     auto open_in_new_window_action
         = GUI::Action::create(
             "Open in New &Window",
             {},
             TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv)),
             [&](GUI::Action const& action) {
-                Vector<DeprecatedString> paths;
+                Vector<ByteString> paths;
                 if (action.activator() == tree_view_directory_context_menu)
                     paths = tree_view_selected_file_paths();
                 else
                     paths = directory_view->selected_file_paths();
 
                 for (auto& path : paths) {
-                    if (Core::DeprecatedFile::is_directory(path))
+                    if (FileSystem::is_directory(path))
                         Desktop::Launcher::open(URL::create_with_file_scheme(path));
                 }
             },
@@ -806,15 +832,15 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
             {},
             TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-terminal.png"sv)),
             [&](GUI::Action const& action) {
-                Vector<DeprecatedString> paths;
+                Vector<ByteString> paths;
                 if (action.activator() == tree_view_directory_context_menu)
                     paths = tree_view_selected_file_paths();
                 else
                     paths = directory_view->selected_file_paths();
 
                 for (auto& path : paths) {
-                    if (Core::DeprecatedFile::is_directory(path)) {
-                        spawn_terminal(path);
+                    if (FileSystem::is_directory(path)) {
+                        spawn_terminal(window, path);
                     }
                 }
             },
@@ -876,9 +902,9 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
     auto properties_action = GUI::CommonActions::make_properties_action(
         [&](auto& action) {
-            DeprecatedString container_dir_path;
-            DeprecatedString path;
-            Vector<DeprecatedString> selected;
+            ByteString container_dir_path;
+            ByteString path;
+            Vector<ByteString> selected;
             if (action.activator() == directory_context_menu || directory_view->active_widget()->is_focused()) {
                 path = directory_view->path();
                 container_dir_path = path;
@@ -895,7 +921,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
     auto paste_action = GUI::CommonActions::make_paste_action(
         [&](GUI::Action const& action) {
-            DeprecatedString target_directory;
+            ByteString target_directory;
             if (action.activator() == directory_context_menu)
                 target_directory = directory_view->selected_file_paths()[0];
             else
@@ -907,7 +933,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
     auto folder_specific_paste_action = GUI::CommonActions::make_paste_action(
         [&](GUI::Action const& action) {
-            DeprecatedString target_directory;
+            ByteString target_directory;
             if (action.activator() == directory_context_menu)
                 target_directory = directory_view->selected_file_paths()[0];
             else
@@ -935,7 +961,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         },
         window);
 
-    GUI::Clipboard::the().on_change = [&](DeprecatedString const& data_type) {
+    GUI::Clipboard::the().on_change = [&](ByteString const& data_type) {
         auto current_location = directory_view->path();
         paste_action->set_enabled(data_type == "text/uri-list" && access(current_location.characters(), W_OK) == 0);
     };
@@ -958,6 +984,10 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
     });
     focus_dependent_delete_action->set_enabled(false);
 
+    auto new_window_action = GUI::Action::create("&New Window", { Mod_Ctrl, Key_N }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/new-window.png"sv)), [&](GUI::Action const&) {
+        Desktop::Launcher::open(URL::create_with_file_scheme(directory_view->path()));
+    });
+
     auto mkdir_action = GUI::Action::create("&New Directory...", { Mod_Ctrl | Mod_Shift, Key_N }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/mkdir.png"sv)), [&](GUI::Action const&) {
         directory_view->mkdir_action().activate();
         refresh_tree_view();
@@ -968,24 +998,25 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         refresh_tree_view();
     });
 
-    auto file_menu = TRY(window->try_add_menu("&File"));
-    TRY(file_menu->try_add_action(mkdir_action));
-    TRY(file_menu->try_add_action(touch_action));
-    TRY(file_menu->try_add_action(focus_dependent_delete_action));
-    TRY(file_menu->try_add_action(directory_view->rename_action()));
-    TRY(file_menu->try_add_separator());
-    TRY(file_menu->try_add_action(properties_action));
-    TRY(file_menu->try_add_separator());
-    TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([](auto&) {
+    auto file_menu = window->add_menu("&File"_string);
+    file_menu->add_action(new_window_action);
+    file_menu->add_action(mkdir_action);
+    file_menu->add_action(touch_action);
+    file_menu->add_action(focus_dependent_delete_action);
+    file_menu->add_action(directory_view->rename_action());
+    file_menu->add_separator();
+    file_menu->add_action(properties_action);
+    file_menu->add_separator();
+    file_menu->add_action(GUI::CommonActions::make_quit_action([](auto&) {
         GUI::Application::the()->quit();
-    })));
+    }));
 
-    auto edit_menu = TRY(window->try_add_menu("&Edit"));
-    TRY(edit_menu->try_add_action(cut_action));
-    TRY(edit_menu->try_add_action(copy_action));
-    TRY(edit_menu->try_add_action(paste_action));
-    TRY(edit_menu->try_add_separator());
-    TRY(edit_menu->try_add_action(select_all_action));
+    auto edit_menu = window->add_menu("&Edit"_string);
+    edit_menu->add_action(cut_action);
+    edit_menu->add_action(copy_action);
+    edit_menu->add_action(paste_action);
+    edit_menu->add_separator();
+    edit_menu->add_action(select_all_action);
 
     auto show_dotfiles_in_view = [&](bool show_dotfiles) {
         directory_view->set_should_show_dotfiles(show_dotfiles);
@@ -1003,20 +1034,25 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
     show_dotfiles_action->set_checked(show_dotfiles);
     show_dotfiles_in_view(show_dotfiles);
 
-    auto view_menu = TRY(window->try_add_menu("&View"));
-    auto layout_menu = TRY(view_menu->try_add_submenu("&Layout"));
-    TRY(layout_menu->try_add_action(*layout_toolbar_action));
-    TRY(layout_menu->try_add_action(*layout_location_action));
-    TRY(layout_menu->try_add_action(*layout_statusbar_action));
-    TRY(layout_menu->try_add_action(*layout_folderpane_action));
+    auto view_menu = window->add_menu("&View"_string);
+    auto layout_menu = view_menu->add_submenu("&Layout"_string);
+    layout_menu->add_action(*layout_toolbar_action);
+    layout_menu->add_action(*layout_location_action);
+    layout_menu->add_action(*layout_statusbar_action);
+    layout_menu->add_action(*layout_folderpane_action);
 
-    TRY(view_menu->try_add_separator());
+    view_menu->add_separator();
 
-    TRY(view_menu->try_add_action(directory_view->view_as_icons_action()));
-    TRY(view_menu->try_add_action(directory_view->view_as_table_action()));
-    TRY(view_menu->try_add_action(directory_view->view_as_columns_action()));
-    TRY(view_menu->try_add_separator());
-    TRY(view_menu->try_add_action(show_dotfiles_action));
+    view_menu->add_action(directory_view->view_as_icons_action());
+    view_menu->add_action(directory_view->view_as_table_action());
+    view_menu->add_action(directory_view->view_as_columns_action());
+    view_menu->add_separator();
+    view_menu->add_action(show_dotfiles_action);
+
+    view_menu->add_separator();
+    view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window->set_fullscreen(!window->is_fullscreen());
+    }));
 
     auto go_to_location_action = GUI::Action::create("Go to &Location...", { Mod_Ctrl, Key_L }, Key_F6, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-to.png"sv)), [&](auto&) {
         toolbar_container.set_visible(true);
@@ -1024,48 +1060,48 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         breadcrumbbar.show_location_text_box();
     });
 
-    auto go_menu = TRY(window->try_add_menu("&Go"));
-    TRY(go_menu->try_add_action(go_back_action));
-    TRY(go_menu->try_add_action(go_forward_action));
-    TRY(go_menu->try_add_action(open_parent_directory_action));
-    TRY(go_menu->try_add_action(open_child_directory_action));
-    TRY(go_menu->try_add_action(go_home_action));
-    TRY(go_menu->try_add_action(go_to_location_action));
-    TRY(go_menu->try_add_separator());
-    TRY(go_menu->try_add_action(directory_view->open_terminal_action()));
+    auto go_menu = window->add_menu("&Go"_string);
+    go_menu->add_action(go_back_action);
+    go_menu->add_action(go_forward_action);
+    go_menu->add_action(open_parent_directory_action);
+    go_menu->add_action(open_child_directory_action);
+    go_menu->add_action(go_home_action);
+    go_menu->add_action(go_to_location_action);
+    go_menu->add_separator();
+    go_menu->add_action(directory_view->open_terminal_action());
 
-    auto help_menu = TRY(window->try_add_menu("&Help"));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("File Manager"sv, GUI::Icon::default_icon("app-file-manager"sv), window)));
+    auto help_menu = window->add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(window));
+    help_menu->add_action(GUI::CommonActions::make_about_action("File Manager"_string, GUI::Icon::default_icon("app-file-manager"sv), window));
 
-    (void)TRY(main_toolbar.try_add_action(go_back_action));
-    (void)TRY(main_toolbar.try_add_action(go_forward_action));
-    (void)TRY(main_toolbar.try_add_action(open_parent_directory_action));
-    (void)TRY(main_toolbar.try_add_action(go_home_action));
+    main_toolbar.add_action(go_back_action);
+    main_toolbar.add_action(go_forward_action);
+    main_toolbar.add_action(open_parent_directory_action);
+    main_toolbar.add_action(go_home_action);
 
-    TRY(main_toolbar.try_add_separator());
-    (void)TRY(main_toolbar.try_add_action(directory_view->open_terminal_action()));
+    main_toolbar.add_separator();
+    main_toolbar.add_action(directory_view->open_terminal_action());
 
-    TRY(main_toolbar.try_add_separator());
-    (void)TRY(main_toolbar.try_add_action(mkdir_action));
-    (void)TRY(main_toolbar.try_add_action(touch_action));
-    TRY(main_toolbar.try_add_separator());
+    main_toolbar.add_separator();
+    main_toolbar.add_action(mkdir_action);
+    main_toolbar.add_action(touch_action);
+    main_toolbar.add_separator();
 
-    (void)TRY(main_toolbar.try_add_action(focus_dependent_delete_action));
-    (void)TRY(main_toolbar.try_add_action(directory_view->rename_action()));
+    main_toolbar.add_action(focus_dependent_delete_action);
+    main_toolbar.add_action(directory_view->rename_action());
 
-    TRY(main_toolbar.try_add_separator());
-    (void)TRY(main_toolbar.try_add_action(cut_action));
-    (void)TRY(main_toolbar.try_add_action(copy_action));
-    (void)TRY(main_toolbar.try_add_action(paste_action));
+    main_toolbar.add_separator();
+    main_toolbar.add_action(cut_action);
+    main_toolbar.add_action(copy_action);
+    main_toolbar.add_action(paste_action);
 
-    TRY(main_toolbar.try_add_separator());
-    (void)TRY(main_toolbar.try_add_action(directory_view->view_as_icons_action()));
-    (void)TRY(main_toolbar.try_add_action(directory_view->view_as_table_action()));
-    (void)TRY(main_toolbar.try_add_action(directory_view->view_as_columns_action()));
+    main_toolbar.add_separator();
+    main_toolbar.add_action(directory_view->view_as_icons_action());
+    main_toolbar.add_action(directory_view->view_as_table_action());
+    main_toolbar.add_action(directory_view->view_as_columns_action());
 
     breadcrumbbar.on_path_change = [&](auto selected_path) {
-        if (Core::DeprecatedFile::is_directory(selected_path)) {
+        if (FileSystem::is_directory(selected_path)) {
             directory_view->open(selected_path);
         } else {
             dbgln("Breadcrumb path '{}' doesn't exist", selected_path);
@@ -1073,12 +1109,12 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         }
     };
 
-    directory_view->on_path_change = [&](DeprecatedString const& new_path, bool can_read_in_path, bool can_write_in_path) {
+    directory_view->on_path_change = [&](ByteString const& new_path, bool can_read_in_path, bool can_write_in_path) {
         auto icon = GUI::FileIconProvider::icon_for_path(new_path);
         auto* bitmap = icon.bitmap_for_size(16);
         window->set_icon(bitmap);
 
-        window->set_title(DeprecatedString::formatted("{} - File Manager", new_path));
+        window->set_title(ByteString::formatted("{} - File Manager", new_path));
 
         breadcrumbbar.set_current_path(new_path);
 
@@ -1107,7 +1143,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
     };
 
     directory_view->on_status_message = [&](StringView message) {
-        statusbar.set_text(message);
+        statusbar.set_text(String::from_utf8(message).release_value_but_fixme_should_propagate_errors());
     };
 
     directory_view->on_thumbnail_progress = [&](int done, int total) {
@@ -1124,6 +1160,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         auto& selection = view.selection();
         cut_action->set_enabled(!selection.is_empty() && access(directory_view->path().characters(), W_OK) == 0);
         copy_action->set_enabled(!selection.is_empty());
+        copy_path_action->set_text(selection.size() > 1 ? "Copy Paths" : "Copy Path");
         focus_dependent_delete_action->set_enabled((!tree_view.selection().is_empty() && tree_view.is_focused())
             || (!directory_view->current_view().selection().is_empty() && access(directory_view->path().characters(), W_OK) == 0));
     };
@@ -1132,40 +1169,42 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         directory_view->open(directory_view->selected_file_paths().first());
     });
 
-    TRY(directory_context_menu->try_add_action(directory_open_action));
-    TRY(directory_context_menu->try_add_action(open_in_new_window_action));
-    TRY(directory_context_menu->try_add_action(open_in_new_terminal_action));
-    TRY(directory_context_menu->try_add_separator());
-    TRY(directory_context_menu->try_add_action(cut_action));
-    TRY(directory_context_menu->try_add_action(copy_action));
-    TRY(directory_context_menu->try_add_action(folder_specific_paste_action));
-    TRY(directory_context_menu->try_add_action(directory_view->delete_action()));
-    TRY(directory_context_menu->try_add_action(directory_view->rename_action()));
-    TRY(directory_context_menu->try_add_action(shortcut_action));
-    TRY(directory_context_menu->try_add_action(create_archive_action));
-    TRY(directory_context_menu->try_add_separator());
-    TRY(directory_context_menu->try_add_action(properties_action));
+    directory_context_menu->add_action(directory_open_action);
+    directory_context_menu->add_action(open_in_new_window_action);
+    directory_context_menu->add_action(open_in_new_terminal_action);
+    directory_context_menu->add_separator();
+    directory_context_menu->add_action(cut_action);
+    directory_context_menu->add_action(copy_action);
+    directory_context_menu->add_action(copy_path_action);
+    directory_context_menu->add_action(folder_specific_paste_action);
+    directory_context_menu->add_action(directory_view->delete_action());
+    directory_context_menu->add_action(directory_view->rename_action());
+    directory_context_menu->add_action(shortcut_action);
+    directory_context_menu->add_action(create_archive_action);
+    directory_context_menu->add_separator();
+    directory_context_menu->add_action(properties_action);
 
-    TRY(directory_view_context_menu->try_add_action(mkdir_action));
-    TRY(directory_view_context_menu->try_add_action(touch_action));
-    TRY(directory_view_context_menu->try_add_action(paste_action));
-    TRY(directory_view_context_menu->try_add_action(directory_view->open_terminal_action()));
-    TRY(directory_view_context_menu->try_add_separator());
-    TRY(directory_view_context_menu->try_add_action(show_dotfiles_action));
-    TRY(directory_view_context_menu->try_add_separator());
-    TRY(directory_view_context_menu->try_add_action(properties_action));
+    directory_view_context_menu->add_action(mkdir_action);
+    directory_view_context_menu->add_action(touch_action);
+    directory_view_context_menu->add_action(paste_action);
+    directory_view_context_menu->add_action(directory_view->open_terminal_action());
+    directory_view_context_menu->add_separator();
+    directory_view_context_menu->add_action(show_dotfiles_action);
+    directory_view_context_menu->add_separator();
+    directory_view_context_menu->add_action(properties_action);
 
-    TRY(tree_view_directory_context_menu->try_add_action(open_in_new_window_action));
-    TRY(tree_view_directory_context_menu->try_add_action(open_in_new_terminal_action));
-    TRY(tree_view_directory_context_menu->try_add_separator());
-    TRY(tree_view_directory_context_menu->try_add_action(mkdir_action));
-    TRY(tree_view_directory_context_menu->try_add_action(touch_action));
-    TRY(tree_view_directory_context_menu->try_add_action(cut_action));
-    TRY(tree_view_directory_context_menu->try_add_action(copy_action));
-    TRY(tree_view_directory_context_menu->try_add_action(paste_action));
-    TRY(tree_view_directory_context_menu->try_add_action(tree_view_delete_action));
-    TRY(tree_view_directory_context_menu->try_add_separator());
-    TRY(tree_view_directory_context_menu->try_add_action(properties_action));
+    tree_view_directory_context_menu->add_action(open_in_new_window_action);
+    tree_view_directory_context_menu->add_action(open_in_new_terminal_action);
+    tree_view_directory_context_menu->add_separator();
+    tree_view_directory_context_menu->add_action(mkdir_action);
+    tree_view_directory_context_menu->add_action(touch_action);
+    tree_view_directory_context_menu->add_action(cut_action);
+    tree_view_directory_context_menu->add_action(copy_action);
+    tree_view_directory_context_menu->add_action(copy_path_action);
+    tree_view_directory_context_menu->add_action(paste_action);
+    tree_view_directory_context_menu->add_action(tree_view_delete_action);
+    tree_view_directory_context_menu->add_separator();
+    tree_view_directory_context_menu->add_action(properties_action);
 
     RefPtr<GUI::Menu> file_context_menu;
     Vector<NonnullRefPtr<LauncherHandler>> current_file_handlers;
@@ -1180,7 +1219,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
                 folder_specific_paste_action->set_enabled(should_get_enabled);
                 directory_context_menu->popup(event.screen_position(), directory_open_action);
             } else {
-                file_context_menu = GUI::Menu::construct("Directory View File");
+                file_context_menu = GUI::Menu::construct("Directory View File"_string);
 
                 bool added_launch_file_handlers = add_launch_handler_actions_to_menu(file_context_menu, directory_view, node.full_path(), file_context_menu_action_default_action, current_file_handlers);
                 if (added_launch_file_handlers)
@@ -1188,6 +1227,7 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
                 file_context_menu->add_action(cut_action);
                 file_context_menu->add_action(copy_action);
+                file_context_menu->add_action(copy_path_action);
                 file_context_menu->add_action(paste_action);
                 file_context_menu->add_action(directory_view->delete_action());
                 file_context_menu->add_action(directory_view->rename_action());
@@ -1268,9 +1308,8 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
 
     paste_action->set_enabled(GUI::Clipboard::the().fetch_mime_type() == "text/uri-list" && access(initial_location.characters(), W_OK) == 0);
 
-    window->set_rect({ left, top, width, height });
-    if (was_maximized)
-        window->set_maximized(true);
+    window->restore_size_and_position("FileManager"sv, "Window"sv, { { 640, 480 } });
+    window->save_size_and_position_on_close("FileManager"sv, "Window"sv);
 
     window->show();
 
@@ -1281,18 +1320,6 @@ ErrorOr<int> run_in_windowed_mode(DeprecatedString const& initial_location, Depr
         if (!matches.is_empty())
             directory_view->current_view().set_cursor(matches.first(), GUI::AbstractView::SelectionUpdate::Set);
     }
-
-    // Write window position to config file on close request.
-    window->on_close_request = [&] {
-        Config::write_bool("FileManager"sv, "Window"sv, "Maximized"sv, window->is_maximized());
-        if (!window->is_maximized()) {
-            Config::write_i32("FileManager"sv, "Window"sv, "Left"sv, window->x());
-            Config::write_i32("FileManager"sv, "Window"sv, "Top"sv, window->y());
-            Config::write_i32("FileManager"sv, "Window"sv, "Width"sv, window->width());
-            Config::write_i32("FileManager"sv, "Window"sv, "Height"sv, window->height());
-        }
-        return GUI::Window::CloseRequestDecision::Close;
-    };
 
     return GUI::Application::the()->exec();
 }

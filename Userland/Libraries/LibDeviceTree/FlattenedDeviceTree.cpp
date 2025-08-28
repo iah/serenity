@@ -9,7 +9,14 @@
 #include <AK/IterationDecision.h>
 #include <AK/MemoryStream.h>
 #include <AK/StringView.h>
+#include <LibDeviceTree/DeviceTree.h>
 #include <LibDeviceTree/FlattenedDeviceTree.h>
+
+#ifdef KERNEL
+#    include <Kernel/Library/StdLib.h>
+#else
+#    include <string.h>
+#endif
 
 namespace DeviceTree {
 
@@ -28,13 +35,14 @@ ErrorOr<void> walk_device_tree(FlattenedDeviceTreeHeader const& header, Readonly
     FixedMemoryStream stream(struct_bytes);
     char const* begin_strings_block = reinterpret_cast<char const*>(raw_device_tree.data() + header.off_dt_strings);
 
-    FlattenedDeviceTreeTokenType prev_token = EndNode;
+    auto prev_token = FlattenedDeviceTreeTokenType::EndNode;
     StringView current_node_name;
 
     while (!stream.is_eof()) {
-        auto current_token = TRY(stream.read_value<BigEndian<u32>>());
+        u32 current_token = TRY(stream.read_value<BigEndian<u32>>());
 
-        switch (current_token) {
+        using enum FlattenedDeviceTreeTokenType;
+        switch (static_cast<FlattenedDeviceTreeTokenType>(current_token)) {
         case BeginNode: {
             current_node_name = TRY(read_string_view(struct_bytes.slice(stream.offset()), "Non-null terminated name for FDT_BEGIN_NODE token!"sv));
             size_t const consume_len = round_up_to_power_of_two(current_node_name.length() + 1, 4);
@@ -131,6 +139,7 @@ static ErrorOr<ReadonlyBytes> slow_get_property_raw(StringView name, FlattenedDe
                 ++current_path_idx; // Root node
                 return IterationDecision::Continue;
             }
+            // FIXME: This might need to ignore address details in the path
             if (token_name == path[current_path_idx]) {
                 ++current_path_idx;
                 if (current_path_idx == static_cast<ssize_t>(path.size() - 1)) {
@@ -163,26 +172,9 @@ static ErrorOr<ReadonlyBytes> slow_get_property_raw(StringView name, FlattenedDe
     return found_property_value;
 }
 
-template<typename T>
-ErrorOr<T> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree)
+ErrorOr<Property> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree)
 {
-    [[maybe_unused]] auto bytes = TRY(slow_get_property_raw(name, header, raw_device_tree));
-    if constexpr (IsVoid<T>) {
-        return {};
-    } else if constexpr (IsArithmetic<T>) {
-        if (bytes.size() != sizeof(T)) {
-            return Error::from_errno(EINVAL);
-        }
-        return *bit_cast<T*>(bytes.data());
-    } else {
-        static_assert(IsSame<T, StringView>);
-        return T(bytes);
-    }
+    return Property { TRY(slow_get_property_raw(name, header, raw_device_tree)) };
 }
-
-template ErrorOr<void> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree);
-template ErrorOr<u32> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree);
-template ErrorOr<u64> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree);
-template ErrorOr<StringView> slow_get_property(StringView name, FlattenedDeviceTreeHeader const& header, ReadonlyBytes raw_device_tree);
 
 } // namespace DeviceTree

@@ -7,15 +7,16 @@
 #pragma once
 
 #include <AK/IPv4Address.h>
-#include <Kernel/Library/NonnullLockRefPtr.h>
+#include <AK/IPv6Address.h>
+#include <AK/RefPtr.h>
 #include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/NetworkAdapter.h>
-#include <Kernel/Thread.h>
+#include <Kernel/Tasks/Thread.h>
 
 namespace Kernel {
 
 struct Route final : public AtomicRefCounted<Route> {
-    Route(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, NonnullLockRefPtr<NetworkAdapter> adapter)
+    Route(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, NonnullRefPtr<NetworkAdapter> adapter)
         : destination(destination)
         , gateway(gateway)
         , netmask(netmask)
@@ -34,18 +35,18 @@ struct Route final : public AtomicRefCounted<Route> {
         return destination == other.destination && (gateway == other.gateway || other.gateway.is_zero()) && netmask == other.netmask && flags == other.flags && adapter.ptr() == other.adapter.ptr();
     }
 
-    const IPv4Address destination;
-    const IPv4Address gateway;
-    const IPv4Address netmask;
-    const u16 flags;
-    NonnullLockRefPtr<NetworkAdapter> adapter;
+    IPv4Address const destination;
+    IPv4Address const gateway;
+    IPv4Address const netmask;
+    u16 const flags;
+    NonnullRefPtr<NetworkAdapter> const adapter;
 
-    IntrusiveListNode<Route, LockRefPtr<Route>> route_list_node {};
+    IntrusiveListNode<Route, RefPtr<Route>> route_list_node {};
     using RouteList = IntrusiveList<&Route::route_list_node>;
 };
 
 struct RoutingDecision {
-    LockRefPtr<NetworkAdapter> adapter;
+    RefPtr<NetworkAdapter> adapter;
     MACAddress next_hop;
 
     bool is_zero() const;
@@ -57,14 +58,19 @@ enum class UpdateTable {
 };
 
 void update_arp_table(IPv4Address const&, MACAddress const&, UpdateTable update);
-ErrorOr<void> update_routing_table(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, LockRefPtr<NetworkAdapter> const adapter, UpdateTable update);
+ErrorOr<void> update_routing_table(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, RefPtr<NetworkAdapter> const adapter, UpdateTable update);
 
 enum class AllowUsingGateway {
     Yes,
     No,
 };
 
-RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, LockRefPtr<NetworkAdapter> const through = nullptr, AllowUsingGateway = AllowUsingGateway::Yes);
+enum class AllowBroadcast {
+    Yes,
+    No,
+};
+
+RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, RefPtr<NetworkAdapter> const through = nullptr, AllowBroadcast = AllowBroadcast::No, AllowUsingGateway = AllowUsingGateway::Yes);
 
 SpinlockProtected<HashMap<IPv4Address, MACAddress>, LockRank::None>& arp_table();
 SpinlockProtected<Route::RouteList, LockRank::None>& routing_table();

@@ -6,7 +6,7 @@
 
 #include <AK/StringView.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -19,11 +19,11 @@ ErrorOr<FlatPtr> Process::sys$utime(Userspace<char const*> user_path, size_t pat
     if (user_buf) {
         TRY(copy_from_user(&buf, user_buf));
     } else {
-        auto now = kgettimeofday().to_truncated_seconds();
+        auto now = kgettimeofday().truncated_seconds_since_epoch();
         // Not a bug!
         buf = { now, now };
     }
-    TRY(VirtualFileSystem::the().utime(credentials(), path->view(), current_directory(), buf.actime, buf.modtime));
+    TRY(VirtualFileSystem::utime(vfs_root_context(), credentials(), path->view(), current_directory(), buf.actime, buf.modtime));
     return 0;
 }
 

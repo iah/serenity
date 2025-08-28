@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2024, Shannon Booth <shannon@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -22,6 +23,8 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(PlainDate);
+
 // 3 Temporal.PlainDate Objects, https://tc39.es/proposal-temporal/#sec-temporal-plaindate-objects
 PlainDate::PlainDate(i32 year, u8 month, u8 day, Object& calendar, Object& prototype)
     : Object(ConstructWithPrototypeTag::Tag, prototype)
@@ -35,7 +38,7 @@ PlainDate::PlainDate(i32 year, u8 month, u8 day, Object& calendar, Object& proto
 void PlainDate::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_calendar);
+    visitor.visit(m_calendar);
 }
 
 // 3.5.2 CreateISODateRecord ( year, month, day ), https://tc39.es/proposal-temporal/#sec-temporal-create-iso-date-record
@@ -378,6 +381,38 @@ bool is_valid_iso_date(i32 year, u8 month, u8 day)
     return true;
 }
 
+// 3.5.6 DifferenceDate ( calendarRec, one, two, options ), https://tc39.es/proposal-temporal/#sec-temporal-differencedate
+ThrowCompletionOr<NonnullGCPtr<Duration>> difference_date(VM& vm, CalendarMethods const& calendar_record, PlainDate const& one, PlainDate const& two, Object const& options)
+{
+    // FIXME: 1. Assert: one.[[Calendar]] and two.[[Calendar]] have been determined to be equivalent as with CalendarEquals.
+    // FIXME: 2. Assert: options is an ordinary Object.
+
+    // 3. Assert: options.[[Prototype]] is null.
+    VERIFY(!options.prototype());
+
+    // 4. Assert: options has a "largestUnit" data property.
+    VERIFY(MUST(options.has_own_property(vm.names.largestUnit)));
+
+    // 5. If one.[[ISOYear]] = two.[[ISOYear]] and one.[[ISOMonth]] = two.[[ISOMonth]] and one.[[ISODay]] = two.[[ISODay]], then
+    if (one.iso_year() == two.iso_year() && one.iso_month() == two.iso_month() && one.iso_day() == two.iso_day()) {
+        // a. Return ! CreateTemporalDuration(0, 0, 0, 0, 0, 0, 0, 0, 0, 0).
+        return MUST(create_temporal_duration(vm, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+    }
+
+    // 6. If ! Get(options, "largestUnit") is "day", then
+    auto largest_unit = MUST(options.get(vm.names.largestUnit));
+    if (largest_unit.is_string() && largest_unit.as_string().utf8_string_view() == "day"sv) {
+        // a. Let days be DaysUntil(one, two).
+        auto days = days_until(one, two);
+
+        // b. Return ! CreateTemporalDuration(0, 0, 0, days, 0, 0, 0, 0, 0, 0).
+        return MUST(create_temporal_duration(vm, 0, 0, 0, days, 0, 0, 0, 0, 0, 0));
+    }
+
+    // 7. Return ? CalendarDateUntil(calendarRec, one, two, options).
+    return TRY(calendar_date_until(vm, calendar_record, Value { &one }, Value { &two }, options));
+}
+
 // 3.5.6 BalanceISODate ( year, month, day ), https://tc39.es/proposal-temporal/#sec-temporal-balanceisodate
 ISODateRecord balance_iso_date(double year, double month, double day)
 {
@@ -494,9 +529,9 @@ i8 compare_iso_date(i32 year1, u8 month1, u8 day1, i32 year2, u8 month2, u8 day2
 }
 
 // 3.5.11 DifferenceTemporalPlainDate ( operation, temporalDate, other, options ), https://tc39.es/proposal-temporal/#sec-temporal-differencetemporalplaindate
-ThrowCompletionOr<Duration*> difference_temporal_plain_date(VM& vm, DifferenceOperation operation, PlainDate& temporal_date, Value other_value, Value options_value)
+ThrowCompletionOr<NonnullGCPtr<Duration>> difference_temporal_plain_date(VM& vm, DifferenceOperation operation, PlainDate& temporal_date, Value other_value, Value options)
 {
-    // 1. If operation is since, let sign be -1. Otherwise, let sign be 1.
+    // 1. If operation is SINCE, let sign be -1. Otherwise, let sign be 1.
     i8 sign = operation == DifferenceOperation::Since ? -1 : 1;
 
     // 2. Set other to ? ToTemporalDate(other).
@@ -506,25 +541,43 @@ ThrowCompletionOr<Duration*> difference_temporal_plain_date(VM& vm, DifferenceOp
     if (!TRY(calendar_equals(vm, temporal_date.calendar(), other->calendar())))
         return vm.throw_completion<RangeError>(ErrorType::TemporalDifferentCalendars);
 
-    // 4. Let settings be ? GetDifferenceSettings(operation, options, date, « », "day", "day").
-    auto settings = TRY(get_difference_settings(vm, operation, options_value, UnitGroup::Date, {}, { "day"sv }, "day"sv));
+    // 4. Let resolvedOptions be ? SnapshotOwnProperties(? GetOptionsObject(options), null).
+    auto resolved_options = TRY(TRY(get_options_object(vm, options))->snapshot_own_properties(vm, nullptr));
 
-    // 5. Let untilOptions be ? MergeLargestUnitOption(settings.[[Options]], settings.[[LargestUnit]]).
-    auto* until_options = TRY(merge_largest_unit_option(vm, settings.options, move(settings.largest_unit)));
+    // 5. Let settings be ? GetDifferenceSettings(operation, resolvedOptions, DATE, « », "day", "day").
+    auto settings = TRY(get_difference_settings(vm, operation, resolved_options, UnitGroup::Date, {}, { "day"sv }, "day"sv));
 
-    // 6. Let result be ? CalendarDateUntil(temporalDate.[[Calendar]], temporalDate, other, untilOptions).
-    auto* duration = TRY(calendar_date_until(vm, temporal_date.calendar(), &temporal_date, other, *until_options));
+    // 6. If temporalDate.[[ISOYear]] = other.[[ISOYear]], and temporalDate.[[ISOMonth]] = other.[[ISOMonth]], and temporalDate.[[ISODay]] = other.[[ISODay]], then
+    if (temporal_date.iso_year() == other->iso_year() && temporal_date.iso_month() == other->iso_month() && temporal_date.iso_day() == other->iso_day()) {
+        // a. Return ! CreateTemporalDuration(0, 0, 0, 0, 0, 0, 0, 0, 0, 0).
+        return MUST(create_temporal_duration(vm, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+    }
 
-    auto result = DurationRecord { duration->years(), duration->months(), duration->weeks(), duration->days(), 0, 0, 0, 0, 0, 0 };
+    // 7. Let calendarRec be ? CreateCalendarMethodsRecord(temporalDate.[[Calendar]], « DATE-ADD, DATE-UNTIL »).
+    // FIXME: The type of calendar in PlainDate does not align with latest spec
+    auto calendar_record = TRY(create_calendar_methods_record(vm, NonnullGCPtr<Object> { temporal_date.calendar() }, { { CalendarMethod::DateAdd, CalendarMethod::DateUntil } }));
 
-    // 7. If settings.[[SmallestUnit]] is not "day" or settings.[[RoundingIncrement]] ≠ 1, then
-    if (settings.smallest_unit != "day"sv || settings.rounding_increment != 1) {
-        // a. Set result to (? RoundDuration(result.[[Years]], result.[[Months]], result.[[Weeks]], result.[[Days]], 0, 0, 0, 0, 0, 0, settings.[[RoundingIncrement]], settings.[[SmallestUnit]], settings.[[RoundingMode]], temporalDate)).[[DurationRecord]].
-        result = TRY(round_duration(vm, result.years, result.months, result.weeks, result.days, 0, 0, 0, 0, 0, 0, settings.rounding_increment, settings.smallest_unit, settings.rounding_mode, &temporal_date)).duration_record;
+    // 8. Perform ! CreateDataPropertyOrThrow(resolvedOptions, "largestUnit", settings.[[LargestUnit]]).
+    MUST(resolved_options->create_data_property_or_throw(vm.names.largestUnit, PrimitiveString::create(vm, settings.largest_unit)));
+
+    // 9. Let result be ? DifferenceDate(calendarRec, temporalDate, other, resolvedOptions).
+    auto result = TRY(difference_date(vm, calendar_record, temporal_date, *other, resolved_options));
+
+    // 10. If settings.[[SmallestUnit]] is "day" and settings.[[RoundingIncrement]] = 1, let roundingGranularityIsNoop be true; else let roundingGranularityIsNoop be false.
+    bool rounding_granularity_is_noop = settings.smallest_unit == "day"sv && settings.rounding_increment == 1;
+
+    // 11. If roundingGranularityIsNoop is false, then
+    if (!rounding_granularity_is_noop) {
+        // a. Let roundRecord be ? RoundDuration(result.[[Years]], result.[[Months]], result.[[Weeks]], result.[[Days]], ZeroTimeDuration(), settings.[[RoundingIncrement]], settings.[[SmallestUnit]], settings.[[RoundingMode]], temporalDate, calendarRec).
+        auto round_record = TRY(round_duration(vm, result->years(), result->months(), result->weeks(), result->days(), 0, 0, 0, 0, 0, 0, settings.rounding_increment, settings.smallest_unit, settings.rounding_mode, &temporal_date, calendar_record)).duration_record;
+
+        // FIXME: b. Let roundResult be roundRecord.[[NormalizedDuration]].
+        // FIXME: c. Set result to ? BalanceDateDurationRelative(roundResult.[[Years]], roundResult.[[Months]], roundResult.[[Weeks]], roundResult.[[Days]], settings.[[LargestUnit]], settings.[[SmallestUnit]], temporalDate, calendarRec).
+        result = MUST(create_temporal_duration(vm, round_record.years, round_record.months, round_record.weeks, round_record.days, 0, 0, 0, 0, 0, 0));
     }
 
     // 16. Return ! CreateTemporalDuration(sign × result.[[Years]], sign × result.[[Months]], sign × result.[[Weeks]], sign × result.[[Days]], 0, 0, 0, 0, 0, 0).
-    return TRY(create_temporal_duration(vm, sign * result.years, sign * result.months, sign * result.weeks, sign * result.days, 0, 0, 0, 0, 0, 0));
+    return MUST(create_temporal_duration(vm, sign * result->years(), sign * result->months(), sign * result->weeks(), sign * result->days(), 0, 0, 0, 0, 0, 0));
 }
 
 }

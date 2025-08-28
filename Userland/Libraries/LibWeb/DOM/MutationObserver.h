@@ -23,12 +23,13 @@ struct MutationObserverInit {
     bool subtree { false };
     Optional<bool> attribute_old_value;
     Optional<bool> character_data_old_value;
-    Optional<Vector<DeprecatedString>> attribute_filter;
+    Optional<Vector<String>> attribute_filter;
 };
 
 // https://dom.spec.whatwg.org/#mutationobserver
 class MutationObserver final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(MutationObserver, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(MutationObserver);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<MutationObserver>> construct_impl(JS::Realm&, JS::GCPtr<WebIDL::CallbackType>);
@@ -51,7 +52,7 @@ public:
 private:
     MutationObserver(JS::Realm&, JS::GCPtr<WebIDL::CallbackType>);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     // https://dom.spec.whatwg.org/#concept-mo-callback
@@ -92,6 +93,7 @@ private:
 // https://dom.spec.whatwg.org/#transient-registered-observer
 class TransientRegisteredObserver final : public RegisteredObserver {
     JS_CELL(TransientRegisteredObserver, RegisteredObserver);
+    JS_DECLARE_ALLOCATOR(TransientRegisteredObserver);
 
 public:
     static JS::NonnullGCPtr<TransientRegisteredObserver> create(MutationObserver&, MutationObserverInit const&, RegisteredObserver& source);

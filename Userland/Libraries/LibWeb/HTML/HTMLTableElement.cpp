@@ -5,17 +5,26 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTableElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/Parser/Parser.h>
+#include <LibWeb/CSS/StyleProperties.h>
+#include <LibWeb/CSS/StyleValues/CSSColorValue.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
+#include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
+#include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/HTMLCollection.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/HTML/HTMLTableElement.h>
 #include <LibWeb/HTML/HTMLTableRowElement.h>
+#include <LibWeb/HTML/Numbers.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Namespace.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTableElement);
 
 HTMLTableElement::HTMLTableElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -24,12 +33,10 @@ HTMLTableElement::HTMLTableElement(DOM::Document& document, DOM::QualifiedName q
 
 HTMLTableElement::~HTMLTableElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLTableElement::initialize(JS::Realm& realm)
+void HTMLTableElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTableElementPrototype>(realm, "HTMLTableElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTableElement);
 }
 
 void HTMLTableElement::visit_edges(Cell::Visitor& visitor)
@@ -37,6 +44,11 @@ void HTMLTableElement::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_rows);
     visitor.visit(m_t_bodies);
+}
+
+static unsigned parse_border(StringView value)
+{
+    return value.to_number<unsigned>().value_or(0);
 }
 
 void HTMLTableElement::apply_presentational_hints(CSS::StyleProperties& style) const
@@ -48,17 +60,65 @@ void HTMLTableElement::apply_presentational_hints(CSS::StyleProperties& style) c
             return;
         }
         if (name == HTML::AttributeNames::height) {
-            if (auto parsed_value = parse_nonzero_dimension_value(value))
+            if (auto parsed_value = parse_dimension_value(value))
                 style.set_property(CSS::PropertyID::Height, parsed_value.release_nonnull());
             return;
         }
-        if (name == HTML::AttributeNames::bgcolor) {
-            auto color = Color::from_string(value);
-            if (color.has_value())
-                style.set_property(CSS::PropertyID::BackgroundColor, CSS::ColorStyleValue::create(color.value()));
+        if (name == HTML::AttributeNames::align) {
+            if (value.equals_ignoring_ascii_case("center"sv)) {
+                style.set_property(CSS::PropertyID::MarginLeft, CSS::CSSKeywordValue::create(CSS::Keyword::Auto));
+                style.set_property(CSS::PropertyID::MarginRight, CSS::CSSKeywordValue::create(CSS::Keyword::Auto));
+            } else if (auto parsed_value = parse_css_value(CSS::Parser::ParsingContext { document() }, value, CSS::PropertyID::Float)) {
+                style.set_property(CSS::PropertyID::Float, parsed_value.release_nonnull());
+            }
             return;
         }
+        if (name == HTML::AttributeNames::background) {
+            if (auto parsed_value = document().parse_url(value); parsed_value.is_valid())
+                style.set_property(CSS::PropertyID::BackgroundImage, CSS::ImageStyleValue::create(parsed_value));
+            return;
+        }
+        if (name == HTML::AttributeNames::bgcolor) {
+            // https://html.spec.whatwg.org/multipage/rendering.html#tables-2:rules-for-parsing-a-legacy-colour-value
+            auto color = parse_legacy_color_value(value);
+            if (color.has_value())
+                style.set_property(CSS::PropertyID::BackgroundColor, CSS::CSSColorValue::create_from_color(color.value()));
+            return;
+        }
+        if (name == HTML::AttributeNames::cellspacing) {
+            if (auto parsed_value = parse_dimension_value(value))
+                style.set_property(CSS::PropertyID::BorderSpacing, parsed_value.release_nonnull());
+            return;
+        }
+        if (name == HTML::AttributeNames::border) {
+            auto border = parse_border(value);
+            if (!border)
+                return;
+            auto apply_border_style = [&](CSS::PropertyID style_property, CSS::PropertyID width_property, CSS::PropertyID color_property) {
+                auto legacy_line_style = CSS::CSSKeywordValue::create(CSS::Keyword::Outset);
+                style.set_property(style_property, legacy_line_style);
+                style.set_property(width_property, CSS::LengthStyleValue::create(CSS::Length::make_px(border)));
+                style.set_property(color_property, CSS::CSSColorValue::create_from_color(Color(128, 128, 128)));
+            };
+            apply_border_style(CSS::PropertyID::BorderLeftStyle, CSS::PropertyID::BorderLeftWidth, CSS::PropertyID::BorderLeftColor);
+            apply_border_style(CSS::PropertyID::BorderTopStyle, CSS::PropertyID::BorderTopWidth, CSS::PropertyID::BorderTopColor);
+            apply_border_style(CSS::PropertyID::BorderRightStyle, CSS::PropertyID::BorderRightWidth, CSS::PropertyID::BorderRightColor);
+            apply_border_style(CSS::PropertyID::BorderBottomStyle, CSS::PropertyID::BorderBottomWidth, CSS::PropertyID::BorderBottomColor);
+        }
     });
+}
+
+void HTMLTableElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
+{
+    Base::attribute_changed(name, old_value, value);
+    if (name == HTML::AttributeNames::cellpadding) {
+        if (value.has_value())
+            m_padding = max(0, parse_integer(value.value()).value_or(0));
+        else
+            m_padding = 1;
+
+        return;
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/tables.html#dom-table-caption
@@ -70,14 +130,16 @@ JS::GCPtr<HTMLTableCaptionElement> HTMLTableElement::caption()
 }
 
 // https://html.spec.whatwg.org/multipage/tables.html#dom-table-caption
-void HTMLTableElement::set_caption(HTMLTableCaptionElement* caption)
+WebIDL::ExceptionOr<void> HTMLTableElement::set_caption(HTMLTableCaptionElement* caption)
 {
     // On setting, the first caption element child of the table element, if any, must be removed,
     // and the new value, if not null, must be inserted as the first node of the table element.
     delete_caption();
 
     if (caption)
-        MUST(pre_insert(*caption, first_child()));
+        TRY(pre_insert(*caption, first_child()));
+
+    return {};
 }
 
 // https://html.spec.whatwg.org/multipage/tables.html#dom-table-createcaption
@@ -123,7 +185,7 @@ WebIDL::ExceptionOr<void> HTMLTableElement::set_t_head(HTMLTableSectionElement* 
 {
     // If the new value is neither null nor a thead element, then a "HierarchyRequestError" DOMException must be thrown instead.
     if (thead && thead->local_name() != TagNames::thead)
-        return WebIDL::HierarchyRequestError::create(realm(), "Element is not thead");
+        return WebIDL::HierarchyRequestError::create(realm(), "Element is not thead"_string);
 
     // On setting, if the new value is null or a thead element, the first thead element child of the table element,
     // if any, must be removed,
@@ -221,7 +283,7 @@ WebIDL::ExceptionOr<void> HTMLTableElement::set_t_foot(HTMLTableSectionElement* 
 {
     // If the new value is neither null nor a tfoot element, then a "HierarchyRequestError" DOMException must be thrown instead.
     if (tfoot && tfoot->local_name() != TagNames::tfoot)
-        return WebIDL::HierarchyRequestError::create(realm(), "Element is not tfoot");
+        return WebIDL::HierarchyRequestError::create(realm(), "Element is not tfoot"_string);
 
     // On setting, if the new value is null or a tfoot element, the first tfoot element child of the table element,
     // if any, must be removed,
@@ -262,9 +324,9 @@ JS::NonnullGCPtr<DOM::HTMLCollection> HTMLTableElement::t_bodies()
     // The tBodies attribute must return an HTMLCollection rooted at the table node,
     // whose filter matches only tbody elements that are children of the table element.
     if (!m_t_bodies) {
-        m_t_bodies = DOM::HTMLCollection::create(*this, [](DOM::Element const& element) {
+        m_t_bodies = DOM::HTMLCollection::create(*this, DOM::HTMLCollection::Scope::Children, [](DOM::Element const& element) {
             return element.local_name() == TagNames::tbody;
-        }).release_value_but_fixme_should_propagate_errors();
+        });
     }
     return *m_t_bodies;
 }
@@ -305,7 +367,7 @@ JS::NonnullGCPtr<DOM::HTMLCollection> HTMLTableElement::rows()
     // How do you sort HTMLCollection?
 
     if (!m_rows) {
-        m_rows = DOM::HTMLCollection::create(*this, [table_node](DOM::Element const& element) {
+        m_rows = DOM::HTMLCollection::create(*this, DOM::HTMLCollection::Scope::Descendants, [table_node](DOM::Element const& element) {
             // Only match TR elements which are:
             // * children of the table element
             // * children of the thead, tbody, or tfoot elements that are themselves children of the table element
@@ -321,19 +383,19 @@ JS::NonnullGCPtr<DOM::HTMLCollection> HTMLTableElement::rows()
             }
 
             return false;
-        }).release_value_but_fixme_should_propagate_errors();
+        });
     }
     return *m_rows;
 }
 
 // https://html.spec.whatwg.org/multipage/tables.html#dom-table-insertrow
-WebIDL::ExceptionOr<JS::NonnullGCPtr<HTMLTableRowElement>> HTMLTableElement::insert_row(long index)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<HTMLTableRowElement>> HTMLTableElement::insert_row(WebIDL::Long index)
 {
     auto rows = this->rows();
     auto rows_length = rows->length();
 
     if (index < -1 || index > (long)rows_length) {
-        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than the number of rows");
+        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than the number of rows"_string);
     }
     auto& tr = static_cast<HTMLTableRowElement&>(*TRY(DOM::create_element(document(), TagNames::tr, Namespace::HTML)));
     if (rows_length == 0 && !has_child_of_type<HTMLTableRowElement>()) {
@@ -353,14 +415,14 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<HTMLTableRowElement>> HTMLTableElement::ins
 }
 
 // https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow
-WebIDL::ExceptionOr<void> HTMLTableElement::delete_row(long index)
+WebIDL::ExceptionOr<void> HTMLTableElement::delete_row(WebIDL::Long index)
 {
     auto rows = this->rows();
     auto rows_length = rows->length();
 
     // 1. If index is less than −1 or greater than or equal to the number of elements in the rows collection, then throw an "IndexSizeError" DOMException.
     if (index < -1 || index >= (long)rows_length)
-        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than or equal to the number of rows");
+        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than or equal to the number of rows"_string);
 
     // 2. If index is −1, then remove the last element in the rows collection from its parent, or do nothing if the rows collection is empty.
     if (index == -1) {
@@ -376,6 +438,16 @@ WebIDL::ExceptionOr<void> HTMLTableElement::delete_row(long index)
     auto row_to_remove = rows->item(index);
     row_to_remove->remove(false);
     return {};
+}
+
+unsigned int HTMLTableElement::border() const
+{
+    return parse_border(get_attribute_value(HTML::AttributeNames::border));
+}
+
+unsigned int HTMLTableElement::padding() const
+{
+    return m_padding;
 }
 
 }

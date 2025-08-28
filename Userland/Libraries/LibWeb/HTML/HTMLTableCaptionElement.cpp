@@ -4,10 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTableCaptionElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/CSS/StyleProperties.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
 #include <LibWeb/HTML/HTMLTableCaptionElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTableCaptionElement);
 
 HTMLTableCaptionElement::HTMLTableCaptionElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -16,12 +21,10 @@ HTMLTableCaptionElement::HTMLTableCaptionElement(DOM::Document& document, DOM::Q
 
 HTMLTableCaptionElement::~HTMLTableCaptionElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLTableCaptionElement::initialize(JS::Realm& realm)
+void HTMLTableCaptionElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTableCaptionElementPrototype>(realm, "HTMLTableCaptionElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTableCaptionElement);
 }
 
 // https://html.spec.whatwg.org/multipage/rendering.html#tables-2
@@ -29,9 +32,9 @@ void HTMLTableCaptionElement::apply_presentational_hints(CSS::StyleProperties& s
 {
     HTMLElement::apply_presentational_hints(style);
     for_each_attribute([&](auto& name, auto& value) {
-        if (name.equals_ignoring_case("align"sv)) {
+        if (name.equals_ignoring_ascii_case("align"sv)) {
             if (value == "bottom"sv)
-                style.set_property(CSS::PropertyID::CaptionSide, CSS::IdentifierStyleValue::create(CSS::ValueID::Bottom));
+                style.set_property(CSS::PropertyID::CaptionSide, CSS::CSSKeywordValue::create(CSS::Keyword::Bottom));
         }
     });
 }

@@ -1,4 +1,4 @@
-@GUI::Widget {
+@TerminalSettings::MainWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         margins: [10]
@@ -46,6 +46,24 @@
         @GUI::CheckBox {
             name: "terminal_confirm_close"
             text: "Confirm exit when process is active"
+        }
+    }
+
+    @GUI::GroupBox {
+        title: "Auto-mark behavior"
+        preferred_height: "fit"
+        layout: @GUI::VerticalBoxLayout {
+            margins: [8]
+        }
+
+        @GUI::RadioButton {
+            name: "automark_off"
+            text: "Do not auto-mark"
+        }
+
+        @GUI::RadioButton {
+            name: "automark_on_interactive_prompt"
+            text: "Auto-mark on interactive shell prompts"
         }
     }
 }

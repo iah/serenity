@@ -5,12 +5,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
 #include <AK/CheckedFormatString.h>
 #include <AK/GenericLexer.h>
 #include <AK/Time.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <LibTimeZone/TimeZone.h>
 #include <ctype.h>
@@ -21,7 +22,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
-static DeprecatedString program_name;
+static ByteString program_name;
 
 template<typename... Parameters>
 [[noreturn]] static void err(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
@@ -53,14 +54,14 @@ static void parse_time(StringView input_time, timespec& atime, timespec& mtime)
         auto literal = lexer.consume(2);
         if (literal.length() < 2)
             err("invalid time format '{}' -- expected 2 digits per parameter", input_time);
-        auto maybe_parameter = literal.to_uint();
+        auto maybe_parameter = literal.to_number<unsigned>();
         if (maybe_parameter.has_value())
             parameters.append(maybe_parameter.value());
         else
             err("invalid time format '{}'", input_time);
     };
 
-    while (!lexer.is_eof() && lexer.next_is(isdigit))
+    while (!lexer.is_eof() && lexer.next_is(is_ascii_digit))
         lex_number();
     if (parameters.size() > 6)
         err("invalid time format '{}' -- too many parameters", input_time);
@@ -87,7 +88,7 @@ static void parse_time(StringView input_time, timespec& atime, timespec& mtime)
     month = parameters.take_last();
 
     if (validate_timestamp(year, month, day, hour, minute, second))
-        atime = mtime = AK::Time::from_timestamp(year, month, day, hour, minute, second, 0).to_timespec();
+        atime = mtime = AK::UnixDateTime::from_unix_time_parts(year, month, day, hour, minute, second, 0).to_timespec();
     else
         err("invalid time format '{}'", input_time);
 }
@@ -101,7 +102,7 @@ static void parse_datetime(StringView input_datetime, timespec& atime, timespec&
     StringView time_zone;
 
     auto lex_number = [&](unsigned& value, size_t n) {
-        auto maybe_value = lexer.consume(n).to_uint();
+        auto maybe_value = lexer.consume(n).to_number<unsigned>();
         if (!maybe_value.has_value())
             err("invalid datetime format '{}' -- expected number at index {}", input_datetime, lexer.tell());
         else
@@ -131,7 +132,7 @@ static void parse_datetime(StringView input_datetime, timespec& atime, timespec&
     millisecond = 0;
     if (!lexer.is_eof()) {
         if (lexer.consume_specific(',') || lexer.consume_specific('.')) {
-            auto fractional_second = lexer.consume_while(isdigit);
+            auto fractional_second = lexer.consume_while(is_ascii_digit);
             if (fractional_second.is_empty())
                 err("invalid datetime format '{}' -- expected floating seconds", input_datetime);
             for (u8 i = 0; i < 3 && i < fractional_second.length(); ++i) {
@@ -158,7 +159,7 @@ static void parse_datetime(StringView input_datetime, timespec& atime, timespec&
     }
 
     if (validate_timestamp(year, month, day, hour, minute, second)) {
-        auto timestamp = AK::Time::from_timestamp(year, month, day, hour, minute, second, millisecond);
+        auto timestamp = AK::UnixDateTime::from_unix_time_parts(year, month, day, hour, minute, second, millisecond);
         auto time = timestamp.to_timespec();
         if (time_zone.is_empty() && TimeZone::system_time_zone() != "UTC") {
             auto offset = TimeZone::get_time_zone_offset(TimeZone::system_time_zone(), timestamp);
@@ -191,7 +192,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     program_name = arguments.strings[0];
 
-    Vector<DeprecatedString> paths;
+    Vector<ByteString> paths;
 
     timespec times[2];
     auto& atime = times[0];
@@ -201,9 +202,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool update_mtime = false;
     bool no_create_file = false;
 
-    DeprecatedString input_datetime = "";
-    DeprecatedString input_time = "";
-    DeprecatedString reference_path = "";
+    ByteString input_datetime = "";
+    ByteString input_time = "";
+    ByteString reference_path = "";
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Create a file or update file access time and/or modification time.");
@@ -238,16 +239,28 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (update_mtime && !update_atime)
         atime.tv_nsec = UTIME_OMIT;
 
+    auto has_errors = false;
     for (auto path : paths) {
-        if (Core::DeprecatedFile::exists(path)) {
-            if (utimensat(AT_FDCWD, path.characters(), times, 0) == -1)
-                err("failed to touch '{}': {}", path, strerror(errno));
+        if (FileSystem::exists(path)) {
+            if (utimensat(AT_FDCWD, path.characters(), times, 0) == -1) {
+                warnln("failed to touch '{}': {}", path, strerror(errno));
+                has_errors = true;
+            }
         } else if (!no_create_file) {
-            int fd = TRY(Core::System::open(path, O_CREAT, 0100644));
-            if (futimens(fd, times) == -1)
-                err("failed to touch '{}': {}", path, strerror(errno));
-            TRY(Core::System::close(fd));
+            auto error_or_fd = Core::System::open(path, O_CREAT, 0100644);
+            if (error_or_fd.is_error()) {
+                warnln("failed to open '{}': {}", path, strerror(error_or_fd.error().code()));
+                has_errors = true;
+                continue;
+            }
+
+            if (futimens(error_or_fd.value(), times) == -1) {
+                warnln("failed to touch '{}': {}", path, strerror(errno));
+                has_errors = true;
+                continue;
+            }
+            (void)Core::System::close(error_or_fd.value());
         }
     }
-    return 0;
+    return has_errors ? 1 : 0;
 }

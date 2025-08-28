@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021, Jan de Visser <jan@de-visser.net>
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,7 +12,6 @@
 #include <LibSQL/Serializer.h>
 #include <LibSQL/TupleDescriptor.h>
 #include <LibSQL/Value.h>
-#include <string.h>
 
 namespace SQL {
 
@@ -31,7 +30,7 @@ static_assert(to_underlying(SQLTypeWithCount::Count) <= 0x0f, "Too many SQL type
 
 // Adding to this list is fine, but changing the order of any value here will result in LibSQL
 // becoming unable to read existing .db files. If the order must absolutely be changed, be sure
-// to bump Heap::current_version.
+// to bump Heap::VERSION.
 enum class TypeData : u8 {
     Null = 1 << 4,
     Int8 = 2 << 4,
@@ -98,7 +97,12 @@ Value::Value(SQLType type)
 {
 }
 
-Value::Value(DeprecatedString value)
+Value::Value(String value)
+    : Value(value.to_byte_string())
+{
+}
+
+Value::Value(ByteString value)
     : m_type(SQLType::Text)
     , m_value(move(value))
 {
@@ -138,6 +142,17 @@ Value::Value(Value const& other)
 Value::Value(Value&& other)
     : m_type(other.m_type)
     , m_value(move(other.m_value))
+{
+}
+
+Value::Value(Duration duration)
+    : m_type(SQLType::Integer)
+    , m_value(duration.to_milliseconds())
+{
+}
+
+Value::Value(UnixDateTime time)
+    : Value(time.offset_to_epoch())
 {
 }
 
@@ -204,24 +219,45 @@ bool Value::is_int() const
     return m_value.has_value() && (m_value->has<i64>() || m_value->has<u64>());
 }
 
-DeprecatedString Value::to_deprecated_string() const
+ErrorOr<String> Value::to_string() const
 {
     if (is_null())
-        return "(null)"sv;
+        return String::from_utf8("(null)"sv);
 
     return m_value->visit(
-        [](DeprecatedString const& value) -> DeprecatedString { return value; },
-        [](Integer auto value) -> DeprecatedString { return DeprecatedString::number(value); },
-        [](double value) -> DeprecatedString { return DeprecatedString::number(value); },
-        [](bool value) -> DeprecatedString { return value ? "true"sv : "false"sv; },
-        [](TupleValue const& value) -> DeprecatedString {
+        [](ByteString const& value) { return String::from_byte_string(value); },
+        [](Integer auto value) -> ErrorOr<String> { return String::number(value); },
+        [](double value) -> ErrorOr<String> { return String::number(value); },
+        [](bool value) { return String::from_utf8(value ? "true"sv : "false"sv); },
+        [](TupleValue const& value) {
             StringBuilder builder;
 
             builder.append('(');
             builder.join(',', value.values);
             builder.append(')');
 
-            return builder.to_deprecated_string();
+            return builder.to_string();
+        });
+}
+
+ByteString Value::to_byte_string() const
+{
+    if (is_null())
+        return "(null)"sv;
+
+    return m_value->visit(
+        [](ByteString const& value) -> ByteString { return value; },
+        [](Integer auto value) -> ByteString { return ByteString::number(value); },
+        [](double value) -> ByteString { return ByteString::number(value); },
+        [](bool value) -> ByteString { return value ? "true"sv : "false"sv; },
+        [](TupleValue const& value) -> ByteString {
+            StringBuilder builder;
+
+            builder.append('(');
+            builder.join(',', value.values);
+            builder.append(')');
+
+            return builder.to_byte_string();
         });
 }
 
@@ -231,7 +267,7 @@ Optional<double> Value::to_double() const
         return {};
 
     return m_value->visit(
-        [](DeprecatedString const& value) -> Optional<double> { return value.to_double(); },
+        [](ByteString const& value) -> Optional<double> { return value.to_number<double>(); },
         [](Integer auto value) -> Optional<double> { return static_cast<double>(value); },
         [](double value) -> Optional<double> { return value; },
         [](bool value) -> Optional<double> { return static_cast<double>(value); },
@@ -244,10 +280,10 @@ Optional<bool> Value::to_bool() const
         return {};
 
     return m_value->visit(
-        [](DeprecatedString const& value) -> Optional<bool> {
-            if (value.equals_ignoring_case("true"sv) || value.equals_ignoring_case("t"sv))
+        [](ByteString const& value) -> Optional<bool> {
+            if (value.equals_ignoring_ascii_case("true"sv) || value.equals_ignoring_ascii_case("t"sv))
                 return true;
-            if (value.equals_ignoring_case("false"sv) || value.equals_ignoring_case("f"sv))
+            if (value.equals_ignoring_ascii_case("false"sv) || value.equals_ignoring_ascii_case("f"sv))
                 return false;
             return {};
         },
@@ -267,6 +303,15 @@ Optional<bool> Value::to_bool() const
         });
 }
 
+Optional<UnixDateTime> Value::to_unix_date_time() const
+{
+    auto time = to_int<i64>();
+    if (!time.has_value())
+        return {};
+
+    return UnixDateTime::from_milliseconds_since_epoch(*time);
+}
+
 Optional<Vector<Value>> Value::to_vector() const
 {
     if (is_null() || (type() != SQLType::Tuple))
@@ -283,7 +328,7 @@ Value& Value::operator=(Value value)
     return *this;
 }
 
-Value& Value::operator=(DeprecatedString value)
+Value& Value::operator=(ByteString value)
 {
     m_type = SQLType::Text;
     m_value = move(value);
@@ -351,7 +396,7 @@ size_t Value::length() const
 
     // FIXME: This seems to be more of an encoded byte size rather than a length.
     return m_value->visit(
-        [](DeprecatedString const& value) -> size_t { return sizeof(u32) + value.length(); },
+        [](ByteString const& value) -> size_t { return sizeof(u32) + value.length(); },
         [](Integer auto value) -> size_t {
             return downsize_integer(value, [](auto integer, auto) {
                 return sizeof(integer);
@@ -375,7 +420,7 @@ u32 Value::hash() const
         return 0;
 
     return m_value->visit(
-        [](DeprecatedString const& value) -> u32 { return value.hash(); },
+        [](ByteString const& value) -> u32 { return value.hash(); },
         [](Integer auto value) -> u32 {
             return downsize_integer(value, [](auto integer, auto) {
                 if constexpr (sizeof(decltype(integer)) == 8)
@@ -408,7 +453,7 @@ int Value::compare(Value const& other) const
         return 1;
 
     return m_value->visit(
-        [&](DeprecatedString const& value) -> int { return value.view().compare(other.to_deprecated_string()); },
+        [&](ByteString const& value) -> int { return value.view().compare(other.to_byte_string()); },
         [&](Integer auto value) -> int {
             auto casted = other.to_int<IntegerType<decltype(value)>>();
             if (!casted.has_value())
@@ -469,7 +514,7 @@ bool Value::operator==(Value const& value) const
 
 bool Value::operator==(StringView value) const
 {
-    return to_deprecated_string() == value;
+    return to_byte_string() == value;
 }
 
 bool Value::operator==(double value) const
@@ -738,9 +783,8 @@ void Value::deserialize(Serializer& serializer)
     switch (m_type) {
     case SQLType::Null:
         VERIFY_NOT_REACHED();
-        break;
     case SQLType::Text:
-        m_value = serializer.deserialize<DeprecatedString>();
+        m_value = serializer.deserialize<ByteString>();
         break;
     case SQLType::Integer:
         switch (type_data) {
@@ -770,7 +814,6 @@ void Value::deserialize(Serializer& serializer)
             break;
         default:
             VERIFY_NOT_REACHED();
-            break;
         }
         break;
     case SQLType::Float:
@@ -826,7 +869,7 @@ ErrorOr<void> IPC::encode(Encoder& encoder, SQL::Value const& value)
     case SQL::SQLType::Null:
         return {};
     case SQL::SQLType::Text:
-        return encoder.encode(value.to_deprecated_string());
+        return encoder.encode(value.to_byte_string());
     case SQL::SQLType::Integer:
         return SQL::downsize_integer(value, [&](auto integer, auto) {
             return encoder.encode(integer);
@@ -857,7 +900,7 @@ ErrorOr<SQL::Value> IPC::decode(Decoder& decoder)
     case SQL::SQLType::Null:
         return SQL::Value {};
     case SQL::SQLType::Text:
-        return SQL::Value { TRY(decoder.decode<DeprecatedString>()) };
+        return SQL::Value { TRY(decoder.decode<ByteString>()) };
     case SQL::SQLType::Integer:
         switch (type_data) {
         case SQL::TypeData::Int8:

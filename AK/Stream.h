@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include <AK/Concepts.h>
 #include <AK/Error.h>
+#include <AK/Format.h>
 #include <AK/Forward.h>
+#include <AK/StringView.h>
 #include <AK/Traits.h>
 
 namespace AK {
@@ -23,16 +26,16 @@ public:
     /// The amount of bytes read can be smaller than the size of the buffer.
     /// Returns either the bytes that were read, or an errno in the case of
     /// failure.
-    virtual ErrorOr<Bytes> read(Bytes) = 0;
+    virtual ErrorOr<Bytes> read_some(Bytes) = 0;
     /// Tries to fill the entire buffer through reading. Returns whether the
     /// buffer was filled without an error.
-    virtual ErrorOr<void> read_entire_buffer(Bytes);
+    virtual ErrorOr<void> read_until_filled(Bytes);
     /// Reads the stream until EOF, storing the contents into a ByteBuffer which
     /// is returned once EOF is encountered. The block size determines the size
     /// of newly allocated chunks while reading.
     virtual ErrorOr<ByteBuffer> read_until_eof(size_t block_size = 4096);
     /// Discards the given number of bytes from the stream. As this is usually used
-    /// as an efficient version of `read_entire_buffer`, it returns an error
+    /// as an efficient version of `read_until_filled`, it returns an error
     /// if reading failed or if not all bytes could be discarded.
     /// Unless specifically overwritten, this just uses read() to read into an
     /// internal stack-based buffer.
@@ -41,10 +44,16 @@ public:
     /// Tries to write the entire contents of the buffer. It is possible for
     /// less than the full buffer to be written. Returns either the amount of
     /// bytes written into the stream, or an errno in the case of failure.
-    virtual ErrorOr<size_t> write(ReadonlyBytes) = 0;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) = 0;
     /// Same as write, but does not return until either the entire buffer
     /// contents are written or an error occurs.
-    virtual ErrorOr<void> write_entire_buffer(ReadonlyBytes);
+    virtual ErrorOr<void> write_until_depleted(ReadonlyBytes);
+
+    template<Concepts::AnyString T>
+    ErrorOr<void> write_until_depleted(T const& buffer)
+    {
+        return write_until_depleted(StringView { buffer }.bytes());
+    }
 
     template<typename T>
     requires(requires(Stream& stream) { { T::read_from_stream(stream) } -> SameAs<ErrorOr<T>>; })
@@ -58,7 +67,7 @@ public:
     ErrorOr<T> read_value()
     {
         alignas(T) u8 buffer[sizeof(T)] = {};
-        TRY(read_entire_buffer({ &buffer, sizeof(buffer) }));
+        TRY(read_until_filled({ &buffer, sizeof(buffer) }));
         return bit_cast<T>(buffer);
     }
 
@@ -73,7 +82,15 @@ public:
     requires(Traits<T>::is_trivially_serializable())
     ErrorOr<void> write_value(T const& value)
     {
-        return write_entire_buffer({ &value, sizeof(value) });
+        return write_until_depleted({ &value, sizeof(value) });
+    }
+
+    template<typename... Parameters>
+    ErrorOr<void> write_formatted(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
+    {
+        VariadicFormatParams<AllowDebugOnlyFormatters::No, Parameters...> variadic_format_params { parameters... };
+        TRY(write_formatted_impl(fmtstr.view(), variadic_format_params));
+        return {};
     }
 
     /// Returns whether the stream has reached the end of file. For sockets,
@@ -97,6 +114,9 @@ protected:
     /// content size to be in order to reduce allocations (does not affect
     /// actual reading).
     ErrorOr<ByteBuffer> read_until_eof_impl(size_t block_size, size_t expected_file_size = 0);
+
+private:
+    ErrorOr<void> write_formatted_impl(StringView, TypeErasedFormatParams&);
 };
 
 enum class SeekMode {

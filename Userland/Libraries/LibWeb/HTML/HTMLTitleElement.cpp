@@ -4,11 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTitleElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLTitleElement.h>
+#include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Page/Page.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTitleElement);
 
 HTMLTitleElement::HTMLTitleElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -17,21 +21,33 @@ HTMLTitleElement::HTMLTitleElement(DOM::Document& document, DOM::QualifiedName q
 
 HTMLTitleElement::~HTMLTitleElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLTitleElement::initialize(JS::Realm& realm)
+void HTMLTitleElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTitleElementPrototype>(realm, "HTMLTitleElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTitleElement);
 }
 
 void HTMLTitleElement::children_changed()
 {
     HTMLElement::children_changed();
-    if (auto* page = document().page()) {
-        if (document().browsing_context() == &page->top_level_browsing_context())
-            page->client().page_did_change_title(document().title());
+    auto navigable = this->navigable();
+    if (navigable && navigable->is_traversable()) {
+        navigable->traversable_navigable()->page().client().page_did_change_title(document().title().to_byte_string());
     }
+}
+
+// https://html.spec.whatwg.org/multipage/semantics.html#dom-title-text
+String HTMLTitleElement::text() const
+{
+    // The text attribute's getter must return this title element's child text content.
+    return child_text_content();
+}
+
+// https://html.spec.whatwg.org/multipage/semantics.html#dom-title-text
+void HTMLTitleElement::set_text(String const& value)
+{
+    // The text attribute's setter must string replace all with the given value within this title element.
+    string_replace_all(value);
 }
 
 }

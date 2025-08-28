@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Hex.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Utf8View.h>
@@ -15,7 +15,7 @@
 
 struct Match {
     u64 offset;
-    DeprecatedString value;
+    String value;
 };
 
 class SearchResultsModel final : public GUI::Model {
@@ -40,13 +40,13 @@ public:
         return 2;
     }
 
-    DeprecatedString column_name(int column) const override
+    ErrorOr<String> column_name(int column) const override
     {
         switch (column) {
         case Column::Offset:
-            return "Offset";
+            return "Offset"_string;
         case Column::Value:
-            return "Value";
+            return "Value"_string;
         }
         VERIFY_NOT_REACHED();
     }
@@ -63,7 +63,7 @@ public:
             auto& match = m_matches.at(index.row());
             switch (index.column()) {
             case Column::Offset:
-                return DeprecatedString::formatted("{:#08X}", match.offset);
+                return ByteString::formatted("{:#08X}", match.offset);
             case Column::Value: {
                 Utf8View utf8_view(match.value);
                 if (!utf8_view.validate())

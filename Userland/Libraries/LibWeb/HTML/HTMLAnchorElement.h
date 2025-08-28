@@ -15,13 +15,19 @@ class HTMLAnchorElement final
     : public HTMLElement
     , public HTMLHyperlinkElementUtils {
     WEB_PLATFORM_OBJECT(HTMLAnchorElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLAnchorElement);
 
 public:
     virtual ~HTMLAnchorElement() override;
 
-    DeprecatedString rel() const { return attribute(HTML::AttributeNames::rel); }
-    DeprecatedString target() const { return attribute(HTML::AttributeNames::target); }
-    DeprecatedString download() const { return attribute(HTML::AttributeNames::download); }
+    String rel() const { return get_attribute_value(HTML::AttributeNames::rel); }
+    String target() const { return get_attribute_value(HTML::AttributeNames::target); }
+    String download() const { return get_attribute_value(HTML::AttributeNames::download); }
+
+    JS::NonnullGCPtr<DOM::DOMTokenList> rel_list();
+
+    String text() const;
+    void set_text(String const&);
 
     // ^EventTarget
     // https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute:the-a-element
@@ -32,28 +38,40 @@ public:
 private:
     HTMLAnchorElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
-    void run_activation_behavior(Web::DOM::Event const&);
+    virtual bool has_activation_behavior() const override;
+    virtual void activation_behavior(Web::DOM::Event const&) override;
+    virtual bool has_download_preference() const;
 
     // ^DOM::Element
-    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
     virtual i32 default_tab_index_value() const override;
 
     // ^HTML::HTMLHyperlinkElementUtils
     virtual DOM::Document& hyperlink_element_utils_document() override { return document(); }
-    virtual DeprecatedString hyperlink_element_utils_href() const override;
-    virtual void set_hyperlink_element_utils_href(DeprecatedString) override;
+    virtual Optional<String> hyperlink_element_utils_href() const override;
+    virtual WebIDL::ExceptionOr<void> set_hyperlink_element_utils_href(String) override;
+    virtual Optional<String> hyperlink_element_utils_referrerpolicy() const override;
     virtual bool hyperlink_element_utils_is_html_anchor_element() const final { return true; }
     virtual bool hyperlink_element_utils_is_connected() const final { return is_connected(); }
-    virtual DeprecatedString hyperlink_element_utils_target() const final { return target(); }
-    virtual DeprecatedString hyperlink_element_utils_rel() const final { return rel(); }
     virtual void hyperlink_element_utils_queue_an_element_task(HTML::Task::Source source, Function<void()> steps) override
     {
         queue_an_element_task(source, move(steps));
     }
+    virtual String hyperlink_element_utils_get_an_elements_target() const override
+    {
+        return get_an_elements_target();
+    }
+    virtual TokenizedFeature::NoOpener hyperlink_element_utils_get_an_elements_noopener(StringView target) const override
+    {
+        return get_an_elements_noopener(target);
+    }
 
     virtual Optional<ARIA::Role> default_role() const override;
+
+    JS::GCPtr<DOM::DOMTokenList> m_rel_list;
 };
 
 }

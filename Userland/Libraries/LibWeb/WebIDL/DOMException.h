@@ -6,9 +6,8 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
 #include <AK/Diagnostics.h>
-#include <LibJS/Runtime/VM.h>
+#include <AK/String.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 
@@ -79,7 +78,7 @@ namespace Web::WebIDL {
     __ENUMERATE(OperationError)                      \
     __ENUMERATE(NotAllowedError)
 
-static u16 get_legacy_code_for_name(DeprecatedFlyString const& name)
+static u16 get_legacy_code_for_name(FlyString const& name)
 {
 #define __ENUMERATE(ErrorName, code) \
     if (name == #ErrorName)          \
@@ -92,37 +91,38 @@ static u16 get_legacy_code_for_name(DeprecatedFlyString const& name)
 // https://webidl.spec.whatwg.org/#idl-DOMException
 class DOMException final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(DOMException, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(DOMException);
 
 public:
-    static JS::NonnullGCPtr<DOMException> create(JS::Realm& realm, DeprecatedFlyString const& name, DeprecatedFlyString const& message);
+    static JS::NonnullGCPtr<DOMException> create(JS::Realm& realm, FlyString name, String message);
 
     // JS constructor has message first, name second
     // FIXME: This is a completely pointless footgun, let's use the same order for both factories.
-    static JS::NonnullGCPtr<DOMException> construct_impl(JS::Realm& realm, DeprecatedFlyString const& message, DeprecatedFlyString const& name);
+    static JS::NonnullGCPtr<DOMException> construct_impl(JS::Realm& realm, String message, FlyString name);
 
     virtual ~DOMException() override;
 
-    DeprecatedFlyString const& name() const { return m_name; }
-    DeprecatedFlyString const& message() const { return m_message; }
+    FlyString const& name() const { return m_name; }
+    FlyString const& message() const { return m_message; }
     u16 code() const { return get_legacy_code_for_name(m_name); }
 
 protected:
-    DOMException(JS::Realm&, DeprecatedFlyString const& name, DeprecatedFlyString const& message);
+    DOMException(JS::Realm&, FlyString name, String message);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
 private:
-    DeprecatedFlyString m_name;
-    DeprecatedFlyString m_message;
+    FlyString m_name;
+    FlyString m_message;
 };
 
-#define __ENUMERATE(ErrorName)                                                                             \
-    class ErrorName final {                                                                                \
-    public:                                                                                                \
-        static JS::NonnullGCPtr<DOMException> create(JS::Realm& realm, DeprecatedFlyString const& message) \
-        {                                                                                                  \
-            return DOMException::create(realm, #ErrorName, message);                                       \
-        }                                                                                                  \
+#define __ENUMERATE(ErrorName)                                                                \
+    class ErrorName final {                                                                   \
+    public:                                                                                   \
+        static JS::NonnullGCPtr<DOMException> create(JS::Realm& realm, String const& message) \
+        {                                                                                     \
+            return DOMException::create(realm, #ErrorName##_fly_string, message);             \
+        }                                                                                     \
     };
 ENUMERATE_DOM_EXCEPTION_ERROR_NAMES
 #undef __ENUMERATE
@@ -133,7 +133,7 @@ namespace Web {
 
 inline JS::Completion throw_completion(JS::NonnullGCPtr<WebIDL::DOMException> exception)
 {
-    return JS::throw_completion(JS::Value(static_cast<JS::Object*>(exception.ptr())));
+    return JS::throw_completion(JS::Value(exception));
 }
 
 }

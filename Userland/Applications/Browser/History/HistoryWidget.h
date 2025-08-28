@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "../History.h"
 #include "HistoryModel.h"
 #include <LibGUI/FilteringProxyModel.h>
 #include <LibGUI/TextBox.h>
@@ -20,7 +19,7 @@ class HistoryWidget final : public GUI::Widget {
 public:
     virtual ~HistoryWidget() override = default;
 
-    void set_history_entries(Vector<History::URLTitlePair> entries);
+    void set_history_entries(Vector<URLTitlePair> entries);
     void clear_history_entries();
 
 private:

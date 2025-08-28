@@ -12,17 +12,20 @@
 #include <LibGUI/SettingsWindow.h>
 #include <LibGUI/TextBox.h>
 
+namespace BrowserSettings {
+
 class BrowserSettingsWidget final : public GUI::SettingsWindow::Tab {
-    C_OBJECT(BrowserSettingsWidget)
+    C_OBJECT_ABSTRACT(BrowserSettingsWidget)
 public:
+    static ErrorOr<NonnullRefPtr<BrowserSettingsWidget>> try_create();
     virtual ~BrowserSettingsWidget() override = default;
 
     virtual void apply_settings() override;
     virtual void reset_default_values() override;
 
-private:
-    BrowserSettingsWidget();
+    ErrorOr<void> initialize();
 
+private:
     RefPtr<GUI::TextBox> m_homepage_url_textbox;
     RefPtr<GUI::TextBox> m_new_tab_url_textbox;
     void set_color_scheme(StringView);
@@ -38,3 +41,5 @@ private:
     RefPtr<GUI::Widget> m_custom_search_engine_group;
     RefPtr<GUI::TextBox> m_custom_search_engine_textbox;
 };
+
+}

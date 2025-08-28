@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/Platform.h>
+#include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 #include <Kernel/Arch/RegisterState.h>
 
@@ -23,5 +24,8 @@ struct TrapFrame {
     TrapFrame& operator=(TrapFrame const&) = delete;
     TrapFrame& operator=(TrapFrame&&) = delete;
 };
+
+#define TRAP_FRAME_SIZE (2 * 8)
+static_assert(AssertSize<TrapFrame, TRAP_FRAME_SIZE>());
 
 }

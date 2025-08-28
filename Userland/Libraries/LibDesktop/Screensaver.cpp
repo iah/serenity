@@ -14,7 +14,7 @@ static constexpr int mouse_tracking_delay_milliseconds = 750;
 
 ErrorOr<NonnullRefPtr<GUI::Window>> Screensaver::create_window(StringView title, StringView icon)
 {
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_double_buffering_enabled(false);
     window->set_frameless(true);
     window->set_fullscreen(true);
@@ -40,7 +40,7 @@ void Screensaver::mousedown_event(GUI::MouseEvent&)
 
 void Screensaver::mousemove_event(GUI::MouseEvent& event)
 {
-    auto now = AK::Time::now_monotonic();
+    auto now = MonotonicTime::now();
     if ((now - m_start_time).to_milliseconds() < mouse_tracking_delay_milliseconds)
         return;
 

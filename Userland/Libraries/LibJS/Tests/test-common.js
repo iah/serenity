@@ -29,11 +29,11 @@ class ExpectationError extends Error {
 
 // Use an IIFE to avoid polluting the global namespace as much as possible
 (() => {
-    // FIXME: This is a very naive deepEquals algorithm
     const deepEquals = (a, b) => {
+        if (Object.is(a, b)) return true; // Handles identical references and primitives
+        if ((a !== null && b === null) || (a === null && b !== null)) return false;
         if (Array.isArray(a)) return Array.isArray(b) && deepArrayEquals(a, b);
         if (typeof a === "object") return typeof b === "object" && deepObjectEquals(a, b);
-        return Object.is(a, b);
     };
 
     const deepArrayEquals = (a, b) => {
@@ -41,14 +41,19 @@ class ExpectationError extends Error {
         for (let i = 0; i < a.length; ++i) {
             if (!deepEquals(a[i], b[i])) return false;
         }
+
         return true;
     };
 
     const deepObjectEquals = (a, b) => {
-        if (a === null) return b === null;
-        for (let key of Reflect.ownKeys(a)) {
+        const keysA = Reflect.ownKeys(a);
+        const keysB = Reflect.ownKeys(b);
+
+        if (keysA.length !== keysB.length) return false;
+        for (let key of keysA) {
             if (!deepEquals(a[key], b[key])) return false;
         }
+
         return true;
     };
 
@@ -86,19 +91,23 @@ class ExpectationError extends Error {
             });
         }
 
-        // FIXME: Take a precision argument like jest's toBeCloseTo matcher
-        toBeCloseTo(value) {
+        toBeCloseTo(value, precision = 5) {
             this.__expect(
                 typeof this.target === "number",
-                () => `toBeCloseTo: expected target of type number, got ${typeof value}`
+                () => `toBeCloseTo: expected target of type number, got ${typeof this.target}`
             );
             this.__expect(
                 typeof value === "number",
                 () => `toBeCloseTo: expected argument of type number, got ${typeof value}`
             );
+            this.__expect(
+                typeof precision === "number",
+                () => `toBeCloseTo: expected precision of type number, got ${typeof precision}`
+            );
 
+            const epsilon = 10 ** -precision / 2;
             this.__doMatcher(() => {
-                this.__expect(Math.abs(this.target - value) < 0.000001);
+                this.__expect(Math.abs(this.target - value) < epsilon);
             });
         }
 
@@ -628,6 +637,41 @@ class ExpectationError extends Error {
             result: "skip",
             duration: 0,
         };
+    };
+
+    test.xfail = (message, callback) => {
+        if (!__TestResults__[suiteMessage]) __TestResults__[suiteMessage] = {};
+
+        const suite = __TestResults__[suiteMessage];
+        if (Object.prototype.hasOwnProperty.call(suite, message)) {
+            suite[message] = {
+                result: "fail",
+                details: "Another test with the same message did already run",
+                duration: 0,
+            };
+            return;
+        }
+
+        const now = () => Temporal.Now.instant().epochNanoseconds;
+        const start = now();
+        const time_us = () => Number(BigInt.asIntN(53, (now() - start) / 1000n));
+        try {
+            callback();
+            suite[message] = {
+                result: "fail",
+                details: "Expected test to fail, but it passed",
+                duration: time_us(),
+            };
+        } catch (e) {
+            suite[message] = {
+                result: "xfail",
+                duration: time_us(),
+            };
+        }
+    };
+
+    test.xfailIf = (condition, message, callback) => {
+        condition ? test.xfail(message, callback) : test(message, callback);
     };
 
     withinSameSecond = callback => {

@@ -11,9 +11,9 @@
 namespace IPC {
 
 class Decoder;
-class Dictionary;
 class Encoder;
 class Message;
+class MessageBuffer;
 class File;
 class Stub;
 

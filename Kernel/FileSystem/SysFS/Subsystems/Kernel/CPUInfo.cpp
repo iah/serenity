@@ -18,9 +18,9 @@ UNMAP_AFTER_INIT SysFSCPUInformation::SysFSCPUInformation(SysFSDirectory const& 
 {
 }
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<SysFSCPUInformation> SysFSCPUInformation::must_create(SysFSDirectory const& parent_directory)
+UNMAP_AFTER_INIT NonnullRefPtr<SysFSCPUInformation> SysFSCPUInformation::must_create(SysFSDirectory const& parent_directory)
 {
-    return adopt_lock_ref_if_nonnull(new (nothrow) SysFSCPUInformation(parent_directory)).release_nonnull();
+    return adopt_ref_if_nonnull(new (nothrow) SysFSCPUInformation(parent_directory)).release_nonnull();
 }
 
 ErrorOr<void> SysFSCPUInformation::try_generate(KBufferBuilder& builder)
@@ -80,6 +80,10 @@ ErrorOr<void> SysFSCPUInformation::try_generate(KBufferBuilder& builder)
 #elif ARCH(AARCH64)
     (void)builder;
     dmesgln("TODO: Implement ProcessorInfo for AArch64!");
+    return Error::from_errno(EINVAL);
+#elif ARCH(RISCV64)
+    (void)builder;
+    dmesgln("TODO: Implement ProcessorInfo for riscv64!");
     return Error::from_errno(EINVAL);
 #else
 #    error Unknown architecture

@@ -13,7 +13,7 @@ namespace Gfx::ICC {
 
 // The ICC spec uses FourCCs for many different things.
 // This is used to give FourCCs for different roles distinct types, so that they can only be compared to the correct constants.
-// (FourCCs that have only a small and fixed set of values should use an enum class instead, see e.g. DeviceClass and ColorSpace in Profile.h.)
+// (FourCCs that have only a small and fixed set of values should use an enum class instead, see e.g. DeviceClass and ColorSpace in Enums.h.)
 enum class FourCCType {
     PreferredCMMType,
     DeviceManufacturer,
@@ -65,7 +65,7 @@ struct AK::Formatter<Gfx::ICC::DistinctFourCC<Type>> : StandardFormatter {
 };
 
 template<Gfx::ICC::FourCCType Type>
-struct AK::Traits<Gfx::ICC::DistinctFourCC<Type>> : public GenericTraits<Gfx::ICC::DistinctFourCC<Type>> {
+struct AK::Traits<Gfx::ICC::DistinctFourCC<Type>> : public DefaultTraits<Gfx::ICC::DistinctFourCC<Type>> {
     static unsigned hash(Gfx::ICC::DistinctFourCC<Type> const& key)
     {
         return int_hash(key.value);

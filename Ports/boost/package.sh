@@ -1,18 +1,17 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='boost'
-version='1.80.0'
+version='1.83.0'
 useconfigure='true'
-workdir="boost_${version//./_}"
 depends=(
     'zlib'
     'bzip2'
     'zstd'
     'xz'
     'libicu'
-    'python3'
 )
-files="https://boostorg.jfrog.io/artifactory/main/release/${version}/source/boost_${version//./_}.tar.bz2 boost_${version//./_}.tar.bz2 1e19565d82e43bc59209a168f5ac899d3ba471d55c7610c677d4ccf2c9c500c0"
-auth_type='sha256'
+files=(
+    "https://github.com/boostorg/boost/releases/download/boost-${version}/boost-${version}.tar.gz#0c6049764e80aa32754acd7d4f179fd5551d8172a83b71532ae093e7384e98da"
+)
 bjamopts=(
     '--user-config=user-config.jam'
     'toolset=gcc'
@@ -20,8 +19,11 @@ bjamopts=(
 )
 
 configure() {
-    run ./bootstrap.sh --with-icu=${DESTDIR}/usr/local --prefix=${DESTDIR}/usr/local
-    echo "using gcc : : $CXX ;" >$workdir/user-config.jam
+    run ./bootstrap.sh \
+        --with-icu="${DESTDIR}/usr/local" \
+        --prefix="${DESTDIR}/usr/local" \
+        --without-libraries='python'
+    echo "using gcc : : ${CXX} ;" > "${workdir}/user-config.jam"
 }
 
 build() {

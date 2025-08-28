@@ -8,14 +8,16 @@ tree
 $ tree [--all] [--only-directories] [--maximum-depth level] [directories...]
 ```
 
-## Options:
+## Options
 
-* `-a`, `--all`: Show hidden files
-* `-d`, `--only-directories`: Show only directories
-* `-L level`, `--maximum-depth level`: Maximum depth of the tree
+-   `-a`, `--all`: Show hidden files
+-   `-d`, `--only-directories`: Show only directories
+-   `-L level`, `--maximum-depth level`: Maximum depth of the tree
 
-## Arguments:
+## Arguments
 
-* `directories`: Directories to print
+-   `directories`: Directories to print
 
-<!-- Auto-generated through ArgsParser -->
+## See also
+
+-   [`ls`(1)](help://man/1/ls) to show just the contents of one directory

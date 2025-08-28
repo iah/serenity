@@ -12,7 +12,7 @@
 
 namespace GUI::GML {
 
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, Token::Type type)
+static Gfx::TextAttributes style_for_token_type(Gfx::Palette const& palette, Token::Type type)
 {
     switch (type) {
     case Token::Type::LeftCurly:
@@ -21,7 +21,7 @@ static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, Token
     case Token::Type::ClassMarker:
         return { palette.syntax_keyword() };
     case Token::Type::ClassName:
-        return { palette.syntax_identifier(), true };
+        return { palette.syntax_identifier(), {}, true };
     case Token::Type::Identifier:
         return { palette.syntax_identifier() };
     case Token::Type::JsonValue:
@@ -47,16 +47,14 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
 
     Vector<Token> folding_region_start_tokens;
 
-    Vector<GUI::TextDocumentSpan> spans;
-    Vector<GUI::TextDocumentFoldingRegion> folding_regions;
+    Vector<Syntax::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentFoldingRegion> folding_regions;
 
     for (auto& token : tokens) {
-        GUI::TextDocumentSpan span;
+        Syntax::TextDocumentSpan span;
         span.range.set_start({ token.m_start.line, token.m_start.column });
         span.range.set_end({ token.m_end.line, token.m_end.column });
-        auto style = style_for_token_type(palette, token.m_type);
-        span.attributes.color = style.color;
-        span.attributes.bold = style.bold;
+        span.attributes = style_for_token_type(palette, token.m_type);
         span.is_skippable = false;
         span.data = static_cast<u64>(token.m_type);
         spans.append(span);
@@ -67,7 +65,7 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         } else if (token.m_type == Token::Type::RightCurly) {
             if (!folding_region_start_tokens.is_empty()) {
                 auto left_curly = folding_region_start_tokens.take_last();
-                GUI::TextDocumentFoldingRegion region;
+                Syntax::TextDocumentFoldingRegion region;
                 region.range.set_start({ left_curly.m_end.line, left_curly.m_end.column });
                 region.range.set_end({ token.m_start.line, token.m_start.column });
                 folding_regions.append(region);

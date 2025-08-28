@@ -42,20 +42,19 @@ public:
         No,
     };
 
-    static ErrorOr<NonnullRefPtr<SettingsWindow>> create(DeprecatedString title, ShowDefaultsButton = ShowDefaultsButton::No);
+    static ErrorOr<NonnullRefPtr<SettingsWindow>> create(ByteString title, ShowDefaultsButton = ShowDefaultsButton::No);
 
     virtual ~SettingsWindow() override = default;
 
     template<class T, class... Args>
-    ErrorOr<NonnullRefPtr<T>> add_tab(DeprecatedString title, StringView id, Args&&... args)
+    ErrorOr<NonnullRefPtr<T>> add_tab(String title, StringView id, Args&&... args)
     {
-        auto tab = TRY(m_tab_widget->try_add_tab<T>(move(title), forward<Args>(args)...));
-        TRY(m_tabs.try_set(id, tab));
-        tab->set_settings_window(*this);
+        auto tab = TRY(T::try_create(forward<Args>(args)...));
+        TRY(add_tab(tab, title, id));
         return tab;
     }
 
-    ErrorOr<void> add_tab(NonnullRefPtr<Tab> const& tab, DeprecatedString title, StringView id)
+    ErrorOr<void> add_tab(NonnullRefPtr<Tab> const& tab, String title, StringView id)
     {
         tab->set_title(move(title));
         TRY(m_tab_widget->try_add_widget(*tab));
@@ -77,7 +76,7 @@ private:
     SettingsWindow() = default;
 
     RefPtr<GUI::TabWidget> m_tab_widget;
-    HashMap<StringView, NonnullRefPtr<Tab>> m_tabs;
+    OrderedHashMap<StringView, NonnullRefPtr<Tab>> m_tabs;
 
     RefPtr<GUI::Button> m_ok_button;
     RefPtr<GUI::Button> m_cancel_button;

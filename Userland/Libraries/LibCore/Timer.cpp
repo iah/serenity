@@ -9,13 +9,32 @@
 
 namespace Core {
 
-Timer::Timer(Object* parent)
-    : Object(parent)
+NonnullRefPtr<Timer> Timer::create()
+{
+    return adopt_ref(*new Timer);
+}
+
+NonnullRefPtr<Timer> Timer::create_repeating(int interval_ms, Function<void()>&& timeout_handler, EventReceiver* parent)
+{
+    return adopt_ref(*new Timer(interval_ms, move(timeout_handler), parent));
+}
+
+NonnullRefPtr<Timer> Timer::create_single_shot(int interval_ms, Function<void()>&& timeout_handler, EventReceiver* parent)
+{
+    auto timer = adopt_ref(*new Timer(interval_ms, move(timeout_handler), parent));
+    timer->set_single_shot(true);
+    return timer;
+}
+
+Timer::~Timer() = default;
+
+Timer::Timer(EventReceiver* parent)
+    : EventReceiver(parent)
 {
 }
 
-Timer::Timer(int interval_ms, Function<void()>&& timeout_handler, Object* parent)
-    : Object(parent)
+Timer::Timer(int interval_ms, Function<void()>&& timeout_handler, EventReceiver* parent)
+    : EventReceiver(parent)
     , on_timeout(move(timeout_handler))
     , m_interval_ms(interval_ms)
 {

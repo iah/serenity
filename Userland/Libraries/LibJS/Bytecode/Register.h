@@ -14,20 +14,53 @@ class Register {
 public:
     constexpr static u32 accumulator_index = 0;
 
-    static Register accumulator()
+    static constexpr Register accumulator()
     {
-        static Register accumulator(accumulator_index);
-        return accumulator;
+        return Register(accumulator_index);
     }
 
-    explicit Register(u32 index)
+    constexpr static u32 saved_return_value_index = 1;
+
+    static constexpr Register saved_return_value()
+    {
+        return Register(saved_return_value_index);
+    }
+
+    static constexpr u32 exception_index = 2;
+
+    static constexpr Register exception()
+    {
+        return Register(exception_index);
+    }
+
+    static constexpr Register this_value()
+    {
+        constexpr u32 this_value_index = 3;
+        return Register(this_value_index);
+    }
+
+    static constexpr Register return_value()
+    {
+        constexpr u32 return_value_index = 4;
+        return Register(return_value_index);
+    }
+
+    static constexpr Register saved_exception()
+    {
+        constexpr u32 saved_exception_index = 5;
+        return Register(saved_exception_index);
+    }
+
+    static constexpr u32 reserved_register_count = 6;
+
+    constexpr explicit Register(u32 index)
         : m_index(index)
     {
     }
 
-    bool operator==(Register reg) const { return m_index == reg.index(); }
+    constexpr bool operator==(Register reg) const { return m_index == reg.index(); }
 
-    u32 index() const { return m_index; }
+    constexpr u32 index() const { return m_index; }
 
 private:
     u32 m_index;

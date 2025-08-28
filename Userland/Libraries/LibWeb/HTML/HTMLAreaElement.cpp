@@ -5,10 +5,14 @@
  */
 
 #include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/Bindings/HTMLAreaElementPrototype.h>
+#include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/HTML/HTMLAreaElement.h>
 #include <LibWeb/HTML/Window.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLAreaElement);
 
 HTMLAreaElement::HTMLAreaElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -17,30 +21,51 @@ HTMLAreaElement::HTMLAreaElement(DOM::Document& document, DOM::QualifiedName qua
 
 HTMLAreaElement::~HTMLAreaElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLAreaElement::initialize(JS::Realm& realm)
+void HTMLAreaElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLAreaElementPrototype>(realm, "HTMLAreaElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLAreaElement);
 }
 
-void HTMLAreaElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
+void HTMLAreaElement::visit_edges(Cell::Visitor& visitor)
 {
-    HTMLElement::parse_attribute(name, value);
+    Base::visit_edges(visitor);
+    visitor.visit(m_rel_list);
+}
+
+void HTMLAreaElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
+{
+    HTMLElement::attribute_changed(name, old_value, value);
     if (name == HTML::AttributeNames::href) {
         set_the_url();
+    } else if (name == HTML::AttributeNames::rel) {
+        if (m_rel_list)
+            m_rel_list->associated_attribute_changed(value.value_or(String {}));
     }
 }
 
-DeprecatedString HTMLAreaElement::hyperlink_element_utils_href() const
+// https://html.spec.whatwg.org/multipage/image-maps.html#dom-area-rellist
+JS::NonnullGCPtr<DOM::DOMTokenList> HTMLAreaElement::rel_list()
+{
+    // The IDL attribute relList must reflect the rel content attribute.
+    if (!m_rel_list)
+        m_rel_list = DOM::DOMTokenList::create(*this, HTML::AttributeNames::rel);
+    return *m_rel_list;
+}
+
+Optional<String> HTMLAreaElement::hyperlink_element_utils_href() const
 {
     return attribute(HTML::AttributeNames::href);
 }
 
-void HTMLAreaElement::set_hyperlink_element_utils_href(DeprecatedString href)
+WebIDL::ExceptionOr<void> HTMLAreaElement::set_hyperlink_element_utils_href(String href)
 {
-    MUST(set_attribute(HTML::AttributeNames::href, move(href)));
+    return set_attribute(HTML::AttributeNames::href, move(href));
+}
+
+Optional<String> HTMLAreaElement::hyperlink_element_utils_referrerpolicy() const
+{
+    return attribute(HTML::AttributeNames::referrerpolicy);
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex
@@ -53,7 +78,7 @@ i32 HTMLAreaElement::default_tab_index_value() const
 Optional<ARIA::Role> HTMLAreaElement::default_role() const
 {
     // https://www.w3.org/TR/html-aria/#el-area-no-href
-    if (!href().is_null())
+    if (!href().is_empty())
         return ARIA::Role::link;
     // https://www.w3.org/TR/html-aria/#el-area
     return ARIA::Role::generic;

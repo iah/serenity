@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
+#include <AK/Error.h>
+#include <AK/FlyString.h>
 
 namespace Web::XHR::EventNames {
 
@@ -20,8 +21,10 @@ namespace Web::XHR::EventNames {
     __ENUMERATE_XHR_EVENT(timeout)          \
     __ENUMERATE_XHR_EVENT(loadend)
 
-#define __ENUMERATE_XHR_EVENT(name) extern DeprecatedFlyString name;
+#define __ENUMERATE_XHR_EVENT(name) extern FlyString name;
 ENUMERATE_XHR_EVENTS
 #undef __ENUMERATE_XHR_EVENT
+
+void initialize_strings();
 
 }

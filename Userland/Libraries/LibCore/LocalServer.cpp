@@ -22,8 +22,8 @@
 
 namespace Core {
 
-LocalServer::LocalServer(Object* parent)
-    : Object(parent)
+LocalServer::LocalServer(EventReceiver* parent)
+    : EventReceiver(parent)
 {
 }
 
@@ -33,7 +33,7 @@ LocalServer::~LocalServer()
         ::close(m_fd);
 }
 
-ErrorOr<void> LocalServer::take_over_from_system_server(DeprecatedString const& socket_path)
+ErrorOr<void> LocalServer::take_over_from_system_server(ByteString const& socket_path)
 {
     if (m_listening)
         return Error::from_string_literal("Core::LocalServer: Can't perform socket takeover when already listening");
@@ -47,10 +47,21 @@ ErrorOr<void> LocalServer::take_over_from_system_server(DeprecatedString const& 
     return {};
 }
 
+ErrorOr<void> LocalServer::take_over_fd(int socket_fd)
+{
+    if (m_listening)
+        return Error::from_string_literal("Core::LocalServer: Can't perform socket takeover when already listening");
+
+    m_fd = socket_fd;
+    m_listening = true;
+    setup_notifier();
+    return {};
+}
+
 void LocalServer::setup_notifier()
 {
-    m_notifier = Notifier::construct(m_fd, Notifier::Event::Read, this);
-    m_notifier->on_ready_to_read = [this] {
+    m_notifier = Notifier::construct(m_fd, Notifier::Type::Read, this);
+    m_notifier->on_activation = [this] {
         if (on_accept) {
             auto maybe_client_socket = accept();
             if (maybe_client_socket.is_error()) {
@@ -65,7 +76,7 @@ void LocalServer::setup_notifier()
     };
 }
 
-bool LocalServer::listen(DeprecatedString const& address)
+bool LocalServer::listen(ByteString const& address)
 {
     if (m_listening)
         return false;
@@ -81,7 +92,7 @@ bool LocalServer::listen(DeprecatedString const& address)
     fcntl(m_fd, F_SETFD, FD_CLOEXEC);
 #endif
     VERIFY(m_fd >= 0);
-#ifndef AK_OS_MACOS
+#if !defined(AK_OS_MACOS) && !defined(AK_OS_IOS)
     rc = fchmod(m_fd, 0600);
     if (rc < 0) {
         perror("fchmod");
@@ -118,7 +129,7 @@ ErrorOr<NonnullOwnPtr<LocalSocket>> LocalServer::accept()
     VERIFY(m_listening);
     sockaddr_un un;
     socklen_t un_size = sizeof(un);
-#ifndef AK_OS_MACOS
+#if !defined(AK_OS_MACOS) && !defined(AK_OS_IOS) && !defined(AK_OS_HAIKU)
     int accepted_fd = ::accept4(m_fd, (sockaddr*)&un, &un_size, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #else
     int accepted_fd = ::accept(m_fd, (sockaddr*)&un, &un_size);
@@ -127,13 +138,13 @@ ErrorOr<NonnullOwnPtr<LocalSocket>> LocalServer::accept()
         return Error::from_syscall("accept"sv, -errno);
     }
 
-#ifdef AK_OS_MACOS
+#if defined(AK_OS_MACOS) || defined(AK_OS_IOS) || defined(AK_OS_HAIKU)
     int option = 1;
     ioctl(m_fd, FIONBIO, &option);
     (void)fcntl(accepted_fd, F_SETFD, FD_CLOEXEC);
 #endif
 
-    return LocalSocket::adopt_fd(accepted_fd, Socket::PreventSIGPIPE::Yes);
+    return LocalSocket::adopt_fd(accepted_fd);
 }
 
 }

@@ -8,7 +8,10 @@
 
 namespace Gfx {
 
+class AffineTransform;
 class Bitmap;
+class CMYKBitmap;
+class ImmutableBitmap;
 class CharacterBitmap;
 class Color;
 
@@ -20,6 +23,7 @@ class Font;
 class GlyphBitmap;
 class ImageDecoder;
 struct FontPixelMetrics;
+class ScaledFont;
 
 template<typename T>
 class Line;

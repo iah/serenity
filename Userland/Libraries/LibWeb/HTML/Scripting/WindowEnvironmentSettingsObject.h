@@ -13,16 +13,17 @@ namespace Web::HTML {
 
 class WindowEnvironmentSettingsObject final : public EnvironmentSettingsObject {
     JS_CELL(WindowEnvironmentSettingsObject, EnvironmentSettingsObject);
+    JS_DECLARE_ALLOCATOR(WindowEnvironmentSettingsObject);
 
 public:
-    static WebIDL::ExceptionOr<void> setup(AK::URL const& creation_url, NonnullOwnPtr<JS::ExecutionContext>, Optional<Environment>, AK::URL top_level_creation_url, Origin top_level_origin);
+    static void setup(Page&, URL::URL const& creation_url, NonnullOwnPtr<JS::ExecutionContext>, JS::GCPtr<Environment>, URL::URL top_level_creation_url, URL::Origin top_level_origin);
 
     virtual ~WindowEnvironmentSettingsObject() override;
 
     virtual JS::GCPtr<DOM::Document> responsible_document() override;
-    virtual DeprecatedString api_url_character_encoding() override;
-    virtual AK::URL api_base_url() override;
-    virtual Origin origin() override;
+    virtual String api_url_character_encoding() override;
+    virtual URL::URL api_base_url() override;
+    virtual URL::Origin origin() override;
     virtual PolicyContainer policy_container() override;
     virtual CanUseCrossOriginIsolatedAPIs cross_origin_isolated_capability() override;
 

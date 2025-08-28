@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/FunctionEnvironment.h>
 #include <LibJS/Runtime/GlobalObject.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(FunctionEnvironment);
 
 FunctionEnvironment::FunctionEnvironment(Environment* parent_environment)
     : DeclarativeEnvironment(parent_environment)

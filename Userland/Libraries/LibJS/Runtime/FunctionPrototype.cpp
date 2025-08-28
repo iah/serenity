@@ -8,7 +8,6 @@
 #include <AK/StringBuilder.h>
 #include <AK/TypeCasts.h>
 #include <LibJS/Heap/MarkedVector.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/BoundFunction.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
@@ -20,28 +19,28 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(FunctionPrototype);
+
 FunctionPrototype::FunctionPrototype(Realm& realm)
-    : FunctionObject(*realm.intrinsics().object_prototype())
+    : FunctionObject(realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> FunctionPrototype::initialize(Realm& realm)
+void FunctionPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.apply, apply, 2, attr);
     define_native_function(realm, vm.names.bind, bind, 1, attr);
     define_native_function(realm, vm.names.call, call, 1, attr);
     define_native_function(realm, vm.names.toString, to_string, 0, attr);
-    define_native_function(realm, *vm.well_known_symbol_has_instance(), symbol_has_instance, 1, 0);
+    define_native_function(realm, vm.well_known_symbol_has_instance(), symbol_has_instance, 1, 0);
     define_direct_property(vm.names.length, Value(0), Attribute::Configurable);
     define_direct_property(vm.names.name, PrimitiveString::create(vm, String {}), Attribute::Configurable);
-
-    return {};
 }
 
-ThrowCompletionOr<Value> FunctionPrototype::internal_call(Value, MarkedVector<Value>)
+ThrowCompletionOr<Value> FunctionPrototype::internal_call(Value, ReadonlySpan<Value>)
 {
     // The Function prototype object:
     // - accepts any arguments and returns undefined when invoked.
@@ -56,7 +55,7 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::apply)
 
     // 2. If IsCallable(func) is false, throw a TypeError exception.
     if (!function_value.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, function_value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, function_value.to_string_without_side_effects());
 
     auto& function = static_cast<FunctionObject&>(function_value.as_object());
 
@@ -77,7 +76,7 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::apply)
     // FIXME: 5. Perform PrepareForTailCall().
 
     // 6. Return ? Call(func, thisArg, argList).
-    return TRY(JS::call(vm, function, this_arg, move(arguments)));
+    return TRY(JS::call(vm, function, this_arg, arguments.span()));
 }
 
 // 20.2.3.2 Function.prototype.bind ( thisArg, ...args ), https://tc39.es/ecma262/#sec-function.prototype.bind
@@ -93,14 +92,13 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::bind)
 
     // 2. If IsCallable(Target) is false, throw a TypeError exception.
     if (!target_value.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, target_value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, target_value.to_string_without_side_effects());
 
     auto& target = static_cast<FunctionObject&>(target_value.as_object());
 
     Vector<Value> arguments;
     if (vm.argument_count() > 1) {
-        arguments = vm.running_execution_context().arguments;
-        arguments.remove(0);
+        arguments.append(vm.running_execution_context().arguments.span().slice(1).data(), vm.argument_count() - 1);
     }
 
     // 3. Let F be ? BoundFunctionCreate(Target, thisArg, args).
@@ -124,21 +122,17 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::call)
 
     // 2. If IsCallable(func) is false, throw a TypeError exception.
     if (!function_value.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, function_value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, function_value.to_string_without_side_effects());
 
     auto& function = static_cast<FunctionObject&>(function_value.as_object());
 
     // FIXME: 3. Perform PrepareForTailCall().
 
     auto this_arg = vm.argument(0);
-    MarkedVector<Value> arguments(vm.heap());
-    if (vm.argument_count() > 1) {
-        for (size_t i = 1; i < vm.argument_count(); ++i)
-            arguments.append(vm.argument(i));
-    }
+    auto args = vm.argument_count() > 1 ? vm.running_execution_context().arguments.span().slice(1) : ReadonlySpan<Value> {};
 
     // 4. Return ? Call(func, thisArg, args).
-    return TRY(JS::call(vm, function, this_arg, move(arguments)));
+    return TRY(JS::call(vm, function, this_arg, args));
 }
 
 // 20.2.3.5 Function.prototype.toString ( ), https://tc39.es/ecma262/#sec-function.prototype.tostring
@@ -166,12 +160,12 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::to_string)
         // NOTE: once we remove name(), the fallback here can simply be an empty string.
         auto const& native_function = static_cast<NativeFunction&>(function);
         auto const name = native_function.initial_name().value_or(native_function.name());
-        return PrimitiveString::create(vm, DeprecatedString::formatted("function {}() {{ [native code] }}", name));
+        return PrimitiveString::create(vm, ByteString::formatted("function {}() {{ [native code] }}", name));
     }
 
     // 4. If Type(func) is Object and IsCallable(func) is true, return an implementation-defined String source code representation of func. The representation must have the syntax of a NativeFunction.
     // NOTE: ProxyObject, BoundFunction, WrappedFunction
-    return MUST_OR_THROW_OOM(PrimitiveString::create(vm, "function () { [native code] }"sv));
+    return PrimitiveString::create(vm, "function () { [native code] }"_string);
 }
 
 // 20.2.3.6 Function.prototype [ @@hasInstance ] ( V ), https://tc39.es/ecma262/#sec-function.prototype-@@hasinstance

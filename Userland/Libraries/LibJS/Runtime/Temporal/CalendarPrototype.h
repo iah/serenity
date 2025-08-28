@@ -13,9 +13,10 @@ namespace JS::Temporal {
 
 class CalendarPrototype final : public PrototypeObject<CalendarPrototype, Calendar> {
     JS_PROTOTYPE_OBJECT(CalendarPrototype, Calendar, Temporal.Calendar);
+    JS_DECLARE_ALLOCATOR(CalendarPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~CalendarPrototype() override = default;
 
 private:

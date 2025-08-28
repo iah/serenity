@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fangrui Song <maskray@google.com>
+Date: Sat, 22 May 2021 23:10:21 -0700
+Subject: [PATCH] ld: Add -Bsymbolic-non-weak-functions
+
+This option is a subset of -Bsymbolic-functions: only STB_GLOBAL are
+considered. Vague linkage functions are STB_WEAK. A vague linkage
+function may have different addresses in a -Bsymbolic-functions linked
+shared object and outside the shared object.
+-Bsymbolic-non-weak-functions can keep pointer equality while providing
+most benefits: (a) fewer JUMP_SLOT (symbol lookups) (b) avoid PLT
+entries for default visibility defined functions.
+
+    PR 27871
+include/
+    * bfdlink.h (struct bfd_link_info): Add dynamic_weak_functions.
+ld/
+    * ldlex.h (enum option_values): Add OPTION_SYMBOLIC_NON_WEAK_FUNCTIONS.
+    * lexsup.c (struct ld_options): Add -Bsymbolic-non-weak-functions.
+    (enum symbolic_enum): Add symbolic_non_weak_functions.
+    (parse_args): Handle -Bsymbolic-non-weak-functions.
+    * ld.texi: Document -Bsymbolic-non-weak-functions.
+    * NEWS: Mention -Bsymbolic-non-weak-functions.
+    * testsuite/ld-elf/shared.exp: Add tests.
+    * testsuite/ld-elf/symbolic-non-weak-func.s: New file.
+    * testsuite/ld-elf/symbolic-non-weak-func-a.rd: Likewise.
+    * testsuite/ld-elf/symbolic-non-weak-func-b.rd: Likewise.
+---
+ bfd/elflink.c                                 | 12 +++++-----
+ include/bfdlink.h                             |  3 +++
+ ld/NEWS                                       |  2 ++
+ ld/ld.texi                                    | 15 ++++++++++---
+ ld/ldlex.h                                    |  1 +
+ ld/lexsup.c                                   | 17 +++++++++++---
+ ld/testsuite/ld-elf/shared.exp                | 22 +++++++++++++++++++
+ .../ld-elf/symbolic-non-weak-func-a.rd        |  4 ++++
+ .../ld-elf/symbolic-non-weak-func-b.rd        |  4 ++++
+ ld/testsuite/ld-elf/symbolic-non-weak-func.s  | 18 +++++++++++++++
+ 10 files changed, 85 insertions(+), 13 deletions(-)
+ create mode 100644 ld/testsuite/ld-elf/symbolic-non-weak-func-a.rd
+ create mode 100644 ld/testsuite/ld-elf/symbolic-non-weak-func-b.rd
+ create mode 100644 ld/testsuite/ld-elf/symbolic-non-weak-func.s
+
+diff --git a/bfd/elflink.c b/bfd/elflink.c
+index 91c77c211ef065a77883004eb696adacd92a00be..558e2a74061452083fd6bcdc99541b535e134aed 100644
+--- a/bfd/elflink.c
++++ b/bfd/elflink.c
+@@ -637,14 +637,12 @@ bfd_elf_link_mark_dynamic_symbol (struct bfd_link_info *info,
+   if(h->dynamic || bfd_link_relocatable (info))
+     return;
+ 
++  int type = sym != NULL ? ELF_ST_TYPE (sym->st_info) : STT_NOTYPE;
+   if ((info->dynamic_data
+-       && (h->type == STT_OBJECT
+-	   || h->type == STT_COMMON
+-	   || (sym != NULL
+-	       && (ELF_ST_TYPE (sym->st_info) == STT_OBJECT
+-		   || ELF_ST_TYPE (sym->st_info) == STT_COMMON))))
+-      || (d != NULL
+-	  && h->non_elf
++       && (type == STT_OBJECT || type == STT_COMMON))
++      || (info->dynamic_weak_functions && type == STT_FUNC
++	  && ELF_ST_BIND (sym->st_info) == STB_WEAK)
++      || (d != NULL && h->non_elf
+ 	  && (*d->match) (&d->head, NULL, h->root.root.string)))
+     {
+       h->dynamic = 1;
+diff --git a/include/bfdlink.h b/include/bfdlink.h
+index ae451075996498eb2c20ea28180dd67489724583..5b5d059b17b62d5f48eede1583638f216f64bb37 100644
+--- a/include/bfdlink.h
++++ b/include/bfdlink.h
+@@ -371,6 +371,9 @@ struct bfd_link_info
+   /* TRUE if all data symbols should be dynamic.  */
+   unsigned int dynamic_data: 1;
+ 
++  /* TRUE if all weak function symbols should be dynamic.  */
++  unsigned int dynamic_weak_functions: 1;
++
+   /* TRUE if section groups should be resolved.  */
+   unsigned int resolve_section_groups: 1;
+ 
+diff --git a/ld/NEWS b/ld/NEWS
+index 17fb20a6b9f7813748dc3346075291ce7ad13f56..b05cbd77a9c4492e32a0cea6a54d05af58e090f7 100644
+--- a/ld/NEWS
++++ b/ld/NEWS
+@@ -185,6 +185,8 @@ Changes in 2.37:
+ 
+ * Add -Bno-symbolic to cancel -Bsymbolic and -Bsymbolic-functions.
+ 
++* Add -Bsymbolic-non-weak-functions as a safe subset of -Bsymbolic-functions.
++
+ Changes in 2.36:
+ 
+ * Add libdep plugin, for linking dependencies of static libraries that
+diff --git a/ld/ld.texi b/ld/ld.texi
+index f6384ad82dd943a1a7e71ed560793d6ab8bdd6f4..7d5d736c32c7011478e7f422d6ca3ea6d2cf9293 100644
+--- a/ld/ld.texi
++++ b/ld/ld.texi
+@@ -1853,7 +1853,7 @@ libraries.
+ 
+ @kindex -Bsymbolic
+ @item -Bsymbolic
+-When creating a shared library, bind references to global symbols to the
++When creating a shared library, bind references to non-local symbols to the
+ definition within the shared library, if any.  Normally, it is possible
+ for a program linked against a shared library to override the definition
+ within the shared library.  This option is only meaningful on ELF
+@@ -1861,11 +1861,20 @@ platforms which support shared libraries.
+ 
+ @kindex -Bsymbolic-functions
+ @item -Bsymbolic-functions
+-When creating a shared library, bind references to global function
+-symbols to the definition within the shared library, if any.
++When creating a shared library, bind references to non-local function
++symbols to the definition within the shared library, if any.  A vague linkage
++function definition is weak. It may have different addresses in the linked
++shared library and outside the shared library.
+ This option is only meaningful on ELF platforms which support shared
+ libraries.
+ 
++@kindex -Bsymbolic-non-weak-functions
++@item -Bsymbolic-non-weak-functions
++When creating a shared library, bind references to @code{STB_GLOBAL} function
++symbols to the definition within the shared library, if any.  Noticeably this
++option skips C++ vague linkage functions and is thus safe.
++This option is only meaningful on ELF platforms which support shared libraries.
++
+ @kindex -Bno-symbolic
+ @item -Bno-symbolic
+ This option can cancel previously specified @samp{-Bsymbolic} and
+diff --git a/ld/ldlex.h b/ld/ldlex.h
+index b8b7d6b6829d9e7427ebd99eb556237005538940..1e60d3f8b7a1aa1280e725eebdf2eed1470ba1fb 100644
+--- a/ld/ldlex.h
++++ b/ld/ldlex.h
+@@ -65,6 +65,7 @@ enum option_values
+   OPTION_SECTION_ORDERING_FILE,
+   OPTION_STATS,
+   OPTION_SYMBOLIC,
++  OPTION_SYMBOLIC_NON_WEAK_FUNCTIONS,
+   OPTION_SYMBOLIC_FUNCTIONS,
+   OPTION_TASK_LINK,
+   OPTION_IMAGE_BASE,
+diff --git a/ld/lexsup.c b/ld/lexsup.c
+index 5399aa45b724e61008686d607a1f3a8e360e2c7f..21e542886ec9a83bb764209affacc0aa4d47bdc3 100644
+--- a/ld/lexsup.c
++++ b/ld/lexsup.c
+@@ -318,9 +318,11 @@ static const struct ld_option ld_options[] =
+   { {"Bno-symbolic", no_argument, NULL, OPTION_NO_SYMBOLIC},
+     '\0', NULL, N_("Don't bind global references locally"), ONE_DASH },
+   { {"Bsymbolic", no_argument, NULL, OPTION_SYMBOLIC},
+-    '\0', NULL, N_("Bind global references locally"), ONE_DASH },
++    '\0', NULL, N_("Bind default visibility defined symbols locally for -shared"), ONE_DASH },
++  { {"Bsymbolic-non-weak-functions", no_argument, NULL, OPTION_SYMBOLIC_NON_WEAK_FUNCTIONS},
++    '\0', NULL, N_("Bind default visibility defined STB_GLOBAL function symbols locally for -shared"), ONE_DASH },
+   { {"Bsymbolic-functions", no_argument, NULL, OPTION_SYMBOLIC_FUNCTIONS},
+-    '\0', NULL, N_("Bind global function references locally"), ONE_DASH },
++    '\0', NULL, N_("Bind default visibility defined function symbols locally for -shared"), ONE_DASH },
+   { {"check-sections", no_argument, NULL, OPTION_CHECK_SECTIONS},
+     '\0', NULL, N_("Check section addresses for overlaps (default)"),
+     TWO_DASHES },
+@@ -668,8 +670,9 @@ parse_args (unsigned argc, char **argv)
+   enum symbolic_enum
+   {
+     symbolic_unset = 0,
+-    symbolic,
++    symbolic_non_weak_functions,
+     symbolic_functions,
++    symbolic,
+   } opt_symbolic = symbolic_unset;
+   enum dynamic_list_enum
+   {
+@@ -1420,6 +1423,9 @@ parse_args (unsigned argc, char **argv)
+ 	case OPTION_SYMBOLIC:
+ 	  opt_symbolic = symbolic;
+ 	  break;
++	case OPTION_SYMBOLIC_NON_WEAK_FUNCTIONS:
++	  opt_symbolic = symbolic_non_weak_functions;
++	  break;
+ 	case OPTION_SYMBOLIC_FUNCTIONS:
+ 	  opt_symbolic = symbolic_functions;
+ 	  break;
+@@ -2038,6 +2044,11 @@ parse_args (unsigned argc, char **argv)
+ 	link_info.dynamic = true;
+ 	link_info.dynamic_data = true;
+ 	break;
++      case symbolic_non_weak_functions:
++	link_info.dynamic = true;
++	link_info.dynamic_data = true;
++	link_info.dynamic_weak_functions = true;
++	break;
+       }
+ 
+   /* -z nosectionheader implies --strip-all.  */
+diff --git a/ld/testsuite/ld-elf/shared.exp b/ld/testsuite/ld-elf/shared.exp
+index bf8952a843cf31bdca7032511c3b0a7e74452a63..0d125653e6e9814c35421ee8d552ab25396db69b 100644
+--- a/ld/testsuite/ld-elf/shared.exp
++++ b/ld/testsuite/ld-elf/shared.exp
+@@ -459,6 +459,28 @@ run_ld_link_tests [list \
+ 	"symbolic-func.so"] \
+ ]
+ 
++if {[istarget "aarch64*-*-*"] || [istarget "powerpc*-*-*"] ||
++    [istarget "i?86-*-*"] || [istarget "x86_64-*-*"]} {
++    run_ld_link_tests [list \
++        [list "-Bsymbolic-non-weak-functions -Bsymbolic" \
++        "-shared -Bsymbolic-non-weak-functions -Bsymbolic" "" "$AFLAGS_PIC" \
++        {symbolic-non-weak-func.s} {{readelf {-r --wide} symbolic-non-weak-func-a.rd}} \
++        "symbolic-non-weak-func-a.so"] \
++    ]
++    run_ld_link_tests [list \
++        [list "-Bsymbolic-non-weak-functions" \
++        "-shared -Bsymbolic-non-weak-functions" "" "$AFLAGS_PIC" \
++        {symbolic-non-weak-func.s} {{readelf {-r --wide} symbolic-non-weak-func-b.rd}} \
++        "symbolic-non-weak-func-b.so"] \
++    ]
++    run_ld_link_tests [list \
++        [list "-Bsymbolic-functions -Bsymbolic-non-weak-functions" \
++        "-shared -Bsymbolic-functions -Bsymbolic-non-weak-functions" "" "$AFLAGS_PIC" \
++        {symbolic-non-weak-func.s} {{readelf {-r --wide} symbolic-non-weak-func-b.rd}} \
++        "symbolic-non-weak-func-b.so"] \
++    ]
++}
++
+ run_ld_link_tests [list \
+     [list "Build pr20995.so" \
+ 	"-shared" "" "$AFLAGS_PIC" \
+diff --git a/ld/testsuite/ld-elf/symbolic-non-weak-func-a.rd b/ld/testsuite/ld-elf/symbolic-non-weak-func-a.rd
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef591840f5c338a55f6d44fc372568569011c430
+--- /dev/null
++++ b/ld/testsuite/ld-elf/symbolic-non-weak-func-a.rd
+@@ -0,0 +1,4 @@
++#...
++[0-9a-f]+ +[0-9a-f]+ +R_.*_RELATIVE .*
++[0-9a-f]+ +[0-9a-f]+ +R_.*_RELATIVE .*
++[0-9a-f]+ +[0-9a-f]+ +R_.*_RELATIVE .*
+diff --git a/ld/testsuite/ld-elf/symbolic-non-weak-func-b.rd b/ld/testsuite/ld-elf/symbolic-non-weak-func-b.rd
+new file mode 100644
+index 0000000000000000000000000000000000000000..34228b0627b226cfdc76e3cedff6f515b7c27872
+--- /dev/null
++++ b/ld/testsuite/ld-elf/symbolic-non-weak-func-b.rd
+@@ -0,0 +1,4 @@
++#...
++[0-9a-f]+ +[0-9a-f]+ +R_.*_RELATIVE .*
++[0-9a-f]+ +[0-9a-f]+ +R_.*_RELATIVE .*
++[0-9a-f]+ +[0-9a-f]+ +R_.* weak_fun.*
+diff --git a/ld/testsuite/ld-elf/symbolic-non-weak-func.s b/ld/testsuite/ld-elf/symbolic-non-weak-func.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..e259f12bfc126bf2ef9bf16aba64667ca4e2bfd5
+--- /dev/null
++++ b/ld/testsuite/ld-elf/symbolic-non-weak-func.s
+@@ -0,0 +1,18 @@
++	.text
++	.global global_fun
++	.type	global_fun, %function
++global_fun:
++	.space	4
++	.weak	weak_fun
++	.type	weak_fun, %function
++weak_fun:
++	.space	4
++
++	.section .data,"aw",%progbits
++	.p2align 3
++	.dc.a	global_data
++	.dc.a	global_fun
++	.dc.a	weak_fun
++
++	.global global_data
++global_data:

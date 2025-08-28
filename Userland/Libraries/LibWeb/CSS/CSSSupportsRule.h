@@ -17,23 +17,23 @@ namespace Web::CSS {
 // https://www.w3.org/TR/css-conditional-3/#the-csssupportsrule-interface
 class CSSSupportsRule final : public CSSConditionRule {
     WEB_PLATFORM_OBJECT(CSSSupportsRule, CSSConditionRule);
+    JS_DECLARE_ALLOCATOR(CSSSupportsRule);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSSupportsRule>> create(JS::Realm&, NonnullRefPtr<Supports>&&, CSSRuleList&);
+    static JS::NonnullGCPtr<CSSSupportsRule> create(JS::Realm&, NonnullRefPtr<Supports>&&, CSSRuleList&);
 
     virtual ~CSSSupportsRule() = default;
 
-    virtual Type type() const override { return Type::Supports; };
+    virtual Type type() const override { return Type::Supports; }
 
-    DeprecatedString condition_text() const override;
-    void set_condition_text(DeprecatedString) override;
+    String condition_text() const override;
     virtual bool condition_matches() const override { return m_supports->matches(); }
 
 private:
     CSSSupportsRule(JS::Realm&, NonnullRefPtr<Supports>&&, CSSRuleList&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-    virtual DeprecatedString serialized() const override;
+    virtual void initialize(JS::Realm&) override;
+    virtual String serialized() const override;
 
     NonnullRefPtr<Supports> m_supports;
 };

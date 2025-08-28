@@ -8,7 +8,6 @@
 #include "../FileDB.h"
 #include "CppComprehensionEngine.h"
 #include <AK/LexicalPath.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibMain/Main.h>
 
 static bool s_some_test_failed = false;
@@ -33,53 +32,64 @@ static bool s_some_test_failed = false;
         return;                        \
     } while (0)
 
+#define RUN(function)         \
+    function;                 \
+    if (s_some_test_failed) { \
+        return 1;             \
+    }
+
 constexpr auto TESTS_ROOT_DIR = "/home/anon/Tests/cpp-tests/comprehension"sv;
 
 class FileDB : public CodeComprehension::FileDB {
 public:
     FileDB() = default;
 
-    void add(DeprecatedString filename, DeprecatedString content)
+    void add(ByteString filename, ByteString content)
     {
         m_map.set(filename, content);
     }
 
-    virtual Optional<DeprecatedString> get_or_read_from_filesystem(StringView filename) const override
+    virtual Optional<ByteString> get_or_read_from_filesystem(StringView filename) const override
     {
-        DeprecatedString target_filename = filename;
-        if (!project_root().is_null() && filename.starts_with(project_root())) {
-            target_filename = LexicalPath::relative_path(filename, project_root());
+        ByteString target_filename = filename;
+        if (project_root().has_value() && filename.starts_with(*project_root())) {
+            target_filename = LexicalPath::relative_path(filename, *project_root());
         }
-        return m_map.get(target_filename);
+        return m_map.get(target_filename).copy();
     }
 
 private:
-    HashMap<DeprecatedString, DeprecatedString> m_map;
+    HashMap<ByteString, ByteString> m_map;
 };
 
 static void test_complete_local_args();
 static void test_complete_local_vars();
 static void test_complete_type();
 static void test_find_variable_definition();
+static void test_find_array_variable_declaration_single();
+static void test_find_array_variable_declaration_single_empty();
+static void test_find_array_variable_declaration_double();
 static void test_complete_includes();
 static void test_parameters_hint();
 
 int run_tests()
 {
-    test_complete_local_args();
-    test_complete_local_vars();
-    test_complete_type();
-    test_find_variable_definition();
-    test_complete_includes();
-    test_parameters_hint();
-    return s_some_test_failed ? 1 : 0;
+    RUN(test_complete_local_args());
+    RUN(test_complete_local_vars());
+    RUN(test_complete_type());
+    RUN(test_find_variable_definition());
+    RUN(test_find_array_variable_declaration_single());
+    RUN(test_find_array_variable_declaration_single_empty());
+    RUN(test_find_array_variable_declaration_double());
+    RUN(test_complete_includes());
+    RUN(test_parameters_hint());
+    return 0;
 }
 
-static void add_file(FileDB& filedb, DeprecatedString const& name)
+static void add_file(FileDB& filedb, ByteString const& name)
 {
-    auto file = Core::DeprecatedFile::open(LexicalPath::join(TESTS_ROOT_DIR, name).string(), Core::OpenMode::ReadOnly);
-    VERIFY(!file.is_error());
-    filedb.add(name, DeprecatedString::copy(file.value()->read_all()));
+    auto file = Core::File::open(LexicalPath::join(TESTS_ROOT_DIR, name).string(), Core::File::OpenMode::Read).release_value_but_fixme_should_propagate_errors();
+    filedb.add(name, ByteString::copy(MUST(file->read_until_eof())));
 }
 
 void test_complete_local_args()
@@ -145,6 +155,60 @@ void test_find_variable_definition()
     FAIL("wrong declaration location");
 }
 
+void test_find_array_variable_declaration_single()
+{
+    I_TEST(Find 1D Array as a Variable Declaration)
+    FileDB filedb;
+    auto filename = "find_array_variable_declaration.cpp";
+    add_file(filedb, filename);
+    CodeComprehension::Cpp::CppComprehensionEngine engine(filedb);
+    auto position = engine.find_declaration_of(filename, { 3, 6 });
+    if (!position.has_value())
+        FAIL("declaration not found");
+
+    if (position.value().file == filename && position.value().line == 2 && position.value().column >= 4)
+        PASS;
+
+    printf("Found at position %zu %zu\n", position.value().line, position.value().column);
+    FAIL("wrong declaration location");
+}
+
+void test_find_array_variable_declaration_single_empty()
+{
+    I_TEST(Find 1D Empty size Array as a Variable Declaration)
+    FileDB filedb;
+    auto filename = "find_array_variable_declaration.cpp";
+    add_file(filedb, filename);
+    CodeComprehension::Cpp::CppComprehensionEngine engine(filedb);
+    auto position = engine.find_declaration_of(filename, { 6, 6 });
+    if (!position.has_value())
+        FAIL("declaration not found");
+
+    if (position.value().file == filename && position.value().line == 5 && position.value().column >= 4)
+        PASS;
+
+    printf("Found at position %zu %zu\n", position.value().line, position.value().column);
+    FAIL("wrong declaration location");
+}
+
+void test_find_array_variable_declaration_double()
+{
+    I_TEST(Find 2D Array as a Variable Declaration)
+    FileDB filedb;
+    auto filename = "find_array_variable_declaration.cpp";
+    add_file(filedb, filename);
+    CodeComprehension::Cpp::CppComprehensionEngine engine(filedb);
+    auto position = engine.find_declaration_of(filename, { 9, 6 });
+    if (!position.has_value())
+        FAIL("declaration not found");
+
+    if (position.value().file == filename && position.value().line == 8 && position.value().column >= 4)
+        PASS;
+
+    printf("Found at position %zu %zu\n", position.value().line, position.value().column);
+    FAIL("wrong declaration location");
+}
+
 void test_complete_includes()
 {
     I_TEST(Complete include statements)
@@ -182,19 +246,19 @@ void test_parameters_hint()
     auto result = engine.get_function_params_hint("parameters_hint1.cpp", { 4, 9 });
     if (!result.has_value())
         FAIL("failed to get parameters hint (1)");
-    if (result->params != Vector<DeprecatedString> { "int x", "char y" } || result->current_index != 0)
+    if (result->params != Vector<ByteString> { "int x", "char y" } || result->current_index != 0)
         FAIL("bad result (1)");
 
     result = engine.get_function_params_hint("parameters_hint1.cpp", { 5, 15 });
     if (!result.has_value())
         FAIL("failed to get parameters hint (2)");
-    if (result->params != Vector<DeprecatedString> { "int x", "char y" } || result->current_index != 1)
+    if (result->params != Vector<ByteString> { "int x", "char y" } || result->current_index != 1)
         FAIL("bad result (2)");
 
     result = engine.get_function_params_hint("parameters_hint1.cpp", { 6, 8 });
     if (!result.has_value())
         FAIL("failed to get parameters hint (3)");
-    if (result->params != Vector<DeprecatedString> { "int x", "char y" } || result->current_index != 0)
+    if (result->params != Vector<ByteString> { "int x", "char y" } || result->current_index != 0)
         FAIL("bad result (3)");
 
     PASS;

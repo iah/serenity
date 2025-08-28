@@ -7,7 +7,6 @@
 #include "ThemeWidget.h"
 
 #include <AK/LexicalPath.h>
-#include <Applications/MouseSettings/ThemeWidgetGML.h>
 #include <LibCore/Directory.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/ComboBox.h>
@@ -15,13 +14,14 @@
 #include <LibGUI/SortingProxyModel.h>
 #include <LibGUI/TableView.h>
 
-DeprecatedString MouseCursorModel::column_name(int column_index) const
+namespace MouseSettings {
+ErrorOr<String> MouseCursorModel::column_name(int column_index) const
 {
     switch (column_index) {
     case Column::Bitmap:
-        return {};
+        return String {};
     case Column::Name:
-        return "Name";
+        return "Name"_string;
     }
     VERIFY_NOT_REACHED();
 }
@@ -51,7 +51,7 @@ void MouseCursorModel::invalidate()
 
     m_cursors.clear();
     // FIXME: Propagate errors.
-    (void)Core::Directory::for_each_entry(DeprecatedString::formatted("/res/cursor-themes/{}", m_theme_name), Core::DirIterator::Flags::SkipDots, [&](auto const& entry, auto const& directory) -> ErrorOr<IterationDecision> {
+    (void)Core::Directory::for_each_entry(ByteString::formatted("/res/cursor-themes/{}", m_theme_name), Core::DirIterator::Flags::SkipDots, [&](auto const& entry, auto const& directory) -> ErrorOr<IterationDecision> {
         auto path = LexicalPath::join(directory.path().string(), entry.name);
         if (path.has_extension(".ini"sv))
             return IterationDecision::Continue;
@@ -89,7 +89,7 @@ void ThemeModel::invalidate()
 
     // FIXME: Propagate errors.
     (void)Core::Directory::for_each_entry("/res/cursor-themes"sv, Core::DirIterator::Flags::SkipDots, [&](auto const& entry, auto&) -> ErrorOr<IterationDecision> {
-        if (access(DeprecatedString::formatted("/res/cursor-themes/{}/Config.ini", entry.name).characters(), R_OK) == 0)
+        if (access(ByteString::formatted("/res/cursor-themes/{}/Config.ini", entry.name).characters(), R_OK) == 0)
             m_themes.append(entry.name);
         return IterationDecision::Continue;
     });
@@ -97,9 +97,24 @@ void ThemeModel::invalidate()
     Model::invalidate();
 }
 
-ThemeWidget::ThemeWidget()
+Vector<GUI::ModelIndex> ThemeModel::matches(StringView needle, unsigned flags, const GUI::ModelIndex& parent)
 {
-    load_from_gml(theme_widget_gml).release_value_but_fixme_should_propagate_errors();
+    Vector<GUI::ModelIndex> found = {};
+
+    for (size_t i = 0; i < m_themes.size(); ++i) {
+        auto theme = m_themes[i];
+        if (!string_matches(theme, needle, flags))
+            continue;
+        found.append(index(i, 0, parent));
+        if (flags & GUI::Model::MatchesFlag::FirstMatchOnly)
+            break;
+    }
+
+    return found;
+}
+
+ErrorOr<void> ThemeWidget::initialize()
+{
     m_cursors_tableview = find_descendant_of_type_named<GUI::TableView>("cursors_tableview");
     m_cursors_tableview->set_highlight_selected_rows(true);
     m_cursors_tableview->set_alternating_row_colors(false);
@@ -108,7 +123,7 @@ ThemeWidget::ThemeWidget()
     m_cursors_tableview->set_highlight_key_column(false);
 
     m_mouse_cursor_model = MouseCursorModel::create();
-    auto sorting_proxy_model = MUST(GUI::SortingProxyModel::create(*m_mouse_cursor_model));
+    auto sorting_proxy_model = TRY(GUI::SortingProxyModel::create(*m_mouse_cursor_model));
     sorting_proxy_model->set_sort_role(GUI::ModelRole::Display);
 
     m_cursors_tableview->set_model(sorting_proxy_model);
@@ -120,13 +135,15 @@ ThemeWidget::ThemeWidget()
     m_mouse_cursor_model->change_theme(theme_name);
 
     m_theme_name_box = find_descendant_of_type_named<GUI::ComboBox>("theme_name_box");
-    m_theme_name_box->on_change = [this](DeprecatedString const& value, GUI::ModelIndex const&) {
+    m_theme_name_box->set_only_allow_values_from_model(true);
+    m_theme_name_box->on_change = [this](ByteString const& value, GUI::ModelIndex const&) {
         m_mouse_cursor_model->change_theme(value);
         set_modified(true);
     };
     m_theme_name_box->set_model(ThemeModel::create());
     m_theme_name_box->model()->invalidate();
     m_theme_name_box->set_text(theme_name, GUI::AllowCallback::No);
+    return {};
 }
 
 void ThemeWidget::apply_settings()
@@ -137,6 +154,5 @@ void ThemeWidget::apply_settings()
 void ThemeWidget::reset_default_values()
 {
     m_theme_name_box->set_text("Default");
-    // FIXME: ComboBox::set_text() doesn't fire the on_change callback, so we have to set the theme here manually.
-    m_mouse_cursor_model->change_theme("Default");
+}
 }

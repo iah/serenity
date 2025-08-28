@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,7 +23,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool no_clobber = false;
     bool verbose = false;
 
-    Vector<DeprecatedString> paths;
+    Vector<ByteString> paths;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(force, "Force", "force", 'f');
@@ -61,33 +61,32 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     umask(my_umask);
 
     for (auto& old_path : paths) {
-        DeprecatedString combined_new_path;
+        ByteString combined_new_path;
         auto new_path = original_new_path;
         if (S_ISDIR(st.st_mode)) {
             auto old_basename = LexicalPath::basename(old_path);
-            combined_new_path = DeprecatedString::formatted("{}/{}", original_new_path, old_basename);
+            combined_new_path = ByteString::formatted("{}/{}", original_new_path, old_basename);
             new_path = combined_new_path.characters();
         }
 
-        if (no_clobber && Core::DeprecatedFile::exists(new_path))
+        if (no_clobber && FileSystem::exists(new_path))
             continue;
 
         rc = rename(old_path.characters(), new_path.characters());
         if (rc < 0) {
             if (errno == EXDEV) {
-                auto result = Core::DeprecatedFile::copy_file_or_directory(
-                    new_path, old_path,
-                    Core::DeprecatedFile::RecursionMode::Allowed,
-                    Core::DeprecatedFile::LinkMode::Disallowed,
-                    Core::DeprecatedFile::AddDuplicateFileMarker::No);
-
-                if (result.is_error()) {
-                    warnln("mv: could not move '{}': {}", old_path, static_cast<Error const&>(result.error()));
+                if (auto result = FileSystem::copy_file_or_directory(
+                        new_path, old_path,
+                        FileSystem::RecursionMode::Allowed,
+                        FileSystem::LinkMode::Disallowed,
+                        FileSystem::AddDuplicateFileMarker::No);
+                    result.is_error()) {
+                    warnln("mv: could not move '{}': {}", old_path, result.error());
                     return 1;
                 }
-                rc = unlink(old_path.characters());
-                if (rc < 0)
-                    warnln("mv: unlink '{}': {}", old_path, strerror(errno));
+
+                if (auto result = FileSystem::remove(old_path.view(), FileSystem::RecursionMode::Allowed); result.is_error())
+                    warnln("mv: could not remove '{}': {}", old_path, result.error());
             } else {
                 warnln("mv: cannot move '{}' : {}", old_path, strerror(errno));
             }

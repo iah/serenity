@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021-2022, David Tuin <davidot@serenityos.org>
+ * Copyright (c) 2023, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,16 +9,23 @@
 
 #include <AK/DeprecatedFlyString.h>
 #include <AK/Vector.h>
+#include <LibJS/Module.h>
 
 namespace JS {
 
-// 2.9 ModuleRequest Records, https://tc39.es/proposal-import-assertions/#sec-modulerequest-record
-struct ModuleRequest {
-    struct Assertion {
-        DeprecatedString key;
-        DeprecatedString value;
-    };
+struct ModuleWithSpecifier {
+    ByteString specifier;        // [[Specifier]]
+    NonnullGCPtr<Module> module; // [[Module]]
+};
 
+// https://tc39.es/proposal-import-attributes/#importattribute-record
+struct ImportAttribute {
+    ByteString key;
+    ByteString value;
+};
+
+// https://tc39.es/proposal-import-attributes/#modulerequest-record
+struct ModuleRequest {
     ModuleRequest() = default;
 
     explicit ModuleRequest(DeprecatedFlyString specifier)
@@ -25,15 +33,15 @@ struct ModuleRequest {
     {
     }
 
-    ModuleRequest(DeprecatedFlyString module_specifier, Vector<Assertion> assertions);
+    ModuleRequest(DeprecatedFlyString specifier, Vector<ImportAttribute> attributes);
 
-    void add_assertion(DeprecatedString key, DeprecatedString value)
+    void add_attribute(ByteString key, ByteString value)
     {
-        assertions.empend(move(key), move(value));
+        attributes.empend(move(key), move(value));
     }
 
     DeprecatedFlyString module_specifier; // [[Specifier]]
-    Vector<Assertion> assertions;         // [[Assertions]]
+    Vector<ImportAttribute> attributes;   // [[Attributes]]
 };
 
 }

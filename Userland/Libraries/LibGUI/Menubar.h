@@ -10,21 +10,20 @@
 
 #include <AK/Badge.h>
 #include <AK/IterationDecision.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGUI/Forward.h>
 #include <LibGUI/Menu.h>
 
 namespace GUI {
 
-class Menubar : public Core::Object {
+class Menubar : public Core::EventReceiver {
     C_OBJECT(Menubar);
 
 public:
     virtual ~Menubar() override = default;
 
-    ErrorOr<void> try_add_menu(Badge<Window>, NonnullRefPtr<Menu>);
-    ErrorOr<NonnullRefPtr<Menu>> try_add_menu(Badge<Window>, DeprecatedString name);
-    Menu& add_menu(Badge<Window>, DeprecatedString name);
+    void add_menu(Badge<Window>, NonnullRefPtr<Menu>);
+    [[nodiscard]] NonnullRefPtr<Menu> add_menu(Badge<Window>, String name);
 
     void for_each_menu(Function<IterationDecision(Menu&)>);
 

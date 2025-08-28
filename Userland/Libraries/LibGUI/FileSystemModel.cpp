@@ -10,15 +10,18 @@
 #include <AK/NumberFormat.h>
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
-#include <LibCore/DeprecatedFile.h>
+#include <AK/Types.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/StandardPaths.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/AbstractView.h>
 #include <LibGUI/FileIconProvider.h>
 #include <LibGUI/FileSystemModel.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
+#include <LibImageDecoderClient/Client.h>
 #include <LibThreading/BackgroundAction.h>
+#include <LibThreading/MutexProtected.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -39,7 +42,7 @@ ModelIndex FileSystemModel::Node::index(int column) const
     VERIFY_NOT_REACHED();
 }
 
-bool FileSystemModel::Node::fetch_data(DeprecatedString const& full_path, bool is_root)
+bool FileSystemModel::Node::fetch_data(ByteString const& full_path, bool is_root)
 {
     struct stat st;
     int rc;
@@ -61,12 +64,12 @@ bool FileSystemModel::Node::fetch_data(DeprecatedString const& full_path, bool i
     mtime = st.st_mtime;
 
     if (S_ISLNK(mode)) {
-        auto sym_link_target_or_error = Core::DeprecatedFile::read_link(full_path);
+        auto sym_link_target_or_error = FileSystem::read_link(full_path);
         if (sym_link_target_or_error.is_error())
             perror("readlink");
         else {
             symlink_target = sym_link_target_or_error.release_value();
-            if (symlink_target.is_null())
+            if (symlink_target.is_empty())
                 perror("readlink");
         }
     }
@@ -80,7 +83,7 @@ bool FileSystemModel::Node::fetch_data(DeprecatedString const& full_path, bool i
 
 void FileSystemModel::Node::traverse_if_needed()
 {
-    if (!is_directory() || m_has_traversed)
+    if (m_has_traversed)
         return;
 
     m_has_traversed = true;
@@ -94,9 +97,24 @@ void FileSystemModel::Node::traverse_if_needed()
         return;
     }
 
+    auto full_path = this->full_path();
+
+    if (!is_directory()) {
+        if (m_model.m_mode != DirectoriesOnly && !m_model.m_file_watcher->is_watching(full_path)) {
+            // We are not already watching this file, watch it
+            auto result = m_model.m_file_watcher->add_watch(full_path, Core::FileWatcherEvent::Type::MetadataModified);
+
+            if (result.is_error()) {
+                dbgln("Couldn't watch '{}': {}", full_path, result.error());
+            } else if (!result.value()) {
+                dbgln("Couldn't watch '{}', probably already watching", full_path);
+            }
+        }
+        return;
+    }
+
     total_size = 0;
 
-    auto full_path = this->full_path();
     Core::DirIterator di(full_path, m_model.should_show_dotfiles() ? Core::DirIterator::SkipParentAndBaseDir : Core::DirIterator::SkipDots);
     if (di.has_error()) {
         auto error = di.error();
@@ -105,7 +123,7 @@ void FileSystemModel::Node::traverse_if_needed()
         return;
     }
 
-    Vector<DeprecatedString> child_names;
+    Vector<ByteString> child_names;
     while (di.has_next()) {
         child_names.append(di.next_path());
     }
@@ -130,7 +148,7 @@ void FileSystemModel::Node::traverse_if_needed()
             }
 
             for (auto& extension : *m_model.m_allowed_file_extensions) {
-                if (child_name.ends_with(DeprecatedString::formatted(".{}", extension))) {
+                if (child_name.ends_with(ByteString::formatted(".{}", extension))) {
                     file_children.append(move(child));
                     break;
                 }
@@ -142,7 +160,7 @@ void FileSystemModel::Node::traverse_if_needed()
     m_children.extend(move(file_children));
 
     if (!m_model.m_file_watcher->is_watching(full_path)) {
-        // We are not already watching this file, watch it
+        // We are not already watching this directory, watch it
         auto result = m_model.m_file_watcher->add_watch(full_path,
             Core::FileWatcherEvent::Type::MetadataModified
                 | Core::FileWatcherEvent::Type::ChildCreated
@@ -151,15 +169,22 @@ void FileSystemModel::Node::traverse_if_needed()
 
         if (result.is_error()) {
             dbgln("Couldn't watch '{}': {}", full_path, result.error());
-        } else if (result.value() == false) {
+        } else if (!result.value()) {
             dbgln("Couldn't watch '{}', probably already watching", full_path);
         }
     }
 }
 
-OwnPtr<FileSystemModel::Node> FileSystemModel::Node::create_child(DeprecatedString const& child_name)
+bool FileSystemModel::Node::can_delete_or_move() const
 {
-    DeprecatedString child_path = LexicalPath::join(full_path(), child_name).string();
+    if (!m_can_delete_or_move.has_value())
+        m_can_delete_or_move = FileSystem::can_delete_or_move(full_path());
+    return m_can_delete_or_move.value();
+}
+
+OwnPtr<FileSystemModel::Node> FileSystemModel::Node::create_child(ByteString const& child_name)
+{
+    ByteString child_path = LexicalPath::join(full_path(), child_name).string();
     auto child = adopt_own(*new Node(m_model));
 
     bool ok = child->fetch_data(child_path, false);
@@ -176,10 +201,9 @@ OwnPtr<FileSystemModel::Node> FileSystemModel::Node::create_child(DeprecatedStri
 
 void FileSystemModel::Node::reify_if_needed()
 {
+    if (mode == 0)
+        fetch_data(full_path(), m_parent == nullptr || m_parent->m_parent_of_root);
     traverse_if_needed();
-    if (mode != 0)
-        return;
-    fetch_data(full_path(), m_parent == nullptr || m_parent->m_parent_of_root);
 }
 
 bool FileSystemModel::Node::is_symlink_to_directory() const
@@ -192,9 +216,9 @@ bool FileSystemModel::Node::is_symlink_to_directory() const
     return S_ISDIR(st.st_mode);
 }
 
-DeprecatedString FileSystemModel::Node::full_path() const
+ByteString FileSystemModel::Node::full_path() const
 {
-    Vector<DeprecatedString, 32> lineage;
+    Vector<ByteString, 32> lineage;
     for (auto* ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
         lineage.append(ancestor->name);
     }
@@ -206,10 +230,10 @@ DeprecatedString FileSystemModel::Node::full_path() const
     }
     builder.append('/');
     builder.append(name);
-    return LexicalPath::canonicalized_path(builder.to_deprecated_string());
+    return LexicalPath::canonicalized_path(builder.to_byte_string());
 }
 
-ModelIndex FileSystemModel::index(DeprecatedString path, int column) const
+ModelIndex FileSystemModel::index(ByteString path, int column) const
 {
     auto node = node_for_path(move(path));
     if (node.has_value())
@@ -218,13 +242,13 @@ ModelIndex FileSystemModel::index(DeprecatedString path, int column) const
     return {};
 }
 
-Optional<FileSystemModel::Node const&> FileSystemModel::node_for_path(DeprecatedString const& path) const
+Optional<FileSystemModel::Node const&> FileSystemModel::node_for_path(ByteString const& path) const
 {
-    DeprecatedString resolved_path;
+    ByteString resolved_path;
     if (path == m_root_path)
         resolved_path = "/";
-    else if (!m_root_path.is_empty() && path.starts_with(m_root_path))
-        resolved_path = LexicalPath::relative_path(path, m_root_path);
+    else if (m_root_path.has_value() && !m_root_path->is_empty() && path.starts_with(*m_root_path))
+        resolved_path = LexicalPath::relative_path(path, *m_root_path);
     else
         resolved_path = path;
     LexicalPath lexical_path(resolved_path);
@@ -253,15 +277,15 @@ Optional<FileSystemModel::Node const&> FileSystemModel::node_for_path(Deprecated
     return {};
 }
 
-DeprecatedString FileSystemModel::full_path(ModelIndex const& index) const
+ByteString FileSystemModel::full_path(ModelIndex const& index) const
 {
     auto& node = this->node(index);
     const_cast<Node&>(node).reify_if_needed();
     return node.full_path();
 }
 
-FileSystemModel::FileSystemModel(DeprecatedString root_path, Mode mode)
-    : m_root_path(LexicalPath::canonicalized_path(move(root_path)))
+FileSystemModel::FileSystemModel(Optional<ByteString> root_path, Mode mode)
+    : m_root_path(root_path.map(LexicalPath::canonicalized_path))
     , m_mode(mode)
 {
     setpwent();
@@ -288,23 +312,23 @@ FileSystemModel::FileSystemModel(DeprecatedString root_path, Mode mode)
     invalidate();
 }
 
-DeprecatedString FileSystemModel::name_for_uid(uid_t uid) const
+ByteString FileSystemModel::name_for_uid(uid_t uid) const
 {
     auto it = m_user_names.find(uid);
     if (it == m_user_names.end())
-        return DeprecatedString::number(uid);
+        return ByteString::number(uid);
     return (*it).value;
 }
 
-DeprecatedString FileSystemModel::name_for_gid(gid_t gid) const
+ByteString FileSystemModel::name_for_gid(gid_t gid) const
 {
     auto it = m_group_names.find(gid);
     if (it == m_group_names.end())
-        return DeprecatedString::number(gid);
+        return ByteString::number(gid);
     return (*it).value;
 }
 
-static DeprecatedString permission_string(mode_t mode)
+static ByteString permission_string(mode_t mode)
 {
     StringBuilder builder;
     if (S_ISDIR(mode))
@@ -337,7 +361,7 @@ static DeprecatedString permission_string(mode_t mode)
         builder.append('t');
     else
         builder.append(mode & S_IXOTH ? 'x' : '-');
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 void FileSystemModel::Node::set_selected(bool selected)
@@ -353,12 +377,12 @@ void FileSystemModel::update_node_on_selection(ModelIndex const& index, bool con
     node.set_selected(selected);
 }
 
-void FileSystemModel::set_root_path(DeprecatedString root_path)
+void FileSystemModel::set_root_path(Optional<ByteString> root_path)
 {
-    if (root_path.is_null())
+    if (!root_path.has_value())
         m_root_path = {};
     else
-        m_root_path = LexicalPath::canonicalized_path(move(root_path));
+        m_root_path = LexicalPath::canonicalized_path(move(*root_path));
     invalidate();
 
     if (m_root->has_error()) {
@@ -373,10 +397,12 @@ void FileSystemModel::invalidate()
 {
     m_root = adopt_own(*new Node(*this));
 
-    if (m_root_path.is_null())
+    if (!m_root_path.has_value())
         m_root->m_parent_of_root = true;
 
     m_root->reify_if_needed();
+    for (auto const& child : m_root->m_children)
+        child->reify_if_needed();
 
     Model::invalidate();
 }
@@ -406,18 +432,34 @@ void FileSystemModel::handle_file_event(Core::FileWatcherEvent const& event)
             break;
         }
 
-        int child_count = parent->m_children.size();
-
         auto& mutable_parent = const_cast<Node&>(*parent);
         auto maybe_child = mutable_parent.create_child(child_name);
         if (!maybe_child)
             break;
 
-        begin_insert_rows(parent->index(0), child_count, child_count);
-
         auto child = maybe_child.release_nonnull();
+        child->reify_if_needed();
+
+        bool const is_new_child_dir = S_ISDIR(child->mode);
+        int insert_index = 0;
+        for (auto const& other_child : mutable_parent.m_children) {
+            bool const is_other_child_dir = S_ISDIR(other_child->mode);
+            if (!is_new_child_dir && is_other_child_dir) {
+                ++insert_index;
+                continue;
+            }
+            if (is_new_child_dir && !is_other_child_dir)
+                break;
+
+            if (other_child->name.view() > child_name)
+                break;
+            ++insert_index;
+        }
+
+        begin_insert_rows(parent->index(0), insert_index, insert_index);
+
         mutable_parent.total_size += child->size;
-        mutable_parent.m_children.append(move(child));
+        mutable_parent.m_children.insert(insert_index, move(child));
 
         end_insert_rows();
         break;
@@ -457,9 +499,14 @@ void FileSystemModel::handle_file_event(Core::FileWatcherEvent const& event)
         break;
     }
     case Core::FileWatcherEvent::Type::MetadataModified: {
-        // FIXME: Do we do anything in case the metadata is modified?
-        //        Perhaps re-stat'ing the modified node would make sense
-        //        here, but let's leave that to when we actually need it.
+        auto child = node_for_path(event.event_path);
+        if (!child.has_value()) {
+            dbgln("Got a MetadataModified on '{}' but the child does not exist?!", event.event_path);
+            break;
+        }
+
+        auto& mutable_child = const_cast<Node&>(child.value());
+        mutable_child.fetch_data(mutable_child.full_path(), &mutable_child == m_root);
         break;
     }
     default:
@@ -611,7 +658,7 @@ Variant FileSystemModel::data(ModelIndex const& index, ModelRole role) const
 Icon FileSystemModel::icon_for(Node const& node) const
 {
     if (node.full_path() == "/")
-        return FileIconProvider::icon_for_path("/");
+        return FileIconProvider::icon_for_path("/"sv);
 
     if (Gfx::Bitmap::is_path_a_supported_image_format(node.name)) {
         if (!node.thumbnail) {
@@ -641,71 +688,139 @@ Icon FileSystemModel::icon_for(Node const& node) const
     return FileIconProvider::icon_for_path(node.full_path(), node.mode);
 }
 
-static HashMap<DeprecatedString, RefPtr<Gfx::Bitmap>> s_thumbnail_cache;
+using BitmapBackgroundAction = Threading::BackgroundAction<NonnullRefPtr<Gfx::Bitmap>>;
+
+// Mutex protected thumbnail cache data shared between threads.
+struct ThumbnailCache {
+    // Null pointers indicate an image that couldn't be loaded due to errors.
+    HashMap<ByteString, RefPtr<Gfx::Bitmap>> thumbnail_cache {};
+    HashMap<ByteString, NonnullRefPtr<BitmapBackgroundAction>> loading_thumbnails {};
+};
+
+static Threading::MutexProtected<ThumbnailCache> s_thumbnail_cache {};
+static Threading::MutexProtected<RefPtr<ImageDecoderClient::Client>> s_image_decoder_client {};
 
 static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> render_thumbnail(StringView path)
 {
-    auto bitmap = TRY(Gfx::Bitmap::load_from_file(path));
-    auto thumbnail = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, { 32, 32 }));
+    Core::EventLoop event_loop;
+    Gfx::IntSize const thumbnail_size { 32, 32 };
 
-    double scale = min(32 / (double)bitmap->width(), 32 / (double)bitmap->height());
+    auto file = TRY(Core::MappedFile::map(path));
+    auto decoded_image = TRY(s_image_decoder_client.with_locked([=, &file](auto& maybe_client) -> ErrorOr<Optional<ImageDecoderClient::DecodedImage>> {
+        if (!maybe_client) {
+            maybe_client = TRY(ImageDecoderClient::Client::try_create());
+            maybe_client->on_death = []() {
+                s_image_decoder_client.with_locked([](auto& client) {
+                    client = nullptr;
+                });
+            };
+        }
+
+        auto mime_type = Core::guess_mime_type_based_on_filename(path);
+
+        // FIXME: Refactor thumbnail rendering to be more async-aware. Possibly return this promise to the caller.
+        auto decoded_image = TRY(maybe_client->decode_image(file->bytes(), {}, {}, thumbnail_size, mime_type)->await());
+
+        return decoded_image;
+    }));
+
+    auto bitmap = decoded_image.value().frames[0].bitmap;
+
+    auto thumbnail = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, thumbnail_size));
+
+    double scale = min(thumbnail_size.width() / (double)bitmap->width(), thumbnail_size.height() / (double)bitmap->height());
     auto destination = Gfx::IntRect(0, 0, (int)(bitmap->width() * scale), (int)(bitmap->height() * scale)).centered_within(thumbnail->rect());
 
     Painter painter(thumbnail);
-    painter.draw_scaled_bitmap(destination, *bitmap, bitmap->rect());
+    painter.draw_scaled_bitmap(destination, *bitmap, bitmap->rect(), 1.f, Gfx::ScalingMode::BoxSampling);
     return thumbnail;
 }
 
 bool FileSystemModel::fetch_thumbnail_for(Node const& node)
 {
-    // See if we already have the thumbnail
-    // we're looking for in the cache.
     auto path = node.full_path();
-    auto it = s_thumbnail_cache.find(path);
-    if (it != s_thumbnail_cache.end()) {
-        if (!(*it).value)
-            return false;
-        node.thumbnail = (*it).value;
-        return true;
-    }
 
-    // Otherwise, arrange to render the thumbnail
-    // in background and make it available later.
+    // See if we already have the thumbnail we're looking for in the cache.
+    auto was_in_cache = s_thumbnail_cache.with_locked([&](auto& cache) {
+        auto it = cache.thumbnail_cache.find(path);
+        if (it != cache.thumbnail_cache.end()) {
+            // Loading was unsuccessful.
+            if (!(*it).value)
+                return TriState::False;
+            // Loading was successful.
+            node.thumbnail = (*it).value;
+            return TriState::True;
+        }
+        // Loading is in progress.
+        if (cache.loading_thumbnails.contains(path))
+            return TriState::False;
+        return TriState::Unknown;
+    });
+    if (was_in_cache != TriState::Unknown)
+        return was_in_cache == TriState::True;
 
-    s_thumbnail_cache.set(path, nullptr);
+    // Otherwise, arrange to render the thumbnail in background and make it available later.
+
     m_thumbnail_progress_total++;
 
     auto weak_this = make_weak_ptr();
 
-    (void)Threading::BackgroundAction<ErrorOr<NonnullRefPtr<Gfx::Bitmap>>>::construct(
-        [path](auto&) {
-            return render_thumbnail(path);
-        },
-
-        [this, path, weak_this](auto thumbnail_or_error) -> ErrorOr<void> {
-            if (thumbnail_or_error.is_error()) {
-                s_thumbnail_cache.set(path, nullptr);
-                dbgln("Failed to load thumbnail for {}: {}", path, thumbnail_or_error.error());
-            } else {
-                s_thumbnail_cache.set(path, thumbnail_or_error.release_value());
+    auto const action = [path](auto&) {
+        return render_thumbnail(path);
+    };
+    auto const update_progress = [weak_this](bool with_success) {
+        using namespace AK::TimeLiterals;
+        if (auto strong_this = weak_this.strong_ref(); !strong_this.is_null()) {
+            strong_this->m_thumbnail_progress++;
+            if (strong_this->on_thumbnail_progress)
+                strong_this->on_thumbnail_progress(strong_this->m_thumbnail_progress, strong_this->m_thumbnail_progress_total);
+            if (strong_this->m_thumbnail_progress == strong_this->m_thumbnail_progress_total) {
+                strong_this->m_thumbnail_progress = 0;
+                strong_this->m_thumbnail_progress_total = 0;
             }
 
-            // The model was destroyed, no need to update
-            // progress or call any event handlers.
-            if (weak_this.is_null())
-                return {};
-
-            m_thumbnail_progress++;
-            if (on_thumbnail_progress)
-                on_thumbnail_progress(m_thumbnail_progress, m_thumbnail_progress_total);
-            if (m_thumbnail_progress == m_thumbnail_progress_total) {
-                m_thumbnail_progress = 0;
-                m_thumbnail_progress_total = 0;
+            if (with_success && (!strong_this->m_ui_update_timer.is_valid() || strong_this->m_ui_update_timer.elapsed_time() > 100_ms)) {
+                strong_this->did_update(UpdateFlag::DontInvalidateIndices);
+                strong_this->m_ui_update_timer.start();
             }
+        }
+    };
 
-            did_update(UpdateFlag::DontInvalidateIndices);
-            return {};
+    auto const on_complete = [weak_this, path, update_progress](auto thumbnail) -> ErrorOr<void> {
+        auto finished_generating_thumbnails = false;
+        s_thumbnail_cache.with_locked([path, thumbnail, &finished_generating_thumbnails](auto& cache) {
+            cache.thumbnail_cache.set(path, thumbnail);
+            cache.loading_thumbnails.remove(path);
+            finished_generating_thumbnails = cache.loading_thumbnails.is_empty();
         });
+
+        if (auto strong_this = weak_this.strong_ref(); finished_generating_thumbnails && !strong_this.is_null())
+            strong_this->m_ui_update_timer.reset();
+
+        update_progress(true);
+
+        return {};
+    };
+
+    auto const on_error = [path, update_progress](Error error) -> void {
+        // Note: We need to defer that to avoid the function removing its last reference
+        //       i.e. trying to destroy itself, which is prohibited.
+        Core::EventLoop::current().deferred_invoke([path, error = Error::copy(error)]() mutable {
+            s_thumbnail_cache.with_locked([path, error = move(error)](auto& cache) {
+                if (error != Error::from_errno(ECANCELED)) {
+                    cache.thumbnail_cache.set(path, nullptr);
+                    dbgln("Failed to load thumbnail for {}: {}", path, error);
+                }
+                cache.loading_thumbnails.remove(path);
+            });
+        });
+
+        update_progress(false);
+    };
+
+    s_thumbnail_cache.with_locked([path, action, on_complete, on_error](auto& cache) {
+        cache.loading_thumbnails.set(path, BitmapBackgroundAction::construct(move(action), move(on_complete), move(on_error)));
+    });
 
     return false;
 }
@@ -715,34 +830,34 @@ int FileSystemModel::column_count(ModelIndex const&) const
     return Column::__Count;
 }
 
-DeprecatedString FileSystemModel::column_name(int column) const
+ErrorOr<String> FileSystemModel::column_name(int column) const
 {
     switch (column) {
     case Column::Icon:
-        return "";
+        return String {};
     case Column::Name:
-        return "Name";
+        return "Name"_string;
     case Column::Size:
-        return "Size";
+        return "Size"_string;
     case Column::User:
-        return "User";
+        return "User"_string;
     case Column::Group:
-        return "Group";
+        return "Group"_string;
     case Column::Permissions:
-        return "Mode";
+        return "Mode"_string;
     case Column::ModificationTime:
-        return "Modified";
+        return "Modified"_string;
     case Column::Inode:
-        return "Inode";
+        return "Inode"_string;
     case Column::SymlinkTarget:
-        return "Symlink target";
+        return "Symlink target"_string;
     }
     VERIFY_NOT_REACHED();
 }
 
-bool FileSystemModel::accepts_drag(ModelIndex const& index, Vector<DeprecatedString> const& mime_types) const
+bool FileSystemModel::accepts_drag(ModelIndex const& index, Core::MimeData const& mime_data) const
 {
-    if (!mime_types.contains_slow("text/uri-list"))
+    if (!mime_data.has_urls())
         return false;
 
     if (!index.is_valid())
@@ -762,7 +877,7 @@ void FileSystemModel::set_should_show_dotfiles(bool show)
     invalidate();
 }
 
-void FileSystemModel::set_allowed_file_extensions(Optional<Vector<DeprecatedString>> const& allowed_file_extensions)
+void FileSystemModel::set_allowed_file_extensions(Optional<Vector<ByteString>> const& allowed_file_extensions)
 {
     if (m_allowed_file_extensions == allowed_file_extensions)
         return;
@@ -783,7 +898,7 @@ void FileSystemModel::set_data(ModelIndex const& index, Variant const& data)
     VERIFY(is_editable(index));
     Node& node = const_cast<Node&>(this->node(index));
     auto dirname = LexicalPath::dirname(node.full_path());
-    auto new_full_path = DeprecatedString::formatted("{}/{}", dirname, data.to_deprecated_string());
+    auto new_full_path = ByteString::formatted("{}/{}", dirname, data.to_byte_string());
     int rc = rename(node.full_path().characters(), new_full_path.characters());
     if (rc < 0) {
         if (on_rename_error)

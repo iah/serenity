@@ -1,7 +1,8 @@
-set(LIBC_SOURCES
+set(SOURCES
+    arch/${SERENITY_ARCH}/fenv.cpp
+    arch/${SERENITY_ARCH}/setjmp.S
     arpa/inet.cpp
     assert.cpp
-    complex.cpp
     ctype.cpp
     cxxabi.cpp
     dirent.cpp
@@ -52,7 +53,7 @@ set(LIBC_SOURCES
     stdlib.cpp
     string.cpp
     strings.cpp
-    stubs.cpp
+    sys/archctl.cpp
     sys/auxv.cpp
     sys/file.cpp
     sys/mman.cpp
@@ -64,10 +65,10 @@ set(LIBC_SOURCES
     sys/uio.cpp
     sys/wait.cpp
     syslog.cpp
-    termcap.cpp
     termios.cpp
     time.cpp
     times.cpp
+    tls.cpp
     ulimit.cpp
     unistd.cpp
     utime.cpp
@@ -75,104 +76,86 @@ set(LIBC_SOURCES
     wchar.cpp
     wctype.cpp
     wstdio.cpp
+
+    ${AK_SOURCES}
 )
 
-file(GLOB ELF_SOURCES CONFIGURE_DEPENDS "../LibELF/*.cpp")
-
-if ("${SERENITY_ARCH}" STREQUAL "aarch64")
-    set(ASM_SOURCES "arch/aarch64/setjmp.S")
-    set(ELF_SOURCES ${ELF_SOURCES} ../LibELF/Arch/aarch64/entry.S ../LibELF/Arch/aarch64/plt_trampoline.S)
-    set(CRTI_SOURCE "arch/aarch64/crti.S")
-    set(CRTN_SOURCE "arch/aarch64/crtn.S")
-elseif ("${SERENITY_ARCH}" STREQUAL "x86_64")
-    set(LIBC_SOURCES ${LIBC_SOURCES} "arch/x86_64/memset.cpp")
-    set(ASM_SOURCES "arch/x86_64/setjmp.S" "arch/x86_64/memset.S")
-    set(ELF_SOURCES ${ELF_SOURCES} ../LibELF/Arch/x86_64/entry.S ../LibELF/Arch/x86_64/plt_trampoline.S)
-    set(CRTI_SOURCE "arch/x86_64/crti.S")
-    set(CRTN_SOURCE "arch/x86_64/crtn.S")
+if (SERENITY_ARCH STREQUAL "x86_64")
+    list(APPEND SOURCES
+        arch/x86_64/memset.cpp
+        arch/x86_64/memset.S
+    )
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option")
+# ===== LibC headers =====
+# NOTE: We have to symlink LibC's headers into the sysroot to satisfy libc++'s include priority
+#       requirements.
+include(Headers.cmake)
+link_libc_headers("${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}")
 
-# Note: We link all these against NoCoverage so that we don't break ports by requiring coverage symbols
-# in runtime/startup objects.
-# Since all native serenity applications use dynamic libraries, prevent coverage on libc.a as well
-
+# ===== Start files =====
+# NOTE: We link all these against NoCoverage so that we don't break ports by requiring coverage
+#       symbols in runtime/startup objects.
 add_library(crt0 STATIC crt0.cpp)
 target_link_libraries(crt0 PRIVATE NoCoverage)
 add_custom_command(
-    TARGET crt0
+    TARGET crt0 POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0.o
 )
-add_library(crt0_shared STATIC crt0_shared.cpp)
-target_link_libraries(crt0_shared PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crt0_shared
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0_shared> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0_shared.o
-)
 
-add_library(crti STATIC ${CRTI_SOURCE})
-target_link_libraries(crti PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crti
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crti> ${CMAKE_INSTALL_PREFIX}/usr/lib/crti.o
-)
+# FIXME: These files are never needed (and Clang driver never references them) but GCC might need
+#        some convincing that this is the case.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_library(crt0_shared STATIC crt0_shared.cpp)
+    target_link_libraries(crt0_shared PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crt0_shared POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0_shared> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0_shared.o
+    )
 
-add_library(crtn STATIC ${CRTN_SOURCE})
-target_link_libraries(crtn PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crtn
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crtn> ${CMAKE_INSTALL_PREFIX}/usr/lib/crtn.o
-)
+    add_library(crti STATIC arch/${SERENITY_ARCH}/crti.S)
+    target_link_libraries(crti PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crti POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crti> ${CMAKE_INSTALL_PREFIX}/usr/lib/crti.o
+    )
 
-set_source_files_properties (ssp_nonshared.cpp PROPERTIES COMPILE_FLAGS "-fno-stack-protector")
-add_library(ssp_nonshared STATIC ssp_nonshared.cpp)
-target_link_libraries(ssp_nonshared PRIVATE NoCoverage)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libssp_nonshared.a DESTINATION ${CMAKE_INSTALL_PREFIX}/usr/lib/)
+    add_library(crtn STATIC arch/${SERENITY_ARCH}/crtn.S)
+    target_link_libraries(crtn PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crtn POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crtn> ${CMAKE_INSTALL_PREFIX}/usr/lib/crtn.o
+    )
+endif()
 
-set(SOURCES ${LIBC_SOURCES} ${AK_SOURCES} ${ELF_SOURCES} ${ASM_SOURCES})
-
+# ===== LibC =====
 # Prevent GCC from removing null checks by marking the `FILE*` argument non-null
 set_source_files_properties(stdio.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin-fputc -fno-builtin-fputs -fno-builtin-fwrite")
 
 # Prevent naively implemented string functions (like strlen) from being "optimized" into a call to themselves.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set_source_files_properties(string.cpp wchar.cpp PROPERTIES COMPILE_FLAGS "-fno-tree-loop-distribution -fno-tree-loop-distribute-patterns")
+else()
+    set_source_files_properties(string.cpp wchar.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin")
 endif()
 
-set_source_files_properties(ssp.cpp PROPERTIES COMPILE_FLAGS "-fno-stack-protector")
-
-add_library(LibCStaticWithoutDeps STATIC ${SOURCES})
-target_link_libraries(LibCStaticWithoutDeps PUBLIC ssp LibTimeZone PRIVATE NoCoverage)
-add_dependencies(LibCStaticWithoutDeps LibSystem LibUBSanitizer)
-
-add_custom_target(LibCStatic
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibCStaticWithoutDeps>
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibSystemStatic>
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibUBSanitizerStatic>
-        COMMAND ${CMAKE_AR} -rcs ${CMAKE_CURRENT_BINARY_DIR}/libc.a *.o
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS LibCStaticWithoutDeps LibSystemStatic LibUBSanitizerStatic
-        )
-
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libc.a DESTINATION ${CMAKE_INSTALL_PREFIX}/usr/lib/)
-file(GLOB TEMP_OBJ_FILES ${CMAKE_CURRENT_BINARY_DIR}/*.o)
-set_property(
-        TARGET LibCStatic
-        APPEND
-        PROPERTY ADDITIONAL_CLEAN_FILES ${TEMP_OBJ_FILES}
-)
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -nolibc")
 serenity_libc(LibC c)
-add_dependencies(LibC crti crt0 crt0_shared crtn)
+add_dependencies(LibC crt0 LibUBSanitizer)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_dependencies(LibC crti crt0_shared crtn)
+endif()
 target_link_libraries(LibC PRIVATE LibSystem LibTimeZone)
-
-# We mark LibCStatic as a dependency of LibC because this triggers the build of the LibCStatic target
-add_dependencies(LibC LibCStatic)
+target_link_options(LibC PRIVATE -nolibc)
 
 # Provide a linker script instead of various other libraries that tells everything to link against LibC.
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libpthread.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libdl.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libm.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libssp.so" "INPUT(libc.so)")
+
+# ===== LibC for DynamicLoader =====
+add_library(DynamicLoader_LibC STATIC ${SOURCES})
+target_link_libraries(DynamicLoader_LibC
+    PUBLIC DynamicLoader_CompileOptions
+    PRIVATE DynamicLoader_LibSystem
+)

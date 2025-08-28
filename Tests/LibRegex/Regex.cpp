@@ -14,12 +14,12 @@
 #include <LibRegex/RegexMatcher.h>
 #include <stdio.h>
 
-static ECMAScriptOptions match_test_api_options(const ECMAScriptOptions options)
+static ECMAScriptOptions match_test_api_options(ECMAScriptOptions const options)
 {
     return options;
 }
 
-static PosixOptions match_test_api_options(const PosixOptions options)
+static PosixOptions match_test_api_options(PosixOptions const options)
 {
     return options;
 }
@@ -122,7 +122,7 @@ TEST_CASE(regex_lexer)
 
 TEST_CASE(parser_error_parens)
 {
-    DeprecatedString pattern = "test()test";
+    ByteString pattern = "test()test";
     Lexer l(pattern);
     PosixExtendedParser p(l);
     p.parse();
@@ -132,7 +132,7 @@ TEST_CASE(parser_error_parens)
 
 TEST_CASE(parser_error_special_characters_used_at_wrong_place)
 {
-    DeprecatedString pattern;
+    ByteString pattern;
     Vector<char, 5> chars = { '*', '+', '?', '{' };
     StringBuilder b;
 
@@ -143,7 +143,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         // First in ere
         b.clear();
         b.append(ch);
-        pattern = b.to_deprecated_string();
+        pattern = b.to_byte_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -153,7 +153,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         b.clear();
         b.append("a|"sv);
         b.append(ch);
-        pattern = b.to_deprecated_string();
+        pattern = b.to_byte_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -163,7 +163,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         b.clear();
         b.append('^');
         b.append(ch);
-        pattern = b.to_deprecated_string();
+        pattern = b.to_byte_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -173,7 +173,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         b.clear();
         b.append('$');
         b.append(ch);
-        pattern = b.to_deprecated_string();
+        pattern = b.to_byte_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -184,7 +184,7 @@ TEST_CASE(parser_error_special_characters_used_at_wrong_place)
         b.append('(');
         b.append(ch);
         b.append(')');
-        pattern = b.to_deprecated_string();
+        pattern = b.to_byte_string();
         l.set_source(pattern);
         p.parse();
         EXPECT(p.has_error());
@@ -267,7 +267,7 @@ TEST_CASE(catch_all_newline)
     Regex<PosixExtended> re("^.*$", PosixFlags::Multiline | PosixFlags::StringCopyMatches);
     RegexResult result;
     auto lambda = [&result, &re]() {
-        DeprecatedString aaa = "Hello World\nTest\n1234\n";
+        ByteString aaa = "Hello World\nTest\n1234\n";
         result = match(aaa, re);
         EXPECT_EQ(result.success, true);
     };
@@ -283,11 +283,11 @@ TEST_CASE(catch_all_newline_view)
     Regex<PosixExtended> re("^.*$", PosixFlags::Multiline);
     RegexResult result;
 
-    DeprecatedString aaa = "Hello World\nTest\n1234\n";
+    ByteString aaa = "Hello World\nTest\n1234\n";
     result = match(aaa, re);
     EXPECT_EQ(result.success, true);
     EXPECT_EQ(result.count, 3u);
-    DeprecatedString str = "Hello World";
+    ByteString str = "Hello World";
     EXPECT_EQ(result.matches.at(0).view, str.view());
     EXPECT_EQ(result.matches.at(1).view, "Test");
     EXPECT_EQ(result.matches.at(2).view, "1234");
@@ -313,7 +313,7 @@ TEST_CASE(catch_all_newline_2)
 TEST_CASE(match_all_character_class)
 {
     Regex<PosixExtended> re("[[:alpha:]]");
-    DeprecatedString str = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    ByteString str = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     RegexResult result = match(str, re, PosixFlags::Global | PosixFlags::StringCopyMatches);
 
     EXPECT_EQ(result.success, true);
@@ -326,7 +326,7 @@ TEST_CASE(match_all_character_class)
 TEST_CASE(match_character_class_with_assertion)
 {
     Regex<PosixExtended> re("[[:alpha:]]+$");
-    DeprecatedString str = "abcdef";
+    ByteString str = "abcdef";
     RegexResult result = match(str, re);
 
     EXPECT_EQ(result.success, true);
@@ -372,13 +372,13 @@ TEST_CASE(ini_file_entries)
         regex_dbg.print_bytecode(re);
     }
 
-    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    ByteString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack.view(), result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 3u);
 
     if constexpr (REGEX_DEBUG) {
         for (auto& v : result.matches)
-            fprintf(stderr, "%s\n", v.view.to_deprecated_string().characters());
+            fprintf(stderr, "%s\n", v.view.to_byte_string().characters());
     }
 
     EXPECT_EQ(result.matches.at(0).view, "[Window]");
@@ -400,7 +400,7 @@ TEST_CASE(ini_file_entries2)
     Regex<PosixExtended> re("[[:alpha:]]*=([[:digit:]]*)");
     RegexResult result;
 
-    DeprecatedString haystack = "ViewMode=Icon";
+    ByteString haystack = "ViewMode=Icon";
 
     EXPECT_EQ(re.match(haystack.view(), result), false);
     EXPECT_EQ(result.count, 0u);
@@ -421,7 +421,7 @@ TEST_CASE(named_capture_group)
         regex_dbg.print_bytecode(re);
     }
 
-    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    ByteString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack, result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 2u);
     EXPECT_EQ(result.matches.at(0).view, "Opacity=255");
@@ -444,7 +444,7 @@ TEST_CASE(ecma262_named_capture_group_with_dollar_sign)
         regex_dbg.print_bytecode(re);
     }
 
-    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    ByteString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack, result, ECMAScriptFlags::Multiline), true);
     EXPECT_EQ(result.count, 2u);
     EXPECT_EQ(result.matches.at(0).view, "Opacity=255");
@@ -467,7 +467,7 @@ TEST_CASE(a_star)
         regex_dbg.print_bytecode(re);
     }
 
-    DeprecatedString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
+    ByteString haystack = "[Window]\nOpacity=255\nAudibleBeep=0\n";
     EXPECT_EQ(re.search(haystack.view(), result, PosixFlags::Multiline), true);
     EXPECT_EQ(result.count, 32u);
     if (result.count == 32u) {
@@ -500,7 +500,7 @@ TEST_CASE(posix_extended_nested_capture_group)
     EXPECT_EQ(result.capture_group_matches[0][2].view, "llo"sv);
 }
 
-auto parse_test_case_long_disjunction_chain = DeprecatedString::repeated("a|"sv, 100000);
+auto parse_test_case_long_disjunction_chain = ByteString::repeated("a|"sv, 100000);
 
 TEST_CASE(ECMA262_parse)
 {
@@ -597,6 +597,7 @@ TEST_CASE(ECMA262_parse)
         { "a{9007199254740992,9007199254740992}"sv, regex::Error::InvalidBraceContent },
         { "(?<a>a)(?<a>b)"sv, regex::Error::DuplicateNamedCapture },
         { "(?<a>a)(?<b>b)(?<a>c)"sv, regex::Error::DuplicateNamedCapture },
+        { "(?<a>(?<a>a))"sv, regex::Error::DuplicateNamedCapture },
         { "(?<1a>a)"sv, regex::Error::InvalidNameForCaptureGroup },
         { "(?<\\a>a)"sv, regex::Error::InvalidNameForCaptureGroup },
         { "(?<\ta>a)"sv, regex::Error::InvalidNameForCaptureGroup },
@@ -606,6 +607,8 @@ TEST_CASE(ECMA262_parse)
         { "((?=lg)?[vl]k\\-?\\d{3}) bui| 3\\.[-\\w; ]{10}lg?-([06cv9]{3,4})"sv, regex::Error::NoError, ECMAScriptFlags::BrowserExtended }, // #12373, quantifiable assertions.
         { parse_test_case_long_disjunction_chain.view() },                                                                                 // A whole lot of disjunctions, should not overflow the stack.
         { "(\"|')(?:(?!\\2)[^\\\\\\r\\n]|\\\\.)*\\2"sv, regex::Error::NoError, ECMAScriptFlags::BrowserExtended },                         // LegacyOctalEscapeSequence should not consume too many chars (and should not crash)
+        // #18324, Capture group counter skipped past EOF.
+        { "\\1[\\"sv, regex::Error::InvalidNumber },
     };
 
     for (auto& test : tests) {
@@ -624,6 +627,8 @@ TEST_CASE(ECMA262_parse)
 
 TEST_CASE(ECMA262_match)
 {
+    constexpr auto global_multiline = ECMAScriptFlags::Global | ECMAScriptFlags::Multiline;
+
     struct _test {
         StringView pattern;
         StringView subject;
@@ -644,7 +649,7 @@ TEST_CASE(ECMA262_match)
         { "^[\\0-\\x1f]$"sv, "\n"sv },
         { .pattern = "\\bhello\\B"sv, .subject = "hello1"sv, .options = ECMAScriptFlags::Global },
         { "\\b.*\\b"sv, "hello1"sv },
-        { "[^\\D\\S]{2}"sv, "1 "sv },
+        { "[^\\D\\S]{2}"sv, "1 "sv, false },
         { "bar(?=f.)foo"sv, "barfoo"sv },
         { "bar(?=foo)bar"sv, "barbar"sv, false },
         { "bar(?!foo)bar"sv, "barbar"sv, true },
@@ -698,6 +703,18 @@ TEST_CASE(ECMA262_match)
         { "^[a-sy-z]$"sv, "y"sv, true, ECMAScriptFlags::Insensitive },
         { "^[a-sy-z]$"sv, "u"sv, false, ECMAScriptFlags::Insensitive },
         { "."sv, "\n\r\u2028\u2029"sv, false }, // Dot should not match any of CR/LF/LS/PS in ECMA262 mode without DotAll.
+        { "a$"sv, "a\r\n"sv, true, global_multiline.value() }, // $ should accept all LineTerminators in ECMA262 mode with Multiline.
+        { "^a"sv, "\ra"sv, true, global_multiline.value() },
+        { "^(.*?):[ \\t]*([^\\r\\n]*)$"sv, "content-length: 488\r\ncontent-type: application/json; charset=utf-8\r\n"sv, true, global_multiline.value() },
+        { "^\\?((&?category=[0-9]+)?(&?shippable=1)?(&?ad_type=demand)?(&?page=[0-9]+)?(&?locations=(r|d)_[0-9]+)?)+$"sv,
+            "?category=54&shippable=1&baby_age=p,0,1,3"sv, false }, // ladybird#968, ?+ should not loop forever.
+        { "([^\\s]+):\\s*([^;]+);"sv, "font-family: 'Inter';"sv, true }, // optimizer bug, blindly accepting inverted char classes [^x] as atomic rewrite opportunities.
+        { "(a)(?=a*\\1)"sv, "aaaa"sv, true, global_multiline.value() }, // Optimizer bug, ignoring references that weren't bound in the current or past block, ladybird#2281
+        { "[ a](b{2})"sv, "abb"sv, true }, // Optimizer bug, wrong Repeat basic block splits.
+        { "^ {0,3}(([\\`\\~])\\2{2,})\\s*([\\*_]*)\\s*([^\\*_\\s]*).*$"sv, ""sv, false }, // See above.
+        { "^(\\d{4}|[+-]\\d{6})(?:-?(\\d{2})(?:-?(\\d{2}))?)?(?:[ T]?(\\d{2}):?(\\d{2})(?::?(\\d{2})(?:[,.](\\d{1,}))?)?(?:(Z)|([+-])(\\d{2})(?::?(\\d{2}))?)?)?$"sv,
+            ""sv,
+            false, }, // See above, also ladybird#2931.
     };
     // clang-format on
 
@@ -723,7 +740,7 @@ TEST_CASE(ECMA262_unicode_match)
     StringBuilder builder;
     for (u32 code_point : space_and_line_terminator_code_points)
         builder.append_code_point(code_point);
-    auto space_and_line_terminators = builder.to_deprecated_string();
+    auto space_and_line_terminators = builder.to_byte_string();
 
     struct _test {
         StringView pattern;
@@ -750,6 +767,18 @@ TEST_CASE(ECMA262_unicode_match)
         { "(?<\\ud835\\udcd1\\ud835\\udcfb\\ud835\\udcf8\\ud835\\udd00\\ud835\\udcf7>brown)"sv, "brown"sv, true, ECMAScriptFlags::Unicode },
         { "^\\s+$"sv, space_and_line_terminators },
         { "^\\s+$"sv, space_and_line_terminators, true, ECMAScriptFlags::Unicode },
+        { "[\\u0390]"sv, "\u1fd3"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\u1fd3]"sv, "\u0390"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\u0390]"sv, "\u1fd3"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
+        { "[\\u1fd3]"sv, "\u0390"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
+        { "[\\u03b0]"sv, "\u1fe3"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\u1fe3]"sv, "\u03b0"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\u03b0]"sv, "\u1fe3"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
+        { "[\\u1fe3]"sv, "\u03b0"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
+        { "[\\ufb05]"sv, "\ufb06"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\ufb06]"sv, "\ufb05"sv, false, ECMAScriptFlags::Unicode },
+        { "[\\ufb05]"sv, "\ufb06"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
+        { "[\\ufb06]"sv, "\ufb05"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::Insensitive) },
     };
 
     for (auto& test : tests) {
@@ -769,6 +798,24 @@ TEST_CASE(ECMA262_unicode_match)
 
         EXPECT_EQ(re.parser_result.error, regex::Error::NoError);
         EXPECT_EQ(re.match(view).success, test.matches);
+    }
+}
+
+TEST_CASE(ECMA262_unicode_sets_parser_error)
+{
+    struct _test {
+        StringView pattern;
+        regex::Error error;
+    };
+
+    constexpr _test tests[] {
+        { "[[]"sv, regex::Error::InvalidPattern },
+        { "[[x[]]]"sv, regex::Error::NoError }, // #23691, should not crash on empty charclass within AndOr.
+    };
+
+    for (auto test : tests) {
+        Regex<ECMA262> re(test.pattern, (ECMAScriptFlags)regex::AllFlags::UnicodeSets);
+        EXPECT_EQ(re.parser_result.error, test.error);
     }
 }
 
@@ -933,7 +980,7 @@ TEST_CASE(case_insensitive_match)
 TEST_CASE(extremely_long_fork_chain)
 {
     Regex<ECMA262> re("(?:aa)*");
-    auto result = re.match(DeprecatedString::repeated('a', 1000));
+    auto result = re.match(ByteString::repeated('a', 1000));
     EXPECT_EQ(result.success, true);
 }
 
@@ -944,6 +991,7 @@ TEST_CASE(theoretically_infinite_loop)
         "(a*?)*"sv, // Infinitely matching empty substrings, the outer loop should short-circuit.
         "(a*)*?"sv, // Should match exactly nothing.
         "(?:)*?"sv, // Should not generate an infinite fork loop.
+        "(a?)+$"sv, // Infinitely matching empty strings, but with '+' instead of '*'.
     };
     for (auto& pattern : patterns) {
         Regex<ECMA262> re(pattern);
@@ -952,7 +1000,7 @@ TEST_CASE(theoretically_infinite_loop)
     }
 }
 
-static auto g_lots_of_a_s = DeprecatedString::repeated('a', 10'000'000);
+static auto g_lots_of_a_s = ByteString::repeated('a', 10'000'000);
 
 BENCHMARK_CASE(fork_performance)
 {
@@ -988,6 +1036,11 @@ TEST_CASE(optimizer_atomic_groups)
         Tuple { "[^x]+y"sv, "ay"sv, true },
         // .+ should not be rewritten here, as it's followed by something that would be matched by `.`.
         Tuple { ".+(a|b|c)"sv, "xxa"sv, true },
+        // (b+)(b+) produces an intermediate block with no matching ops, the optimiser should ignore that block when looking for following matches and correctly detect the overlap between (b+) and (b+).
+        // note that the second loop may be rewritten to a ForkReplace, but the first loop should not be rewritten.
+        Tuple { "(b+)(b+)"sv, "bbb"sv, true },
+        // Don't treat [\S] as [\s]; see ladybird#2296.
+        Tuple { "([^\\s]+?)\\(([\\s\\S]*)\\)"sv, "a(b)"sv, true },
     };
 
     for (auto& test : tests) {
@@ -1018,15 +1071,31 @@ TEST_CASE(optimizer_char_class_lut)
 TEST_CASE(optimizer_alternation)
 {
     Array tests {
-        // Pattern, Subject, Expected length
+        // Pattern, Subject, Expected length [0 == fail]
         Tuple { "a|"sv, "a"sv, 1u },
+        Tuple { "a|a|a|a|a|a|a|a|a|b"sv, "a"sv, 1u },
+        Tuple { "ab|ac|ad|bc"sv, "bc"sv, 2u },
+        // Should not crash on backwards jumps introduced by '.*'.
+        Tuple { "\\bDroid\\b.*Build|XT912|XT928|XT926|XT915|XT919|XT925|XT1021|\\bMoto E\\b|XT1068|XT1092|XT1052"sv, "XT1068"sv, 6u },
+        // Backwards jumps to IP 0 are normal jumps too.
+        Tuple { "^(\\d+|x)"sv, "42"sv, 2u },
+        // `Repeat' does not add its insn size to the jump target.
+        Tuple { "[0-9]{2}|[0-9]"sv, "92"sv, 2u },
+        // Don't ForkJump to the next instruction, rerunning it would produce the same result. see ladybird#2398.
+        Tuple { "(xxxxxxxxxxxxxxxxxxxxxxx|xxxxxxxxxxxxxxxxxxxxxxx)?b"sv, "xxxxxxxxxxxxxxxxxxxxxxx"sv, 0u },
+        // Don't take the jump in JumpNonEmpty with nonexistent checkpoints (also don't crash).
+        Tuple { "(?!\\d*|[g-ta-r]+|[h-l]|\\S|\\S|\\S){,9}|\\S{7,8}|\\d|(?<wnvdfimiwd>)|[c-mj-tb-o]*|\\s"sv, "rjvogg7pm|li4nmct mjb2|pk7s8e0"sv, 0u },
     };
 
     for (auto& test : tests) {
         Regex<ECMA262> re(test.get<0>());
         auto result = re.match(test.get<1>());
-        EXPECT(result.success);
-        EXPECT_EQ(result.matches.first().view.length(), test.get<2>());
+        if (test.get<2>() != 0) {
+            EXPECT(result.success);
+            EXPECT_EQ(result.matches.first().view.length(), test.get<2>());
+        } else {
+            EXPECT(!result.success);
+        }
     }
 }
 
@@ -1090,7 +1159,7 @@ TEST_CASE(single_match_flag)
         auto result = re.match("ABC"sv);
         EXPECT_EQ(result.success, true);
         EXPECT_EQ(result.matches.size(), 1u);
-        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "A"sv);
+        EXPECT_EQ(result.matches.first().view.to_byte_string(), "A"sv);
     }
 }
 
@@ -1102,7 +1171,7 @@ TEST_CASE(empty_string_wildcard_match)
         auto result = re.match(""sv);
         EXPECT_EQ(result.success, true);
         EXPECT_EQ(result.matches.size(), 1u);
-        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), ""sv);
+        EXPECT_EQ(result.matches.first().view.to_byte_string(), ""sv);
     }
 }
 
@@ -1115,7 +1184,7 @@ TEST_CASE(inversion_state_in_char_class)
         auto result = re.match("hello"sv);
         EXPECT_EQ(result.success, true);
         EXPECT_EQ(result.matches.size(), 1u);
-        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "h"sv);
+        EXPECT_EQ(result.matches.first().view.to_byte_string(), "h"sv);
     }
     {
         Regex<ECMA262> re("^(?:([^\\s!\"#%-,\\./;->@\\[-\\^`\\{-~]+(?=([=~}\\s/.)|]))))"sv, ECMAScriptFlags::Global);
@@ -1123,8 +1192,29 @@ TEST_CASE(inversion_state_in_char_class)
         auto result = re.match("slideNumbers}}"sv);
         EXPECT_EQ(result.success, true);
         EXPECT_EQ(result.matches.size(), 1u);
-        EXPECT_EQ(result.matches.first().view.to_deprecated_string(), "slideNumbers"sv);
-        EXPECT_EQ(result.capture_group_matches.first()[0].view.to_deprecated_string(), "slideNumbers"sv);
-        EXPECT_EQ(result.capture_group_matches.first()[1].view.to_deprecated_string(), "}"sv);
+        EXPECT_EQ(result.matches.first().view.to_byte_string(), "slideNumbers"sv);
+        EXPECT_EQ(result.capture_group_matches.first()[0].view.to_byte_string(), "slideNumbers"sv);
+        EXPECT_EQ(result.capture_group_matches.first()[1].view.to_byte_string(), "}"sv);
+    }
+    {
+        // #21786, /[^\S\n]/.exec("\n") should be null, not [ "\n" ].
+        // This was a general confusion between the inversion state and the negation state (temp inverse).
+        Regex<ECMA262> re("[^\\S\\n]", ECMAScriptFlags::Global | (ECMAScriptFlags)regex::AllFlags::SingleMatch);
+
+        auto result = re.match("\n"sv);
+        EXPECT_EQ(result.success, false);
+    }
+}
+
+TEST_CASE(mismatching_brackets)
+{
+    auto const test_cases = Array {
+        "["sv,
+        "[ -"sv,
+    };
+
+    for (auto const& test_case : test_cases) {
+        Regex<ECMA262> re(test_case);
+        EXPECT_EQ(re.parser_result.error, regex::Error::MismatchingBracket);
     }
 }

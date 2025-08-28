@@ -1,7 +1,7 @@
 [App]
-Name=Pixel Paint
+Name=&Pixel Paint
 Executable=/bin/PixelPaint
-Category=Graphics
+Category=Gra&phics
 
 [Launcher]
-FileTypes=pp,bmp,pbm,pgm,png,ppm,gif,jpg,jpeg,dds,qoi,ico
+FileTypes=pp,bmp,dds,gif,ico,iff,jb2,jbig2,jp2,jpeg,jpf,jpg,jpx,jxl,lbm,pbm,pgm,png,ppm,qoi,tga,tiff,tif

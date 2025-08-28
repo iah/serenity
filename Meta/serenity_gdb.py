@@ -3,8 +3,12 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import gdb
+import gdb.printing
 import gdb.types
 import re
+
+
+void_ptr = gdb.lookup_type('void').pointer()
 
 
 def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
@@ -20,8 +24,14 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKArray
     elif klass == 'AK::Atomic':
         return AKAtomic
+    elif klass == 'AK::Detail::IntrusiveList':
+        return AKIntrusiveList
     elif klass == 'AK::DistinctNumeric':
         return AKDistinctNumeric
+    elif klass == 'AK::FixedArray':
+        return AKFixedArrayPrinter
+    elif klass == 'AK::FixedStringBuffer':
+        return AKFixedStringBuffer
     elif klass == 'AK::HashMap':
         return AKHashMapPrettyPrinter
     elif klass == 'AK::RefCounted':
@@ -36,12 +46,16 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKSinglyLinkedList
     elif klass == 'AK::String':
         return AKString
+    elif klass == 'AK::ByteString':
+        return AKDeprecatedString
     elif klass == 'AK::StringView':
         return AKStringView
     elif klass == 'AK::StringImpl':
         return AKStringImpl
     elif klass == 'AK::Variant':
         return AKVariant
+    elif klass == 'AK::Optional':
+        return AKOptional
     elif klass == 'AK::Vector':
         return AKVector
     elif klass == 'VirtualAddress':
@@ -69,6 +83,32 @@ class AKAtomic:
         return f'AK::Atomic<{handler_class_for_type(contained_type).prettyprint_type(contained_type)}>'
 
 
+class AKIntrusiveList:
+    def __init__(self, val: gdb.Value):
+        self.val = val
+        self.element_type = self.val.type.template_argument(0)
+        self.node_member_offset = int(self.val.type.template_argument(2).cast(void_ptr))
+
+    def _node_to_value(self, node_ptr: gdb.Value) -> gdb.Value:
+        return (node_ptr.cast(void_ptr) - self.node_member_offset).cast(self.element_type.pointer()).dereference()
+
+    def to_string(self):
+        return AKIntrusiveList.prettyprint_type(self.val.type)
+
+    def children(self):
+        current = self.val["m_storage"]["m_first"]
+        i = 0
+        while current != 0:
+            yield f"[{i}]", self._node_to_value(current)
+            current = current["m_next"]
+            i += 1
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        element_type = type.template_argument(0)
+        return f'AK::IntrusiveList<{handler_class_for_type(element_type).prettyprint_type(element_type)}>'
+
+
 class AKDistinctNumeric:
     def __init__(self, val):
         self.val = val
@@ -89,6 +129,46 @@ class AKDistinctNumeric:
         return f'AK::DistinctNumeric<{handler_class_for_type(contained_type).prettyprint_type(contained_type)}>'
 
 
+class AKFixedArrayPrinter:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        size = self.val["m_size"]
+        return f'{AKFixedArrayPrinter.prettyprint_type(self.val.type)} of size {size}'
+
+    def children(self):
+        size = self.val["m_size"]
+        elements = self.val["m_elements"]
+
+        # Very arbitrary limit, just to catch UAF'd and garbage vector values with a silly number of elements
+        if size > 373373:
+            return []
+
+        return [(f"[{i}]", elements[i]) for i in range(size)]
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        template_type = type.template_argument(0)
+        return f'AK::FixedArray<{handler_class_for_type(template_type).prettyprint_type(template_type)}>'
+
+
+class AKFixedStringBuffer:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        if int(self.val["m_stored_length"]) == 0:
+            return '""'
+        else:
+            return '"' + self.val["m_storage"]["__data"].string(length=self.val["m_stored_length"]) + '"'
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        size = type.template_argument(0)
+        return f'AK::FixedStringBuffer<{size}>'
+
+
 class AKRefCounted:
     def __init__(self, val):
         self.val = val
@@ -107,6 +187,24 @@ class AKString:
         self.val = val
 
     def to_string(self):
+        # Using the internal structure directly is quite convoluted here because of the packing optimizations
+        # of AK::String (could be a short string, a substring, or a normal string).
+        # This workaround was described in the gdb bugzilla on a discussion of supporting direct method calls
+        # on values: https://sourceware.org/bugzilla/show_bug.cgi?id=13326
+        gdb.set_convenience_variable('_tmp', self.val.reference_value())
+        string_view = gdb.parse_and_eval('$_tmp.bytes_as_string_view()')
+        return AKStringView(string_view).to_string()
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        return 'AK::String'
+
+
+class AKDeprecatedString:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
         if int(self.val["m_impl"]["m_ptr"]) == 0:
             return '""'
         else:
@@ -115,7 +213,7 @@ class AKString:
 
     @classmethod
     def prettyprint_type(cls, type):
-        return 'AK::String'
+        return 'AK::ByteString'
 
 
 class AKStringView:
@@ -126,9 +224,7 @@ class AKStringView:
         if int(self.val["m_length"]) == 0:
             return '""'
         else:
-            characters = self.val["m_characters"]
-            str_type = characters.type.target().array(self.val["m_length"]).pointer()
-            return str(characters.cast(str_type).dereference())
+            return '"' + self.val["m_characters"].string(length=self.val["m_length"]) + '"'
 
     @classmethod
     def prettyprint_type(cls, type):
@@ -150,8 +246,7 @@ class AKStringImpl:
         if int(self.val["m_length"]) == 0:
             return '""'
         else:
-            str_type = gdb.lookup_type("char").array(self.val["m_length"])
-            return get_field_unalloced(self.val, "m_inline_buffer", str_type)
+            return self.val["m_inline_buffer"].string(length=self.val["m_length"])
 
     @classmethod
     def prettyprint_type(cls, type):
@@ -227,6 +322,27 @@ class AKVariant:
     def prettyprint_type(cls, ty):
         names = ", ".join(handler_class_for_type(t).prettyprint_type(t) for t in AKVariant.resolve_types(ty))
         return f'AK::Variant<{names}>'
+
+
+class AKOptional:
+    def __init__(self, val):
+        self.val = val
+        self.has_value = bool(self.val["m_has_value"])
+        self.contained_type = self.val.type.strip_typedefs().template_argument(0)
+
+    def to_string(self):
+        return AKOptional.prettyprint_type(self.val.type)
+
+    def children(self):
+        if self.has_value:
+            data = self.val["m_storage"]
+            return [(self.contained_type.name, data.cast(self.contained_type.pointer()).referenced_value())]
+        return [("OptionalNone", "{}")]
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        template_type = type.template_argument(0)
+        return f'AK::Optional<{template_type}>'
 
 
 class AKVector:
@@ -312,7 +428,6 @@ class AKHashMapPrettyPrinter:
         elements = []
 
         def cb(key, value):
-            nonlocal elements
             elements.append((f"[{key}]", value))
 
         AKHashMapPrettyPrinter._iter_hashmap(self.val, cb)

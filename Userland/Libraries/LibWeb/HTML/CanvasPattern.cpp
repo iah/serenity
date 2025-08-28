@@ -5,11 +5,16 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <LibWeb/Bindings/CanvasPatternPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/CanvasPattern.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
+#include <LibWeb/HTML/ImageBitmap.h>
+#include <LibWeb/SVG/SVGImageElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(CanvasPattern);
 
 void CanvasPatternPaintStyle::paint(Gfx::IntRect physical_bounding_box, PaintFunction paint) const
 {
@@ -119,7 +124,7 @@ WebIDL::ExceptionOr<JS::GCPtr<CanvasPattern>> CanvasPattern::create(JS::Realm& r
     // then throw a "SyntaxError" DOMException.
     auto repetition_value = parse_repetition(repetition);
     if (!repetition_value.has_value())
-        return WebIDL::SyntaxError::create(realm, "Repetition value is not valid");
+        return WebIDL::SyntaxError::create(realm, "Repetition value is not valid"_string);
 
     // Note: Bitmap won't be null here, as if it were it would have "bad" usability.
     auto const& bitmap = *image.visit([](auto const& source) -> Gfx::Bitmap const* { return source->bitmap(); });
@@ -130,15 +135,13 @@ WebIDL::ExceptionOr<JS::GCPtr<CanvasPattern>> CanvasPattern::create(JS::Realm& r
     // FIXME: 7. If image is not origin-clean, then mark pattern as not origin-clean.
 
     // 8. Return pattern.
-    return MUST_OR_THROW_OOM(realm.heap().allocate<CanvasPattern>(realm, realm, *pattern));
+    return realm.heap().allocate<CanvasPattern>(realm, realm, *pattern);
 }
 
-JS::ThrowCompletionOr<void> CanvasPattern::initialize(JS::Realm& realm)
+void CanvasPattern::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::CanvasPatternPrototype>(realm, "CanvasPattern"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(CanvasPattern);
 }
 
 }

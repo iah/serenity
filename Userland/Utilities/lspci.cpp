@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Hex.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
@@ -25,15 +25,18 @@ static constexpr StringView format_numerical = "{:04x}:{:02x}:{:02x}.{} {}: {}:{
 static constexpr StringView format_textual = "{:04x}:{:02x}:{:02x}.{} {}: {} {} (rev {:02x})"sv;
 static constexpr StringView format_region = "\tBAR {}: {} region @ {:#x}"sv;
 
-static u32 read_hex_string_from_bytebuffer(ByteBuffer const& buf)
+static ErrorOr<u32> read_hex_string_from_bytebuffer(ByteBuffer const& buf)
 {
-    // FIXME: Propagate errors.
-    return AK::StringUtils::convert_to_uint_from_hex(
-        DeprecatedString(MUST(buf.slice(2, buf.size() - 2)).bytes()))
-        .release_value();
+    auto slice_result = TRY(buf.slice(2, buf.size() - 2));
+    auto hex_string = ByteString(slice_result.bytes());
+    auto result = AK::StringUtils::convert_to_uint_from_hex(hex_string);
+    if (!result.has_value())
+        return Error::from_string_literal("Failed to convert hex string to number");
+
+    return result.release_value();
 }
 
-static u32 convert_sysfs_value_to_uint(DeprecatedString const& value)
+static u32 convert_sysfs_value_to_uint(ByteString const& value)
 {
     if (auto result = AK::StringUtils::convert_to_uint_from_hex(value); result.has_value())
         return result.release_value();
@@ -89,31 +92,31 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         VERIFY(function_parts.size() == 2);
         auto function = convert_sysfs_value_to_uint(function_parts[1]);
 
-        auto vendor_id_filename = DeprecatedString::formatted("/sys/bus/pci/{}/vendor", dir);
+        auto vendor_id_filename = ByteString::formatted("/sys/bus/pci/{}/vendor", dir);
         auto vendor_id_file = Core::File::open(vendor_id_filename, Core::File::OpenMode::Read);
         if (vendor_id_file.is_error()) {
             dbgln("Error: Could not open {}: {}", vendor_id_filename, vendor_id_file.error());
             continue;
         }
-        auto device_id_filename = DeprecatedString::formatted("/sys/bus/pci/{}/device_id", dir);
+        auto device_id_filename = ByteString::formatted("/sys/bus/pci/{}/device_id", dir);
         auto device_id_file = Core::File::open(device_id_filename, Core::File::OpenMode::Read);
         if (device_id_file.is_error()) {
             dbgln("Error: Could not open {}: {}", device_id_filename, device_id_file.error());
             continue;
         }
-        auto class_id_filename = DeprecatedString::formatted("/sys/bus/pci/{}/class", dir);
+        auto class_id_filename = ByteString::formatted("/sys/bus/pci/{}/class", dir);
         auto class_id_file = Core::File::open(class_id_filename, Core::File::OpenMode::Read);
         if (class_id_file.is_error()) {
             dbgln("Error: Could not open {}: {}", class_id_filename, class_id_file.error());
             continue;
         }
-        auto subclass_id_filename = DeprecatedString::formatted("/sys/bus/pci/{}/subclass", dir);
+        auto subclass_id_filename = ByteString::formatted("/sys/bus/pci/{}/subclass", dir);
         auto subclass_id_file = Core::File::open(subclass_id_filename, Core::File::OpenMode::Read);
         if (subclass_id_file.is_error()) {
             dbgln("Error: Could not open {}: {}", subclass_id_filename, subclass_id_file.error());
             continue;
         }
-        auto revision_id_filename = DeprecatedString::formatted("/sys/bus/pci/{}/revision", dir);
+        auto revision_id_filename = ByteString::formatted("/sys/bus/pci/{}/revision", dir);
         auto revision_id_file = Core::File::open(revision_id_filename, Core::File::OpenMode::Read);
         if (revision_id_file.is_error()) {
             dbgln("Error: Could not open {}: {}", revision_id_filename, revision_id_file.error());
@@ -125,39 +128,39 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             dbgln("Error: Could not read {}: {}", vendor_id_filename, vendor_id_contents.error());
             continue;
         }
-        u32 vendor_id = read_hex_string_from_bytebuffer(vendor_id_contents.value());
+        u32 vendor_id = TRY(read_hex_string_from_bytebuffer(vendor_id_contents.value()));
 
         auto device_id_contents = device_id_file.value()->read_until_eof();
         if (device_id_contents.is_error()) {
             dbgln("Error: Could not read {}: {}", device_id_filename, device_id_contents.error());
             continue;
         }
-        u32 device_id = read_hex_string_from_bytebuffer(device_id_contents.value());
+        u32 device_id = TRY(read_hex_string_from_bytebuffer(device_id_contents.value()));
 
         auto revision_id_contents = revision_id_file.value()->read_until_eof();
         if (revision_id_contents.is_error()) {
             dbgln("Error: Could not read {}: {}", revision_id_filename, revision_id_contents.error());
             continue;
         }
-        u32 revision_id = read_hex_string_from_bytebuffer(revision_id_contents.value());
+        u32 revision_id = TRY(read_hex_string_from_bytebuffer(revision_id_contents.value()));
 
         auto class_id_contents = class_id_file.value()->read_until_eof();
         if (class_id_contents.is_error()) {
             dbgln("Error: Could not read {}: {}", class_id_filename, class_id_contents.error());
             continue;
         }
-        u32 class_id = read_hex_string_from_bytebuffer(class_id_contents.value());
+        u32 class_id = TRY(read_hex_string_from_bytebuffer(class_id_contents.value()));
 
         auto subclass_id_contents = subclass_id_file.value()->read_until_eof();
         if (subclass_id_contents.is_error()) {
             dbgln("Error: Could not read {}: {}", subclass_id_filename, subclass_id_contents.error());
             continue;
         }
-        u32 subclass_id = read_hex_string_from_bytebuffer(subclass_id_contents.value());
+        u32 subclass_id = TRY(read_hex_string_from_bytebuffer(subclass_id_contents.value()));
 
-        DeprecatedString vendor_name;
-        DeprecatedString device_name;
-        DeprecatedString class_name;
+        ByteString vendor_name;
+        ByteString device_name;
+        ByteString class_name;
 
         if (db) {
             vendor_name = db->get_vendor(vendor_id);
@@ -166,18 +169,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
         if (vendor_name.is_empty())
-            vendor_name = DeprecatedString::formatted("{:04x}", vendor_id);
+            vendor_name = ByteString::formatted("{:04x}", vendor_id);
         if (device_name.is_empty())
-            device_name = DeprecatedString::formatted("{:04x}", device_id);
+            device_name = ByteString::formatted("{:04x}", device_id);
         if (class_name.is_empty())
-            class_name = DeprecatedString::formatted("{:02x}{:02x}", class_id, subclass_id);
+            class_name = ByteString::formatted("{:02x}{:02x}", class_id, subclass_id);
 
         outln(format, domain, bus, device, function, class_name, vendor_name, device_name, revision_id);
 
         if (!flag_verbose)
             continue;
         for (size_t bar_index = 0; bar_index <= 5; bar_index++) {
-            auto bar_value_filename = DeprecatedString::formatted("/sys/bus/pci/{}/bar{}", dir, bar_index);
+            auto bar_value_filename = ByteString::formatted("/sys/bus/pci/{}/bar{}", dir, bar_index);
             auto bar_value_file = Core::File::open(bar_value_filename, Core::File::OpenMode::Read);
             if (bar_value_file.is_error()) {
                 dbgln("Error: Could not open {}: {}", bar_value_filename, bar_value_file.error());
@@ -190,7 +193,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 continue;
             }
 
-            u32 bar_value = read_hex_string_from_bytebuffer(bar_value_contents.value());
+            u32 bar_value = TRY(read_hex_string_from_bytebuffer(bar_value_contents.value()));
             if (bar_value == 0)
                 continue;
             bool memory_region = ((bar_value & 1) == 0);

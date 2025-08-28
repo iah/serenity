@@ -24,8 +24,6 @@
 #include <spawn.h>
 #include <unistd.h>
 
-using StringViewListModel = GUI::ItemListModel<StringView, ReadonlySpan<StringView>>;
-
 static constexpr auto PI_OVER_180 = M_PIf32 / 180.0f;
 static constexpr auto PI_OVER_4 = M_PIf32 / 4.0f;
 static constexpr auto TAU = M_PIf32 * 2.0f;
@@ -63,12 +61,22 @@ TimeZoneSettingsWidget::TimeZoneSettingsWidget()
 {
     load_from_gml(time_zone_settings_widget_gml).release_value_but_fixme_should_propagate_errors();
 
-    static auto time_zones = TimeZone::all_time_zones();
+    static auto time_zones = []() {
+        Vector<StringView> time_zones;
+
+        for (auto const& time_zone : TimeZone::all_time_zones()) {
+            if (time_zone.is_link == TimeZone::IsLink::No)
+                time_zones.append(time_zone.name);
+        }
+
+        return time_zones;
+    }();
+
     m_time_zone = TimeZone::system_time_zone();
 
     m_time_zone_combo_box = *find_descendant_of_type_named<GUI::ComboBox>("time_zone_input");
     m_time_zone_combo_box->set_only_allow_values_from_model(true);
-    m_time_zone_combo_box->set_model(*StringViewListModel::create(time_zones));
+    m_time_zone_combo_box->set_model(*GUI::ItemListModel<StringView>::create(time_zones));
     m_time_zone_combo_box->set_text(m_time_zone);
     m_time_zone_combo_box->on_change = [&](auto, auto) {
         set_modified(true);
@@ -133,12 +141,12 @@ void TimeZoneSettingsWidget::set_time_zone_location()
     m_time_zone_location = compute_time_zone_location();
 
     auto locale = Locale::default_locale();
-    auto now = AK::Time::now_realtime();
+    auto now = AK::UnixDateTime::now();
 
-    auto name = Locale::format_time_zone(locale, m_time_zone, Locale::CalendarPatternStyle::Long, now).release_value_but_fixme_should_propagate_errors();
-    auto offset = Locale::format_time_zone(locale, m_time_zone, Locale::CalendarPatternStyle::LongOffset, now).release_value_but_fixme_should_propagate_errors();
+    auto name = Locale::format_time_zone(locale, m_time_zone, Locale::CalendarPatternStyle::Long, now);
+    auto offset = Locale::format_time_zone(locale, m_time_zone, Locale::CalendarPatternStyle::LongOffset, now);
 
-    m_time_zone_text = DeprecatedString::formatted("{}\n({})", name, offset);
+    m_time_zone_text = ByteString::formatted("{}\n({})", name, offset);
 }
 
 // https://en.wikipedia.org/wiki/Mercator_projection#Derivation

@@ -55,7 +55,7 @@ public:
                 auto rect = rect_for_desktop(row, column);
                 painter.fill_rect(rect,
                     (row == current_row() && column == current_column()) ? active_color : inactive_color);
-                Gfx::StylePainter::current().paint_frame(painter, rect, palette(), Gfx::FrameShape::Container, Gfx::FrameShadow::Sunken, 1);
+                Gfx::StylePainter::current().paint_frame(painter, rect, palette(), Gfx::FrameStyle::SunkenPanel);
             }
         }
     }
@@ -148,7 +148,7 @@ DesktopStatusWindow::DesktopStatusWindow()
 {
     set_window_type(GUI::WindowType::Applet);
     set_has_alpha_channel(true);
-    m_widget = set_main_widget<DesktopStatusWidget>().release_value_but_fixme_should_propagate_errors();
+    m_widget = set_main_widget<DesktopStatusWidget>();
 }
 
 void DesktopStatusWindow::wm_event(GUI::WMEvent& event)

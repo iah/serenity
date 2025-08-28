@@ -5,8 +5,8 @@
  */
 
 #include "../LibUnicode/GeneratorUtil.h" // FIXME: Move this somewhere common.
+#include <AK/ByteString.h>
 #include <AK/DateConstants.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Error.h>
 #include <AK/Format.h>
 #include <AK/HashMap.h>
@@ -36,7 +36,7 @@ struct TimeZoneOffset {
     i64 offset { 0 };
     Optional<DateTime> until;
 
-    Optional<DeprecatedString> dst_rule;
+    Optional<ByteString> dst_rule;
     Optional<i32> dst_rule_index;
     i64 dst_offset { 0 };
 
@@ -56,17 +56,19 @@ struct DaylightSavingsOffset {
 struct TimeZoneData {
     UniqueStringStorage unique_strings;
 
-    HashMap<DeprecatedString, Vector<TimeZoneOffset>> time_zones;
-    Vector<DeprecatedString> time_zone_names;
+    HashMap<ByteString, Vector<TimeZoneOffset>> time_zones;
+    Vector<ByteString> time_zone_names;
     Vector<Alias> time_zone_aliases;
 
-    HashMap<DeprecatedString, Vector<DaylightSavingsOffset>> dst_offsets;
-    Vector<DeprecatedString> dst_offset_names;
+    HashMap<ByteString, Vector<DaylightSavingsOffset>> dst_offsets;
+    Vector<ByteString> dst_offset_names;
 
-    HashMap<DeprecatedString, TimeZone::Location> time_zone_coordinates;
+    HashMap<ByteString, TimeZone::Location> time_zone_coordinates;
 
-    HashMap<DeprecatedString, Vector<size_t>> time_zone_regions;
-    Vector<DeprecatedString> time_zone_region_names;
+    HashMap<ByteString, Vector<size_t>> time_zone_regions;
+    Vector<ByteString> time_zone_region_names;
+
+    Vector<TimeZone::TimeZoneIdentifier> time_zones_and_links;
 };
 
 }
@@ -110,10 +112,10 @@ struct AK::Formatter<DaylightSavingsOffset> : Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, DaylightSavingsOffset const& dst_offset)
     {
         auto format_time = [&](auto year) {
-            return DeprecatedString::formatted("AK::Time::from_timestamp({}, 1, 1, 0, 0, 0, 0)", year);
+            return ByteString::formatted("AK::UnixDateTime::from_unix_time_parts({}, 1, 1, 0, 0, 0, 0)", year);
         };
 
-        static DeprecatedString max_year_as_time("max_year_as_time"sv);
+        static ByteString max_year_as_time("max_year_as_time"sv);
 
         return Formatter<FormatString>::format(builder,
             "{{ {}, {}, {}, {}, {} }}"sv,
@@ -124,6 +126,17 @@ struct AK::Formatter<DaylightSavingsOffset> : Formatter<FormatString> {
                 : max_year_as_time,
             dst_offset.in_effect,
             dst_offset.format);
+    }
+};
+
+template<>
+struct AK::Formatter<TimeZone::TimeZoneIdentifier> : Formatter<FormatString> {
+    ErrorOr<void> format(FormatBuilder& builder, TimeZone::TimeZoneIdentifier const& time_zone)
+    {
+        return Formatter<FormatString>::format(builder,
+            "{{ \"{}\"sv, IsLink::{} }}"sv,
+            time_zone.name,
+            time_zone.is_link == TimeZone::IsLink::Yes ? "Yes"sv : "No"sv);
     }
 };
 
@@ -159,7 +172,7 @@ static Optional<DateTime> parse_date_time(ReadonlySpan<StringView> segments)
         return {};
 
     DateTime date_time {};
-    date_time.year = segments[0].to_uint().value();
+    date_time.year = segments[0].to_number<unsigned>().value();
 
     if (segments.size() > 1)
         date_time.month = find_index(short_month_names.begin(), short_month_names.end(), segments[1]) + 1;
@@ -173,15 +186,15 @@ static Optional<DateTime> parse_date_time(ReadonlySpan<StringView> segments)
             date_time.after_weekday = find_index(short_day_names.begin(), short_day_names.end(), weekday);
 
             auto day = segments[2].substring_view(*index + ">="sv.length());
-            date_time.day = day.to_uint().value();
+            date_time.day = day.to_number<unsigned>().value();
         } else if (auto index = segments[2].find("<="sv); index.has_value()) {
             auto weekday = segments[2].substring_view(0, *index);
             date_time.before_weekday = find_index(short_day_names.begin(), short_day_names.end(), weekday);
 
             auto day = segments[2].substring_view(*index + "<="sv.length());
-            date_time.day = day.to_uint().value();
+            date_time.day = day.to_number<unsigned>().value();
         } else {
-            date_time.day = segments[2].to_uint().value();
+            date_time.day = segments[2].to_number<unsigned>().value();
         }
     }
 
@@ -189,9 +202,9 @@ static Optional<DateTime> parse_date_time(ReadonlySpan<StringView> segments)
         // FIXME: Some times end with a letter, e.g. "2:00u" and "2:00s". Figure out what this means and handle it.
         auto time_segments = segments[3].split_view(':');
 
-        date_time.hour = time_segments[0].to_int().value();
-        date_time.minute = time_segments.size() > 1 ? time_segments[1].substring_view(0, 2).to_uint().value() : 0;
-        date_time.second = time_segments.size() > 2 ? time_segments[2].substring_view(0, 2).to_uint().value() : 0;
+        date_time.hour = time_segments[0].to_number<int>().value();
+        date_time.minute = time_segments.size() > 1 ? time_segments[1].substring_view(0, 2).to_number<unsigned>().value() : 0;
+        date_time.second = time_segments.size() > 2 ? time_segments[2].substring_view(0, 2).to_number<unsigned>().value() : 0;
     }
 
     return date_time;
@@ -201,9 +214,9 @@ static i64 parse_time_offset(StringView segment)
 {
     auto segments = segment.split_view(':');
 
-    i64 hours = segments[0].to_int().value();
-    i64 minutes = segments.size() > 1 ? segments[1].to_uint().value() : 0;
-    i64 seconds = segments.size() > 2 ? segments[2].to_uint().value() : 0;
+    i64 hours = segments[0].to_number<int>().value();
+    i64 minutes = segments.size() > 1 ? segments[1].to_number<unsigned>().value() : 0;
+    i64 seconds = segments.size() > 2 ? segments[2].to_number<unsigned>().value() : 0;
 
     i64 sign = ((hours < 0) || (segments[0] == "-0"sv)) ? -1 : 1;
     return (hours * 3600) + sign * ((minutes * 60) + seconds);
@@ -249,8 +262,10 @@ static Vector<TimeZoneOffset>& parse_zone(StringView zone_line, TimeZoneData& ti
     auto& time_zones = time_zone_data.time_zones.ensure(name);
     time_zones.append(move(time_zone));
 
-    if (!time_zone_data.time_zone_names.contains_slow(name))
+    if (!time_zone_data.time_zone_names.contains_slow(name)) {
         time_zone_data.time_zone_names.append(name);
+        time_zone_data.time_zones_and_links.append({ time_zone_data.time_zone_names.last(), TimeZone::IsLink::No });
+    }
 
     return time_zones;
 }
@@ -281,6 +296,7 @@ static void parse_link(StringView link_line, TimeZoneData& time_zone_data)
     auto alias = segments[2];
 
     time_zone_data.time_zone_aliases.append({ target, alias });
+    time_zone_data.time_zones_and_links.append({ time_zone_data.time_zone_aliases.last().alias, TimeZone::IsLink::Yes });
 }
 
 static void parse_rule(StringView rule_line, TimeZoneData& time_zone_data)
@@ -293,12 +309,12 @@ static void parse_rule(StringView rule_line, TimeZoneData& time_zone_data)
 
     DaylightSavingsOffset dst_offset {};
     dst_offset.offset = parse_time_offset(segments[8]);
-    dst_offset.year_from = segments[2].to_uint().value();
+    dst_offset.year_from = segments[2].to_number<unsigned>().value();
 
     if (segments[3] == "only")
         dst_offset.year_to = dst_offset.year_from;
     else if (segments[3] != "max"sv)
-        dst_offset.year_to = segments[3].to_uint().value();
+        dst_offset.year_to = segments[3].to_number<unsigned>().value();
 
     auto in_effect = Array { "0"sv, segments[5], segments[6], segments[7] };
     dst_offset.in_effect = parse_date_time(in_effect).release_value();
@@ -345,7 +361,7 @@ static ErrorOr<void> parse_time_zones(StringView time_zone_path, TimeZoneData& t
     return {};
 }
 
-static ErrorOr<void> parse_time_zone_coordinates(Core::BufferedFile& file, TimeZoneData& time_zone_data)
+static ErrorOr<void> parse_time_zone_coordinates(Core::InputBufferedFile& file, TimeZoneData& time_zone_data)
 {
     auto parse_coordinate = [](auto coordinate) {
         VERIFY(coordinate.substring_view(0, 1).is_one_of("+"sv, "-"sv));
@@ -353,22 +369,22 @@ static ErrorOr<void> parse_time_zone_coordinates(Core::BufferedFile& file, TimeZ
 
         if (coordinate.length() == 5) {
             // ±DDMM
-            parsed.degrees = coordinate.substring_view(0, 3).to_int().value();
-            parsed.minutes = coordinate.substring_view(3).to_int().value();
+            parsed.degrees = coordinate.substring_view(0, 3).template to_number<int>().value();
+            parsed.minutes = coordinate.substring_view(3).template to_number<int>().value();
         } else if (coordinate.length() == 6) {
             // ±DDDMM
-            parsed.degrees = coordinate.substring_view(0, 4).to_int().value();
-            parsed.minutes = coordinate.substring_view(4).to_int().value();
+            parsed.degrees = coordinate.substring_view(0, 4).template to_number<int>().value();
+            parsed.minutes = coordinate.substring_view(4).template to_number<int>().value();
         } else if (coordinate.length() == 7) {
             // ±DDMMSS
-            parsed.degrees = coordinate.substring_view(0, 3).to_int().value();
-            parsed.minutes = coordinate.substring_view(3, 2).to_int().value();
-            parsed.seconds = coordinate.substring_view(5).to_int().value();
+            parsed.degrees = coordinate.substring_view(0, 3).template to_number<int>().value();
+            parsed.minutes = coordinate.substring_view(3, 2).template to_number<int>().value();
+            parsed.seconds = coordinate.substring_view(5).template to_number<int>().value();
         } else if (coordinate.length() == 8) {
             // ±DDDDMMSS
-            parsed.degrees = coordinate.substring_view(0, 4).to_int().value();
-            parsed.minutes = coordinate.substring_view(4, 2).to_int().value();
-            parsed.seconds = coordinate.substring_view(6).to_int().value();
+            parsed.degrees = coordinate.substring_view(0, 4).template to_number<int>().value();
+            parsed.minutes = coordinate.substring_view(4, 2).template to_number<int>().value();
+            parsed.seconds = coordinate.substring_view(6).template to_number<int>().value();
         } else {
             VERIFY_NOT_REACHED();
         }
@@ -423,7 +439,7 @@ static void set_dst_rule_indices(TimeZoneData& time_zone_data)
     }
 }
 
-static DeprecatedString format_identifier(StringView owner, DeprecatedString identifier)
+static ByteString format_identifier(StringView owner, ByteString identifier)
 {
     constexpr auto gmt_time_zones = Array { "Etc/GMT"sv, "GMT"sv };
 
@@ -432,9 +448,9 @@ static DeprecatedString format_identifier(StringView owner, DeprecatedString ide
             auto offset = identifier.substring_view(gmt_time_zone.length());
 
             if (offset.starts_with('+'))
-                identifier = DeprecatedString::formatted("{}_Ahead_{}", gmt_time_zone, offset.substring_view(1));
+                identifier = ByteString::formatted("{}_Ahead_{}", gmt_time_zone, offset.substring_view(1));
             else if (offset.starts_with('-'))
-                identifier = DeprecatedString::formatted("{}_Behind_{}", gmt_time_zone, offset.substring_view(1));
+                identifier = ByteString::formatted("{}_Behind_{}", gmt_time_zone, offset.substring_view(1));
         }
     }
 
@@ -442,13 +458,13 @@ static DeprecatedString format_identifier(StringView owner, DeprecatedString ide
     identifier = identifier.replace("/"sv, "_"sv, ReplaceMode::All);
 
     if (all_of(identifier, is_ascii_digit))
-        return DeprecatedString::formatted("{}_{}", owner[0], identifier);
+        return ByteString::formatted("{}_{}", owner[0], identifier);
     if (is_ascii_lower_alpha(identifier[0]))
-        return DeprecatedString::formatted("{:c}{}", to_ascii_uppercase(identifier[0]), identifier.substring_view(1));
+        return ByteString::formatted("{:c}{}", to_ascii_uppercase(identifier[0]), identifier.substring_view(1));
     return identifier;
 }
 
-static ErrorOr<void> generate_time_zone_data_header(Core::BufferedFile& file, TimeZoneData& time_zone_data)
+static ErrorOr<void> generate_time_zone_data_header(Core::InputBufferedFile& file, TimeZoneData& time_zone_data)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -469,11 +485,11 @@ namespace TimeZone {
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
-static ErrorOr<void> generate_time_zone_data_implementation(Core::BufferedFile& file, TimeZoneData& time_zone_data)
+static ErrorOr<void> generate_time_zone_data_implementation(Core::InputBufferedFile& file, TimeZoneData& time_zone_data)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -494,13 +510,13 @@ static ErrorOr<void> generate_time_zone_data_implementation(Core::BufferedFile& 
 
 namespace TimeZone {
 
-static constexpr auto max_year_as_time = AK::Time::from_timestamp(NumericLimits<u16>::max(), 1, 1, 0, 0, 0, 0);
+static constexpr auto max_year_as_time = AK::UnixDateTime::from_unix_time_parts(NumericLimits<u16>::max(), 1, 1, 0, 0, 0, 0);
 
 struct DateTime {
-    AK::Time time_since_epoch() const
+    AK::UnixDateTime time_since_epoch() const
     {
         // FIXME: This implementation does not take last_weekday, after_weekday, or before_weekday into account.
-        return AK::Time::from_timestamp(year, month, day, hour, minute, second, 0);
+        return AK::UnixDateTime::from_unix_time_parts(year, month, day, hour, minute, second, 0);
     }
 
     u16 year { 0 };
@@ -530,17 +546,17 @@ struct TimeZoneOffset {
 };
 
 struct DaylightSavingsOffset {
-    AK::Time time_in_effect(AK::Time time) const
+    AK::UnixDateTime time_in_effect(AK::UnixDateTime time) const
     {
         auto in_effect = this->in_effect;
-        in_effect.year = seconds_since_epoch_to_year(time.to_seconds());
+        in_effect.year = seconds_since_epoch_to_year(time.seconds_since_epoch());
 
         return in_effect.time_since_epoch();
     }
 
     i64 offset { 0 };
-    AK::Time year_from {};
-    AK::Time year_to {};
+    AK::UnixDateTime year_from {};
+    AK::UnixDateTime year_to {};
     DateTime in_effect {};
 
     @string_index_type@ format { 0 };
@@ -552,14 +568,14 @@ struct DaylightSavingsOffset {
     auto append_offsets = [&](auto const& name, auto type, auto const& offsets) {
         generator.set("name", name);
         generator.set("type", type);
-        generator.set("size", DeprecatedString::number(offsets.size()));
+        generator.set("size", ByteString::number(offsets.size()));
 
         generator.append(R"~~~(
 static constexpr Array<@type@, @size@> @name@ { {
 )~~~");
 
         for (auto const& offset : offsets)
-            generator.append(DeprecatedString::formatted("    {},\n", offset));
+            generator.append(ByteString::formatted("    {},\n", offset));
 
         generator.append("} };\n");
     };
@@ -581,7 +597,7 @@ static constexpr Array<@type@, @size@> @name@ { {
             auto const& time_zones = time_zone_data.time_zone_regions.find(value)->value;
 
             generator.set("name", name);
-            generator.set("size", DeprecatedString::number(time_zones.size()));
+            generator.set("size", ByteString::number(time_zones.size()));
 
             generator.append(R"~~~(
 static constexpr Array<@string_index_type@, @size@> @name@ { {)~~~");
@@ -589,14 +605,14 @@ static constexpr Array<@string_index_type@, @size@> @name@ { {)~~~");
             bool first = true;
             for (auto const& time_zone : time_zones) {
                 generator.append(first ? " "sv : ", "sv);
-                generator.append(DeprecatedString::number(time_zone));
+                generator.append(ByteString::number(time_zone));
                 first = false;
             }
 
             generator.append(" } };");
         });
 
-    generator.set("size", DeprecatedString::number(time_zone_data.time_zone_names.size()));
+    generator.set("size", ByteString::number(time_zone_data.time_zone_names.size()));
     generator.append(R"~~~(
 static constexpr Array<Location, @size@> s_time_zone_locations { {
 )~~~");
@@ -604,16 +620,16 @@ static constexpr Array<Location, @size@> s_time_zone_locations { {
     for (auto const& time_zone : time_zone_data.time_zone_names) {
         auto location = time_zone_data.time_zone_coordinates.get(time_zone).value_or({});
 
-        generator.append(DeprecatedString::formatted("    {},\n", location));
+        generator.append(ByteString::formatted("    {},\n", location));
     }
     generator.append("} };\n");
 
     auto append_string_conversions = [&](StringView enum_title, StringView enum_snake, auto const& values, Vector<Alias> const& aliases = {}) -> ErrorOr<void> {
-        HashValueMap<DeprecatedString> hashes;
+        HashValueMap<ByteString> hashes;
         TRY(hashes.try_ensure_capacity(values.size()));
 
         auto hash = [](auto const& value) {
-            return CaseInsensitiveStringViewTraits::hash(value);
+            return CaseInsensitiveASCIIStringViewTraits::hash(value);
         };
 
         for (auto const& value : values)
@@ -635,7 +651,7 @@ static constexpr Array<Location, @size@> s_time_zone_locations { {
     TRY(append_string_conversions("Region"sv, "region"sv, time_zone_data.time_zone_region_names));
 
     generator.append(R"~~~(
-static Array<DaylightSavingsOffset const*, 2> find_dst_offsets(TimeZoneOffset const& time_zone_offset, AK::Time time)
+static Array<DaylightSavingsOffset const*, 2> find_dst_offsets(TimeZoneOffset const& time_zone_offset, AK::UnixDateTime time)
 {
     auto const& dst_rules = s_dst_offsets[time_zone_offset.dst_rule];
 
@@ -677,7 +693,7 @@ static Array<DaylightSavingsOffset const*, 2> find_dst_offsets(TimeZoneOffset co
     return { standard_offset, daylight_offset ? daylight_offset : standard_offset };
 }
 
-static Offset get_active_dst_offset(TimeZoneOffset const& time_zone_offset, AK::Time time)
+static Offset get_active_dst_offset(TimeZoneOffset const& time_zone_offset, AK::UnixDateTime time)
 {
     auto offsets = find_dst_offsets(time_zone_offset, time);
     if (offsets[0] == offsets[1])
@@ -697,7 +713,7 @@ static Offset get_active_dst_offset(TimeZoneOffset const& time_zone_offset, AK::
     return { offsets[1]->offset, InDST::Yes };
 }
 
-static TimeZoneOffset const& find_time_zone_offset(TimeZone time_zone, AK::Time time)
+static TimeZoneOffset const& find_time_zone_offset(TimeZone time_zone, AK::UnixDateTime time)
 {
     auto const& time_zone_offsets = s_time_zone_offsets[to_underlying(time_zone)];
 
@@ -713,7 +729,7 @@ static TimeZoneOffset const& find_time_zone_offset(TimeZone time_zone, AK::Time 
     return time_zone_offsets[index];
 }
 
-Optional<Offset> get_time_zone_offset(TimeZone time_zone, AK::Time time)
+Optional<Offset> get_time_zone_offset(TimeZone time_zone, AK::UnixDateTime time)
 {
     auto const& time_zone_offset = find_time_zone_offset(time_zone, time);
 
@@ -729,15 +745,15 @@ Optional<Offset> get_time_zone_offset(TimeZone time_zone, AK::Time time)
     return dst_offset;
 }
 
-Optional<Array<NamedOffset, 2>> get_named_time_zone_offsets(TimeZone time_zone, AK::Time time)
+Optional<Array<NamedOffset, 2>> get_named_time_zone_offsets(TimeZone time_zone, AK::UnixDateTime time)
 {
     auto const& time_zone_offset = find_time_zone_offset(time_zone, time);
     Array<NamedOffset, 2> named_offsets;
 
-    auto format_name = [](auto format, auto offset) -> DeprecatedString {
+    auto format_name = [](auto format, auto offset) -> ByteString {
         if (offset == 0)
             return decode_string(format).replace("{}"sv, ""sv, ReplaceMode::FirstOnly);
-        return DeprecatedString::formatted(decode_string(format), decode_string(offset));
+        return ByteString::formatted(decode_string(format), decode_string(offset));
     };
 
     auto set_named_offset = [&](auto& named_offset, auto dst_offset, auto in_dst, auto format, auto offset) {
@@ -794,14 +810,32 @@ Vector<StringView> time_zones_in_region(StringView region)
 }
 )~~~");
 
-    generate_available_values(generator, "all_time_zones"sv, time_zone_data.time_zone_names);
+    quick_sort(time_zone_data.time_zones_and_links, [](auto const& lhs, auto const& rhs) {
+        return lhs.name < rhs.name;
+    });
+
+    generator.set("time_zones_and_links_size", String::number(time_zone_data.time_zones_and_links.size()));
 
     generator.append(R"~~~(
+ReadonlySpan<TimeZoneIdentifier> all_time_zones()
+{
+    static constexpr Array<TimeZoneIdentifier, @time_zones_and_links_size@> time_zones_and_links { {)~~~");
+
+    bool first = true;
+    for (auto const& zone : time_zone_data.time_zones_and_links) {
+        generator.append(first ? " "sv : ", "sv);
+        generator.append(MUST(String::formatted("{}", zone)));
+        first = false;
+    }
+    generator.append(R"~~~( } };
+
+    return time_zones_and_links.span();
+}
 
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 

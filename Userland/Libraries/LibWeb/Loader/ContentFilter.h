@@ -6,8 +6,9 @@
 
 #pragma once
 
-#include <AK/URL.h>
+#include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibURL/URL.h>
 
 namespace Web {
 
@@ -15,15 +16,15 @@ class ContentFilter {
 public:
     static ContentFilter& the();
 
-    bool is_filtered(const AK::URL&) const;
-    void add_pattern(DeprecatedString const&);
+    bool is_filtered(const URL::URL&) const;
+    ErrorOr<void> set_patterns(ReadonlySpan<String>);
 
 private:
     ContentFilter();
     ~ContentFilter();
 
     struct Pattern {
-        DeprecatedString text;
+        String text;
     };
     Vector<Pattern> m_patterns;
 };

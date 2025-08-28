@@ -8,11 +8,11 @@
 #pragma once
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
-#include <LibC/elf.h>
 #include <LibELF/DynamicObject.h>
+#include <LibELF/ELFABI.h>
 #include <LibELF/Image.h>
 #include <bits/dlfcn_integration.h>
 #include <sys/mman.h>
@@ -35,17 +35,19 @@ private:
     size_t m_size;
 };
 
-enum class ShouldInitializeWeak {
+enum class ShouldCallIfuncResolver {
     Yes,
     No
 };
 
+extern "C" FlatPtr _fixup_plt_entry(DynamicObject* object, u32 relocation_offset);
+
 class DynamicLoader : public RefCounted<DynamicLoader> {
 public:
-    static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> try_create(int fd, DeprecatedString filepath);
+    static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> try_create(int fd, ByteString filepath);
     ~DynamicLoader();
 
-    DeprecatedString const& filepath() const { return m_filepath; }
+    ByteString const& filepath() const { return m_filepath; }
 
     bool is_valid() const { return m_valid; }
 
@@ -65,7 +67,7 @@ public:
     // Stage 4 of loading: initializers
     void load_stage_4();
 
-    void set_tls_offset(size_t offset) { m_tls_offset = offset; };
+    void set_tls_offset(size_t offset) { m_tls_offset = offset; }
     size_t tls_size_of_current_object() const { return m_tls_size_of_current_object; }
     size_t tls_alignment_of_current_object() const { return m_tls_alignment_of_current_object; }
     size_t tls_offset() const { return m_tls_offset; }
@@ -79,19 +81,28 @@ public:
     bool is_dynamic() const { return image().is_dynamic(); }
 
     static Optional<DynamicObject::SymbolLookupResult> lookup_symbol(const ELF::DynamicObject::Symbol&);
-    void copy_initial_tls_data_into(ByteBuffer& buffer) const;
+    void copy_initial_tls_data_into(Bytes buffer) const;
 
-    DynamicObject const& dynamic_object() const;
+    DynamicObject& dynamic_object() { return *m_dynamic_object; }
+    DynamicObject const& dynamic_object() const { return *m_dynamic_object; }
 
     bool is_fully_relocated() const { return m_fully_relocated; }
     bool is_fully_initialized() const { return m_fully_initialized; }
 
+    void add_dependency(NonnullRefPtr<DynamicLoader> dependency)
+    {
+        // Dependencies that aren't actually true will be removed in compute_topological_order.
+        m_true_dependencies.append(move(dependency));
+    }
+
+    void compute_topological_order(Vector<NonnullRefPtr<DynamicLoader>>& topological_order);
+
 private:
-    DynamicLoader(int fd, DeprecatedString filepath, void* file_data, size_t file_size);
+    DynamicLoader(int fd, ByteString filepath, void* file_data, size_t file_size);
 
     class ProgramHeaderRegion {
     public:
-        void set_program_header(const ElfW(Phdr) & header) { m_program_header = header; }
+        void set_program_header(Elf_Phdr const& header) { m_program_header = header; }
 
         // Information from ELF Program header
         u32 type() const { return m_program_header.p_type; }
@@ -110,7 +121,7 @@ private:
         bool is_relro() const { return type() == PT_GNU_RELRO; }
 
     private:
-        ElfW(Phdr) m_program_header; // Explicitly a copy of the PHDR in the image
+        Elf_Phdr m_program_header; // Explicitly a copy of the PHDR in the image
     };
 
     // Stage 1
@@ -120,7 +131,6 @@ private:
     void do_main_relocations();
 
     // Stage 3
-    void do_lazy_relocations();
     void setup_plt_trampoline();
 
     // Stage 4
@@ -128,16 +138,24 @@ private:
 
     bool validate();
 
+    friend FlatPtr _fixup_plt_entry(DynamicObject*, u32);
+
     enum class RelocationResult : uint8_t {
-        Failed = 0,
-        Success = 1,
-        ResolveLater = 2,
+        Failed,
+        Success,
+        CallIfuncResolver,
     };
-    RelocationResult do_relocation(DynamicObject::Relocation const&, ShouldInitializeWeak should_initialize_weak);
+    struct CachedLookupResult {
+        DynamicObject::Symbol symbol;
+        Optional<DynamicObject::SymbolLookupResult> result;
+    };
+    RelocationResult do_direct_relocation(DynamicObject::Relocation const&, Optional<CachedLookupResult>&, ShouldCallIfuncResolver);
+    // Will be called from _fixup_plt_entry, as part of the PLT trampoline
+    static RelocationResult do_plt_relocation(DynamicObject::Relocation const&, ShouldCallIfuncResolver);
     void do_relr_relocations();
     void find_tls_size_and_alignment();
 
-    DeprecatedString m_filepath;
+    ByteString m_filepath;
     size_t m_file_size { 0 };
     int m_image_fd { -1 };
     void* m_file_data { nullptr };
@@ -158,12 +176,19 @@ private:
     size_t m_tls_size_of_current_object { 0 };
     size_t m_tls_alignment_of_current_object { 0 };
 
-    Vector<DynamicObject::Relocation> m_unresolved_relocations;
-
-    mutable RefPtr<DynamicObject> m_cached_dynamic_object;
+    Vector<DynamicObject::Relocation> m_direct_ifunc_relocations;
+    Vector<DynamicObject::Relocation> m_plt_ifunc_relocations;
 
     bool m_fully_relocated { false };
     bool m_fully_initialized { false };
+
+    enum class TopologicalOrderingState {
+        NotVisited,
+        Visiting,
+        Visited,
+    } m_topological_ordering_state { TopologicalOrderingState::NotVisited };
+
+    Vector<NonnullRefPtr<DynamicLoader>> m_true_dependencies;
 };
 
 template<typename F>

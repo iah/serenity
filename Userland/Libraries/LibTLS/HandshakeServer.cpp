@@ -11,12 +11,12 @@
 
 #include <LibCore/Timer.h>
 #include <LibCrypto/ASN1/DER.h>
+#include <LibCrypto/Curves/Ed25519.h>
 #include <LibCrypto/Curves/EllipticCurve.h>
-#include <LibCrypto/Curves/SECP256r1.h>
+#include <LibCrypto/Curves/SECPxxxr1.h>
 #include <LibCrypto/Curves/X25519.h>
 #include <LibCrypto/Curves/X448.h>
 #include <LibCrypto/PK/Code/EMSA_PKCS1_V1_5.h>
-#include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
 
 namespace TLS {
@@ -46,7 +46,7 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
         dbgln("not enough data for version");
         return (i8)Error::NeedMoreData;
     }
-    auto version = static_cast<Version>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res))));
+    auto version = static_cast<ProtocolVersion>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res))));
 
     res += 2;
     if (!supports_version(version))
@@ -80,12 +80,12 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
     auto cipher = static_cast<CipherSuite>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res))));
     res += 2;
     if (!supports_cipher(cipher)) {
-        m_context.cipher = CipherSuite::Invalid;
+        m_context.cipher = CipherSuite::TLS_NULL_WITH_NULL_NULL;
         dbgln("No supported cipher could be agreed upon");
         return (i8)Error::NoCommonCipher;
     }
     m_context.cipher = cipher;
-    dbgln_if(TLS_DEBUG, "Cipher: {}", (u16)cipher);
+    dbgln_if(TLS_DEBUG, "Cipher: {}", enum_to_string(cipher));
 
     // Simplification: We only support handshake hash functions via HMAC
     m_context.handshake_hash.initialize(hmac_hash());
@@ -111,17 +111,17 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
     }
 
     while (buffer.size() - res >= 4) {
-        auto extension_type = (HandshakeExtension)AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res)));
+        auto extension_type = (ExtensionType)AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res)));
         res += 2;
         u16 extension_length = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res)));
         res += 2;
 
-        dbgln_if(TLS_DEBUG, "Extension {} with length {}", (u16)extension_type, extension_length);
+        dbgln_if(TLS_DEBUG, "Extension {} with length {}", enum_to_string(extension_type), extension_length);
 
         if (buffer.size() - res < extension_length)
             return (i8)Error::NeedMoreData;
 
-        if (extension_type == HandshakeExtension::ServerName) {
+        if (extension_type == ExtensionType::SERVER_NAME) {
             // RFC6066 section 3: SNI extension_data can be empty in the server hello
             if (extension_length > 0) {
                 // ServerNameList total size
@@ -136,7 +136,7 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                 auto sni_name_type = (NameType)(*(u8 const*)buffer.offset_pointer(res++));
                 auto sni_name_length = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res += 2)));
 
-                if (sni_name_type != NameType::HostName)
+                if (sni_name_type != NameType::HOST_NAME)
                     return (i8)Error::NotUnderstood;
 
                 if (sizeof(sni_name_type) + sizeof(sni_name_length) + sni_name_length != sni_name_list_bytes)
@@ -145,11 +145,11 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                 // Read out the host_name
                 if (buffer.size() - res < sni_name_length)
                     return (i8)Error::NeedMoreData;
-                m_context.extensions.SNI = DeprecatedString { (char const*)buffer.offset_pointer(res), sni_name_length };
+                m_context.extensions.SNI = ByteString { (char const*)buffer.offset_pointer(res), sni_name_length };
                 res += sni_name_length;
                 dbgln("SNI host_name: {}", m_context.extensions.SNI);
             }
-        } else if (extension_type == HandshakeExtension::ApplicationLayerProtocolNegotiation && m_context.alpn.size()) {
+        } else if (extension_type == ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION && m_context.alpn.size()) {
             if (buffer.size() - res > 2) {
                 auto alpn_length = AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(res)));
                 if (alpn_length && alpn_length <= extension_length - 2) {
@@ -159,7 +159,7 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                         u8 alpn_size = alpn[alpn_position++];
                         if (alpn_size + alpn_position >= extension_length)
                             break;
-                        DeprecatedString alpn_str { (char const*)alpn + alpn_position, alpn_length };
+                        ByteString alpn_str { (char const*)alpn + alpn_position, alpn_length };
                         if (alpn_size && m_context.alpn.contains_slow(alpn_str)) {
                             m_context.negotiated_alpn = alpn_str;
                             dbgln("negotiated alpn: {}", alpn_str);
@@ -172,12 +172,12 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
                 }
             }
             res += extension_length;
-        } else if (extension_type == HandshakeExtension::SignatureAlgorithms) {
+        } else if (extension_type == ExtensionType::SIGNATURE_ALGORITHMS) {
             dbgln("supported signatures: ");
             print_buffer(buffer.slice(res, extension_length));
             res += extension_length;
             // FIXME: what are we supposed to do here?
-        } else if (extension_type == HandshakeExtension::ECPointFormats) {
+        } else if (extension_type == ExtensionType::EC_POINT_FORMATS) {
             // RFC8422 section 5.2: A server that selects an ECC cipher suite in response to a ClientHello message
             // including a Supported Point Formats Extension appends this extension (along with others) to its
             // ServerHello message, enumerating the point formats it can parse. The Supported Point Formats Extension,
@@ -187,8 +187,11 @@ ssize_t TLSv12::handle_server_hello(ReadonlyBytes buffer, WritePacketStage& writ
             // uncompressed points. Therefore, this extension can be safely ignored as it should always inform us
             // that the server supports uncompressed points.
             res += extension_length;
+        } else if (extension_type == ExtensionType::EXTENDED_MASTER_SECRET) {
+            m_context.extensions.extended_master_secret = true;
+            res += extension_length;
         } else {
-            dbgln("Encountered unknown extension {} with length {}", (u16)extension_type, extension_length);
+            dbgln("Encountered unknown extension {} with length {}", enum_to_string(extension_type), extension_length);
             res += extension_length;
         }
     }
@@ -237,9 +240,10 @@ ssize_t TLSv12::handle_server_key_exchange(ReadonlyBytes buffer)
         break;
     case KeyExchangeAlgorithm::ECDHE_RSA:
         return handle_ecdhe_rsa_server_key_exchange(buffer);
+    case KeyExchangeAlgorithm::ECDHE_ECDSA:
+        return handle_ecdhe_ecdsa_server_key_exchange(buffer);
     case KeyExchangeAlgorithm::ECDH_ECDSA:
     case KeyExchangeAlgorithm::ECDH_RSA:
-    case KeyExchangeAlgorithm::ECDHE_ECDSA:
     case KeyExchangeAlgorithm::ECDH_anon:
         dbgln("Server key exchange for ECDHE algorithms is not implemented");
         TODO();
@@ -292,34 +296,37 @@ ssize_t TLSv12::handle_dhe_rsa_server_key_exchange(ReadonlyBytes buffer)
     return verify_rsa_server_key_exchange(server_key_info, signature);
 }
 
-ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
+ssize_t TLSv12::handle_ecdhe_server_key_exchange(ReadonlyBytes buffer, u8& server_public_key_length)
 {
     if (buffer.size() < 7)
         return (i8)Error::NeedMoreData;
 
     auto curve_type = buffer[3];
-    if (curve_type != (u8)ECCurveType::NamedCurve)
+    if (curve_type != (u8)ECCurveType::NAMED_CURVE)
         return (i8)Error::NotUnderstood;
 
-    auto curve = static_cast<NamedCurve>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(4))));
+    auto curve = static_cast<SupportedGroup>(AK::convert_between_host_and_network_endian(ByteReader::load16(buffer.offset_pointer(4))));
     if (!m_context.options.elliptic_curves.contains_slow(curve))
         return (i8)Error::NotUnderstood;
 
-    switch ((NamedCurve)curve) {
-    case NamedCurve::x25519:
+    switch ((SupportedGroup)curve) {
+    case SupportedGroup::X25519:
         m_context.server_key_exchange_curve = make<Crypto::Curves::X25519>();
         break;
-    case NamedCurve::x448:
+    case SupportedGroup::X448:
         m_context.server_key_exchange_curve = make<Crypto::Curves::X448>();
         break;
-    case NamedCurve::secp256r1:
+    case SupportedGroup::SECP256R1:
         m_context.server_key_exchange_curve = make<Crypto::Curves::SECP256r1>();
+        break;
+    case SupportedGroup::SECP384R1:
+        m_context.server_key_exchange_curve = make<Crypto::Curves::SECP384r1>();
         break;
     default:
         return (i8)Error::NotUnderstood;
     }
 
-    auto server_public_key_length = buffer[6];
+    server_public_key_length = buffer[6];
     if (server_public_key_length != m_context.server_key_exchange_curve->key_size())
         return (i8)Error::NotUnderstood;
 
@@ -338,6 +345,16 @@ ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
         dbgln("ECDHE server public key: {:hex-dump}", server_public_key);
     }
 
+    return 0;
+}
+
+ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
+{
+    u8 server_public_key_length;
+    if (auto result = handle_ecdhe_server_key_exchange(buffer, server_public_key_length)) {
+        return result;
+    }
+
     auto server_key_info = buffer.slice(3, 4 + server_public_key_length);
     auto signature = buffer.slice(7 + server_public_key_length);
     return verify_rsa_server_key_exchange(server_key_info, signature);
@@ -346,9 +363,9 @@ ssize_t TLSv12::handle_ecdhe_rsa_server_key_exchange(ReadonlyBytes buffer)
 ssize_t TLSv12::verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer)
 {
     auto signature_hash = signature_buffer[0];
-    auto signature_algorithm = signature_buffer[1];
-    if (signature_algorithm != (u8)SignatureAlgorithm::RSA) {
-        dbgln("verify_rsa_server_key_exchange failed: Signature algorithm is not RSA, instead {}", signature_algorithm);
+    auto signature_algorithm = static_cast<SignatureAlgorithm>(signature_buffer[1]);
+    if (signature_algorithm != SignatureAlgorithm::RSA) {
+        dbgln("verify_rsa_server_key_exchange failed: Signature algorithm is not RSA, instead {}", enum_to_string(signature_algorithm));
         return (i8)Error::NotUnderstood;
     }
 
@@ -362,7 +379,7 @@ ssize_t TLSv12::verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buf
     // RFC5246 section 7.4.2: The sender's certificate MUST come first in the list.
     auto certificate_public_key = m_context.certificates.first().public_key;
     Crypto::PK::RSAPrivateKey dummy_private_key;
-    auto rsa = Crypto::PK::RSA(certificate_public_key, dummy_private_key);
+    auto rsa = Crypto::PK::RSA(certificate_public_key.rsa, dummy_private_key);
 
     auto signature_verify_buffer_result = ByteBuffer::create_uninitialized(signature_length);
     if (signature_verify_buffer_result.is_error()) {
@@ -412,4 +429,102 @@ ssize_t TLSv12::verify_rsa_server_key_exchange(ReadonlyBytes server_key_info_buf
 
     return 0;
 }
+
+ssize_t TLSv12::handle_ecdhe_ecdsa_server_key_exchange(ReadonlyBytes buffer)
+{
+    u8 server_public_key_length;
+    if (auto result = handle_ecdhe_server_key_exchange(buffer, server_public_key_length)) {
+        return result;
+    }
+
+    auto server_key_info = buffer.slice(3, 4 + server_public_key_length);
+    auto signature = buffer.slice(7 + server_public_key_length);
+    return verify_ecdsa_server_key_exchange(server_key_info, signature);
+}
+
+ssize_t TLSv12::verify_ecdsa_server_key_exchange(ReadonlyBytes server_key_info_buffer, ReadonlyBytes signature_buffer)
+{
+    auto signature_hash = signature_buffer[0];
+    auto signature_algorithm = signature_buffer[1];
+    if (signature_algorithm != (u8)SignatureAlgorithm::ECDSA) {
+        dbgln("verify_ecdsa_server_key_exchange failed: Signature algorithm is not ECDSA, instead {}", signature_algorithm);
+        return (i8)Error::NotUnderstood;
+    }
+
+    auto signature_length = AK::convert_between_host_and_network_endian(ByteReader::load16(signature_buffer.offset_pointer(2)));
+    auto signature = signature_buffer.slice(4, signature_length);
+
+    if (m_context.certificates.is_empty()) {
+        dbgln("verify_ecdsa_server_key_exchange failed: Attempting to verify signature without certificates");
+        return (i8)Error::NotSafe;
+    }
+    ReadonlyBytes server_point = m_context.certificates.first().public_key.raw_key;
+
+    auto message_result = ByteBuffer::create_uninitialized(64 + server_key_info_buffer.size());
+    if (message_result.is_error()) {
+        dbgln("verify_ecdsa_server_key_exchange failed: Not enough memory");
+        return (i8)Error::OutOfMemory;
+    }
+    auto message = message_result.release_value();
+    message.overwrite(0, m_context.local_random, 32);
+    message.overwrite(32, m_context.remote_random, 32);
+    message.overwrite(64, server_key_info_buffer.data(), server_key_info_buffer.size());
+
+    Crypto::Hash::HashKind hash_kind;
+    switch ((HashAlgorithm)signature_hash) {
+    case HashAlgorithm::SHA256:
+        hash_kind = Crypto::Hash::HashKind::SHA256;
+        break;
+    case HashAlgorithm::SHA384:
+        hash_kind = Crypto::Hash::HashKind::SHA384;
+        break;
+    case HashAlgorithm::SHA512:
+        hash_kind = Crypto::Hash::HashKind::SHA512;
+        break;
+    default:
+        dbgln("verify_ecdsa_server_key_exchange failed: Hash algorithm is not SHA256/384/512, instead {}", signature_hash);
+        return (i8)Error::NotUnderstood;
+    }
+
+    ErrorOr<bool> res = AK::Error::from_errno(ENOTSUP);
+    auto& public_key = m_context.certificates.first().public_key;
+    switch (public_key.algorithm.ec_parameters) {
+    case SupportedGroup::SECP256R1: {
+        Crypto::Hash::Manager manager(hash_kind);
+        manager.update(message);
+        auto digest = manager.digest();
+
+        Crypto::Curves::SECP256r1 curve;
+        res = curve.verify(digest.bytes(), server_point, signature);
+        break;
+    }
+    case SupportedGroup::SECP384R1: {
+        Crypto::Hash::Manager manager(hash_kind);
+        manager.update(message);
+        auto digest = manager.digest();
+
+        Crypto::Curves::SECP384r1 curve;
+        res = curve.verify(digest.bytes(), server_point, signature);
+        break;
+    }
+    default: {
+        dbgln("verify_ecdsa_server_key_exchange failed: Server certificate public key algorithm is not supported: {}", to_underlying(public_key.algorithm.ec_parameters));
+        break;
+    }
+    }
+
+    if (res.is_error()) {
+        dbgln("verify_ecdsa_server_key_exchange failed: {}", res.error());
+        return (i8)Error::NotUnderstood;
+    }
+
+    bool verification_ok = res.release_value();
+    if (!verification_ok) {
+        dbgln("verify_ecdsa_server_key_exchange failed: Verification of signature failed");
+        return (i8)Error::NotSafe;
+    }
+
+    return 0;
+}
+
 }

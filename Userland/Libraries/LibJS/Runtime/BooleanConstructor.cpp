@@ -9,25 +9,26 @@
 #include <LibJS/Runtime/BooleanConstructor.h>
 #include <LibJS/Runtime/BooleanObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(BooleanConstructor);
+
 BooleanConstructor::BooleanConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Boolean.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Boolean.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> BooleanConstructor::initialize(Realm& realm)
+void BooleanConstructor::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     // 20.3.2.1 Boolean.prototype, https://tc39.es/ecma262/#sec-boolean.prototype
     define_direct_property(vm.names.prototype, realm.intrinsics().boolean_prototype(), 0);
 
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-
-    return {};
 }
 
 // 20.3.1.1 Boolean ( value ), https://tc39.es/ecma262/#sec-boolean-constructor-boolean-value

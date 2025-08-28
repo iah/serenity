@@ -7,8 +7,10 @@
 #include <AK/ByteReader.h>
 #include <AK/Error.h>
 #include <AK/HashTable.h>
+#include <AK/NeverDestroyed.h>
+#include <AK/Singleton.h>
 #if ARCH(X86_64)
-#    include <Kernel/Arch/x86_64/PCI/Controller/HostBridge.h>
+#    include <Kernel/Arch/x86_64/PCI/Controller/PIIX4HostBridge.h>
 #endif
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Controller/MemoryBackedHostBridge.h>
@@ -24,29 +26,65 @@ namespace Kernel::PCI {
 
 #define PCI_MMIO_CONFIG_SPACE_SIZE 4096
 
-static Access* s_access;
+static Singleton<Access> s_the;
+static NeverDestroyed<Vector<NonnullOwnPtr<Driver>>> s_available_drivers;
 
 Access& Access::the()
 {
-    if (s_access == nullptr) {
-        VERIFY_NOT_REACHED(); // We failed to initialize the PCI subsystem, so stop here!
-    }
-    return *s_access;
+    VERIFY(!is_disabled());
+    return *s_the;
 }
 
 bool Access::is_initialized()
 {
-    return (s_access != nullptr);
+    return s_the.is_initialized();
 }
 
 bool Access::is_hardware_disabled()
 {
-    return g_pci_access_io_probe_failed;
+    return g_pci_access_io_probe_failed.was_set();
 }
 
 bool Access::is_disabled()
 {
-    return g_pci_access_is_disabled_from_commandline || g_pci_access_io_probe_failed;
+    return g_pci_access_is_disabled_from_commandline.was_set() || g_pci_access_io_probe_failed.was_set();
+}
+
+ErrorOr<void> Access::register_driver(NonnullOwnPtr<Driver>&& driver)
+{
+    TRY(s_available_drivers->try_append(move(driver)));
+    return {};
+}
+
+ErrorOr<void> Access::probe_drivers()
+{
+    Vector<NonnullRefPtr<DeviceIdentifier>> device_identifiers;
+    {
+        SpinlockLocker locker(m_access_lock);
+        TRY(device_identifiers.try_extend(m_device_identifiers));
+    }
+
+    for (auto& device_identifier : device_identifiers) {
+        device_identifier->driver({}).with([device_identifier](Driver const*& current_driver) {
+            if (current_driver != nullptr)
+                return;
+
+            for (auto const& driver : *s_available_drivers) {
+                auto probe_result = driver->probe(device_identifier);
+                if (probe_result.is_error()) {
+                    if (probe_result.error().code() != ENOTSUP)
+                        dmesgln("PCI: Failed to probe {} on {}: {}", driver->name(), device_identifier->address(), probe_result.error());
+                    continue;
+                }
+
+                current_driver = driver.ptr();
+                dbgln("PCI: Attached device {} to driver {}", device_identifier->address(), driver->name());
+                break;
+            }
+        });
+    }
+
+    return {};
 }
 
 UNMAP_AFTER_INIT bool Access::find_and_register_pci_host_bridges_from_acpi_mcfg_table(PhysicalAddress mcfg_table)
@@ -79,7 +117,7 @@ UNMAP_AFTER_INIT bool Access::find_and_register_pci_host_bridges_from_acpi_mcfg_
         dbgln("Failed to round up length of {} to pages", length);
         return false;
     }
-    auto mcfg_region_or_error = MM.allocate_kernel_region(mcfg_table.page_base(), region_size_or_error.value(), "PCI Parsing MCFG"sv, Memory::Region::Access::ReadWrite);
+    auto mcfg_region_or_error = MM.allocate_mmio_kernel_region(mcfg_table.page_base(), region_size_or_error.value(), "PCI Parsing MCFG"sv, Memory::Region::Access::ReadWrite);
     if (mcfg_region_or_error.is_error())
         return false;
     auto& mcfg = *(ACPI::Structures::MCFG*)mcfg_region_or_error.value()->vaddr().offset(mcfg_table.offset_in_page()).as_ptr();
@@ -101,10 +139,10 @@ UNMAP_AFTER_INIT bool Access::find_and_register_pci_host_bridges_from_acpi_mcfg_
 UNMAP_AFTER_INIT bool Access::initialize_for_multiple_pci_domains(PhysicalAddress mcfg_table)
 {
     VERIFY(!Access::is_initialized());
-    auto* access = new Access();
-    if (!access->find_and_register_pci_host_bridges_from_acpi_mcfg_table(mcfg_table))
+    auto& access = Access::the();
+    if (!access.find_and_register_pci_host_bridges_from_acpi_mcfg_table(mcfg_table))
         return false;
-    access->rescan_hardware();
+    access.rescan_hardware();
     dbgln_if(PCI_DEBUG, "PCI: access for multiple PCI domain initialised.");
     return true;
 }
@@ -113,10 +151,10 @@ UNMAP_AFTER_INIT bool Access::initialize_for_multiple_pci_domains(PhysicalAddres
 UNMAP_AFTER_INIT bool Access::initialize_for_one_pci_domain()
 {
     VERIFY(!Access::is_initialized());
-    auto* access = new Access();
-    auto host_bridge = HostBridge::must_create_with_io_access();
-    access->add_host_controller(move(host_bridge));
-    access->rescan_hardware();
+    auto& access = Access::the();
+    auto host_bridge = PIIX4HostBridge::must_create_with_io_access();
+    access.add_host_controller(move(host_bridge));
+    access.rescan_hardware();
     dbgln_if(PCI_DEBUG, "PCI: access for one PCI domain initialised.");
     return true;
 }
@@ -132,15 +170,13 @@ ErrorOr<void> Access::add_host_controller_and_scan_for_devices(NonnullOwnPtr<Hos
     // Note: We need to register the new controller as soon as possible, and
     // definitely before enumerating devices behind that.
     m_host_controllers.set(domain_number, move(controller));
-    ErrorOr<void> error_or_void {};
-    m_host_controllers.get(domain_number).value()->enumerate_attached_devices([&](EnumerableDeviceIdentifier const& device_identifier) -> IterationDecision {
+    m_host_controllers.get(domain_number).value()->enumerate_attached_devices([&](EnumerableDeviceIdentifier const& device_identifier) {
         auto device_identifier_or_error = DeviceIdentifier::from_enumerable_identifier(device_identifier);
         if (device_identifier_or_error.is_error()) {
-            error_or_void = device_identifier_or_error.release_error();
-            return IterationDecision::Break;
+            dmesgln("Failed during PCI Access::rescan_hardware due to {}", device_identifier_or_error.error());
+            VERIFY_NOT_REACHED();
         }
         m_device_identifiers.append(device_identifier_or_error.release_value());
-        return IterationDecision::Continue;
     });
     return {};
 }
@@ -151,9 +187,13 @@ UNMAP_AFTER_INIT void Access::add_host_controller(NonnullOwnPtr<HostController> 
     m_host_controllers.set(domain_number, move(controller));
 }
 
-UNMAP_AFTER_INIT Access::Access()
+UNMAP_AFTER_INIT Access::Access() = default;
+
+UNMAP_AFTER_INIT void Access::configure_pci_space(HostController& host_controller, PCIConfiguration& config)
 {
-    s_access = this;
+    SpinlockLocker locker(m_access_lock);
+    SpinlockLocker scan_locker(m_scan_lock);
+    host_controller.configure_attached_devices(config);
 }
 
 UNMAP_AFTER_INIT void Access::rescan_hardware()
@@ -161,21 +201,15 @@ UNMAP_AFTER_INIT void Access::rescan_hardware()
     SpinlockLocker locker(m_access_lock);
     SpinlockLocker scan_locker(m_scan_lock);
     VERIFY(m_device_identifiers.is_empty());
-    ErrorOr<void> error_or_void {};
-    for (auto it = m_host_controllers.begin(); it != m_host_controllers.end(); ++it) {
-        (*it).value->enumerate_attached_devices([this, &error_or_void](EnumerableDeviceIdentifier device_identifier) -> IterationDecision {
+    for (auto& [_, host_controller] : m_host_controllers) {
+        host_controller->enumerate_attached_devices([this](EnumerableDeviceIdentifier const& device_identifier) {
             auto device_identifier_or_error = DeviceIdentifier::from_enumerable_identifier(device_identifier);
             if (device_identifier_or_error.is_error()) {
-                error_or_void = device_identifier_or_error.release_error();
-                return IterationDecision::Break;
+                dmesgln("Failed during PCI Access::rescan_hardware due to {}", device_identifier_or_error.error());
+                VERIFY_NOT_REACHED();
             }
             m_device_identifiers.append(device_identifier_or_error.release_value());
-            return IterationDecision::Continue;
         });
-    }
-    if (error_or_void.is_error()) {
-        dmesgln("Failed during PCI Access::rescan_hardware due to {}", error_or_void.error());
-        VERIFY_NOT_REACHED();
     }
 }
 
@@ -186,7 +220,6 @@ ErrorOr<void> Access::fast_enumerate(Function<void(DeviceIdentifier const&)>& ca
     Vector<NonnullRefPtr<DeviceIdentifier>> device_identifiers;
     {
         SpinlockLocker locker(m_access_lock);
-        VERIFY(!m_device_identifiers.is_empty());
         TRY(device_identifiers.try_extend(m_device_identifiers));
     }
     for (auto const& device_identifier : device_identifiers) {
@@ -268,6 +301,13 @@ u32 Access::read32_field(DeviceIdentifier const& identifier, u32 field)
     VERIFY(m_host_controllers.contains(identifier.address().domain()));
     auto& controller = *m_host_controllers.get(identifier.address().domain()).value();
     return controller.read32_field(identifier.address().bus(), identifier.address().device(), identifier.address().function(), field);
+}
+
+ErrorOr<PhysicalAddress> Access::translate_bus_address_to_host_address(DeviceIdentifier const& identifier, BARSpaceType address_space_type, u64 bus_address)
+{
+    VERIFY(m_host_controllers.contains(identifier.address().domain()));
+    auto& controller = *m_host_controllers.get(identifier.address().domain()).value();
+    return controller.translate_bus_address_to_host_address(address_space_type, bus_address);
 }
 
 }

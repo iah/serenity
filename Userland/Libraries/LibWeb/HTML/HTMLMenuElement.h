@@ -13,6 +13,7 @@ namespace Web::HTML {
 
 class HTMLMenuElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLMenuElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLMenuElement);
 
 public:
     virtual ~HTMLMenuElement() override;
@@ -23,7 +24,7 @@ public:
 private:
     HTMLMenuElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

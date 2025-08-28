@@ -10,7 +10,8 @@
 
 extern "C" int LLVMFuzzerTestOneInput(uint8_t const* data, size_t size)
 {
-    (void)TLS::Certificate::parse_asn1({ data, size });
+    AK::set_debug_enabled(false);
+    (void)TLS::Certificate::parse_certificate({ data, size });
 
     return 0;
 }

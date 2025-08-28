@@ -7,8 +7,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
-#include <AK/DeprecatedString.h>
+#include <AK/FlyString.h>
 #include <AK/Function.h>
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
@@ -21,6 +20,7 @@ class HTMLTokenizer;
 
 class HTMLToken {
     AK_MAKE_NONCOPYABLE(HTMLToken);
+    AK_MAKE_DEFAULT_MOVABLE(HTMLToken);
 
 public:
     enum class Type : u8 {
@@ -36,13 +36,14 @@ public:
     struct Position {
         size_t line { 0 };
         size_t column { 0 };
+        size_t byte_offset { 0 };
     };
 
     struct Attribute {
-        DeprecatedString prefix;
-        DeprecatedString local_name { "" };
-        DeprecatedString namespace_;
-        DeprecatedString value { "" };
+        Optional<FlyString> prefix;
+        FlyString local_name;
+        Optional<FlyString> namespace_;
+        String value;
         Position name_start_position;
         Position value_start_position;
         Position name_end_position;
@@ -51,9 +52,9 @@ public:
 
     struct DoctypeData {
         // NOTE: "Missing" is a distinct state from the empty string.
-        DeprecatedString name;
-        DeprecatedString public_identifier;
-        DeprecatedString system_identifier;
+        String name;
+        String public_identifier;
+        String system_identifier;
         bool missing_name { true };
         bool missing_public_identifier { true };
         bool missing_system_identifier { true };
@@ -67,7 +68,7 @@ public:
         return token;
     }
 
-    static HTMLToken make_start_tag(DeprecatedFlyString const& tag_name)
+    static HTMLToken make_start_tag(FlyString const& tag_name)
     {
         HTMLToken token { Type::StartTag };
         token.set_tag_name(tag_name);
@@ -94,9 +95,6 @@ public:
             break;
         }
     }
-
-    HTMLToken(HTMLToken&&) = default;
-    HTMLToken& operator=(HTMLToken&&) = default;
 
     bool is_doctype() const { return m_type == Type::DOCTYPE; }
     bool is_start_tag() const { return m_type == Type::StartTag; }
@@ -134,25 +132,25 @@ public:
         m_data.get<u32>() = code_point;
     }
 
-    DeprecatedFlyString const& comment() const
+    String const& comment() const
     {
         VERIFY(is_comment());
-        return m_string_data;
+        return m_comment_data;
     }
 
-    void set_comment(DeprecatedString comment)
+    void set_comment(String comment)
     {
         VERIFY(is_comment());
-        m_string_data = move(comment);
+        m_comment_data = move(comment);
     }
 
-    DeprecatedFlyString const& tag_name() const
+    FlyString const& tag_name() const
     {
         VERIFY(is_start_tag() || is_end_tag());
         return m_string_data;
     }
 
-    void set_tag_name(DeprecatedString name)
+    void set_tag_name(FlyString name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         m_string_data = move(name);
@@ -247,33 +245,40 @@ public:
         }
     }
 
-    StringView attribute(DeprecatedFlyString const& attribute_name)
+    Optional<String> attribute(FlyString const& attribute_name) const
+    {
+        if (auto result = raw_attribute(attribute_name); result.has_value())
+            return result->value;
+        return {};
+    }
+
+    Optional<Attribute const&> raw_attribute(FlyString const& attribute_name) const
     {
         VERIFY(is_start_tag() || is_end_tag());
 
         auto* ptr = tag_attributes();
         if (!ptr)
             return {};
-        for (auto& attribute : *ptr) {
+        for (auto const& attribute : *ptr) {
             if (attribute_name == attribute.local_name)
-                return attribute.value;
+                return attribute;
         }
         return {};
     }
 
-    bool has_attribute(DeprecatedFlyString const& attribute_name)
+    bool has_attribute(FlyString const& attribute_name) const
     {
-        return !attribute(attribute_name).is_null();
+        return attribute(attribute_name).has_value();
     }
 
-    void adjust_tag_name(DeprecatedFlyString const& old_name, DeprecatedFlyString const& new_name)
+    void adjust_tag_name(FlyString const& old_name, FlyString const& new_name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         if (old_name == tag_name())
             set_tag_name(new_name);
     }
 
-    void adjust_attribute_name(DeprecatedFlyString const& old_name, DeprecatedFlyString const& new_name)
+    void adjust_attribute_name(FlyString const& old_name, FlyString const& new_name)
     {
         VERIFY(is_start_tag() || is_end_tag());
         for_each_attribute([&](Attribute& attribute) {
@@ -283,7 +288,7 @@ public:
         });
     }
 
-    void adjust_foreign_attribute(DeprecatedFlyString const& old_name, DeprecatedFlyString const& prefix, DeprecatedFlyString const& local_name, DeprecatedFlyString const& namespace_)
+    void adjust_foreign_attribute(FlyString const& old_name, Optional<FlyString> const& prefix, FlyString const& local_name, Optional<FlyString> const& namespace_)
     {
         VERIFY(is_start_tag() || is_end_tag());
         for_each_attribute([&](Attribute& attribute) {
@@ -315,13 +320,15 @@ public:
 
     Type type() const { return m_type; }
 
-    DeprecatedString to_deprecated_string() const;
+    String to_string() const;
 
     Position const& start_position() const { return m_start_position; }
     Position const& end_position() const { return m_end_position; }
 
     void set_start_position(Badge<HTMLTokenizer>, Position start_position) { m_start_position = start_position; }
     void set_end_position(Badge<HTMLTokenizer>, Position end_position) { m_end_position = end_position; }
+
+    void normalize_attributes();
 
 private:
     Vector<Attribute> const* tag_attributes() const
@@ -349,8 +356,11 @@ private:
     bool m_tag_self_closing { false };
     bool m_tag_self_closing_acknowledged { false };
 
-    // Type::Comment (comment data), Type::StartTag and Type::EndTag (tag name)
-    DeprecatedFlyString m_string_data;
+    // Type::StartTag and Type::EndTag (tag name)
+    FlyString m_string_data;
+
+    // Type::Comment (comment data)
+    String m_comment_data;
 
     Variant<Empty, u32, OwnPtr<DoctypeData>, OwnPtr<Vector<Attribute>>> m_data {};
 

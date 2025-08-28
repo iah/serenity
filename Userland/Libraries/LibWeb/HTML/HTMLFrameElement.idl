@@ -4,10 +4,18 @@
 [Exposed=Window]
 interface HTMLFrameElement : HTMLElement {
 
-    [Reflect] attribute DOMString name;
-    [Reflect] attribute DOMString scrolling;
-    [Reflect] attribute DOMString src;
-    [Reflect=frameborder] attribute DOMString frameBorder;
-    [Reflect=longdesc] attribute DOMString longDesc;
+    [HTMLConstructor] constructor();
+
+    [CEReactions, Reflect] attribute DOMString name;
+    [CEReactions, Reflect] attribute DOMString scrolling;
+    [CEReactions, Reflect, URL] attribute USVString src;
+    [CEReactions, Reflect=frameborder] attribute DOMString frameBorder;
+    [CEReactions, Reflect=longdesc, URL] attribute USVString longDesc;
+    [CEReactions, Reflect=noresize] attribute boolean noResize;
+    [FIXME] readonly attribute Document? contentDocument;
+    [FIXME] readonly attribute WindowProxy? contentWindow;
+
+    [CEReactions, LegacyNullToEmptyString, Reflect=marginheight] attribute DOMString marginHeight;
+    [CEReactions, LegacyNullToEmptyString, Reflect=marginwidth] attribute DOMString marginWidth;
 
 };

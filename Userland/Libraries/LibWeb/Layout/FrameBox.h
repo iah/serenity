@@ -13,6 +13,7 @@ namespace Web::Layout {
 
 class FrameBox final : public ReplacedBox {
     JS_CELL(FrameBox, ReplacedBox);
+    JS_DECLARE_ALLOCATOR(FrameBox);
 
 public:
     FrameBox(DOM::Document&, DOM::Element&, NonnullRefPtr<CSS::StyleProperties>);
@@ -26,7 +27,7 @@ public:
     virtual JS::GCPtr<Painting::Paintable> create_paintable() const override;
 
 private:
-    virtual void did_set_rect() override;
+    virtual void did_set_content_size() override;
 };
 
 }

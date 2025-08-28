@@ -23,7 +23,7 @@ namespace GUI {
 Button::Button(String text)
     : AbstractButton(move(text))
 {
-    set_min_size({ 40, SpecialDimension::Shrink });
+    set_min_size({ SpecialDimension::Shrink });
     set_preferred_size({ SpecialDimension::OpportunisticGrow, SpecialDimension::Shrink });
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
 
@@ -105,7 +105,7 @@ void Button::paint_event(PaintEvent& event)
         content_rect.set_width(content_rect.width() - m_icon->width() - icon_spacing());
     }
 
-    Gfx::IntRect text_rect { 0, 0, static_cast<int>(ceilf(font.width(text()))), font.pixel_size_rounded_up() };
+    Gfx::IntRect text_rect { 0, 0, font.width_rounded_up(text()), font.pixel_size_rounded_up() };
     if (text_rect.width() > content_rect.width())
         text_rect.set_width(content_rect.width());
     text_rect.align_within(content_rect, text_alignment());
@@ -186,7 +186,7 @@ void Button::set_icon(RefPtr<Gfx::Bitmap const> icon)
     update();
 }
 
-void Button::set_icon_from_path(DeprecatedString const& path)
+void Button::set_icon_from_path(ByteString const& path)
 {
     auto maybe_bitmap = Gfx::Bitmap::load_from_file(path);
     if (maybe_bitmap.is_error()) {
@@ -222,7 +222,7 @@ void Button::set_menu(RefPtr<GUI::Menu> menu)
 void Button::mousedown_event(MouseEvent& event)
 {
     if (m_menu) {
-        m_menu->popup(screen_relative_rect().bottom_left(), {}, rect());
+        m_menu->popup(screen_relative_rect().bottom_left().moved_up(1), {}, rect());
         update();
         return;
     }
@@ -275,24 +275,28 @@ void Button::timer_event(Core::TimerEvent&)
 
 Optional<UISize> Button::calculated_min_size() const
 {
-    int width = 0;
-    int height = 0;
-
+    int width = 22;
+    int height = 22;
+    int constexpr padding = 6;
     if (!text().is_empty()) {
-        auto& font = this->font();
-        width = static_cast<int>(ceilf(font.width(text()))) + 2;
-        height = font.pixel_size_rounded_up() + 4; // FIXME: Use actual maximum total height
+        width = max(width, font().width_rounded_up("..."sv) + padding);
+        height = max(height, font().pixel_size_rounded_up() + padding);
+    }
+    if (icon()) {
+        int icon_width = icon()->width() + icon_spacing();
+        width = text().is_empty() ? max(width, icon_width) : width + icon_width;
+        height = max(height, icon()->height() + padding);
     }
 
-    if (m_icon) {
-        height += max(height, m_icon->height());
-        width += m_icon->width() + icon_spacing();
-    }
+    return UISize(width, height);
+}
 
-    width += 8;
-    height += 4;
-
-    height = max(22, height);
+Optional<UISize> DialogButton::calculated_min_size() const
+{
+    int constexpr scale = 8;
+    int constexpr padding = 6;
+    int width = max(80, font().presentation_size() * scale);
+    int height = max(22, font().pixel_size_rounded_up() + padding);
 
     return UISize(width, height);
 }

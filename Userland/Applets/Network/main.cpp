@@ -53,13 +53,13 @@ private:
 
     void update_widget()
     {
-        auto adapter_info = get_adapter_info();
-
-        if (adapter_info == "") {
+        auto adapter_info_or_error = get_adapter_info();
+        if (adapter_info_or_error.is_error()) {
+            dbgln("Couldn't update adapter info: {}", adapter_info_or_error.error());
             set_connected(false);
-            m_adapter_info = "No network adapters";
+            m_adapter_info = "No network adapters"_string;
         } else {
-            m_adapter_info = adapter_info;
+            m_adapter_info = adapter_info_or_error.release_value();
         }
 
         set_tooltip(m_adapter_info);
@@ -77,9 +77,9 @@ private:
         if (!m_notifications)
             return;
         auto notification = GUI::Notification::construct();
-        notification->set_title("Network");
+        notification->set_title("Network"_string);
         notification->set_icon(m_connected_icon);
-        notification->set_text("Network connected");
+        notification->set_text("Network connected"_string);
         notification->show();
     }
 
@@ -88,9 +88,9 @@ private:
         if (!m_notifications)
             return;
         auto notification = GUI::Notification::construct();
-        notification->set_title("Network");
+        notification->set_title("Network"_string);
         notification->set_icon(m_disconnected_icon);
-        notification->set_text("Network disconnected");
+        notification->set_text("Network disconnected"_string);
         notification->show();
     }
 
@@ -103,32 +103,18 @@ private:
         m_connected = connected;
     }
 
-    DeprecatedString get_adapter_info()
+    ErrorOr<String> get_adapter_info()
     {
+        auto file = TRY(Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read));
+        auto file_contents = TRY(file->read_until_eof());
+        auto json = TRY(JsonValue::from_string(file_contents));
+
         StringBuilder adapter_info;
-
-        auto file_or_error = Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read);
-        if (file_or_error.is_error()) {
-            dbgln("Error: Could not open /sys/kernel/net/adapters: {}", file_or_error.error());
-            return "";
-        }
-
-        auto file_contents_or_error = file_or_error.value()->read_until_eof();
-        if (file_contents_or_error.is_error()) {
-            dbgln("Error: Could not read /sys/kernel/net/adapters: {}", file_contents_or_error.error());
-            return "";
-        }
-
-        auto json = JsonValue::from_string(file_contents_or_error.value());
-
-        if (json.is_error())
-            return adapter_info.to_deprecated_string();
-
         int connected_adapters = 0;
-        json.value().as_array().for_each([&adapter_info, &connected_adapters](auto& value) {
+        json.as_array().for_each([&adapter_info, &connected_adapters](auto& value) {
             auto& if_object = value.as_object();
-            auto ip_address = if_object.get_deprecated_string("ipv4_address"sv).value_or("no IP");
-            auto ifname = if_object.get_deprecated_string("name"sv).value();
+            auto ip_address = if_object.get_byte_string("ipv4_address"sv).value_or("no IP");
+            auto ifname = if_object.get_byte_string("name"sv).value();
             auto link_up = if_object.get_bool("link_up"sv).value();
             auto link_speed = if_object.get_i32("link_speed"sv).value();
 
@@ -151,10 +137,10 @@ private:
         // show connected icon so long as at least one adapter is connected
         connected_adapters ? set_connected(true) : set_connected(false);
 
-        return adapter_info.to_deprecated_string();
+        return adapter_info.to_string();
     }
 
-    DeprecatedString m_adapter_info;
+    String m_adapter_info;
     bool m_connected = false;
     bool m_notifications = true;
     NonnullRefPtr<Gfx::Bitmap> m_connected_icon;
@@ -164,7 +150,7 @@ private:
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio recvfd sendfd rpath unix proc exec"));
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::unveil("/tmp/session/%sid/portal/notify", "rw"));
     TRY(Core::System::unveil("/res", "r"));
@@ -182,12 +168,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (name.is_empty())
         name = "Network"sv;
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title(name);
     window->set_window_type(GUI::WindowType::Applet);
     window->set_has_alpha_channel(true);
     window->resize(16, 16);
-    auto icon = TRY(window->set_main_widget<NetworkWidget>(display_notifications));
+    auto icon = TRY(NetworkWidget::try_create(display_notifications));
+    window->set_main_widget(icon);
     icon->load_from_file("/res/icons/16x16/network.png"sv);
     window->resize(16, 16);
     window->show();

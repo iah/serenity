@@ -13,6 +13,7 @@ namespace Web::HTML {
 
 class HTMLOptGroupElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLOptGroupElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLOptGroupElement);
 
 public:
     virtual ~HTMLOptGroupElement() override;
@@ -23,7 +24,7 @@ public:
 private:
     HTMLOptGroupElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

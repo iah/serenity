@@ -8,10 +8,14 @@
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/ModuleEnvironment.h>
+#include <LibJS/Runtime/PromiseCapability.h>
+#include <LibJS/Runtime/PromiseConstructor.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/SyntheticModule.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(SyntheticModule);
 
 // 1.2.1 CreateSyntheticModule ( exportNames, evaluationSteps, realm, hostDefined ), https://tc39.es/proposal-json-modules/#sec-createsyntheticmodule
 SyntheticModule::SyntheticModule(Vector<DeprecatedFlyString> export_names, SyntheticModule::EvaluationFunction evaluation_steps, Realm& realm, StringView filename)
@@ -77,25 +81,25 @@ ThrowCompletionOr<Promise*> SyntheticModule::evaluate(VM& vm)
     // FIXME: We don't have suspend yet.
 
     // 2. Let moduleContext be a new ECMAScript code execution context.
-    ExecutionContext module_context { vm.heap() };
+    auto module_context = ExecutionContext::create();
 
     // 3. Set the Function of moduleContext to null.
     // Note: This is the default value.
 
     // 4. Set the Realm of moduleContext to module.[[Realm]].
-    module_context.realm = &realm();
+    module_context->realm = &realm();
 
     // 5. Set the ScriptOrModule of moduleContext to module.
-    module_context.script_or_module = NonnullGCPtr<Module>(*this);
+    module_context->script_or_module = NonnullGCPtr<Module>(*this);
 
     // 6. Set the VariableEnvironment of moduleContext to module.[[Environment]].
-    module_context.variable_environment = environment();
+    module_context->variable_environment = environment();
 
     // 7. Set the LexicalEnvironment of moduleContext to module.[[Environment]].
-    module_context.lexical_environment = environment();
+    module_context->lexical_environment = environment();
 
     // 8. Push moduleContext on to the execution context stack; moduleContext is now the running execution context.
-    TRY(vm.push_execution_context(module_context, {}));
+    TRY(vm.push_execution_context(*module_context, {}));
 
     // 9. Let result be the result of performing module.[[EvaluationSteps]](module).
     auto result = m_evaluation_steps(*this);
@@ -148,13 +152,23 @@ ThrowCompletionOr<NonnullGCPtr<Module>> parse_json_module(StringView source_text
     auto& vm = realm.vm();
 
     // 1. Let jsonParse be realm's intrinsic object named "%JSON.parse%".
-    auto* json_parse = realm.intrinsics().json_parse_function();
+    auto json_parse = realm.intrinsics().json_parse_function();
 
     // 2. Let json be ? Call(jsonParse, undefined, « sourceText »).
-    auto json = TRY(call(vm, *json_parse, js_undefined(), MUST_OR_THROW_OOM(PrimitiveString::create(realm.vm(), source_text))));
+    auto json = TRY(call(vm, *json_parse, js_undefined(), PrimitiveString::create(realm.vm(), source_text)));
 
     // 3. Return CreateDefaultExportSyntheticModule(json, realm, hostDefined).
     return SyntheticModule::create_default_export_synthetic_module(json, realm, filename);
+}
+
+// 1.2.3.1 LoadRequestedModules ( ), https://tc39.es/proposal-json-modules/#sec-smr-LoadRequestedModules
+PromiseCapability& SyntheticModule::load_requested_modules(GCPtr<GraphLoadingState::HostDefined>)
+{
+    // 1. Return ! PromiseResolve(%Promise%, undefined).
+    auto& constructor = *vm().current_realm()->intrinsics().promise_constructor();
+    auto promise_capability = MUST(new_promise_capability(vm(), &constructor));
+    MUST(call(vm(), *promise_capability->resolve(), js_undefined(), js_undefined()));
+    return promise_capability;
 }
 
 }

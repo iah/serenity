@@ -5,6 +5,11 @@
 [Exposed=Window]
 interface HTMLTemplateElement : HTMLElement {
 
-    readonly attribute DocumentFragment content;
+    [HTMLConstructor] constructor();
 
+    readonly attribute DocumentFragment content;
+    [Reflect=shadowrootmode, Enumerated=ShadowRootMode, CEReactions] attribute DOMString shadowRootMode;
+    [Reflect=shadowrootdelegatesfocus, CEReactions] attribute boolean shadowRootDelegatesFocus;
+    [Reflect=shadowrootclonable, CEReactions] attribute boolean shadowRootClonable;
+    [Reflect=shadowrootserializable, CEReactions] attribute boolean shadowRootSerializable;
 };

@@ -14,9 +14,10 @@ namespace Web::SVG {
 // https://www.w3.org/TR/SVG11/types.html#InterfaceSVGAnimatedLength
 class SVGAnimatedLength final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(SVGAnimatedLength, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(SVGAnimatedLength);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<SVGAnimatedLength>> create(JS::Realm&, JS::NonnullGCPtr<SVGLength> base_val, JS::NonnullGCPtr<SVGLength> anim_val);
+    [[nodiscard]] static JS::NonnullGCPtr<SVGAnimatedLength> create(JS::Realm&, JS::NonnullGCPtr<SVGLength> base_val, JS::NonnullGCPtr<SVGLength> anim_val);
     virtual ~SVGAnimatedLength() override;
 
     JS::NonnullGCPtr<SVGLength> base_val() const { return m_base_val; }
@@ -25,7 +26,7 @@ public:
 private:
     SVGAnimatedLength(JS::Realm&, JS::NonnullGCPtr<SVGLength> base_val, JS::NonnullGCPtr<SVGLength> anim_val);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     JS::NonnullGCPtr<SVGLength> m_base_val;

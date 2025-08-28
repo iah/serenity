@@ -6,6 +6,7 @@
  */
 
 #include <AK/Atomic.h>
+#include <AK/Debug.h>
 #include <AK/Format.h>
 #include <AK/OwnPtr.h>
 #include <AK/Time.h>
@@ -15,6 +16,7 @@
 #include <LibAudio/UserSampleQueue.h>
 #include <LibCore/Event.h>
 #include <LibThreading/Mutex.h>
+#include <Userland/Services/AudioServer/AudioClientEndpoint.h>
 #include <sched.h>
 #include <time.h>
 
@@ -36,6 +38,7 @@ ConnectionToServer::ConnectionToServer(NonnullOwnPtr<Core::LocalSocket> socket)
         return (intptr_t) nullptr;
     }))
 {
+    update_good_sleep_time();
     async_pause_playback();
     set_buffer(*m_buffer);
 }
@@ -63,13 +66,16 @@ ErrorOr<void> ConnectionToServer::async_enqueue(FixedArray<Sample>&& samples)
 {
     if (!m_background_audio_enqueuer->is_started()) {
         m_background_audio_enqueuer->start();
+        // Wait until the enqueuer has constructed its loop. A pseudo-spinlock is fine since this happens as soon as the other thread gets scheduled.
+        while (!m_enqueuer_loop)
+            usleep(1);
         TRY(m_background_audio_enqueuer->set_priority(THREAD_PRIORITY_MAX));
     }
 
-    update_good_sleep_time();
     m_user_queue->append(move(samples));
     // Wake the background thread to make sure it starts enqueuing audio.
-    m_enqueuer_loop->wake_once(*this, 0);
+    m_enqueuer_loop->post_event(*this, make<Core::CustomEvent>(0));
+    m_enqueuer_loop->wake();
     async_start_playback();
 
     return {};
@@ -82,10 +88,16 @@ void ConnectionToServer::clear_client_buffer()
 
 void ConnectionToServer::update_good_sleep_time()
 {
-    auto sample_rate = static_cast<double>(get_sample_rate());
+    auto sample_rate = static_cast<double>(get_self_sample_rate());
     auto buffer_play_time_ns = 1'000'000'000.0 / (sample_rate / static_cast<double>(AUDIO_BUFFER_SIZE));
     // A factor of 1 should be good for now.
-    m_good_sleep_time = Time::from_nanoseconds(static_cast<unsigned>(buffer_play_time_ns)).to_timespec();
+    m_good_sleep_time = Duration::from_nanoseconds(static_cast<unsigned>(buffer_play_time_ns)).to_timespec();
+}
+
+void ConnectionToServer::set_self_sample_rate(u32 sample_rate)
+{
+    IPC::ConnectionToServer<AudioClientEndpoint, AudioServerEndpoint>::set_self_sample_rate(sample_rate);
+    update_good_sleep_time();
 }
 
 // Non-realtime audio writing loop
@@ -94,7 +106,7 @@ void ConnectionToServer::custom_event(Core::CustomEvent&)
     Array<Sample, AUDIO_BUFFER_SIZE> next_chunk;
     while (true) {
         if (m_user_queue->is_empty()) {
-            dbgln("Reached end of provided audio data, going to sleep");
+            dbgln_if(AUDIO_DEBUG, "Reached end of provided audio data, going to sleep");
             break;
         }
 
@@ -138,16 +150,9 @@ size_t ConnectionToServer::remaining_buffers() const
     return m_buffer->size() - m_buffer->weak_remaining_capacity();
 }
 
-void ConnectionToServer::main_mix_muted_state_changed(bool muted)
+bool ConnectionToServer::can_enqueue() const
 {
-    if (on_main_mix_muted_state_change)
-        on_main_mix_muted_state_change(muted);
-}
-
-void ConnectionToServer::main_mix_volume_changed(double volume)
-{
-    if (on_main_mix_volume_change)
-        on_main_mix_volume_change(volume);
+    return m_buffer->can_enqueue();
 }
 
 void ConnectionToServer::client_volume_changed(double volume)

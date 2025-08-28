@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Tuple.h>
 #include <LibWeb/DOM/AccessibilityTreeNode.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -13,9 +12,11 @@
 
 namespace Web::DOM {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<AccessibilityTreeNode>> AccessibilityTreeNode::create(Document* document, DOM::Node const* value)
+JS_DEFINE_ALLOCATOR(AccessibilityTreeNode);
+
+JS::NonnullGCPtr<AccessibilityTreeNode> AccessibilityTreeNode::create(Document* document, DOM::Node const* value)
 {
-    return MUST_OR_THROW_OOM(document->heap().allocate<AccessibilityTreeNode>(document->realm(), value));
+    return document->heap().allocate<AccessibilityTreeNode>(document->realm(), value);
 }
 
 AccessibilityTreeNode::AccessibilityTreeNode(JS::GCPtr<DOM::Node const> value)
@@ -41,6 +42,7 @@ void AccessibilityTreeNode::serialize_tree_as_json(JsonObjectSerializer<StringBu
             MUST(object.add("name"sv, name));
             auto description = MUST(element->accessible_description(document));
             MUST(object.add("description"sv, description));
+            MUST(object.add("id"sv, element->unique_id()));
 
             if (has_role)
                 MUST(object.add("role"sv, ARIA::role_name(*role)));
@@ -59,7 +61,7 @@ void AccessibilityTreeNode::serialize_tree_as_json(JsonObjectSerializer<StringBu
 
     if (value()->has_child_nodes()) {
         auto node_children = MUST(object.add_array("children"sv));
-        for (auto* child : children()) {
+        for (auto& child : children()) {
             if (child->value()->is_uninteresting_whitespace_node())
                 continue;
             JsonObjectSerializer<StringBuilder> child_object = MUST(node_children.add_object());
@@ -73,9 +75,8 @@ void AccessibilityTreeNode::serialize_tree_as_json(JsonObjectSerializer<StringBu
 void AccessibilityTreeNode::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(value());
-    for (auto child : children())
-        child->visit_edges(visitor);
+    visitor.visit(m_value);
+    visitor.visit(m_children);
 }
 
 }

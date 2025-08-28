@@ -14,7 +14,7 @@
 #include <AK/Types.h>
 #ifdef KERNEL
 #    include <Kernel/Arch/Processor.h>
-#    include <Kernel/ScopedCritical.h>
+#    include <Kernel/Library/ScopedCritical.h>
 #endif
 
 #define NONNULLLOCKREFPTR_SCRUB_BYTE 0xa1
@@ -329,7 +329,7 @@ requires(IsConvertible<U*, T*>)
 }
 
 template<typename T>
-struct Traits<NonnullLockRefPtr<T>> : public GenericTraits<NonnullLockRefPtr<T>> {
+struct Traits<NonnullLockRefPtr<T>> : public DefaultTraits<NonnullLockRefPtr<T>> {
     using PeekType = T*;
     using ConstPeekType = T const*;
     static unsigned hash(NonnullLockRefPtr<T> const& p) { return ptr_hash(p.ptr()); }

@@ -13,7 +13,7 @@ namespace Wasm {
 class Reference;
 class Value;
 
-DeprecatedString instruction_name(OpCode const& opcode);
+ByteString instruction_name(OpCode const& opcode);
 Optional<OpCode> instruction_from_name(StringView name);
 
 struct Printer {
@@ -50,7 +50,6 @@ struct Printer {
     void print(Wasm::MemorySection::Memory const&);
     void print(Wasm::MemoryType const&);
     void print(Wasm::Module const&);
-    void print(Wasm::Module::Function const&);
     void print(Wasm::Reference const&);
     void print(Wasm::StartSection const&);
     void print(Wasm::StartSection::StartFunction const&);
@@ -60,6 +59,7 @@ struct Printer {
     void print(Wasm::TypeSection const&);
     void print(Wasm::ValueType const&);
     void print(Wasm::Value const&);
+    void print(Wasm::Value const&, ValueType const&);
 
 private:
     void print_indent();
@@ -68,7 +68,7 @@ private:
     {
         StringBuilder builder;
         builder.appendff(fmt.view(), forward<Args>(args)...);
-        m_stream.write_entire_buffer(builder.string_view().bytes()).release_value_but_fixme_should_propagate_errors();
+        m_stream.write_until_depleted(builder.string_view().bytes()).release_value_but_fixme_should_propagate_errors();
     }
 
     Stream& m_stream;

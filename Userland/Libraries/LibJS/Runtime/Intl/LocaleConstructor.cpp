@@ -16,10 +16,13 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(LocaleConstructor);
+
 struct LocaleAndKeys {
     String locale;
     Optional<String> ca;
     Optional<String> co;
+    Optional<String> fw;
     Optional<String> hc;
     Optional<String> kf;
     Optional<String> kn;
@@ -33,10 +36,10 @@ static ThrowCompletionOr<Optional<String>> get_string_option(VM& vm, Object cons
     if (option.is_undefined())
         return OptionalNone {};
 
-    if (validator && !validator(TRY(option.as_string().utf8_string_view())))
+    if (validator && !validator(option.as_string().utf8_string_view()))
         return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, option, property);
 
-    return TRY(option.as_string().utf8_string());
+    return option.as_string().utf8_string();
 }
 
 // 14.1.2 ApplyOptionsToTag ( tag, options ), https://tc39.es/ecma402/#sec-apply-options-to-tag
@@ -46,7 +49,7 @@ static ThrowCompletionOr<String> apply_options_to_tag(VM& vm, StringView tag, Ob
     // 2. Assert: Type(options) is Object.
 
     // 3. If ! IsStructurallyValidLanguageTag(tag) is false, throw a RangeError exception.
-    auto locale_id = MUST_OR_THROW_OOM(is_structurally_valid_language_tag(vm, tag));
+    auto locale_id = is_structurally_valid_language_tag(tag);
     if (!locale_id.has_value())
         return vm.throw_completion<RangeError>(ErrorType::IntlInvalidLanguageTag, tag);
 
@@ -66,10 +69,10 @@ static ThrowCompletionOr<String> apply_options_to_tag(VM& vm, StringView tag, Ob
     auto region = TRY(get_string_option(vm, options, vm.names.region, ::Locale::is_unicode_region_subtag));
 
     // 10. Set tag to ! CanonicalizeUnicodeLocaleId(tag).
-    auto canonicalized_tag = MUST_OR_THROW_OOM(canonicalize_unicode_locale_id(vm, *locale_id));
+    auto canonicalized_tag = JS::Intl::canonicalize_unicode_locale_id(*locale_id);
 
     // 11. Assert: tag matches the unicode_locale_id production.
-    locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(canonicalized_tag));
+    locale_id = ::Locale::parse_unicode_locale_id(canonicalized_tag);
     VERIFY(locale_id.has_value());
 
     // 12. Let languageId be the substring of tag corresponding to the unicode_language_id production.
@@ -101,15 +104,15 @@ static ThrowCompletionOr<String> apply_options_to_tag(VM& vm, StringView tag, Ob
 
     // 16. Set tag to tag with the substring corresponding to the unicode_language_id production replaced by the string languageId.
     // 17. Return ! CanonicalizeUnicodeLocaleId(tag).
-    return MUST_OR_THROW_OOM(canonicalize_unicode_locale_id(vm, *locale_id));
+    return JS::Intl::canonicalize_unicode_locale_id(*locale_id);
 }
 
 // 14.1.3 ApplyUnicodeExtensionToTag ( tag, options, relevantExtensionKeys ), https://tc39.es/ecma402/#sec-apply-unicode-extension-to-tag
-static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, StringView tag, LocaleAndKeys options, ReadonlySpan<StringView> relevant_extension_keys)
+static LocaleAndKeys apply_unicode_extension_to_tag(StringView tag, LocaleAndKeys options, ReadonlySpan<StringView> relevant_extension_keys)
 {
     // 1. Assert: Type(tag) is String.
     // 2. Assert: tag matches the unicode_locale_id production.
-    auto locale_id = TRY_OR_THROW_OOM(vm, ::Locale::parse_unicode_locale_id(tag));
+    auto locale_id = ::Locale::parse_unicode_locale_id(tag);
     VERIFY(locale_id.has_value());
 
     Vector<String> attributes;
@@ -139,6 +142,8 @@ static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, S
             return value.ca;
         if (key == "co"sv)
             return value.co;
+        if (key == "fw"sv)
+            return value.fw;
         if (key == "hc"sv)
             return value.hc;
         if (key == "kf"sv)
@@ -188,7 +193,7 @@ static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, S
             // iv. Else,
             else {
                 // 1. Append the Record { [[Key]]: key, [[Value]]: value } to keywords.
-                TRY_OR_THROW_OOM(vm, keywords.try_append({ TRY_OR_THROW_OOM(vm, String::from_utf8(key)), *value }));
+                keywords.append({ MUST(String::from_utf8(key)), *value });
             }
         }
 
@@ -198,7 +203,7 @@ static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, S
 
     // 7. Let locale be the String value that is tag with any Unicode locale extension sequences removed.
     locale_id->remove_extension_type<::Locale::LocaleExtension>();
-    auto locale = TRY_OR_THROW_OOM(vm, locale_id->to_string());
+    auto locale = locale_id->to_string();
 
     // 8. Let newExtension be a Unicode BCP 47 U Extension based on attributes and keywords.
     ::Locale::LocaleExtension new_extension { move(attributes), move(keywords) };
@@ -206,7 +211,7 @@ static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, S
     // 9. If newExtension is not the empty String, then
     if (!new_extension.attributes.is_empty() || !new_extension.keywords.is_empty()) {
         // a. Let locale be ! InsertUnicodeExtensionAndCanonicalize(locale, newExtension).
-        locale = MUST_OR_THROW_OOM(insert_unicode_extension_and_canonicalize(vm, locale_id.release_value(), move(new_extension)));
+        locale = insert_unicode_extension_and_canonicalize(locale_id.release_value(), move(new_extension));
     }
 
     // 10. Set result.[[locale]] to locale.
@@ -218,21 +223,19 @@ static ThrowCompletionOr<LocaleAndKeys> apply_unicode_extension_to_tag(VM& vm, S
 
 // 14.1 The Intl.Locale Constructor, https://tc39.es/ecma402/#sec-intl-locale-constructor
 LocaleConstructor::LocaleConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Locale.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Locale.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> LocaleConstructor::initialize(Realm& realm)
+void LocaleConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
     // 14.2.1 Intl.Locale.prototype, https://tc39.es/ecma402/#sec-Intl.Locale.prototype
     define_direct_property(vm.names.prototype, realm.intrinsics().intl_locale_prototype(), 0);
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-
-    return {};
 }
 
 // 14.1.1 Intl.Locale ( tag [ , options ] ), https://tc39.es/ecma402/#sec-Intl.Locale
@@ -243,6 +246,7 @@ ThrowCompletionOr<Value> LocaleConstructor::call()
 }
 
 // 14.1.1 Intl.Locale ( tag [ , options ] ), https://tc39.es/ecma402/#sec-Intl.Locale
+// 1.2.3 Intl.Locale ( tag [ , options ] ), https://tc39.es/proposal-intl-locale-info/#sec-Intl.Locale
 ThrowCompletionOr<NonnullGCPtr<Object>> LocaleConstructor::construct(FunctionObject& new_target)
 {
     auto& vm = this->vm();
@@ -253,7 +257,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> LocaleConstructor::construct(FunctionObj
     // 2. Let relevantExtensionKeys be %Locale%.[[RelevantExtensionKeys]].
     auto relevant_extension_keys = Locale::relevant_extension_keys();
 
-    // 3. Let internalSlotsList be « [[InitializedLocale]], [[Locale]], [[Calendar]], [[Collation]], [[HourCycle]], [[NumberingSystem]] ».
+    // 3. Let internalSlotsList be « [[InitializedLocale]], [[Locale]], [[Calendar]], [[Collation]], [[FirstDayOfWeek]], [[HourCycle]], [[NumberingSystem]] ».
     // 4. If relevantExtensionKeys contains "kf", then
     //     a. Append [[CaseFirst]] as the last element of internalSlotsList.
     // 5. If relevantExtensionKeys contains "kn", then
@@ -301,51 +305,82 @@ ThrowCompletionOr<NonnullGCPtr<Object>> LocaleConstructor::construct(FunctionObj
     // 18. Set opt.[[co]] to collation.
     opt.co = TRY(get_string_option(vm, *options, vm.names.collation, ::Locale::is_type_identifier));
 
-    // 19. Let hc be ? GetOption(options, "hourCycle", string, « "h11", "h12", "h23", "h24" », undefined).
-    // 20. Set opt.[[hc]] to hc.
+    // 19. Let fw be ? GetOption(options, "firstDayOfWeek", "string", « "mon", "tue", "wed", "thu", "fri", "sat", "sun", "0", "1", "2", "3", "4", "5", "6", "7" », undefined).
+    auto first_day_of_week = TRY(get_string_option(vm, *options, vm.names.firstDayOfWeek, nullptr, AK::Array { "mon"sv, "tue"sv, "wed"sv, "thu"sv, "fri"sv, "sat"sv, "sun"sv, "0"sv, "1"sv, "2"sv, "3"sv, "4"sv, "5"sv, "6"sv, "7"sv }));
+
+    // 20. Let firstDay be undefined.
+    Optional<String> first_day_string;
+
+    // 21. If fw is not undefined, then
+    if (first_day_of_week.has_value()) {
+        // a. Set firstDay to !WeekdayToString(fw).
+        first_day_string = MUST(String::from_utf8(weekday_to_string(*first_day_of_week)));
+    }
+
+    // 22. Set opt.[[fw]] to firstDay.
+    opt.fw = move(first_day_string);
+
+    // 23. Let hc be ? GetOption(options, "hourCycle", string, « "h11", "h12", "h23", "h24" », undefined).
+    // 24. Set opt.[[hc]] to hc.
     opt.hc = TRY(get_string_option(vm, *options, vm.names.hourCycle, nullptr, AK::Array { "h11"sv, "h12"sv, "h23"sv, "h24"sv }));
 
-    // 21. Let kf be ? GetOption(options, "caseFirst", string, « "upper", "lower", "false" », undefined).
-    // 22. Set opt.[[kf]] to kf.
+    // 25. Let kf be ? GetOption(options, "caseFirst", string, « "upper", "lower", "false" », undefined).
+    // 26. Set opt.[[kf]] to kf.
     opt.kf = TRY(get_string_option(vm, *options, vm.names.caseFirst, nullptr, AK::Array { "upper"sv, "lower"sv, "false"sv }));
 
-    // 23. Let kn be ? GetOption(options, "numeric", boolean, empty, undefined).
+    // 27. Let kn be ? GetOption(options, "numeric", boolean, empty, undefined).
     auto kn = TRY(get_option(vm, *options, vm.names.numeric, OptionType::Boolean, {}, Empty {}));
 
-    // 24. If kn is not undefined, set kn to ! ToString(kn).
-    // 25. Set opt.[[kn]] to kn.
+    // 28. If kn is not undefined, set kn to ! ToString(kn).
+    // 29. Set opt.[[kn]] to kn.
     if (!kn.is_undefined())
         opt.kn = TRY(kn.to_string(vm));
 
-    // 26. Let numberingSystem be ? GetOption(options, "numberingSystem", string, empty, undefined).
-    // 27. If numberingSystem is not undefined, then
+    // 30. Let numberingSystem be ? GetOption(options, "numberingSystem", string, empty, undefined).
+    // 31. If numberingSystem is not undefined, then
     //     a. If numberingSystem does not match the Unicode Locale Identifier type nonterminal, throw a RangeError exception.
-    // 28. Set opt.[[nu]] to numberingSystem.
+    // 32. Set opt.[[nu]] to numberingSystem.
     opt.nu = TRY(get_string_option(vm, *options, vm.names.numberingSystem, ::Locale::is_type_identifier));
 
-    // 29. Let r be ! ApplyUnicodeExtensionToTag(tag, opt, relevantExtensionKeys).
-    auto result = MUST_OR_THROW_OOM(apply_unicode_extension_to_tag(vm, tag, move(opt), relevant_extension_keys));
+    // 33. Let r be ! ApplyUnicodeExtensionToTag(tag, opt, relevantExtensionKeys).
+    auto result = apply_unicode_extension_to_tag(tag, move(opt), relevant_extension_keys);
 
-    // 30. Set locale.[[Locale]] to r.[[locale]].
+    // 34. Set locale.[[Locale]] to r.[[locale]].
     locale->set_locale(move(result.locale));
-    // 31. Set locale.[[Calendar]] to r.[[ca]].
+
+    // 35. Set locale.[[Calendar]] to r.[[ca]].
     if (result.ca.has_value())
         locale->set_calendar(result.ca.release_value());
-    // 32. Set locale.[[Collation]] to r.[[co]].
+
+    // 36. Set locale.[[Collation]] to r.[[co]].
     if (result.co.has_value())
         locale->set_collation(result.co.release_value());
-    // 33. Set locale.[[HourCycle]] to r.[[hc]].
+
+    // 37. Let firstDay be undefined.
+    Optional<u8> first_day_numeric;
+
+    // 38. If r.[[fw]] is not undefined, then
+    if (result.fw.has_value()) {
+        // a. Set firstDay to ! WeekdayToNumber(r.[[fw]]).
+        first_day_numeric = weekday_to_number(*result.fw);
+    }
+
+    // 39. Set locale.[[FirstDayOfWeek]] to firstDay.
+    if (first_day_numeric.has_value())
+        locale->set_first_day_of_week(*first_day_numeric);
+
+    // 40. Set locale.[[HourCycle]] to r.[[hc]].
     if (result.hc.has_value())
         locale->set_hour_cycle(result.hc.release_value());
 
-    // 34. If relevantExtensionKeys contains "kf", then
+    // 41. If relevantExtensionKeys contains "kf", then
     if (relevant_extension_keys.span().contains_slow("kf"sv)) {
         // a. Set locale.[[CaseFirst]] to r.[[kf]].
         if (result.kf.has_value())
             locale->set_case_first(result.kf.release_value());
     }
 
-    // 35. If relevantExtensionKeys contains "kn", then
+    // 42. If relevantExtensionKeys contains "kn", then
     if (relevant_extension_keys.span().contains_slow("kn"sv)) {
         // a. If SameValue(r.[[kn]], "true") is true or r.[[kn]] is the empty String, then
         if (result.kn.has_value() && (result.kn == "true"sv || result.kn->is_empty())) {
@@ -359,11 +394,11 @@ ThrowCompletionOr<NonnullGCPtr<Object>> LocaleConstructor::construct(FunctionObj
         }
     }
 
-    // 36. Set locale.[[NumberingSystem]] to r.[[nu]].
+    // 43. Set locale.[[NumberingSystem]] to r.[[nu]].
     if (result.nu.has_value())
         locale->set_numbering_system(result.nu.release_value());
 
-    // 37. Return locale.
+    // 44. Return locale.
     return locale;
 }
 

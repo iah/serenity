@@ -5,25 +5,38 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ByteString.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <AK/StringBuilder.h>
-#include <LibC/elf.h>
 #include <LibELF/DynamicLoader.h>
 #include <LibELF/DynamicObject.h>
+#include <LibELF/ELFABI.h>
 #include <LibELF/Hashes.h>
 #include <string.h>
 
 namespace ELF {
 
-DynamicObject::DynamicObject(DeprecatedString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address)
+DynamicObject::DynamicObject(ByteString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address)
     : m_filepath(filepath)
     , m_base_address(base_address)
     , m_dynamic_address(dynamic_section_address)
 {
-    auto* header = (ElfW(Ehdr)*)base_address.as_ptr();
-    auto* pheader = (ElfW(Phdr)*)(base_address.as_ptr() + header->e_phoff);
-    m_elf_base_address = VirtualAddress(pheader->p_vaddr - pheader->p_offset);
+    auto* header = (Elf_Ehdr*)base_address.as_ptr();
+    auto* const phdrs = program_headers();
+
+    // Calculate the base address using the PT_LOAD element with the lowest `p_vaddr` (which is the first element)
+    for (size_t i = 0; i < program_header_count(); ++i) {
+        auto pheader = phdrs[i];
+        if (pheader.p_type == PT_LOAD) {
+            m_elf_base_address = VirtualAddress { pheader.p_vaddr - pheader.p_offset };
+            break;
+        }
+
+        if (i == program_header_count() - 1) {
+            VERIFY_NOT_REACHED();
+        }
+    }
+
     if (header->e_type == ET_DYN)
         m_is_elf_dynamic = true;
     else
@@ -45,7 +58,7 @@ void DynamicObject::dump() const
         size_t num_dynamic_sections = 0;
 
         for_each_dynamic_entry([&](DynamicObject::DynamicEntry const& entry) {
-            DeprecatedString name_field = DeprecatedString::formatted("({})", name_for_dtag(entry.tag()));
+            ByteString name_field = ByteString::formatted("({})", name_for_dtag(entry.tag()));
             builder.appendff("{:#08x} {:17} {:#08x}\n", entry.tag(), name_field, entry.val());
             num_dynamic_sections++;
         });
@@ -114,7 +127,7 @@ void DynamicObject::parse()
             break;
         case DT_PLTREL:
             m_procedure_linkage_table_relocation_type = entry.val();
-            VERIFY(m_procedure_linkage_table_relocation_type & (DT_REL | DT_RELA));
+            VERIFY(m_procedure_linkage_table_relocation_type == DT_REL || m_procedure_linkage_table_relocation_type == DT_RELA);
             break;
         case DT_JMPREL:
             m_plt_relocation_offset_location = entry.ptr() - (FlatPtr)m_elf_base_address.as_ptr();
@@ -170,6 +183,7 @@ void DynamicObject::parse()
         case DT_DEBUG:
             break;
         case DT_FLAGS_1:
+            m_is_pie = true;
             break;
         case DT_NEEDED:
             // We handle these in for_each_needed_library
@@ -177,7 +191,7 @@ void DynamicObject::parse()
         case DT_SYMBOLIC:
             break;
         default:
-            dbgln("DynamicObject: DYNAMIC tag handling not implemented for DT_{} ({})", name_for_dtag(entry.tag()), entry.tag());
+            dbgln("DynamicObject: DYNAMIC tag handling not implemented for DT_{} ({}) in {}", name_for_dtag(entry.tag()), entry.tag(), m_filepath);
             break;
         }
     });
@@ -186,34 +200,81 @@ void DynamicObject::parse()
         // TODO: FIXME, this shouldn't be hardcoded
         // The reason we need this here is that for some reason, when there only PLT relocations, the compiler
         // doesn't insert a 'PLTRELSZ' entry to the dynamic section
-        m_size_of_relocation_entry = sizeof(ElfW(Rel));
+        m_size_of_relocation_entry = sizeof(Elf_Rel);
     }
 
-    auto hash_section_address = hash_section().address().as_ptr();
-    // TODO: consider base address - it might not be zero
-    auto num_hash_chains = ((u32*)hash_section_address)[1];
-    m_symbol_count = num_hash_chains;
+    // Whether or not RELASZ (stored in m_size_of_relocation_table) only refers to non-PLT entries is not clearly specified.
+    // So check if [JMPREL, JMPREL+PLTRELSZ) is in [RELA, RELA+RELASZ).
+    // If so, change the size of the non-PLT relocation table.
+    if (m_plt_relocation_offset_location >= m_relocation_table_offset                                     // JMPREL >= RELA
+        && m_plt_relocation_offset_location < (m_relocation_table_offset + m_size_of_relocation_table)) { // JMPREL < (RELA + RELASZ)
+        // [JMPREL, JMPREL+PLTRELSZ) is in [RELA, RELA+RELASZ)
+
+        // Verify that the ends of the tables match up
+        VERIFY(m_plt_relocation_offset_location + m_size_of_plt_relocation_entry_list == m_relocation_table_offset + m_size_of_relocation_table);
+
+        m_size_of_relocation_table -= m_size_of_plt_relocation_entry_list;
+    }
+
+    u32 const* hash_table_begin = reinterpret_cast<u32 const*>(hash_section().address().as_ptr());
+
+    if (m_hash_type == HashType::SYSV) {
+        u32 n_chain = hash_table_begin[1];
+        m_symbol_count = n_chain;
+        return;
+    }
+
+    // Determine amount of symbols by finding the chain with the highest
+    // starting index and walking this chain until the end to find the
+    // maximum index = amount of symbols.
+    using BloomWord = FlatPtr;
+    size_t const num_buckets = hash_table_begin[0];
+    size_t const num_omitted_symbols = hash_table_begin[1];
+    u32 const num_maskwords = hash_table_begin[2];
+    BloomWord const* bloom_words = reinterpret_cast<BloomWord const*>(&hash_table_begin[4]);
+    u32 const* const buckets = reinterpret_cast<u32 const*>(&bloom_words[num_maskwords]);
+    u32 const* const chains = &buckets[num_buckets];
+
+    size_t highest_chain_idx = 0;
+    for (size_t i = 0; i < num_buckets; i++) {
+        if (buckets[i] > highest_chain_idx) {
+            highest_chain_idx = buckets[i];
+        }
+    }
+
+    if (highest_chain_idx < num_omitted_symbols) {
+        m_symbol_count = 0;
+        return;
+    }
+
+    size_t amount_symbols = highest_chain_idx;
+    u32 const* last_chain = &chains[highest_chain_idx - num_omitted_symbols];
+    while ((*(last_chain++) & 1) == 0) {
+        amount_symbols++;
+    }
+
+    m_symbol_count = amount_symbols + 1;
 }
 
 DynamicObject::Relocation DynamicObject::RelocationSection::relocation(unsigned index) const
 {
     VERIFY(index < entry_count());
     unsigned offset_in_section = index * entry_size();
-    auto relocation_address = (ElfW(Rela)*)address().offset(offset_in_section).as_ptr();
+    auto relocation_address = (Elf_Rela*)address().offset(offset_in_section).as_ptr();
     return Relocation(m_dynamic, *relocation_address, offset_in_section, m_addend_used);
 }
 
 DynamicObject::Relocation DynamicObject::RelocationSection::relocation_at_offset(unsigned offset) const
 {
     VERIFY(offset <= (m_section_size_bytes - m_entry_size));
-    auto relocation_address = (ElfW(Rela)*)address().offset(offset).as_ptr();
+    auto relocation_address = (Elf_Rela*)address().offset(offset).as_ptr();
     return Relocation(m_dynamic, *relocation_address, offset, m_addend_used);
 }
 
 DynamicObject::Symbol DynamicObject::symbol(unsigned index) const
 {
     auto symbol_section = Section(*this, m_symbol_table_offset, (m_symbol_count * m_size_of_symbol_table_entry), m_size_of_symbol_table_entry, "DT_SYMTAB"sv);
-    auto symbol_entry = (ElfW(Sym)*)symbol_section.address().offset(index * symbol_section.entry_size()).as_ptr();
+    auto symbol_entry = (Elf_Sym*)symbol_section.address().offset(index * symbol_section.entry_size()).as_ptr();
     return Symbol(*this, index, *symbol_entry);
 }
 
@@ -244,7 +305,7 @@ DynamicObject::RelocationSection DynamicObject::relocation_section() const
 
 DynamicObject::RelocationSection DynamicObject::plt_relocation_section() const
 {
-    return RelocationSection(Section(*this, m_plt_relocation_offset_location, m_size_of_plt_relocation_entry_list, m_size_of_relocation_entry, "DT_JMPREL"sv), m_procedure_linkage_table_relocation_type & DT_RELA);
+    return RelocationSection(Section(*this, m_plt_relocation_offset_location, m_size_of_plt_relocation_entry_list, m_size_of_relocation_entry, "DT_JMPREL"sv), m_procedure_linkage_table_relocation_type == DT_RELA);
 }
 
 DynamicObject::Section DynamicObject::relr_relocation_section() const
@@ -252,16 +313,16 @@ DynamicObject::Section DynamicObject::relr_relocation_section() const
     return Section(*this, m_relr_relocation_table_offset, m_size_of_relr_relocation_table, m_size_of_relr_relocations_entry, "DT_RELR"sv);
 }
 
-ElfW(Half) DynamicObject::program_header_count() const
+Elf_Half DynamicObject::program_header_count() const
 {
-    auto* header = (const ElfW(Ehdr)*)m_base_address.as_ptr();
+    auto* header = (Elf_Ehdr const*)m_base_address.as_ptr();
     return header->e_phnum;
 }
 
-const ElfW(Phdr) * DynamicObject::program_headers() const
+Elf_Phdr const* DynamicObject::program_headers() const
 {
-    auto* header = (const ElfW(Ehdr)*)m_base_address.as_ptr();
-    return (const ElfW(Phdr)*)(m_base_address.as_ptr() + header->e_phoff);
+    auto* header = (Elf_Ehdr const*)m_base_address.as_ptr();
+    return (Elf_Phdr const*)(m_base_address.as_ptr() + header->e_phoff);
 }
 
 auto DynamicObject::HashSection::lookup_sysv_symbol(StringView name, u32 hash_value) const -> Optional<Symbol>
@@ -296,12 +357,12 @@ auto DynamicObject::HashSection::lookup_gnu_symbol(StringView name, u32 hash_val
 
     u32 const* hash_table_begin = (u32*)address().as_ptr();
 
-    const size_t num_buckets = hash_table_begin[0];
-    const size_t num_omitted_symbols = hash_table_begin[1];
-    const u32 num_maskwords = hash_table_begin[2];
+    size_t const num_buckets = hash_table_begin[0];
+    size_t const num_omitted_symbols = hash_table_begin[1];
+    u32 const num_maskwords = hash_table_begin[2];
     // This works because num_maskwords is required to be a power of 2
-    const u32 num_maskwords_bitmask = num_maskwords - 1;
-    const u32 shift2 = hash_table_begin[3];
+    u32 const num_maskwords_bitmask = num_maskwords - 1;
+    u32 const shift2 = hash_table_begin[3];
 
     BloomWord const* bloom_words = (BloomWord const*)&hash_table_begin[4];
     u32 const* const buckets = (u32 const*)&bloom_words[num_maskwords];
@@ -309,7 +370,7 @@ auto DynamicObject::HashSection::lookup_gnu_symbol(StringView name, u32 hash_val
 
     BloomWord hash1 = hash_value;
     BloomWord hash2 = hash1 >> shift2;
-    const BloomWord bitmask = ((BloomWord)1 << (hash1 % bloom_word_size)) | ((BloomWord)1 << (hash2 % bloom_word_size));
+    BloomWord const bitmask = ((BloomWord)1 << (hash1 % bloom_word_size)) | ((BloomWord)1 << (hash2 % bloom_word_size));
 
     if ((bloom_words[(hash1 / bloom_word_size) & num_maskwords_bitmask] & bitmask) != bitmask)
         return {};
@@ -334,13 +395,13 @@ auto DynamicObject::HashSection::lookup_gnu_symbol(StringView name, u32 hash_val
     return {};
 }
 
-StringView DynamicObject::symbol_string_table_string(ElfW(Word) index) const
+StringView DynamicObject::symbol_string_table_string(Elf_Word index) const
 {
     auto const* symbol_string_table_ptr = reinterpret_cast<char const*>(base_address().offset(m_string_table_offset + index).as_ptr());
     return StringView { symbol_string_table_ptr, strlen(symbol_string_table_ptr) };
 }
 
-char const* DynamicObject::raw_symbol_string_table_string(ElfW(Word) index) const
+char const* DynamicObject::raw_symbol_string_table_string(Elf_Word index) const
 {
     return (char const*)base_address().offset(m_string_table_offset + index).as_ptr();
 }
@@ -351,7 +412,13 @@ DynamicObject::InitializationFunction DynamicObject::init_section_function() con
     return (InitializationFunction)init_section().address().as_ptr();
 }
 
-char const* DynamicObject::name_for_dtag(ElfW(Sword) d_tag)
+DynamicObject::FinalizationFunction DynamicObject::fini_section_function() const
+{
+    VERIFY(has_fini_section());
+    return (FinalizationFunction)fini_section().address().as_ptr();
+}
+
+char const* DynamicObject::name_for_dtag(Elf_Sword d_tag)
 {
     switch (d_tag) {
     case DT_NULL:
@@ -475,36 +542,9 @@ auto DynamicObject::lookup_symbol(HashSymbol const& symbol) const -> Optional<Sy
     return SymbolLookupResult { symbol_result.value(), symbol_result.size(), symbol_result.address(), symbol_result.bind(), symbol_result.type(), this };
 }
 
-NonnullRefPtr<DynamicObject> DynamicObject::create(DeprecatedString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address)
+NonnullRefPtr<DynamicObject> DynamicObject::create(ByteString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address)
 {
     return adopt_ref(*new DynamicObject(filepath, base_address, dynamic_section_address));
-}
-
-// offset is in PLT relocation table
-VirtualAddress DynamicObject::patch_plt_entry(u32 relocation_offset)
-{
-    auto relocation = plt_relocation_section().relocation_at_offset(relocation_offset);
-    VERIFY(relocation.type() == R_X86_64_JUMP_SLOT || relocation.type() == R_AARCH64_JUMP_SLOT);
-    auto symbol = relocation.symbol();
-    auto relocation_address = (FlatPtr*)relocation.address().as_ptr();
-
-    VirtualAddress symbol_location;
-    auto result = DynamicLoader::lookup_symbol(symbol);
-    if (result.has_value()) {
-        symbol_location = result.value().address;
-
-        if (result.value().type == STT_GNU_IFUNC)
-            symbol_location = VirtualAddress { reinterpret_cast<IfuncResolver>(symbol_location.get())() };
-    } else if (symbol.bind() != STB_WEAK) {
-        dbgln("did not find symbol while doing relocations for library {}: {}", m_filepath, symbol.name());
-        VERIFY_NOT_REACHED();
-    }
-
-    dbgln_if(DYNAMIC_LOAD_DEBUG, "DynamicLoader: Jump slot relocation: putting {} ({}) into PLT at {}", symbol.name(), symbol_location, (void*)relocation_address);
-
-    *relocation_address = symbol_location.get();
-
-    return symbol_location;
 }
 
 u32 DynamicObject::HashSymbol::gnu_hash() const

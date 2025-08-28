@@ -16,6 +16,7 @@ class HTMLFrameSetElement final
     : public HTMLElement
     , public WindowEventHandlers {
     WEB_PLATFORM_OBJECT(HTMLFrameSetElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLFrameSetElement);
 
 public:
     virtual ~HTMLFrameSetElement() override;
@@ -23,14 +24,14 @@ public:
 private:
     HTMLFrameSetElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-    virtual void parse_attribute(DeprecatedFlyString const&, DeprecatedString const&) override;
+    virtual void initialize(JS::Realm&) override;
+    virtual void attribute_changed(FlyString const&, Optional<String> const& old_value, Optional<String> const&) override;
 
     // ^HTML::GlobalEventHandlers
-    virtual EventTarget& global_event_handlers_to_event_target(DeprecatedFlyString const& event_name) override;
+    virtual JS::GCPtr<EventTarget> global_event_handlers_to_event_target(FlyString const& event_name) override;
 
     // ^HTML::WindowEventHandlers
-    virtual EventTarget& window_event_handlers_to_event_target() override;
+    virtual JS::GCPtr<EventTarget> window_event_handlers_to_event_target() override;
 };
 
 }

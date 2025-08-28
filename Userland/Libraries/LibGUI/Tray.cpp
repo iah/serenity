@@ -33,7 +33,7 @@ Gfx::IntRect Tray::Item::rect(Tray const& tray) const
     };
 }
 
-size_t Tray::add_item(DeprecatedString text, RefPtr<Gfx::Bitmap const> bitmap, DeprecatedString custom_data)
+size_t Tray::add_item(ByteString text, RefPtr<Gfx::Bitmap const> bitmap, ByteString custom_data)
 {
     auto new_index = m_items.size();
 
@@ -82,7 +82,7 @@ void Tray::paint_event(GUI::PaintEvent& event)
         icon_rect.center_vertically_within(rect);
 
         Gfx::IntRect text_rect {
-            icon_rect.right() + 5,
+            icon_rect.right() + 4,
             rect.y(),
             rect.width(),
             rect.height(),

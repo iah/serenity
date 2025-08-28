@@ -9,9 +9,9 @@
 
 #include <AK/Bitmap.h>
 #include <AK/ByteReader.h>
-#include <AK/DeprecatedString.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
+#include <AK/String.h>
 #include <AK/Types.h>
 #include <LibCore/MappedFile.h>
 #include <LibGfx/Bitmap.h>
@@ -23,9 +23,8 @@ namespace Gfx {
 class GlyphBitmap {
 public:
     GlyphBitmap() = default;
-    GlyphBitmap(u8 const* rows, size_t start_index, IntSize size)
+    GlyphBitmap(Bytes rows, IntSize size)
         : m_rows(rows)
-        , m_start_index(start_index)
         , m_size(size)
     {
     }
@@ -46,11 +45,10 @@ public:
 private:
     AK::Bitmap bitmap(size_t y) const
     {
-        return { const_cast<u8*>(m_rows) + bytes_per_row() * (m_start_index + y), bytes_per_row() * 8 };
+        return { const_cast<u8*>(m_rows.offset_pointer(bytes_per_row() * y)), bytes_per_row() * 8 };
     }
 
-    u8 const* m_rows { nullptr };
-    size_t m_start_index { 0 };
+    Bytes m_rows;
     IntSize m_size { 0, 0 };
 };
 
@@ -150,6 +148,8 @@ public:
     enum class AllowInexactSizeMatch {
         No,
         Yes,
+        Larger,
+        Smaller,
     };
 
     virtual NonnullRefPtr<Font> clone() const = 0;
@@ -160,6 +160,9 @@ public:
 
     virtual u8 presentation_size() const = 0;
     virtual u8 slope() const = 0;
+
+    // Font point size (distance between ascender and descender).
+    virtual float point_size() const = 0;
 
     // Font pixel size (distance between ascender and descender).
     virtual float pixel_size() const = 0;
@@ -172,10 +175,14 @@ public:
     virtual u16 weight() const = 0;
     virtual Glyph glyph(u32 code_point) const = 0;
     virtual Glyph glyph(u32 code_point, GlyphSubpixelOffset) const = 0;
+    virtual Optional<Glyph> glyph_for_postscript_name(StringView, GlyphSubpixelOffset) const = 0;
     virtual bool contains_glyph(u32 code_point) const = 0;
+    virtual bool contains_glyph_for_postscript_name(StringView name) const = 0;
 
     virtual float glyph_left_bearing(u32 code_point) const = 0;
+    virtual Optional<float> glyph_left_bearing_for_postscript_name(StringView) const = 0;
     virtual float glyph_width(u32 code_point) const = 0;
+    virtual Optional<float> glyph_width_for_postscript_name(StringView) const = 0;
     virtual float glyph_or_emoji_width(Utf8CodePointIterator&) const = 0;
     virtual float glyph_or_emoji_width(Utf32CodePointIterator&) const = 0;
     virtual float glyphs_horizontal_kerning(u32 left_code_point, u32 right_code_point) const = 0;
@@ -193,7 +200,9 @@ public:
     virtual float width(Utf8View const&) const = 0;
     virtual float width(Utf32View const&) const = 0;
 
-    virtual DeprecatedString name() const = 0;
+    virtual int width_rounded_up(StringView) const = 0;
+
+    virtual String name() const = 0;
 
     virtual bool is_fixed_width() const = 0;
 
@@ -201,13 +210,13 @@ public:
 
     virtual size_t glyph_count() const = 0;
 
-    virtual DeprecatedString family() const = 0;
-    virtual DeprecatedString variant() const = 0;
+    virtual String family() const = 0;
+    virtual String variant() const = 0;
 
-    virtual DeprecatedString qualified_name() const = 0;
-    virtual DeprecatedString human_readable_name() const = 0;
+    virtual String qualified_name() const = 0;
+    virtual String human_readable_name() const = 0;
 
-    virtual RefPtr<Font> with_size(float point_size) const = 0;
+    virtual NonnullRefPtr<Font> with_size(float point_size) const = 0;
 
     Font const& bold_variant() const;
 

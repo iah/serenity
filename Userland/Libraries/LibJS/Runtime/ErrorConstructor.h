@@ -13,9 +13,10 @@ namespace JS {
 
 class ErrorConstructor final : public NativeFunction {
     JS_OBJECT(ErrorConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(ErrorConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ErrorConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -25,14 +26,17 @@ private:
     explicit ErrorConstructor(Realm&);
 
     virtual bool has_constructor() const override { return true; }
+
+    JS_DECLARE_NATIVE_FUNCTION(is_error);
 };
 
 #define DECLARE_NATIVE_ERROR_CONSTRUCTOR(ClassName, snake_name, PrototypeName, ConstructorName)         \
     class ConstructorName final : public NativeFunction {                                               \
         JS_OBJECT(ConstructorName, NativeFunction);                                                     \
+        JS_DECLARE_ALLOCATOR(ConstructorName);                                                          \
                                                                                                         \
     public:                                                                                             \
-        virtual ThrowCompletionOr<void> initialize(Realm&) override;                                    \
+        virtual void initialize(Realm&) override;                                                       \
         virtual ~ConstructorName() override;                                                            \
         virtual ThrowCompletionOr<Value> call() override;                                               \
         virtual ThrowCompletionOr<NonnullGCPtr<Object>> construct(FunctionObject& new_target) override; \

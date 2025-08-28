@@ -10,9 +10,11 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(SymbolObject);
+
 NonnullGCPtr<SymbolObject> SymbolObject::create(Realm& realm, Symbol& primitive_symbol)
 {
-    return realm.heap().allocate<SymbolObject>(realm, primitive_symbol, *realm.intrinsics().symbol_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<SymbolObject>(realm, primitive_symbol, realm.intrinsics().symbol_prototype());
 }
 
 SymbolObject::SymbolObject(Symbol& symbol, Object& prototype)
@@ -24,7 +26,7 @@ SymbolObject::SymbolObject(Symbol& symbol, Object& prototype)
 void SymbolObject::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_symbol);
+    visitor.visit(m_symbol);
 }
 
 }

@@ -55,7 +55,7 @@ public:
     virtual void reset() = 0;
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const = 0;
+    virtual ByteString class_name() const = 0;
 #endif
 
 protected:
@@ -70,7 +70,7 @@ struct AK::Formatter<Crypto::Hash::Digest<DigestS>> : StandardFormatter {
         for (size_t i = 0; i < digest.Size; ++i) {
             if (i > 0 && i % 4 == 0)
                 TRY(builder.put_padding('-', 1));
-            TRY(builder.put_u64(digest.data[i], 16, false, false, true, FormatBuilder::Align::Right, 2));
+            TRY(builder.put_u64(digest.data[i], 16, false, false, true, false, FormatBuilder::Align::Right, 2));
         }
         return {};
     }

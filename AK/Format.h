@@ -10,7 +10,6 @@
 
 #include <AK/AllOf.h>
 #include <AK/AnyOf.h>
-#include <AK/Array.h>
 #include <AK/Error.h>
 #include <AK/Forward.h>
 #include <AK/Optional.h>
@@ -57,95 +56,156 @@ concept Formattable = HasFormatter<T>;
 
 constexpr size_t max_format_arguments = 256;
 
+template<typename T>
+ErrorOr<void> __format_value(TypeErasedFormatParams& params, FormatBuilder& builder, FormatParser& parser, void const* value)
+{
+    Formatter<T> formatter;
+
+    formatter.parse(params, parser);
+    return formatter.format(builder, *static_cast<T const*>(value));
+}
+
 struct TypeErasedParameter {
     enum class Type {
-        UInt8,
-        UInt16,
-        UInt32,
-        UInt64,
-        Int8,
-        Int16,
-        Int32,
-        Int64,
-        Custom
+        UnsignedInteger,
+        SignedInteger,
+        Boolean,
+        Character,
+#ifndef KERNEL
+        Float,
+        Double,
+#endif
+        StringView,
+        CString,
+        CustomType
     };
 
-    template<size_t size, bool is_unsigned>
-    static consteval Type get_type_from_size()
-    {
-        if constexpr (is_unsigned) {
-            if constexpr (size == 1)
-                return Type::UInt8;
-            if constexpr (size == 2)
-                return Type::UInt16;
-            if constexpr (size == 4)
-                return Type::UInt32;
-            if constexpr (size == 8)
-                return Type::UInt64;
-        } else {
-            if constexpr (size == 1)
-                return Type::Int8;
-            if constexpr (size == 2)
-                return Type::Int16;
-            if constexpr (size == 4)
-                return Type::Int32;
-            if constexpr (size == 8)
-                return Type::Int64;
-        }
+    struct CustomType {
+        void const* value;
+        ErrorOr<void> (*formatter)(TypeErasedFormatParams&, FormatBuilder&, FormatParser&, void const* value);
+    };
 
-        VERIFY_NOT_REACHED();
+    template<typename T>
+    static bool const IsChar = IsOneOf<T, char, wchar_t, char8_t, char16_t, char32_t>;
+
+    template<Unsigned U>
+    explicit constexpr TypeErasedParameter(U const& value)
+    requires(!IsChar<U> && sizeof(U) <= sizeof(u64))
+        : value { .as_unsigned = value }
+        , type { Type::UnsignedInteger }
+    {
+    }
+
+    template<Signed I>
+    explicit constexpr TypeErasedParameter(I const& value)
+    requires(!IsChar<I> && sizeof(I) <= sizeof(i64))
+        : value { .as_signed = value }
+        , type { Type::SignedInteger }
+    {
+    }
+
+    explicit constexpr TypeErasedParameter(bool const& value)
+        : value { .as_bool = value }
+        , type { Type::Boolean }
+    {
+    }
+
+    explicit constexpr TypeErasedParameter(char const& value)
+        : value { .as_char = value }
+        , type { Type::Character }
+    {
+    }
+
+#ifndef KERNEL
+    explicit constexpr TypeErasedParameter(float const& value)
+        : value { .as_float = value }
+        , type { Type::Float }
+    {
+    }
+
+    explicit constexpr TypeErasedParameter(double const& value)
+        : value { .as_double = value }
+        , type { Type::Double }
+    {
+    }
+#endif
+
+    explicit constexpr TypeErasedParameter(StringView const& value)
+        : value { .as_string_view = value }
+        , type { Type::StringView }
+    {
+    }
+
+    explicit constexpr TypeErasedParameter(char const* value)
+        : value { .as_c_string = value }
+        , type { Type::CString }
+    {
     }
 
     template<typename T>
-    static consteval Type get_type()
+    explicit constexpr TypeErasedParameter(T const& value)
+        : value { .as_custom_type = { &value, __format_value<T> } }
+        , type { Type::CustomType }
     {
-        if constexpr (IsIntegral<T>)
-            return get_type_from_size<sizeof(T), IsUnsigned<T>>();
-        else
-            return Type::Custom;
     }
 
     template<typename Visitor>
     constexpr auto visit(Visitor&& visitor) const
     {
         switch (type) {
-        case TypeErasedParameter::Type::UInt8:
-            return visitor(*static_cast<u8 const*>(value));
-        case TypeErasedParameter::Type::UInt16:
-            return visitor(*static_cast<u16 const*>(value));
-        case TypeErasedParameter::Type::UInt32:
-            return visitor(*static_cast<u32 const*>(value));
-        case TypeErasedParameter::Type::UInt64:
-            return visitor(*static_cast<u64 const*>(value));
-        case TypeErasedParameter::Type::Int8:
-            return visitor(*static_cast<i8 const*>(value));
-        case TypeErasedParameter::Type::Int16:
-            return visitor(*static_cast<i16 const*>(value));
-        case TypeErasedParameter::Type::Int32:
-            return visitor(*static_cast<i32 const*>(value));
-        case TypeErasedParameter::Type::Int64:
-            return visitor(*static_cast<i64 const*>(value));
-        default:
-            TODO();
+        case Type::UnsignedInteger:
+            return visitor(value.as_unsigned);
+        case Type::SignedInteger:
+            return visitor(value.as_signed);
+        case Type::Boolean:
+            return visitor(value.as_bool);
+        case Type::Character:
+            return visitor(value.as_char);
+#ifndef KERNEL
+        case Type::Float:
+            return visitor(value.as_float);
+        case Type::Double:
+            return visitor(value.as_double);
+#endif
+        case Type::StringView:
+            return visitor(value.as_string_view);
+        case Type::CString:
+            return visitor(value.as_c_string);
+        case Type::CustomType:
+            return visitor(value.as_custom_type);
         }
+        VERIFY_NOT_REACHED();
     }
 
     constexpr size_t to_size() const
     {
-        return visit([]<typename T>(T value) {
-            if constexpr (sizeof(T) > sizeof(size_t))
-                VERIFY(value < NumericLimits<size_t>::max());
-            if constexpr (IsSigned<T>)
+        return visit([]<typename T>(T value) -> size_t {
+            if constexpr (IsSame<T, u64>)
+                return static_cast<size_t>(value);
+
+            if constexpr (IsSame<T, i64>) {
                 VERIFY(value >= 0);
-            return static_cast<size_t>(value);
+                return static_cast<size_t>(value);
+            }
+
+            TODO();
         });
     }
 
-    // FIXME: Getters and setters.
-
-    void const* value;
+    union {
+        u64 as_unsigned;
+        i64 as_signed;
+        bool as_bool;
+        char as_char;
+#ifndef KERNEL
+        float as_float;
+        double as_double;
+#endif
+        StringView as_string_view;
+        char const* as_c_string;
+        CustomType as_custom_type;
+    } value;
     Type type;
-    ErrorOr<void> (*formatter)(TypeErasedFormatParams&, FormatBuilder&, FormatParser&, void const* value);
 };
 
 class FormatBuilder {
@@ -191,6 +251,7 @@ public:
         bool prefix = false,
         bool upper_case = false,
         bool zero_pad = false,
+        bool use_separator = false,
         Align align = Align::Right,
         size_t min_width = 0,
         char fill = ' ',
@@ -203,6 +264,7 @@ public:
         bool prefix = false,
         bool upper_case = false,
         bool zero_pad = false,
+        bool use_separator = false,
         Align align = Align::Right,
         size_t min_width = 0,
         char fill = ' ',
@@ -213,21 +275,23 @@ public:
         i64 integer_value,
         u64 fraction_value,
         u64 fraction_one,
+        size_t precision,
         u8 base = 10,
         bool upper_case = false,
         bool zero_pad = false,
+        bool use_separator = false,
         Align align = Align::Right,
         size_t min_width = 0,
-        size_t precision = 6,
+        size_t fraction_max_width = 6,
         char fill = ' ',
-        SignMode sign_mode = SignMode::OnlyIfNeeded,
-        RealNumberDisplayMode = RealNumberDisplayMode::Default);
+        SignMode sign_mode = SignMode::OnlyIfNeeded);
 
 #ifndef KERNEL
     ErrorOr<void> put_f80(
         long double value,
         u8 base = 10,
         bool upper_case = false,
+        bool use_separator = false,
         Align align = Align::Right,
         size_t min_width = 0,
         size_t precision = 6,
@@ -235,14 +299,16 @@ public:
         SignMode sign_mode = SignMode::OnlyIfNeeded,
         RealNumberDisplayMode = RealNumberDisplayMode::Default);
 
-    ErrorOr<void> put_f64(
-        double value,
+    template<OneOf<f32, f64> T>
+    ErrorOr<void> put_f32_or_f64(
+        T value,
         u8 base = 10,
         bool upper_case = false,
         bool zero_pad = false,
+        bool use_separator = false,
         Align align = Align::Right,
         size_t min_width = 0,
-        size_t precision = 6,
+        Optional<size_t> precision = {},
         char fill = ' ',
         SignMode sign_mode = SignMode::OnlyIfNeeded,
         RealNumberDisplayMode = RealNumberDisplayMode::Default);
@@ -261,28 +327,39 @@ public:
 
 private:
     StringBuilder& m_builder;
+
+#ifndef KERNEL
+    ErrorOr<void> put_f64_with_precision(
+        double value,
+        u8 base,
+        bool upper_case,
+        bool zero_pad,
+        bool use_separator,
+        Align align,
+        size_t min_width,
+        size_t precision,
+        char fill,
+        SignMode sign_mode,
+        RealNumberDisplayMode);
+#endif
 };
 
 class TypeErasedFormatParams {
 public:
-    ReadonlySpan<TypeErasedParameter> parameters() const { return m_parameters; }
+    TypeErasedFormatParams(u32 size)
+        : m_size(size)
+    {
+    }
 
-    void set_parameters(ReadonlySpan<TypeErasedParameter> parameters) { m_parameters = parameters; }
+    ReadonlySpan<TypeErasedParameter> parameters() const { return { m_parameters, m_size }; }
+
     size_t take_next_index() { return m_next_index++; }
 
 private:
-    ReadonlySpan<TypeErasedParameter> m_parameters;
-    size_t m_next_index { 0 };
+    u32 m_size { 0 };
+    u32 m_next_index { 0 };
+    TypeErasedParameter m_parameters[0];
 };
-
-template<typename T>
-ErrorOr<void> __format_value(TypeErasedFormatParams& params, FormatBuilder& builder, FormatParser& parser, void const* value)
-{
-    Formatter<T> formatter;
-
-    formatter.parse(params, parser);
-    return formatter.format(builder, *static_cast<T const*>(value));
-}
 
 template<AllowDebugOnlyFormatters allow_debug_formatters, typename... Parameters>
 class VariadicFormatParams : public TypeErasedFormatParams {
@@ -290,16 +367,16 @@ public:
     static_assert(sizeof...(Parameters) <= max_format_arguments);
 
     explicit VariadicFormatParams(Parameters const&... parameters)
-        : m_data({ TypeErasedParameter { &parameters, TypeErasedParameter::get_type<Parameters>(), __format_value<Parameters> }... })
+        : TypeErasedFormatParams(sizeof...(Parameters))
+        , m_parameter_storage { TypeErasedParameter { parameters }... }
     {
         constexpr bool any_debug_formatters = (is_debug_only_formatter<Formatter<Parameters>>() || ...);
         static_assert(!any_debug_formatters || allow_debug_formatters == AllowDebugOnlyFormatters::Yes,
             "You are attempting to use a debug-only formatter outside of a debug log! Maybe one of your format values is an ErrorOr<T>?");
-        this->set_parameters(m_data);
     }
 
 private:
-    Array<TypeErasedParameter, sizeof...(Parameters)> m_data;
+    TypeErasedParameter m_parameter_storage[sizeof...(Parameters)];
 };
 
 // We use the same format for most types for consistency. This is taken directly from
@@ -328,6 +405,7 @@ struct StandardFormatter {
     FormatBuilder::SignMode m_sign_mode = FormatBuilder::SignMode::OnlyIfNeeded;
     Mode m_mode = Mode::Default;
     bool m_alternative_form = false;
+    bool m_use_separator = false;
     char m_fill = ' ';
     bool m_zero_pad = false;
     Optional<size_t> m_width;
@@ -463,19 +541,8 @@ struct Formatter<char*> : Formatter<char const*> {
 template<size_t Size>
 struct Formatter<char[Size]> : Formatter<char const*> {
 };
-template<size_t Size>
-struct Formatter<unsigned char[Size]> : Formatter<StringView> {
-    ErrorOr<void> format(FormatBuilder& builder, unsigned char const* value)
-    {
-        if (m_mode == Mode::Pointer) {
-            Formatter<FlatPtr> formatter { *this };
-            return formatter.format(builder, reinterpret_cast<FlatPtr>(value));
-        }
-        return Formatter<StringView>::format(builder, { value, Size });
-    }
-};
 template<>
-struct Formatter<DeprecatedString> : Formatter<StringView> {
+struct Formatter<ByteString> : Formatter<StringView> {
 };
 template<>
 struct Formatter<DeprecatedFlyString> : Formatter<StringView> {
@@ -547,7 +614,7 @@ struct Formatter<nullptr_t> : Formatter<FlatPtr> {
 
 ErrorOr<void> vformat(StringBuilder&, StringView fmtstr, TypeErasedFormatParams&);
 
-#ifndef KERNEL
+#if !defined(KERNEL)
 void vout(FILE*, StringView fmtstr, TypeErasedFormatParams&, bool newline = false);
 
 template<typename... Parameters>
@@ -567,18 +634,15 @@ void outln(FILE* file, CheckedFormatString<Parameters...>&& fmtstr, Parameters c
 inline void outln(FILE* file) { fputc('\n', file); }
 
 template<typename... Parameters>
-void out(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters) { out(stdout, move(fmtstr), parameters...); }
+void out(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
+{
+    out(stdout, move(fmtstr), parameters...);
+}
 
 template<typename... Parameters>
 void outln(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters) { outln(stdout, move(fmtstr), parameters...); }
 
 inline void outln() { outln(stdout); }
-
-#    define outln_if(flag, fmt, ...)       \
-        do {                               \
-            if constexpr (flag)            \
-                outln(fmt, ##__VA_ARGS__); \
-        } while (0)
 
 template<typename... Parameters>
 void warn(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
@@ -591,6 +655,12 @@ void warnln(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... pa
 
 inline void warnln() { outln(stderr); }
 
+#    define outln_if(flag, fmt, ...)       \
+        do {                               \
+            if constexpr (flag)            \
+                outln(fmt, ##__VA_ARGS__); \
+        } while (0)
+
 #    define warnln_if(flag, fmt, ...)       \
         do {                                \
             if constexpr (flag)             \
@@ -599,18 +669,26 @@ inline void warnln() { outln(stderr); }
 
 #endif
 
-void vdbgln(StringView fmtstr, TypeErasedFormatParams&);
+void vdbg(StringView fmtstr, TypeErasedFormatParams&, bool newline = false);
+
+template<typename... Parameters>
+void dbg(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
+{
+    VariadicFormatParams<AllowDebugOnlyFormatters::Yes, Parameters...> variadic_format_params { parameters... };
+    vdbg(fmtstr.view(), variadic_format_params, false);
+}
 
 template<typename... Parameters>
 void dbgln(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
 {
     VariadicFormatParams<AllowDebugOnlyFormatters::Yes, Parameters...> variadic_format_params { parameters... };
-    vdbgln(fmtstr.view(), variadic_format_params);
+    vdbg(fmtstr.view(), variadic_format_params, true);
 }
 
 inline void dbgln() { dbgln(""); }
 
 void set_debug_enabled(bool);
+void set_rich_debug_enabled(bool);
 
 #ifdef KERNEL
 void vdmesgln(StringView fmtstr, TypeErasedFormatParams&);
@@ -709,6 +787,16 @@ struct Formatter<ErrorOr<T, ErrorType>> : Formatter<FormatString> {
     }
 };
 
+template<typename T>
+struct Formatter<Optional<T>> : Formatter<FormatString> {
+    ErrorOr<void> format(FormatBuilder& builder, Optional<T> const& optional)
+    {
+        if (optional.has_value())
+            return Formatter<FormatString>::format(builder, "{}"sv, *optional);
+        return builder.put_literal("None"sv);
+    }
+};
+
 } // namespace AK
 
 #if USING_AK_GLOBALLY
@@ -723,6 +811,7 @@ using AK::warn;
 using AK::warnln;
 #    endif
 
+using AK::dbg;
 using AK::dbgln;
 
 using AK::CheckedFormatString;

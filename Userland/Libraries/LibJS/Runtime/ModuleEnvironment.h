@@ -15,6 +15,7 @@ namespace JS {
 // 9.1.1.5 Module Environment Records, https://tc39.es/ecma262/#sec-module-environment-records
 class ModuleEnvironment final : public DeclarativeEnvironment {
     JS_ENVIRONMENT(ModuleEnvironment, DeclarativeEnvironment);
+    JS_DECLARE_ALLOCATOR(ModuleEnvironment);
 
 public:
     // Note: Module Environment Records support all of the declarative Environment Record methods listed
@@ -34,7 +35,7 @@ private:
 
     struct IndirectBinding {
         DeprecatedFlyString name;
-        Module* module;
+        GCPtr<Module> module;
         DeprecatedFlyString binding_name;
     };
     IndirectBinding const* get_indirect_binding(DeprecatedFlyString const& name) const;

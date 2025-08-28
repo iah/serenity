@@ -9,7 +9,18 @@
 #include <AK/Span.h>
 #include <LibPDF/ObjectDerivatives.h>
 
+namespace Crypto::Cipher {
+enum class Intent;
+}
+
 namespace PDF {
+
+enum class CryptFilterMethod {
+    None,
+    V2, // RC4
+    AESV2,
+    AESV3,
+};
 
 class SecurityHandler : public RefCounted<SecurityHandler> {
 public:
@@ -28,7 +39,7 @@ class StandardSecurityHandler : public SecurityHandler {
 public:
     static PDFErrorOr<NonnullRefPtr<StandardSecurityHandler>> create(Document*, NonnullRefPtr<DictObject> encryption_dict);
 
-    StandardSecurityHandler(Document*, size_t revision, DeprecatedString const& o_entry, DeprecatedString const& u_entry, u32 flags, bool encrypt_metadata, size_t length);
+    StandardSecurityHandler(Document*, size_t revision, ByteString const& o_entry, ByteString const& oe_entry, ByteString const& u_entry, ByteString const& ue_entry, ByteString const& perms, u32 flags, bool encrypt_metadata, size_t length, CryptFilterMethod method);
 
     ~StandardSecurityHandler() override = default;
 
@@ -41,19 +52,36 @@ protected:
     void decrypt(NonnullRefPtr<Object>, Reference reference) const override;
 
 private:
-    template<bool is_revision_2>
-    ByteBuffer compute_user_password_value(ByteBuffer password_string);
+    void crypt(NonnullRefPtr<Object>, Reference reference, Crypto::Cipher::Intent) const;
 
-    ByteBuffer compute_encryption_key(ByteBuffer password_string);
+    ByteBuffer compute_user_password_value_r2(ByteBuffer password_string);
+    ByteBuffer compute_user_password_value_r3_to_r5(ByteBuffer password_string);
+
+    bool authenticate_user_password_r2_to_r5(StringView password_string);
+    bool authenticate_user_password_r6_and_later(StringView password_string);
+    bool authenticate_owner_password_r6_and_later(StringView password_string);
+
+    ByteBuffer compute_encryption_key_r2_to_r5(ByteBuffer password_string);
+    bool compute_encryption_key_r6_and_later(ByteBuffer password_string);
+
+    enum class HashKind {
+        Owner,
+        User,
+    };
+    ByteBuffer computing_a_hash_r6_and_later(ByteBuffer input, StringView input_password, HashKind);
 
     Document* m_document;
     size_t m_revision;
     Optional<ByteBuffer> m_encryption_key;
-    DeprecatedString m_o_entry;
-    DeprecatedString m_u_entry;
+    ByteString m_o_entry;
+    ByteString m_oe_entry;
+    ByteString m_u_entry;
+    ByteString m_ue_entry;
+    ByteString m_perms_entry;
     u32 m_flags;
     bool m_encrypt_metadata;
     size_t m_length;
+    CryptFilterMethod m_method;
 };
 
 class RC4 {

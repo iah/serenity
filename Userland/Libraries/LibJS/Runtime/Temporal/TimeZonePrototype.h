@@ -13,9 +13,10 @@ namespace JS::Temporal {
 
 class TimeZonePrototype final : public PrototypeObject<TimeZonePrototype, TimeZone> {
     JS_PROTOTYPE_OBJECT(TimeZonePrototype, TimeZone, Temporal.TimeZone);
+    JS_DECLARE_ALLOCATOR(TimeZonePrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~TimeZonePrototype() override = default;
 
 private:

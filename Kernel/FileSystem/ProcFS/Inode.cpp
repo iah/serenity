@@ -1,13 +1,14 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Spencer Dixon <spencercdixon@gmail.com>
- * Copyright (c) 2021-2023, Liav A. <liavalb@hotmail.co.il>
+ * Copyright (c) 2021-2024, Liav A. <liavalb@hotmail.co.il>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <Kernel/FileSystem/ProcFS/Inode.h>
-#include <Kernel/Process.h>
+#include <Kernel/FileSystem/RAMBackedFileType.h>
+#include <Kernel/Tasks/Process.h>
 #include <Kernel/Time/TimeManagement.h>
 
 namespace Kernel {
@@ -108,26 +109,25 @@ ProcFSInode::ProcFSInode(ProcFS const& procfs_instance, InodeIndex inode_index)
 
 ErrorOr<void> ProcFSInode::traverse_as_root_directory(Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)> callback) const
 {
-    TRY(callback({ "."sv, { fsid(), 1 }, 0 }));
-    TRY(callback({ ".."sv, { fsid(), 0 }, 0 }));
-    TRY(callback({ "self"sv, { fsid(), 2 }, 0 }));
+    TRY(callback({ "."sv, { fsid(), to_underlying(RAMBackedFileType::Directory) }, 0 }));
+    TRY(callback({ ".."sv, { fsid(), to_underlying(RAMBackedFileType::Directory) }, 0 }));
+    TRY(callback({ "self"sv, { fsid(), 2 }, to_underlying(RAMBackedFileType::Link) }));
 
-    return Process::for_each_in_same_jail([&](Process& process) -> ErrorOr<void> {
+    return Process::for_each_in_same_process_list([&](Process& process) -> ErrorOr<void> {
         VERIFY(!(process.pid() < 0));
         u64 process_id = (u64)process.pid().value();
         InodeIdentifier identifier = { fsid(), static_cast<InodeIndex>(process_id << 36) };
         auto process_id_string = TRY(KString::formatted("{:d}", process_id));
-        TRY(callback({ process_id_string->view(), identifier, 0 }));
+        TRY(callback({ process_id_string->view(), identifier, to_underlying(RAMBackedFileType::Directory) }));
         return {};
     });
 }
 
 ErrorOr<void> ProcFSInode::traverse_as_directory(Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)> callback) const
 {
-    MutexLocker locker(procfs().m_lock);
     if (m_type == Type::ProcessSubdirectory) {
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return EINVAL;
         switch (m_subdirectory) {
@@ -149,35 +149,34 @@ ErrorOr<void> ProcFSInode::traverse_as_directory(Function<ErrorOr<void>(FileSyst
 
     VERIFY(m_type == Type::ProcessDirectory);
     VERIFY(m_associated_pid.has_value());
-    auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+    auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
     if (!process)
         return EINVAL;
     return process->traverse_as_directory(procfs().fsid(), move(callback));
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> ProcFSInode::lookup_as_root_directory(StringView name)
+ErrorOr<NonnullRefPtr<Inode>> ProcFSInode::lookup_as_root_directory(StringView name)
 {
     if (name == "self"sv)
         return procfs().get_inode({ fsid(), 2 });
 
-    auto pid = name.to_uint<unsigned>();
+    auto pid = name.to_number<unsigned>();
     if (!pid.has_value())
         return ESRCH;
     auto actual_pid = pid.value();
 
-    if (auto maybe_process = Process::from_pid_in_same_jail(actual_pid)) {
+    if (auto maybe_process = Process::from_pid_in_same_process_list(actual_pid)) {
         InodeIndex id = (static_cast<u64>(maybe_process->pid().value()) + 1) << 36;
         return procfs().get_inode({ fsid(), id });
     }
     return ENOENT;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> ProcFSInode::lookup(StringView name)
+ErrorOr<NonnullRefPtr<Inode>> ProcFSInode::lookup(StringView name)
 {
-    MutexLocker locker(procfs().m_lock);
     if (m_type == Type::ProcessSubdirectory) {
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return ESRCH;
         switch (m_subdirectory) {
@@ -199,7 +198,7 @@ ErrorOr<NonnullLockRefPtr<Inode>> ProcFSInode::lookup(StringView name)
 
     VERIFY(m_type == Type::ProcessDirectory);
     VERIFY(m_associated_pid.has_value());
-    auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+    auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
     if (!process)
         return ESRCH;
     return process->lookup_as_directory(procfs(), name);
@@ -248,7 +247,7 @@ ErrorOr<size_t> ProcFSInode::read_bytes_locked(off_t offset, size_t count, UserO
     if (!description) {
         auto builder = TRY(KBufferBuilder::try_create());
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return Error::from_errno(ESRCH);
         TRY(try_fetch_process_property_data(*process, builder));
@@ -288,7 +287,7 @@ static ErrorOr<void> build_from_cached_data(KBufferBuilder& builder, ProcFSInode
     return {};
 }
 
-ErrorOr<void> ProcFSInode::try_fetch_process_property_data(NonnullLockRefPtr<Process> process, KBufferBuilder& builder) const
+ErrorOr<void> ProcFSInode::try_fetch_process_property_data(NonnullRefPtr<Process> process, KBufferBuilder& builder) const
 {
     VERIFY(m_type == Type::ProcessProperty);
     if (m_subdirectory == process_fd_subdirectory_root_entry.subdirectory) {
@@ -340,7 +339,7 @@ ErrorOr<void> ProcFSInode::refresh_process_property_data(OpenFileDescription& de
     // Without this, files opened before a process went non-dumpable could still be used for dumping.
     VERIFY(m_type == Type::ProcessProperty);
     VERIFY(m_associated_pid.has_value());
-    auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+    auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
     if (!process)
         return Error::from_errno(ESRCH);
     process->ptrace_lock().lock();
@@ -387,7 +386,7 @@ InodeMetadata ProcFSInode::metadata() const
     }
     case Type::ProcessProperty: {
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return {};
         metadata.inode = identifier();
@@ -396,12 +395,15 @@ InodeMetadata ProcFSInode::metadata() const
         metadata.uid = credentials->uid();
         metadata.gid = credentials->gid();
         metadata.size = 0;
-        metadata.mtime = TimeManagement::now();
+        auto creation_time = process->creation_time();
+        metadata.atime = creation_time;
+        metadata.ctime = creation_time;
+        metadata.mtime = creation_time;
         break;
     }
     case Type::ProcessDirectory: {
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return {};
         metadata.inode = identifier();
@@ -410,12 +412,15 @@ InodeMetadata ProcFSInode::metadata() const
         metadata.uid = credentials->uid();
         metadata.gid = credentials->gid();
         metadata.size = 0;
-        metadata.mtime = TimeManagement::now();
+        auto creation_time = process->creation_time();
+        metadata.atime = creation_time;
+        metadata.ctime = creation_time;
+        metadata.mtime = creation_time;
         break;
     }
     case Type::ProcessSubdirectory: {
         VERIFY(m_associated_pid.has_value());
-        auto process = Process::from_pid_in_same_jail(m_associated_pid.value());
+        auto process = Process::from_pid_in_same_process_list(m_associated_pid.value());
         if (!process)
             return {};
         metadata.inode = identifier();
@@ -424,7 +429,10 @@ InodeMetadata ProcFSInode::metadata() const
         metadata.uid = credentials->uid();
         metadata.gid = credentials->gid();
         metadata.size = 0;
-        metadata.mtime = TimeManagement::now();
+        auto creation_time = process->creation_time();
+        metadata.atime = creation_time;
+        metadata.ctime = creation_time;
+        metadata.mtime = creation_time;
         break;
     }
     }

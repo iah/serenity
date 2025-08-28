@@ -8,30 +8,31 @@
 #pragma once
 
 #include <LibWeb/CSS/CSSRule.h>
-#include <LibWeb/CSS/FontFace.h>
+#include <LibWeb/CSS/ParsedFontFace.h>
 
 namespace Web::CSS {
 
 class CSSFontFaceRule final : public CSSRule {
     WEB_PLATFORM_OBJECT(CSSFontFaceRule, CSSRule);
+    JS_DECLARE_ALLOCATOR(CSSFontFaceRule);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSFontFaceRule>> create(JS::Realm&, FontFace&&);
+    [[nodiscard]] static JS::NonnullGCPtr<CSSFontFaceRule> create(JS::Realm&, ParsedFontFace&&);
 
     virtual ~CSSFontFaceRule() override = default;
 
     virtual Type type() const override { return Type::FontFace; }
 
-    FontFace const& font_face() const { return m_font_face; }
+    ParsedFontFace const& font_face() const { return m_font_face; }
     CSSStyleDeclaration* style();
 
 private:
-    CSSFontFaceRule(JS::Realm&, FontFace&&);
+    CSSFontFaceRule(JS::Realm&, ParsedFontFace&&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-    virtual DeprecatedString serialized() const override;
+    virtual void initialize(JS::Realm&) override;
+    virtual String serialized() const override;
 
-    FontFace m_font_face;
+    ParsedFontFace m_font_face;
 };
 
 template<>

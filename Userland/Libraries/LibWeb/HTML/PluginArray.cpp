@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/PluginArrayPrototype.h>
 #include <LibWeb/HTML/PluginArray.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Window.h>
@@ -12,19 +13,24 @@
 
 namespace Web::HTML {
 
+JS_DEFINE_ALLOCATOR(PluginArray);
+
 PluginArray::PluginArray(JS::Realm& realm)
-    : Bindings::LegacyPlatformObject(realm)
+    : Bindings::PlatformObject(realm)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+        .supports_named_properties = true,
+        .has_legacy_unenumerable_named_properties_interface_extended_attribute = true,
+    };
 }
 
 PluginArray::~PluginArray() = default;
 
-JS::ThrowCompletionOr<void> PluginArray::initialize(JS::Realm& realm)
+void PluginArray::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::PluginArrayPrototype>(realm, "PluginArray"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(PluginArray);
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-refresh
@@ -34,32 +40,23 @@ void PluginArray::refresh() const
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:support-named-properties
-Vector<DeprecatedString> PluginArray::supported_property_names() const
+Vector<FlyString> PluginArray::supported_property_names() const
 {
     // The PluginArray interface supports named properties. If the user agent's PDF viewer supported is true, then they are the PDF viewer plugin names. Otherwise, they are the empty list.
     auto const& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    VERIFY(window.page());
-    if (!window.page()->pdf_viewer_supported())
+    if (!window.page().pdf_viewer_supported())
         return {};
 
     // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-plugin-names
-    static Vector<DeprecatedString> plugin_names = {
-        "PDF Viewer"sv,
-        "Chrome PDF Viewer"sv,
-        "Chromium PDF Viewer"sv,
-        "Microsoft Edge PDF Viewer"sv,
-        "WebKit built-in PDF"sv,
+    static Vector<FlyString> const plugin_names = {
+        "PDF Viewer"_fly_string,
+        "Chrome PDF Viewer"_fly_string,
+        "Chromium PDF Viewer"_fly_string,
+        "Microsoft Edge PDF Viewer"_fly_string,
+        "WebKit built-in PDF"_fly_string,
     };
 
     return plugin_names;
-}
-
-// https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:supports-indexed-properties
-bool PluginArray::is_supported_property_index(u32 index) const
-{
-    // The PluginArray interface supports indexed properties. The supported property indices are the indices of this's relevant global object's PDF viewer plugin objects.
-    auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    return index < window.pdf_viewer_plugin_objects().size();
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-length
@@ -86,7 +83,7 @@ JS::GCPtr<Plugin> PluginArray::item(u32 index) const
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-nameditem
-JS::GCPtr<Plugin> PluginArray::named_item(String const& name) const
+JS::GCPtr<Plugin> PluginArray::named_item(FlyString const& name) const
 {
     // 1. For each Plugin plugin of this's relevant global object's PDF viewer plugin objects: if plugin's name is name, then return plugin.
     auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
@@ -101,18 +98,17 @@ JS::GCPtr<Plugin> PluginArray::named_item(String const& name) const
     return nullptr;
 }
 
-WebIDL::ExceptionOr<JS::Value> PluginArray::item_value(size_t index) const
+Optional<JS::Value> PluginArray::item_value(size_t index) const
 {
     auto return_value = item(index);
     if (!return_value)
-        return JS::js_null();
+        return {};
     return return_value.ptr();
 }
 
-WebIDL::ExceptionOr<JS::Value> PluginArray::named_item_value(DeprecatedFlyString const& name) const
+JS::Value PluginArray::named_item_value(FlyString const& name) const
 {
-    auto converted_name = TRY_OR_THROW_OOM(vm(), String::from_deprecated_string(name));
-    auto return_value = named_item(converted_name);
+    auto return_value = named_item(name);
     if (!return_value)
         return JS::js_null();
     return return_value.ptr();

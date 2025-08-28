@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
+ * Copyright (c) 2023, Cameron Youell <cameronyouell@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,14 +9,13 @@
 #include <AK/Random.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-constexpr StringView default_template = "tmp.XXXXXXXXXX"sv;
-
-static DeprecatedString generate_random_filename(DeprecatedString const& pattern)
+static ByteString generate_random_filename(ByteString const& pattern)
 {
     StringBuilder new_filename { pattern.length() };
 
@@ -27,10 +27,10 @@ static DeprecatedString generate_random_filename(DeprecatedString const& pattern
             new_filename.append(pattern[i]);
     }
 
-    return new_filename.to_deprecated_string();
+    return new_filename.to_byte_string();
 }
 
-static ErrorOr<DeprecatedString> make_temp(DeprecatedString const& pattern, bool directory, bool dry_run)
+static ErrorOr<Optional<ByteString>> make_temp(ByteString const& pattern, bool directory, bool dry_run)
 {
     for (int i = 0; i < 100; ++i) {
         auto path = generate_random_filename(pattern);
@@ -49,18 +49,18 @@ static ErrorOr<DeprecatedString> make_temp(DeprecatedString const& pattern, bool
             }
         }
     }
-    return DeprecatedString {};
+    return OptionalNone {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath wpath cpath"));
 
-    StringView file_template;
+    ByteString file_template;
     bool create_directory = false;
     bool dry_run = false;
     bool quiet = false;
-    StringView target_directory;
+    ByteString target_directory;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Create a temporary file or directory, safely, and print its name.");
@@ -71,20 +71,26 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(target_directory, "Create TEMPLATE relative to DIR", "tmpdir", 'p', "DIR");
     args_parser.parse(arguments);
 
-    if (target_directory.is_empty()) {
-        if (!file_template.is_empty()) { // If a custom template is specified we assume the target directory is the current directory
-            // FIXME: Get rid of this minor memory leak.
-            auto const* cwd_ptr = getcwd(nullptr, 0);
-            target_directory = StringView { cwd_ptr, strlen(cwd_ptr) };
-        } else {
-            LexicalPath template_path(file_template);
-            char const* env_directory = getenv("TMPDIR");
-            target_directory = env_directory && *env_directory ? StringView { env_directory, strlen(env_directory) } : "/tmp"sv;
+    if (file_template.is_empty()) {
+        file_template = "tmp.XXXXXXXXXX"sv;
+    } else {
+        auto resolved_path = LexicalPath(file_template);
+        if (resolved_path.is_absolute()) {
+            if (!target_directory.is_empty()) {
+                warnln("mktemp: File template cannot be an absolute path if the --tmpdir option is used");
+                return 1;
+            }
+
+            target_directory = resolved_path.dirname();
+            file_template = resolved_path.basename();
         }
     }
 
-    if (file_template.is_empty()) {
-        file_template = default_template;
+    if (target_directory.is_empty()) {
+        target_directory = "/tmp";
+        auto const* env_directory = getenv("TMPDIR");
+        if (env_directory != nullptr && *env_directory != 0)
+            target_directory = ByteString(env_directory, strlen(env_directory));
     }
 
     if (!file_template.find("XXX"sv).has_value()) {
@@ -96,7 +102,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto target_path = LexicalPath::join(target_directory, file_template).string();
 
     auto final_path = TRY(make_temp(target_path, create_directory, dry_run));
-    if (final_path.is_null()) {
+    if (!final_path.has_value()) {
         if (!quiet) {
             if (create_directory)
                 warnln("Failed to create directory via template {}", target_path.characters());
@@ -106,7 +112,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    outln("{}", final_path);
+    outln("{}", *final_path);
 
     return 0;
 }

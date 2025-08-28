@@ -11,16 +11,17 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
 #include <LibWeb/CSS/GeneralEnclosed.h>
+#include <LibWeb/CSS/Length.h>
 #include <LibWeb/CSS/MediaFeatureID.h>
 #include <LibWeb/CSS/Ratio.h>
-#include <LibWeb/CSS/StyleValue.h>
+#include <LibWeb/CSS/Resolution.h>
 
 namespace Web::CSS {
 
 // https://www.w3.org/TR/mediaqueries-4/#typedef-mf-value
 class MediaFeatureValue {
 public:
-    explicit MediaFeatureValue(ValueID ident)
+    explicit MediaFeatureValue(Keyword ident)
         : m_value(move(ident))
     {
     }
@@ -45,19 +46,19 @@ public:
     {
     }
 
-    ErrorOr<String> to_string() const;
+    String to_string() const;
 
-    bool is_ident() const { return m_value.has<ValueID>(); }
+    bool is_ident() const { return m_value.has<Keyword>(); }
     bool is_length() const { return m_value.has<Length>(); }
     bool is_number() const { return m_value.has<float>(); }
     bool is_ratio() const { return m_value.has<Ratio>(); }
     bool is_resolution() const { return m_value.has<Resolution>(); }
     bool is_same_type(MediaFeatureValue const& other) const;
 
-    ValueID const& ident() const
+    Keyword const& ident() const
     {
         VERIFY(is_ident());
-        return m_value.get<ValueID>();
+        return m_value.get<Keyword>();
     }
 
     Length const& length() const
@@ -85,7 +86,7 @@ public:
     }
 
 private:
-    Variant<ValueID, Length, Ratio, Resolution, float> m_value;
+    Variant<Keyword, Length, Ratio, Resolution, float> m_value;
 };
 
 // https://www.w3.org/TR/mediaqueries-4/#mq-features
@@ -144,7 +145,7 @@ public:
     }
 
     bool evaluate(HTML::Window const&) const;
-    ErrorOr<String> to_string() const;
+    String to_string() const;
 
 private:
     enum class Type {
@@ -200,7 +201,7 @@ struct MediaCondition {
     static NonnullOwnPtr<MediaCondition> from_or_list(Vector<NonnullOwnPtr<MediaCondition>>&&);
 
     MatchResult evaluate(HTML::Window const&) const;
-    ErrorOr<String> to_string() const;
+    String to_string() const;
 
 private:
     MediaCondition() = default;
@@ -239,7 +240,7 @@ public:
 
     bool matches() const { return m_matches; }
     bool evaluate(HTML::Window const&);
-    ErrorOr<String> to_string() const;
+    String to_string() const;
 
 private:
     MediaQuery() = default;
@@ -253,9 +254,7 @@ private:
     bool m_matches { false };
 };
 
-ErrorOr<String> serialize_a_media_query_list(Vector<NonnullRefPtr<MediaQuery>> const&);
-
-bool is_media_feature_name(StringView name);
+String serialize_a_media_query_list(Vector<NonnullRefPtr<MediaQuery>> const&);
 
 MediaQuery::MediaType media_type_from_string(StringView);
 StringView to_string(MediaQuery::MediaType);
@@ -268,7 +267,7 @@ template<>
 struct Formatter<Web::CSS::MediaFeature> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaFeature const& media_feature)
     {
-        return Formatter<StringView>::format(builder, TRY(media_feature.to_string()));
+        return Formatter<StringView>::format(builder, media_feature.to_string());
     }
 };
 
@@ -276,7 +275,7 @@ template<>
 struct Formatter<Web::CSS::MediaCondition> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaCondition const& media_condition)
     {
-        return Formatter<StringView>::format(builder, TRY(media_condition.to_string()));
+        return Formatter<StringView>::format(builder, media_condition.to_string());
     }
 };
 
@@ -284,7 +283,7 @@ template<>
 struct Formatter<Web::CSS::MediaQuery> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::MediaQuery const& media_query)
     {
-        return Formatter<StringView>::format(builder, TRY(media_query.to_string()));
+        return Formatter<StringView>::format(builder, media_query.to_string());
     }
 };
 

@@ -19,7 +19,7 @@ namespace PDF {
 
 class StringObject final : public Object {
 public:
-    StringObject(DeprecatedString string, bool is_binary)
+    StringObject(ByteString string, bool is_binary)
         : m_string(move(string))
         , m_is_binary(is_binary)
     {
@@ -27,18 +27,18 @@ public:
 
     ~StringObject() override = default;
 
-    [[nodiscard]] ALWAYS_INLINE DeprecatedString const& string() const { return m_string; }
+    [[nodiscard]] ALWAYS_INLINE ByteString const& string() const { return m_string; }
     [[nodiscard]] ALWAYS_INLINE bool is_binary() const { return m_is_binary; }
-    void set_string(DeprecatedString string) { m_string = move(string); }
+    void set_string(ByteString string) { m_string = move(string); }
 
     char const* type_name() const override { return "string"; }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 protected:
     bool is_string() const override { return true; }
 
 private:
-    DeprecatedString m_string;
+    ByteString m_string;
     bool m_is_binary;
 };
 
@@ -54,7 +54,7 @@ public:
     [[nodiscard]] ALWAYS_INLINE DeprecatedFlyString const& name() const { return m_name; }
 
     char const* type_name() const override { return "name"; }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 protected:
     bool is_name() const override { return true; }
@@ -83,7 +83,7 @@ public:
     ALWAYS_INLINE Value const& at(size_t index) const { return m_elements[index]; }
 
     PDFErrorOr<NonnullRefPtr<Object>> get_object_at(Document* document, size_t index) const;
-    NonnullRefPtr<Object> get_object_at(size_t index) const { return at(index).get<NonnullRefPtr<Object>>(); };
+    NonnullRefPtr<Object> get_object_at(size_t index) const { return at(index).get<NonnullRefPtr<Object>>(); }
 
 #define DEFINE_INDEXER(class_name, snake_name)                                                  \
     PDFErrorOr<NonnullRefPtr<class_name>> get_##snake_name##_at(Document*, size_t index) const; \
@@ -95,7 +95,7 @@ public:
     {
         return "array";
     }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 protected:
     bool is_array() const override { return true; }
@@ -121,7 +121,7 @@ public:
     template<typename... Args>
     bool contains_any_of(Args&&... keys) const { return (m_map.contains(keys) || ...); }
 
-    ALWAYS_INLINE Optional<Value> get(DeprecatedFlyString const& key) const { return m_map.get(key); }
+    ALWAYS_INLINE Optional<Value> get(DeprecatedFlyString const& key) const { return m_map.get(key).copy(); }
 
     Value get_value(DeprecatedFlyString const& key) const
     {
@@ -142,7 +142,7 @@ public:
     {
         return "dict";
     }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 protected:
     bool is_dict() const override { return true; }
@@ -162,11 +162,11 @@ public:
     virtual ~StreamObject() override = default;
 
     [[nodiscard]] ALWAYS_INLINE NonnullRefPtr<DictObject> dict() const { return m_dict; }
-    [[nodiscard]] ReadonlyBytes bytes() const { return m_buffer.bytes(); };
-    [[nodiscard]] ByteBuffer& buffer() { return m_buffer; };
+    [[nodiscard]] ReadonlyBytes bytes() const { return m_buffer.bytes(); }
+    [[nodiscard]] ByteBuffer& buffer() { return m_buffer; }
 
     char const* type_name() const override { return "stream"; }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 private:
     bool is_stream() const override { return true; }
@@ -190,7 +190,7 @@ public:
     [[nodiscard]] ALWAYS_INLINE Value const& value() const { return m_value; }
 
     char const* type_name() const override { return "indirect_object"; }
-    DeprecatedString to_deprecated_string(int indent) const override;
+    ByteString to_byte_string(int indent) const override;
 
 protected:
     bool is_indirect_value() const override { return true; }

@@ -12,9 +12,10 @@ namespace JS {
 
 class AggregateErrorConstructor final : public NativeFunction {
     JS_OBJECT(AggregateErrorConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(AggregateErrorConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~AggregateErrorConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

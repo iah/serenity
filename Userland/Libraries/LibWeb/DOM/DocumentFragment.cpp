@@ -4,28 +4,29 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/DocumentFragmentPrototype.h>
 #include <LibWeb/DOM/DocumentFragment.h>
 #include <LibWeb/HTML/Window.h>
 
 namespace Web::DOM {
+
+JS_DEFINE_ALLOCATOR(DocumentFragment);
 
 DocumentFragment::DocumentFragment(Document& document)
     : ParentNode(document, NodeType::DOCUMENT_FRAGMENT_NODE)
 {
 }
 
-JS::ThrowCompletionOr<void> DocumentFragment::initialize(JS::Realm& realm)
+void DocumentFragment::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::DocumentFragmentPrototype>(realm, "DocumentFragment"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(DocumentFragment);
 }
 
 void DocumentFragment::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_host.ptr());
+    visitor.visit(m_host);
 }
 
 void DocumentFragment::set_host(Web::DOM::Element* element)
@@ -37,7 +38,7 @@ void DocumentFragment::set_host(Web::DOM::Element* element)
 WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> DocumentFragment::construct_impl(JS::Realm& realm)
 {
     auto& window = verify_cast<HTML::Window>(realm.global_object());
-    return MUST_OR_THROW_OOM(realm.heap().allocate<DocumentFragment>(realm, window.associated_document()));
+    return realm.heap().allocate<DocumentFragment>(realm, window.associated_document());
 }
 
 }

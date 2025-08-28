@@ -6,7 +6,7 @@
 
 #include <LibTest/TestCase.h>
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/HashMap.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
@@ -14,7 +14,7 @@
 
 TEST_CASE(load_form)
 {
-    DeprecatedString raw_form_json = R"(
+    ByteString raw_form_json = R"(
     {
         "name": "Form1",
         "widgets": [
@@ -40,7 +40,7 @@ TEST_CASE(load_form)
 
     EXPECT(form_json.is_object());
 
-    auto name = form_json.as_object().get_deprecated_string("name"sv);
+    auto name = form_json.as_object().get_byte_string("name"sv);
     EXPECT(name.has_value());
 
     EXPECT_EQ(name.value(), "Form1");
@@ -50,8 +50,8 @@ TEST_CASE(load_form)
 
     widgets->for_each([&](JsonValue const& widget_value) {
         auto& widget_object = widget_value.as_object();
-        auto widget_class = widget_object.get_deprecated_string("class"sv).value();
-        widget_object.for_each_member([&]([[maybe_unused]] auto& property_name, [[maybe_unused]] const JsonValue& property_value) {
+        auto widget_class = widget_object.get_byte_string("class"sv).value();
+        widget_object.for_each_member([&]([[maybe_unused]] auto& property_name, [[maybe_unused]] JsonValue const& property_value) {
         });
     });
 }
@@ -60,7 +60,6 @@ TEST_CASE(json_empty_string)
 {
     auto json = JsonValue::from_string("\"\""sv).value();
     EXPECT_EQ(json.type(), JsonValue::Type::String);
-    EXPECT_EQ(json.as_string().is_null(), false);
     EXPECT_EQ(json.as_string().is_empty(), true);
 }
 
@@ -68,7 +67,6 @@ TEST_CASE(json_string)
 {
     auto json = JsonValue::from_string("\"A\""sv).value();
     EXPECT_EQ(json.type(), JsonValue::Type::String);
-    EXPECT_EQ(json.as_string().is_null(), false);
     EXPECT_EQ(json.as_string().length(), size_t { 1 });
     EXPECT_EQ(json.as_string() == "A", true);
 }
@@ -77,9 +75,30 @@ TEST_CASE(json_utf8_character)
 {
     auto json = JsonValue::from_string("\"\\u0041\""sv).value();
     EXPECT_EQ(json.type(), JsonValue::Type::String);
-    EXPECT_EQ(json.as_string().is_null(), false);
     EXPECT_EQ(json.as_string().length(), size_t { 1 });
     EXPECT_EQ(json.as_string() == "A", true);
+}
+
+TEST_CASE(json_encoded_surrogates)
+{
+    {
+        auto json = JsonValue::from_string("\"\\uD83E\\uDD13\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 4u);
+        EXPECT_EQ(json.as_string(), "🤓"sv);
+    }
+    {
+        auto json = JsonValue::from_string("\"\\uD83E\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 3u);
+        EXPECT_EQ(json.as_string(), "\xED\xA0\xBE"sv);
+    }
+    {
+        auto json = JsonValue::from_string("\"\\uDD13\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 3u);
+        EXPECT_EQ(json.as_string(), "\xED\xB4\x93"sv);
+    }
 }
 
 /*
@@ -92,7 +111,6 @@ TEST_CASE(json_utf8_multibyte)
 
     auto& json = json_or_error.value();
     EXPECT_EQ(json.type(), JsonValue::Type::String);
-    EXPECT_EQ(json.as_string().is_null(), false);
     EXPECT_EQ(json.as_string().length(), size_t { 2 });
     EXPECT_EQ(json.as_string() == "š", true);
     EXPECT_EQ(json.as_string() == "\xc5\xa1", true);
@@ -103,8 +121,39 @@ TEST_CASE(json_64_bit_value)
 {
     auto big_value = 0x12345678aabbccddull;
     JsonValue big_json_value(big_value);
+    EXPECT(big_json_value.is_integer<u64>());
+    EXPECT_EQ(big_json_value.as_integer<u64>(), big_value);
+
     JsonValue big_json_value_copy = big_json_value;
-    EXPECT_EQ(big_json_value.as_u64(), big_json_value_copy.as_u64());
+    EXPECT(big_json_value.equals(big_json_value_copy));
+}
+
+TEST_CASE(json_64_bit_value_coerced_to_32_bit)
+{
+    {
+        auto min = NumericLimits<i64>::min();
+        auto max = NumericLimits<i64>::max();
+
+        auto json = TRY_OR_FAIL(JsonValue::from_string(String::number(min)));
+        EXPECT_EQ(json.get_integer<i64>(), min);
+        EXPECT(!json.is_integer<i32>());
+
+        json = TRY_OR_FAIL(JsonValue::from_string(String::number(max)));
+        EXPECT_EQ(json.get_integer<i64>(), max);
+        EXPECT(!json.is_integer<i32>());
+    }
+    {
+        auto min = NumericLimits<u64>::min();
+        auto max = NumericLimits<u64>::max();
+
+        auto json = TRY_OR_FAIL(JsonValue::from_string(String::number(min)));
+        EXPECT_EQ(json.get_integer<u64>(), min);
+        EXPECT_EQ(json.get_integer<u32>(), min);
+
+        json = TRY_OR_FAIL(JsonValue::from_string(String::number(max)));
+        EXPECT_EQ(json.get_integer<u64>(), max);
+        EXPECT(!json.is_integer<u32>());
+    }
 }
 
 TEST_CASE(json_duplicate_keys)
@@ -113,16 +162,16 @@ TEST_CASE(json_duplicate_keys)
     json.set("test", "foo");
     json.set("test", "bar");
     json.set("test", "baz");
-    EXPECT_EQ(json.to_deprecated_string(), "{\"test\":\"baz\"}");
+    EXPECT_EQ(json.to_byte_string(), "{\"test\":\"baz\"}");
 }
 
 TEST_CASE(json_u64_roundtrip)
 {
     auto big_value = 0xffffffffffffffffull;
-    auto json = JsonValue(big_value).to_deprecated_string();
+    auto json = JsonValue(big_value).serialized<StringBuilder>();
     auto value = JsonValue::from_string(json);
     EXPECT_EQ_FORCE(value.is_error(), false);
-    EXPECT_EQ(value.value().as_u64(), big_value);
+    EXPECT_EQ(value.value().as_integer<u64>(), big_value);
 }
 
 TEST_CASE(json_parse_empty_string)
@@ -134,28 +183,30 @@ TEST_CASE(json_parse_empty_string)
 TEST_CASE(json_parse_long_decimals)
 {
     auto value = JsonValue::from_string("1644452550.6489999294281"sv);
-    EXPECT_EQ(value.value().as_double(), 1644452550.6489999294281);
+    EXPECT_EQ(value.value().get_double_with_precision_loss(), 1644452550.6489999294281);
 }
 
 TEST_CASE(json_parse_number_with_exponent)
 {
     auto value_without_fraction = JsonValue::from_string("10e5"sv);
-    EXPECT_EQ(value_without_fraction.value().as_double(), 1000000.0);
+    EXPECT_EQ(value_without_fraction.value().get_double_with_precision_loss(), 1000000.0);
 
     auto value_with_fraction = JsonValue::from_string("10.5e5"sv);
-    EXPECT_EQ(value_with_fraction.value().as_double(), 1050000.0);
+    EXPECT_EQ(value_with_fraction.value().get_double_with_precision_loss(), 1050000.0);
 }
 
 TEST_CASE(json_parse_special_numbers)
 {
-#define EXPECT_TO_MATCH_NUMBER_BIT_WISE(string_input, double_input)                                                           \
-    do {                                                                                                                      \
-        auto value_or_error = JsonValue::from_string(string_input##sv);                                                       \
-        VERIFY(!value_or_error.is_error());                                                                                   \
-        if (value_or_error.is_error())                                                                                        \
-            dbgln("got {}", value_or_error.error());                                                                          \
-        EXPECT(value_or_error.value().is_number());                                                                           \
-        EXPECT_EQ(bit_cast<u64>(value_or_error.value().to_double(4321.0)), bit_cast<u64>(static_cast<double>(double_input))); \
+#define EXPECT_TO_MATCH_NUMBER_BIT_WISE(string_input, double_input)                                  \
+    do {                                                                                             \
+        auto value_or_error = JsonValue::from_string(string_input##sv);                              \
+        VERIFY(!value_or_error.is_error());                                                          \
+        if (value_or_error.is_error())                                                               \
+            dbgln("got {}", value_or_error.error());                                                 \
+        auto value = value_or_error.release_value();                                                 \
+        EXPECT(value.is_number());                                                                   \
+        auto value_as_double = value.get_double_with_precision_loss().value();                       \
+        EXPECT_EQ(bit_cast<u64>(value_as_double), bit_cast<u64>(static_cast<double>(double_input))); \
     } while (false)
 
     EXPECT_TO_MATCH_NUMBER_BIT_WISE("-0", -0.);
@@ -276,6 +327,9 @@ struct CustomError {
 template<typename T>
 class CustomErrorOr {
 public:
+    using ResultType = T;
+    using ErrorType = CustomError;
+
     CustomErrorOr(T)
         : m_is_error(false)
     {
@@ -296,7 +350,7 @@ private:
 
 TEST_CASE(fallible_json_object_for_each)
 {
-    DeprecatedString raw_json = R"(
+    ByteString raw_json = R"(
     {
         "name": "anon",
         "home": "/home/anon",
@@ -311,7 +365,7 @@ TEST_CASE(fallible_json_object_for_each)
     }));
 
     auto result1 = object.try_for_each_member([](auto const&, auto const&) -> ErrorOr<void> {
-        return Error::from_string_view("nanananana"sv);
+        return Error::from_string_literal("nanananana");
     });
     EXPECT(result1.is_error());
     EXPECT_EQ(result1.error().string_literal(), "nanananana"sv);
@@ -320,7 +374,7 @@ TEST_CASE(fallible_json_object_for_each)
         return CustomError {};
     });
     EXPECT(result2.is_error());
-    EXPECT((IsSame<decltype(result2.release_error()), CustomError>));
+    static_assert((IsSame<decltype(result2.release_error()), CustomError&&>));
 
     auto result3 = object.try_for_each_member([](auto const&, auto const&) -> CustomErrorOr<int> {
         return 42;
@@ -331,12 +385,12 @@ TEST_CASE(fallible_json_object_for_each)
         return CustomError {};
     });
     EXPECT(result4.is_error());
-    EXPECT((IsSame<decltype(result4.release_error()), CustomError>));
+    static_assert((IsSame<decltype(result4.release_error()), CustomError&&>));
 }
 
 TEST_CASE(fallible_json_array_for_each)
 {
-    DeprecatedString raw_json = R"(
+    ByteString raw_json = R"(
     [
         "anon",
         "/home/anon",
@@ -351,7 +405,7 @@ TEST_CASE(fallible_json_array_for_each)
     }));
 
     auto result1 = array.try_for_each([](auto const&) -> ErrorOr<void> {
-        return Error::from_string_view("nanananana"sv);
+        return Error::from_string_literal("nanananana");
     });
     EXPECT(result1.is_error());
     EXPECT_EQ(result1.error().string_literal(), "nanananana"sv);
@@ -360,7 +414,7 @@ TEST_CASE(fallible_json_array_for_each)
         return CustomError {};
     });
     EXPECT(result2.is_error());
-    EXPECT((IsSame<decltype(result2.release_error()), CustomError>));
+    static_assert((IsSame<decltype(result2.release_error()), CustomError&&>));
 
     auto result3 = array.try_for_each([](auto const&) -> CustomErrorOr<int> {
         return 42;
@@ -371,7 +425,141 @@ TEST_CASE(fallible_json_array_for_each)
         return CustomError {};
     });
     EXPECT(result4.is_error());
-    EXPECT((IsSame<decltype(result4.release_error()), CustomError>));
+    static_assert((IsSame<decltype(result4.release_error()), CustomError&&>));
+}
+
+TEST_CASE(json_array_is_empty)
+{
+    auto raw_json = "[]"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    auto array = json_value.as_array();
+    EXPECT(array.is_empty());
+
+    raw_json = "[1, 2]"sv;
+    json_value = MUST(JsonValue::from_string(raw_json));
+    array = json_value.as_array();
+    EXPECT(!array.is_empty());
+}
+
+static JsonArray setup_json_array()
+{
+    auto raw_json = R"([1, 2, "WHF", 802.11, 16])"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    return json_value.as_array();
+}
+
+TEST_CASE(json_array_size)
+{
+    auto array = setup_json_array();
+    EXPECT_EQ(array.size(), size_t { 5 });
+
+    auto empty_json_arr_sv = "[]"sv;
+    array = MUST(JsonValue::from_string(empty_json_arr_sv)).as_array();
+    EXPECT_EQ(array.size(), size_t { 0 });
+}
+
+TEST_CASE(json_array_at)
+{
+    auto array = setup_json_array();
+    auto const& element = array.at(1);
+    EXPECT_EQ(element.as_integer<u8>(), 2);
+}
+
+TEST_CASE(json_array_subscript_operator)
+{
+    auto array = setup_json_array();
+    auto const& element = array[1];
+    EXPECT_EQ(element.as_integer<u8>(), 2);
+}
+
+TEST_CASE(json_array_take)
+{
+    auto array = setup_json_array();
+    auto const& element = array.take(2);
+    EXPECT_EQ(array.size(), size_t { 4 });
+    EXPECT_EQ(element.as_string(), "WHF");
+}
+
+TEST_CASE(json_array_must_append)
+{
+    auto array = setup_json_array();
+    array.must_append(MUST(JsonValue::from_string("32"sv)));
+    EXPECT_EQ(array.size(), size_t { 6 });
+    EXPECT_EQ(array.at(array.size() - 1).as_integer<u8>(), 32);
+}
+
+TEST_CASE(json_array_try_append)
+{
+    auto array = setup_json_array();
+    MUST(array.append(MUST(JsonValue::from_string("32"sv))));
+    EXPECT_EQ(array.size(), size_t { 6 });
+    EXPECT_EQ(array.at(array.size() - 1).as_integer<u8>(), 32);
+}
+
+TEST_CASE(json_array_clear)
+{
+    auto array = setup_json_array();
+    array.clear();
+    EXPECT(array.is_empty());
+}
+
+TEST_CASE(json_array_set)
+{
+    auto array = setup_json_array();
+    array.set(1, MUST(JsonValue::from_string("-32"sv)));
+    EXPECT_EQ(array.size(), size_t { 5 });
+    EXPECT_EQ(array.at(1).as_integer<i8>(), -32);
+}
+
+TEST_CASE(json_array_ensure_capacity)
+{
+    auto array = setup_json_array();
+    size_t new_capacity { 16 };
+    array.ensure_capacity(new_capacity);
+    EXPECT_EQ(array.values().capacity(), new_capacity);
+}
+
+TEST_CASE(json_array_for_each)
+{
+    auto raw_json = "[1, 2, 3, 4]"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    auto array = json_value.as_array();
+    size_t count { 0 };
+    array.for_each([&count](JsonValue const& value) {
+        EXPECT_EQ(value.as_integer<u8>(), ++count);
+    });
+    EXPECT_EQ(array.size(), count);
+}
+
+TEST_CASE(json_array_serialized)
+{
+    auto raw_json = R"(["Hello",2,3.14,4,"World"])"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    auto array = json_value.as_array();
+    auto const& serialized_json = array.serialized<StringBuilder>();
+    EXPECT_EQ(serialized_json, raw_json);
+}
+
+TEST_CASE(json_array_serialize)
+{
+    auto raw_json = R"(["Hello",2,3.14,4,"World"])"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    auto array = json_value.as_array();
+    StringBuilder builder {};
+    array.serialize(builder);
+    EXPECT_EQ(builder.to_byte_string(), raw_json);
+}
+
+TEST_CASE(json_array_values)
+{
+    auto raw_json = "[1, 2, 3, 4]"sv;
+    auto json_value = MUST(JsonValue::from_string(raw_json));
+    auto array = json_value.as_array();
+    auto const& values = array.values();
+    EXPECT_EQ(values.size(), size_t { 4 });
+
+    for (size_t i = 0; i < values.size(); i++)
+        EXPECT_EQ(array.at(i).as_integer<u8>(), i + 1);
 }
 
 TEST_CASE(json_value_as_integer)

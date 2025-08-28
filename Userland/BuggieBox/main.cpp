@@ -7,51 +7,79 @@
 
 #include <AK/LexicalPath.h>
 #include <LibMain/Main.h>
-#include <Userland/Shell/Shell.h>
+#include <LibShell/Shell.h>
 
-#define ENUMERATE_UTILITIES(E) \
-    E(cat)                     \
-    E(checksum)                \
-    E(chmod)                   \
-    E(chown)                   \
-    E(cp)                      \
-    E(df)                      \
-    E(env)                     \
-    E(file)                    \
-    E(find)                    \
-    E(id)                      \
-    E(less)                    \
-    E(ln)                      \
-    E(ls)                      \
-    E(lsblk)                   \
-    E(mkdir)                   \
-    E(mknod)                   \
-    E(mount)                   \
-    E(mv)                      \
-    E(ps)                      \
-    E(rm)                      \
-    E(sh)                      \
-    E(rmdir)                   \
-    E(tail)                    \
-    E(tree)                    \
-    E(umount)                  \
-    E(uname)                   \
+#define ENUMERATE_UTILITIES(E, ALIAS) \
+    ALIAS(b2sum, checksum)            \
+    E(cat)                            \
+    E(checksum)                       \
+    E(chmod)                          \
+    E(chown)                          \
+    E(cp)                             \
+    E(df)                             \
+    E(env)                            \
+    E(file)                           \
+    E(find)                           \
+    E(id)                             \
+    E(init)                           \
+    E(less)                           \
+    E(ln)                             \
+    E(ls)                             \
+    E(lsblk)                          \
+    ALIAS(md5sum, checksum)           \
+    E(mkdir)                          \
+    E(mknod)                          \
+    E(mount)                          \
+    E(mv)                             \
+    E(ps)                             \
+    E(rm)                             \
+    E(rmdir)                          \
+    E(sh)                             \
+    ALIAS(sha1sum, checksum)          \
+    ALIAS(sha256sum, checksum)        \
+    ALIAS(sha512sum, checksum)        \
+    ALIAS(Shell, sh)                  \
+    E(tail)                           \
+    E(tree)                           \
+    E(umount)                         \
+    E(uname)                          \
     E(uniq)
 
 // Declare the entrypoints of all the tools that we delegate to.
+// Some tools have additional aliases that we skip in the declarations.
 // Relying on `decltype(serenity_main)` ensures that we always stay consistent with the `serenity_main` signature.
 #define DECLARE_ENTRYPOINT(name) decltype(serenity_main) name##_main;
-ENUMERATE_UTILITIES(DECLARE_ENTRYPOINT)
+#define SKIP(alias, name)
+ENUMERATE_UTILITIES(DECLARE_ENTRYPOINT, SKIP)
 #undef DECLARE_ENTRYPOINT
+#undef SKIP
 
 static void fail()
 {
-    out(stderr, "Direct running of BuggieBox was detected without finding a proper requested utility.\n");
-    out(stderr, "The following programs are supported: uname, env, lsblk, file, df, mount, umount, mkdir, ");
-    out(stderr, "rmdir, rm, chown, chmod, cp, ln, ls, mv, cat, md5sum, sha1sum, sha256sum, sha512sum, sh, uniq, id, tail, ");
-    out(stderr, "find, less, mknod, ps\n");
-    out(stderr, "To use one of these included utilities, create a symbolic link with the target being this binary, and ensure the basename");
-    out(stderr, "is included within.\n");
+#define TOOL_NAME(name) #name##sv,
+#define ALIAS_NAME(alias, name) #alias##sv,
+    auto const tool_names = {
+        ENUMERATE_UTILITIES(TOOL_NAME, ALIAS_NAME)
+    };
+#undef TOOL_NAME
+#undef ALIAS_NAME
+
+    outln(stderr);
+    outln(stderr, "Usage:");
+    outln(stderr, "* Specify a utility as an argument:");
+    outln(stderr, "  $ BuggieBox UTILITY");
+    outln(stderr, "* Create a symbolic link with the target being this binary,");
+    outln(stderr, "  and ensure the basename is one of the supported utilities' name.");
+
+    outln(stderr);
+    outln(stderr, "The following utilities are supported:");
+    int count = 0;
+    for (auto const& tool_name : tool_names) {
+        if (++count % 5 == 1)
+            out(stderr, "\n\t");
+        out(stderr, "{:12}", tool_name);
+    }
+    outln(stderr);
 }
 
 struct Runner {
@@ -61,15 +89,10 @@ struct Runner {
 
 static constexpr Runner s_runners[] = {
 #define RUNNER_ENTRY(name) { #name##sv, name##_main },
-    ENUMERATE_UTILITIES(RUNNER_ENTRY)
+#define ALIAS_RUNNER_ENTRY(alias, name) { #alias##sv, name##_main },
+    ENUMERATE_UTILITIES(RUNNER_ENTRY, ALIAS_RUNNER_ENTRY)
 #undef RUNNER_ENTRY
-
-    // Some tools have additional aliases.
-    { "md5sum"sv, checksum_main },
-    { "sha1sum"sv, checksum_main },
-    { "sha256sum"sv, checksum_main },
-    { "sha512sum"sv, checksum_main },
-    { "Shell"sv, sh_main },
+#undef ALIAS_RUNNER_ENTRY
 };
 
 static ErrorOr<int> run_program(Main::Arguments arguments, LexicalPath const& runbase, bool& found_runner)
@@ -86,14 +109,17 @@ static ErrorOr<int> run_program(Main::Arguments arguments, LexicalPath const& ru
 static ErrorOr<int> buggiebox_main(Main::Arguments arguments)
 {
     if (arguments.argc == 0) {
+        outln(stderr, "Detected directly running BuggieBox without specifying a utility.");
         fail();
         return 1;
     }
     bool found_runner = false;
     LexicalPath runbase { arguments.strings[0] };
     auto result = TRY(run_program(arguments, runbase, found_runner));
-    if (!found_runner)
+    if (!found_runner) {
+        outln(stderr, "'{}' is not supported by BuggieBox.", runbase);
         fail();
+    }
     return result;
 }
 

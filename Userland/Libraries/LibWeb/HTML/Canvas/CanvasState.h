@@ -11,7 +11,10 @@
 #include <AK/Vector.h>
 #include <LibGfx/AffineTransform.h>
 #include <LibGfx/Color.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/PaintStyle.h>
+#include <LibGfx/PathClipper.h>
+#include <LibWeb/Bindings/CanvasRenderingContext2DPrototype.h>
 #include <LibWeb/HTML/CanvasGradient.h>
 #include <LibWeb/HTML/CanvasPattern.h>
 
@@ -50,13 +53,13 @@ public:
         Optional<Gfx::Color> as_color() const;
         Gfx::Color to_color_but_fixme_should_accept_any_paint_style() const;
 
-        using JsFillOrStrokeStyle = Variant<DeprecatedString, JS::Handle<CanvasGradient>, JS::Handle<CanvasPattern>>;
+        using JsFillOrStrokeStyle = Variant<String, JS::Handle<CanvasGradient>, JS::Handle<CanvasPattern>>;
 
         JsFillOrStrokeStyle to_js_fill_or_stroke_style() const
         {
             return m_fill_or_stroke_style.visit(
                 [&](Gfx::Color color) -> JsFillOrStrokeStyle {
-                    return color.to_deprecated_string();
+                    return color.to_string(Gfx::Color::HTMLCompatibleSerialization::Yes);
                 },
                 [&](auto handle) -> JsFillOrStrokeStyle {
                     return handle;
@@ -74,6 +77,19 @@ public:
         FillOrStrokeStyle fill_style { Gfx::Color::Black };
         FillOrStrokeStyle stroke_style { Gfx::Color::Black };
         float line_width { 1 };
+        Bindings::CanvasLineCap line_cap { Bindings::CanvasLineCap::Butt };
+        Bindings::CanvasLineJoin line_join { Bindings::CanvasLineJoin::Miter };
+        float miter_limit { 10 };
+        Vector<double> dash_list;
+        float line_dash_offset { 0 };
+        bool image_smoothing_enabled { true };
+        Bindings::ImageSmoothingQuality image_smoothing_quality { Bindings::ImageSmoothingQuality::Low };
+        float global_alpha = { 1 };
+        Optional<Gfx::ClipPath> clip;
+        RefPtr<CSS::CSSStyleValue> font_style_value { nullptr };
+        RefPtr<Gfx::Font const> current_font { nullptr };
+        Bindings::CanvasTextAlign text_align { Bindings::CanvasTextAlign::Start };
+        Bindings::CanvasTextBaseline text_baseline { Bindings::CanvasTextBaseline::Alphabetic };
     };
     DrawingState& drawing_state() { return m_drawing_state; }
     DrawingState const& drawing_state() const { return m_drawing_state; }

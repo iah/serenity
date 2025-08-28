@@ -18,107 +18,115 @@ constexpr bool is_space(int ch)
     return ch == '\t' || ch == '\n' || ch == '\r' || ch == ' ';
 }
 
-ErrorOr<DeprecatedString> JsonParser::consume_and_unescape_string()
+// ECMA-404 9 String
+// Boils down to
+// STRING = "\"" *("[^\"\\]" | "\\" ("[\"\\bfnrt]" | "u[0-9A-Za-z]{4}")) "\""
+//     │├── " ──╮───────────────────────────────────────────────╭── " ──┤│
+//              │                                               │
+//              │  ╭───────────────────<─────────────────────╮  │
+//              │  │                                         │  │
+//              ╰──╰──╮───────────── [^"\\] ──────────────╭──╯──╯
+//                    │                                   │
+//                    ╰── \ ───╮──── ["\\bfnrt] ───────╭──╯
+//                             │                       │
+//                             ╰─── u[0-9A-Za-z]{4}  ──╯
+//
+ErrorOr<ByteString> JsonParser::consume_and_unescape_string()
 {
     if (!consume_specific('"'))
         return Error::from_string_literal("JsonParser: Expected '\"'");
     StringBuilder final_sb;
 
     for (;;) {
-        size_t peek_index = m_index;
-        char ch = 0;
+        // OPTIMIZATION: We try to append as many literal characters as possible at a time
+        //               This also pre-checks some error conditions
+        // Note: All utf8 characters are either plain ascii,  or have their most signifiant bit set,
+        //       which puts the, above plain ascii in value, so they will always consist
+        //       of a set of "legal" non-special bytes,
+        //       hence we don't need to bother with a code-point iterator,
+        //       as a simple byte iterator suffices, which GenericLexer provides by default
+        size_t literal_characters = 0;
         for (;;) {
-            if (peek_index == m_input.length())
-                break;
-            ch = m_input[peek_index];
+            char ch = peek(literal_characters);
+            // Note: We get a 0 byte when we hit EOF
+            if (ch == 0)
+                return Error::from_string_literal("JsonParser: EOF while parsing String");
+            // Spec: All code points may be placed within the quotation marks except
+            //       for the code points that must be escaped: quotation mark (U+0022),
+            //       reverse solidus (U+005C), and the control characters U+0000 to U+001F.
+            //       There are two-character escape sequence representations of some characters.
+            if (is_ascii_c0_control(ch))
+                return Error::from_string_literal("JsonParser: ASCII control sequence encountered");
             if (ch == '"' || ch == '\\')
                 break;
-            if (is_ascii_c0_control(ch))
-                return Error::from_string_literal("JsonParser: Error while parsing string");
-            ++peek_index;
+            ++literal_characters;
+        }
+        final_sb.append(consume(literal_characters));
+
+        // We have checked all cases except end-of-string and escaped characters in the loop above,
+        // so we now only have to handle those two cases
+        char ch = peek();
+
+        if (ch == '"') {
+            consume();
+            break;
         }
 
-        while (peek_index != m_index) {
-            final_sb.append(m_input[m_index]);
-            m_index++;
-        }
+        ignore(); // '\'
 
-        if (m_index == m_input.length())
-            break;
-        if (ch == '"')
-            break;
-        if (ch != '\\') {
+        switch (peek()) {
+        case '\0':
+            return Error::from_string_literal("JsonParser: EOF while parsing String");
+        case '"':
+        case '\\':
+        case '/':
             final_sb.append(consume());
-            continue;
-        }
-        ignore();
-        if (next_is('"')) {
-            ignore();
-            final_sb.append('"');
-            continue;
-        }
-
-        if (next_is('\\')) {
-            ignore();
-            final_sb.append('\\');
-            continue;
-        }
-
-        if (next_is('/')) {
-            ignore();
-            final_sb.append('/');
-            continue;
-        }
-
-        if (next_is('n')) {
-            ignore();
-            final_sb.append('\n');
-            continue;
-        }
-
-        if (next_is('r')) {
-            ignore();
-            final_sb.append('\r');
-            continue;
-        }
-
-        if (next_is('t')) {
-            ignore();
-            final_sb.append('\t');
-            continue;
-        }
-
-        if (next_is('b')) {
+            break;
+        case 'b':
             ignore();
             final_sb.append('\b');
-            continue;
-        }
-
-        if (next_is('f')) {
+            break;
+        case 'f':
             ignore();
             final_sb.append('\f');
-            continue;
-        }
-
-        if (next_is('u')) {
+            break;
+        case 'n':
             ignore();
-            if (tell_remaining() < 4)
-                return Error::from_string_literal("JsonParser: EOF while parsing Unicode escape");
+            final_sb.append('\n');
+            break;
+        case 'r':
+            ignore();
+            final_sb.append('\r');
+            break;
+        case 't':
+            ignore();
+            final_sb.append('\t');
+            break;
+        case 'u': {
+            ignore(); // 'u'
 
-            auto code_point = AK::StringUtils::convert_to_uint_from_hex(consume(4));
-            if (code_point.has_value()) {
-                final_sb.append_code_point(code_point.value());
-                continue;
-            }
-            return Error::from_string_literal("JsonParser: Error while parsing Unicode escape");
+            // https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf
+            //
+            // To escape a code point that is not in the Basic Multilingual Plane, the character may be represented as a
+            // twelve-character sequence, encoding the UTF-16 surrogate pair corresponding to the code point. So for
+            // example, a string containing only the G clef character (U+1D11E) may be represented as "\uD834\uDD1E".
+            // However, whether a processor of JSON texts interprets such a surrogate pair as a single code point or as an
+            // explicit surrogate pair is a semantic decision that is determined by the specific processor.
+            auto code_point = decode_single_or_paired_surrogate();
+
+            if (code_point.is_error())
+                return Error::from_string_literal("JsonParser: Error while parsing Unicode escape");
+
+            final_sb.append_code_point(code_point.value());
+            break;
         }
-
-        return Error::from_string_literal("JsonParser: Error while parsing string");
+        default:
+            dbgln("JsonParser: Invalid escaped character '{}' ({:#x}) ", peek(), peek());
+            return Error::from_string_literal("JsonParser: Invalid escaped character");
+        }
     }
-    if (!consume_specific('"'))
-        return Error::from_string_literal("JsonParser: Expected '\"'");
 
-    return final_sb.to_deprecated_string();
+    return final_sb.to_byte_string();
 }
 
 ErrorOr<JsonValue> JsonParser::parse_object()
@@ -132,8 +140,6 @@ ErrorOr<JsonValue> JsonParser::parse_object()
             break;
         ignore_while(is_space);
         auto name = TRY(consume_and_unescape_string());
-        if (name.is_null())
-            return Error::from_string_literal("JsonParser: Expected object property name");
         ignore_while(is_space);
         if (!consume_specific(':'))
             return Error::from_string_literal("JsonParser: Expected ':'");
@@ -164,7 +170,7 @@ ErrorOr<JsonValue> JsonParser::parse_array()
         if (peek() == ']')
             break;
         auto element = TRY(parse_helper());
-        array.append(move(element));
+        TRY(array.append(move(element)));
         ignore_while(is_space);
         if (peek() == ']')
             break;
@@ -270,19 +276,10 @@ ErrorOr<JsonValue> JsonParser::parse_number()
 
     StringView number_string(number_buffer.data(), number_buffer.size());
 
-    auto to_unsigned_result = number_string.to_uint<u64>();
-    if (to_unsigned_result.has_value()) {
-        if (*to_unsigned_result <= NumericLimits<u32>::max())
-            return JsonValue((u32)*to_unsigned_result);
-
-        return JsonValue(*to_unsigned_result);
-    } else if (auto signed_number = number_string.to_int<i64>(); signed_number.has_value()) {
-
-        if (*signed_number <= NumericLimits<i32>::max())
-            return JsonValue((i32)*signed_number);
-
-        return JsonValue(*signed_number);
-    }
+    if (auto number = number_string.to_number<u64>(); number.has_value())
+        return JsonValue(*number);
+    if (auto number = number_string.to_number<i64>(); number.has_value())
+        return JsonValue(*number);
 
     // It's possible the unsigned value is bigger than u64 max
     return fallback_to_double_parse();
@@ -290,23 +287,23 @@ ErrorOr<JsonValue> JsonParser::parse_number()
 
 ErrorOr<JsonValue> JsonParser::parse_true()
 {
-    if (!consume_specific("true"))
+    if (!consume_specific("true"sv))
         return Error::from_string_literal("JsonParser: Expected 'true'");
     return JsonValue(true);
 }
 
 ErrorOr<JsonValue> JsonParser::parse_false()
 {
-    if (!consume_specific("false"))
+    if (!consume_specific("false"sv))
         return Error::from_string_literal("JsonParser: Expected 'false'");
     return JsonValue(false);
 }
 
 ErrorOr<JsonValue> JsonParser::parse_null()
 {
-    if (!consume_specific("null"))
+    if (!consume_specific("null"sv))
         return Error::from_string_literal("JsonParser: Expected 'null'");
-    return JsonValue(JsonValue::Type::Null);
+    return JsonValue {};
 }
 
 ErrorOr<JsonValue> JsonParser::parse_helper()

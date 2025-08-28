@@ -14,6 +14,7 @@ namespace Web::DOM {
 // https://dom.spec.whatwg.org/#abortcontroller
 class AbortController final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(AbortController, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(AbortController);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortController>> construct_impl(JS::Realm&);
@@ -28,7 +29,7 @@ public:
 private:
     AbortController(JS::Realm&, JS::NonnullGCPtr<AbortSignal>);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     // https://dom.spec.whatwg.org/#abortcontroller-signal

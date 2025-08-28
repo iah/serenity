@@ -17,18 +17,19 @@ namespace Web::HTML {
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#domparser
 class DOMParser final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(DOMParser, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(DOMParser);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMParser>> construct_impl(JS::Realm&);
 
     virtual ~DOMParser() override;
 
-    JS::NonnullGCPtr<DOM::Document> parse_from_string(DeprecatedString const&, Bindings::DOMParserSupportedType type);
+    JS::NonnullGCPtr<DOM::Document> parse_from_string(StringView, Bindings::DOMParserSupportedType type);
 
 private:
     explicit DOMParser(JS::Realm&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

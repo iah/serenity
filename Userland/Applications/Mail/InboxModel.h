@@ -10,14 +10,28 @@
 #include <LibGUI/Model.h>
 #include <LibIMAP/Objects.h>
 
+enum class MailStatus {
+    Unseen,
+    Seen,
+};
+
 struct InboxEntry {
-    DeprecatedString from;
-    DeprecatedString subject;
+    u32 sequence_number;
+    ByteString date;
+    ByteString from;
+    ByteString subject;
+    MailStatus status;
+};
+
+enum class InboxModelCustomRole {
+    __DONOTUSE = (int)GUI::ModelRole::Custom,
+    Sequence,
 };
 
 class InboxModel final : public GUI::Model {
 public:
     enum Column {
+        Date,
         From,
         Subject,
         __Count
@@ -30,9 +44,12 @@ public:
 
     virtual ~InboxModel() override = default;
 
+    MailStatus mail_status(int row);
+    void set_mail_status(int row, MailStatus status);
+
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override;
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Count; }
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
 
 private:

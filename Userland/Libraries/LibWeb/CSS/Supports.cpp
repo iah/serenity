@@ -10,26 +10,26 @@
 
 namespace Web::CSS {
 
-Supports::Supports(NonnullOwnPtr<Condition>&& condition)
+Supports::Supports(JS::Realm& realm, NonnullOwnPtr<Condition>&& condition)
     : m_condition(move(condition))
 {
-    m_matches = m_condition->evaluate();
+    m_matches = m_condition->evaluate(realm);
 }
 
-bool Supports::Condition::evaluate() const
+bool Supports::Condition::evaluate(JS::Realm& realm) const
 {
     switch (type) {
     case Type::Not:
-        return !children.first().evaluate();
+        return !children.first().evaluate(realm);
     case Type::And:
         for (auto& child : children) {
-            if (!child.evaluate())
+            if (!child.evaluate(realm))
                 return false;
         }
         return true;
     case Type::Or:
         for (auto& child : children) {
-            if (child.evaluate())
+            if (child.evaluate(realm))
                 return true;
         }
         return false;
@@ -37,80 +37,80 @@ bool Supports::Condition::evaluate() const
     VERIFY_NOT_REACHED();
 }
 
-bool Supports::InParens::evaluate() const
+bool Supports::InParens::evaluate(JS::Realm& realm) const
 {
     return value.visit(
         [&](NonnullOwnPtr<Condition> const& condition) {
-            return condition->evaluate();
+            return condition->evaluate(realm);
         },
         [&](Feature const& feature) {
-            return feature.evaluate();
+            return feature.evaluate(realm);
         },
         [&](GeneralEnclosed const&) {
             return false;
         });
 }
 
-bool Supports::Declaration::evaluate() const
+bool Supports::Declaration::evaluate(JS::Realm& realm) const
 {
-    auto style_property = parse_css_supports_condition(Parser::ParsingContext { *realm }, declaration);
+    auto style_property = parse_css_supports_condition(Parser::ParsingContext { realm }, declaration);
     return style_property.has_value();
 }
 
-bool Supports::Selector::evaluate() const
+bool Supports::Selector::evaluate(JS::Realm& realm) const
 {
-    auto style_property = parse_selector(Parser::ParsingContext { *realm }, selector);
+    auto style_property = parse_selector(Parser::ParsingContext { realm }, selector);
     return style_property.has_value();
 }
 
-bool Supports::Feature::evaluate() const
+bool Supports::Feature::evaluate(JS::Realm& realm) const
 {
     return value.visit(
         [&](Declaration const& declaration) {
-            return declaration.evaluate();
+            return declaration.evaluate(realm);
         },
         [&](Selector const& selector) {
-            return selector.evaluate();
+            return selector.evaluate(realm);
         });
 }
 
-ErrorOr<String> Supports::Declaration::to_string() const
+String Supports::Declaration::to_string() const
 {
-    return String::formatted("({})", declaration);
+    return MUST(String::formatted("({})", declaration));
 }
 
-ErrorOr<String> Supports::Selector::to_string() const
+String Supports::Selector::to_string() const
 {
-    return String::formatted("selector({})", selector);
+    return MUST(String::formatted("selector({})", selector));
 }
 
-ErrorOr<String> Supports::Feature::to_string() const
+String Supports::Feature::to_string() const
 {
     return value.visit([](auto& it) { return it.to_string(); });
 }
 
-ErrorOr<String> Supports::InParens::to_string() const
+String Supports::InParens::to_string() const
 {
     return value.visit(
-        [](NonnullOwnPtr<Condition> const& condition) -> ErrorOr<String> { return String::formatted("({})", TRY(condition->to_string())); },
-        [](Supports::Feature const& it) -> ErrorOr<String> { return it.to_string(); },
-        [](GeneralEnclosed const& it) -> ErrorOr<String> { return it.to_string(); });
+        [](NonnullOwnPtr<Condition> const& condition) { return MUST(String::formatted("({})", condition->to_string())); },
+        [](Supports::Feature const& it) { return it.to_string(); },
+        [](GeneralEnclosed const& it) { return it.to_string(); });
 }
 
-ErrorOr<String> Supports::Condition::to_string() const
+String Supports::Condition::to_string() const
 {
     switch (type) {
     case Type::Not:
-        return String::formatted("not {}", TRY(children.first().to_string()));
+        return MUST(String::formatted("not {}", children.first().to_string()));
     case Type::And:
-        return String::join(" and "sv, children);
+        return MUST(String::join(" and "sv, children));
     case Type::Or:
-        return String::join(" or "sv, children);
+        return MUST(String::join(" or "sv, children));
     }
     VERIFY_NOT_REACHED();
 }
 
-ErrorOr<String> Supports::to_string() const
+String Supports::to_string() const
 {
     return m_condition->to_string();
 }

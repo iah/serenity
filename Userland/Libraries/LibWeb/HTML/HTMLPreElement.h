@@ -8,11 +8,13 @@
 
 #include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
 
 class HTMLPreElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLPreElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLPreElement);
 
 public:
     virtual ~HTMLPreElement() override;
@@ -23,7 +25,7 @@ public:
 private:
     HTMLPreElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 };
 

@@ -9,27 +9,27 @@
 #include <LibJS/Runtime/ArrayIteratorPrototype.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
-#include <LibJS/Runtime/IteratorOperations.h>
+#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/TypedArray.h>
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(ArrayIteratorPrototype);
+
 ArrayIteratorPrototype::ArrayIteratorPrototype(Realm& realm)
-    : PrototypeObject(*realm.intrinsics().iterator_prototype())
+    : PrototypeObject(realm.intrinsics().iterator_prototype())
 {
 }
 
-ThrowCompletionOr<void> ArrayIteratorPrototype::initialize(Realm& realm)
+void ArrayIteratorPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     define_native_function(realm, vm.names.next, next, 0, Attribute::Configurable | Attribute::Writable);
 
     // 23.1.5.2.2 %ArrayIteratorPrototype% [ @@toStringTag ], https://tc39.es/ecma262/#sec-%arrayiteratorprototype%-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Array Iterator"sv)), Attribute::Configurable);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "Array Iterator"_string), Attribute::Configurable);
 }
 
 // 23.1.5.2.1 %ArrayIteratorPrototype%.next ( ), https://tc39.es/ecma262/#sec-%arrayiteratorprototype%.next
@@ -38,7 +38,7 @@ JS_DEFINE_NATIVE_FUNCTION(ArrayIteratorPrototype::next)
 {
     auto& realm = *vm.current_realm();
 
-    auto* iterator = TRY(typed_this_value(vm));
+    auto iterator = TRY(typed_this_value(vm));
     auto target_array = iterator->array();
     if (target_array.is_undefined())
         return create_iterator_result_object(vm, js_undefined(), true);
@@ -50,32 +50,77 @@ JS_DEFINE_NATIVE_FUNCTION(ArrayIteratorPrototype::next)
 
     size_t length;
 
+    // i. If array has a [[TypedArrayName]] internal slot, then
     if (array.is_typed_array()) {
         auto& typed_array = static_cast<TypedArrayBase&>(array);
 
-        if (typed_array.viewed_array_buffer()->is_detached())
-            return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+        // 1. Let taRecord be MakeTypedArrayWithBufferWitnessRecord(array, seq-cst).
+        auto typed_array_record = make_typed_array_with_buffer_witness_record(typed_array, ArrayBuffer::SeqCst);
 
-        length = typed_array.array_length();
-    } else {
+        // 2. If IsTypedArrayOutOfBounds(taRecord) is true, throw a TypeError exception.
+        if (is_typed_array_out_of_bounds(typed_array_record))
+            return vm.throw_completion<TypeError>(ErrorType::BufferOutOfBounds, "TypedArray"sv);
+
+        // 3. Let len be TypedArrayLength(taRecord).
+        length = typed_array_length(typed_array_record);
+    }
+    // ii. Else,
+    else {
+        // 1. Let len be ? LengthOfArrayLike(array).
         length = TRY(length_of_array_like(vm, array));
     }
 
+    // iii. If index ≥ len, return NormalCompletion(undefined).
     if (index >= length) {
         iterator->m_array = js_undefined();
         return create_iterator_result_object(vm, js_undefined(), true);
     }
 
-    iterator->m_index++;
-    if (iteration_kind == Object::PropertyKind::Key)
-        return create_iterator_result_object(vm, Value(static_cast<i32>(index)), false);
+    // iv. Let indexNumber be 𝔽(index).
 
-    auto value = TRY(array.get(index));
+    Value result;
 
-    if (iteration_kind == Object::PropertyKind::Value)
-        return create_iterator_result_object(vm, value, false);
+    // v. If kind is key, then
+    if (iteration_kind == Object::PropertyKind::Key) {
+        // 1. Let result be indexNumber.
+        result = Value(static_cast<i32>(index));
+    }
+    // vi. Else,
+    else {
+        // 1. Let elementKey be ! ToString(indexNumber).
+        // 2. Let elementValue be ? Get(array, elementKey).
+        auto element_value = TRY([&]() -> ThrowCompletionOr<Value> {
+            // OPTIMIZATION: For objects that don't interfere with indexed property access, we try looking directly at storage.
+            if (!array.may_interfere_with_indexed_property_access() && array.indexed_properties().has_index(index)) {
+                auto value = array.indexed_properties().get(index)->value;
+                if (!value.is_accessor()) {
+                    return value;
+                }
+            }
 
-    return create_iterator_result_object(vm, Array::create_from(realm, { Value(static_cast<i32>(index)), value }), false);
+            return array.get(index);
+        }());
+
+        // 3. If kind is value, then
+        if (iteration_kind == Object::PropertyKind::Value) {
+            // a. Let result be elementValue.
+            result = element_value;
+        }
+        // 4. Else,
+        else {
+            // a. Assert: kind is key+value.
+            VERIFY(iteration_kind == Object::PropertyKind::KeyAndValue);
+
+            // b. Let result be CreateArrayFromList(« indexNumber, elementValue »).
+            result = Array::create_from(realm, { Value(static_cast<i32>(index)), element_value });
+        }
+    }
+
+    // viii. Set index to index + 1.
+    ++iterator->m_index;
+
+    // vii. Perform ? GeneratorYield(CreateIterResultObject(result, false)).
+    return create_iterator_result_object(vm, result, false);
 }
 
 }

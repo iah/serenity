@@ -8,7 +8,6 @@
  */
 
 #include "CalculatorWidget.h"
-#include <Applications/Calculator/CalculatorGML.h>
 #include <LibCrypto/BigFraction/BigFraction.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/Label.h>
@@ -16,22 +15,21 @@
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
-CalculatorWidget::CalculatorWidget()
-{
-    load_from_gml(calculator_gml).release_value_but_fixme_should_propagate_errors();
+namespace Calculator {
 
+ErrorOr<void> CalculatorWidget::initialize()
+{
     m_entry = *find_descendant_of_type_named<GUI::TextBox>("entry_textbox");
+    // FIXME: Use GML for this.
     m_entry->set_relative_rect(5, 5, 244, 26);
     m_entry->set_text_alignment(Gfx::TextAlignment::CenterRight);
 
+    // FIXME: Use GML for this.
     m_label = *find_descendant_of_type_named<GUI::Label>("label");
-
-    m_label->set_frame_shadow(Gfx::FrameShadow::Sunken);
-    m_label->set_frame_shape(Gfx::FrameShape::Container);
-    m_label->set_frame_thickness(2);
+    m_label->set_frame_style(Gfx::FrameStyle::SunkenContainer);
 
     for (int i = 0; i < 10; i++) {
-        m_digit_button[i] = *find_descendant_of_type_named<GUI::Button>(DeprecatedString::formatted("{}_button", i));
+        m_digit_button[i] = *find_descendant_of_type_named<GUI::Button>(TRY(String::formatted("{}_button", i)));
         add_digit_button(*m_digit_button[i], i);
     }
 
@@ -98,6 +96,8 @@ CalculatorWidget::CalculatorWidget()
 
     m_equals_button = *find_descendant_of_type_named<GUI::Button>("equal_button");
     add_operation_button(*m_equals_button, Calculator::Operation::Equals);
+
+    return {};
 }
 
 void CalculatorWidget::perform_operation(Calculator::Operation operation)
@@ -131,9 +131,9 @@ void CalculatorWidget::add_digit_button(GUI::Button& button, int digit)
     };
 }
 
-DeprecatedString CalculatorWidget::get_entry()
+String CalculatorWidget::get_entry()
 {
-    return m_entry->text();
+    return String::from_byte_string(m_entry->text()).release_value_but_fixme_should_propagate_errors();
 }
 
 void CalculatorWidget::set_entry(Crypto::BigFraction value)
@@ -150,11 +150,11 @@ void CalculatorWidget::set_typed_entry(Crypto::BigFraction value)
 
 void CalculatorWidget::update_display()
 {
-    m_entry->set_text(m_keypad.to_deprecated_string());
+    m_entry->set_text(m_keypad.to_string().release_value_but_fixme_should_propagate_errors());
     if (m_calculator.has_error())
-        m_label->set_text("E");
+        m_label->set_text("E"_string);
     else
-        m_label->set_text("");
+        m_label->set_text({});
 }
 
 void CalculatorWidget::keydown_event(GUI::KeyEvent& event)
@@ -187,6 +187,8 @@ void CalculatorWidget::keydown_event(GUI::KeyEvent& event)
         m_divide_button->click();
     else if (event.code_point() == '%')
         m_percent_button->click();
+    else
+        event.ignore();
 
     update_display();
 }
@@ -212,4 +214,6 @@ void CalculatorWidget::set_rounding_custom(GUI::Action& action, StringView forma
 {
     m_format = format;
     m_rounding_custom = action;
+}
+
 }

@@ -1,30 +1,54 @@
 /*
  * Copyright (c) 2022, Ali Mohammad Pur <mpfard@serenityos.org>
+ * Copyright (c) 2024, Simon Wanner <simon@skyrising.xyz>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedFlyString.h>
+#include <AK/FlyString.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/TextDecoderPrototype.h>
 #include <LibWeb/Encoding/TextDecoder.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
+#include <LibWeb/WebIDL/Buffers.h>
 
 namespace Web::Encoding {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<TextDecoder>> TextDecoder::construct_impl(JS::Realm& realm, DeprecatedFlyString encoding)
+JS_DEFINE_ALLOCATOR(TextDecoder);
+
+// https://encoding.spec.whatwg.org/#dom-textdecoder
+WebIDL::ExceptionOr<JS::NonnullGCPtr<TextDecoder>> TextDecoder::construct_impl(JS::Realm& realm, FlyString label, Optional<TextDecoderOptions> const& options)
 {
     auto& vm = realm.vm();
 
-    auto decoder = TextCodec::decoder_for(encoding);
-    if (!decoder.has_value())
-        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, TRY_OR_THROW_OOM(vm, String::formatted("Invalid encoding {}", encoding)) };
+    // 1. Let encoding be the result of getting an encoding from label.
+    auto encoding = TextCodec::get_standardized_encoding(label);
 
-    return MUST_OR_THROW_OOM(realm.heap().allocate<TextDecoder>(realm, realm, *decoder, move(encoding), false, false));
+    // 2. If encoding is failure or replacement, then throw a RangeError.
+    if (!encoding.has_value() || encoding->equals_ignoring_ascii_case("replacement"sv))
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::RangeError, TRY_OR_THROW_OOM(vm, String::formatted("Invalid encoding {}", label)) };
+
+    // 3. Set this’s encoding to encoding.
+    // https://encoding.spec.whatwg.org/#dom-textdecoder-encoding
+    // The encoding getter steps are to return this’s encoding’s name, ASCII lowercased.
+    auto lowercase_encoding_name = MUST(String::from_byte_string(encoding.value().to_lowercase_string()));
+
+    // 4. If options["fatal"] is true, then set this’s error mode to "fatal".
+    auto fatal = options.value_or({}).fatal;
+
+    // 5. Set this’s ignore BOM to options["ignoreBOM"].
+    auto ignore_bom = options.value_or({}).ignore_bom;
+
+    // NOTE: This should happen in decode(), but we don't support streaming yet and share decoders across calls.
+    auto decoder = TextCodec::decoder_for_exact_name(encoding.value());
+    VERIFY(decoder.has_value());
+
+    return realm.heap().allocate<TextDecoder>(realm, realm, *decoder, lowercase_encoding_name, fatal, ignore_bom);
 }
 
 // https://encoding.spec.whatwg.org/#dom-textdecoder
-TextDecoder::TextDecoder(JS::Realm& realm, TextCodec::Decoder& decoder, DeprecatedFlyString encoding, bool fatal, bool ignore_bom)
+TextDecoder::TextDecoder(JS::Realm& realm, TextCodec::Decoder& decoder, FlyString encoding, bool fatal, bool ignore_bom)
     : PlatformObject(realm)
     , m_decoder(decoder)
     , m_encoding(move(encoding))
@@ -35,24 +59,27 @@ TextDecoder::TextDecoder(JS::Realm& realm, TextCodec::Decoder& decoder, Deprecat
 
 TextDecoder::~TextDecoder() = default;
 
-JS::ThrowCompletionOr<void> TextDecoder::initialize(JS::Realm& realm)
+void TextDecoder::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::TextDecoderPrototype>(realm, "TextDecoder"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(TextDecoder);
 }
 
 // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
-WebIDL::ExceptionOr<DeprecatedString> TextDecoder::decode(JS::Handle<JS::Object> const& input) const
+WebIDL::ExceptionOr<String> TextDecoder::decode(Optional<JS::Handle<WebIDL::BufferSource>> const& input, Optional<TextDecodeOptions> const&) const
 {
-    // FIXME: Implement the streaming stuff.
+    if (!input.has_value())
+        return TRY_OR_THROW_OOM(vm(), m_decoder.to_utf8({}));
 
-    auto data_buffer_or_error = WebIDL::get_buffer_source_copy(*input.cell());
+    // FIXME: Implement the streaming stuff.
+    auto data_buffer_or_error = WebIDL::get_buffer_source_copy(*input.value()->raw_object());
     if (data_buffer_or_error.is_error())
-        return WebIDL::OperationError::create(realm(), "Failed to copy bytes from ArrayBuffer");
+        return WebIDL::OperationError::create(realm(), "Failed to copy bytes from ArrayBuffer"_string);
     auto& data_buffer = data_buffer_or_error.value();
-    return TRY_OR_THROW_OOM(vm(), m_decoder.to_utf8({ data_buffer.data(), data_buffer.size() }));
+    auto result = TRY_OR_THROW_OOM(vm(), m_decoder.to_utf8({ data_buffer.data(), data_buffer.size() }));
+    if (this->fatal() && result.contains(0xfffd))
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Decoding failed"sv };
+    return result;
 }
 
 }

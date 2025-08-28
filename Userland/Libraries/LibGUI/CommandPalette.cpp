@@ -92,7 +92,7 @@ public:
         return Column::__Count;
     }
 
-    virtual DeprecatedString column_name(int) const override { return {}; }
+    virtual ErrorOr<String> column_name(int) const override { return String {}; }
 
     virtual ModelIndex index(int row, int column = 0, ModelIndex const& = ModelIndex()) const override
     {
@@ -129,32 +129,33 @@ public:
         case Column::Shortcut:
             if (!action.shortcut().is_valid())
                 return "";
-            return action.shortcut().to_deprecated_string();
+            return action.shortcut().to_byte_string();
         }
 
         VERIFY_NOT_REACHED();
     }
 
-    virtual TriState data_matches(GUI::ModelIndex const& index, GUI::Variant const& term) const override
+    virtual GUI::Model::MatchResult data_matches(GUI::ModelIndex const& index, GUI::Variant const& term) const override
     {
         auto needle = term.as_string();
         if (needle.is_empty())
-            return TriState::True;
+            return { TriState::True };
 
-        auto haystack = DeprecatedString::formatted("{} {}", menu_name(index), action_text(index));
-        if (fuzzy_match(needle, haystack).score > 0)
-            return TriState::True;
-        return TriState::False;
+        auto haystack = ByteString::formatted("{} {}", menu_name(index), action_text(index));
+        auto match_result = fuzzy_match(needle, haystack);
+        if (match_result.score > 0)
+            return { TriState::True, match_result.score };
+        return { TriState::False };
     }
 
-    static DeprecatedString action_text(ModelIndex const& index)
+    static ByteString action_text(ModelIndex const& index)
     {
         auto& action = *static_cast<GUI::Action*>(index.internal_data());
 
         return Gfx::parse_ampersand_string(action.text());
     }
 
-    static DeprecatedString menu_name(ModelIndex const& index)
+    static ByteString menu_name(ModelIndex const& index)
     {
         auto& action = *static_cast<GUI::Action*>(index.internal_data());
         if (action.menu_items().is_empty())
@@ -182,8 +183,8 @@ CommandPalette::CommandPalette(GUI::Window& parent_window, ScreenPosition screen
 
     collect_actions(parent_window);
 
-    auto main_widget = set_main_widget<GUI::Frame>().release_value_but_fixme_should_propagate_errors();
-    main_widget->set_frame_shape(Gfx::FrameShape::Window);
+    auto main_widget = set_main_widget<GUI::Frame>();
+    main_widget->set_frame_style(Gfx::FrameStyle::Window);
     main_widget->set_fill_with_background_color(true);
 
     main_widget->set_layout<GUI::VerticalBoxLayout>(4);
@@ -230,7 +231,7 @@ void CommandPalette::collect_actions(GUI::Window& parent_window)
 {
     OrderedHashTable<NonnullRefPtr<GUI::Action>> actions;
 
-    auto collect_action_children = [&](Core::Object& action_parent) {
+    auto collect_action_children = [&](Core::EventReceiver& action_parent) {
         action_parent.for_each_child_of_type<GUI::Action>([&](GUI::Action& action) {
             if (action.is_enabled() && action.is_visible())
                 actions.set(action);

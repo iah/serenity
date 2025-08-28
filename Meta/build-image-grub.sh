@@ -8,7 +8,7 @@ script_path=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
 
 if [ "$(id -u)" != 0 ]; then
     set +e
-    ${SUDO} -- sh -c "\"$0\" $* || exit 42"
+    ${SUDO} -- "${SHELL}" -c "\"$0\" $* || exit 42"
     case $? in
         1)
             die "this script needs to run as root"
@@ -33,14 +33,6 @@ if [ -z "$grub" ]; then
     exit 1
 fi
 echo "using grub-install at ${grub}"
-
-disk_usage() {
-if [ "$(uname -s)" = "Darwin" ]; then
-    du -sm "$1" | cut -f1
-else
-    du -sm --apparent-size "$1" | cut -f1
-fi
-}
 
 DISK_SIZE=$(($(disk_usage "$SERENITY_SOURCE_DIR/Base") + $(disk_usage Root) + 300))
 
@@ -101,7 +93,7 @@ dd if=/dev/zero of="${dev}${partition_number}" bs=1M count=1 status=none || die 
 echo "done"
 
 printf "creating new filesystem... "
-mke2fs -q -I 128 "${dev}${partition_number}" || die "couldn't create filesystem"
+mke2fs -q "${dev}${partition_number}" || die "couldn't create filesystem"
 echo "done"
 
 printf "mounting filesystem... "

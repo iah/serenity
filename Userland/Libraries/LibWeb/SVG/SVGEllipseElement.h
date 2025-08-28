@@ -13,13 +13,14 @@ namespace Web::SVG {
 
 class SVGEllipseElement final : public SVGGeometryElement {
     WEB_PLATFORM_OBJECT(SVGEllipseElement, SVGGeometryElement);
+    JS_DECLARE_ALLOCATOR(SVGEllipseElement);
 
 public:
     virtual ~SVGEllipseElement() override = default;
 
-    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
 
-    virtual Gfx::Path& get_path() override;
+    virtual Gfx::Path get_path(CSSPixelSize viewport_size) override;
 
     JS::NonnullGCPtr<SVGAnimatedLength> cx() const;
     JS::NonnullGCPtr<SVGAnimatedLength> cy() const;
@@ -29,9 +30,7 @@ public:
 private:
     SVGEllipseElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-
-    Optional<Gfx::Path> m_path;
+    virtual void initialize(JS::Realm&) override;
 
     Optional<float> m_center_x;
     Optional<float> m_center_y;

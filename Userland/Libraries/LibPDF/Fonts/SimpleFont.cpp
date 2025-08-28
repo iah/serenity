@@ -11,6 +11,7 @@
 #include <LibPDF/Fonts/SimpleFont.h>
 #include <LibPDF/Fonts/TrueTypeFont.h>
 #include <LibPDF/Fonts/Type1Font.h>
+#include <LibPDF/Renderer.h>
 
 namespace PDF {
 
@@ -45,21 +46,49 @@ PDFErrorOr<void> SimpleFont::initialize(Document* document, NonnullRefPtr<DictOb
     return {};
 }
 
-float SimpleFont::get_char_width(u8 char_code) const
+PDFErrorOr<Gfx::FloatPoint> SimpleFont::draw_string(Gfx::Painter& painter, Gfx::FloatPoint glyph_position, ByteString const& string, Renderer const& renderer)
 {
-    return static_cast<float>(m_widths.get(char_code).value_or(m_missing_width)) / 1000.0f;
-}
+    auto horizontal_scaling = renderer.text_state().horizontal_scaling;
 
-PDFErrorOr<Gfx::FloatPoint> SimpleFont::draw_string(Gfx::Painter& painter, Gfx::FloatPoint glyph_position, DeprecatedString const& string, Color const& paint_color, float font_size, float character_spacing, float horizontal_scaling)
-{
-    auto so = make_object<StringObject>(string, true);
+    auto const& text_rendering_matrix = renderer.calculate_text_rendering_matrix();
+
+    // TrueType fonts are prescaled to text_rendering_matrix.x_scale() * text_state().font_size / horizontal_scaling,
+    // cf `Renderer::text_set_font()`. That's the width we get back from `get_glyph_width()` if we use a fallback
+    // (or built-in) font. Scale the width size too, so the m_width.get() codepath is consistent.
+    auto const font_size = text_rendering_matrix.x_scale() * renderer.text_state().font_size / horizontal_scaling;
+
+    auto character_spacing = renderer.text_state().character_spacing;
+    auto word_spacing = renderer.text_state().word_spacing;
+
     for (auto char_code : string.bytes()) {
-        auto char_width = get_char_width(char_code);
-        auto glyph_width = char_width * font_size;
-        draw_glyph(painter, glyph_position, glyph_width, char_code, paint_color);
-        auto tx = glyph_width;
+        // Use the width specified in the font's dictionary if available,
+        // and use the default width for the given font otherwise.
+        float glyph_width;
+        if (auto width = m_widths.get(char_code); width.has_value())
+            glyph_width = font_size * width.value() * m_font_matrix.x_scale();
+        else if (auto width = get_glyph_width(char_code); width.has_value())
+            glyph_width = width.value();
+        else
+            glyph_width = font_size * m_missing_width * m_font_matrix.x_scale();
+
+        if (renderer.text_state().rendering_mode != TextRenderingMode::Invisible || renderer.show_hidden_text()) {
+            Gfx::FloatPoint glyph_render_position = text_rendering_matrix.map(glyph_position);
+            TRY(draw_glyph(painter, glyph_render_position, glyph_width, char_code, renderer));
+        }
+
+        // glyph_width is scaled by `text_rendering_matrix.x_scale() * renderer.text_state().font_size / horizontal_scaling`,
+        // but it should only be scaled by `renderer.text_state().font_size`.
+        // FIXME: Having to divide here isn't pretty. Refactor things so that this isn't needed.
+        auto tx = glyph_width / text_rendering_matrix.x_scale() * horizontal_scaling;
         tx += character_spacing;
-        tx *= horizontal_scaling;
+
+        // ISO 32000 (PDF 2.0), 9.3.3 Wordspacing
+        // "Word spacing shall be applied to every occurrence of the single-byte character code 32
+        // in a string when using a simple font (including Type 3) or a composite font that defines
+        // code 32 as a single-byte code."
+        if (char_code == ' ')
+            tx += word_spacing;
+
         glyph_position += { tx, 0.0f };
     }
     return glyph_position;

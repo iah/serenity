@@ -26,22 +26,21 @@ public:
     // ^Inode
     virtual InodeMetadata metadata() const override;
     virtual ErrorOr<void> traverse_as_directory(Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)>) const override;
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> lookup(StringView name) override;
+    virtual ErrorOr<NonnullRefPtr<Inode>> lookup(StringView name) override;
     virtual ErrorOr<void> flush_metadata() override;
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
+    virtual ErrorOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
     virtual ErrorOr<void> add_child(Inode&, StringView name, mode_t) override;
     virtual ErrorOr<void> remove_child(StringView name) override;
-    virtual ErrorOr<void> replace_child(StringView name, Inode& child) override;
     virtual ErrorOr<void> chmod(mode_t) override;
     virtual ErrorOr<void> chown(UserID, GroupID) override;
-    virtual ErrorOr<void> truncate(u64) override;
-    virtual ErrorOr<void> update_timestamps(Optional<Time> atime, Optional<Time> ctime, Optional<Time> mtime) override;
+    virtual ErrorOr<void> truncate_locked(u64) override;
+    virtual ErrorOr<void> update_timestamps(Optional<UnixDateTime> atime, Optional<UnixDateTime> ctime, Optional<UnixDateTime> mtime) override;
 
 private:
     RAMFSInode(RAMFS& fs, InodeMetadata const& metadata, LockWeakPtr<RAMFSInode> parent);
     explicit RAMFSInode(RAMFS& fs);
-    static ErrorOr<NonnullLockRefPtr<RAMFSInode>> try_create(RAMFS&, InodeMetadata const& metadata, LockWeakPtr<RAMFSInode> parent);
-    static ErrorOr<NonnullLockRefPtr<RAMFSInode>> try_create_root(RAMFS&);
+    static ErrorOr<NonnullRefPtr<RAMFSInode>> try_create(RAMFS&, InodeMetadata const& metadata, LockWeakPtr<RAMFSInode> parent);
+    static ErrorOr<NonnullRefPtr<RAMFSInode>> try_create_root(RAMFS&);
 
     // ^Inode
     virtual ErrorOr<size_t> read_bytes_locked(off_t, size_t, UserOrKernelBuffer& buffer, OpenFileDescription*) const override;
@@ -51,7 +50,7 @@ private:
 
     struct Child {
         NonnullOwnPtr<KString> name;
-        NonnullLockRefPtr<RAMFSInode> inode;
+        NonnullRefPtr<RAMFSInode> inode;
         IntrusiveListNode<Child> list_node {};
         using List = IntrusiveList<&Child::list_node>;
     };

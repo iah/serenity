@@ -4,10 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLHtmlElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLHtmlElement.h>
+#include <LibWeb/Layout/Node.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLHtmlElement);
 
 HTMLHtmlElement::HTMLHtmlElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -16,12 +20,10 @@ HTMLHtmlElement::HTMLHtmlElement(DOM::Document& document, DOM::QualifiedName qua
 
 HTMLHtmlElement::~HTMLHtmlElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLHtmlElement::initialize(JS::Realm& realm)
+void HTMLHtmlElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLHtmlElementPrototype>(realm, "HTMLHtmlElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLHtmlElement);
 }
 
 bool HTMLHtmlElement::should_use_body_background_properties() const

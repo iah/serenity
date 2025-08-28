@@ -27,7 +27,7 @@ fstype defaults to `ext2`).
 A special source value "none" is recognized, in which case
 [`mount`(8)](help://man/8/mount) will not attempt to open the source as a file, and will
 pass an invalid file descriptor to [`mount`(2)](help://man/2/mount). This is
-useful for mounting  pseudo filesystems.
+useful for mounting pseudo filesystems.
 
 Options correspond to the mount flags, and should be specified as a
 comma-separated list of flag names (lowercase and without the `MS_` prefix).
@@ -35,17 +35,21 @@ Additionally, the name `defaults` is accepted and ignored.
 
 ## Files
 
-* `/etc/fstab` - read by `mount -a` on startup to find out which filesystems to mount.
-* `/etc/fstab.d` - directory with drop-in additions to the normal `fstab` file, also read by `mount -a`.
-* `/sys/kernel/df` - read by `mount` to get information about mounted filesystems.
+-   `/etc/fstab` - read by `mount -a` on startup to find out which filesystems to mount.
+-   `/etc/fstab.d` - directory with drop-in additions to the normal `fstab` file, also read by `mount -a`.
+-   `/sys/kernel/df` - read by `mount` to get information about mounted filesystems.
 
 ## Examples
 
 ```sh
 # mount devpts /dev/pts -t devpts -o noexec,nosuid
 # mount /home/anon/myfile.txt /tmp/foo -o bind
+
+# mount a regular file using a temporary loop device
+$ mount /home/anon/myfilesystem.bin /mnt
 ```
 
 ## See also
 
-* [`mount`(2)](help://man/2/mount)
+-   [`mount`(2)](help://man/2/mount)
+-   [`umount`(8)](help://man/8/umount)

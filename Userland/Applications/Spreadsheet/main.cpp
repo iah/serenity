@@ -9,9 +9,10 @@
 #include "SpreadsheetWidget.h"
 #include <AK/ScopeGuard.h>
 #include <AK/Try.h>
+#include <LibConfig/Client.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibFileSystemAccessClient/Client.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Icon.h>
@@ -22,9 +23,9 @@
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath fattr unix cpath wpath thread"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath fattr unix cpath wpath thread map_fixed"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     StringView filename;
 
@@ -34,11 +35,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.parse(arguments);
 
     if (!filename.is_empty()) {
-        if (!Core::DeprecatedFile::exists(filename) || Core::DeprecatedFile::is_directory(filename)) {
+        if (!FileSystem::exists(filename) || FileSystem::is_directory(filename)) {
             warnln("File does not exist or is a directory: {}", filename);
             return 1;
         }
     }
+
+    Config::pledge_domain("Spreadsheet");
+    app->set_config_domain("Spreadsheet"_string);
 
     TRY(Core::System::unveil("/tmp/session/%sid/portal/filesystemaccess", "rw"));
     TRY(Core::System::unveil("/tmp/session/%sid/portal/webcontent", "rw"));
@@ -48,12 +52,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto app_icon = GUI::Icon::default_icon("app-spreadsheet"sv);
     auto window = GUI::Window::construct();
-    window->resize(640, 480);
+    window->restore_size_and_position("Spreadsheet"sv, "Window"sv, { { 640, 480 } });
+    window->save_size_and_position_on_close("Spreadsheet"sv, "Window"sv);
     window->set_icon(app_icon.bitmap_for_size(16));
 
-    auto spreadsheet_widget = TRY(window->set_main_widget<Spreadsheet::SpreadsheetWidget>(*window, Vector<NonnullRefPtr<Spreadsheet::Sheet>> {}, filename.is_empty()));
+    auto spreadsheet_widget = window->set_main_widget<Spreadsheet::SpreadsheetWidget>(*window, Vector<NonnullRefPtr<Spreadsheet::Sheet>> {}, filename.is_empty());
 
-    spreadsheet_widget->initialize_menubar(*window);
+    TRY(spreadsheet_widget->initialize_menubar(*window));
     spreadsheet_widget->update_window_title();
 
     window->on_close_request = [&]() -> GUI::Window::CloseRequestDecision {

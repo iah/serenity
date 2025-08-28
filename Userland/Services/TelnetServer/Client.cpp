@@ -7,7 +7,6 @@
 #include "Client.h"
 
 #include <AK/ByteBuffer.h>
-#include <AK/DeprecatedString.h>
 #include <AK/MemoryStream.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
@@ -22,7 +21,7 @@ Client::Client(int id, NonnullOwnPtr<Core::TCPSocket> socket, int ptm_fd)
     : m_id(id)
     , m_socket(move(socket))
     , m_ptm_fd(ptm_fd)
-    , m_ptm_notifier(Core::Notifier::construct(ptm_fd, Core::Notifier::Read))
+    , m_ptm_notifier(Core::Notifier::construct(ptm_fd, Core::Notifier::Type::Read))
 {
     m_socket->on_ready_to_read = [this] {
         auto result = drain_socket();
@@ -32,7 +31,7 @@ Client::Client(int id, NonnullOwnPtr<Core::TCPSocket> socket, int ptm_fd)
         }
     };
 
-    m_ptm_notifier->on_ready_to_read = [this] {
+    m_ptm_notifier->on_activation = [this] {
         auto result = drain_pty();
         if (result.is_error()) {
             dbgln("Failed to drain the PTY: {}", result.error());
@@ -77,7 +76,7 @@ ErrorOr<void> Client::drain_socket()
     auto buffer = TRY(ByteBuffer::create_uninitialized(1024));
 
     while (TRY(m_socket->can_read_without_blocking())) {
-        auto read_bytes = TRY(m_socket->read(buffer));
+        auto read_bytes = TRY(m_socket->read_some(buffer));
 
         m_parser.write(StringView { read_bytes });
 
@@ -161,7 +160,7 @@ ErrorOr<void> Client::send_data(StringView data)
     }
 
     if (fast) {
-        TRY(m_socket->write({ data.characters_without_null_termination(), data.length() }));
+        TRY(m_socket->write_until_depleted({ data.characters_without_null_termination(), data.length() }));
         return {};
     }
 
@@ -182,8 +181,8 @@ ErrorOr<void> Client::send_data(StringView data)
         }
     }
 
-    auto builder_contents = builder.to_byte_buffer();
-    TRY(m_socket->write(builder_contents));
+    auto builder_contents = TRY(builder.to_byte_buffer());
+    TRY(m_socket->write_until_depleted(builder_contents));
     return {};
 }
 
@@ -204,7 +203,7 @@ ErrorOr<void> Client::send_commands(Vector<Command> commands)
     }
 
     VERIFY(TRY(stream.tell()) == buffer.size());
-    TRY(m_socket->write({ buffer.data(), buffer.size() }));
+    TRY(m_socket->write_until_depleted({ buffer.data(), buffer.size() }));
     return {};
 }
 

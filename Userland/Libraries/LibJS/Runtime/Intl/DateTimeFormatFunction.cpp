@@ -10,13 +10,16 @@
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Intl/DateTimeFormat.h>
 #include <LibJS/Runtime/Intl/DateTimeFormatFunction.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS::Intl {
 
-// 11.5.5 DateTime Format Functions, https://tc39.es/ecma402/#sec-datetime-format-functions
+JS_DEFINE_ALLOCATOR(DateTimeFormatFunction);
+
+// 11.5.4 DateTime Format Functions, https://tc39.es/ecma402/#sec-datetime-format-functions
 NonnullGCPtr<DateTimeFormatFunction> DateTimeFormatFunction::create(Realm& realm, DateTimeFormat& date_time_format)
 {
-    return realm.heap().allocate<DateTimeFormatFunction>(realm, date_time_format, *realm.intrinsics().function_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<DateTimeFormatFunction>(realm, date_time_format, realm.intrinsics().function_prototype());
 }
 
 DateTimeFormatFunction::DateTimeFormatFunction(DateTimeFormat& date_time_format, Object& prototype)
@@ -25,15 +28,13 @@ DateTimeFormatFunction::DateTimeFormatFunction(DateTimeFormat& date_time_format,
 {
 }
 
-ThrowCompletionOr<void> DateTimeFormatFunction::initialize(Realm& realm)
+void DateTimeFormatFunction::initialize(Realm& realm)
 {
     auto& vm = this->vm();
 
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
     define_direct_property(vm.names.name, PrimitiveString::create(vm, String {}), Attribute::Configurable);
-
-    return {};
 }
 
 ThrowCompletionOr<Value> DateTimeFormatFunction::call()
@@ -51,7 +52,7 @@ ThrowCompletionOr<Value> DateTimeFormatFunction::call()
     // 3. If date is not provided or is undefined, then
     if (date.is_undefined()) {
         // a. Let x be ! Call(%Date.now%, undefined).
-        date_value = MUST(JS::call(vm, realm.intrinsics().date_constructor_now_function(), js_undefined())).as_double();
+        date_value = MUST(JS::call(vm, *realm.intrinsics().date_constructor_now_function(), js_undefined())).as_double();
     }
     // 4. Else,
     else {
@@ -67,7 +68,7 @@ ThrowCompletionOr<Value> DateTimeFormatFunction::call()
 void DateTimeFormatFunction::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_date_time_format);
+    visitor.visit(m_date_time_format);
 }
 
 }

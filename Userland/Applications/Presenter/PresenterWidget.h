@@ -38,6 +38,7 @@ protected:
     virtual void resize_event(GUI::ResizeEvent&) override;
 
 private:
+    void resize_web_view(Gfx::IntSize const& size);
     void update_web_view();
     void update_slides_actions();
 
@@ -46,6 +47,8 @@ private:
     OwnPtr<Presentation> m_current_presentation;
     RefPtr<GUI::Action> m_next_slide_action;
     RefPtr<GUI::Action> m_previous_slide_action;
-    RefPtr<GUI::Action> m_full_screen_action;
     RefPtr<GUI::Action> m_present_from_first_slide_action;
+
+    RefPtr<GUI::Action> m_full_screen_action;
+    RefPtr<GUI::Action> m_resize_to_fit_content_action;
 };

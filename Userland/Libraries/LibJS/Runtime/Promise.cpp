@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,6 +18,8 @@
 #include <LibJS/Runtime/PromiseResolvingFunction.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(Promise);
 
 // 27.2.4.7.1 PromiseResolve ( C, x ), https://tc39.es/ecma262/#sec-promise-resolve
 ThrowCompletionOr<Object*> promise_resolve(VM& vm, Object& constructor, Value value)
@@ -44,7 +46,7 @@ ThrowCompletionOr<Object*> promise_resolve(VM& vm, Object& constructor, Value va
 
 NonnullGCPtr<Promise> Promise::create(Realm& realm)
 {
-    return realm.heap().allocate<Promise>(realm, *realm.intrinsics().promise_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<Promise>(realm, realm.intrinsics().promise_prototype());
 }
 
 // 27.2 Promise Objects, https://tc39.es/ecma262/#sec-promise-objects
@@ -71,7 +73,7 @@ Promise::ResolvingFunctions Promise::create_resolving_functions()
     // 6. Set resolve.[[AlreadyResolved]] to alreadyResolved.
 
     // 27.2.1.3.2 Promise Resolve Functions, https://tc39.es/ecma262/#sec-promise-resolve-functions
-    auto resolve_function = PromiseResolvingFunction::create(realm, *this, *already_resolved, [](auto& vm, auto& promise, auto& already_resolved) -> ThrowCompletionOr<Value> {
+    auto resolve_function = PromiseResolvingFunction::create(realm, *this, *already_resolved, [](auto& vm, auto& promise, auto& already_resolved) {
         dbgln_if(PROMISE_DEBUG, "[Promise @ {} / PromiseResolvingFunction]: Resolve function was called", &promise);
 
         auto& realm = *vm.current_realm();
@@ -97,7 +99,7 @@ Promise::ResolvingFunctions Promise::create_resolving_functions()
             dbgln_if(PROMISE_DEBUG, "[Promise @ {} / PromiseResolvingFunction]: Promise can't be resolved with itself, rejecting with error", &promise);
 
             // a. Let selfResolutionError be a newly created TypeError object.
-            auto self_resolution_error = MUST_OR_THROW_OOM(TypeError::create(realm, "Cannot resolve promise with itself"sv));
+            auto self_resolution_error = TypeError::create(realm, "Cannot resolve promise with itself"sv);
 
             // b. Perform RejectPromise(promise, selfResolutionError).
             promise.reject(self_resolution_error);
@@ -151,7 +153,7 @@ Promise::ResolvingFunctions Promise::create_resolving_functions()
         auto job = create_promise_resolve_thenable_job(vm, promise, resolution, move(then_job_callback));
 
         // 15. Perform HostEnqueuePromiseJob(job.[[Job]], job.[[Realm]]).
-        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / PromiseResolvingFunction]: Enqueuing job @ {} in realm {}", &promise, &job.job, job.realm);
+        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / PromiseResolvingFunction]: Enqueuing job @ {} in realm {}", &promise, &job.job, job.realm.ptr());
         vm.host_enqueue_promise_job(move(job.job), job.realm);
 
         // 16. Return undefined.
@@ -275,7 +277,7 @@ void Promise::trigger_reactions() const
         auto [job, realm] = create_promise_reaction_job(vm, *reaction, m_result);
 
         // b. Perform HostEnqueuePromiseJob(job.[[Job]], job.[[Realm]]).
-        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / trigger_reactions()]: Enqueuing job @ {} in realm {}", this, &job, realm);
+        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / trigger_reactions()]: Enqueuing job @ {} in realm {}", this, &job, realm.ptr());
         vm.host_enqueue_promise_job(move(job), realm);
     }
 
@@ -298,7 +300,7 @@ Value Promise::perform_then(Value on_fulfilled, Value on_rejected, GCPtr<Promise
 
     // 3. If IsCallable(onFulfilled) is false, then
     //     a. Let onFulfilledJobCallback be empty.
-    Optional<JobCallback> on_fulfilled_job_callback;
+    GCPtr<JobCallback> on_fulfilled_job_callback;
 
     // 4. Else,
     if (on_fulfilled.is_function()) {
@@ -309,7 +311,7 @@ Value Promise::perform_then(Value on_fulfilled, Value on_rejected, GCPtr<Promise
 
     // 5. If IsCallable(onRejected) is false, then
     //     a. Let onRejectedJobCallback be empty.
-    Optional<JobCallback> on_rejected_job_callback;
+    GCPtr<JobCallback> on_rejected_job_callback;
 
     // 6. Else,
     if (on_rejected.is_function()) {
@@ -345,7 +347,7 @@ Value Promise::perform_then(Value on_fulfilled, Value on_rejected, GCPtr<Promise
         auto [fulfill_job, realm] = create_promise_reaction_job(vm, fulfill_reaction, value);
 
         // c. Perform HostEnqueuePromiseJob(fulfillJob.[[Job]], fulfillJob.[[Realm]]).
-        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / perform_then()]: Enqueuing job @ {} in realm {}", this, &fulfill_job, realm);
+        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / perform_then()]: Enqueuing job @ {} in realm {}", this, &fulfill_job, realm.ptr());
         vm.host_enqueue_promise_job(move(fulfill_job), realm);
         break;
     }
@@ -365,7 +367,7 @@ Value Promise::perform_then(Value on_fulfilled, Value on_rejected, GCPtr<Promise
         auto [reject_job, realm] = create_promise_reaction_job(vm, *reject_reaction, reason);
 
         // e. Perform HostEnqueuePromiseJob(rejectJob.[[Job]], rejectJob.[[Realm]]).
-        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / perform_then()]: Enqueuing job @ {} in realm {}", this, &reject_job, realm);
+        dbgln_if(PROMISE_DEBUG, "[Promise @ {} / perform_then()]: Enqueuing job @ {} in realm {}", this, &reject_job, realm.ptr());
         vm.host_enqueue_promise_job(move(reject_job), realm);
         break;
     }
@@ -393,10 +395,8 @@ void Promise::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_result);
-    for (auto& reaction : m_fulfill_reactions)
-        visitor.visit(reaction);
-    for (auto& reaction : m_reject_reactions)
-        visitor.visit(reaction);
+    visitor.visit(m_fulfill_reactions);
+    visitor.visit(m_reject_reactions);
 }
 
 }

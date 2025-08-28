@@ -11,9 +11,9 @@
 #include <Kernel/Arch/x86_64/Interrupts/APIC.h>
 #include <Kernel/Arch/x86_64/Interrupts/IOAPIC.h>
 #include <Kernel/Arch/x86_64/Interrupts/PIC.h>
-#include <Kernel/CommandLine.h>
-#include <Kernel/Firmware/MultiProcessor/Parser.h>
-#include <Kernel/InterruptDisabler.h>
+#include <Kernel/Boot/CommandLine.h>
+#include <Kernel/Firmware/ACPI/StaticParsing.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Interrupts/SpuriousInterruptHandler.h>
 #include <Kernel/Memory/TypedMapping.h>
@@ -40,7 +40,7 @@ UNMAP_AFTER_INIT void InterruptManagement::initialize()
 {
     VERIFY(!InterruptManagement::initialized());
     s_interrupt_management = new InterruptManagement();
-    if (!kernel_command_line().is_smp_enabled_without_ioapic_enabled()) {
+    if (kernel_command_line().is_smp_enabled_without_ioapic_enabled()) {
         dbgln("Can't enable SMP mode without IOAPIC mode being enabled");
     }
     if (!kernel_command_line().is_ioapic_enabled() && !kernel_command_line().is_smp_enabled())
@@ -85,8 +85,6 @@ u8 InterruptManagement::acquire_irq_number(u8 mapped_interrupt_vector)
 u8 InterruptManagement::get_mapped_interrupt_vector(u8 original_irq)
 {
     // FIXME: For SMP configuration (with IOAPICs) use a better routing scheme to make redirections more efficient.
-    // FIXME: Find a better way to handle conflict with Syscall interrupt gate.
-    VERIFY((original_irq + IRQ_VECTOR_BASE) != syscall_vector);
     return original_irq;
 }
 
@@ -118,20 +116,19 @@ NonnullLockRefPtr<IRQController> InterruptManagement::get_responsible_irq_contro
     VERIFY_NOT_REACHED();
 }
 
-UNMAP_AFTER_INIT PhysicalAddress InterruptManagement::search_for_madt()
+UNMAP_AFTER_INIT ErrorOr<Optional<PhysicalAddress>> InterruptManagement::find_madt_physical_address()
 {
     dbgln("Early access to ACPI tables for interrupt setup");
-    auto rsdp = ACPI::StaticParsing::find_rsdp();
-    if (!rsdp.has_value())
-        return {};
-    auto apic = ACPI::StaticParsing::find_table(rsdp.value(), "APIC"sv);
-    if (!apic.has_value())
-        return {};
-    return apic.value();
+    auto possible_rsdp_physical_address = ACPI::StaticParsing::find_rsdp();
+    if (!possible_rsdp_physical_address.has_value())
+        return Optional<PhysicalAddress> {};
+    auto possible_apic_physical_address = TRY(ACPI::StaticParsing::find_table(possible_rsdp_physical_address.value(), "APIC"sv));
+    if (!possible_apic_physical_address.has_value())
+        return Optional<PhysicalAddress> {};
+    return possible_apic_physical_address.value();
 }
 
 UNMAP_AFTER_INIT InterruptManagement::InterruptManagement()
-    : m_madt(search_for_madt())
 {
 }
 
@@ -151,13 +148,15 @@ UNMAP_AFTER_INIT void InterruptManagement::switch_to_ioapic_mode()
     dmesgln("Interrupts: Switch to IOAPIC mode");
     InterruptDisabler disabler;
 
-    if (m_madt.is_null()) {
+    m_madt_physical_address = MUST(find_madt_physical_address());
+
+    if (!m_madt_physical_address.has_value()) {
         dbgln("Interrupts: ACPI MADT is not available, reverting to PIC mode");
         switch_to_pic_mode();
         return;
     }
 
-    dbgln("Interrupts: MADT @ P {}", m_madt.as_ptr());
+    dbgln("Interrupts: MADT @ P {}", m_madt_physical_address.value().as_ptr());
     locate_apic_data();
     if (m_interrupt_controllers.size() == 1) {
         if (get_interrupt_controller(0).type() == IRQControllerType::i8259) {
@@ -177,18 +176,14 @@ UNMAP_AFTER_INIT void InterruptManagement::switch_to_ioapic_mode()
         }
     }
 
-    if (auto mp_parser = MultiProcessorParser::autodetect()) {
-        m_pci_interrupt_overrides = mp_parser->get_pci_interrupt_redirections();
-    }
-
     APIC::initialize();
     APIC::the().init_bsp();
 }
 
 UNMAP_AFTER_INIT void InterruptManagement::locate_apic_data()
 {
-    VERIFY(!m_madt.is_null());
-    auto madt = Memory::map_typed<ACPI::Structures::MADT>(m_madt).release_value_but_fixme_should_propagate_errors();
+    VERIFY(m_madt_physical_address.has_value());
+    auto madt = Memory::map_typed<ACPI::Structures::MADT>(m_madt_physical_address.value()).release_value_but_fixme_should_propagate_errors();
 
     if (madt->flags & PCAT_COMPAT_FLAG)
         m_interrupt_controllers.append(adopt_lock_ref(*new PIC()));

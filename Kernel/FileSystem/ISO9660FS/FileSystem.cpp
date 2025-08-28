@@ -16,16 +16,16 @@ constexpr u32 first_data_area_block = 16;
 constexpr u32 logical_sector_size = 2048;
 constexpr u32 max_cached_directory_entries = 128;
 
-ErrorOr<NonnullLockRefPtr<FileSystem>> ISO9660FS::try_create(OpenFileDescription& description)
+ErrorOr<NonnullRefPtr<FileSystem>> ISO9660FS::try_create(OpenFileDescription& description, FileSystemSpecificOptions const&)
 {
-    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) ISO9660FS(description)));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ISO9660FS(description)));
 }
 
 ISO9660FS::ISO9660FS(OpenFileDescription& description)
     : BlockBasedFileSystem(description)
 {
-    set_block_size(logical_sector_size);
-    m_logical_block_size = logical_sector_size;
+    set_logical_block_size(logical_sector_size);
+    m_device_block_size = logical_sector_size;
 }
 
 ISO9660FS::~ISO9660FS() = default;
@@ -51,6 +51,11 @@ Inode& ISO9660FS::root_inode()
 {
     VERIFY(!m_root_inode.is_null());
     return *m_root_inode;
+}
+
+ErrorOr<void> ISO9660FS::rename(Inode&, StringView, Inode&, StringView)
+{
+    return EROFS;
 }
 
 unsigned ISO9660FS::total_block_count() const
@@ -80,10 +85,9 @@ u8 ISO9660FS::internal_file_type_to_directory_entry_type(DirectoryEntryView cons
     return DT_REG;
 }
 
-ErrorOr<void> ISO9660FS::prepare_to_clear_last_mount()
+ErrorOr<void> ISO9660FS::prepare_to_clear_last_mount(Inode&)
 {
     // FIXME: Do proper cleaning here.
-    BlockBasedFileSystem::remove_disk_cache_before_last_unmount();
     return {};
 }
 
@@ -91,7 +95,7 @@ ErrorOr<void> ISO9660FS::parse_volume_set()
 {
     VERIFY(!m_primary_volume);
 
-    auto block = TRY(KBuffer::try_create_with_size("ISO9660FS: Temporary volume descriptor storage"sv, m_logical_block_size, Memory::Region::Access::Read | Memory::Region::Access::Write));
+    auto block = TRY(KBuffer::try_create_with_size("ISO9660FS: Temporary volume descriptor storage"sv, m_device_block_size, Memory::Region::Access::Read | Memory::Region::Access::Write));
     auto block_buffer = UserOrKernelBuffer::for_kernel_buffer(block->data());
 
     auto current_block_index = first_data_area_block;
@@ -136,7 +140,7 @@ all_headers_read:
         return EIO;
     }
 
-    m_logical_block_size = LittleEndian { m_primary_volume->logical_block_size.little };
+    m_device_block_size = LittleEndian { m_primary_volume->logical_block_size.little };
     return {};
 }
 
@@ -242,14 +246,14 @@ ErrorOr<NonnullLockRefPtr<ISO9660FSDirectoryEntry>> ISO9660FS::directory_entry_f
         m_directory_entry_cache.remove(m_directory_entry_cache.begin());
     }
 
-    if (!(data_length % logical_block_size() == 0)) {
+    if (!(data_length % device_block_size() == 0)) {
         dbgln_if(ISO9660_DEBUG, "Found a directory with non-logical block size aligned data length!");
         return EIO;
     }
 
     auto blocks = TRY(KBuffer::try_create_with_size("ISO9660FS: Directory traversal buffer"sv, data_length, Memory::Region::Access::Read | Memory::Region::Access::Write));
     auto blocks_buffer = UserOrKernelBuffer::for_kernel_buffer(blocks->data());
-    TRY(raw_read_blocks(BlockBasedFileSystem::BlockIndex { extent_location }, data_length / logical_block_size(), blocks_buffer));
+    TRY(raw_read_blocks(BlockBasedFileSystem::BlockIndex { extent_location }, data_length / device_block_size(), blocks_buffer));
     auto entry = TRY(ISO9660FSDirectoryEntry::try_create(extent_location, data_length, move(blocks)));
     m_directory_entry_cache.set(key, entry);
 

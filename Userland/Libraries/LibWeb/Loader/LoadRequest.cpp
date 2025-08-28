@@ -10,15 +10,22 @@
 
 namespace Web {
 
-LoadRequest LoadRequest::create_for_url_on_page(const AK::URL& url, Page* page)
+static int s_resource_id = 0;
+
+LoadRequest::LoadRequest()
+    : m_id(s_resource_id++)
+{
+}
+
+LoadRequest LoadRequest::create_for_url_on_page(const URL::URL& url, Page* page)
 {
     LoadRequest request;
     request.set_url(url);
 
     if (page) {
-        DeprecatedString cookie = page->client().page_did_request_cookie(url, Cookie::Source::Http);
+        auto cookie = page->client().page_did_request_cookie(url, Cookie::Source::Http);
         if (!cookie.is_empty())
-            request.set_header("Cookie", cookie);
+            request.set_header("Cookie", cookie.to_byte_string());
         request.set_page(*page);
     }
 

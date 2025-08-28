@@ -27,17 +27,14 @@ public:
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_frames.size(); }
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return 1; }
 
-    virtual DeprecatedString column_name(int) const override
-    {
-        return "";
-    }
+    virtual ErrorOr<String> column_name(int) const override { return String {}; }
 
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
 
     virtual GUI::ModelIndex index(int row, int column, const GUI::ModelIndex&) const override;
 
     struct FrameInfo {
-        DeprecatedString function_name;
+        ByteString function_name;
         FlatPtr instruction_address { 0 };
         FlatPtr frame_base { 0 };
         Optional<Debug::DebugInfo::SourcePosition> m_source_position;

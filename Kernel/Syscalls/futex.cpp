@@ -9,11 +9,11 @@
 #include <Kernel/Debug.h>
 #include <Kernel/Memory/InodeVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
-static Singleton<SpinlockProtected<HashMap<GlobalFutexKey, NonnullLockRefPtr<FutexQueue>>, LockRank::None>> s_global_futex_queues;
+static Singleton<RecursiveSpinlockProtected<HashMap<GlobalFutexKey, NonnullLockRefPtr<FutexQueue>>, LockRank::None>> s_global_futex_queues;
 
 void Process::clear_futex_queues_on_exec()
 {

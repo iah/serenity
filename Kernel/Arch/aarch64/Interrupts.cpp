@@ -9,12 +9,16 @@
 #include <Kernel/Arch/PageFault.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Arch/aarch64/InterruptManagement.h>
+#include <Kernel/Arch/aarch64/Registers.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Interrupts/UnhandledInterruptHandler.h>
 #include <Kernel/KSyms.h>
-#include <Kernel/Panic.h>
-#include <Kernel/StdLib.h>
+#include <Kernel/Library/Panic.h>
+#include <Kernel/Library/StdLib.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Thread.h>
+#include <Kernel/Tasks/ThreadTracer.h>
 
 namespace Kernel {
 
@@ -28,21 +32,19 @@ static void dump_exception_syndrome_register(Aarch64::ESR_EL1 const& esr_el1)
     if (Aarch64::exception_class_is_data_abort(esr_el1.EC))
         dbgln("    Data Fault Status Code: {}", Aarch64::data_fault_status_code_to_string(esr_el1.ISS));
     if (Aarch64::exception_class_has_set_far(esr_el1.EC))
-        dbgln("    Faulting Virtual Address: 0x{:x}", Aarch64::FAR_EL1::read().virtual_address);
+        dbgln("    Faulting Virtual Address: {:#x}", Aarch64::FAR_EL1::read().virtual_address);
 }
 
 void dump_registers(RegisterState const& regs)
 {
-    auto esr_el1 = Kernel::Aarch64::ESR_EL1::read();
+    auto esr_el1 = bit_cast<Aarch64::ESR_EL1>(regs.esr_el1);
     dump_exception_syndrome_register(esr_el1);
 
     // Special registers
-    Aarch64::SPSR_EL1 spsr_el1 = {};
-    memcpy(&spsr_el1, (u8 const*)&regs.spsr_el1, sizeof(u64));
-
-    dbgln("Saved Program Status: (NZCV({:#b}) DAIF({:#b}) M({:#b})) / 0x{:x}", ((regs.spsr_el1 >> 28) & 0b1111), ((regs.spsr_el1 >> 6) & 0b1111), regs.spsr_el1 & 0b1111, regs.spsr_el1);
-    dbgln("Exception Link Register: 0x{:x}", regs.elr_el1);
-    dbgln("Stack Pointer (EL0): 0x{:x}", regs.sp_el0);
+    dbgln("Saved Program Status: (NZCV({:#b}) DAIF({:#b}) M({:#b})) / {:#x}", ((regs.spsr_el1 >> 28) & 0b1111), ((regs.spsr_el1 >> 6) & 0b1111), regs.spsr_el1 & 0b1111, regs.spsr_el1);
+    dbgln("Exception Link Register: {:#x}", regs.elr_el1);
+    dbgln("Stack Pointer (EL0): {:#x}", regs.sp_el0);
+    dbgln("Software Thread ID Register (EL0): {:#x}", regs.tpidr_el0);
 
     dbgln(" x0={:p}  x1={:p}  x2={:p}  x3={:p}  x4={:p}", regs.x[0], regs.x[1], regs.x[2], regs.x[3], regs.x[4]);
     dbgln(" x5={:p}  x6={:p}  x7={:p}  x8={:p}  x9={:p}", regs.x[5], regs.x[6], regs.x[7], regs.x[8], regs.x[9]);
@@ -82,8 +84,14 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
 {
     Processor::current().enter_trap(*trap_frame, false);
 
-    auto esr_el1 = Kernel::Aarch64::ESR_EL1::read();
+    auto esr_el1 = bit_cast<Aarch64::ESR_EL1>(trap_frame->regs->esr_el1);
     auto fault_address = Aarch64::FAR_EL1::read().virtual_address;
+    if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC)) {
+        // When breakpoint instruction exception is triggered, the pc is set to the address of the
+        // breakpoint instruction, so we need to increase the pc past the breakpoint instruction to
+        // stay consistent with the user‑mode debugger’s behavior.
+        trap_frame->regs->set_ip(trap_frame->regs->ip() + 4);
+    }
     Processor::enable_interrupts();
 
     if (Aarch64::exception_class_is_data_abort(esr_el1.EC) || Aarch64::exception_class_is_instruction_abort(esr_el1.EC)) {
@@ -96,6 +104,29 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
         }
     } else if (Aarch64::exception_class_is_svc_instruction_execution(esr_el1.EC)) {
         syscall_handler(trap_frame);
+    } else if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC) || Aarch64::exception_class_is_software_step(esr_el1.EC)) {
+        if (trap_frame->regs->previous_mode() == ExecutionMode::User) {
+            auto* current_thread = Thread::current();
+            auto& current_process = current_thread->process();
+
+            if (Aarch64::exception_class_is_software_step(esr_el1.EC)) {
+                // Clear the software step bit in the MDSCR_EL1 register to disable software step.
+                read_debug_registers_into(current_thread->debug_register_state());
+                current_thread->debug_register_state().mdscr_el1 &= ~Aarch64::MDSCR_EL1_SS_FLAG;
+                write_debug_registers_from(current_thread->debug_register_state());
+            }
+
+            if (auto* tracer = current_process.tracer()) {
+                tracer->set_regs(*trap_frame->regs);
+            }
+
+            current_thread->send_urgent_signal_to_self(SIGTRAP);
+        } else {
+            if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC))
+                handle_crash(*trap_frame->regs, "Unexpected breakpoint instruction exception", SIGTRAP, false);
+            if (Aarch64::exception_class_is_software_step(esr_el1.EC))
+                handle_crash(*trap_frame->regs, "Unexpected software step exception", SIGTRAP, false);
+        }
     } else {
         handle_crash(*trap_frame->regs, "Unexpected exception", SIGSEGV, false);
     }
@@ -104,7 +135,15 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
     Processor::current().exit_trap(*trap_frame);
 }
 
-static Array<GenericInterruptHandler*, 64> s_interrupt_handlers;
+// This spinlock is used to reserve IRQs that can be later used by interrupt mechanism such as MSIx
+static Spinlock<LockRank::None> s_interrupt_handler_lock {};
+// A GICv2 supports a maximum of 1020 interrupts.
+static Array<GenericInterruptHandler*, 1020> s_interrupt_handlers;
+
+static bool is_unused_handler(GenericInterruptHandler* handler_slot)
+{
+    return (handler_slot->type() == HandlerType::UnhandledInterruptHandler) && !handler_slot->reserved();
+}
 
 extern "C" void handle_interrupt(TrapFrame&);
 extern "C" void handle_interrupt(TrapFrame& trap_frame)
@@ -112,25 +151,17 @@ extern "C" void handle_interrupt(TrapFrame& trap_frame)
     Processor::current().enter_trap(trap_frame, true);
 
     for (auto& interrupt_controller : InterruptManagement::the().controllers()) {
-        auto pending_interrupts = interrupt_controller->pending_interrupts();
-
         // TODO: Add these interrupts as a source of entropy for randomness.
-        u8 irq = 0;
-        while (pending_interrupts) {
-            if ((pending_interrupts & 0b1) != 0b1) {
-                irq += 1;
-                pending_interrupts >>= 1;
-                continue;
-            }
+        for (;;) {
+            auto maybe_irq = interrupt_controller->pending_interrupt();
+            if (!maybe_irq.has_value())
+                break;
 
-            auto* handler = s_interrupt_handlers[irq];
+            auto* handler = s_interrupt_handlers[maybe_irq.value()];
             VERIFY(handler);
             handler->increment_call_count();
-            handler->handle_interrupt(*trap_frame.regs);
+            handler->handle_interrupt();
             handler->eoi();
-
-            irq += 1;
-            pending_interrupts >>= 1;
         }
     }
 
@@ -166,7 +197,7 @@ void register_generic_interrupt_handler(u8 interrupt_number, GenericInterruptHan
         handler_slot = &handler;
         return;
     }
-    if (handler_slot->is_shared_handler() && !handler_slot->is_sharing_with_others()) {
+    if (handler_slot->is_shared_handler()) {
         VERIFY(handler_slot->type() == HandlerType::SharedIRQHandler);
         static_cast<SharedIRQHandler*>(handler_slot)->register_handler(handler);
         return;
@@ -194,7 +225,7 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
     VERIFY(handler_slot != nullptr);
     if (handler_slot->type() == HandlerType::UnhandledInterruptHandler)
         return;
-    if (handler_slot->is_shared_handler() && !handler_slot->is_sharing_with_others()) {
+    if (handler_slot->is_shared_handler()) {
         VERIFY(handler_slot->type() == HandlerType::SharedIRQHandler);
         auto* shared_handler = static_cast<SharedIRQHandler*>(handler_slot);
         shared_handler->unregister_handler(handler);
@@ -214,10 +245,53 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
 
 void initialize_interrupts()
 {
-    for (u8 i = 0; i < s_interrupt_handlers.size(); ++i) {
+    for (size_t i = 0; i < s_interrupt_handlers.size(); ++i) {
         auto* handler = new UnhandledInterruptHandler(i);
         handler->register_interrupt_handler();
     }
+}
+
+// Sets the reserved flag on `number_of_irqs` if it finds unused interrupt handler on
+// a contiguous range.
+// FIXME: Share the code below with Arch/x86_64/Interrupts.cpp.
+ErrorOr<u8> reserve_interrupt_handlers(u8 number_of_irqs)
+{
+    bool found_range = false;
+    u8 first_irq = 0;
+    SpinlockLocker locker(s_interrupt_handler_lock);
+    for (size_t start_irq = 0; start_irq < s_interrupt_handlers.size(); start_irq++) {
+        auto*& handler_slot = s_interrupt_handlers[start_irq];
+        VERIFY(handler_slot != nullptr);
+
+        if (!is_unused_handler(handler_slot))
+            continue;
+
+        found_range = true;
+        for (auto off = 1; off < number_of_irqs; off++) {
+            auto*& handler = s_interrupt_handlers[start_irq + off];
+            VERIFY(handler_slot != nullptr);
+
+            if (!is_unused_handler(handler)) {
+                found_range = false;
+                break;
+            }
+        }
+
+        if (found_range == true) {
+            first_irq = start_irq;
+            break;
+        }
+    }
+
+    if (!found_range)
+        return Error::from_errno(EAGAIN);
+
+    for (auto irq = first_irq; irq < number_of_irqs; irq++) {
+        auto*& handler_slot = s_interrupt_handlers[irq];
+        handler_slot->set_reserved();
+    }
+
+    return first_irq;
 }
 
 }

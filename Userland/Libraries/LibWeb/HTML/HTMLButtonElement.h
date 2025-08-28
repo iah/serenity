@@ -21,12 +21,13 @@ class HTMLButtonElement final
     : public HTMLElement
     , public FormAssociatedElement {
     WEB_PLATFORM_OBJECT(HTMLButtonElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLButtonElement);
     FORM_ASSOCIATED_ELEMENT(HTMLElement, HTMLButtonElement)
 
 public:
     virtual ~HTMLButtonElement() override;
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     enum class TypeAttributeState {
 #define __ENUMERATE_HTML_BUTTON_TYPE_ATTRIBUTE(_, state) state,
@@ -34,9 +35,8 @@ public:
 #undef __ENUMERATE_HTML_BUTTON_TYPE_ATTRIBUTE
     };
 
-    DeprecatedString type() const;
     TypeAttributeState type_state() const;
-    void set_type(DeprecatedString const&);
+    WebIDL::ExceptionOr<void> set_type(String const&);
 
     // ^EventTarget
     // https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute:the-button-element
@@ -52,6 +52,12 @@ public:
     // https://html.spec.whatwg.org/multipage/forms.html#category-autocapitalize
     virtual bool is_auto_capitalize_inheriting() const override { return true; }
 
+    // https://html.spec.whatwg.org/multipage/forms.html#concept-button
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-button-element:concept-button
+    virtual bool is_button() const override { return true; }
+
+    virtual bool is_submit_button() const override;
+
     // ^HTMLElement
     // https://html.spec.whatwg.org/multipage/forms.html#category-label
     virtual bool is_labelable() const override { return true; }
@@ -59,11 +65,23 @@ public:
     // https://www.w3.org/TR/html-aria/#el-button
     virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::button; }
 
+    virtual String value() const override;
+
+    virtual bool has_activation_behavior() const override;
+    virtual void activation_behavior(DOM::Event const&) override;
+
 private:
+    virtual bool is_html_button_element() const override { return true; }
+
     HTMLButtonElement(DOM::Document&, DOM::QualifiedName);
 
     // ^DOM::Element
     virtual i32 default_tab_index_value() const override;
 };
 
+}
+
+namespace Web::DOM {
+template<>
+inline bool Node::fast_is<HTML::HTMLButtonElement>() const { return is_html_button_element(); }
 }

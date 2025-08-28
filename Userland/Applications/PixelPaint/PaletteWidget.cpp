@@ -33,13 +33,14 @@ public:
     {
         if (event.modifiers() & KeyModifier::Mod_Ctrl) {
             auto dialog = GUI::ColorPicker::construct(m_color, window());
-            if (dialog->exec() == GUI::Dialog::ExecResult::OK) {
-                m_color = dialog->color();
+            dialog->on_color_changed = [this](Gfx::Color color) {
+                m_color = color;
                 auto pal = palette();
                 pal.set_color(ColorRole::Background, m_color);
                 set_palette(pal);
                 update();
-            }
+            };
+            dialog->exec();
         }
 
         if (event.button() == GUI::MouseButton::Primary)
@@ -72,8 +73,10 @@ public:
             return;
 
         auto dialog = GUI::ColorPicker::construct(m_color, window());
-        if (dialog->exec() == GUI::Dialog::ExecResult::OK)
-            on_color_change(dialog->color());
+        dialog->on_color_changed = [this](Gfx::Color color) {
+            on_color_change(color);
+        };
+        dialog->exec();
     }
 
     void set_background_color(Color color)
@@ -94,9 +97,7 @@ private:
 
 PaletteWidget::PaletteWidget()
 {
-    set_frame_shape(Gfx::FrameShape::Panel);
-    set_frame_shadow(Gfx::FrameShadow::Raised);
-    set_frame_thickness(0);
+    set_frame_style(Gfx::FrameStyle::NoFrame);
     set_fill_with_background_color(true);
 
     set_fixed_height(35);
@@ -117,7 +118,7 @@ PaletteWidget::PaletteWidget()
     m_primary_color_widget->set_fill_with_background_color(true);
 
     m_color_container = add<GUI::Widget>();
-    m_color_container->set_relative_rect(m_secondary_color_widget->relative_rect().right() + 2, 2, 500, 33);
+    m_color_container->set_relative_rect(m_secondary_color_widget->relative_rect().right() + 1, 2, 500, 33);
     m_color_container->set_layout<GUI::VerticalBoxLayout>(GUI::Margins {}, 1);
 
     auto& top_color_container = m_color_container->add<GUI::Widget>();
@@ -130,7 +131,7 @@ PaletteWidget::PaletteWidget()
 
     auto result = load_palette_path("/res/color-palettes/default.palette");
     if (result.is_error()) {
-        GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Loading default palette failed: {}", result.error()));
+        GUI::MessageBox::show_error(window(), MUST(String::formatted("Loading default palette failed: {}", result.release_error())));
         display_color_list(fallback_colors());
 
         return;
@@ -138,6 +139,8 @@ PaletteWidget::PaletteWidget()
 
     display_color_list(result.value());
 }
+
+PaletteWidget::~PaletteWidget() = default;
 
 void PaletteWidget::set_image_editor(ImageEditor* editor)
 {
@@ -217,7 +220,7 @@ ErrorOr<Vector<Color>> PaletteWidget::load_palette_file(NonnullOwnPtr<Core::File
 {
     Vector<Color> palette;
     Array<u8, PAGE_SIZE> buffer;
-    auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+    auto buffered_file = TRY(Core::InputBufferedFile::create(move(file)));
 
     while (TRY(buffered_file->can_read_line())) {
         auto line = TRY(buffered_file->read_line(buffer));
@@ -239,7 +242,7 @@ ErrorOr<Vector<Color>> PaletteWidget::load_palette_file(NonnullOwnPtr<Core::File
     return palette;
 }
 
-ErrorOr<Vector<Color>> PaletteWidget::load_palette_path(DeprecatedString const& file_path)
+ErrorOr<Vector<Color>> PaletteWidget::load_palette_path(ByteString const& file_path)
 {
     auto file = TRY(Core::File::open(file_path, Core::File::OpenMode::Read));
     return load_palette_file(move(file));
@@ -248,8 +251,8 @@ ErrorOr<Vector<Color>> PaletteWidget::load_palette_path(DeprecatedString const& 
 ErrorOr<void> PaletteWidget::save_palette_file(Vector<Color> palette, NonnullOwnPtr<Core::File> file)
 {
     for (auto& color : palette) {
-        TRY(file->write_entire_buffer(color.to_deprecated_string_without_alpha().bytes()));
-        TRY(file->write_entire_buffer({ "\n", 1 }));
+        TRY(file->write_until_depleted(color.to_byte_string_without_alpha()));
+        TRY(file->write_until_depleted({ "\n", 1 }));
     }
     return {};
 }

@@ -21,6 +21,7 @@ concept SeekableStreamLike = IsBaseOf<SeekableStream, T>;
 template<typename T>
 class BufferedHelper {
     AK_MAKE_NONCOPYABLE(BufferedHelper);
+    AK_MAKE_DEFAULT_MOVABLE(BufferedHelper);
 
 public:
     template<StreamLike U>
@@ -28,19 +29,6 @@ public:
         : m_stream(move(stream))
         , m_buffer(move(buffer))
     {
-    }
-
-    BufferedHelper(BufferedHelper&& other)
-        : m_stream(move(other.m_stream))
-        , m_buffer(move(other.m_buffer))
-    {
-    }
-
-    BufferedHelper& operator=(BufferedHelper&& other)
-    {
-        m_stream = move(other.m_stream);
-        m_buffer = move(other.m_buffer);
-        return *this;
     }
 
     template<template<typename> typename BufferedType>
@@ -99,7 +87,8 @@ public:
         auto const candidate = TRY(find_and_populate_until_any_of(candidates, buffer.size()));
 
         if (stream().is_eof()) {
-            if (buffer.size() < m_buffer.used_space()) {
+            if ((candidate.has_value() && candidate->offset + candidate->size > buffer.size())
+                || (!candidate.has_value() && buffer.size() < m_buffer.used_space())) {
                 // Normally, reading from an EOFed stream and receiving bytes
                 // would mean that the stream is no longer EOF. However, it's
                 // possible with a buffered stream that the user is able to read
@@ -124,6 +113,52 @@ public:
         // that the delimiter ends beyond the length of the caller-passed
         // buffer. Let's just fill the caller's buffer up.
         return m_buffer.read(buffer);
+    }
+
+    ErrorOr<StringView> read_line_with_resize(ByteBuffer& buffer)
+    {
+        return StringView { TRY(read_until_with_resize(buffer, "\n"sv)) };
+    }
+
+    ErrorOr<Bytes> read_until_with_resize(ByteBuffer& buffer, StringView candidate)
+    {
+        return read_until_any_of_with_resize(buffer, Array { candidate });
+    }
+
+    template<size_t N>
+    ErrorOr<Bytes> read_until_any_of_with_resize(ByteBuffer& buffer, Array<StringView, N> candidates)
+    {
+        if (!stream().is_open())
+            return Error::from_errno(ENOTCONN);
+
+        auto candidate = TRY(find_and_populate_until_any_of(candidates));
+
+        size_t bytes_read_to_user_buffer = 0;
+        while (!candidate.has_value()) {
+            if (m_buffer.used_space() == 0 && stream().is_eof()) {
+                // If we read to the very end of the buffered and unbuffered data,
+                // then treat the remainder as a full line (the last one), even if it
+                // doesn't end in the delimiter.
+                return buffer.span().trim(bytes_read_to_user_buffer);
+            }
+
+            if (buffer.size() - bytes_read_to_user_buffer < m_buffer.used_space()) {
+                // Resize the user supplied buffer because it cannot fit
+                // the contents of m_buffer.
+                TRY(buffer.try_resize(buffer.size() + m_buffer.used_space()));
+            }
+
+            // Read bytes into the buffer starting from the offset of how many bytes have previously been read.
+            bytes_read_to_user_buffer += m_buffer.read(buffer.span().slice(bytes_read_to_user_buffer)).size();
+            candidate = TRY(find_and_populate_until_any_of(candidates));
+        }
+
+        // Once the candidate has been found, read the contents of m_buffer into the buffer,
+        // offset by how many bytes have already been read in.
+        TRY(buffer.try_resize(bytes_read_to_user_buffer + candidate->offset));
+        m_buffer.read(buffer.span().slice(bytes_read_to_user_buffer));
+        TRY(m_buffer.discard(candidate->size));
+        return buffer.span();
     }
 
     struct Match {
@@ -187,13 +222,22 @@ public:
         return Optional<Match> {};
     }
 
-    // Returns whether a line can be read, populating the buffer in the process.
-    ErrorOr<bool> can_read_line()
+    // Populates the buffer, and returns whether it is possible to read up to the given delimiter.
+    ErrorOr<bool> can_read_up_to_delimiter(ReadonlyBytes delimiter)
     {
         if (stream().is_eof())
-            return m_buffer.used_space() > 0;
+            return m_buffer.offset_of(delimiter).has_value();
 
-        return TRY(find_and_populate_until_any_of(Array<StringView, 1> { "\n"sv })).has_value();
+        auto maybe_match = TRY(find_and_populate_until_any_of(Array { StringView { delimiter } }));
+        if (maybe_match.has_value())
+            return true;
+
+        return stream().is_eof() && m_buffer.offset_of(delimiter).has_value();
+    }
+
+    bool is_eof_with_data_left_over() const
+    {
+        return stream().is_eof() && m_buffer.used_space() > 0;
     }
 
     bool is_eof() const
@@ -231,12 +275,11 @@ private:
         if (m_buffer.empty_space() == 0)
             return 0;
 
-        // TODO: Figure out if we can do direct writes in a comfortable way.
-        Array<u8, 1024> temporary_buffer;
-        auto const fillable_slice = temporary_buffer.span().trim(min(temporary_buffer.size(), m_buffer.empty_space()));
         size_t nread = 0;
-        do {
-            auto result = stream().read(fillable_slice);
+
+        while (true) {
+            auto result = m_buffer.fill_from_stream(stream());
+
             if (result.is_error()) {
                 if (!result.error().is_errno())
                     return result.release_error();
@@ -246,11 +289,11 @@ private:
                     break;
                 return result.release_error();
             }
-            auto const filled_slice = result.value();
-            VERIFY(m_buffer.write(filled_slice) == filled_slice.size());
-            nread += filled_slice.size();
+
+            nread += result.value();
             break;
-        } while (true);
+        }
+
         return nread;
     }
 
@@ -262,20 +305,20 @@ private:
 //       needed at the moment.
 
 template<SeekableStreamLike T>
-class BufferedSeekable final : public SeekableStream {
+class InputBufferedSeekable final : public SeekableStream {
     friend BufferedHelper<T>;
 
 public:
-    static ErrorOr<NonnullOwnPtr<BufferedSeekable<T>>> create(NonnullOwnPtr<T> stream, size_t buffer_size = 16384)
+    static ErrorOr<NonnullOwnPtr<InputBufferedSeekable<T>>> create(NonnullOwnPtr<T> stream, size_t buffer_size = 16384)
     {
-        return BufferedHelper<T>::template create_buffered<BufferedSeekable>(move(stream), buffer_size);
+        return BufferedHelper<T>::template create_buffered<InputBufferedSeekable>(move(stream), buffer_size);
     }
 
-    BufferedSeekable(BufferedSeekable&& other) = default;
-    BufferedSeekable& operator=(BufferedSeekable&& other) = default;
+    InputBufferedSeekable(InputBufferedSeekable&& other) = default;
+    InputBufferedSeekable& operator=(InputBufferedSeekable&& other) = default;
 
-    virtual ErrorOr<Bytes> read(Bytes buffer) override { return m_helper.read(move(buffer)); }
-    virtual ErrorOr<size_t> write(ReadonlyBytes buffer) override { return m_helper.stream().write(buffer); }
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override { return m_helper.read(buffer); }
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override { return m_helper.stream().write_some(buffer); }
     virtual bool is_eof() const override { return m_helper.is_eof(); }
     virtual bool is_open() const override { return m_helper.stream().is_open(); }
     virtual void close() override { m_helper.stream().close(); }
@@ -301,28 +344,131 @@ public:
         return m_helper.stream().truncate(length);
     }
 
-    ErrorOr<StringView> read_line(Bytes buffer) { return m_helper.read_line(move(buffer)); }
-    ErrorOr<Bytes> read_until(Bytes buffer, StringView candidate) { return m_helper.read_until(move(buffer), move(candidate)); }
+    ErrorOr<StringView> read_line(Bytes buffer) { return m_helper.read_line(buffer); }
+    ErrorOr<bool> can_read_line()
+    {
+        return TRY(m_helper.can_read_up_to_delimiter("\n"sv.bytes())) || m_helper.is_eof_with_data_left_over();
+    }
+    ErrorOr<Bytes> read_until(Bytes buffer, StringView candidate) { return m_helper.read_until(buffer, candidate); }
     template<size_t N>
-    ErrorOr<Bytes> read_until_any_of(Bytes buffer, Array<StringView, N> candidates) { return m_helper.read_until_any_of(move(buffer), move(candidates)); }
-    ErrorOr<bool> can_read_line() { return m_helper.can_read_line(); }
+    ErrorOr<Bytes> read_until_any_of(Bytes buffer, Array<StringView, N> candidates) { return m_helper.read_until_any_of(buffer, move(candidates)); }
+    ErrorOr<bool> can_read_up_to_delimiter(ReadonlyBytes delimiter) { return m_helper.can_read_up_to_delimiter(delimiter); }
+
+    // Methods for reading stream into an auto-adjusting buffer
+    ErrorOr<StringView> read_line_with_resize(ByteBuffer& buffer) { return m_helper.read_line_with_resize(buffer); }
+    ErrorOr<Bytes> read_until_with_resize(ByteBuffer& buffer, StringView candidate) { return m_helper.read_until_with_resize(buffer, candidate); }
+    template<size_t N>
+    ErrorOr<Bytes> read_until_any_of_with_resize(ByteBuffer& buffer, Array<StringView, N> candidates) { return m_helper.read_until_any_of_with_resize(buffer, move(candidates)); }
 
     size_t buffer_size() const { return m_helper.buffer_size(); }
 
-    virtual ~BufferedSeekable() override = default;
+    virtual ~InputBufferedSeekable() override = default;
 
 private:
-    BufferedSeekable(NonnullOwnPtr<T> stream, CircularBuffer buffer)
-        : m_helper(Badge<BufferedSeekable<T>> {}, move(stream), move(buffer))
+    InputBufferedSeekable(NonnullOwnPtr<T> stream, CircularBuffer buffer)
+        : m_helper(Badge<InputBufferedSeekable<T>> {}, move(stream), move(buffer))
     {
     }
 
     BufferedHelper<T> m_helper;
 };
 
+template<SeekableStreamLike T>
+class OutputBufferedSeekable : public SeekableStream {
+public:
+    static ErrorOr<NonnullOwnPtr<OutputBufferedSeekable<T>>> create(NonnullOwnPtr<T> stream, size_t buffer_size = 16 * KiB)
+    {
+        if (buffer_size == 0)
+            return Error::from_errno(EINVAL);
+        if (!stream->is_open())
+            return Error::from_errno(ENOTCONN);
+
+        auto buffer = TRY(CircularBuffer::create_empty(buffer_size));
+
+        return adopt_nonnull_own_or_enomem(new OutputBufferedSeekable<T>(move(stream), move(buffer)));
+    }
+
+    OutputBufferedSeekable(OutputBufferedSeekable&& other) = default;
+    OutputBufferedSeekable& operator=(OutputBufferedSeekable&& other) = default;
+
+    virtual ErrorOr<Bytes> read_some(Bytes buffer) override
+    {
+        TRY(flush_buffer());
+        return m_stream->read_some(buffer);
+    }
+
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes buffer) override
+    {
+        if (!m_stream->is_open())
+            return Error::from_errno(ENOTCONN);
+
+        auto const written = m_buffer.write(buffer);
+
+        if (m_buffer.empty_space() == 0)
+            TRY(m_buffer.flush_to_stream(*m_stream));
+
+        return written;
+    }
+
+    virtual bool is_eof() const override
+    {
+        MUST(flush_buffer());
+        return m_stream->is_eof();
+    }
+
+    virtual bool is_open() const override { return m_stream->is_open(); }
+
+    virtual void close() override
+    {
+        MUST(flush_buffer());
+        m_stream->close();
+    }
+
+    ErrorOr<void> flush_buffer() const
+    {
+        while (m_buffer.used_space() > 0)
+            TRY(m_buffer.flush_to_stream(*m_stream));
+        return {};
+    }
+
+    // Since tell() doesn't involve moving the write offset, we can skip flushing the buffer here.
+    virtual ErrorOr<size_t> tell() const override
+    {
+        return TRY(m_stream->tell()) + m_buffer.used_space();
+    }
+
+    virtual ErrorOr<size_t> seek(i64 offset, SeekMode mode) override
+    {
+        TRY(flush_buffer());
+        return m_stream->seek(offset, mode);
+    }
+
+    virtual ErrorOr<void> truncate(size_t length) override
+    {
+        TRY(flush_buffer());
+        return m_stream->truncate(length);
+    }
+
+    virtual ~OutputBufferedSeekable() override
+    {
+        MUST(flush_buffer());
+    }
+
+private:
+    OutputBufferedSeekable(NonnullOwnPtr<T> stream, CircularBuffer buffer)
+        : m_stream(move(stream))
+        , m_buffer(move(buffer))
+    {
+    }
+
+    mutable NonnullOwnPtr<T> m_stream;
+    mutable CircularBuffer m_buffer;
+};
+
 }
 
 #if USING_AK_GLOBALLY
 using AK::BufferedHelper;
-using AK::BufferedSeekable;
+using AK::InputBufferedSeekable;
+using AK::OutputBufferedSeekable;
 #endif

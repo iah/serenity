@@ -6,20 +6,21 @@
  */
 
 #include <AK/Base64.h>
+#include <AK/CharacterTypes.h>
 #include <AK/GenericLexer.h>
 #include <AK/LexicalPath.h>
 #include <AK/MaybeOwned.h>
 #include <AK/NumberFormat.h>
 #include <AK/String.h>
-#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibHTTP/HttpResponse.h>
 #include <LibMain/Main.h>
 #include <LibProtocol/Request.h>
 #include <LibProtocol/RequestClient.h>
+#include <LibURL/URL.h>
 #include <ctype.h>
 #include <stdio.h>
 
@@ -30,20 +31,20 @@ public:
     {
         GenericLexer lexer(value);
 
-        lexer.ignore_while(isspace);
+        lexer.ignore_while(is_ascii_space);
 
-        if (lexer.consume_specific("inline")) {
+        if (lexer.consume_specific("inline"sv)) {
             m_kind = Kind::Inline;
             if (!lexer.is_eof())
                 m_might_be_wrong = true;
             return;
         }
 
-        if (lexer.consume_specific("attachment")) {
+        if (lexer.consume_specific("attachment"sv)) {
             m_kind = Kind::Attachment;
-            if (lexer.consume_specific(";")) {
-                lexer.ignore_while(isspace);
-                if (lexer.consume_specific("filename=")) {
+            if (lexer.consume_specific(";"sv)) {
+                lexer.ignore_while(is_ascii_space);
+                if (lexer.consume_specific("filename="sv)) {
                     // RFC 2183: "A short (length <= 78 characters)
                     //            parameter value containing only non-`tspecials' characters SHOULD be
                     //            represented as a single `token'."
@@ -61,13 +62,13 @@ public:
             return;
         }
 
-        if (lexer.consume_specific("form-data")) {
+        if (lexer.consume_specific("form-data"sv)) {
             m_kind = Kind::FormData;
-            while (lexer.consume_specific(";")) {
-                lexer.ignore_while(isspace);
-                if (lexer.consume_specific("name=")) {
+            while (lexer.consume_specific(";"sv)) {
+                lexer.ignore_while(is_ascii_space);
+                if (lexer.consume_specific("name="sv)) {
                     m_name = lexer.consume_quoted_string();
-                } else if (lexer.consume_specific("filename=")) {
+                } else if (lexer.consume_specific("filename="sv)) {
                     if (lexer.next_is('"'))
                         m_filename = lexer.consume_quoted_string();
                     else
@@ -112,18 +113,18 @@ public:
     {
     }
 
-    virtual ErrorOr<Bytes> read(Bytes) override
+    virtual ErrorOr<Bytes> read_some(Bytes) override
     {
         return Error::from_errno(EBADF);
     }
 
-    virtual ErrorOr<size_t> write(ReadonlyBytes bytes) override
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes bytes) override
     {
         // Pretend that we wrote the whole buffer if the condition is untrue.
         if (!m_condition())
             return bytes.size();
 
-        return m_stream->write(bytes);
+        return m_stream->write_some(bytes);
     }
 
     virtual bool is_eof() const override
@@ -153,9 +154,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool verbose_output = false;
     StringView data;
     StringView proxy_spec;
-    DeprecatedString method = "GET";
+    ByteString method = "GET";
     StringView method_override;
-    HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> request_headers;
+    HTTP::HeaderMap request_headers;
     String credentials;
 
     Core::ArgsParser args_parser;
@@ -214,7 +215,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         // FIXME: Content-Type?
     }
 
-    URL url(url_str);
+    URL::URL url(url_str);
     if (!url.is_valid()) {
         warnln("'{}' is not a valid URL", url_str);
         return 1;
@@ -231,12 +232,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool should_save_stream_data = false;
     bool following_url = false;
 
-    u32 previous_downloaded_size = 0;
+    u64 previous_downloaded_size = 0;
+    u64 current_bytes_per_second_speed = 0;
     u32 const report_time_in_ms = 100;
-    u32 const speed_update_time_in_ms = 4000;
+    u32 const speed_update_time_in_ms = 1000;
 
-    timeval previous_time, current_time, time_diff;
-    gettimeofday(&previous_time, nullptr);
+    auto previous_report_time = MonotonicTime::now();
+    auto previous_speed_update_time = previous_report_time;
 
     RefPtr<Protocol::Request> request;
     auto protocol_client = TRY(Protocol::RequestClient::try_create());
@@ -251,13 +253,41 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         // that scheme as (...) or a single sequence of characters capable of holding base64-encoded information.
         auto const encoded_credentials = TRY(encode_base64(credentials.bytes()));
         auto const authorization = TRY(String::formatted("Basic {}", encoded_credentials));
-        request_headers.set("Authorization", authorization.to_deprecated_string());
+        request_headers.set("Authorization", authorization.to_byte_string());
     } else {
         if (is_http_url && has_credentials && has_manual_authorization_header)
             warnln("* Skipping encoding provided authorization, manual header present.");
         if (!is_http_url && has_credentials)
             warnln("* Skipping adding Authorization header, request was not for the HTTP protocol.");
     }
+
+    auto update_progress = [&](Optional<u64> maybe_total_size, u64 downloaded_size, bool force_update) {
+        auto current_time = MonotonicTime::now();
+        if (!force_update && (current_time - previous_report_time).to_milliseconds() < report_time_in_ms)
+            return;
+
+        previous_report_time = current_time;
+        warn("\r\033[2K");
+        if (maybe_total_size.has_value()) {
+            warn("\033]9;{};{};\033\\", downloaded_size, maybe_total_size.value());
+            warn("Download progress: {} / {}", human_readable_size(downloaded_size), human_readable_size(maybe_total_size.value()));
+        } else {
+            warn("Download progress: {} / ???", human_readable_size(downloaded_size));
+        }
+
+        auto time_diff_ms = (current_time - previous_speed_update_time).to_milliseconds();
+        if ((force_update && previous_downloaded_size == 0) || time_diff_ms > speed_update_time_in_ms) {
+            auto size_diff = downloaded_size - previous_downloaded_size;
+            previous_speed_update_time = current_time;
+            previous_downloaded_size = downloaded_size;
+            current_bytes_per_second_speed = size_diff * 1000 / time_diff_ms;
+        }
+
+        if (previous_downloaded_size == 0)
+            warn(" at --.-B/s");
+        else
+            warn(" at {}/s", human_readable_size(current_bytes_per_second_speed));
+    };
 
     Function<void()> setup_request = [&] {
         if (!request) {
@@ -268,35 +298,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (verbose_output && is_http_url) {
             warnln("* Setting up request");
             warnln("> Method={}, URL={}", method, url);
-            for (auto const& header : request_headers) {
-                warnln("> {}: {}", header.key, header.value);
+            for (auto const& header : request_headers.headers()) {
+                warnln("> {}: {}", header.name, header.value);
             }
         }
 
-        request->on_progress = [&](Optional<u32> maybe_total_size, u32 downloaded_size) {
-            gettimeofday(&current_time, nullptr);
-            timersub(&current_time, &previous_time, &time_diff);
-            auto time_diff_ms = time_diff.tv_sec * 1000 + time_diff.tv_usec / 1000;
-            if (time_diff_ms < report_time_in_ms)
-                return;
-
-            warn("\r\033[2K");
-            if (maybe_total_size.has_value()) {
-                warn("\033]9;{};{};\033\\", downloaded_size, maybe_total_size.value());
-                warn("Download progress: {} / {}", human_readable_size(downloaded_size), human_readable_size(maybe_total_size.value()));
-            } else {
-                warn("Download progress: {} / ???", human_readable_size(downloaded_size));
-            }
-
-            auto size_diff = downloaded_size - previous_downloaded_size;
-            if (time_diff_ms > speed_update_time_in_ms) {
-                previous_time = current_time;
-                previous_downloaded_size = downloaded_size;
-            }
-
-            warn(" at {}/s", human_readable_size(((float)size_diff / (float)time_diff_ms) * 1000));
-        };
-        request->on_headers_received = [&](auto& response_headers, auto status_code) {
+        auto on_headers_received = [&](auto& response_headers, auto status_code) {
             if (received_actual_headers)
                 return;
             dbgln("Received headers! response code = {}", status_code.value_or(0));
@@ -310,13 +317,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     ? HTTP::HttpResponse::reason_phrase_for_code(value)
                     : "UNKNOWN"sv;
                 warnln("< Code={}, Reason={}", value, reason_phrase);
-                for (auto const& header : response_headers) {
-                    warnln("< {}: {}", header.key, header.value);
+                for (auto const& header : response_headers.headers()) {
+                    warnln("< {}: {}", header.name, header.value);
                 }
             }
 
             if (!following_url && save_at_provided_name) {
-                DeprecatedString output_name;
+                ByteString output_name;
                 if (auto content_disposition = response_headers.get("Content-Disposition"); content_disposition.has_value()) {
                     auto& value = content_disposition.value();
                     ContentDispositionParser parser(value);
@@ -324,7 +331,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
 
                 if (output_name.is_empty())
-                    output_name = url.path();
+                    output_name = URL::percent_decode(url.serialize_path());
 
                 LexicalPath path { output_name };
                 output_name = path.basename();
@@ -333,11 +340,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 if (output_name.is_empty() || output_name == "/") {
                     int i = -1;
                     do {
-                        output_name = url.host();
+                        output_name = url.serialized_host().release_value_but_fixme_should_propagate_errors().to_byte_string();
                         if (i > -1)
-                            output_name = DeprecatedString::formatted("{}.{}", output_name, i);
+                            output_name = ByteString::formatted("{}.{}", output_name, i);
                         ++i;
-                    } while (Core::DeprecatedFile::exists(output_name));
+                    } while (FileSystem::exists(output_name));
                 }
 
                 int target_file_fd = open(output_name.characters(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -367,9 +374,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     following_url = true;
                     received_actual_headers = false;
                     should_save_stream_data = false;
-                    request->on_finish = nullptr;
-                    request->on_headers_received = nullptr;
-                    request->on_progress = nullptr;
                     request->stop();
 
                     Core::deferred_invoke([&, was_following_url, url = location.value()] {
@@ -385,9 +389,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     warnln("Request returned error {}", status_code_value);
             }
         };
-        request->on_finish = [&](bool success, auto) {
+
+        auto on_data_received = [&](auto data) {
+            output_stream.write_until_depleted(data).release_value_but_fixme_should_propagate_errors();
+        };
+
+        auto on_finished = [&](bool success, u64 total_size) {
             if (following_url)
                 return;
+
+            if (success)
+                update_progress(total_size, total_size, true);
 
             warn("\033]9;-1;\033\\");
             warnln();
@@ -396,7 +408,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             loop.quit(0);
         };
 
-        request->stream_into(output_stream);
+        request->set_unbuffered_request_callbacks(move(on_headers_received), move(on_data_received), move(on_finished));
+
+        request->on_progress = [&](Optional<u64> maybe_total_size, u64 downloaded_size) {
+            update_progress(move(maybe_total_size), downloaded_size, false);
+        };
     };
 
     request = protocol_client->start_request(method, url, request_headers, data.bytes(), proxy_data);

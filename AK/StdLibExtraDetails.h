@@ -9,6 +9,7 @@
 #pragma once
 
 #include <AK/Platform.h>
+#include <AK/Types.h>
 
 namespace AK::Detail {
 
@@ -25,7 +26,7 @@ using FalseType = IntegralConstant<bool, false>;
 using TrueType = IntegralConstant<bool, true>;
 
 template<class T>
-using AddConst = const T;
+using AddConst = T const;
 
 template<class T>
 struct __AddConstToReferencedType {
@@ -125,9 +126,9 @@ inline constexpr bool IsFunction<Ret(Args...) const volatile&> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args..., ...) const volatile&> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args...)&&> = true;
+inline constexpr bool IsFunction<Ret(Args...) &&> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args..., ...)&&> = true;
+inline constexpr bool IsFunction<Ret(Args..., ...) &&> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args...) const&&> = true;
 template<class Ret, class... Args>
@@ -174,19 +175,6 @@ inline constexpr bool IsSame = false;
 
 template<typename T>
 inline constexpr bool IsSame<T, T> = true;
-
-template<bool condition, class TrueType, class FalseType>
-struct __Conditional {
-    using Type = TrueType;
-};
-
-template<class TrueType, class FalseType>
-struct __Conditional<false, TrueType, FalseType> {
-    using Type = FalseType;
-};
-
-template<bool condition, class TrueType, class FalseType>
-using Conditional = typename __Conditional<condition, TrueType, FalseType>::Type;
 
 template<typename T>
 inline constexpr bool IsNullPointer = IsSame<decltype(nullptr), RemoveCV<T>>;
@@ -274,7 +262,7 @@ template<>
 struct __MakeUnsigned<bool> {
     using Type = bool;
 };
-#ifdef AK_ARCH_AARCH64
+#if ARCH(AARCH64)
 template<>
 struct __MakeUnsigned<wchar_t> {
     using Type = wchar_t;
@@ -283,64 +271,6 @@ struct __MakeUnsigned<wchar_t> {
 
 template<typename T>
 using MakeUnsigned = typename __MakeUnsigned<T>::Type;
-
-template<typename T>
-struct __MakeSigned {
-    using Type = void;
-};
-template<>
-struct __MakeSigned<signed char> {
-    using Type = signed char;
-};
-template<>
-struct __MakeSigned<short> {
-    using Type = short;
-};
-template<>
-struct __MakeSigned<int> {
-    using Type = int;
-};
-template<>
-struct __MakeSigned<long> {
-    using Type = long;
-};
-template<>
-struct __MakeSigned<long long> {
-    using Type = long long;
-};
-template<>
-struct __MakeSigned<unsigned char> {
-    using Type = char;
-};
-template<>
-struct __MakeSigned<unsigned short> {
-    using Type = short;
-};
-template<>
-struct __MakeSigned<unsigned int> {
-    using Type = int;
-};
-template<>
-struct __MakeSigned<unsigned long> {
-    using Type = long;
-};
-template<>
-struct __MakeSigned<unsigned long long> {
-    using Type = long long;
-};
-template<>
-struct __MakeSigned<char> {
-    using Type = char;
-};
-#ifdef AK_ARCH_AARCH64
-template<>
-struct __MakeSigned<wchar_t> {
-    using Type = void;
-};
-#endif
-
-template<typename T>
-using MakeSigned = typename __MakeSigned<T>::Type;
 
 template<typename T>
 auto declval() -> T;
@@ -412,6 +342,7 @@ inline constexpr bool __IsIntegral<unsigned long long> = true;
 template<typename T>
 inline constexpr bool IsIntegral = __IsIntegral<MakeUnsigned<RemoveCV<T>>>;
 
+#ifndef KERNEL
 template<typename T>
 inline constexpr bool __IsFloatingPoint = false;
 template<>
@@ -423,6 +354,7 @@ inline constexpr bool __IsFloatingPoint<long double> = true;
 
 template<typename T>
 inline constexpr bool IsFloatingPoint = __IsFloatingPoint<RemoveCV<T>>;
+#endif
 
 template<typename ReferenceType, typename T>
 using CopyConst = Conditional<IsConst<ReferenceType>, AddConst<T>, RemoveConst<T>>;
@@ -439,21 +371,37 @@ inline constexpr bool IsSigned = IsSame<T, MakeSigned<T>>;
 template<typename T>
 inline constexpr bool IsUnsigned = IsSame<T, MakeUnsigned<T>>;
 
+#ifndef KERNEL
 template<typename T>
 inline constexpr bool IsArithmetic = IsIntegral<T> || IsFloatingPoint<T>;
+#else
+template<typename T>
+inline constexpr bool IsArithmetic = IsIntegral<T>;
+#endif
 
 template<typename T>
 inline constexpr bool IsFundamental = IsArithmetic<T> || IsVoid<T> || IsNullPointer<T>;
 
+// FIXME: The std::is_scalar also includes std::is_member_pointer
+template<typename T>
+inline constexpr bool IsScalar = IsArithmetic<T> || IsEnum<T> || IsPointer<T> || IsNullPointer<T>;
+
 template<typename T, T... Ts>
 struct IntegerSequence {
     using Type = T;
-    static constexpr unsigned size() noexcept { return sizeof...(Ts); };
+    static constexpr unsigned size() noexcept { return sizeof...(Ts); }
 };
 
-template<unsigned... Indices>
-using IndexSequence = IntegerSequence<unsigned, Indices...>;
+template<size_t... Indices>
+using IndexSequence = IntegerSequence<size_t, Indices...>;
 
+#if __has_builtin(__make_integer_seq)
+template<typename T, T N>
+using MakeIntegerSequence = __make_integer_seq<IntegerSequence, T, N>;
+#elif __has_builtin(__integer_pack)
+template<typename T, T N>
+using MakeIntegerSequence = IntegerSequence<T, __integer_pack(N)...>;
+#else
 template<typename T, T N, T... Ts>
 auto make_integer_sequence_impl()
 {
@@ -465,9 +413,10 @@ auto make_integer_sequence_impl()
 
 template<typename T, T N>
 using MakeIntegerSequence = decltype(make_integer_sequence_impl<T, N>());
+#endif
 
-template<unsigned N>
-using MakeIndexSequence = MakeIntegerSequence<unsigned, N>;
+template<size_t N>
+using MakeIndexSequence = MakeIntegerSequence<size_t, N>;
 
 template<typename T>
 struct __IdentityType {
@@ -480,7 +429,7 @@ using IdentityType = typename __IdentityType<T>::Type;
 template<typename T, typename = void>
 struct __AddReference {
     using LvalueType = T;
-    using TvalueType = T;
+    using RvalueType = T;
 };
 
 template<typename T>
@@ -610,6 +559,60 @@ inline constexpr bool IsSameIgnoringCV = IsSame<RemoveCV<T>, RemoveCV<U>>;
 template<typename T, typename... Ts>
 inline constexpr bool IsOneOfIgnoringCV = (IsSameIgnoringCV<T, Ts> || ...);
 
+template<typename...>
+struct __InvokeResult { };
+
+template<typename MethodDefBaseType, typename MethodType, typename InstanceType, typename... Args>
+struct __InvokeResult<MethodType MethodDefBaseType::*, InstanceType, Args...> {
+    using type = decltype((
+        declval<InstanceType>()
+        .*declval<MethodType MethodDefBaseType::*>())(declval<Args>()...));
+};
+
+template<typename F, typename... Args>
+struct __InvokeResult<F, Args...> {
+    using type = decltype((declval<F>())(declval<Args>()...));
+};
+
+template<typename F, typename... Args>
+using InvokeResult = typename __InvokeResult<F, Args...>::type;
+
+template<typename Callable>
+struct EquivalentFunctionTypeImpl;
+
+template<template<typename> class Function, typename T, typename... Args>
+struct EquivalentFunctionTypeImpl<Function<T(Args...)>> {
+    using Type = T(Args...);
+};
+
+template<typename T, typename... Args>
+struct EquivalentFunctionTypeImpl<T(Args...)> {
+    using Type = T(Args...);
+};
+
+template<typename T, typename... Args>
+struct EquivalentFunctionTypeImpl<T (*)(Args...)> {
+    using Type = T(Args...);
+};
+
+template<typename L>
+struct EquivalentFunctionTypeImpl {
+    using Type = typename EquivalentFunctionTypeImpl<decltype(&L::operator())>::Type;
+};
+
+template<typename T, typename C, typename... Args>
+struct EquivalentFunctionTypeImpl<T (C::*)(Args...)> {
+    using Type = T(Args...);
+};
+
+template<typename T, typename C, typename... Args>
+struct EquivalentFunctionTypeImpl<T (C::*)(Args...) const> {
+    using Type = T(Args...);
+};
+
+template<typename Callable>
+using EquivalentFunctionType = typename EquivalentFunctionTypeImpl<Callable>::Type;
+
 }
 
 #if !USING_AK_GLOBALLY
@@ -625,10 +628,12 @@ using AK::Detail::Conditional;
 using AK::Detail::CopyConst;
 using AK::Detail::declval;
 using AK::Detail::DependentFalse;
+using AK::Detail::EquivalentFunctionType;
 using AK::Detail::FalseType;
 using AK::Detail::IdentityType;
 using AK::Detail::IndexSequence;
 using AK::Detail::IntegerSequence;
+using AK::Detail::InvokeResult;
 using AK::Detail::IsArithmetic;
 using AK::Detail::IsAssignable;
 using AK::Detail::IsBaseOf;
@@ -640,7 +645,9 @@ using AK::Detail::IsCopyAssignable;
 using AK::Detail::IsCopyConstructible;
 using AK::Detail::IsDestructible;
 using AK::Detail::IsEnum;
+#ifndef KERNEL
 using AK::Detail::IsFloatingPoint;
+#endif
 using AK::Detail::IsFunction;
 using AK::Detail::IsFundamental;
 using AK::Detail::IsHashCompatible;
@@ -656,6 +663,7 @@ using AK::Detail::IsPointer;
 using AK::Detail::IsRvalueReference;
 using AK::Detail::IsSame;
 using AK::Detail::IsSameIgnoringCV;
+using AK::Detail::IsScalar;
 using AK::Detail::IsSigned;
 using AK::Detail::IsSpecializationOf;
 using AK::Detail::IsTrivial;

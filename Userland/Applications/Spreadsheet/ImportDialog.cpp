@@ -27,9 +27,10 @@ namespace Spreadsheet {
 CSVImportDialogPage::CSVImportDialogPage(StringView csv)
     : m_csv(csv)
 {
-    m_page = GUI::WizardPage::construct(
-        "CSV Import Options",
-        "Please select the options for the csv file you wish to import");
+    m_page = GUI::WizardPage::create(
+        "CSV Import Options"sv,
+        "Please select the options for the csv file you wish to import"sv)
+                 .release_value_but_fixme_should_propagate_errors();
 
     m_page->body_widget().load_from_gml(csv_import_gml).release_value_but_fixme_should_propagate_errors();
     m_page->set_is_final_page(true);
@@ -52,7 +53,7 @@ CSVImportDialogPage::CSVImportDialogPage(StringView csv)
     m_data_preview_error_label = m_page->body_widget().find_descendant_of_type_named<GUI::Label>("data_preview_error_label");
     m_data_preview_widget = m_page->body_widget().find_descendant_of_type_named<GUI::StackWidget>("data_preview_widget");
 
-    m_quote_escape_combo_box->set_model(GUI::ItemListModel<DeprecatedString>::create(m_quote_escape_items));
+    m_quote_escape_combo_box->set_model(GUI::ItemListModel<ByteString>::create(m_quote_escape_items));
 
     // By default, use commas, double quotes with repeat, and disable headers.
     m_delimiter_comma_radio->set_checked(true);
@@ -85,8 +86,8 @@ CSVImportDialogPage::CSVImportDialogPage(StringView csv)
 
 auto CSVImportDialogPage::make_reader() -> Optional<Reader::XSV>
 {
-    DeprecatedString delimiter;
-    DeprecatedString quote;
+    ByteString delimiter;
+    ByteString quote;
     Reader::ParserTraits::QuoteEscape quote_escape;
 
     // Delimiter
@@ -145,7 +146,7 @@ auto CSVImportDialogPage::make_reader() -> Optional<Reader::XSV>
         behaviors = behaviors | Reader::ParserBehavior::TrimTrailingFieldSpaces;
 
     return Reader::XSV(m_csv, move(traits), behaviors);
-};
+}
 
 void CSVImportDialogPage::update_preview()
 
@@ -153,7 +154,7 @@ void CSVImportDialogPage::update_preview()
     m_previously_made_reader = make_reader();
     if (!m_previously_made_reader.has_value()) {
         m_data_preview_table_view->set_model(nullptr);
-        m_data_preview_error_label->set_text("Could not read the given file");
+        m_data_preview_error_label->set_text("Could not read the given file"_string);
         m_data_preview_widget->set_active_widget(m_data_preview_error_label);
         return;
     }
@@ -161,30 +162,32 @@ void CSVImportDialogPage::update_preview()
     auto& reader = *m_previously_made_reader;
     if (reader.has_error()) {
         m_data_preview_table_view->set_model(nullptr);
-        m_data_preview_error_label->set_text(DeprecatedString::formatted("XSV parse error:\n{}", reader.error_string()));
+        m_data_preview_error_label->set_text(String::formatted("XSV parse error:\n{}", reader.error_string()).release_value_but_fixme_should_propagate_errors());
         m_data_preview_widget->set_active_widget(m_data_preview_error_label);
         return;
     }
 
-    auto headers = reader.headers();
+    Vector<String> headers;
+    for (auto const& header : reader.headers())
+        headers.append(String::from_byte_string(header).release_value_but_fixme_should_propagate_errors());
 
     m_data_preview_table_view->set_model(
-        GUI::ItemListModel<Reader::XSV::Row, Reader::XSV, Vector<DeprecatedString>>::create(reader, headers, min(8ul, reader.size())));
+        GUI::ItemListModel<Reader::XSV::Row, Reader::XSV, Vector<String>>::create(reader, headers, min(8ul, reader.size())));
     m_data_preview_widget->set_active_widget(m_data_preview_table_view);
     m_data_preview_table_view->update();
 }
 
-ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> ImportDialog::make_and_run_for(GUI::Window& parent, StringView mime, String const& filename, Core::File& file, Workbook& workbook)
+ErrorOr<Vector<NonnullRefPtr<Sheet>>, ByteString> ImportDialog::make_and_run_for(GUI::Window& parent, StringView mime, ByteString const& filename, Core::File& file, Workbook& workbook)
 {
-    auto wizard = GUI::WizardDialog::construct(&parent);
+    auto wizard = GUI::WizardDialog::create(&parent).release_value_but_fixme_should_propagate_errors();
     wizard->set_title("File Import Wizard");
     wizard->set_icon(GUI::Icon::default_icon("app-spreadsheet"sv).bitmap_for_size(16));
 
-    auto import_xsv = [&]() -> ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> {
+    auto import_xsv = [&]() -> ErrorOr<Vector<NonnullRefPtr<Sheet>>, ByteString> {
         auto contents_or_error = file.read_until_eof();
         if (contents_or_error.is_error())
-            return DeprecatedString::formatted("{}", contents_or_error.release_error());
-        CSVImportDialogPage page { contents_or_error.release_value() };
+            return ByteString::formatted("{}", contents_or_error.release_error());
+        CSVImportDialogPage page { contents_or_error.value() };
         wizard->replace_page(page.page());
         auto result = wizard->exec();
 
@@ -196,7 +199,7 @@ ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> ImportDialog::make_and_r
             if (reader.has_value()) {
                 reader->parse();
                 if (reader.value().has_error())
-                    return DeprecatedString::formatted("CSV Import failed: {}", reader.value().error_string());
+                    return ByteString::formatted("CSV Import failed: {}", reader.value().error_string());
 
                 auto sheet = Sheet::from_xsv(reader.value(), workbook);
                 if (sheet)
@@ -206,20 +209,20 @@ ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> ImportDialog::make_and_r
             return sheets;
         }
 
-        return DeprecatedString { "CSV Import was cancelled" };
+        return ByteString { "CSV Import was cancelled" };
     };
 
-    auto import_worksheet = [&]() -> ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> {
+    auto import_worksheet = [&]() -> ErrorOr<Vector<NonnullRefPtr<Sheet>>, ByteString> {
         auto contents_or_error = file.read_until_eof();
         if (contents_or_error.is_error())
-            return DeprecatedString::formatted("{}", contents_or_error.release_error());
+            return ByteString::formatted("{}", contents_or_error.release_error());
         auto json_value_option = JsonParser(contents_or_error.release_value()).parse();
         if (json_value_option.is_error())
-            return DeprecatedString::formatted("Failed to parse {}", filename);
+            return ByteString::formatted("Failed to parse {}", filename);
 
         auto& json_value = json_value_option.value();
         if (!json_value.is_array())
-            return DeprecatedString::formatted("Did not find a spreadsheet in {}", filename);
+            return ByteString::formatted("Did not find a spreadsheet in {}", filename);
 
         Vector<NonnullRefPtr<Sheet>> sheets;
 
@@ -242,25 +245,26 @@ ErrorOr<Vector<NonnullRefPtr<Sheet>>, DeprecatedString> ImportDialog::make_and_r
     } else if (mime == "application/x-sheets+json") {
         return import_worksheet();
     } else {
-        auto page = GUI::WizardPage::construct(
-            "Import File Format",
-            DeprecatedString::formatted("Select the format you wish to import '{}' as", LexicalPath::basename(filename.to_deprecated_string())));
+        auto page = GUI::WizardPage::create(
+            "Import File Format"sv,
+            ByteString::formatted("Select the format you wish to import '{}' as", LexicalPath::basename(filename)))
+                        .release_value_but_fixme_should_propagate_errors();
 
         page->on_next_page = [] { return nullptr; };
 
         page->body_widget().load_from_gml(select_format_page_gml).release_value_but_fixme_should_propagate_errors();
         auto format_combo_box = page->body_widget().find_descendant_of_type_named<GUI::ComboBox>("select_format_page_format_combo_box");
 
-        Vector<DeprecatedString> supported_formats {
+        Vector<ByteString> supported_formats {
             "CSV (text/csv)",
             "Spreadsheet Worksheet",
         };
-        format_combo_box->set_model(GUI::ItemListModel<DeprecatedString>::create(supported_formats));
+        format_combo_box->set_model(GUI::ItemListModel<ByteString>::create(supported_formats));
 
         wizard->push_page(page);
 
         if (wizard->exec() != GUI::Dialog::ExecResult::OK)
-            return DeprecatedString { "Import was cancelled" };
+            return ByteString { "Import was cancelled" };
 
         if (format_combo_box->selected_index() == 0)
             return import_xsv();

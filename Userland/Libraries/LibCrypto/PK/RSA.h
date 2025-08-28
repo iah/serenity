@@ -8,13 +8,13 @@
 #pragma once
 
 #include <AK/Span.h>
+#include <LibCrypto/ASN1/DER.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 #include <LibCrypto/NumberTheory/ModularFunctions.h>
-#include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibCrypto/PK/PK.h>
 
-namespace Crypto {
-namespace PK {
+namespace Crypto::PK {
+
 template<typename Integer = UnsignedBigInteger>
 class RSAPublicKey {
 public:
@@ -36,6 +36,18 @@ public:
     size_t length() const { return m_length; }
     void set_length(size_t length) { m_length = length; }
 
+    ErrorOr<ByteBuffer> export_as_der() const
+    {
+        ASN1::Encoder encoder;
+        TRY(encoder.write_constructed(ASN1::Class::Universal, ASN1::Kind::Sequence, [&]() -> ErrorOr<void> {
+            TRY(encoder.write(m_modulus));
+            TRY(encoder.write(m_public_exponent));
+            return {};
+        }));
+
+        return encoder.finish();
+    }
+
     void set(Integer n, Integer e)
     {
         m_modulus = move(n);
@@ -52,34 +64,80 @@ private:
 template<typename Integer = UnsignedBigInteger>
 class RSAPrivateKey {
 public:
-    RSAPrivateKey(Integer n, Integer d, Integer e)
+    RSAPrivateKey(Integer n, Integer d, Integer e, Integer p, Integer q)
         : m_modulus(move(n))
         , m_private_exponent(move(d))
         , m_public_exponent(move(e))
+        , m_prime_1(move(p))
+        , m_prime_2(move(q))
+        , m_exponent_1(NumberTheory::Mod(m_private_exponent, m_prime_1.minus(1)))
+        , m_exponent_2(NumberTheory::Mod(m_private_exponent, m_prime_2.minus(1)))
+        , m_coefficient(NumberTheory::ModularInverse(m_prime_2, m_prime_1))
+        , m_length(m_modulus.trimmed_length() * sizeof(u32))
+    {
+    }
+
+    RSAPrivateKey(Integer n, Integer d, Integer e, Integer p, Integer q, Integer dp, Integer dq, Integer qinv)
+        : m_modulus(move(n))
+        , m_private_exponent(move(d))
+        , m_public_exponent(move(e))
+        , m_prime_1(move(p))
+        , m_prime_2(move(q))
+        , m_exponent_1(move(dp))
+        , m_exponent_2(move(dq))
+        , m_coefficient(move(qinv))
         , m_length(m_modulus.trimmed_length() * sizeof(u32))
     {
     }
 
     RSAPrivateKey() = default;
 
+    static RSAPrivateKey from_crt(Integer n, Integer e, Integer p, Integer q, Integer dp, Integer dq, Integer qinv)
+    {
+        auto phi = p.minus(1).multiplied_by(q.minus(1));
+        auto d = NumberTheory::ModularInverse(e, phi);
+
+        return { n, d, e, p, q, dp, dq, qinv };
+    }
+
     Integer const& modulus() const { return m_modulus; }
     Integer const& private_exponent() const { return m_private_exponent; }
     Integer const& public_exponent() const { return m_public_exponent; }
+    Integer const& prime1() const { return m_prime_1; }
+    Integer const& prime2() const { return m_prime_2; }
+    Integer const& exponent1() const { return m_exponent_1; }
+    Integer const& exponent2() const { return m_exponent_2; }
+    Integer const& coefficient() const { return m_coefficient; }
     size_t length() const { return m_length; }
-    void set_length(size_t length) { m_length = length; }
 
-    void set(Integer n, Integer d, Integer e)
+    ErrorOr<ByteBuffer> export_as_der() const
     {
-        m_modulus = move(n);
-        m_private_exponent = move(d);
-        m_public_exponent = move(e);
-        m_length = m_modulus.trimmed_length() * sizeof(u32);
+        ASN1::Encoder encoder;
+        TRY(encoder.write_constructed(ASN1::Class::Universal, ASN1::Kind::Sequence, [&]() -> ErrorOr<void> {
+            TRY(encoder.write(0x00u)); // version
+            TRY(encoder.write(m_modulus));
+            TRY(encoder.write(m_public_exponent));
+            TRY(encoder.write(m_private_exponent));
+            TRY(encoder.write(m_prime_1));
+            TRY(encoder.write(m_prime_2));
+            TRY(encoder.write(m_exponent_1));
+            TRY(encoder.write(m_exponent_2));
+            TRY(encoder.write(m_coefficient));
+            return {};
+        }));
+
+        return encoder.finish();
     }
 
 private:
     Integer m_modulus;
     Integer m_private_exponent;
     Integer m_public_exponent;
+    Integer m_prime_1;
+    Integer m_prime_2;
+    Integer m_exponent_1;  // d mod (p-1)
+    Integer m_exponent_2;  // d mod (q-1)
+    Integer m_coefficient; // q^-1 mod p
     size_t m_length { 0 };
 };
 
@@ -91,43 +149,36 @@ struct RSAKeyPair {
 
 using IntegerType = UnsignedBigInteger;
 class RSA : public PKSystem<RSAPrivateKey<IntegerType>, RSAPublicKey<IntegerType>> {
-    template<typename T>
-    friend class RSA_EMSA_PSS;
-
 public:
     using KeyPairType = RSAKeyPair<PublicKeyType, PrivateKeyType>;
 
     static KeyPairType parse_rsa_key(ReadonlyBytes der);
-    static KeyPairType generate_key_pair(size_t bits = 256)
+    static KeyPairType generate_key_pair(size_t bits = 256, IntegerType e = 65537)
     {
-        IntegerType e { 65537 }; // :P
-        IntegerType p, q;
+        IntegerType p;
+        IntegerType q;
         IntegerType lambda;
 
         do {
             p = NumberTheory::random_big_prime(bits / 2);
             q = NumberTheory::random_big_prime(bits / 2);
             lambda = NumberTheory::LCM(p.minus(1), q.minus(1));
-            dbgln("checking combination p={}, q={}, lambda={}", p, q, lambda.length());
         } while (!(NumberTheory::GCD(e, lambda) == 1));
 
         auto n = p.multiplied_by(q);
 
         auto d = NumberTheory::ModularInverse(e, lambda);
-        dbgln("Your keys are Pub(n={}, e={}) and Priv(n={}, d={})", n, e, n, d);
         RSAKeyPair<PublicKeyType, PrivateKeyType> keys {
             { n, e },
-            { n, d, e }
+            { n, d, e, p, q }
         };
-        keys.public_key.set_length(bits / 2 / 8);
-        keys.private_key.set_length(bits / 2 / 8);
         return keys;
     }
 
     RSA(IntegerType n, IntegerType d, IntegerType e)
     {
         m_public_key.set(n, e);
-        m_private_key.set(n, d, e);
+        m_private_key = { n, d, e, 0, 0, 0, 0, 0 };
     }
 
     RSA(PublicKeyType& pubkey, PrivateKeyType& privkey)
@@ -162,7 +213,7 @@ public:
     virtual void verify(ReadonlyBytes in, Bytes& out) override;
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const override
+    virtual ByteString class_name() const override
     {
         return "RSA";
     }
@@ -178,22 +229,9 @@ public:
 
     PrivateKeyType const& private_key() const { return m_private_key; }
     PublicKeyType const& public_key() const { return m_public_key; }
-};
 
-template<typename HashFunction>
-class RSA_EMSA_PSS {
-public:
-    RSA_EMSA_PSS(RSA& rsa)
-        : m_rsa(rsa)
-    {
-    }
-
-    void sign(ReadonlyBytes in, Bytes& out);
-    VerificationConsistency verify(ReadonlyBytes in);
-
-private:
-    EMSA_PSS<HashFunction, HashFunction::DigestSize> m_emsa_pss;
-    RSA m_rsa;
+    void set_public_key(PublicKeyType const& key) { m_public_key = key; }
+    void set_private_key(PrivateKeyType const& key) { m_private_key = key; }
 };
 
 class RSA_PKCS1_EME : public RSA {
@@ -214,7 +252,7 @@ public:
     virtual void verify(ReadonlyBytes, Bytes&) override;
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const override
+    virtual ByteString class_name() const override
     {
         return "RSA_PKCS1-EME";
     }
@@ -224,5 +262,4 @@ public:
         return m_public_key.length();
     }
 };
-}
 }

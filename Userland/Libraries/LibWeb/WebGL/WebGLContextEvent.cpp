@@ -5,13 +5,16 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/WebGLContextEventPrototype.h>
 #include <LibWeb/WebGL/WebGLContextEvent.h>
 
 namespace Web::WebGL {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> WebGLContextEvent::create(JS::Realm& realm, FlyString const& event_name, WebGLContextEventInit const& event_init)
+JS_DEFINE_ALLOCATOR(WebGLContextEvent);
+
+JS::NonnullGCPtr<WebGLContextEvent> WebGLContextEvent::create(JS::Realm& realm, FlyString const& event_name, WebGLContextEventInit const& event_init)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<WebGLContextEvent>(realm, realm, event_name, event_init));
+    return realm.heap().allocate<WebGLContextEvent>(realm, realm, event_name, event_init);
 }
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> WebGLContextEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, WebGLContextEventInit const& event_init)
@@ -20,19 +23,17 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> WebGLContextEvent::cons
 }
 
 WebGLContextEvent::WebGLContextEvent(JS::Realm& realm, FlyString const& type, WebGLContextEventInit const& event_init)
-    : DOM::Event(realm, type.to_deprecated_fly_string(), event_init)
+    : DOM::Event(realm, type, event_init)
     , m_status_message(event_init.status_message)
 {
 }
 
 WebGLContextEvent::~WebGLContextEvent() = default;
 
-JS::ThrowCompletionOr<void> WebGLContextEvent::initialize(JS::Realm& realm)
+void WebGLContextEvent::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::WebGLContextEventPrototype>(realm, "WebGLContextEvent"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(WebGLContextEvent);
 }
 
 }

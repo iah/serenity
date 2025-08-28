@@ -6,10 +6,13 @@
 
 #include <AK/Assertions.h>
 #include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/Bindings/HTMLQuoteElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLQuoteElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLQuoteElement);
 
 HTMLQuoteElement::HTMLQuoteElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -18,12 +21,10 @@ HTMLQuoteElement::HTMLQuoteElement(DOM::Document& document, DOM::QualifiedName q
 
 HTMLQuoteElement::~HTMLQuoteElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLQuoteElement::initialize(JS::Realm& realm)
+void HTMLQuoteElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLQuoteElementPrototype>(realm, "HTMLQuoteElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLQuoteElement);
 }
 
 Optional<ARIA::Role> HTMLQuoteElement::default_role() const

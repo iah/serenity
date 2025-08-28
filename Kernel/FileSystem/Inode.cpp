@@ -13,11 +13,12 @@
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeWatcher.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
+#include <Kernel/FileSystem/VFSRootContext.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/KBufferBuilder.h>
+#include <Kernel/Library/KBufferBuilder.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Net/LocalSocket.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -30,7 +31,7 @@ SpinlockProtected<Inode::AllInstancesList, LockRank::None>& Inode::all_instances
 
 void Inode::sync_all()
 {
-    Vector<NonnullLockRefPtr<Inode>, 32> inodes;
+    Vector<NonnullRefPtr<Inode>, 32> inodes;
     Inode::all_instances().with([&](auto& all_inodes) {
         for (auto& inode : all_inodes) {
             if (inode.is_metadata_dirty())
@@ -39,49 +40,32 @@ void Inode::sync_all()
     });
 
     for (auto& inode : inodes) {
-        VERIFY(inode->is_metadata_dirty());
         (void)inode->flush_metadata();
     }
 }
 
 void Inode::sync()
 {
-    if (is_metadata_dirty())
-        (void)flush_metadata();
-    fs().flush_writes();
-}
-
-ErrorOr<NonnullOwnPtr<KBuffer>> Inode::read_entire(OpenFileDescription* description) const
-{
-    auto builder = TRY(KBufferBuilder::try_create());
-
-    u8 buffer[4096];
-    off_t offset = 0;
-    for (;;) {
-        auto buf = UserOrKernelBuffer::for_kernel_buffer(buffer);
-        auto nread = TRY(read_bytes(offset, sizeof(buffer), buf, description));
-        VERIFY(nread <= sizeof(buffer));
-        if (nread == 0)
-            break;
-        TRY(builder.append((char const*)buffer, nread));
-        offset += nread;
-        if (nread < sizeof(buffer))
-            break;
+    (void)flush_metadata();
+    auto result = fs().flush_writes();
+    if (result.is_error()) {
+        // TODO: Figure out how to propagate error to a higher function.
     }
-
-    auto entire_file = builder.build();
-    if (!entire_file)
-        return ENOMEM;
-    return entire_file.release_nonnull();
 }
 
-ErrorOr<NonnullRefPtr<Custody>> Inode::resolve_as_link(Credentials const& credentials, Custody& base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level) const
+ErrorOr<NonnullRefPtr<Custody>> Inode::resolve_as_link(VFSRootContext const& vfs_root_context, Credentials const& credentials, CustodyBase const& base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level) const
 {
     // The default implementation simply treats the stored
     // contents as a path and resolves that. That is, it
     // behaves exactly how you would expect a symlink to work.
-    auto contents = TRY(read_entire());
-    return VirtualFileSystem::the().resolve_path(credentials, StringView { contents->bytes() }, base, out_parent, options, symlink_recursion_level);
+
+    // Make sure that our assumptions about the path length hold up.
+    // Note that this doesn't mean that the reported size can be trusted, some inodes just report zero.
+    VERIFY(size() <= MAXPATHLEN);
+
+    Array<u8, MAXPATHLEN> contents;
+    auto read_bytes = TRY(read_until_filled_or_end(0, contents.size(), UserOrKernelBuffer::for_kernel_buffer(contents.data()), nullptr));
+    return VirtualFileSystem::resolve_path(vfs_root_context, credentials, StringView { contents.span().trim(read_bytes) }, base, out_parent, options, symlink_recursion_level);
 }
 
 Inode::Inode(FileSystem& fs, InodeIndex index)
@@ -105,9 +89,21 @@ void Inode::will_be_destroyed()
         (void)flush_metadata();
 }
 
+ErrorOr<void> Inode::truncate(u64 size)
+{
+    MutexLocker locker(m_inode_lock);
+    return truncate_locked(size);
+}
+
 ErrorOr<size_t> Inode::write_bytes(off_t offset, size_t length, UserOrKernelBuffer const& target_buffer, OpenFileDescription* open_description)
 {
     MutexLocker locker(m_inode_lock);
+    return prepare_and_write_bytes_locked(offset, length, target_buffer, open_description);
+}
+
+ErrorOr<size_t> Inode::prepare_and_write_bytes_locked(off_t offset, size_t length, UserOrKernelBuffer const& target_buffer, OpenFileDescription* open_description)
+{
+    VERIFY(m_inode_lock.is_locked());
     TRY(prepare_to_write_data());
     return write_bytes_locked(offset, length, target_buffer, open_description);
 }
@@ -118,7 +114,22 @@ ErrorOr<size_t> Inode::read_bytes(off_t offset, size_t length, UserOrKernelBuffe
     return read_bytes_locked(offset, length, buffer, open_description);
 }
 
-ErrorOr<void> Inode::update_timestamps([[maybe_unused]] Optional<Time> atime, [[maybe_unused]] Optional<Time> ctime, [[maybe_unused]] Optional<Time> mtime)
+ErrorOr<size_t> Inode::read_until_filled_or_end(off_t offset, size_t length, UserOrKernelBuffer buffer, OpenFileDescription* open_description) const
+{
+    auto remaining_length = length;
+
+    while (remaining_length > 0) {
+        auto filled_bytes = TRY(read_bytes(offset, remaining_length, buffer, open_description));
+        if (filled_bytes == 0)
+            break;
+        offset += filled_bytes;
+        remaining_length -= filled_bytes;
+    }
+
+    return length - remaining_length;
+}
+
+ErrorOr<void> Inode::update_timestamps([[maybe_unused]] Optional<UnixDateTime> atime, [[maybe_unused]] Optional<UnixDateTime> ctime, [[maybe_unused]] Optional<UnixDateTime> mtime)
 {
     return ENOTIMPL;
 }
@@ -180,7 +191,7 @@ void Inode::unregister_watcher(Badge<InodeWatcher>, InodeWatcher& watcher)
     });
 }
 
-ErrorOr<NonnullLockRefPtr<FIFO>> Inode::fifo()
+ErrorOr<NonnullRefPtr<FIFO>> Inode::fifo()
 {
     MutexLocker locker(m_inode_lock);
     VERIFY(metadata().is_fifo());
@@ -189,7 +200,7 @@ ErrorOr<NonnullLockRefPtr<FIFO>> Inode::fifo()
     if (!m_fifo)
         m_fifo = TRY(FIFO::try_create(metadata().uid));
 
-    return NonnullLockRefPtr { *m_fifo };
+    return NonnullRefPtr { *m_fifo };
 }
 
 void Inode::set_metadata_dirty(bool metadata_dirty)
@@ -297,43 +308,48 @@ static inline ErrorOr<void> normalize_flock(OpenFileDescription const& descripti
     return {};
 }
 
-bool Inode::can_apply_flock(flock const& new_lock, Optional<OpenFileDescription const&> description) const
+bool Inode::can_apply_flock_impl(flock const& new_lock, Optional<OpenFileDescription const&> description, Vector<Flock> const& flocks) const
 {
     VERIFY(new_lock.l_whence == SEEK_SET);
 
     if (new_lock.l_type == F_UNLCK)
         return true;
 
+    for (auto const& lock : flocks) {
+        if (!range_overlap(lock.start, lock.len, new_lock.l_start, new_lock.l_len))
+            continue;
+
+        // There are two cases where we can attempt downgrade:
+        //
+        // 1) We're the owner of this lock. The downgrade will immediately
+        //    succeed.
+        // 2) We're not the owner of this lock. Our downgrade attempt will
+        //    fail, and the thread will start blocking on an FlockBlocker.
+        //
+        // For the first case, we get the description from try_apply_flock
+        // below. For the second case, the check below would always be
+        // false, so there is no need to store the description in the
+        // blocker in the first place.
+        if (new_lock.l_type == F_RDLCK && lock.type == F_WRLCK)
+            return description.has_value() && lock.owner == &description.value() && lock.start == new_lock.l_start && lock.len == new_lock.l_len;
+
+        if (new_lock.l_type == F_WRLCK)
+            return false;
+    }
+    return true;
+}
+
+bool Inode::can_apply_flock(flock const& new_lock, Optional<OpenFileDescription const&> description) const
+{
     return m_flocks.with([&](auto& flocks) {
-        for (auto const& lock : flocks) {
-            if (!range_overlap(lock.start, lock.len, new_lock.l_start, new_lock.l_len))
-                continue;
-
-            // There are two cases where we can attempt downgrade:
-            //
-            // 1) We're the owner of this lock. The downgrade will immediately
-            //    succeed.
-            // 2) We're not the owner of this lock. Our downgrade attempt will
-            //    fail, and the thread will start blocking on an FlockBlocker.
-            //
-            // For the first case, we get the description from try_apply_flock
-            // below. For the second case, the check below would always be
-            // false, so there is no need to store the description in the
-            // blocker in the first place.
-            if (new_lock.l_type == F_RDLCK && lock.type == F_WRLCK)
-                return description.has_value() && lock.owner == &description.value() && lock.start == new_lock.l_start && lock.len == new_lock.l_len;
-
-            if (new_lock.l_type == F_WRLCK)
-                return false;
-        }
-        return true;
+        return can_apply_flock_impl(new_lock, description, flocks);
     });
 }
 
 ErrorOr<bool> Inode::try_apply_flock(Process const& process, OpenFileDescription const& description, flock const& new_lock)
 {
     return m_flocks.with([&](auto& flocks) -> ErrorOr<bool> {
-        if (!can_apply_flock(new_lock, description))
+        if (!can_apply_flock_impl(new_lock, description, flocks))
             return false;
 
         bool did_manipulate_lock = false;

@@ -73,9 +73,14 @@ Utf8View Utf8View::unicode_substring_view(size_t code_point_offset, size_t code_
 size_t Utf8View::calculate_length() const
 {
     size_t length = 0;
-    for ([[maybe_unused]] auto code_point : *this) {
-        ++length;
+
+    for (size_t i = 0; i < m_string.length(); ++length) {
+        auto [byte_length, code_point, is_valid] = decode_leading_byte(static_cast<u8>(m_string[i]));
+
+        // Similar to Utf8CodePointIterator::operator++, if the byte is invalid, try the next byte.
+        i += is_valid ? byte_length : 1;
     }
+
     return length;
 }
 
@@ -99,10 +104,19 @@ bool Utf8View::starts_with(Utf8View const& start) const
 
 bool Utf8View::contains(u32 needle) const
 {
-    for (u32 code_point : *this) {
-        if (code_point == needle)
-            return true;
+    if (needle <= 0x7f) {
+        // OPTIMIZATION: Fast path for ASCII
+        for (u8 code_point : as_string()) {
+            if (code_point == needle)
+                return true;
+        }
+    } else {
+        for (u32 code_point : *this) {
+            if (code_point == needle)
+                return true;
+        }
     }
+
     return false;
 }
 
@@ -141,6 +155,13 @@ Utf8View Utf8View::trim(Utf8View const& characters, TrimMode mode) const
 Utf8CodePointIterator& Utf8CodePointIterator::operator++()
 {
     VERIFY(m_length > 0);
+
+    // OPTIMIZATION: Fast path for ASCII characters.
+    if (*m_ptr <= 0x7F) {
+        m_ptr += 1;
+        m_length -= 1;
+        return *this;
+    }
 
     size_t code_point_length_in_bytes = underlying_code_point_length_in_bytes();
     if (code_point_length_in_bytes > m_length) {
@@ -185,6 +206,11 @@ ReadonlyBytes Utf8CodePointIterator::underlying_code_point_bytes() const
 u32 Utf8CodePointIterator::operator*() const
 {
     VERIFY(m_length > 0);
+
+    // OPTIMIZATION: Fast path for ASCII characters.
+    if (*m_ptr <= 0x7F)
+        return *m_ptr;
+
     auto [code_point_length_in_bytes, code_point_value_so_far, first_byte_makes_sense] = Utf8View::decode_leading_byte(*m_ptr);
 
     if (!first_byte_makes_sense) {

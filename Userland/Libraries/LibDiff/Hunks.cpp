@@ -1,134 +1,196 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
+ * Copyright (c) 2023, Shannon Booth <shannon@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Hunks.h"
 #include <AK/Debug.h>
+#include <AK/LexicalPath.h>
 
 namespace Diff {
-Vector<Hunk> parse_hunks(DeprecatedString const& diff)
+
+Optional<HunkLocation> Parser::consume_unified_location()
 {
-    Vector<DeprecatedString> diff_lines = diff.split('\n');
-    if (diff_lines.is_empty())
+    auto consume_range = [this](Range& range) {
+        if (!consume_line_number(range.start_line))
+            return false;
+
+        if (consume_specific(',')) {
+            if (!consume_line_number(range.number_of_lines))
+                return false;
+        } else {
+            range.number_of_lines = 1;
+        }
+        return true;
+    };
+
+    if (!consume_specific("@@ -"sv))
         return {};
 
-    Vector<Hunk> hunks;
+    HunkLocation location;
 
-    size_t line_index = 0;
-    HunkLocation current_location {};
+    if (!consume_range(location.old_range))
+        return {};
 
-    // Skip to first hunk
-    while (diff_lines[line_index][0] != '@') {
-        ++line_index;
+    if (!consume_specific(" +"sv))
+        return {};
+
+    if (!consume_range(location.new_range))
+        return {};
+
+    if (!consume_specific(" @@"sv))
+        return {};
+
+    return location;
+}
+
+bool Parser::consume_line_number(size_t& number)
+{
+    auto line = consume_while(is_ascii_digit);
+
+    auto maybe_number = line.to_number<size_t>();
+    if (!maybe_number.has_value())
+        return false;
+
+    number = maybe_number.value();
+    return true;
+}
+
+ErrorOr<String> Parser::parse_file_line(Optional<size_t> const& strip_count)
+{
+    // FIXME: handle parsing timestamps as well.
+    auto line = consume_line();
+
+    GenericLexer line_parser(line);
+    auto path = line_parser.consume_until('\t');
+
+    // No strip count given. Default to basename of file.
+    if (!strip_count.has_value())
+        return String::from_byte_string(LexicalPath::basename(path));
+
+    // NOTE: We cannot use LexicalPath::parts as we want to strip the non-canonicalized path.
+    auto const& parts = path.split_view('/');
+
+    // More components to strip than the filename has. Just pretend it is missing.
+    if (strip_count.value() >= parts.size())
+        return String();
+
+    // Remove given number of leading components from the path.
+    size_t components = parts.size() - strip_count.value();
+
+    StringBuilder stripped_path;
+    for (size_t i = parts.size() - components; i < parts.size(); ++i) {
+        TRY(stripped_path.try_append(parts[i]));
+        if (i != parts.size() - 1)
+            TRY(stripped_path.try_append("/"sv));
     }
 
-    while (line_index < diff_lines.size()) {
-        if (diff_lines[line_index][0] == '@') {
-            current_location = parse_hunk_location(diff_lines[line_index]);
-            ++line_index;
+    return stripped_path.to_string();
+}
+
+ErrorOr<Patch> Parser::parse_patch(Optional<size_t> const& strip_count)
+{
+    Patch patch;
+    patch.header = TRY(parse_header(strip_count));
+    patch.hunks = TRY(parse_hunks());
+    return patch;
+}
+
+ErrorOr<Header> Parser::parse_header(Optional<size_t> const& strip_count)
+{
+    Header header;
+
+    while (!is_eof()) {
+
+        if (consume_specific("+++ "sv)) {
+            header.new_file_path = TRY(parse_file_line(strip_count));
             continue;
         }
-        if (diff_lines[line_index][0] == ' ') {
-            current_location.apply_offset(1, HunkLocation::LocationType::Both);
-            ++line_index;
+
+        if (consume_specific("--- "sv)) {
+            header.old_file_path = TRY(parse_file_line(strip_count));
             continue;
         }
-        Hunk hunk {};
-        hunk.original_start_line = current_location.original_start_line;
-        hunk.target_start_line = current_location.target_start_line;
 
-        while (line_index < diff_lines.size() && diff_lines[line_index][0] == '-') {
-            hunk.removed_lines.append(diff_lines[line_index].substring(1, diff_lines[line_index].length() - 1));
-            current_location.apply_offset(1, HunkLocation::LocationType::Original);
-            ++line_index;
-        }
-        while (line_index < diff_lines.size() && diff_lines[line_index][0] == '+') {
-            hunk.added_lines.append(diff_lines[line_index].substring(1, diff_lines[line_index].length() - 1));
-            current_location.apply_offset(1, HunkLocation::LocationType::Target);
-            ++line_index;
+        if (next_is("@@ ")) {
+            header.format = Format::Unified;
+            return header;
         }
 
-        while (line_index < diff_lines.size() && diff_lines[line_index][0] == ' ') {
-            current_location.apply_offset(1, HunkLocation::LocationType::Both);
-            ++line_index;
+        consume_line();
+    }
+
+    return header;
+}
+
+ErrorOr<Vector<Hunk>> Parser::parse_hunks()
+{
+    Vector<Hunk> hunks;
+
+    while (next_is("@@ ")) {
+        // Try an locate a hunk location in this hunk. It may be prefixed with information.
+        auto maybe_location = consume_unified_location();
+        consume_line();
+
+        if (!maybe_location.has_value())
+            break;
+
+        Hunk hunk { *maybe_location, {} };
+
+        auto old_lines_expected = hunk.location.old_range.number_of_lines;
+        auto new_lines_expected = hunk.location.new_range.number_of_lines;
+
+        // We've found a location. Now parse out all of the expected content lines.
+        while (old_lines_expected != 0 || new_lines_expected != 0) {
+            StringView line = consume_line();
+
+            if (line.is_empty())
+                return Error::from_string_literal("Malformed empty content line in patch");
+
+            if (line[0] != ' ' && line[0] != '+' && line[0] != '-')
+                return Error::from_string_literal("Invaid operation in patch");
+
+            auto const operation = Line::operation_from_symbol(line[0]);
+
+            if (operation != Line::Operation::Removal) {
+                if (new_lines_expected == 0)
+                    return Error::from_string_literal("Found more removal and context lines in patch than expected");
+
+                --new_lines_expected;
+            }
+
+            if (operation != Line::Operation::Addition) {
+                if (old_lines_expected == 0)
+                    return Error::from_string_literal("Found more addition and context lines in patch than expected");
+
+                --old_lines_expected;
+            }
+
+            auto const content = line.substring_view(1, line.length() - 1);
+            TRY(hunk.lines.try_append(Line { operation, TRY(String::from_utf8(content)) }));
         }
-        hunks.append(hunk);
+
+        TRY(hunks.try_append(hunk));
     }
 
     if constexpr (HUNKS_DEBUG) {
         for (auto const& hunk : hunks) {
-            dbgln("Hunk location:");
-            dbgln("  orig: {}", hunk.original_start_line);
-            dbgln("  target: {}", hunk.target_start_line);
-            dbgln("  removed:");
-            for (auto const& line : hunk.removed_lines)
-                dbgln("- {}", line);
-            dbgln("  added:");
-            for (auto const& line : hunk.added_lines)
-                dbgln("+ {}", line);
+            dbgln("{}", hunk.location);
+            for (auto const& line : hunk.lines)
+                dbgln("{}", line);
         }
     }
 
     return hunks;
 }
 
-HunkLocation parse_hunk_location(DeprecatedString const& location_line)
+ErrorOr<Vector<Hunk>> parse_hunks(StringView diff)
 {
-    size_t char_index = 0;
-    struct StartAndLength {
-        size_t start { 0 };
-        size_t length { 0 };
-    };
-    auto parse_start_and_length_pair = [](DeprecatedString const& raw) {
-        auto index_of_separator = raw.find(',').value();
-        auto start = raw.substring(0, index_of_separator).to_uint().value();
-        auto length = raw.substring(index_of_separator + 1, raw.length() - index_of_separator - 1).to_uint().value();
-
-        if (start != 0)
-            start--;
-
-        if (length != 0)
-            length--;
-
-        return StartAndLength { start, length };
-    };
-    while (char_index < location_line.length() && location_line[char_index++] != '-') {
-    }
-    VERIFY(char_index < location_line.length());
-
-    size_t original_location_start_index = char_index;
-
-    while (char_index < location_line.length() && location_line[char_index++] != ' ') {
-    }
-    VERIFY(char_index < location_line.length() && location_line[char_index] == '+');
-    size_t original_location_end_index = char_index - 2;
-
-    size_t target_location_start_index = char_index + 1;
-
-    char_index += 1;
-    while (char_index < location_line.length() && location_line[char_index++] != ' ') {
-    }
-    VERIFY(char_index < location_line.length());
-
-    size_t target_location_end_index = char_index - 2;
-
-    auto original_pair = parse_start_and_length_pair(location_line.substring(original_location_start_index, original_location_end_index - original_location_start_index + 1));
-    auto target_pair = parse_start_and_length_pair(location_line.substring(target_location_start_index, target_location_end_index - target_location_start_index + 1));
-    return { original_pair.start, original_pair.length, target_pair.start, target_pair.length };
+    Parser lexer(diff);
+    while (!lexer.next_is("@@ ") && !lexer.is_eof())
+        lexer.consume_line();
+    return lexer.parse_hunks();
 }
-
-void HunkLocation::apply_offset(size_t offset, HunkLocation::LocationType type)
-{
-    if (type == LocationType::Original || type == LocationType::Both) {
-        original_start_line += offset;
-        original_length -= offset;
-    }
-    if (type == LocationType::Target || type == LocationType::Both) {
-        target_start_line += offset;
-        target_length -= offset;
-    }
 }
-
-};

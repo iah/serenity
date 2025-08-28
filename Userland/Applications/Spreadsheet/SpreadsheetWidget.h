@@ -22,14 +22,14 @@ class SpreadsheetWidget final
 public:
     virtual ~SpreadsheetWidget() override = default;
 
-    void save(String const& filename, Core::File&);
-    void load_file(String const& filename, Core::File&);
-    void import_sheets(String const& filename, Core::File&);
+    void save(ByteString const& filename, Core::File&);
+    void load_file(ByteString const& filename, Core::File&);
+    void import_sheets(ByteString const& filename, Core::File&);
     bool request_close();
     void add_sheet();
     void add_sheet(NonnullRefPtr<Sheet>&&);
 
-    DeprecatedString const& current_filename() const { return m_workbook->current_filename(); }
+    ByteString const& current_filename() const { return m_workbook->current_filename(); }
     SpreadsheetView* current_view() { return static_cast<SpreadsheetView*>(m_tab_widget->active_widget()); }
     Sheet* current_worksheet_if_available() { return current_view() ? current_view()->sheet_if_available() : nullptr; }
     void update_window_title();
@@ -45,7 +45,7 @@ public:
         return current_view()->cursor();
     }
 
-    void initialize_menubar(GUI::Window&);
+    ErrorOr<void> initialize_menubar(GUI::Window&);
 
     void undo();
     void redo();
@@ -57,7 +57,7 @@ private:
     virtual void resize_event(GUI::ResizeEvent&) override;
 
     // ^GUI::Clipboard::ClipboardClient
-    virtual void clipboard_content_did_change(DeprecatedString const& mime_type) override;
+    virtual void clipboard_content_did_change(ByteString const& mime_type) override;
 
     explicit SpreadsheetWidget(GUI::Window& window, Vector<NonnullRefPtr<Sheet>>&& sheets = {}, bool should_add_sheet_if_empty = true);
 

@@ -1,21 +1,25 @@
 /*
  * Copyright (c) 2021, Arne Elster <arne@elster.li>
+ * Copyright (c) 2024, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "AnnotationsModel.h"
 #include <AK/HashMap.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Forward.h>
 #include <LibGUI/Command.h>
+#include <LibGfx/Color.h>
 
-constexpr Time COMMAND_COMMIT_TIME = Time::from_milliseconds(400);
+constexpr Duration COMMAND_COMMIT_TIME = Duration::from_milliseconds(400);
 
 class HexDocument : public Weakable<HexDocument> {
 public:
@@ -38,8 +42,13 @@ public:
     virtual bool is_dirty() const;
     virtual void clear_changes() = 0;
 
+    AnnotationsModel& annotations() { return *m_annotations; }
+
 protected:
+    HexDocument();
+
     HashMap<size_t, u8> m_changes;
+    NonnullRefPtr<AnnotationsModel> m_annotations;
 };
 
 class HexDocumentMemory final : public HexDocument {
@@ -95,7 +104,7 @@ public:
 
     virtual void undo() override;
     virtual void redo() override;
-    virtual DeprecatedString action_text() const override { return "Update cell"; }
+    virtual ByteString action_text() const override { return "Update cell"; }
 
     virtual bool merge_with(GUI::Command const& other) override;
 
@@ -103,9 +112,9 @@ public:
     ErrorOr<void> try_add_changed_bytes(ByteBuffer old_values, ByteBuffer new_values);
 
 private:
-    bool commit_time_expired() const { return Time::now_monotonic() - m_timestamp >= COMMAND_COMMIT_TIME; }
+    bool commit_time_expired() const { return MonotonicTime::now() - m_timestamp >= COMMAND_COMMIT_TIME; }
 
-    Time m_timestamp = Time::now_monotonic();
+    MonotonicTime m_timestamp = MonotonicTime::now();
     WeakPtr<HexDocument> m_document;
     size_t m_position;
     ByteBuffer m_old;

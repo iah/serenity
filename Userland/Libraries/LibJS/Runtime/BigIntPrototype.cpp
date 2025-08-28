@@ -17,38 +17,38 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(BigIntPrototype);
+
 BigIntPrototype::BigIntPrototype(Realm& realm)
-    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
+    : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> BigIntPrototype::initialize(Realm& realm)
+void BigIntPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.toString, to_string, 0, attr);
     define_native_function(realm, vm.names.toLocaleString, to_locale_string, 0, attr);
     define_native_function(realm, vm.names.valueOf, value_of, 0, attr);
 
     // 21.2.3.5 BigInt.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-bigint.prototype-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.BigInt.as_string()), Attribute::Configurable);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.BigInt.as_string()), Attribute::Configurable);
 }
 
 // thisBigIntValue ( value ), https://tc39.es/ecma262/#thisbigintvalue
-static ThrowCompletionOr<BigInt*> this_bigint_value(VM& vm, Value value)
+static ThrowCompletionOr<NonnullGCPtr<BigInt>> this_bigint_value(VM& vm, Value value)
 {
     // 1. If value is a BigInt, return value.
     if (value.is_bigint())
-        return &value.as_bigint();
+        return value.as_bigint();
 
     // 2. If value is an Object and value has a [[BigIntData]] internal slot, then
     if (value.is_object() && is<BigIntObject>(value.as_object())) {
         // a. Assert: value.[[BigIntData]] is a BigInt.
         // b. Return value.[[BigIntData]].
-        return &static_cast<BigIntObject&>(value.as_object()).bigint();
+        return static_cast<BigIntObject&>(value.as_object()).bigint();
     }
 
     // 3. Throw a TypeError exception.
@@ -59,7 +59,7 @@ static ThrowCompletionOr<BigInt*> this_bigint_value(VM& vm, Value value)
 JS_DEFINE_NATIVE_FUNCTION(BigIntPrototype::to_string)
 {
     // 1. Let x be ? thisBigIntValue(this value).
-    auto* bigint = TRY(this_bigint_value(vm, vm.this_value()));
+    auto bigint = TRY(this_bigint_value(vm, vm.this_value()));
 
     // 2. If radix is undefined, let radixMV be 10.
     double radix = 10;
@@ -87,13 +87,13 @@ JS_DEFINE_NATIVE_FUNCTION(BigIntPrototype::to_locale_string)
     auto options = vm.argument(1);
 
     // 1. Let x be ? thisBigIntValue(this value).
-    auto* bigint = TRY(this_bigint_value(vm, vm.this_value()));
+    auto bigint = TRY(this_bigint_value(vm, vm.this_value()));
 
     // 2. Let numberFormat be ? Construct(%NumberFormat%, « locales, options »).
-    auto* number_format = static_cast<Intl::NumberFormat*>(TRY(construct(vm, *realm.intrinsics().intl_number_format_constructor(), locales, options)).ptr());
+    auto* number_format = static_cast<Intl::NumberFormat*>(TRY(construct(vm, realm.intrinsics().intl_number_format_constructor(), locales, options)).ptr());
 
     // 3. Return ? FormatNumeric(numberFormat, x).
-    auto formatted = TRY(Intl::format_numeric(vm, *number_format, Value(bigint)));
+    auto formatted = Intl::format_numeric(vm, *number_format, Value(bigint));
     return PrimitiveString::create(vm, move(formatted));
 }
 

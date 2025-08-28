@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <LibSyntax/Forward.h>
+
 namespace GUI {
 
 class AbstractButton;
@@ -24,6 +26,7 @@ class CheckBox;
 class ComboBox;
 class Command;
 class CommandPalette;
+class DatePicker;
 class Dialog;
 class DialogButton;
 class DragEvent;
@@ -54,6 +57,7 @@ class ModelIndex;
 class MouseEvent;
 class MultiPaintEvent;
 class MultiView;
+class Object;
 class OpacitySlider;
 class PaintEvent;
 class Painter;
@@ -76,11 +80,7 @@ class Statusbar;
 class TabWidget;
 class TableView;
 class TextBox;
-class TextPosition;
-class UrlBox;
 class TextDocument;
-class TextDocumentLine;
-struct TextDocumentSpan;
 class TextDocumentUndoCommand;
 class TextEditor;
 class ThemeChangeEvent;

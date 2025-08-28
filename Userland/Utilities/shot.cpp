@@ -8,20 +8,20 @@
 
 #include <AK/Format.h>
 #include <AK/Optional.h>
-#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/DateTime.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Process.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>
 #include <LibGUI/ConnectionToWindowServer.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
-#include <LibGfx/PNGWriter.h>
+#include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibGfx/Palette.h>
 #include <LibMain/Main.h>
+#include <LibURL/URL.h>
 #include <unistd.h>
 
 class SelectableLayover final : public GUI::Widget {
@@ -46,21 +46,24 @@ private:
     {
         if (event.button() == GUI::MouseButton::Primary)
             m_anchor_point = event.position();
-    };
+    }
 
     virtual void mousemove_event(GUI::MouseEvent& event) override
     {
         if (m_anchor_point.has_value()) {
             m_region = Gfx::IntRect::from_two_points(*m_anchor_point, event.position());
-            update();
         }
-    };
+
+        m_mouse_y = event.y();
+        m_mouse_x = event.x();
+        update();
+    }
 
     virtual void mouseup_event(GUI::MouseEvent& event) override
     {
         if (event.button() == GUI::MouseButton::Primary)
             m_window->close();
-    };
+    }
 
     virtual void paint_event(GUI::PaintEvent&) override
     {
@@ -68,6 +71,8 @@ private:
         painter.clear_rect(m_window->rect(), Gfx::Color::Transparent);
         painter.fill_rect(m_window->rect(), m_background_color);
 
+        painter.draw_line(Gfx::IntPoint(0, m_mouse_y), Gfx::IntPoint(m_window->width(), m_mouse_y), Gfx::Color::Green);
+        painter.draw_line(Gfx::IntPoint(m_mouse_x, 0), Gfx::IntPoint(m_mouse_x, m_window->height()), Gfx::Color::Green);
         if (m_region.is_empty())
             return;
 
@@ -86,13 +91,16 @@ private:
     Gfx::IntRect m_region;
     GUI::Window* m_window = nullptr;
     Gfx::Color const m_background_color;
+
+    int m_mouse_y = 0;
+    int m_mouse_x = 0;
 };
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
 
-    DeprecatedString output_path;
+    ByteString output_path;
     bool output_to_clipboard = false;
     unsigned delay = 0;
     bool select_region = false;
@@ -109,16 +117,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.parse(arguments);
 
     if (output_path.is_empty()) {
-        output_path = Core::DateTime::now().to_deprecated_string("screenshot-%Y-%m-%d-%H-%M-%S.png"sv);
+        output_path = Core::DateTime::now().to_byte_string("screenshot-%Y-%m-%d-%H-%M-%S.png"sv);
     }
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     Optional<Gfx::IntRect> crop_region;
     if (select_region) {
         auto window = GUI::Window::construct();
-        auto container = TRY(window->set_main_widget<SelectableLayover>(window));
+        auto container = window->set_main_widget<SelectableLayover>(window);
 
         window->set_title("shot");
+        window->set_window_type(GUI::WindowType::Popup);
         window->set_has_alpha_channel(true);
         window->set_fullscreen(true);
         window->show();
@@ -158,28 +167,28 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto encoded_bitmap = encoded_bitmap_or_error.release_value();
 
     if (edit_image)
-        output_path = Core::DateTime::now().to_deprecated_string("/tmp/screenshot-%Y-%m-%d-%H-%M-%S.png"sv);
+        output_path = Core::DateTime::now().to_byte_string("/tmp/screenshot-%Y-%m-%d-%H-%M-%S.png"sv);
 
-    auto file_or_error = Core::File::open(output_path, Core::File::OpenMode::ReadWrite);
+    auto file_or_error = Core::File::open(output_path, Core::File::OpenMode::Write);
     if (file_or_error.is_error()) {
         warnln("Could not open '{}' for writing: {}", output_path, file_or_error.error());
         return 1;
     }
 
     auto& file = *file_or_error.value();
-    TRY(file.write(encoded_bitmap.bytes()));
+    TRY(file.write_until_depleted(encoded_bitmap.bytes()));
 
     if (edit_image)
         TRY(Core::Process::spawn("/bin/PixelPaint"sv, Array { output_path }));
 
     bool printed_hyperlink = false;
     if (isatty(STDOUT_FILENO)) {
-        auto full_path = Core::DeprecatedFile::real_path_for(output_path);
-        if (!full_path.is_null()) {
+        auto full_path_or_error = FileSystem::real_path(output_path);
+        if (!full_path_or_error.is_error()) {
             char hostname[HOST_NAME_MAX];
             VERIFY(gethostname(hostname, sizeof(hostname)) == 0);
 
-            auto url = URL::create_with_file_scheme(full_path, {}, hostname);
+            auto url = URL::create_with_file_scheme(full_path_or_error.value(), {}, hostname);
             out("\033]8;;{}\033\\", url.serialize());
             printed_hyperlink = true;
         }

@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class PluralRulesPrototype final : public PrototypeObject<PluralRulesPrototype, PluralRules> {
     JS_PROTOTYPE_OBJECT(PluralRulesPrototype, PluralRules, Intl.PluralRules);
+    JS_DECLARE_ALLOCATOR(PluralRulesPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PluralRulesPrototype() override = default;
 
 private:

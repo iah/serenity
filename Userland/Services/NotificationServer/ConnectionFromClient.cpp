@@ -24,9 +24,9 @@ void ConnectionFromClient::die()
     s_connections.remove(client_id());
 }
 
-void ConnectionFromClient::show_notification(DeprecatedString const& text, DeprecatedString const& title, Gfx::ShareableBitmap const& icon)
+void ConnectionFromClient::show_notification(String const& text, String const& title, Gfx::ShareableBitmap const& icon, URL::URL const& launch_url)
 {
-    auto window = NotificationWindow::construct(client_id(), text, title, icon);
+    auto window = NotificationWindow::construct(client_id(), text, title, icon, launch_url);
     window->show();
 }
 
@@ -47,12 +47,21 @@ Messages::NotificationServer::UpdateNotificationIconResponse ConnectionFromClien
     return !!window;
 }
 
-Messages::NotificationServer::UpdateNotificationTextResponse ConnectionFromClient::update_notification_text(DeprecatedString const& text, DeprecatedString const& title)
+Messages::NotificationServer::UpdateNotificationTextResponse ConnectionFromClient::update_notification_text(String const& text, String const& title)
 {
     auto window = NotificationWindow::get_window_by_id(client_id());
     if (window) {
         window->set_text(text);
         window->set_title(title);
+    }
+    return !!window;
+}
+
+Messages::NotificationServer::UpdateNotificationLaunchUrlResponse ConnectionFromClient::update_notification_launch_url(URL::URL const& launch_url)
+{
+    auto window = NotificationWindow::get_window_by_id(client_id());
+    if (window) {
+        window->set_launch_url(launch_url);
     }
     return !!window;
 }

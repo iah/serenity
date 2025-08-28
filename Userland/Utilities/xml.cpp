@@ -6,12 +6,12 @@
 
 #include <AK/LexicalPath.h>
 #include <AK/Queue.h>
-#include <AK/URL.h>
-#include <AK/URLParser.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/File.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
+#include <LibURL/Parser.h>
+#include <LibURL/URL.h>
 #include <LibXML/DOM/Document.h>
 #include <LibXML/DOM/Node.h>
 #include <LibXML/Parser/Parser.h>
@@ -289,7 +289,7 @@ static void dump(XML::Document& document)
                                     color(ColorRole::Tag);
                                     out("{} ", declaration.name);
                                     declaration.definition.visit(
-                                        [](DeprecatedString const& value) {
+                                        [](ByteString const& value) {
                                             color(ColorRole::AttributeValue);
                                             out("\"{}\"", value);
                                         },
@@ -320,7 +320,7 @@ static void dump(XML::Document& document)
                                     color(ColorRole::Tag);
                                     out("{} ", declaration.name);
                                     declaration.definition.visit(
-                                        [](DeprecatedString const& value) {
+                                        [](ByteString const& value) {
                                             color(ColorRole::AttributeValue);
                                             out("\"{}\"", value);
                                         },
@@ -355,24 +355,24 @@ static void dump(XML::Document& document)
     dump(document.root());
 }
 
-static DeprecatedString s_path;
+static ByteString s_path;
 static auto parse(StringView contents)
 {
     return XML::Parser {
         contents,
         {
             .preserve_comments = true,
-            .resolve_external_resource = [&](XML::SystemID const& system_id, Optional<XML::PublicID> const&) -> ErrorOr<DeprecatedString> {
+            .resolve_external_resource = [&](XML::SystemID const& system_id, Optional<XML::PublicID> const&) -> ErrorOr<Variant<ByteString, Vector<XML::MarkupDeclaration>>> {
                 auto base = URL::create_with_file_scheme(s_path);
-                auto url = URLParser::parse(system_id.system_literal, &base);
+                auto url = URL::Parser::basic_parse(system_id.system_literal, base);
                 if (!url.is_valid())
                     return Error::from_string_literal("Invalid URL");
 
                 if (url.scheme() != "file")
                     return Error::from_string_literal("NYI: Nonlocal entity");
 
-                auto file = TRY(Core::File::open(url.path(), Core::File::OpenMode::Read));
-                return DeprecatedString::copy(TRY(file->read_until_eof()));
+                auto file = TRY(Core::File::open(URL::percent_decode(url.serialize_path()), Core::File::OpenMode::Read));
+                return ByteString::copy(TRY(file->read_until_eof()));
             },
         },
     };
@@ -383,7 +383,7 @@ enum class TestResult {
     Failed,
     RunnerFailed,
 };
-static HashMap<DeprecatedString, TestResult> s_test_results {};
+static HashMap<ByteString, TestResult> s_test_results {};
 static void do_run_tests(XML::Document& document)
 {
     auto& root = document.root().content.get<XML::Node::Element>();
@@ -430,7 +430,7 @@ static void do_run_tests(XML::Document& document)
                 path_builder.append(entry);
                 path_builder.append('/');
             }
-            auto test_base_path = path_builder.to_deprecated_string();
+            auto test_base_path = path_builder.to_byte_string();
 
             path_builder.append(suite.attributes.find("URI")->value);
             auto url = URL::create_with_file_scheme(path_builder.string_view());
@@ -440,28 +440,29 @@ static void do_run_tests(XML::Document& document)
                 continue;
             }
 
-            auto file_result = Core::File::open(url.path(), Core::File::OpenMode::Read);
+            auto file_path = URL::percent_decode(url.serialize_path());
+            auto file_result = Core::File::open(file_path, Core::File::OpenMode::Read);
             if (file_result.is_error()) {
-                warnln("Read error for {}: {}", url.path(), file_result.error());
-                s_test_results.set(url.path(), TestResult::RunnerFailed);
+                warnln("Read error for {}: {}", file_path, file_result.error());
+                s_test_results.set(file_path, TestResult::RunnerFailed);
                 continue;
             }
 
-            warnln("Running test {}", url.path());
+            warnln("Running test {}", file_path);
 
             auto contents = file_result.value()->read_until_eof();
             if (contents.is_error()) {
-                warnln("Read error for {}: {}", url.path(), contents.error());
-                s_test_results.set(url.path(), TestResult::RunnerFailed);
+                warnln("Read error for {}: {}", file_path, contents.error());
+                s_test_results.set(file_path, TestResult::RunnerFailed);
                 continue;
             }
             auto parser = parse(contents.value());
             auto doc_or_error = parser.parse();
             if (doc_or_error.is_error()) {
                 if (type == "invalid" || type == "error" || type == "not-wf")
-                    s_test_results.set(url.path(), TestResult::Passed);
+                    s_test_results.set(file_path, TestResult::Passed);
                 else
-                    s_test_results.set(url.path(), TestResult::Failed);
+                    s_test_results.set(file_path, TestResult::Failed);
                 continue;
             }
 
@@ -471,33 +472,33 @@ static void do_run_tests(XML::Document& document)
                 auto file_result = Core::File::open(out_path, Core::File::OpenMode::Read);
                 if (file_result.is_error()) {
                     warnln("Read error for {}: {}", out_path, file_result.error());
-                    s_test_results.set(url.path(), TestResult::RunnerFailed);
+                    s_test_results.set(file_path, TestResult::RunnerFailed);
                     continue;
                 }
                 auto contents = file_result.value()->read_until_eof();
                 if (contents.is_error()) {
                     warnln("Read error for {}: {}", out_path, contents.error());
-                    s_test_results.set(url.path(), TestResult::RunnerFailed);
+                    s_test_results.set(file_path, TestResult::RunnerFailed);
                     continue;
                 }
                 auto parser = parse(contents.value());
                 auto out_doc_or_error = parser.parse();
                 if (out_doc_or_error.is_error()) {
                     warnln("Parse error for {}: {}", out_path, out_doc_or_error.error());
-                    s_test_results.set(url.path(), TestResult::RunnerFailed);
+                    s_test_results.set(file_path, TestResult::RunnerFailed);
                     continue;
                 }
                 auto out_doc = out_doc_or_error.release_value();
                 if (out_doc.root() != doc_or_error.value().root()) {
-                    s_test_results.set(url.path(), TestResult::Failed);
+                    s_test_results.set(file_path, TestResult::Failed);
                     continue;
                 }
             }
 
             if (type == "invalid" || type == "error" || type == "not-wf")
-                s_test_results.set(url.path(), TestResult::Failed);
+                s_test_results.set(file_path, TestResult::Failed);
             else
-                s_test_results.set(url.path(), TestResult::Passed);
+                s_test_results.set(file_path, TestResult::Passed);
         }
     }
 }
@@ -515,7 +516,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     parser.add_positional_argument(filename, "File to read from", "file");
     parser.parse(arguments);
 
-    s_path = Core::DeprecatedFile::real_path_for(filename);
+    s_path = TRY(FileSystem::real_path(filename));
     auto file = TRY(Core::File::open(s_path, Core::File::OpenMode::Read));
     auto contents = TRY(file->read_until_eof());
 

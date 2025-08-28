@@ -3,8 +3,9 @@ port='qt6-qtbase'
 version='6.4.0'
 workdir="qtbase-everywhere-src-${version}"
 useconfigure='true'
-files="https://download.qt.io/official_releases/qt/$(cut -d. -f1,2 <<< ${version})/${version}/submodules/qtbase-everywhere-src-${version}.tar.xz qt6-qtbase-${version}.tar.xz cb6475a0bd8567c49f7ffbb072a05516ee6671171bed55db75b22b94ead9b37d"
-auth_type='sha256'
+files=(
+    "https://download.qt.io/archive/qt/$(cut -d. -f1,2 <<< ${version})/${version}/submodules/qtbase-everywhere-src-${version}.tar.xz#cb6475a0bd8567c49f7ffbb072a05516ee6671171bed55db75b22b94ead9b37d"
+)
 configopts=(
     '-GNinja'
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
@@ -13,16 +14,18 @@ configopts=(
     '-DQT_FEATURE_cxx20=ON'
     '-DQT_FEATURE_ssl=ON'
     '-DQT_FEATURE_zstd=ON'
+    '-DQT_FEATURE_sql=ON'
     '-DINPUT_opengl=no'
 )
 depends=(
     'double-conversion'
     'md4c'
     'openssl'
+    'sqlite'
     'zstd'
 )
 
-QT_DISABLED_FEATURES='sql opengl dbus systemsemaphore sharedmemory dnslookup'
+QT_DISABLED_FEATURES='opengl dbus systemsemaphore sharedmemory dnslookup'
 
 configure() {
 

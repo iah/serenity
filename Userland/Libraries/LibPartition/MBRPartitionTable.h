@@ -7,13 +7,14 @@
 #pragma once
 
 #include <AK/Error.h>
+#include <AK/StdLibExtraDetails.h>
 #include <LibPartition/PartitionTable.h>
 
 namespace Partition {
 
 class MBRPartitionTable : public PartitionTable {
 public:
-    struct [[gnu::packed]] Entry {
+    struct Entry {
         u8 status;
         u8 chs1[3];
         u8 type;
@@ -21,6 +22,7 @@ public:
         u32 offset;
         u32 length;
     };
+    static_assert(AssertSize<Entry, 16>());
     struct [[gnu::packed]] Header {
         u8 code1[218];
         u16 ts_zero;
@@ -34,37 +36,31 @@ public:
         Entry entry[4];
         u16 mbr_signature;
     };
+    static_assert(AssertSize<Header, 512>());
 
 public:
     ~MBRPartitionTable();
 
-#ifdef KERNEL
-    static ErrorOr<NonnullOwnPtr<MBRPartitionTable>> try_to_initialize(Kernel::StorageDevice&);
-    static OwnPtr<MBRPartitionTable> try_to_initialize(Kernel::StorageDevice&, u32 start_lba);
-    explicit MBRPartitionTable(Kernel::StorageDevice&);
-    MBRPartitionTable(Kernel::StorageDevice&, u32 start_lba);
-#else
-    static ErrorOr<NonnullOwnPtr<MBRPartitionTable>> try_to_initialize(NonnullRefPtr<Core::DeprecatedFile>);
-    static OwnPtr<MBRPartitionTable> try_to_initialize(NonnullRefPtr<Core::DeprecatedFile>, u32 start_lba);
-    explicit MBRPartitionTable(NonnullRefPtr<Core::DeprecatedFile>);
-    MBRPartitionTable(NonnullRefPtr<Core::DeprecatedFile>, u32 start_lba);
-#endif
+    static ErrorOr<NonnullOwnPtr<MBRPartitionTable>> try_to_initialize(PartitionableDevice);
+    static OwnPtr<MBRPartitionTable> try_to_initialize(PartitionableDevice, u32 start_lba);
+    explicit MBRPartitionTable(PartitionableDevice);
+    MBRPartitionTable(PartitionableDevice, u32 start_lba);
 
     bool is_protective_mbr() const;
     bool contains_ebr() const;
-    virtual bool is_valid() const override { return m_valid; };
+    virtual bool is_valid() const override { return m_valid; }
 
 protected:
     Header const& header() const;
-    bool is_header_valid() const { return m_header_valid; };
+    bool is_header_valid() const { return m_header_valid; }
 
 private:
     bool read_boot_record();
     bool initialize();
     bool m_valid { false };
     bool m_header_valid { false };
-    const u32 m_start_lba;
-    ByteBuffer m_cached_header;
+    u32 const m_start_lba;
+    Header m_cached_header;
 };
 
 }

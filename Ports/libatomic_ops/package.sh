@@ -1,8 +1,8 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-
-port=libatomic_ops
-version=7.6.12
-useconfigure=true
-use_fresh_config_sub=true
-files="https://www.hboehm.info/gc/gc_source/libatomic_ops-${version}.tar.gz libatomic_ops-${version}.tar.gz f0ab566e25fce08b560e1feab6a3db01db4a38e5bc687804334ef3920c549f3e"
-auth_type=sha256
+port='libatomic_ops'
+version='7.8.2'
+useconfigure='true'
+use_fresh_config_sub='true'
+files=(
+    "https://github.com/ivmai/libatomic_ops/releases/download/v${version}/libatomic_ops-${version}.tar.gz#d305207fe207f2b3fb5cb4c019da12b44ce3fcbc593dfd5080d867b1a2419b51"
+)

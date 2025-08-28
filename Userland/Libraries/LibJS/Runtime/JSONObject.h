@@ -12,14 +12,15 @@ namespace JS {
 
 class JSONObject final : public Object {
     JS_OBJECT(JSONObject, Object);
+    JS_DECLARE_ALLOCATOR(JSONObject);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~JSONObject() override = default;
 
     // The base implementation of stringify is exposed because it is used by
     // test-js to communicate between the JS tests and the C++ test runner.
-    static ThrowCompletionOr<DeprecatedString> stringify_impl(VM&, Value value, Value replacer, Value space);
+    static ThrowCompletionOr<Optional<ByteString>> stringify_impl(VM&, Value value, Value replacer, Value space);
 
     static Value parse_json_value(VM&, JsonValue const&);
 
@@ -27,18 +28,18 @@ private:
     explicit JSONObject(Realm&);
 
     struct StringifyState {
-        FunctionObject* replacer_function { nullptr };
-        HashTable<Object*> seen_objects;
-        DeprecatedString indent { DeprecatedString::empty() };
-        DeprecatedString gap;
-        Optional<Vector<DeprecatedString>> property_list;
+        GCPtr<FunctionObject> replacer_function;
+        HashTable<GCPtr<Object>> seen_objects;
+        ByteString indent { ByteString::empty() };
+        ByteString gap;
+        Optional<Vector<ByteString>> property_list;
     };
 
     // Stringify helpers
-    static ThrowCompletionOr<DeprecatedString> serialize_json_property(VM&, StringifyState&, PropertyKey const& key, Object* holder);
-    static ThrowCompletionOr<DeprecatedString> serialize_json_object(VM&, StringifyState&, Object&);
-    static ThrowCompletionOr<DeprecatedString> serialize_json_array(VM&, StringifyState&, Object&);
-    static DeprecatedString quote_json_string(DeprecatedString);
+    static ThrowCompletionOr<Optional<ByteString>> serialize_json_property(VM&, StringifyState&, PropertyKey const& key, Object* holder);
+    static ThrowCompletionOr<ByteString> serialize_json_object(VM&, StringifyState&, Object&);
+    static ThrowCompletionOr<ByteString> serialize_json_array(VM&, StringifyState&, Object&);
+    static ByteString quote_json_string(ByteString);
 
     // Parse helpers
     static Object* parse_json_object(VM&, JsonObject const&);

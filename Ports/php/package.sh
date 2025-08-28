@@ -1,10 +1,12 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='php'
 useconfigure='true'
-version='8.1.12'
-files="https://www.php.net/distributions/php-${version}.tar.xz php-${version}.tar.xz 08243359e2204d842082269eedc15f08d2eca726d0e65b93fb11f4bfc51bbbab"
-auth_type='sha256'
+version='8.2.10'
+files=(
+    "https://www.php.net/distributions/php-${version}.tar.xz#561dc4acd5386e47f25be76f2c8df6ae854756469159248313bcf276e282fbb3"
+)
 depends=(
+    'curl'
     'libiconv'
     'libxml2'
     'openssl'
@@ -17,6 +19,7 @@ configopts=(
     '--disable-opcache'
     '--enable-fpm'
     "--prefix=${SERENITY_INSTALL_ROOT}/usr/local"
+    '--with-curl'
     "--with-iconv=${SERENITY_INSTALL_ROOT}/usr/local"
     '--with-openssl'
     "--with-readline=${SERENITY_INSTALL_ROOT}/usr/local"
@@ -24,7 +27,7 @@ configopts=(
     '--without-pcre-jit'
 )
 launcher_name='PHP'
-launcher_category='Development'
+launcher_category='D&evelopment'
 launcher_command='/usr/local/bin/php -a'
 launcher_run_in_terminal='true'
 icon_file='win32/build/php.ico'

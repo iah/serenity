@@ -6,6 +6,7 @@
  */
 
 #include <AK/Array.h>
+#include <AK/CharacterTypes.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibCore/System.h>
@@ -56,7 +57,7 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         out("  |");
 
         for (auto const& byte : line) {
-            if (isprint(byte))
+            if (is_ascii_printable(byte))
                 putchar(byte);
             else
                 putchar('.');
@@ -86,7 +87,7 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         }
 
         bytes = contents.span().slice(0, bytes_to_read);
-        bytes = TRY(file->read(bytes));
+        bytes = TRY(file->read_some(bytes));
 
         total_bytes_read += bytes.size();
 

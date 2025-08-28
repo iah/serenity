@@ -25,12 +25,12 @@ public:
     bool received_client_certificates() const { return m_received_client_certificates.has_value(); }
     Vector<TLS::Certificate> take_client_certificates() const { return m_received_client_certificates.release_value(); }
 
-    void set_certificate(DeprecatedString certificate, DeprecatedString key);
+    void set_certificate(ByteString certificate, ByteString key);
 
     Function<Vector<TLS::Certificate>()> on_certificate_requested;
 
 private:
-    explicit HttpsJob(HttpRequest&& request, Stream& output_stream)
+    explicit HttpsJob(HttpRequest&& request, Core::File& output_stream)
         : Job(move(request), output_stream)
     {
     }

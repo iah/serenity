@@ -5,9 +5,19 @@
  */
 
 #include <LibWeb/Layout/ImageBox.h>
+#include <LibWeb/Layout/SVGClipBox.h>
+#include <LibWeb/Layout/SVGMaskBox.h>
+#include <LibWeb/Painting/SVGClipPaintable.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
+#include <LibWeb/Painting/StackingContext.h>
+#include <LibWeb/SVG/SVGSVGElement.h>
 
 namespace Web::Painting {
+
+JS::NonnullGCPtr<SVGGraphicsPaintable> SVGGraphicsPaintable::create(Layout::SVGGraphicsBox const& layout_box)
+{
+    return layout_box.heap().allocate_without_realm<SVGGraphicsPaintable>(layout_box);
+}
 
 SVGGraphicsPaintable::SVGGraphicsPaintable(Layout::SVGGraphicsBox const& layout_box)
     : SVGPaintable(layout_box)
@@ -17,22 +27,6 @@ SVGGraphicsPaintable::SVGGraphicsPaintable(Layout::SVGGraphicsBox const& layout_
 Layout::SVGGraphicsBox const& SVGGraphicsPaintable::layout_box() const
 {
     return static_cast<Layout::SVGGraphicsBox const&>(layout_node());
-}
-
-void SVGGraphicsPaintable::before_children_paint(PaintContext& context, PaintPhase phase) const
-{
-    SVGPaintable::before_children_paint(context, phase);
-    if (phase != PaintPhase::Foreground)
-        return;
-
-    auto& graphics_element = layout_box().dom_node();
-
-    if (graphics_element.fill_color().has_value())
-        context.svg_context().set_fill_color(graphics_element.fill_color().value());
-    if (graphics_element.stroke_color().has_value())
-        context.svg_context().set_stroke_color(graphics_element.stroke_color().value());
-    if (graphics_element.stroke_width().has_value())
-        context.svg_context().set_stroke_width(graphics_element.stroke_width().value());
 }
 
 }

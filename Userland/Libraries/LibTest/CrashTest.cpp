@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2019-2020, Shannon Booth <shannon.ml.booth@gmail.com>
+ * Copyright (c) 2019-2020, Shannon Booth <shannon@serenityos.org>
  * Copyright (c) 2021, Brian Gianforcaro <bgianf@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -12,13 +12,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if !defined(AK_OS_MACOS) && !defined(AK_OS_EMSCRIPTEN)
+#if !defined(AK_OS_MACOS) && !defined(AK_OS_EMSCRIPTEN) && !defined(AK_OS_GNU_HURD)
 #    include <sys/prctl.h>
 #endif
 
 namespace Test {
 
-Crash::Crash(DeprecatedString test_type, Function<Crash::Failure()> crash_function, int crash_signal)
+Crash::Crash(ByteString test_type, Function<Crash::Failure()> crash_function, int crash_signal)
     : m_type(move(test_type))
     , m_crash_function(move(crash_function))
     , m_crash_signal(crash_signal)
@@ -38,8 +38,11 @@ bool Crash::run(RunType run_type)
             perror("fork");
             VERIFY_NOT_REACHED();
         } else if (pid == 0) {
-#if !defined(AK_OS_MACOS) && !defined(AK_OS_EMSCRIPTEN)
-            if (prctl(PR_SET_DUMPABLE, 0, 0) < 0)
+#if defined(AK_OS_GNU_HURD)
+            // When we crash, just kill the program, don't dump core.
+            setenv("CRASHSERVER", "/servers/crash-kill", true);
+#elif !defined(AK_OS_MACOS) && !defined(AK_OS_EMSCRIPTEN)
+            if (prctl(PR_SET_DUMPABLE, 0, 0, 0) < 0)
                 perror("prctl(PR_SET_DUMPABLE)");
 #endif
             exit((int)m_crash_function());

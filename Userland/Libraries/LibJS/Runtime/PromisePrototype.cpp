@@ -1,11 +1,10 @@
 /*
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Function.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -16,15 +15,17 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(PromisePrototype);
+
 PromisePrototype::PromisePrototype(Realm& realm)
-    : PrototypeObject(*realm.intrinsics().object_prototype())
+    : PrototypeObject(realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> PromisePrototype::initialize(Realm& realm)
+void PromisePrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.then, then, 2, attr);
@@ -32,9 +33,7 @@ ThrowCompletionOr<void> PromisePrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.finally, finally, 1, attr);
 
     // 27.2.5.5 Promise.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-promise.prototype-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.Promise.as_string()), Attribute::Configurable);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.Promise.as_string()), Attribute::Configurable);
 }
 
 // 27.2.5.4 Promise.prototype.then ( onFulfilled, onRejected ), https://tc39.es/ecma262/#sec-promise.prototype.then
@@ -50,7 +49,7 @@ JS_DEFINE_NATIVE_FUNCTION(PromisePrototype::then)
     auto promise = TRY(typed_this_object(vm));
 
     // 3. Let C be ? SpeciesConstructor(promise, %Promise%).
-    auto* constructor = TRY(species_constructor(vm, *promise, *realm.intrinsics().promise_constructor()));
+    auto* constructor = TRY(species_constructor(vm, promise, realm.intrinsics().promise_constructor()));
 
     // 4. Let resultCapability be ? NewPromiseCapability(C).
     auto result_capability = TRY(new_promise_capability(vm, constructor));
@@ -83,10 +82,10 @@ JS_DEFINE_NATIVE_FUNCTION(PromisePrototype::finally)
 
     // 2. If Type(promise) is not Object, throw a TypeError exception.
     if (!promise.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, promise.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, promise.to_string_without_side_effects());
 
     // 3. Let C be ? SpeciesConstructor(promise, %Promise%).
-    auto* constructor = TRY(species_constructor(vm, promise.as_object(), *realm.intrinsics().promise_constructor()));
+    auto* constructor = TRY(species_constructor(vm, promise.as_object(), realm.intrinsics().promise_constructor()));
 
     // 4. Assert: IsConstructor(C) is true.
     VERIFY(constructor);
@@ -105,22 +104,20 @@ JS_DEFINE_NATIVE_FUNCTION(PromisePrototype::finally)
     // 6. Else,
     else {
         // a. Let thenFinallyClosure be a new Abstract Closure with parameters (value) that captures onFinally and C and performs the following steps when called:
-        auto then_finally_closure = [constructor_handle = make_handle(constructor), on_finally_handle = make_handle(&on_finally.as_function())](auto& vm) -> ThrowCompletionOr<Value> {
+        auto then_finally_closure = [constructor, on_finally](auto& vm) -> ThrowCompletionOr<Value> {
             auto& realm = *vm.current_realm();
-            auto& constructor = const_cast<FunctionObject&>(*constructor_handle.cell());
-            auto& on_finally = const_cast<FunctionObject&>(*on_finally_handle.cell());
             auto value = vm.argument(0);
 
             // i. Let result be ? Call(onFinally, undefined).
             auto result = TRY(call(vm, on_finally, js_undefined()));
 
             // ii. Let promise be ? PromiseResolve(C, result).
-            auto promise = TRY(promise_resolve(vm, constructor, result));
+            auto promise = TRY(promise_resolve(vm, *constructor, result));
 
             // iii. Let returnValue be a new Abstract Closure with no parameters that captures value and performs the following steps when called:
-            auto return_value = [value_handle = make_handle(value)](auto&) -> ThrowCompletionOr<Value> {
+            auto return_value = [value](auto&) -> ThrowCompletionOr<Value> {
                 // 1. Return value.
-                return value_handle.value();
+                return value;
             };
 
             // iv. Let valueThunk be CreateBuiltinFunction(returnValue, 0, "", « »).
@@ -134,22 +131,20 @@ JS_DEFINE_NATIVE_FUNCTION(PromisePrototype::finally)
         then_finally = NativeFunction::create(realm, move(then_finally_closure), 1, "");
 
         // c. Let catchFinallyClosure be a new Abstract Closure with parameters (reason) that captures onFinally and C and performs the following steps when called:
-        auto catch_finally_closure = [constructor_handle = make_handle(constructor), on_finally_handle = make_handle(&on_finally.as_function())](auto& vm) -> ThrowCompletionOr<Value> {
+        auto catch_finally_closure = [constructor, on_finally](auto& vm) -> ThrowCompletionOr<Value> {
             auto& realm = *vm.current_realm();
-            auto& constructor = const_cast<FunctionObject&>(*constructor_handle.cell());
-            auto& on_finally = const_cast<FunctionObject&>(*on_finally_handle.cell());
             auto reason = vm.argument(0);
 
             // i. Let result be ? Call(onFinally, undefined).
             auto result = TRY(call(vm, on_finally, js_undefined()));
 
             // ii. Let promise be ? PromiseResolve(C, result).
-            auto promise = TRY(promise_resolve(vm, constructor, result));
+            auto promise = TRY(promise_resolve(vm, *constructor, result));
 
             // iii. Let throwReason be a new Abstract Closure with no parameters that captures reason and performs the following steps when called:
-            auto throw_reason = [reason_handle = make_handle(reason)](auto&) -> ThrowCompletionOr<Value> {
+            auto throw_reason = [reason](auto&) -> ThrowCompletionOr<Value> {
                 // 1. Return ThrowCompletion(reason).
-                return throw_completion(reason_handle.value());
+                return throw_completion(reason);
             };
 
             // iv. Let thrower be CreateBuiltinFunction(throwReason, 0, "", « »).

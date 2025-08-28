@@ -1,18 +1,24 @@
 /*
  * Copyright (c) 2020-2022, the SerenityOS developers.
  * Copyright (c) 2022, MacDue <macdue@dueutil.tech>
+ * Copyright (c) 2023, Bastiaan van der Plaat <bastiaan.v.d.plaat@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLProgressElementPrototype.h>
+#include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/HTML/HTMLProgressElement.h>
-#include <LibWeb/Layout/BlockContainer.h>
-#include <LibWeb/Layout/Node.h>
-#include <LibWeb/Layout/Progress.h>
+#include <LibWeb/HTML/Numbers.h>
+#include <LibWeb/Namespace.h>
+#include <LibWeb/Page/Page.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLProgressElement);
 
 HTMLProgressElement::HTMLProgressElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -21,86 +27,57 @@ HTMLProgressElement::HTMLProgressElement(DOM::Document& document, DOM::Qualified
 
 HTMLProgressElement::~HTMLProgressElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLProgressElement::initialize(JS::Realm& realm)
+void HTMLProgressElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLProgressElementPrototype>(realm, "HTMLProgressElement"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLProgressElement);
+}
 
+void HTMLProgressElement::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_progress_value_element);
+}
+
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-value
+double HTMLProgressElement::value() const
+{
+    if (auto value_string = get_attribute(HTML::AttributeNames::value); value_string.has_value()) {
+        if (auto value = parse_floating_point_number(*value_string); value.has_value())
+            return clamp(*value, 0, max());
+    }
+    return 0;
+}
+
+WebIDL::ExceptionOr<void> HTMLProgressElement::set_value(double value)
+{
+    if (value < 0)
+        value = 0;
+
+    TRY(set_attribute(HTML::AttributeNames::value, String::number(value)));
+    update_progress_value_element();
     return {};
 }
 
-JS::GCPtr<Layout::Node> HTMLProgressElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max
+WebIDL::Double HTMLProgressElement::max() const
 {
-    if (style->appearance().value_or(CSS::Appearance::Auto) == CSS::Appearance::None)
-        return HTMLElement::create_layout_node(style);
-    return heap().allocate_without_realm<Layout::Progress>(document(), *this, move(style));
+    if (auto max_string = get_attribute(HTML::AttributeNames::max); max_string.has_value()) {
+        if (auto max = parse_floating_point_number(*max_string); max.has_value())
+            if (*max > 0)
+                return *max;
+    }
+    return 1;
 }
 
-bool HTMLProgressElement::using_system_appearance() const
-{
-    if (layout_node())
-        return is<Layout::Progress>(*layout_node());
-    return false;
-}
-
-void HTMLProgressElement::progress_position_updated()
-{
-    if (using_system_appearance())
-        layout_node()->set_needs_display();
-    else
-        document().invalidate_layout();
-}
-
-double HTMLProgressElement::value() const
-{
-    auto const& value_characters = attribute(HTML::AttributeNames::value);
-    if (value_characters == nullptr)
-        return 0;
-
-    // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values
-    // 6. Skip ASCII whitespace within input given position.
-    auto maybe_double = value_characters.to_double(AK::TrimWhitespace::Yes);
-    if (!maybe_double.has_value())
-        return 0;
-    if (!isfinite(maybe_double.value()) || maybe_double.value() < 0)
-        return 0;
-
-    return min(maybe_double.value(), max());
-}
-
-void HTMLProgressElement::set_value(double value)
-{
-    if (value < 0)
-        return;
-
-    MUST(set_attribute(HTML::AttributeNames::value, DeprecatedString::number(value)));
-    progress_position_updated();
-}
-
-double HTMLProgressElement::max() const
-{
-    auto const& max_characters = attribute(HTML::AttributeNames::max);
-    if (max_characters == nullptr)
-        return 1;
-
-    // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values
-    // 6. Skip ASCII whitespace within input given position.
-    auto double_or_none = max_characters.to_double(AK::TrimWhitespace::Yes);
-    if (!double_or_none.has_value())
-        return 1;
-    if (!isfinite(double_or_none.value()) || double_or_none.value() <= 0)
-        return 1;
-
-    return double_or_none.value();
-}
-
-void HTMLProgressElement::set_max(double value)
+WebIDL::ExceptionOr<void> HTMLProgressElement::set_max(double value)
 {
     if (value <= 0)
-        return;
+        return {};
 
-    MUST(set_attribute(HTML::AttributeNames::max, DeprecatedString::number(value)));
-    progress_position_updated();
+    TRY(set_attribute(HTML::AttributeNames::max, String::number(value)));
+    update_progress_value_element();
+    return {};
 }
 
 double HTMLProgressElement::position() const
@@ -109,6 +86,53 @@ double HTMLProgressElement::position() const
         return -1;
 
     return value() / max();
+}
+
+void HTMLProgressElement::inserted()
+{
+    create_shadow_tree_if_needed();
+}
+
+void HTMLProgressElement::removed_from(DOM::Node*)
+{
+    set_shadow_root(nullptr);
+}
+
+void HTMLProgressElement::create_shadow_tree_if_needed()
+{
+    if (shadow_root())
+        return;
+
+    auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);
+    set_shadow_root(shadow_root);
+
+    auto progress_bar_element = MUST(DOM::create_element(document(), HTML::TagNames::div, Namespace::HTML));
+    progress_bar_element->set_use_pseudo_element(CSS::Selector::PseudoElement::Type::ProgressBar);
+    MUST(shadow_root->append_child(*progress_bar_element));
+
+    m_progress_value_element = MUST(DOM::create_element(document(), HTML::TagNames::div, Namespace::HTML));
+    m_progress_value_element->set_use_pseudo_element(CSS::Selector::PseudoElement::Type::ProgressValue);
+    MUST(progress_bar_element->append_child(*m_progress_value_element));
+    update_progress_value_element();
+}
+
+void HTMLProgressElement::update_progress_value_element()
+{
+    if (m_progress_value_element)
+        MUST(m_progress_value_element->style_for_bindings()->set_property(CSS::PropertyID::Width, MUST(String::formatted("{}%", position() * 100))));
+}
+
+void HTMLProgressElement::computed_css_values_changed()
+{
+    auto palette = document().page().palette();
+    auto accent_color = palette.color(ColorRole::Accent).to_string();
+
+    auto accent_color_property = computed_css_values()->property(CSS::PropertyID::AccentColor);
+    if (accent_color_property->has_color())
+        accent_color = accent_color_property->to_string();
+
+    if (m_progress_value_element)
+        MUST(m_progress_value_element->style_for_bindings()->set_property(CSS::PropertyID::BackgroundColor, accent_color));
 }
 
 }

@@ -9,18 +9,18 @@
 #include <Kernel/Arch/CPU.h>
 #include <Kernel/Arch/PageDirectory.h>
 #include <Kernel/Arch/aarch64/ASM_wrapper.h>
-#include <Kernel/InterruptDisabler.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Prekernel/Prekernel.h>
-#include <Kernel/Process.h>
-#include <Kernel/Random.h>
 #include <Kernel/Sections.h>
-#include <Kernel/Thread.h>
+#include <Kernel/Security/Random.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Thread.h>
 
 namespace Kernel::Memory {
 
 struct TTBR0Map {
-    SpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
+    RecursiveSpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
 };
 
 static Singleton<TTBR0Map> s_ttbr0_map;
@@ -49,12 +49,14 @@ LockRefPtr<PageDirectory> PageDirectory::find_current()
 void activate_kernel_page_directory(PageDirectory const& page_directory)
 {
     Aarch64::Asm::set_ttbr0_el1(page_directory.ttbr0());
+    Processor::flush_entire_tlb_local();
 }
 
 void activate_page_directory(PageDirectory const& page_directory, Thread* current_thread)
 {
     current_thread->regs().ttbr0_el1 = page_directory.ttbr0();
     Aarch64::Asm::set_ttbr0_el1(page_directory.ttbr0());
+    Processor::flush_entire_tlb_local();
 }
 
 UNMAP_AFTER_INIT NonnullLockRefPtr<PageDirectory> PageDirectory::must_create_kernel_page_directory()
@@ -62,14 +64,16 @@ UNMAP_AFTER_INIT NonnullLockRefPtr<PageDirectory> PageDirectory::must_create_ker
     return adopt_lock_ref_if_nonnull(new (nothrow) PageDirectory).release_nonnull();
 }
 
-ErrorOr<NonnullLockRefPtr<PageDirectory>> PageDirectory::try_create_for_userspace()
+ErrorOr<NonnullLockRefPtr<PageDirectory>> PageDirectory::try_create_for_userspace(Process& process)
 {
     auto directory = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) PageDirectory));
+
+    directory->m_process = &process;
 
     directory->m_root_table = TRY(MM.allocate_physical_page());
 
     directory->m_directory_table = TRY(MM.allocate_physical_page());
-    auto kernel_pd_index = (kernel_mapping_base >> 30) & 0x1ffu;
+    auto kernel_pd_index = (g_boot_info.kernel_mapping_base >> 30) & 0x1ffu;
     for (size_t i = 0; i < kernel_pd_index; i++) {
         directory->m_directory_pages[i] = TRY(MM.allocate_physical_page());
     }
@@ -104,14 +108,18 @@ PageDirectory::PageDirectory() = default;
 UNMAP_AFTER_INIT void PageDirectory::allocate_kernel_directory()
 {
     // Adopt the page tables already set up by boot.S
-    dmesgln("MM: boot_pml4t @ {}", boot_pml4t);
-    m_root_table = PhysicalPage::create(boot_pml4t, MayReturnToFreeList::No);
-    dmesgln("MM: boot_pdpt @ {}", boot_pdpt);
-    dmesgln("MM: boot_pd0 @ {}", boot_pd0);
-    dmesgln("MM: boot_pd_kernel @ {}", boot_pd_kernel);
-    m_directory_table = PhysicalPage::create(boot_pdpt, MayReturnToFreeList::No);
-    m_directory_pages[0] = PhysicalPage::create(boot_pd0, MayReturnToFreeList::No);
-    m_directory_pages[(kernel_mapping_base >> 30) & 0x1ff] = PhysicalPage::create(boot_pd_kernel, MayReturnToFreeList::No);
+    dmesgln("MM: boot_pml4t @ {}", g_boot_info.boot_pml4t);
+    dmesgln("MM: boot_pdpt @ {}", g_boot_info.boot_pdpt);
+    dmesgln("MM: boot_pd_kernel @ {}", g_boot_info.boot_pd_kernel);
+
+    m_root_table = PhysicalRAMPage::create(g_boot_info.boot_pml4t, MayReturnToFreeList::No);
+    m_directory_table = PhysicalRAMPage::create(g_boot_info.boot_pdpt, MayReturnToFreeList::No);
+    m_directory_pages[(g_boot_info.kernel_mapping_base >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_pd_kernel, MayReturnToFreeList::No);
+
+    if (g_boot_info.boot_method == BootMethod::EFI) {
+        dmesgln("MM: bootstrap_page_page_directory @ {}", g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr);
+        m_directory_pages[(g_boot_info.boot_method_specific.efi.bootstrap_page_vaddr.get() >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr, MayReturnToFreeList::No);
+    }
 }
 
 PageDirectory::~PageDirectory()

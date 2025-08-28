@@ -53,7 +53,7 @@ void TableView::paint_event(PaintEvent& event)
 
     bool dummy;
     int first_visible_row = index_at_event_position(frame_inner_rect().top_left().translated(x_offset, y_offset), dummy).row();
-    int last_visible_row = index_at_event_position(frame_inner_rect().bottom_right().translated(x_offset, y_offset), dummy).row();
+    int last_visible_row = index_at_event_position(frame_inner_rect().bottom_right().translated(-1).translated(x_offset, y_offset), dummy).row();
 
     if (first_visible_row == -1)
         first_visible_row = 0;
@@ -131,14 +131,14 @@ void TableView::paint_event(PaintEvent& event)
                     }
 
                     auto text_alignment = cell_index.data(ModelRole::TextAlignment).to_text_alignment(Gfx::TextAlignment::CenterLeft);
-                    draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_deprecated_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
+                    draw_item_text(painter, cell_index, is_selected_row, cell_rect, data.to_byte_string(), font_for_index(cell_index), text_alignment, Gfx::TextElision::Right);
                 }
             }
 
             if (m_grid_style == GridStyle::Horizontal || m_grid_style == GridStyle::Both)
-                painter.draw_line(cell_rect_for_fill.bottom_left(), cell_rect_for_fill.bottom_right(), palette().ruler());
+                painter.draw_line(cell_rect_for_fill.bottom_left().moved_up(1), cell_rect_for_fill.bottom_right().translated(-1), palette().ruler());
             if (m_grid_style == GridStyle::Vertical || m_grid_style == GridStyle::Both)
-                painter.draw_line(cell_rect_for_fill.top_right(), cell_rect_for_fill.bottom_right(), palette().ruler());
+                painter.draw_line(cell_rect_for_fill.top_right().moved_left(1), cell_rect_for_fill.bottom_right().translated(-1), palette().ruler());
 
             if (selection_behavior() == SelectionBehavior::SelectItems && cell_index == cursor_index())
                 painter.draw_rect(cell_rect_for_fill, palette().text_cursor());
@@ -173,7 +173,7 @@ void TableView::second_paint_event(PaintEvent& event)
 
     // The rubber band rect always borders the widget inner to the left and right
     auto rubber_band_left = widget_inner_rect().left();
-    auto rubber_band_right = widget_inner_rect().right() + 1;
+    auto rubber_band_right = widget_inner_rect().right();
 
     auto rubber_band_rect = Gfx::IntRect::from_two_points({ rubber_band_left, m_rubber_band_origin }, { rubber_band_right, m_rubber_band_current });
 
@@ -194,21 +194,21 @@ void TableView::keydown_event(KeyEvent& event)
     auto is_delete = event.key() == Key_Delete;
     auto is_backspace = event.key() == Key_Backspace;
     auto is_clear = is_delete || is_backspace;
-    auto has_ctrl = event.modifiers() & KeyModifier::Mod_Ctrl;
-    if (is_editable() && edit_triggers() & EditTrigger::AnyKeyPressed && (event.code_point() != 0 || is_clear) && !has_ctrl) {
+    auto is_control_character = is_ascii_c0_control(event.code_point());
+    if (is_editable() && edit_triggers() & EditTrigger::AnyKeyPressed && !event.ctrl() && (!is_control_character || is_clear)) {
         begin_editing(cursor_index());
         if (m_editing_delegate) {
             if (is_delete) {
                 if (selection().size() > 1) {
                     selection().for_each_index([&](GUI::ModelIndex& index) {
                         begin_editing(index);
-                        m_editing_delegate->set_value(DeprecatedString {});
+                        m_editing_delegate->set_value(GUI::Variant {});
                     });
                 } else {
-                    m_editing_delegate->set_value(DeprecatedString {});
+                    m_editing_delegate->set_value(GUI::Variant {});
                 }
             } else if (is_backspace) {
-                m_editing_delegate->set_value(DeprecatedString::empty());
+                m_editing_delegate->set_value(ByteString::empty());
             } else {
                 m_editing_delegate->set_value(event.text(), ModelEditingDelegate::SelectionBehavior::DoNotSelect);
             }
@@ -250,7 +250,7 @@ void TableView::mousemove_event(MouseEvent& event)
 {
     if (m_rubber_banding) {
         // The rubber band rect cannot go outside the bounds of the rect enclosing all rows
-        m_rubber_band_current = clamp(event.position().y(), widget_inner_rect().top() + column_header().height(), widget_inner_rect().bottom() + 1);
+        m_rubber_band_current = clamp(event.position().y(), widget_inner_rect().top() + column_header().height(), widget_inner_rect().bottom());
 
         int row_count = model()->row_count();
 

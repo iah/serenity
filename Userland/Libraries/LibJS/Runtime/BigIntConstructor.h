@@ -12,9 +12,10 @@ namespace JS {
 
 class BigIntConstructor final : public NativeFunction {
     JS_OBJECT(BigIntConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(BigIntConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~BigIntConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

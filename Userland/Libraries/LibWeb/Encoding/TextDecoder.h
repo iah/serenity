@@ -16,29 +16,40 @@
 
 namespace Web::Encoding {
 
+// https://encoding.spec.whatwg.org/#textdecoderoptions
+struct TextDecoderOptions {
+    bool fatal = false;
+    bool ignore_bom = false;
+};
+
+// https://encoding.spec.whatwg.org/#textdecodeoptions
+struct TextDecodeOptions {
+    bool stream = false;
+};
+
 // https://encoding.spec.whatwg.org/#textdecoder
 class TextDecoder : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(TextDecoder, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(TextDecoder);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<TextDecoder>> construct_impl(JS::Realm&, DeprecatedFlyString encoding);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<TextDecoder>> construct_impl(JS::Realm&, FlyString encoding, Optional<TextDecoderOptions> const& options = {});
 
     virtual ~TextDecoder() override;
 
-    WebIDL::ExceptionOr<DeprecatedString> decode(JS::Handle<JS::Object> const&) const;
+    WebIDL::ExceptionOr<String> decode(Optional<JS::Handle<WebIDL::BufferSource>> const&, Optional<TextDecodeOptions> const& options = {}) const;
 
-    DeprecatedFlyString const& encoding() const { return m_encoding; }
+    FlyString const& encoding() const { return m_encoding; }
     bool fatal() const { return m_fatal; }
-    bool ignore_bom() const { return m_ignore_bom; };
+    bool ignore_bom() const { return m_ignore_bom; }
 
 private:
-    // https://encoding.spec.whatwg.org/#dom-textdecoder
-    TextDecoder(JS::Realm&, TextCodec::Decoder&, DeprecatedFlyString encoding, bool fatal, bool ignore_bom);
+    TextDecoder(JS::Realm&, TextCodec::Decoder&, FlyString encoding, bool fatal, bool ignore_bom);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     TextCodec::Decoder& m_decoder;
-    DeprecatedFlyString m_encoding;
+    FlyString m_encoding;
     bool m_fatal { false };
     bool m_ignore_bom { false };
 };

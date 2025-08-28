@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
@@ -19,6 +19,8 @@ struct Attribute {
         Writable = 1 << 0,
         Enumerable = 1 << 1,
         Configurable = 1 << 2,
+        // AD-HOC: This is used for reporting unimplemented IDL interfaces.
+        Unimplemented = 1 << 3,
     };
 };
 
@@ -33,6 +35,7 @@ public:
     [[nodiscard]] bool is_writable() const { return m_bits & Attribute::Writable; }
     [[nodiscard]] bool is_enumerable() const { return m_bits & Attribute::Enumerable; }
     [[nodiscard]] bool is_configurable() const { return m_bits & Attribute::Configurable; }
+    [[nodiscard]] bool is_unimplemented() const { return m_bits & Attribute::Unimplemented; }
 
     void set_writable(bool writable = true)
     {
@@ -76,11 +79,11 @@ template<>
 struct Formatter<JS::PropertyAttributes> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, JS::PropertyAttributes const& property_attributes)
     {
-        Vector<DeprecatedString> parts;
-        parts.append(DeprecatedString::formatted("[[Writable]]: {}", property_attributes.is_writable()));
-        parts.append(DeprecatedString::formatted("[[Enumerable]]: {}", property_attributes.is_enumerable()));
-        parts.append(DeprecatedString::formatted("[[Configurable]]: {}", property_attributes.is_configurable()));
-        return Formatter<StringView>::format(builder, DeprecatedString::formatted("PropertyAttributes {{ {} }}", DeprecatedString::join(", "sv, parts)));
+        Vector<ByteString> parts;
+        parts.append(ByteString::formatted("[[Writable]]: {}", property_attributes.is_writable()));
+        parts.append(ByteString::formatted("[[Enumerable]]: {}", property_attributes.is_enumerable()));
+        parts.append(ByteString::formatted("[[Configurable]]: {}", property_attributes.is_configurable()));
+        return Formatter<StringView>::format(builder, ByteString::formatted("PropertyAttributes {{ {} }}", ByteString::join(", "sv, parts)));
     }
 };
 

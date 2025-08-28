@@ -8,22 +8,23 @@
 #include <AK/Error.h>
 #include <AK/String.h>
 #include <AK/Utf8View.h>
+#include <LibCore/EventLoop.h>
 #include <LibGemini/GeminiResponse.h>
 #include <LibGemini/Job.h>
 #include <unistd.h>
 
 namespace Gemini {
 
-Job::Job(GeminiRequest const& request, Stream& output_stream)
+Job::Job(GeminiRequest const& request, Core::File& output_stream)
     : Core::NetworkJob(output_stream)
     , m_request(request)
 {
 }
 
-void Job::start(Core::Socket& socket)
+void Job::start(Core::BufferedSocketBase& socket)
 {
     VERIFY(!m_socket);
-    m_socket = verify_cast<Core::BufferedSocketBase>(&socket);
+    m_socket = &socket;
     on_socket_connected();
 }
 
@@ -65,7 +66,7 @@ ErrorOr<String> Job::read_line(size_t size)
 ErrorOr<ByteBuffer> Job::receive(size_t size)
 {
     ByteBuffer buffer = TRY(ByteBuffer::create_uninitialized(size));
-    auto nread = TRY(m_socket->read(buffer)).size();
+    auto nread = TRY(m_socket->read_some(buffer)).size();
     return buffer.slice(0, nread);
 }
 
@@ -76,14 +77,14 @@ bool Job::can_read() const
 
 bool Job::write(ReadonlyBytes bytes)
 {
-    return !m_socket->write_entire_buffer(bytes).is_error();
+    return !m_socket->write_until_depleted(bytes).is_error();
 }
 
 void Job::flush_received_buffers()
 {
     for (size_t i = 0; i < m_received_buffers.size(); ++i) {
         auto& payload = m_received_buffers[i];
-        auto result = do_write(payload);
+        auto result = Core::run_async_in_new_event_loop([&] { return do_write(payload); });
         if (result.is_error()) {
             if (!result.error().is_errno()) {
                 dbgln("Job: Failed to flush received buffers: {}", result.error());
@@ -111,11 +112,11 @@ void Job::flush_received_buffers()
 
 void Job::on_socket_connected()
 {
-    auto raw_request = m_request.to_raw_request();
+    auto raw_request = m_request.to_raw_request().release_value_but_fixme_should_propagate_errors();
 
     if constexpr (JOB_DEBUG) {
         dbgln("Job: raw_request:");
-        dbgln("{}", DeprecatedString::copy(raw_request));
+        dbgln("{}", ByteString::copy(raw_request));
     }
     bool success = write(raw_request);
     if (!success)
@@ -167,7 +168,7 @@ void Job::on_socket_connected()
             auto first_part = view.substring_view(0, space_index);
             auto second_part = view.substring_view(space_index + 1);
 
-            auto status = first_part.to_uint();
+            auto status = first_part.to_number<unsigned>();
             if (!status.has_value()) {
                 dbgln("Job: Expected numeric status code");
                 m_state = State::Failed;

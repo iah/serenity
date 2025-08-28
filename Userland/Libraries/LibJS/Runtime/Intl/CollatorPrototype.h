@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class CollatorPrototype final : public PrototypeObject<CollatorPrototype, Collator> {
     JS_PROTOTYPE_OBJECT(CollatorPrototype, Collator, Collator);
+    JS_DECLARE_ALLOCATOR(CollatorPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~CollatorPrototype() override = default;
 
 private:

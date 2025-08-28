@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,15 +14,17 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(PlainDateTimeConstructor);
+
 // 5.1 The Temporal.PlainDateTime Constructor, https://tc39.es/proposal-temporal/#sec-temporal-plaindatetime-constructor
 PlainDateTimeConstructor::PlainDateTimeConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.PlainDateTime.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.PlainDateTime.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> PlainDateTimeConstructor::initialize(Realm& realm)
+void PlainDateTimeConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -34,8 +36,6 @@ ThrowCompletionOr<void> PlainDateTimeConstructor::initialize(Realm& realm)
     define_native_function(realm, vm.names.compare, compare, 2, attr);
 
     define_direct_property(vm.names.length, Value(3), Attribute::Configurable);
-
-    return {};
 }
 
 // 5.1.1 Temporal.PlainDateTime ( isoYear, isoMonth, isoDay [ , hour [ , minute [ , second [ , millisecond [ , microsecond [ , nanosecond [ , calendarLike ] ] ] ] ] ] ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime

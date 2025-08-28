@@ -1,15 +1,17 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='SDL2'
-version='2.24.0'
+version='2.32.8'
 useconfigure='true'
-auth_type='sha256'
-files="https://github.com/libsdl-org/SDL/releases/download/release-${version}/SDL2-${version}.tar.gz SDL2-${version}.tar.gz 91e4c34b1768f92d399b078e171448c6af18cafda743987ed2064a28954d6d97"
+files=(
+    "https://github.com/libsdl-org/SDL/releases/download/release-${version}/SDL2-${version}.tar.gz#0ca83e9c9b31e18288c7ec811108e58bac1f1bb5ec6577ad386830eac51c787e"
+)
 configopts=(
+    "-DCMAKE_CXX_FLAGS=-I${SERENITY_BUILD_DIR}/Root/usr/include/Services/ -I${SERENITY_BUILD_DIR}/Root/usr/include/Userland/Services/"
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
     "-DPULSEAUDIO=OFF"
     "-DJACK=OFF"
     "-DSDL_LIBSAMPLERATE=OFF" # Disabled to prevent potential collision with host libsamplerate
-    "-DEXTRA_LDFLAGS=-laudio;-liconv;-ldl"
+    "-DEXTRA_LDFLAGS=-lcorebasic;-laudio;-liconv"
 )
 depends=("libiconv")
 

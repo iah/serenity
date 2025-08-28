@@ -13,22 +13,26 @@ namespace Web::HTML {
 
 class HTMLOptionElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLOptionElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLOptionElement);
 
 public:
     virtual ~HTMLOptionElement() override;
 
     bool selected() const { return m_selected; }
     void set_selected(bool);
+    void set_selected_internal(bool);
 
-    DeprecatedString value() const;
-    void set_value(DeprecatedString);
+    String value() const;
+    WebIDL::ExceptionOr<void> set_value(String const&);
 
-    DeprecatedString text() const;
-    void set_text(DeprecatedString);
+    String text() const;
+    void set_text(String const&);
 
     int index() const;
 
     bool disabled() const;
+
+    JS::GCPtr<HTML::HTMLFormElement> form() const;
 
     virtual Optional<ARIA::Role> default_role() const override;
 
@@ -38,10 +42,9 @@ private:
 
     HTMLOptionElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
-    void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
-    void did_remove_attribute(DeprecatedFlyString const& name) override;
+    void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
 
     void ask_for_a_reset();
 

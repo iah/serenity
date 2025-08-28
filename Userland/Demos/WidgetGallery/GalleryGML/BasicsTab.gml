@@ -17,9 +17,7 @@
 
             @GUI::Frame {
                 name: "label_frame"
-                shape: "Panel"
-                shadow: "Sunken"
-                thickness: 1
+                frame_style: "SunkenPanel"
                 layout: @GUI::VerticalBoxLayout {
                     margins: [3, 4]
                 }
@@ -59,7 +57,7 @@
             layout: @GUI::HorizontalBoxLayout {}
 
             @GUI::ComboBox {
-                name: "frame_shape_combobox"
+                name: "frame_style_combobox"
                 placeholder: "Combo box"
             }
 
@@ -70,11 +68,7 @@
 
             @GUI::VerticalSeparator {}
 
-            @GUI::SpinBox {
-                name: "thickness_spinbox"
-                min: 0
-                max: 2
-            }
+            @GUI::SpinBox {}
 
             @GUI::SpinBox {
                 enabled: false
@@ -104,7 +98,7 @@
                 @GUI::Button {
                     name: "disabled_normal_button"
                     text: "Disabled"
-                    enabled: "false"
+                    enabled: false
                 }
 
                 @GUI::Layout::Spacer {}
@@ -119,14 +113,14 @@
 
                 @GUI::Button {
                     name: "enabled_coolbar_button"
-                    text: "Coolbar button"
+                    text: "Coolbar Button"
                     button_style: "Coolbar"
                 }
 
                 @GUI::Button {
                     name: "disabled_coolbar_button"
                     text: "Disabled"
-                    enabled: "false"
+                    enabled: false
                     button_style: "Coolbar"
                 }
 
@@ -196,13 +190,13 @@
 
                 @GUI::Button {
                     name: "icon_button"
-                    text: "Icon button"
+                    text: "Icon Button"
                 }
 
                 @GUI::Button {
                     name: "disabled_icon_button"
                     text: "Disabled"
-                    enabled: "false"
+                    enabled: false
                 }
 
                 @GUI::Layout::Spacer {}
@@ -271,7 +265,7 @@
 
                     @GUI::ColorInput {
                         name: "font_colorinput"
-                        placeholder: "Color dialog"
+                        placeholder: "Color Picker"
                     }
 
                     @GUI::ColorInput {
@@ -284,17 +278,17 @@
 
                 @GUI::Button {
                     name: "font_button"
-                    text: "Font picker dialog..."
+                    text: "Font Picker"
                 }
 
                 @GUI::Button {
                     name: "file_button"
-                    text: "File picker dialog..."
+                    text: "File Picker"
                 }
 
                 @GUI::Button {
                     name: "input_button"
-                    text: "Input dialog..."
+                    text: "Input Box"
                 }
 
                 @GUI::Layout::Spacer {}
@@ -328,7 +322,7 @@
 
                 @GUI::Button {
                     name: "msgbox_button"
-                    text: "Message box dialog..."
+                    text: "Message Box"
                 }
             }
         }

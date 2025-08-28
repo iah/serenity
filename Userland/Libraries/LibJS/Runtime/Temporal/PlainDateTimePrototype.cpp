@@ -20,22 +20,25 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(PlainDateTimePrototype);
+
 // 5.3 Properties of the Temporal.PlainDateTime Prototype Object, https://tc39.es/proposal-temporal/#sec-properties-of-the-temporal-plaindatetime-prototype-object
 PlainDateTimePrototype::PlainDateTimePrototype(Realm& realm)
-    : PrototypeObject(*realm.intrinsics().object_prototype())
+    : PrototypeObject(realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> PlainDateTimePrototype::initialize(Realm& realm)
+void PlainDateTimePrototype::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
     // 5.3.2 Temporal.PlainDateTime.prototype[ @@toStringTag ], https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), MUST_OR_THROW_OOM(PrimitiveString::create(vm, "Temporal.PlainDateTime"sv)), Attribute::Configurable);
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "Temporal.PlainDateTime"_string), Attribute::Configurable);
 
     define_native_accessor(realm, vm.names.calendar, calendar_getter, {}, Attribute::Configurable);
+    define_native_accessor(realm, vm.names.calendarId, calendar_id_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.year, year_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.month, month_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.monthCode, month_code_getter, {}, Attribute::Configurable);
@@ -79,8 +82,6 @@ ThrowCompletionOr<void> PlainDateTimePrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.toPlainMonthDay, to_plain_month_day, 0, attr);
     define_native_function(realm, vm.names.toPlainTime, to_plain_time, 0, attr);
     define_native_function(realm, vm.names.getISOFields, get_iso_fields, 0, attr);
-
-    return {};
 }
 
 // 5.3.3 get Temporal.PlainDateTime.prototype.calendar, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.calendar
@@ -88,7 +89,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::calendar_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return dateTime.[[Calendar]].
     return Value(&date_time->calendar());
@@ -99,13 +100,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarYear(calendar, dateTime)).
-    return TRY(calendar_year(vm, calendar, *date_time));
+    return TRY(calendar_year(vm, calendar, date_time));
 }
 
 // 5.3.5 get Temporal.PlainDateTime.prototype.month, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.month
@@ -113,13 +114,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::month_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarMonth(calendar, dateTime)).
-    return TRY(calendar_month(vm, calendar, *date_time));
+    return TRY(calendar_month(vm, calendar, date_time));
 }
 
 // 5.3.6 get Temporal.PlainDateTime.prototype.monthCode, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.monthcode
@@ -127,13 +128,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::month_code_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return ? CalendarMonthCode(calendar, dateTime).
-    return PrimitiveString::create(vm, TRY(calendar_month_code(vm, calendar, *date_time)));
+    return PrimitiveString::create(vm, TRY(calendar_month_code(vm, calendar, date_time)));
 }
 
 // 5.3.7 get Temporal.PlainDateTime.prototype.day, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.day
@@ -141,13 +142,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::day_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDay(calendar, dateTime)).
-    return TRY(calendar_day(vm, calendar, *date_time));
+    return TRY(calendar_day(vm, calendar, date_time));
 }
 
 // 5.3.8 get Temporal.PlainDateTime.prototype.hour, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.hour
@@ -155,7 +156,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::hour_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISOHour]]).
     return Value(date_time->iso_hour());
@@ -166,7 +167,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::minute_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISOMinute]]).
     return Value(date_time->iso_minute());
@@ -177,7 +178,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::second_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISOSecond]]).
     return Value(date_time->iso_second());
@@ -188,7 +189,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::millisecond_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISOMillisecond]]).
     return Value(date_time->iso_millisecond());
@@ -199,7 +200,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::microsecond_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISOMicrosecond]]).
     return Value(date_time->iso_microsecond());
@@ -210,7 +211,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::nanosecond_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return 𝔽(dateTime.[[ISONanosecond]]).
     return Value(date_time->iso_nanosecond());
@@ -221,13 +222,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::day_of_week_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDayOfWeek(calendar, dateTime)).
-    return TRY(calendar_day_of_week(vm, calendar, *date_time));
+    return TRY(calendar_day_of_week(vm, calendar, date_time));
 }
 
 // 5.3.15 get Temporal.PlainDateTime.prototype.dayOfYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.dayofyear
@@ -235,13 +236,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::day_of_year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDayOfYear(calendar, dateTime)).
-    return TRY(calendar_day_of_year(vm, calendar, *date_time));
+    return TRY(calendar_day_of_year(vm, calendar, date_time));
 }
 
 // 5.3.16 get Temporal.PlainDateTime.prototype.weekOfYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.weekofyear
@@ -249,13 +250,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::week_of_year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarWeekOfYear(calendar, dateTime)).
-    return TRY(calendar_week_of_year(vm, calendar, *date_time));
+    return TRY(calendar_week_of_year(vm, calendar, date_time));
 }
 
 // 5.3.17 get Temporal.PlainDateTime.prototype.yearOfWeek, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.yearofweek
@@ -263,13 +264,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::year_of_week_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarYearOfWeek(calendar, dateTime)).
-    return TRY(calendar_year_of_week(vm, calendar, *date_time));
+    return TRY(calendar_year_of_week(vm, calendar, date_time));
 }
 
 // 5.3.18 get Temporal.PlainDateTime.prototype.daysInWeek, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.daysinweek
@@ -277,13 +278,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::days_in_week_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDaysInWeek(calendar, dateTime)).
-    return TRY(calendar_days_in_week(vm, calendar, *date_time));
+    return TRY(calendar_days_in_week(vm, calendar, date_time));
 }
 
 // 5.3.19 get Temporal.PlainDateTime.prototype.daysInMonth, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.daysinmonth
@@ -291,13 +292,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::days_in_month_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDaysInMonth(calendar, dateTime)).
-    return TRY(calendar_days_in_month(vm, calendar, *date_time));
+    return TRY(calendar_days_in_month(vm, calendar, date_time));
 }
 
 // 5.3.20 get Temporal.PlainDateTime.prototype.daysInYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.daysinyear
@@ -305,13 +306,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::days_in_year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarDaysInYear(calendar, dateTime)).
-    return TRY(calendar_days_in_year(vm, calendar, *date_time));
+    return TRY(calendar_days_in_year(vm, calendar, date_time));
 }
 
 // 5.3.21 get Temporal.PlainDateTime.prototype.monthsInYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.monthsinyear
@@ -319,13 +320,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::months_in_year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return 𝔽(? CalendarMonthsInYear(calendar, dateTime)).
-    return TRY(calendar_months_in_year(vm, calendar, *date_time));
+    return TRY(calendar_months_in_year(vm, calendar, date_time));
 }
 
 // 5.3.22 get Temporal.PlainDateTime.prototype.inLeapYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.inleapyear
@@ -333,13 +334,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::in_leap_year_getter)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
 
     // 4. Return ? CalendarInLeapYear(calendar, dateTime).
-    return TRY(calendar_in_leap_year(vm, calendar, *date_time));
+    return TRY(calendar_in_leap_year(vm, calendar, date_time));
 }
 
 // 15.6.6.2 get Temporal.PlainDateTime.prototype.era, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.era
@@ -347,13 +348,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::era_getter)
 {
     // 1. Let plainDateTime be the this value.
     // 2. Perform ? RequireInternalSlot(plainDateTime, [[InitializedTemporalDateTime]]).
-    auto* plain_date_time = TRY(typed_this_object(vm));
+    auto plain_date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be plainDateTime.[[Calendar]].
     auto& calendar = plain_date_time->calendar();
 
     // 4. Return ? CalendarEra(calendar, plainDateTime).
-    return TRY(calendar_era(vm, calendar, *plain_date_time));
+    return TRY(calendar_era(vm, calendar, plain_date_time));
 }
 
 // 15.6.6.3 get Temporal.PlainDateTime.prototype.eraYear, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.erayear
@@ -361,13 +362,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::era_year_getter)
 {
     // 1. Let plainDateTime be the this value.
     // 2. Perform ? RequireInternalSlot(plainDateTime, [[InitializedTemporalDateTime]]).
-    auto* plain_date_time = TRY(typed_this_object(vm));
+    auto plain_date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be plainDateTime.[[Calendar]].
     auto& calendar = plain_date_time->calendar();
 
     // 4. Return ? CalendarEraYear(calendar, plainDateTime).
-    return TRY(calendar_era_year(vm, calendar, *plain_date_time));
+    return TRY(calendar_era_year(vm, calendar, plain_date_time));
 }
 
 // 5.3.23 Temporal.PlainDateTime.prototype.with ( temporalDateTimeLike [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype.with
@@ -377,12 +378,12 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. If Type(temporalDateTimeLike) is not Object, then
     if (!temporal_date_time_like.is_object()) {
         // a. Throw a TypeError exception.
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, temporal_date_time_like.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, temporal_date_time_like.to_string_without_side_effects());
     }
 
     // 4. Perform ? RejectObjectWithCalendarOrTimeZone(temporalDateTimeLike).
@@ -401,7 +402,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with)
     auto* options = TRY(get_options_object(vm, vm.argument(1)));
 
     // 9. Let fields be ? PrepareTemporalFields(dateTime, fieldNames, «»).
-    auto* fields = TRY(prepare_temporal_fields(vm, *date_time, field_names, Vector<StringView> {}));
+    auto* fields = TRY(prepare_temporal_fields(vm, date_time, field_names, Vector<StringView> {}));
 
     // 10. Set fields to ? CalendarMergeFields(calendar, fields, partialDateTime).
     fields = TRY(calendar_merge_fields(vm, calendar, *fields, *partial_date_time));
@@ -410,7 +411,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with)
     fields = TRY(prepare_temporal_fields(vm, *fields, field_names, Vector<StringView> {}));
 
     // 12. Let result be ? InterpretTemporalDateTimeFields(calendar, fields, options).
-    auto result = TRY(interpret_temporal_date_time_fields(vm, calendar, *fields, *options));
+    auto result = TRY(interpret_temporal_date_time_fields(vm, calendar, *fields, options));
 
     // 13. Assert: IsValidISODate(result.[[Year]], result.[[Month]], result.[[Day]]) is true.
     VERIFY(is_valid_iso_date(result.year, result.month, result.day));
@@ -427,7 +428,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with_plain_time)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. If plainTimeLike is undefined, then
     if (vm.argument(0).is_undefined()) {
@@ -447,7 +448,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with_plain_date)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let plainDate be ? ToTemporalDate(plainDateLike).
     auto* plain_date = TRY(to_temporal_date(vm, vm.argument(0)));
@@ -466,7 +467,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::with_calendar)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be ? ToTemporalCalendar(calendarLike).
     auto* calendar = TRY(to_temporal_calendar(vm, calendar_like));
@@ -483,10 +484,10 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::add)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? AddDurationToOrSubtractDurationFromPlainDateTime(add, dateTime, temporalDurationLike, options).
-    return TRY(add_duration_to_or_subtract_duration_from_plain_date_time(vm, ArithmeticOperation::Add, *date_time, temporal_duration_like, options));
+    return TRY(add_duration_to_or_subtract_duration_from_plain_date_time(vm, ArithmeticOperation::Add, date_time, temporal_duration_like, options));
 }
 
 // 5.3.28 Temporal.PlainDateTime.prototype.subtract ( temporalDurationLike [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype.subtract
@@ -497,10 +498,10 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::subtract)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? AddDurationToOrSubtractDurationFromPlainDateTime(subtract, dateTime, temporalDurationLike, options).
-    return TRY(add_duration_to_or_subtract_duration_from_plain_date_time(vm, ArithmeticOperation::Subtract, *date_time, temporal_duration_like, options));
+    return TRY(add_duration_to_or_subtract_duration_from_plain_date_time(vm, ArithmeticOperation::Subtract, date_time, temporal_duration_like, options));
 }
 
 // 5.3.29 Temporal.PlainDateTime.prototype.until ( other [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaintime.prototype.since
@@ -511,10 +512,10 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::until)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? DifferenceTemporalPlainDateTime(until, dateTime, other, options).
-    return TRY(difference_temporal_plain_date_time(vm, DifferenceOperation::Until, *date_time, other, options));
+    return TRY(difference_temporal_plain_date_time(vm, DifferenceOperation::Until, date_time, other, options));
 }
 
 // 5.3.30 Temporal.PlainDateTime.prototype.since ( other [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype.since
@@ -525,10 +526,10 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::since)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? DifferenceTemporalPlainDateTime(since, dateTime, other, options).
-    return TRY(difference_temporal_plain_date_time(vm, DifferenceOperation::Since, *date_time, other, options));
+    return TRY(difference_temporal_plain_date_time(vm, DifferenceOperation::Since, date_time, other, options));
 }
 
 // 5.3.31 Temporal.PlainDateTime.prototype.round ( roundTo ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype.round
@@ -538,7 +539,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::round)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. If roundTo is undefined, then
     if (vm.argument(0).is_undefined()) {
@@ -570,13 +571,31 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::round)
     // 7. Let roundingMode be ? ToTemporalRoundingMode(roundTo, "halfExpand").
     auto rounding_mode = TRY(to_temporal_rounding_mode(vm, *round_to, "halfExpand"sv));
 
-    // 8. Let roundingIncrement be ? ToTemporalDateTimeRoundingIncrement(roundTo, smallestUnit).
-    auto rounding_increment = TRY(to_temporal_date_time_rounding_increment(vm, *round_to, *smallest_unit));
+    // 8. If smallestUnit is "day", then
+    Optional<u16> maximum;
+    if (smallest_unit == "day"sv) {
+        // a. Let maximum be 1.
+        maximum = 1;
+    }
+    // 9. Else
+    else {
+        // a. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit)
+        maximum = maximum_temporal_duration_rounding_increment(*smallest_unit);
 
-    // 9. Let result be ! RoundISODateTime(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], roundingIncrement, smallestUnit, roundingMode).
+        // b. Assert: maximum is not undefined
+        VERIFY(maximum.has_value());
+    }
+
+    // 10. Let roundingIncrement be ? ToTemporalDateTimeRoundingIncrement(roundTo).
+    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *round_to));
+
+    // 11. Perform ? ValidateTemporalRoundingIncrement(roundingIncrement, maximum, false).
+    TRY(validate_temporal_rounding_increment(vm, rounding_increment, *maximum, false));
+
+    // 12. Let result be ! RoundISODateTime(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], roundingIncrement, smallestUnit, roundingMode).
     auto result = round_iso_date_time(date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond(), rounding_increment, *smallest_unit, rounding_mode);
 
-    // 10. Return ? CreateTemporalDateTime(result.[[Year]], result.[[Month]], result.[[Day]], result.[[Hour]], result.[[Minute]], result.[[Second]], result.[[Millisecond]], result.[[Microsecond]], result.[[Nanosecond]], dateTime.[[Calendar]]).
+    // 13. Return ? CreateTemporalDateTime(result.[[Year]], result.[[Month]], result.[[Day]], result.[[Hour]], result.[[Minute]], result.[[Second]], result.[[Millisecond]], result.[[Microsecond]], result.[[Nanosecond]], dateTime.[[Calendar]]).
     return TRY(create_temporal_date_time(vm, result.year, result.month, result.day, result.hour, result.minute, result.second, result.millisecond, result.microsecond, result.nanosecond, date_time->calendar()));
 }
 
@@ -585,7 +604,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::equals)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Set other to ? ToTemporalDateTime(other).
     auto* other = TRY(to_temporal_date_time(vm, vm.argument(0)));
@@ -606,13 +625,13 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_string)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Set options to ? GetOptionsObject(options).
     auto* options = TRY(get_options_object(vm, vm.argument(0)));
 
-    // 4. Let precision be ? ToSecondsStringPrecision(options).
-    auto precision = TRY(to_seconds_string_precision(vm, *options));
+    // 4. Let precision be ? ToSecondsStringPrecisionRecord(options).
+    auto precision = TRY(to_seconds_string_precision_record(vm, *options));
 
     // 5. Let roundingMode be ? ToTemporalRoundingMode(options, "trunc").
     auto rounding_mode = TRY(to_temporal_rounding_mode(vm, *options, "trunc"sv));
@@ -633,7 +652,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_locale_string)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? TemporalDateTimeToString(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], dateTime.[[Calendar]], "auto", "auto").
     return PrimitiveString::create(vm, TRY(temporal_date_time_to_string(vm, date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond(), &date_time->calendar(), "auto"sv, "auto"sv)));
@@ -644,7 +663,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_json)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ? TemporalDateTimeToString(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], dateTime.[[Calendar]], "auto", "auto").
     return PrimitiveString::create(vm, TRY(temporal_date_time_to_string(vm, date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond(), &date_time->calendar(), "auto"sv, "auto"sv)));
@@ -662,7 +681,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_zoned_date_time)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let timeZone be ? ToTemporalTimeZone(temporalTimeZoneLike).
     auto* time_zone = TRY(to_temporal_time_zone(vm, vm.argument(0)));
@@ -674,7 +693,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_zoned_date_time)
     auto disambiguation = TRY(to_temporal_disambiguation(vm, options));
 
     // 6. Let instant be ? BuiltinTimeZoneGetInstantFor(timeZone, dateTime, disambiguation).
-    auto* instant = TRY(builtin_time_zone_get_instant_for(vm, time_zone, *date_time, disambiguation));
+    auto instant = TRY(builtin_time_zone_get_instant_for(vm, time_zone, date_time, disambiguation));
 
     // 7. Return ! CreateTemporalZonedDateTime(instant.[[Nanoseconds]], timeZone, dateTime.[[Calendar]]).
     return MUST(create_temporal_zoned_date_time(vm, instant->nanoseconds(), *time_zone, date_time->calendar()));
@@ -685,7 +704,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_date)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ! CreateTemporalDate(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[Calendar]]).
     return MUST(create_temporal_date(vm, date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->calendar()));
@@ -696,7 +715,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_year_month)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
@@ -705,7 +724,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_year_month)
     auto field_names = TRY(calendar_fields(vm, calendar, { "monthCode"sv, "year"sv }));
 
     // 5. Let fields be ? PrepareTemporalFields(dateTime, fieldNames, «»).
-    auto* fields = TRY(prepare_temporal_fields(vm, *date_time, field_names, Vector<StringView> {}));
+    auto* fields = TRY(prepare_temporal_fields(vm, date_time, field_names, Vector<StringView> {}));
 
     // 6. Return ? CalendarYearMonthFromFields(calendar, fields).
     return TRY(calendar_year_month_from_fields(vm, calendar, *fields));
@@ -716,7 +735,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_month_day)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let calendar be dateTime.[[Calendar]].
     auto& calendar = date_time->calendar();
@@ -725,7 +744,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_month_day)
     auto field_names = TRY(calendar_fields(vm, calendar, { "day"sv, "monthCode"sv }));
 
     // 5. Let fields be ? PrepareTemporalFields(dateTime, fieldNames, «»).
-    auto* fields = TRY(prepare_temporal_fields(vm, *date_time, field_names, Vector<StringView> {}));
+    auto* fields = TRY(prepare_temporal_fields(vm, date_time, field_names, Vector<StringView> {}));
 
     // 6. Return ? CalendarMonthDayFromFields(calendar, fields).
     return TRY(calendar_month_day_from_fields(vm, calendar, *fields));
@@ -736,7 +755,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_plain_time)
 {
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Return ! CreateTemporalTime(dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]]).
     return MUST(create_temporal_time(vm, date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond()));
@@ -749,7 +768,7 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::get_iso_fields)
 
     // 1. Let dateTime be the this value.
     // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
-    auto* date_time = TRY(typed_this_object(vm));
+    auto date_time = TRY(typed_this_object(vm));
 
     // 3. Let fields be OrdinaryObjectCreate(%Object.prototype%).
     auto fields = Object::create(realm, realm.intrinsics().object_prototype());
@@ -786,6 +805,18 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::get_iso_fields)
 
     // 14. Return fields.
     return fields;
+}
+
+// 5.3.3 get Temporal.PlainDateTime.prototype.calendarId, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.calendarid
+JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::calendar_id_getter)
+{
+    // 1. Let dateTime be the this value.
+    // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
+    auto temporal_date = TRY(typed_this_object(vm));
+
+    // 3. Return dateTime.[[Calendar]].
+    auto& calendar = static_cast<Calendar&>(temporal_date->calendar());
+    return PrimitiveString::create(vm, calendar.identifier());
 }
 
 }

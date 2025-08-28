@@ -4,6 +4,7 @@
  * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
  * Copyright (c) 2022, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2023, Cameron Youell <cameronyouell@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,20 +13,27 @@
 #include "BookmarksBarWidget.h"
 #include "Browser.h"
 #include "BrowserWindow.h"
-#include "ConsoleWidget.h"
 #include "DownloadWidget.h"
 #include "History/HistoryWidget.h"
 #include "InspectorWidget.h"
 #include "StorageWidget.h"
 #include <AK/StringBuilder.h>
-#include <AK/URL.h>
 #include <Applications/Browser/TabGML.h>
+#include <Applications/Browser/URLBox.h>
+#include <Applications/BrowserSettings/Defaults.h>
 #include <LibConfig/Client.h>
+#include <LibCore/MimeData.h>
+#include <LibDesktop/Launcher.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/Clipboard.h>
+#include <LibGUI/ColorPicker.h>
+#include <LibGUI/Dialog.h>
+#include <LibGUI/FilePicker.h>
+#include <LibGUI/FileTypeFilter.h>
+#include <LibGUI/InputBox.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Statusbar.h>
@@ -33,13 +41,16 @@
 #include <LibGUI/Toolbar.h>
 #include <LibGUI/ToolbarContainer.h>
 #include <LibGUI/Window.h>
-#include <LibJS/Interpreter.h>
+#include <LibURL/URL.h>
 #include <LibWeb/HTML/BrowsingContext.h>
+#include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWebView/OutOfProcessWebView.h>
+#include <LibWebView/SearchEngine.h>
+#include <LibWebView/URL.h>
 
 namespace Browser {
 
@@ -48,48 +59,33 @@ Tab::~Tab()
     close_sub_widgets();
 }
 
-URL url_from_user_input(DeprecatedString const& input)
-{
-    if (input.starts_with('?') && !g_search_engine.is_empty())
-        return URL(g_search_engine.replace("{}"sv, URL::percent_encode(input.substring_view(1)), ReplaceMode::FirstOnly));
-
-    URL url_with_http_schema = URL(DeprecatedString::formatted("http://{}", input));
-    if (url_with_http_schema.is_valid() && url_with_http_schema.port().has_value())
-        return url_with_http_schema;
-
-    URL url = URL(input);
-    if (url.is_valid())
-        return url;
-
-    return url_with_http_schema;
-}
-
-void Tab::start_download(const URL& url)
+void Tab::start_download(const URL::URL& url)
 {
     auto window = GUI::Window::construct(&this->window());
     window->resize(300, 170);
-    window->set_title(DeprecatedString::formatted("0% of {}", url.basename()));
+    window->set_title(ByteString::formatted("0% of {}", url.basename()));
     window->set_resizable(false);
-    (void)window->set_main_widget<DownloadWidget>(url).release_value_but_fixme_should_propagate_errors();
+    (void)window->set_main_widget<DownloadWidget>(url);
     window->show();
 }
 
-void Tab::view_source(const URL& url, DeprecatedString const& source)
+void Tab::view_source(const URL::URL& url, StringView source)
 {
     auto window = GUI::Window::construct(&this->window());
-    auto editor = window->set_main_widget<GUI::TextEditor>().release_value_but_fixme_should_propagate_errors();
+    auto editor = window->set_main_widget<GUI::TextEditor>();
     editor->set_text(source);
     editor->set_mode(GUI::TextEditor::ReadOnly);
     editor->set_syntax_highlighter(make<Web::HTML::SyntaxHighlighter>());
     editor->set_ruler_visible(true);
+    editor->set_visualize_trailing_whitespace(false);
     window->resize(640, 480);
-    window->set_title(url.to_deprecated_string());
+    window->set_title(url.to_byte_string());
     window->set_icon(g_icon_bag.filetype_text);
     window->set_window_mode(GUI::WindowMode::Modeless);
     window->show();
 }
 
-void Tab::update_status(Optional<DeprecatedString> text_override, i32 count_waiting)
+void Tab::update_status(Optional<String> text_override, i32 count_waiting)
 {
     if (text_override.has_value()) {
         m_statusbar->set_text(*text_override);
@@ -97,7 +93,7 @@ void Tab::update_status(Optional<DeprecatedString> text_override, i32 count_wait
     }
 
     if (m_loaded) {
-        m_statusbar->set_text("");
+        m_statusbar->set_text({});
         return;
     }
 
@@ -105,16 +101,18 @@ void Tab::update_status(Optional<DeprecatedString> text_override, i32 count_wait
 
     if (count_waiting == 0) {
         // ex: "Loading google.com"
-        m_statusbar->set_text(DeprecatedString::formatted("Loading {}", m_navigating_url->host()));
+        m_statusbar->set_text(String::formatted("Loading {}", m_navigating_url->serialized_host().release_value_but_fixme_should_propagate_errors()).release_value_but_fixme_should_propagate_errors());
     } else {
         // ex: "google.com is waiting on 5 resources"
-        m_statusbar->set_text(DeprecatedString::formatted("{} is waiting on {} resource{}", m_navigating_url->host(), count_waiting, count_waiting == 1 ? ""sv : "s"sv));
+        m_statusbar->set_text(String::formatted("{} is waiting on {} resource{}", m_navigating_url->serialized_host().release_value_but_fixme_should_propagate_errors(), count_waiting, count_waiting == 1 ? ""sv : "s"sv).release_value_but_fixme_should_propagate_errors());
     }
 }
 
 Tab::Tab(BrowserWindow& window)
 {
     load_from_gml(tab_gml).release_value_but_fixme_should_propagate_errors();
+
+    m_icon = g_icon_bag.default_favicon;
 
     m_toolbar_container = *find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
     auto& toolbar = *find_descendant_of_type_named<GUI::Toolbar>("toolbar");
@@ -123,13 +121,11 @@ Tab::Tab(BrowserWindow& window)
 
     m_web_content_view = webview_container.add<WebView::OutOfProcessWebView>();
 
-    auto preferred_color_scheme = Web::CSS::preferred_color_scheme_from_string(Config::read_string("Browser"sv, "Preferences"sv, "ColorScheme"sv, "auto"sv));
+    auto preferred_color_scheme = Web::CSS::preferred_color_scheme_from_string(Config::read_string("Browser"sv, "Preferences"sv, "ColorScheme"sv, Browser::default_color_scheme));
     m_web_content_view->set_preferred_color_scheme(preferred_color_scheme);
 
-    if (g_content_filters_enabled)
-        m_web_content_view->set_content_filters(g_content_filters);
-    else
-        m_web_content_view->set_content_filters({});
+    content_filters_changed();
+    autoplay_allowlist_changed();
 
     m_web_content_view->set_proxy_mappings(g_proxies, g_proxy_mappings);
     if (!g_webdriver_content_ipc_path.is_empty())
@@ -137,51 +133,39 @@ Tab::Tab(BrowserWindow& window)
 
     auto& go_back_button = toolbar.add_action(window.go_back_action());
     go_back_button.on_context_menu_request = [&](auto&) {
-        if (!m_history.can_go_back())
+        if (!m_can_navigate_back)
             return;
-        int i = 0;
-        m_go_back_context_menu = GUI::Menu::construct();
-        for (auto& url : m_history.get_back_title_history()) {
-            i++;
-            m_go_back_context_menu->add_action(GUI::Action::create(url.to_deprecated_string(), g_icon_bag.filetype_html, [this, i](auto&) { go_back(i); }));
-        }
-        m_go_back_context_menu->popup(go_back_button.screen_relative_rect().bottom_left());
+
+        // FIXME: Reimplement selecting a specific entry using WebContent's history.
     };
 
     auto& go_forward_button = toolbar.add_action(window.go_forward_action());
     go_forward_button.on_context_menu_request = [&](auto&) {
-        if (!m_history.can_go_forward())
+        if (!m_can_navigate_forward)
             return;
-        int i = 0;
-        m_go_forward_context_menu = GUI::Menu::construct();
-        for (auto& url : m_history.get_forward_title_history()) {
-            i++;
-            m_go_forward_context_menu->add_action(GUI::Action::create(url.to_deprecated_string(), g_icon_bag.filetype_html, [this, i](auto&) { go_forward(i); }));
-        }
-        m_go_forward_context_menu->popup(go_forward_button.screen_relative_rect().bottom_left());
+
+        // FIXME: Reimplement selecting a specific entry using WebContent's history.
     };
 
     auto& go_home_button = toolbar.add_action(window.go_home_action());
     go_home_button.set_allowed_mouse_buttons_for_pressing(GUI::MouseButton::Primary | GUI::MouseButton::Middle);
     go_home_button.on_middle_mouse_click = [&](auto) {
-        on_tab_open_request(Browser::url_from_user_input(g_home_url));
+        on_tab_open_request(g_home_url);
     };
 
     toolbar.add_action(window.reload_action());
 
-    m_location_box = toolbar.add<GUI::UrlBox>();
-    m_location_box->set_placeholder("Address"sv);
+    m_location_box = toolbar.add<URLBox>();
+    m_location_box->set_placeholder("Search or enter address"sv);
 
     m_location_box->on_return_pressed = [this] {
-        auto url = url_from_location_bar();
-        if (url.has_value())
-            load(url.release_value());
+        if (auto url = WebView::sanitize_url(m_location_box->text(), g_search_engine, WebView::AppendTLD::No); url.has_value())
+            load(*url);
     };
 
     m_location_box->on_ctrl_return_pressed = [this] {
-        auto url = url_from_location_bar(MayAppendTLD::Yes);
-        if (url.has_value())
-            load(url.release_value());
+        if (auto url = WebView::sanitize_url(m_location_box->text(), g_search_engine, WebView::AppendTLD::Yes); url.has_value())
+            load(*url);
     };
 
     m_location_box->add_custom_context_menu_action(GUI::Action::create("Paste && Go", [this](auto&) {
@@ -197,9 +181,21 @@ Tab::Tab(BrowserWindow& window)
 
     auto bookmark_action = GUI::Action::create(
         "Bookmark current URL", { Mod_Ctrl, Key_D }, [this](auto&) {
-            bookmark_current_url();
+            if (auto result = bookmark_current_url(); result.is_error())
+                GUI::MessageBox::show_error(this->window().main_widget()->window(), MUST(String::formatted("Failed to bookmark URL: {}", result.error())));
         },
         this);
+
+    m_reset_zoom_button = toolbar.add<GUI::Button>();
+    m_reset_zoom_button->set_tooltip("Reset zoom level"_string);
+    m_reset_zoom_button->on_click = [&](auto) {
+        view().reset_zoom();
+        update_reset_zoom_button();
+        window.update_zoom_menu();
+    };
+    m_reset_zoom_button->set_button_style(Gfx::ButtonStyle::Coolbar);
+    m_reset_zoom_button->set_visible(false);
+    m_reset_zoom_button->set_preferred_width(GUI::SpecialDimension::Shrink);
 
     m_bookmark_button = toolbar.add<GUI::Button>();
     m_bookmark_button->set_action(bookmark_action);
@@ -208,34 +204,28 @@ Tab::Tab(BrowserWindow& window)
     m_bookmark_button->set_icon(g_icon_bag.bookmark_contour);
     m_bookmark_button->set_fixed_size(22, 22);
 
-    view().on_load_start = [this](auto& url, bool is_redirect) {
+    view().on_load_start = [this](auto& url, bool) {
         m_navigating_url = url;
         m_loaded = false;
 
-        // If we are loading due to a redirect, we replace the current history entry
-        // with the loaded URL
-        if (is_redirect) {
-            m_history.replace_current(url, title());
-        }
+        auto url_serialized = url.serialize();
 
-        update_status();
+        m_title = url_serialized;
+        if (on_title_change)
+            on_title_change(m_title);
+
+        m_icon = g_icon_bag.default_favicon;
+        if (on_favicon_change)
+            on_favicon_change(*m_icon);
 
         m_location_box->set_icon(nullptr);
-        m_location_box->set_text(url.to_deprecated_string());
+        m_location_box->set_text(url_serialized);
 
-        // don't add to history if back or forward is pressed
-        if (!m_is_history_navigation)
-            m_history.push(url, title());
-        m_is_history_navigation = false;
-
-        update_actions();
-        update_bookmark_button(url.to_deprecated_string());
+        update_status();
+        update_bookmark_button(url_serialized);
 
         if (m_dom_inspector_widget)
-            m_dom_inspector_widget->clear_dom_json();
-
-        if (m_console_widget)
-            m_console_widget->reset();
+            m_dom_inspector_widget->reset();
     };
 
     view().on_load_finish = [this](auto&) {
@@ -244,18 +234,29 @@ Tab::Tab(BrowserWindow& window)
 
         update_status();
 
-        if (m_dom_inspector_widget) {
-            m_web_content_view->inspect_dom_tree();
-            m_web_content_view->inspect_accessibility_tree();
-        }
+        if (m_dom_inspector_widget)
+            m_dom_inspector_widget->inspect();
+    };
+
+    view().on_url_change = [this](auto const& url) {
+        auto url_serialized = url.serialize();
+        m_location_box->set_text(url_serialized);
+
+        update_bookmark_button(url_serialized);
+    };
+
+    view().on_navigation_buttons_state_changed = [this](auto back_enabled, auto forward_enabled) {
+        m_can_navigate_back = back_enabled;
+        m_can_navigate_forward = forward_enabled;
+        update_actions();
     };
 
     view().on_navigate_back = [this]() {
-        go_back(1);
+        go_back();
     };
 
     view().on_navigate_forward = [this]() {
-        go_forward(1);
+        go_forward();
     };
 
     view().on_refresh = [this]() {
@@ -316,9 +317,10 @@ Tab::Tab(BrowserWindow& window)
         view().on_link_click(m_link_context_menu_url, "_blank", 0);
     }));
     m_link_context_menu->add_separator();
-    m_link_context_menu->add_action(GUI::Action::create("&Copy URL", g_icon_bag.copy, [this](auto&) {
-        GUI::Clipboard::the().set_plain_text(m_link_context_menu_url.to_deprecated_string());
-    }));
+    m_link_copy_action = GUI::Action::create("Copy &URL", g_icon_bag.copy, [this](auto&) {
+        GUI::Clipboard::the().set_plain_text(WebView::url_text_to_copy(m_link_context_menu_url));
+    });
+    m_link_context_menu->add_action(*m_link_copy_action);
     m_link_context_menu->add_separator();
     m_link_context_menu->add_action(GUI::Action::create("&Download", g_icon_bag.download, [this](auto&) {
         start_download(m_link_context_menu_url);
@@ -326,8 +328,22 @@ Tab::Tab(BrowserWindow& window)
     m_link_context_menu->add_separator();
     m_link_context_menu->add_action(window.inspect_dom_node_action());
 
-    view().on_link_context_menu_request = [this](auto& url, auto screen_position) {
+    view().on_link_context_menu_request = [this](auto& url, auto widget_position) {
         m_link_context_menu_url = url;
+
+        switch (WebView::url_type(url)) {
+        case WebView::URLType::Email:
+            m_link_copy_action->set_text("Copy &Email Address");
+            break;
+        case WebView::URLType::Telephone:
+            m_link_copy_action->set_text("Copy &Phone Number");
+            break;
+        case WebView::URLType::Other:
+            m_link_copy_action->set_text("Copy &URL");
+            break;
+        }
+
+        auto screen_position = view().screen_relative_rect().location().translated(widget_position);
         m_link_context_menu->popup(screen_position, m_link_context_menu_default_action);
     };
 
@@ -344,7 +360,7 @@ Tab::Tab(BrowserWindow& window)
             GUI::Clipboard::the().set_bitmap(*m_image_context_menu_bitmap.bitmap());
     }));
     m_image_context_menu->add_action(GUI::Action::create("Copy Image &URL", g_icon_bag.copy, [this](auto&) {
-        GUI::Clipboard::the().set_plain_text(m_image_context_menu_url.to_deprecated_string());
+        GUI::Clipboard::the().set_plain_text(m_image_context_menu_url.to_byte_string());
     }));
     m_image_context_menu->add_separator();
     m_image_context_menu->add_action(GUI::Action::create("&Download", g_icon_bag.download, [this](auto&) {
@@ -353,24 +369,110 @@ Tab::Tab(BrowserWindow& window)
     m_image_context_menu->add_separator();
     m_image_context_menu->add_action(window.inspect_dom_node_action());
 
-    view().on_image_context_menu_request = [this](auto& image_url, auto screen_position, Gfx::ShareableBitmap const& shareable_bitmap) {
+    view().on_image_context_menu_request = [this](auto& image_url, auto widget_position, Gfx::ShareableBitmap const& shareable_bitmap) {
         m_image_context_menu_url = image_url;
         m_image_context_menu_bitmap = shareable_bitmap;
+
+        auto screen_position = view().screen_relative_rect().location().translated(widget_position);
         m_image_context_menu->popup(screen_position);
+    };
+
+    m_media_context_menu_play_pause_action = GUI::Action::create("&Play", g_icon_bag.play, [this](auto&) {
+        view().toggle_media_play_state();
+    });
+    m_media_context_menu_mute_unmute_action = GUI::Action::create("&Mute", g_icon_bag.mute, [this](auto&) {
+        view().toggle_media_mute_state();
+    });
+    m_media_context_menu_controls_action = GUI::Action::create_checkable("Show &Controls", [this](auto&) {
+        view().toggle_media_controls_state();
+    });
+    m_media_context_menu_loop_action = GUI::Action::create_checkable("&Loop", [this](auto&) {
+        view().toggle_media_loop_state();
+    });
+
+    m_audio_context_menu = GUI::Menu::construct();
+    m_audio_context_menu->add_action(*m_media_context_menu_play_pause_action);
+    m_audio_context_menu->add_action(*m_media_context_menu_mute_unmute_action);
+    m_audio_context_menu->add_action(*m_media_context_menu_controls_action);
+    m_audio_context_menu->add_action(*m_media_context_menu_loop_action);
+    m_audio_context_menu->add_separator();
+    m_audio_context_menu->add_action(GUI::Action::create("&Open Audio", g_icon_bag.filetype_audio, [this](auto&) {
+        view().on_link_click(m_media_context_menu_url, "", 0);
+    }));
+    m_audio_context_menu->add_action(GUI::Action::create("Open Audio in New &Tab", g_icon_bag.new_tab, [this](auto&) {
+        view().on_link_click(m_media_context_menu_url, "_blank", 0);
+    }));
+    m_audio_context_menu->add_separator();
+    m_audio_context_menu->add_action(GUI::Action::create("Copy Audio &URL", g_icon_bag.copy, [this](auto&) {
+        GUI::Clipboard::the().set_plain_text(m_media_context_menu_url.to_byte_string());
+    }));
+    m_audio_context_menu->add_separator();
+    m_audio_context_menu->add_action(GUI::Action::create("&Download", g_icon_bag.download, [this](auto&) {
+        start_download(m_media_context_menu_url);
+    }));
+    m_audio_context_menu->add_separator();
+    m_audio_context_menu->add_action(window.inspect_dom_node_action());
+
+    m_video_context_menu = GUI::Menu::construct();
+    m_video_context_menu->add_action(*m_media_context_menu_play_pause_action);
+    m_video_context_menu->add_action(*m_media_context_menu_mute_unmute_action);
+    m_video_context_menu->add_action(*m_media_context_menu_controls_action);
+    m_video_context_menu->add_action(*m_media_context_menu_loop_action);
+    m_video_context_menu->add_separator();
+    m_video_context_menu->add_action(GUI::Action::create("&Open Video", g_icon_bag.filetype_video, [this](auto&) {
+        view().on_link_click(m_media_context_menu_url, "", 0);
+    }));
+    m_video_context_menu->add_action(GUI::Action::create("Open Video in New &Tab", g_icon_bag.new_tab, [this](auto&) {
+        view().on_link_click(m_media_context_menu_url, "_blank", 0);
+    }));
+    m_video_context_menu->add_separator();
+    m_video_context_menu->add_action(GUI::Action::create("Copy Video &URL", g_icon_bag.copy, [this](auto&) {
+        GUI::Clipboard::the().set_plain_text(m_media_context_menu_url.to_byte_string());
+    }));
+    m_video_context_menu->add_separator();
+    m_video_context_menu->add_action(GUI::Action::create("&Download", g_icon_bag.download, [this](auto&) {
+        start_download(m_media_context_menu_url);
+    }));
+    m_video_context_menu->add_separator();
+    m_video_context_menu->add_action(window.inspect_dom_node_action());
+
+    view().on_media_context_menu_request = [this](auto widget_position, Web::Page::MediaContextMenu const& menu) {
+        m_media_context_menu_url = menu.media_url;
+
+        if (menu.is_playing) {
+            m_media_context_menu_play_pause_action->set_icon(g_icon_bag.pause);
+            m_media_context_menu_play_pause_action->set_text("&Pause"sv);
+        } else {
+            m_media_context_menu_play_pause_action->set_icon(g_icon_bag.play);
+            m_media_context_menu_play_pause_action->set_text("&Play"sv);
+        }
+
+        if (menu.is_muted) {
+            m_media_context_menu_mute_unmute_action->set_icon(g_icon_bag.unmute);
+            m_media_context_menu_mute_unmute_action->set_text("Un&mute"sv);
+        } else {
+            m_media_context_menu_mute_unmute_action->set_icon(g_icon_bag.mute);
+            m_media_context_menu_mute_unmute_action->set_text("&Mute"sv);
+        }
+
+        m_media_context_menu_controls_action->set_checked(menu.has_user_agent_controls);
+        m_media_context_menu_loop_action->set_checked(menu.is_looping);
+
+        auto screen_position = view().screen_relative_rect().location().translated(widget_position);
+
+        if (menu.is_video)
+            m_video_context_menu->popup(screen_position);
+        else
+            m_audio_context_menu->popup(screen_position);
     };
 
     view().on_link_middle_click = [this](auto& href, auto&, auto) {
         view().on_link_click(href, "_blank", 0);
     };
 
-    view().on_title_change = [this](auto& title) {
-        if (title.is_null()) {
-            m_history.update_title(url().to_deprecated_string());
-            m_title = url().to_deprecated_string();
-        } else {
-            m_history.update_title(title);
-            m_title = title;
-        }
+    view().on_title_change = [this](auto const& title) {
+        m_title = title;
+
         if (on_title_change)
             on_title_change(m_title);
     };
@@ -382,60 +484,183 @@ Tab::Tab(BrowserWindow& window)
             on_favicon_change(icon);
     };
 
-    view().on_get_all_cookies = [this](auto& url) -> Vector<Web::Cookie::Cookie> {
-        if (on_get_all_cookies)
-            return on_get_all_cookies(url);
-        return {};
+    view().on_request_alert = [this](String const& message) {
+        auto& window = this->window();
+
+        m_dialog = GUI::MessageBox::create(&window, message, "Alert"sv, GUI::MessageBox::Type::Information, GUI::MessageBox::InputType::OK).release_value_but_fixme_should_propagate_errors();
+        m_dialog->set_icon(window.icon());
+        m_dialog->exec();
+
+        view().alert_closed();
+        m_dialog = nullptr;
     };
 
-    view().on_get_named_cookie = [this](auto& url, auto& name) -> Optional<Web::Cookie::Cookie> {
-        if (on_get_named_cookie)
-            return on_get_named_cookie(url, name);
-        return {};
+    view().on_request_confirm = [this](String const& message) {
+        auto& window = this->window();
+
+        m_dialog = GUI::MessageBox::create(&window, message, "Confirm"sv, GUI::MessageBox::Type::Warning, GUI::MessageBox::InputType::OKCancel).release_value_but_fixme_should_propagate_errors();
+        m_dialog->set_icon(window.icon());
+
+        view().confirm_closed(m_dialog->exec() == GUI::Dialog::ExecResult::OK);
+        m_dialog = nullptr;
     };
 
-    view().on_get_cookie = [this](auto& url, auto source) -> DeprecatedString {
-        if (on_get_cookie)
-            return on_get_cookie(url, source);
-        return {};
+    view().on_request_prompt = [this](String const& message, String const& default_) {
+        auto& window = this->window();
+
+        String mutable_value = default_;
+        m_dialog = GUI::InputBox::create(&window, mutable_value, message, "Prompt"sv, GUI::InputType::Text).release_value_but_fixme_should_propagate_errors();
+        m_dialog->set_icon(window.icon());
+
+        if (m_dialog->exec() == GUI::InputBox::ExecResult::OK) {
+            auto const& dialog = static_cast<GUI::InputBox const&>(*m_dialog);
+            auto response = dialog.text_value();
+
+            view().prompt_closed(move(response));
+        } else {
+            view().prompt_closed({});
+        }
+
+        m_dialog = nullptr;
     };
 
-    view().on_set_cookie = [this](auto& url, auto& cookie, auto source) {
-        if (on_set_cookie)
-            on_set_cookie(url, cookie, source);
+    view().on_request_set_prompt_text = [this](String const& message) {
+        if (m_dialog && is<GUI::InputBox>(*m_dialog))
+            static_cast<GUI::InputBox&>(*m_dialog).set_text_value(message);
     };
 
-    view().on_update_cookie = [this](auto& cookie) {
-        if (on_update_cookie)
-            on_update_cookie(cookie);
+    view().on_request_accept_dialog = [this]() {
+        if (m_dialog)
+            m_dialog->done(GUI::Dialog::ExecResult::OK);
     };
 
-    view().on_get_source = [this](auto& url, auto& source) {
+    view().on_request_dismiss_dialog = [this]() {
+        if (m_dialog)
+            m_dialog->done(GUI::Dialog::ExecResult::Cancel);
+    };
+
+    view().on_request_color_picker = [this](Color current_color) {
+        auto& window = this->window();
+
+        m_dialog = GUI::ColorPicker::construct(current_color, &window);
+        auto& dialog = static_cast<GUI::ColorPicker&>(*m_dialog);
+
+        dialog.set_icon(window.icon());
+        dialog.set_color_has_alpha_channel(false);
+        dialog.on_color_changed = [this](Color color) {
+            view().color_picker_update(color, Web::HTML::ColorPickerUpdateState::Update);
+        };
+
+        if (dialog.exec() == GUI::ColorPicker::ExecResult::OK)
+            view().color_picker_update(dialog.color(), Web::HTML::ColorPickerUpdateState::Closed);
+        else
+            view().color_picker_update({}, Web::HTML::ColorPickerUpdateState::Closed);
+
+        m_dialog = nullptr;
+    };
+
+    view().on_request_file_picker = [this](auto const& accepted_file_types, auto allow_multiple_files) {
+        // FIXME: GUI::FilePicker does not allow selecting multiple files at once.
+        (void)allow_multiple_files;
+
+        Vector<Web::HTML::SelectedFile> selected_files;
+        auto& window = this->window();
+
+        auto create_selected_file = [&](auto file_path) {
+            if (auto file = Web::HTML::SelectedFile::from_file_path(file_path); file.is_error())
+                warnln("Unable to open file {}: {}", file_path, file.error());
+            else
+                selected_files.append(file.release_value());
+        };
+
+        Vector<GUI::FileTypeFilter> accepted_file_filters;
+
+        for (auto const& filter : accepted_file_types.filters) {
+            filter.visit(
+                [&](Web::HTML::FileFilter::FileType type) {
+                    switch (type) {
+                    case Web::HTML::FileFilter::FileType::Audio:
+                        accepted_file_filters.append(GUI::FileTypeFilter::audio_files());
+                        break;
+                    case Web::HTML::FileFilter::FileType::Image:
+                        accepted_file_filters.append(GUI::FileTypeFilter::image_files());
+                        break;
+                    case Web::HTML::FileFilter::FileType::Video:
+                        accepted_file_filters.append(GUI::FileTypeFilter::video_files());
+                        break;
+                    }
+                },
+                [&](Web::HTML::FileFilter::MimeType const& filter) {
+                    if (auto mime_type = Core::get_mime_type_data(filter.value); mime_type.has_value()) {
+                        Vector<ByteString> extensions;
+                        extensions.ensure_capacity(mime_type->common_extensions.size());
+
+                        for (auto extension : mime_type->common_extensions)
+                            extensions.append(extension);
+
+                        accepted_file_filters.append({ mime_type->description, move(extensions) });
+                    }
+                },
+                [&](Web::HTML::FileFilter::Extension const& filter) {
+                    accepted_file_filters.empend(ByteString {}, Vector<ByteString> { filter.value.to_byte_string() });
+                });
+        }
+
+        accepted_file_filters.size() > 1 ? accepted_file_filters.prepend(GUI::FileTypeFilter::all_files()) : accepted_file_filters.append(GUI::FileTypeFilter::all_files());
+
+        if (auto path = GUI::FilePicker::get_open_filepath(&window, "Select file", Core::StandardPaths::home_directory(), false, GUI::Dialog::ScreenPosition::CenterWithinParent, move(accepted_file_filters)); path.has_value())
+            create_selected_file(path.release_value());
+
+        view().file_picker_closed(move(selected_files));
+    };
+
+    m_select_dropdown = GUI::Menu::construct();
+    m_select_dropdown->on_visibility_change = [this](bool visible) {
+        if (!visible && !m_select_dropdown_closed_by_action)
+            view().select_dropdown_closed({});
+    };
+
+    view().on_request_select_dropdown = [this](Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> items) {
+        m_select_dropdown_closed_by_action = false;
+        m_select_dropdown->remove_all_actions();
+        m_select_dropdown->set_minimum_width(minimum_width);
+
+        auto add_menu_item = [this](Web::HTML::SelectItemOption const& item_option, bool in_option_group) {
+            auto action = GUI::Action::create(in_option_group ? ByteString::formatted("    {}", item_option.label) : item_option.label.to_byte_string(), [this, item_option](GUI::Action&) {
+                m_select_dropdown_closed_by_action = true;
+                view().select_dropdown_closed(item_option.id);
+            });
+            action->set_checkable(true);
+            action->set_checked(item_option.selected);
+            action->set_enabled(!item_option.disabled);
+            m_select_dropdown->add_action(action);
+        };
+
+        for (auto const& item : items) {
+            if (item.has<Web::HTML::SelectItemOptionGroup>()) {
+                auto const& item_option_group = item.get<Web::HTML::SelectItemOptionGroup>();
+                auto subtitle = GUI::Action::create(item_option_group.label.to_byte_string(), nullptr);
+                subtitle->set_enabled(false);
+                m_select_dropdown->add_action(subtitle);
+
+                for (auto const& item_option : item_option_group.items)
+                    add_menu_item(item_option, true);
+            }
+
+            if (item.has<Web::HTML::SelectItemOption>())
+                add_menu_item(item.get<Web::HTML::SelectItemOption>(), false);
+
+            if (item.has<Web::HTML::SelectItemSeparator>())
+                m_select_dropdown->add_separator();
+        }
+
+        m_select_dropdown->popup(view().screen_relative_rect().location().translated(content_position));
+    };
+
+    view().on_received_source = [this](auto& url, auto const& base_url, auto const& source) {
+        // FIXME: Use base_url?
+        (void)base_url;
         view_source(url, source);
-    };
-
-    view().on_get_dom_tree = [this](auto& dom_tree) {
-        if (m_dom_inspector_widget)
-            m_dom_inspector_widget->set_dom_json(dom_tree);
-    };
-
-    view().on_get_dom_node_properties = [this](auto node_id, auto& specified, auto& computed, auto& custom_properties, auto& node_box_sizing) {
-        m_dom_inspector_widget->set_dom_node_properties_json({ node_id }, specified, computed, custom_properties, node_box_sizing);
-    };
-
-    view().on_get_accessibility_tree = [this](auto& accessibility_tree) {
-        if (m_dom_inspector_widget)
-            m_dom_inspector_widget->set_accessibility_json(accessibility_tree);
-    };
-
-    view().on_js_console_new_message = [this](auto message_index) {
-        if (m_console_widget)
-            m_console_widget->notify_about_new_console_message(message_index);
-    };
-
-    view().on_get_js_console_messages = [this](auto start_index, auto& message_types, auto& messages) {
-        if (m_console_widget)
-            m_console_widget->handle_console_messages(start_index, message_types, messages);
     };
 
     auto focus_location_box_action = GUI::Action::create(
@@ -448,28 +673,30 @@ Tab::Tab(BrowserWindow& window)
     m_statusbar = *find_descendant_of_type_named<GUI::Statusbar>("statusbar");
 
     view().on_link_hover = [this](auto& url) {
-        if (url.is_valid())
-            update_status(url.to_deprecated_string());
-        else
-            update_status();
+        update_status(String::from_byte_string(url.to_byte_string()).release_value_but_fixme_should_propagate_errors());
     };
 
-    view().on_url_drop = [this](auto& url) {
-        load(url);
+    view().on_link_unhover = [this]() {
+        view().set_override_cursor(Gfx::StandardCursor::None);
+        update_status();
     };
 
-    view().on_back_button = [this] {
-        if (m_history.can_go_back())
-            go_back();
+    view().on_new_web_view = [this](auto activate_tab, auto, auto) {
+        // FIXME: Create a child tab that re-uses the ConnectionFromClient of the parent tab
+        auto& tab = this->window().create_new_tab(URL::URL("about:blank"), activate_tab);
+        return tab.view().handle();
     };
 
-    view().on_forward_button = [this] {
-        if (m_history.can_go_forward())
-            go_forward();
+    view().on_activate_tab = [this]() {
+        on_activate_tab_request(*this);
     };
 
     view().on_close = [this] {
         on_tab_close_request(*this);
+    };
+
+    view().on_insert_clipboard_entry = [](auto const& data, auto const&, auto const& mime_type) {
+        GUI::Clipboard::the().set_data(data.bytes(), mime_type.to_byte_string());
     };
 
     m_tab_context_menu = GUI::Menu::construct();
@@ -486,77 +713,121 @@ Tab::Tab(BrowserWindow& window)
         on_tab_close_other_request(*this);
     }));
 
+    auto search_selected_text_action = GUI::Action::create(
+        "&Search for <query>"sv, g_icon_bag.search, [this](auto&) {
+            auto url = MUST(String::formatted(g_search_engine, URL::percent_encode(*m_page_context_menu_search_text)));
+            this->window().create_new_tab(url, Web::HTML::ActivateTab::Yes);
+        },
+        this);
+
+    auto take_screenshot = [this](auto type) {
+        auto& view = this->view();
+
+        view.take_screenshot(type)
+            ->when_resolved([this](auto const& path) {
+                auto message = MUST(String::formatted("Screenshot saved to: {}", path));
+                auto response = GUI::MessageBox::show(&this->window(), message, "Browser"sv, GUI::MessageBox::Type::Information, GUI::MessageBox::InputType::OKReveal);
+
+                if (response == GUI::MessageBox::ExecResult::Reveal)
+                    Desktop::Launcher::open(URL::create_with_file_scheme(path.dirname()));
+            })
+            .when_rejected([this](auto const& error) {
+                auto error_message = MUST(String::formatted("{}", error));
+                GUI::MessageBox::show_error(&this->window(), error_message);
+            });
+    };
+
+    auto take_visible_screenshot_action = GUI::Action::create(
+        "Take &Visible Screenshot"sv, g_icon_bag.filetype_image, [take_screenshot](auto&) {
+            take_screenshot(WebView::ViewImplementation::ScreenshotType::Visible);
+        },
+        this);
+    take_visible_screenshot_action->set_status_tip("Save a screenshot of the visible portion of the current tab to the Downloads directory"_string);
+
+    auto take_full_screenshot_action = GUI::Action::create(
+        "Take &Full Screenshot"sv, g_icon_bag.filetype_image, [take_screenshot](auto&) {
+            take_screenshot(WebView::ViewImplementation::ScreenshotType::Full);
+        },
+        this);
+    take_full_screenshot_action->set_status_tip("Save a screenshot of the entirety of the current tab to the Downloads directory"_string);
+
     m_page_context_menu = GUI::Menu::construct();
     m_page_context_menu->add_action(window.go_back_action());
     m_page_context_menu->add_action(window.go_forward_action());
     m_page_context_menu->add_action(window.reload_action());
     m_page_context_menu->add_separator();
     m_page_context_menu->add_action(window.copy_selection_action());
+    m_page_context_menu->add_action(window.paste_action());
     m_page_context_menu->add_action(window.select_all_action());
+    // FIXME: It would be nice to have a separator here, but the below action is sometimes hidden, and WindowServer
+    //        does not hide successive separators like other toolkits.
+    m_page_context_menu->add_action(search_selected_text_action);
+    m_page_context_menu->add_separator();
+    m_page_context_menu->add_action(move(take_visible_screenshot_action));
+    m_page_context_menu->add_action(move(take_full_screenshot_action));
     m_page_context_menu->add_separator();
     m_page_context_menu->add_action(window.view_source_action());
     m_page_context_menu->add_action(window.inspect_dom_tree_action());
     m_page_context_menu->add_action(window.inspect_dom_node_action());
-    m_page_context_menu->add_separator();
-    m_page_context_menu->add_action(window.take_visible_screenshot_action());
-    m_page_context_menu->add_action(window.take_full_screenshot_action());
-    view().on_context_menu_request = [&](auto screen_position) {
+
+    m_page_context_menu->on_visibility_change = [this](auto visible) {
+        if (!visible)
+            m_page_context_menu_search_text = {};
+    };
+
+    view().on_context_menu_request = [&, search_selected_text_action = move(search_selected_text_action)](auto widget_position) {
+        m_page_context_menu_search_text = g_search_engine.is_empty()
+            ? OptionalNone {}
+            : view().selected_text_with_whitespace_collapsed();
+
+        if (m_page_context_menu_search_text.has_value()) {
+            auto action_text = WebView::format_search_query_for_display(g_search_engine, *m_page_context_menu_search_text);
+            search_selected_text_action->set_text(action_text.to_byte_string());
+            search_selected_text_action->set_visible(true);
+        } else {
+            search_selected_text_action->set_visible(false);
+        }
+
+        auto screen_position = view().screen_relative_rect().location().translated(widget_position);
         m_page_context_menu->popup(screen_position);
     };
 }
 
-Optional<URL> Tab::url_from_location_bar(MayAppendTLD may_append_tld)
+void Tab::update_reset_zoom_button()
 {
-    if (m_location_box->text().starts_with('?') && g_search_engine.is_empty()) {
-        GUI::MessageBox::show(&this->window(), "Select a search engine in the Settings menu before searching."sv, "No search engine selected"sv, GUI::MessageBox::Type::Information);
-        return {};
+    auto zoom_level = view().zoom_level();
+    if (zoom_level != 1.0f) {
+        m_reset_zoom_button->set_text(MUST(String::formatted("{}%", round_to<int>(zoom_level * 100))));
+        m_reset_zoom_button->set_visible(true);
+    } else {
+        m_reset_zoom_button->set_visible(false);
     }
-
-    DeprecatedString text = m_location_box->text();
-
-    StringBuilder builder;
-    builder.append(text);
-    if (may_append_tld == MayAppendTLD::Yes) {
-        // FIXME: Expand the list of top level domains.
-        if (!(text.ends_with(".com"sv) || text.ends_with(".net"sv) || text.ends_with(".org"sv))) {
-            builder.append(".com"sv);
-        }
-    }
-    auto final_text = builder.to_deprecated_string();
-
-    auto url = url_from_user_input(final_text);
-    return url;
 }
 
-void Tab::load(const URL& url, LoadType load_type)
+void Tab::load(URL::URL const& url)
 {
-    m_is_history_navigation = (load_type == LoadType::HistoryNavigation);
     m_web_content_view->load(url);
     m_location_box->set_focus(false);
 }
 
-URL Tab::url() const
+URL::URL Tab::url() const
 {
     return m_web_content_view->url();
 }
 
 void Tab::reload()
 {
-    load(url());
+    view().reload();
 }
 
-void Tab::go_back(int steps)
+void Tab::go_back()
 {
-    m_history.go_back(steps);
-    update_actions();
-    load(m_history.current().url, LoadType::HistoryNavigation);
+    view().traverse_the_history_by_delta(-1);
 }
 
-void Tab::go_forward(int steps)
+void Tab::go_forward()
 {
-    m_history.go_forward(steps);
-    update_actions();
-    load(m_history.current().url, LoadType::HistoryNavigation);
+    view().traverse_the_history_by_delta(1);
 }
 
 void Tab::update_actions()
@@ -564,29 +835,30 @@ void Tab::update_actions()
     auto& window = this->window();
     if (this != &window.active_tab())
         return;
-    window.go_back_action().set_enabled(m_history.can_go_back());
-    window.go_forward_action().set_enabled(m_history.can_go_forward());
+    window.go_back_action().set_enabled(m_can_navigate_back);
+    window.go_forward_action().set_enabled(m_can_navigate_forward);
 }
 
-void Tab::bookmark_current_url()
+ErrorOr<void> Tab::bookmark_current_url()
 {
-    auto url = this->url().to_deprecated_string();
+    auto url = this->url().to_byte_string();
     if (BookmarksBarWidget::the().contains_bookmark(url)) {
-        BookmarksBarWidget::the().remove_bookmark(url);
+        TRY(BookmarksBarWidget::the().remove_bookmark(url));
     } else {
-        BookmarksBarWidget::the().add_bookmark(url, m_title);
+        TRY(BookmarksBarWidget::the().add_bookmark(url, m_title));
     }
-    update_bookmark_button(url);
+
+    return {};
 }
 
-void Tab::update_bookmark_button(DeprecatedString const& url)
+void Tab::update_bookmark_button(StringView url)
 {
     if (BookmarksBarWidget::the().contains_bookmark(url)) {
         m_bookmark_button->set_icon(g_icon_bag.bookmark_filled);
-        m_bookmark_button->set_tooltip("Remove Bookmark");
+        m_bookmark_button->set_tooltip("Remove Bookmark"_string);
     } else {
         m_bookmark_button->set_icon(g_icon_bag.bookmark_contour);
-        m_bookmark_button->set_tooltip("Add Bookmark");
+        m_bookmark_button->set_tooltip("Add Bookmark"_string);
     }
 }
 
@@ -602,7 +874,11 @@ void Tab::did_become_active()
     };
 
     BookmarksBarWidget::the().on_bookmark_hover = [this](auto&, auto& url) {
-        m_statusbar->set_text(url);
+        m_statusbar->set_text(String::from_byte_string(url).release_value_but_fixme_should_propagate_errors());
+    };
+
+    BookmarksBarWidget::the().on_bookmark_change = [this]() {
+        update_bookmark_button(url().to_byte_string());
     };
 
     BookmarksBarWidget::the().remove_from_parent();
@@ -626,6 +902,14 @@ void Tab::content_filters_changed()
         m_web_content_view->set_content_filters(g_content_filters);
     else
         m_web_content_view->set_content_filters({});
+}
+
+void Tab::autoplay_allowlist_changed()
+{
+    if (g_autoplay_allowed_on_all_websites)
+        m_web_content_view->set_autoplay_allowed_on_all_websites();
+    else
+        m_web_content_view->set_autoplay_allowlist(g_autoplay_allowlist);
 }
 
 void Tab::proxy_mappings_changed()
@@ -668,22 +952,20 @@ void Tab::show_inspector_window(Browser::Tab::InspectorTarget inspector_target)
     if (!m_dom_inspector_widget) {
         auto window = GUI::Window::construct(&this->window());
         window->set_window_mode(GUI::WindowMode::Modeless);
-        window->resize(300, 500);
+        window->resize(750, 500);
         window->set_title("Inspector");
         window->set_icon(g_icon_bag.inspector_object);
         window->on_close = [&]() {
             m_web_content_view->clear_inspected_dom_node();
         };
-        m_dom_inspector_widget = window->set_main_widget<InspectorWidget>().release_value_but_fixme_should_propagate_errors();
-        m_dom_inspector_widget->set_web_view(*m_web_content_view);
-        m_web_content_view->inspect_dom_tree();
-        m_web_content_view->inspect_accessibility_tree();
+
+        m_dom_inspector_widget = window->set_main_widget<InspectorWidget>(*m_web_content_view);
+    } else {
+        m_dom_inspector_widget->inspect();
     }
 
     if (inspector_target == InspectorTarget::HoveredElement) {
-        // FIXME: Handle pseudo-elements
-        auto hovered_node = m_web_content_view->get_hovered_node_id();
-        m_dom_inspector_widget->set_selection({ hovered_node });
+        m_dom_inspector_widget->select_hovered_node();
     } else {
         VERIFY(inspector_target == InspectorTarget::Document);
         m_dom_inspector_widget->select_default_node();
@@ -703,29 +985,7 @@ void Tab::close_sub_widgets()
         }
     };
     close_widget_window(m_dom_inspector_widget);
-    close_widget_window(m_console_widget);
     close_widget_window(m_storage_widget);
-}
-
-void Tab::show_console_window()
-{
-    if (!m_console_widget) {
-        auto console_window = GUI::Window::construct(&window());
-        console_window->resize(500, 300);
-        console_window->set_title("JS Console");
-        console_window->set_icon(g_icon_bag.filetype_javascript);
-        m_console_widget = console_window->set_main_widget<ConsoleWidget>().release_value_but_fixme_should_propagate_errors();
-        m_console_widget->on_js_input = [this](DeprecatedString const& js_source) {
-            m_web_content_view->js_console_input(js_source);
-        };
-        m_console_widget->on_request_messages = [this](i32 start_index) {
-            m_web_content_view->js_console_request_messages(start_index);
-        };
-    }
-
-    auto* window = m_console_widget->window();
-    window->show();
-    window->move_to_front();
 }
 
 void Tab::show_storage_inspector()
@@ -733,12 +993,12 @@ void Tab::show_storage_inspector()
     if (!m_storage_widget) {
         auto storage_window = GUI::Window::construct(&window());
         storage_window->resize(500, 300);
-        storage_window->set_title("Storage inspector");
+        storage_window->set_title("Storage Inspector");
         storage_window->set_icon(g_icon_bag.cookie);
-        m_storage_widget = storage_window->set_main_widget<StorageWidget>().release_value_but_fixme_should_propagate_errors();
+        m_storage_widget = storage_window->set_main_widget<StorageWidget>();
         m_storage_widget->on_update_cookie = [this](Web::Cookie::Cookie cookie) {
-            if (on_update_cookie)
-                on_update_cookie(move(cookie));
+            if (view().on_update_cookie)
+                view().on_update_cookie(move(cookie));
         };
     }
 
@@ -751,13 +1011,13 @@ void Tab::show_storage_inspector()
     if (on_get_local_storage_entries) {
         auto local_storage_entries = on_get_local_storage_entries();
         m_storage_widget->clear_local_storage_entries();
-        m_storage_widget->set_local_storage_entries(local_storage_entries);
+        m_storage_widget->set_local_storage_entries(move(local_storage_entries));
     }
 
     if (on_get_session_storage_entries) {
         auto session_storage_entries = on_get_session_storage_entries();
         m_storage_widget->clear_session_storage_entries();
-        m_storage_widget->set_session_storage_entries(session_storage_entries);
+        m_storage_widget->set_session_storage_entries(move(session_storage_entries));
     }
 
     auto* window = m_storage_widget->window();
@@ -772,11 +1032,11 @@ void Tab::show_history_inspector()
         history_window->resize(500, 300);
         history_window->set_title("History");
         history_window->set_icon(g_icon_bag.history);
-        m_history_widget = history_window->set_main_widget<HistoryWidget>().release_value_but_fixme_should_propagate_errors();
+        m_history_widget = history_window->set_main_widget<HistoryWidget>();
     }
 
+    // FIXME: Reimplement viewing history entries using WebContent's history.
     m_history_widget->clear_history_entries();
-    m_history_widget->set_history_entries(m_history.get_all_history_entries());
 
     auto* window = m_history_widget->window();
     window->show();

@@ -6,6 +6,8 @@
  */
 
 #include <LibArchive/Zip.h>
+#include <LibCompress/Deflate.h>
+#include <LibCrypto/Checksum/CRC32.h>
 
 namespace Archive {
 
@@ -75,7 +77,7 @@ Optional<Zip> Zip::try_create(ReadonlyBytes buffer)
     };
 }
 
-ErrorOr<bool> Zip::for_each_member(Function<IterationDecision(ZipMember const&)> callback)
+ErrorOr<bool> Zip::for_each_member(Function<ErrorOr<IterationDecision>(ZipMember const&)> callback) const
 {
     size_t member_offset = m_members_start_offset;
     for (size_t i = 0; i < m_member_count; i++) {
@@ -94,12 +96,30 @@ ErrorOr<bool> Zip::for_each_member(Function<IterationDecision(ZipMember const&)>
         member.modification_date = central_directory_record.modification_date;
         member.is_directory = central_directory_record.external_attributes & zip_directory_external_attribute || member.name.bytes_as_string_view().ends_with('/'); // FIXME: better directory detection
 
-        if (callback(member) == IterationDecision::Break)
+        if (TRY(callback(member)) == IterationDecision::Break)
             return false;
 
         member_offset += central_directory_record.size();
     }
     return true;
+}
+
+ErrorOr<Statistics> Zip::calculate_statistics() const
+{
+    size_t file_count = 0;
+    size_t directory_count = 0;
+    size_t uncompressed_bytes = 0;
+
+    TRY(for_each_member([&](auto zip_member) -> ErrorOr<IterationDecision> {
+        if (zip_member.is_directory)
+            directory_count++;
+        else
+            file_count++;
+        uncompressed_bytes += zip_member.uncompressed_size;
+        return IterationDecision::Continue;
+    }));
+
+    return Statistics(file_count, directory_count, uncompressed_bytes);
 }
 
 ZipOutputStream::ZipOutputStream(NonnullOwnPtr<Stream> stream)
@@ -136,6 +156,62 @@ ErrorOr<void> ZipOutputStream::add_member(ZipMember const& member)
         .compressed_data = member.compressed_data.data(),
     };
     return local_file_header.write(*m_stream);
+}
+
+ErrorOr<ZipOutputStream::MemberInformation> ZipOutputStream::add_member_from_stream(StringView path, Stream& stream, Optional<Core::DateTime> const& modification_time)
+{
+    auto buffer = TRY(stream.read_until_eof());
+
+    Archive::ZipMember member {};
+    member.name = TRY(String::from_utf8(path));
+
+    if (modification_time.has_value()) {
+        member.modification_date = to_packed_dos_date(modification_time->year(), modification_time->month(), modification_time->day());
+        member.modification_time = to_packed_dos_time(modification_time->hour(), modification_time->minute(), modification_time->second());
+    }
+
+    auto deflate_buffer = Compress::DeflateCompressor::compress_all(buffer);
+    auto compression_ratio = 1.f;
+    auto compressed_size = buffer.size();
+
+    if (!deflate_buffer.is_error() && deflate_buffer.value().size() < buffer.size()) {
+        member.compressed_data = deflate_buffer.value().bytes();
+        member.compression_method = Archive::ZipCompressionMethod::Deflate;
+
+        compression_ratio = static_cast<float>(deflate_buffer.value().size()) / static_cast<float>(buffer.size());
+        compressed_size = member.compressed_data.size();
+    } else {
+        member.compressed_data = buffer.bytes();
+        member.compression_method = Archive::ZipCompressionMethod::Store;
+    }
+
+    member.uncompressed_size = buffer.size();
+
+    Crypto::Checksum::CRC32 checksum { buffer.bytes() };
+    member.crc32 = checksum.digest();
+    member.is_directory = false;
+
+    TRY(add_member(member));
+
+    return MemberInformation { compression_ratio, compressed_size };
+}
+
+ErrorOr<void> ZipOutputStream::add_directory(StringView name, Optional<Core::DateTime> const& modification_time)
+{
+    Archive::ZipMember member {};
+    member.name = TRY(String::from_utf8(name));
+    member.compressed_data = {};
+    member.compression_method = Archive::ZipCompressionMethod::Store;
+    member.uncompressed_size = 0;
+    member.crc32 = 0;
+    member.is_directory = true;
+
+    if (modification_time.has_value()) {
+        member.modification_date = to_packed_dos_date(modification_time->year(), modification_time->month(), modification_time->day());
+        member.modification_time = to_packed_dos_time(modification_time->hour(), modification_time->minute(), modification_time->second());
+    }
+
+    return add_member(member);
 }
 
 ErrorOr<void> ZipOutputStream::finish()

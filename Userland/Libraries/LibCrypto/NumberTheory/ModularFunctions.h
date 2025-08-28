@@ -9,9 +9,9 @@
 #include <AK/Random.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 
-namespace Crypto {
-namespace NumberTheory {
+namespace Crypto::NumberTheory {
 
+UnsignedBigInteger Mod(UnsignedBigInteger const& a, UnsignedBigInteger const& b);
 UnsignedBigInteger ModularInverse(UnsignedBigInteger const& a_, UnsignedBigInteger const& b);
 UnsignedBigInteger ModularPower(UnsignedBigInteger const& b, UnsignedBigInteger const& e, UnsignedBigInteger const& m);
 
@@ -30,7 +30,7 @@ static IntegerType Power(IntegerType const& b, IntegerType const& e)
             exp.set_to(exp.multiplied_by(base));
 
         // ep = ep / 2;
-        ep.set_to(ep.divided_by(IntegerType { 2 }).quotient);
+        ep.set_to(ep.shift_right(1));
 
         // base = base * base
         base.set_to(base.multiplied_by(base));
@@ -46,5 +46,4 @@ UnsignedBigInteger random_number(UnsignedBigInteger const& min, UnsignedBigInteg
 bool is_probably_prime(UnsignedBigInteger const& p);
 UnsignedBigInteger random_big_prime(size_t bits);
 
-}
 }

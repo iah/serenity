@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Error.h>
 #include <AK/Format.h>
 #include <AK/Forward.h>
@@ -24,6 +24,8 @@ ErrorOr<Utf16Data> utf8_to_utf16(StringView);
 ErrorOr<Utf16Data> utf8_to_utf16(Utf8View const&);
 ErrorOr<Utf16Data> utf32_to_utf16(Utf32View const&);
 ErrorOr<void> code_point_to_utf16(Utf16Data&, u32);
+
+size_t utf16_code_unit_length_from_utf8(StringView);
 
 class Utf16View;
 
@@ -57,6 +59,8 @@ private:
 
 class Utf16View {
 public:
+    using Iterator = Utf16CodePointIterator;
+
     static bool is_high_surrogate(u16);
     static bool is_low_surrogate(u16);
     static u32 decode_surrogate_pair(u16 high_surrogate, u16 low_surrogate);
@@ -69,6 +73,14 @@ public:
     {
     }
 
+    template<size_t Size>
+    Utf16View(char16_t const (&code_units)[Size])
+        : m_code_units(
+              reinterpret_cast<u16 const*>(&code_units[0]),
+              code_units[Size - 1] == u'\0' ? Size - 1 : Size)
+    {
+    }
+
     bool operator==(Utf16View const& other) const { return m_code_units == other.m_code_units; }
 
     enum class AllowInvalidCodeUnits {
@@ -76,7 +88,7 @@ public:
         No,
     };
 
-    ErrorOr<DeprecatedString> to_deprecated_string(AllowInvalidCodeUnits = AllowInvalidCodeUnits::No) const;
+    ErrorOr<ByteString> to_byte_string(AllowInvalidCodeUnits = AllowInvalidCodeUnits::No) const;
     ErrorOr<String> to_utf8(AllowInvalidCodeUnits = AllowInvalidCodeUnits::No) const;
 
     bool is_null() const { return m_code_units.is_null(); }
@@ -100,6 +112,8 @@ public:
 
     Utf16View unicode_substring_view(size_t code_point_offset, size_t code_point_length) const;
     Utf16View unicode_substring_view(size_t code_point_offset) const { return unicode_substring_view(code_point_offset, length_in_code_points() - code_point_offset); }
+
+    bool starts_with(Utf16View const&) const;
 
     bool validate(size_t& valid_code_units) const;
     bool validate() const

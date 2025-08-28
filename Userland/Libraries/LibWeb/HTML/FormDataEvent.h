@@ -17,6 +17,7 @@ struct FormDataEventInit : public DOM::EventInit {
 
 class FormDataEvent final : public DOM::Event {
     WEB_PLATFORM_OBJECT(FormDataEvent, DOM::Event);
+    JS_DECLARE_ALLOCATOR(FormDataEvent);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<FormDataEvent>> construct_impl(JS::Realm&, FlyString const& event_name, FormDataEventInit const& event_init);
@@ -28,7 +29,7 @@ public:
 private:
     FormDataEvent(JS::Realm&, FlyString const& event_name, FormDataEventInit const& event_init);
 
-    JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    void initialize(JS::Realm&) override;
 
     virtual void visit_edges(Cell::Visitor&) override;
 

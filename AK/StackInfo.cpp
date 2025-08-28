@@ -12,9 +12,10 @@
 
 #ifdef AK_OS_SERENITY
 #    include <serenity.h>
-#elif defined(AK_OS_LINUX) or defined(AK_OS_MACOS) or defined(AK_OS_NETBSD) or defined(AK_OS_SOLARIS)
+#elif defined(AK_OS_LINUX) || defined(AK_LIBC_GLIBC) || defined(AK_OS_MACOS) || defined(AK_OS_IOS) || defined(AK_OS_NETBSD) || defined(AK_OS_SOLARIS) || defined(AK_OS_HAIKU)
 #    include <pthread.h>
-#elif defined(AK_OS_FREEBSD) or defined(AK_OS_OPENBSD)
+#    include <sys/resource.h>
+#elif defined(AK_OS_FREEBSD) || defined(AK_OS_OPENBSD)
 #    include <pthread.h>
 #    include <pthread_np.h>
 #elif defined(AK_OS_WINDOWS)
@@ -32,12 +33,12 @@ StackInfo::StackInfo()
         perror("get_stack_bounds");
         VERIFY_NOT_REACHED();
     }
-#elif defined(AK_OS_LINUX) or defined(AK_OS_FREEBSD) or defined(AK_OS_NETBSD) or defined(AK_OS_SOLARIS)
+#elif defined(AK_OS_LINUX) or defined(AK_LIBC_GLIBC) or defined(AK_OS_FREEBSD) or defined(AK_OS_NETBSD) or defined(AK_OS_SOLARIS) or defined(AK_OS_HAIKU)
     int rc;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
 
-#    ifdef AK_OS_LINUX
+#    if defined(AK_OS_LINUX) or defined(AK_LIBC_GLIBC) or defined(AK_OS_HAIKU)
     if ((rc = pthread_getattr_np(pthread_self(), &attr)) != 0) {
         fprintf(stderr, "pthread_getattr_np: %s\n", strerror(rc));
         VERIFY_NOT_REACHED();
@@ -54,7 +55,7 @@ StackInfo::StackInfo()
         VERIFY_NOT_REACHED();
     }
     pthread_attr_destroy(&attr);
-#elif defined(AK_OS_MACOS)
+#elif defined(AK_OS_MACOS) || defined(AK_OS_IOS)
     // NOTE: !! On MacOS, pthread_get_stackaddr_np gives the TOP of the stack, not the bottom!
     FlatPtr top_of_stack = (FlatPtr)pthread_get_stackaddr_np(pthread_self());
     m_size = (size_t)pthread_get_stacksize_np(pthread_self());
@@ -64,11 +65,16 @@ StackInfo::StackInfo()
     // MacOS seems inconsistent on what stack size is given for the main thread.
     // According to the Apple docs, default for main thread is 8MB, and default for
     // other threads is 512KB
-    constexpr size_t eight_megabytes = 0x800000;
-    if (pthread_main_np() == 1 && m_size < eight_megabytes) {
-        // Assume no one messed with stack size linker options for the main thread,
-        // and just set it to 8MB.
-        m_size = eight_megabytes;
+    if (pthread_main_np() == 1) {
+        // Apparently the main thread's stack size is not reported correctly on macOS
+        // but we can use getrlimit to get the correct value.
+        rlimit limit {};
+        getrlimit(RLIMIT_STACK, &limit);
+        if (limit.rlim_cur == RLIM_INFINITY) {
+            m_size = 8 * MiB;
+        } else {
+            m_size = limit.rlim_cur;
+        }
     }
     m_base = top_of_stack - m_size;
 #elif defined(AK_OS_OPENBSD)
@@ -95,6 +101,21 @@ StackInfo::StackInfo()
 #endif
 
     m_top = m_base + m_size;
+
+#if defined(AK_OS_LINUX) && !defined(AK_LIBC_GLIBC)
+    // Note: musl libc always gives the initial size of the main thread's stack
+    if (getpid() == static_cast<pid_t>(gettid())) {
+        rlimit limit;
+        getrlimit(RLIMIT_STACK, &limit);
+        rlim_t size = limit.rlim_cur;
+        if (size == RLIM_INFINITY)
+            size = 8 * 0x10000;
+        // account for a guard page
+        size -= static_cast<rlim_t>(sysconf(_SC_PAGESIZE));
+        m_size = static_cast<size_t>(size);
+        m_base = m_top - m_size;
+    }
+#endif
 }
 
 }

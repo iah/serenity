@@ -11,20 +11,20 @@ namespace Kernel {
 
 static bool s_loopback_initialized = false;
 
-LockRefPtr<LoopbackAdapter> LoopbackAdapter::try_create()
+ErrorOr<NonnullRefPtr<LoopbackAdapter>> LoopbackAdapter::try_create()
 {
-    auto interface_name = KString::try_create("loop"sv);
-    if (interface_name.is_error())
-        return {};
-    return adopt_lock_ref_if_nonnull(new LoopbackAdapter(interface_name.release_value()));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) LoopbackAdapter("loop"sv)));
 }
 
-LoopbackAdapter::LoopbackAdapter(NonnullOwnPtr<KString> interface_name)
-    : NetworkAdapter(move(interface_name))
+LoopbackAdapter::LoopbackAdapter(StringView interface_name)
+    : NetworkAdapter(interface_name)
 {
     VERIFY(!s_loopback_initialized);
     s_loopback_initialized = true;
-    set_mtu(65536);
+    // The networking subsystem currently assumes all adapters are Ethernet adapters, including the LoopbackAdapter,
+    // so all packets are pre-pended with an Ethernet Frame header. Since the MTU must not include any overhead added
+    // by the data-link (Ethernet in this case) or physical layers, we need to subtract it from the MTU.
+    set_mtu(65536 - sizeof(EthernetFrameHeader));
     set_mac_address({ 19, 85, 2, 9, 0x55, 0xaa });
 }
 
@@ -32,7 +32,7 @@ LoopbackAdapter::~LoopbackAdapter() = default;
 
 void LoopbackAdapter::send_raw(ReadonlyBytes payload)
 {
-    dbgln("LoopbackAdapter: Sending {} byte(s) to myself.", payload.size());
+    dbgln_if(LOOPBACK_DEBUG, "LoopbackAdapter: Sending {} byte(s) to myself.", payload.size());
     did_receive(payload);
 }
 

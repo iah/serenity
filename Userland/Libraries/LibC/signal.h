@@ -6,6 +6,10 @@
 
 #pragma once
 
+// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/signal.h.html
+// The <signal.h> header shall define the timespec structure as described in <time.h>.
+#include <Kernel/API/POSIX/time.h>
+
 #include <Kernel/API/POSIX/signal.h>
 #include <Kernel/API/POSIX/ucontext.h>
 #include <bits/sighow.h>
@@ -24,6 +28,7 @@ int sigfillset(sigset_t*);
 int sigaddset(sigset_t*, int sig);
 int sigaltstack(stack_t const* ss, stack_t* old_ss);
 int sigdelset(sigset_t*, int sig);
+int siginterrupt(int sig, int flag);
 int sigismember(sigset_t const*, int sig);
 int sigprocmask(int how, sigset_t const* set, sigset_t* old_set);
 int sigpending(sigset_t*);
@@ -32,8 +37,8 @@ int sigtimedwait(sigset_t const*, siginfo_t*, struct timespec const*);
 int sigwait(sigset_t const*, int*);
 int sigwaitinfo(sigset_t const*, siginfo_t*);
 int raise(int sig);
-int getsignalbyname(char const*);
-char const* getsignalname(int);
+int sig2str(int signum, char* str);
+int str2sig(char const* __restrict__ str, int* __restrict__ pnum);
 
 extern char const* sys_siglist[NSIG];
 extern char const* sys_signame[NSIG];

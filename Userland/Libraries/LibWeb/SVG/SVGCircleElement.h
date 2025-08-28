@@ -13,13 +13,14 @@ namespace Web::SVG {
 
 class SVGCircleElement final : public SVGGeometryElement {
     WEB_PLATFORM_OBJECT(SVGCircleElement, SVGGeometryElement);
+    JS_DECLARE_ALLOCATOR(SVGCircleElement);
 
 public:
     virtual ~SVGCircleElement() override = default;
 
-    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 
-    virtual Gfx::Path& get_path() override;
+    virtual Gfx::Path get_path(CSSPixelSize viewport_size) override;
 
     JS::NonnullGCPtr<SVGAnimatedLength> cx() const;
     JS::NonnullGCPtr<SVGAnimatedLength> cy() const;
@@ -28,13 +29,7 @@ public:
 private:
     SVGCircleElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-
-    Optional<Gfx::Path> m_path;
-
-    Optional<float> m_center_x;
-    Optional<float> m_center_y;
-    Optional<float> m_radius;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

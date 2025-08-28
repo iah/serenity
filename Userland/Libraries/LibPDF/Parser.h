@@ -33,7 +33,8 @@ public:
 
     void set_document(WeakPtr<Document> const&);
 
-    DeprecatedString parse_comment();
+    ByteString parse_comment();
+    void consume_whitespace() { m_reader.consume_whitespace(); }
 
     void move_by(size_t count) { m_reader.move_by(count); }
     void move_to(size_t offset) { m_reader.move_to(offset); }
@@ -49,20 +50,34 @@ public:
     PDFErrorOr<NonnullRefPtr<IndirectValue>> parse_indirect_value();
     PDFErrorOr<Value> parse_number();
     PDFErrorOr<NonnullRefPtr<NameObject>> parse_name();
-    NonnullRefPtr<StringObject> parse_string();
-    DeprecatedString parse_literal_string();
-    DeprecatedString parse_hex_string();
+    PDFErrorOr<NonnullRefPtr<StringObject>> parse_string();
+    PDFErrorOr<ByteString> parse_literal_string();
+    PDFErrorOr<ByteString> parse_hex_string();
     PDFErrorOr<NonnullRefPtr<ArrayObject>> parse_array();
+    PDFErrorOr<HashMap<DeprecatedFlyString, Value>> parse_dict_contents_until(char const*);
     PDFErrorOr<NonnullRefPtr<DictObject>> parse_dict();
+    PDFErrorOr<void> unfilter_stream(NonnullRefPtr<StreamObject>);
     PDFErrorOr<NonnullRefPtr<StreamObject>> parse_stream(NonnullRefPtr<DictObject> dict);
     PDFErrorOr<Vector<Operator>> parse_operators();
 
-protected:
+    void set_filters_enabled(bool enabled)
+    {
+        m_enable_filters = enabled;
+    }
+
+    void set_encryption_enabled(bool enabled)
+    {
+        m_enable_encryption = enabled;
+    }
+
     void push_reference(Reference const& ref) { m_current_reference_stack.append(ref); }
     void pop_reference() { m_current_reference_stack.take_last(); }
 
+protected:
+    PDFErrorOr<NonnullRefPtr<StreamObject>> parse_inline_image();
+
     Error error(
-        DeprecatedString const& message
+        ByteString const& message
 #ifdef PDF_DEBUG
         ,
         SourceLocation loc = SourceLocation::current()
@@ -72,7 +87,8 @@ protected:
     Reader m_reader;
     WeakPtr<Document> m_document;
     Vector<Reference> m_current_reference_stack;
-    bool m_disable_encryption { false };
+    bool m_enable_encryption { true };
+    bool m_enable_filters { true };
 };
 
 };

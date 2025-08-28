@@ -14,10 +14,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio recvfd sendfd thread cpath rpath wpath unix proc exec"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
-    auto window = TRY(RunWindow::try_create());
+    auto app = TRY(GUI::Application::create(arguments));
+    auto window = TRY(Run::RunWindow::try_create());
 
-    window->move_to(16, GUI::Desktop::the().rect().bottom() - GUI::Desktop::the().taskbar_height() - 16 - window->height());
+    constexpr int margin = 16;
+    window->move_to(margin, GUI::Desktop::the().rect().bottom() - 1 - GUI::Desktop::the().taskbar_height() - margin - window->height());
     window->show();
 
     return app->exec();

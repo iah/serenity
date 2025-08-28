@@ -8,8 +8,8 @@
 #pragma once
 
 #include <LibDebug/DebugInfo.h>
+#include <LibDisassembly/x86/Instruction.h>
 #include <LibGUI/Model.h>
-#include <LibX86/Instruction.h>
 
 namespace Profiler {
 
@@ -17,8 +17,8 @@ class Profile;
 class ProfileNode;
 
 struct InstructionData {
-    X86::Instruction insn;
-    DeprecatedString disassembly;
+    NonnullOwnPtr<Disassembly::Instruction> insn;
+    ByteString disassembly;
     StringView bytes;
     FlatPtr address { 0 };
     u32 event_count { 0 };
@@ -46,7 +46,7 @@ public:
 
     virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override;
     virtual int column_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override { return Column::__Count; }
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual GUI::Variant data(GUI::ModelIndex const&, GUI::ModelRole) const override;
     virtual bool is_column_sortable(int) const override { return false; }
 

@@ -1,17 +1,21 @@
 ## Name
 
-chgrp - change group ownership of file
+chgrp - change group ownership of files
 
 ## Synopsis
 
 ```**sh
-$ chgrp <gid> <path>
-$ chgrp <name> <path>
+$ chgrp <gid> <path...>
+$ chgrp <name> <path...>
 ```
 
 ## Description
 
 `chgrp` called as root or as file owner changes owning group of specified `path` to `gid` or `name`.
+
+## Options
+
+-   `-h`, `--no-dereference`: Don't follow symlinks
 
 ## Examples
 
@@ -25,5 +29,5 @@ $ chgrp <name> <path>
 
 ## See also
 
-* [`chmod`(1)](help://man/1/chmod)
-* [`chown`(1)](help://man/1/chown)
+-   [`chmod`(1)](help://man/1/chmod)
+-   [`chown`(1)](help://man/1/chown)

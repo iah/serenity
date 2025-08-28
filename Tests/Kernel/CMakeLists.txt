@@ -38,10 +38,14 @@ target_link_libraries(fuzz-syscalls PRIVATE LibSystem)
 serenity_test("crash.cpp" Kernel MAIN_ALREADY_DEFINED)
 
 set(LIBTEST_BASED_SOURCES
+    TestAnonymousMmap.cpp
     TestEFault.cpp
     TestEmptyPrivateInodeVMObject.cpp
     TestEmptySharedInodeVMObject.cpp
+    TestExt2FS.cpp
+    TestFileSystemDirentTypes.cpp
     TestInvalidUIDSet.cpp
+    TestSFNUtilities.cpp
     TestSharedInodeVMObject.cpp
     TestPosixFallocate.cpp
     TestPrivateInodeVMObject.cpp
@@ -49,15 +53,25 @@ set(LIBTEST_BASED_SOURCES
     TestKernelFilePermissions.cpp
     TestKernelPledge.cpp
     TestKernelUnveil.cpp
-    TestMemoryDeviceMmap.cpp
+    TestLoopDevice.cpp
     TestMunMap.cpp
     TestProcFS.cpp
     TestProcFSWrite.cpp
     TestSigAltStack.cpp
     TestSigHandler.cpp
     TestSigWait.cpp
+    TestTCPSocket.cpp
+    TestWXProtection.cpp
 )
 
+if (ENABLE_KERNEL_COVERAGE_COLLECTION)
+    list(APPEND LIBTEST_BASED_SOURCES TestKCOV.cpp)
+endif()
+
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    list(APPEND LIBTEST_BASED_SOURCES TestMemoryDeviceMmap.cpp)
+endif()
+
 foreach(libtest_source IN LISTS LIBTEST_BASED_SOURCES)
-    serenity_test("${libtest_source}" Kernel)
+    serenity_test("${libtest_source}" Kernel LIBS LibSystem)
 endforeach()

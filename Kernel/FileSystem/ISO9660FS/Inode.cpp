@@ -20,17 +20,17 @@ ErrorOr<size_t> ISO9660Inode::read_bytes_locked(off_t offset, size_t size, UserO
     if (static_cast<u64>(offset) >= data_length)
         return 0;
 
-    auto block = TRY(KBuffer::try_create_with_size("ISO9660FS: Inode read buffer"sv, fs().m_logical_block_size));
+    auto block = TRY(KBuffer::try_create_with_size("ISO9660FS: Inode read buffer"sv, fs().device_block_size()));
     auto block_buffer = UserOrKernelBuffer::for_kernel_buffer(block->data());
 
     size_t total_bytes = min(size, data_length - offset);
     size_t nread = 0;
-    size_t blocks_already_read = offset / fs().m_logical_block_size;
-    size_t initial_offset = offset % fs().m_logical_block_size;
+    size_t blocks_already_read = offset / fs().device_block_size();
+    size_t initial_offset = offset % fs().device_block_size();
 
     auto current_block_index = BlockBasedFileSystem::BlockIndex { extent_location + blocks_already_read };
     while (nread != total_bytes) {
-        size_t bytes_to_read = min(total_bytes - nread, fs().logical_block_size() - initial_offset);
+        size_t bytes_to_read = min(total_bytes - nread, fs().device_block_size() - initial_offset);
         auto buffer_offset = buffer.offset(nread);
         dbgln_if(ISO9660_VERY_DEBUG, "ISO9660Inode::read_bytes: Reading {} bytes into buffer offset {}/{}, logical block index: {}", bytes_to_read, nread, total_bytes, current_block_index.value());
 
@@ -70,14 +70,9 @@ ErrorOr<void> ISO9660Inode::traverse_as_directory(Function<ErrorOr<void>(FileSys
     });
 }
 
-ErrorOr<void> ISO9660Inode::replace_child(StringView, Inode&)
+ErrorOr<NonnullRefPtr<Inode>> ISO9660Inode::lookup(StringView name)
 {
-    return EROFS;
-}
-
-ErrorOr<NonnullLockRefPtr<Inode>> ISO9660Inode::lookup(StringView name)
-{
-    LockRefPtr<Inode> inode;
+    RefPtr<Inode> inode;
     Array<u8, max_file_identifier_length> file_identifier_buffer;
 
     TRY(fs().visit_directory_record(m_record, [&](ISO::DirectoryRecordHeader const* record) {
@@ -115,7 +110,7 @@ ErrorOr<size_t> ISO9660Inode::write_bytes_locked(off_t, size_t, UserOrKernelBuff
     return EROFS;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> ISO9660Inode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
+ErrorOr<NonnullRefPtr<Inode>> ISO9660Inode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
 {
     return EROFS;
 }
@@ -140,12 +135,12 @@ ErrorOr<void> ISO9660Inode::chown(UserID, GroupID)
     return EROFS;
 }
 
-ErrorOr<void> ISO9660Inode::truncate(u64)
+ErrorOr<void> ISO9660Inode::truncate_locked(u64)
 {
     return EROFS;
 }
 
-ErrorOr<void> ISO9660Inode::update_timestamps(Optional<Time>, Optional<Time>, Optional<Time>)
+ErrorOr<void> ISO9660Inode::update_timestamps(Optional<UnixDateTime>, Optional<UnixDateTime>, Optional<UnixDateTime>)
 {
     return EROFS;
 }
@@ -160,16 +155,16 @@ ISO9660Inode::ISO9660Inode(ISO9660FS& fs, ISO::DirectoryRecordHeader const& reco
 
 ISO9660Inode::~ISO9660Inode() = default;
 
-ErrorOr<NonnullLockRefPtr<ISO9660Inode>> ISO9660Inode::try_create_from_directory_record(ISO9660FS& fs, ISO::DirectoryRecordHeader const& record, StringView name)
+ErrorOr<NonnullRefPtr<ISO9660Inode>> ISO9660Inode::try_create_from_directory_record(ISO9660FS& fs, ISO::DirectoryRecordHeader const& record, StringView name)
 {
-    return adopt_nonnull_lock_ref_or_enomem(new (nothrow) ISO9660Inode(fs, record, name));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) ISO9660Inode(fs, record, name));
 }
 
 void ISO9660Inode::create_metadata()
 {
     u32 data_length = LittleEndian { m_record.data_length.little };
     bool is_directory = has_flag(m_record.file_flags, ISO::FileFlags::Directory);
-    auto recorded_at = Time::from_timespec({ parse_numerical_date_time(m_record.recording_date_and_time), 0 });
+    auto recorded_at = parse_numerical_date_time(m_record.recording_date_and_time);
 
     m_metadata = {
         .inode = identifier(),
@@ -189,16 +184,12 @@ void ISO9660Inode::create_metadata()
     };
 }
 
-time_t ISO9660Inode::parse_numerical_date_time(ISO::NumericalDateAndTime const& date)
+UnixDateTime ISO9660Inode::parse_numerical_date_time(ISO::NumericalDateAndTime const& date)
 {
     i32 year_offset = date.years_since_1900 - 70;
 
-    return (year_offset * 60 * 60 * 24 * 30 * 12)
-        + (date.month * 60 * 60 * 24 * 30)
-        + (date.day * 60 * 60 * 24)
-        + (date.hour * 60 * 60)
-        + (date.minute * 60)
-        + date.second;
+    // FIXME: This ignores timezone information in date.
+    return UnixDateTime::from_unix_time_parts(year_offset, date.month, date.day, date.hour, date.minute, date.second, 0);
 }
 
 StringView ISO9660Inode::get_normalized_filename(ISO::DirectoryRecordHeader const& record, Bytes buffer)

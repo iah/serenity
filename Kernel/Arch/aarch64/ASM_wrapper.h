@@ -9,43 +9,52 @@
 
 #pragma once
 
-#include <Kernel/Arch/aarch64/Processor.h>
+#ifndef PREKERNEL
+#    include <Kernel/Arch/Processor.h>
+#endif
+
 #include <Kernel/Arch/aarch64/Registers.h>
 
 namespace Kernel::Aarch64::Asm {
 
 inline void set_ttbr1_el1(FlatPtr ttbr1_el1)
 {
-    asm("msr ttbr1_el1, %[value]" ::[value] "r"(ttbr1_el1));
+    asm volatile(R"(
+        msr ttbr1_el1, %[value]
+        isb
+    )" ::[value] "r"(ttbr1_el1));
 }
 
 inline void set_ttbr0_el1(FlatPtr ttbr0_el1)
 {
-    asm("msr ttbr0_el1, %[value]" ::[value] "r"(ttbr0_el1));
+    asm volatile(R"(
+        msr ttbr0_el1, %[value]
+        isb
+    )" ::[value] "r"(ttbr0_el1));
 }
 
 inline FlatPtr get_ttbr0_el1()
 {
     FlatPtr ttbr0_el1;
-    asm("mrs %[value], ttbr0_el1\n"
-        : [value] "=r"(ttbr0_el1));
+    asm volatile("mrs %[value], ttbr0_el1\n"
+                 : [value] "=r"(ttbr0_el1));
     return ttbr0_el1;
 }
 
 inline void set_sp_el1(FlatPtr sp_el1)
 {
-    asm("msr sp_el1, %[value]" ::[value] "r"(sp_el1));
+    asm volatile("msr sp_el1, %[value]" ::[value] "r"(sp_el1));
 }
 
 inline void set_tpidr_el0(FlatPtr tpidr_el0)
 {
-    asm("msr tpidr_el0, %[value]" ::[value] "r"(tpidr_el0));
+    asm volatile("msr tpidr_el0, %[value]" ::[value] "r"(tpidr_el0));
 }
 
 inline void flush()
 {
-    asm("dsb ish");
-    asm("isb");
+    asm volatile("dsb ish");
+    asm volatile("isb");
 }
 
 [[noreturn]] inline void halt()
@@ -66,13 +75,14 @@ inline ExceptionLevel get_current_exception_level()
 {
     u64 current_exception_level;
 
-    asm("mrs  %[value], CurrentEL"
-        : [value] "=r"(current_exception_level));
+    asm volatile("mrs  %[value], CurrentEL"
+                 : [value] "=r"(current_exception_level));
 
     current_exception_level = (current_exception_level >> 2) & 0x3;
     return static_cast<ExceptionLevel>(current_exception_level);
 }
 
+#ifndef PREKERNEL
 inline void wait_cycles(int n)
 {
     // FIXME: Make timer-based.
@@ -80,10 +90,11 @@ inline void wait_cycles(int n)
         Processor::pause();
     }
 }
+#endif
 
 inline void load_el1_vector_table(void* vector_table)
 {
-    asm("msr VBAR_EL1, %[value]" ::[value] "r"(vector_table));
+    asm volatile("msr VBAR_EL1, %[value]" ::[value] "r"(vector_table));
 }
 
 inline void enter_el2_from_el3()
@@ -92,10 +103,10 @@ inline void enter_el2_from_el3()
     //       the processor is set up to use SP_EL2 when jumping into EL2.
     asm volatile("    mov x0, sp\n"
                  "    msr sp_el2, x0\n"
-                 "    adr x0, entered_el2\n"
+                 "    adr x0, 1f\n"
                  "    msr elr_el3, x0\n"
                  "    eret\n"
-                 "entered_el2:" ::
+                 "1:" ::
                      : "x0");
 }
 
@@ -105,10 +116,10 @@ inline void enter_el1_from_el2()
     //       the processor is set up to use SP_EL1 when jumping into EL1.
     asm volatile("    mov x0, sp\n"
                  "    msr sp_el1, x0\n"
-                 "    adr x0, entered_el1\n"
+                 "    adr x0, 1f\n"
                  "    msr elr_el2, x0\n"
                  "    eret\n"
-                 "entered_el1:" ::
+                 "1:" ::
                      : "x0");
 }
 
@@ -117,21 +128,44 @@ inline u64 read_rndrrs()
     u64 value = 0;
 
     asm volatile(
-        "retry:\n"
+        "1:\n"
         "mrs %[value], s3_3_c2_c4_1 \n" // encoded RNDRRS register
-        "b.eq retry\n"
-        : [value] "=r"(value));
+        "b.eq 1b\n"
+        : [value] "=r"(value)::"cc");
 
     return value;
 }
 
+inline FlatPtr get_cache_line_size()
+{
+    FlatPtr ctr_el0;
+    asm volatile("mrs %[value], ctr_el0"
+                 : [value] "=r"(ctr_el0));
+    auto log2_size = (ctr_el0 >> 16) & 0xF;
+    return 1 << log2_size;
 }
 
-namespace Kernel {
-
-inline bool are_interrupts_enabled()
+inline void flush_data_cache(FlatPtr start, size_t size)
 {
-    return Processor::are_interrupts_enabled();
+    auto const cache_size = get_cache_line_size();
+    for (FlatPtr addr = align_down_to(start, cache_size); addr < start + size; addr += cache_size)
+        asm volatile("dc civac, %[addr]" ::[addr] "r"(addr)
+                     : "memory");
+    asm volatile("dsb sy" ::
+                     : "memory");
+}
+
+inline FlatPtr get_mdscr_el1()
+{
+    FlatPtr mdscr_el1;
+    asm volatile("mrs %[value], mdscr_el1\n"
+                 : [value] "=r"(mdscr_el1));
+    return mdscr_el1;
+}
+
+inline void set_mdscr_el1(FlatPtr mdscr_el1)
+{
+    asm volatile("msr mdscr_el1, %[value]" ::[value] "r"(mdscr_el1));
 }
 
 }

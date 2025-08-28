@@ -9,29 +9,14 @@
 
 namespace Web {
 
-PaintContext::PaintContext(Gfx::Painter& painter, Palette const& palette, float device_pixels_per_css_pixel)
-    : m_painter(painter)
+static u64 s_next_paint_generation_id = 0;
+
+PaintContext::PaintContext(Painting::DisplayListRecorder& display_list_recorder, Palette const& palette, double device_pixels_per_css_pixel)
+    : m_display_list_recorder(display_list_recorder)
     , m_palette(palette)
     , m_device_pixels_per_css_pixel(device_pixels_per_css_pixel)
+    , m_paint_generation_id(s_next_paint_generation_id++)
 {
-}
-
-SVGContext& PaintContext::svg_context()
-{
-    // FIXME: This is a total hack to avoid crashing on content that has SVG elements embedded directly in HTML without an <svg> element.
-    if (!m_svg_context.has_value())
-        m_svg_context = SVGContext { {} };
-    return m_svg_context.value();
-}
-
-void PaintContext::set_svg_context(SVGContext context)
-{
-    m_svg_context = move(context);
-}
-
-void PaintContext::clear_svg_context()
-{
-    m_svg_context.clear();
 }
 
 CSSPixelRect PaintContext::css_viewport_rect() const
@@ -46,66 +31,74 @@ CSSPixelRect PaintContext::css_viewport_rect() const
 
 DevicePixels PaintContext::rounded_device_pixels(CSSPixels css_pixels) const
 {
-    return roundf(css_pixels.value() * m_device_pixels_per_css_pixel);
+    return round(css_pixels.to_double() * m_device_pixels_per_css_pixel);
 }
 
 DevicePixels PaintContext::enclosing_device_pixels(CSSPixels css_pixels) const
 {
-    return ceilf(css_pixels.value() * m_device_pixels_per_css_pixel);
+    return ceil(css_pixels.to_double() * m_device_pixels_per_css_pixel);
 }
 
 DevicePixels PaintContext::floored_device_pixels(CSSPixels css_pixels) const
 {
-    return floorf(css_pixels.value() * m_device_pixels_per_css_pixel);
+    return floor(css_pixels.to_double() * m_device_pixels_per_css_pixel);
 }
 
 DevicePixelPoint PaintContext::rounded_device_point(CSSPixelPoint point) const
 {
     return {
-        roundf(point.x().value() * m_device_pixels_per_css_pixel),
-        roundf(point.y().value() * m_device_pixels_per_css_pixel)
+        round(point.x().to_double() * m_device_pixels_per_css_pixel),
+        round(point.y().to_double() * m_device_pixels_per_css_pixel)
+    };
+}
+
+DevicePixelPoint PaintContext::floored_device_point(CSSPixelPoint point) const
+{
+    return {
+        floor(point.x().to_double() * m_device_pixels_per_css_pixel),
+        floor(point.y().to_double() * m_device_pixels_per_css_pixel)
     };
 }
 
 DevicePixelRect PaintContext::enclosing_device_rect(CSSPixelRect rect) const
 {
     return {
-        floorf(rect.x().value() * m_device_pixels_per_css_pixel),
-        floorf(rect.y().value() * m_device_pixels_per_css_pixel),
-        ceilf(rect.width().value() * m_device_pixels_per_css_pixel),
-        ceilf(rect.height().value() * m_device_pixels_per_css_pixel)
+        floor(rect.x().to_double() * m_device_pixels_per_css_pixel),
+        floor(rect.y().to_double() * m_device_pixels_per_css_pixel),
+        ceil(rect.width().to_double() * m_device_pixels_per_css_pixel),
+        ceil(rect.height().to_double() * m_device_pixels_per_css_pixel)
     };
 }
 
 DevicePixelRect PaintContext::rounded_device_rect(CSSPixelRect rect) const
 {
     return {
-        roundf(rect.x().value() * m_device_pixels_per_css_pixel),
-        roundf(rect.y().value() * m_device_pixels_per_css_pixel),
-        roundf(rect.width().value() * m_device_pixels_per_css_pixel),
-        roundf(rect.height().value() * m_device_pixels_per_css_pixel)
+        round(rect.x().to_double() * m_device_pixels_per_css_pixel),
+        round(rect.y().to_double() * m_device_pixels_per_css_pixel),
+        round(rect.width().to_double() * m_device_pixels_per_css_pixel),
+        round(rect.height().to_double() * m_device_pixels_per_css_pixel)
     };
 }
 
 DevicePixelSize PaintContext::enclosing_device_size(CSSPixelSize size) const
 {
     return {
-        ceilf(size.width().value() * m_device_pixels_per_css_pixel),
-        ceilf(size.height().value() * m_device_pixels_per_css_pixel)
+        ceil(size.width().to_double() * m_device_pixels_per_css_pixel),
+        ceil(size.height().to_double() * m_device_pixels_per_css_pixel)
     };
 }
 
 DevicePixelSize PaintContext::rounded_device_size(CSSPixelSize size) const
 {
     return {
-        roundf(size.width().value() * m_device_pixels_per_css_pixel),
-        roundf(size.height().value() * m_device_pixels_per_css_pixel)
+        round(size.width().to_double() * m_device_pixels_per_css_pixel),
+        round(size.height().to_double() * m_device_pixels_per_css_pixel)
     };
 }
 
 CSSPixels PaintContext::scale_to_css_pixels(DevicePixels device_pixels) const
 {
-    return device_pixels.value() / m_device_pixels_per_css_pixel;
+    return CSSPixels::nearest_value_for(device_pixels.value() / m_device_pixels_per_css_pixel);
 }
 
 CSSPixelPoint PaintContext::scale_to_css_point(DevicePixelPoint point) const
@@ -113,6 +106,22 @@ CSSPixelPoint PaintContext::scale_to_css_point(DevicePixelPoint point) const
     return {
         scale_to_css_pixels(point.x()),
         scale_to_css_pixels(point.y())
+    };
+}
+
+CSSPixelSize PaintContext::scale_to_css_size(DevicePixelSize size) const
+{
+    return {
+        scale_to_css_pixels(size.width()),
+        scale_to_css_pixels(size.height())
+    };
+}
+
+CSSPixelRect PaintContext::scale_to_css_rect(DevicePixelRect rect) const
+{
+    return {
+        scale_to_css_point(rect.location()),
+        scale_to_css_size(rect.size())
     };
 }
 

@@ -12,9 +12,10 @@ namespace JS::Intl {
 
 class DurationFormatConstructor final : public NativeFunction {
     JS_OBJECT(DurationFormatConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DurationFormatConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DurationFormatConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

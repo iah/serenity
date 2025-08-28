@@ -19,29 +19,29 @@ ContentFilter::ContentFilter() = default;
 
 ContentFilter::~ContentFilter() = default;
 
-bool ContentFilter::is_filtered(const AK::URL& url) const
+bool ContentFilter::is_filtered(const URL::URL& url) const
 {
     if (url.scheme() == "data")
         return false;
 
-    auto url_string = url.to_deprecated_string();
+    auto url_string = url.to_byte_string();
 
     for (auto& pattern : m_patterns) {
-        if (url_string.matches(pattern.text, CaseSensitivity::CaseSensitive))
+        if (url_string.find(pattern.text).has_value())
             return true;
     }
     return false;
 }
 
-void ContentFilter::add_pattern(DeprecatedString const& pattern)
+ErrorOr<void> ContentFilter::set_patterns(ReadonlySpan<String> patterns)
 {
-    StringBuilder builder;
-    if (!pattern.starts_with('*'))
-        builder.append('*');
-    builder.append(pattern);
-    if (!pattern.ends_with('*'))
-        builder.append('*');
-    m_patterns.empend(builder.to_deprecated_string());
+    m_patterns.clear_with_capacity();
+
+    for (auto const& pattern : patterns) {
+        TRY(m_patterns.try_empend(pattern));
+    }
+
+    return {};
 }
 
 }

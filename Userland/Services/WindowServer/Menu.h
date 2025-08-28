@@ -6,9 +6,9 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/WeakPtr.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Forward.h>
@@ -23,7 +23,7 @@ class ConnectionFromClient;
 class Menubar;
 class Window;
 
-class Menu final : public Core::Object {
+class Menu final : public Core::EventReceiver {
     C_OBJECT(Menu);
 
 public:
@@ -58,7 +58,11 @@ public:
     void update_alt_shortcuts_for_items();
     void add_item(NonnullOwnPtr<MenuItem>);
 
-    DeprecatedString const& name() const { return m_name; }
+    String const& name() const { return m_name; }
+    void set_name(String);
+
+    int minimum_width() const { return m_minimum_width; }
+    void set_minimum_width(int);
 
     template<typename Callback>
     IterationDecision for_each_item(Callback callback)
@@ -108,7 +112,7 @@ public:
     void redraw(MenuItem const&);
 
     MenuItem* hovered_item() const;
-    int hovered_item_index() const { return m_hovered_item_index; };
+    int hovered_item_index() const { return m_hovered_item_index; }
 
     void set_hovered_index(int index, bool make_input = false);
 
@@ -137,7 +141,7 @@ public:
     Vector<size_t> const* items_with_alt_shortcut(u32 alt_shortcut) const;
 
 private:
-    Menu(ConnectionFromClient*, int menu_id, DeprecatedString name);
+    Menu(ConnectionFromClient*, int menu_id, String name, int minimum_width = 0);
 
     virtual void event(Core::Event&) override;
 
@@ -152,9 +156,12 @@ private:
 
     void start_activation_animation(MenuItem&);
 
+    bool opens_to_the_left() const { return m_opens_to_the_left; }
+
     ConnectionFromClient* m_client { nullptr };
     int m_menu_id { 0 };
-    DeprecatedString m_name;
+    String m_name;
+    int m_minimum_width { 0 };
     u32 m_alt_shortcut_character { 0 };
     Gfx::IntRect m_rect_in_window_menubar;
     Gfx::IntPoint m_unadjusted_position;
@@ -166,6 +173,7 @@ private:
     Gfx::IntPoint m_last_position_in_hover;
     int m_theme_index_at_last_paint { -1 };
     int m_hovered_item_index { -1 };
+    bool m_opens_to_the_left { false };
 
     bool m_scrollable { false };
     int m_scroll_offset { 0 };

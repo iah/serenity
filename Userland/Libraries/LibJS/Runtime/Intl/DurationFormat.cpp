@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Intl/DurationFormat.h>
@@ -15,9 +16,11 @@
 #include <LibJS/Runtime/Intl/PluralRulesConstructor.h>
 #include <LibJS/Runtime/Intl/RelativeTimeFormat.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS::Intl {
+
+JS_DEFINE_ALLOCATOR(DurationFormat);
 
 // 1 DurationFormat Objects, https://tc39.es/proposal-intl-duration-format/#durationformat-objects
 DurationFormat::DurationFormat(Object& prototype)
@@ -272,7 +275,7 @@ bool is_valid_duration_record(Temporal::DurationRecord const& record)
 ThrowCompletionOr<DurationUnitOptions> get_duration_unit_options(VM& vm, String const& unit, Object const& options, StringView base_style, ReadonlySpan<StringView> styles_list, StringView digital_base, StringView previous_style)
 {
     // 1. Let style be ? GetOption(options, unit, string, stylesList, undefined).
-    auto style_value = TRY(get_option(vm, options, unit.to_deprecated_string(), OptionType::String, styles_list, Empty {}));
+    auto style_value = TRY(get_option(vm, options, unit.to_byte_string(), OptionType::String, styles_list, Empty {}));
 
     // 2. Let displayDefault be "always".
     auto display_default = "always"sv;
@@ -309,14 +312,14 @@ ThrowCompletionOr<DurationUnitOptions> get_duration_unit_options(VM& vm, String 
             }
         }
     } else {
-        style = TRY(style_value.as_string().utf8_string_view());
+        style = style_value.as_string().utf8_string_view();
     }
 
     // 4. Let displayField be the string-concatenation of unit and "Display".
-    auto display_field = TRY_OR_THROW_OOM(vm, String::formatted("{}Display", unit));
+    auto display_field = MUST(String::formatted("{}Display", unit));
 
     // 5. Let display be ? GetOption(options, displayField, string, « "auto", "always" », displayDefault).
-    auto display = TRY(get_option(vm, options, display_field.to_deprecated_string(), OptionType::String, { "auto"sv, "always"sv }, display_default));
+    auto display = TRY(get_option(vm, options, display_field.to_byte_string(), OptionType::String, { "auto"sv, "always"sv }, display_default));
 
     // 6. If prevStyle is "numeric" or "2-digit", then
     if (previous_style == "numeric"sv || previous_style == "2-digit"sv) {
@@ -333,11 +336,11 @@ ThrowCompletionOr<DurationUnitOptions> get_duration_unit_options(VM& vm, String 
     }
 
     // 7. Return the Record { [[Style]]: style, [[Display]]: display }.
-    return DurationUnitOptions { .style = TRY_OR_THROW_OOM(vm, String::from_utf8(style)), .display = TRY(display.as_string().utf8_string()) };
+    return DurationUnitOptions { .style = MUST(String::from_utf8(style)), .display = display.as_string().utf8_string() };
 }
 
 // 1.1.7 PartitionDurationFormatPattern ( durationFormat, duration ), https://tc39.es/proposal-intl-duration-format/#sec-partitiondurationformatpattern
-ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM& vm, DurationFormat const& duration_format, Temporal::DurationRecord const& duration)
+Vector<PatternPartition> partition_duration_format_pattern(VM& vm, DurationFormat const& duration_format, Temporal::DurationRecord const& duration)
 {
     auto& realm = *vm.current_realm();
 
@@ -438,7 +441,7 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
             // i. If style is "2-digit" or "numeric", then
             if (style == DurationFormat::ValueStyle::TwoDigit || style == DurationFormat::ValueStyle::Numeric) {
                 // 1. Let nf be ! Construct(%NumberFormat%, « durationFormat.[[Locale]], nfOpts »).
-                auto* number_format = static_cast<NumberFormat*>(MUST(construct(vm, *realm.intrinsics().intl_number_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), number_format_options)).ptr());
+                auto* number_format = static_cast<NumberFormat*>(MUST(construct(vm, realm.intrinsics().intl_number_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), number_format_options)).ptr());
 
                 // 2. Let dataLocale be durationFormat.[[DataLocale]].
                 auto const& data_locale = duration_format.data_locale();
@@ -446,10 +449,10 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
                 // 3. Let dataLocaleData be %DurationFormat%.[[LocaleData]].[[<dataLocale>]].
 
                 // 4. Let num be ! FormatNumeric(nf, 𝔽(value)).
-                auto number = MUST_OR_THROW_OOM(format_numeric(vm, *number_format, MathematicalValue(value)));
+                auto number = format_numeric(vm, *number_format, MathematicalValue(value));
 
                 // 5. Append the new Record { [[Type]]: unit, [[Value]]: num} to the end of result.
-                TRY_OR_THROW_OOM(vm, result.try_append({ unit, move(number) }));
+                result.append({ unit, move(number) });
 
                 // 6. If unit is "hours" or "minutes", then
                 if (unit.is_one_of("hours"sv, "minutes"sv)) {
@@ -482,42 +485,42 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
                     // c. If nextValue is not 0 or nextDisplay is not "auto", then
                     if (next_value != 0.0 || next_display != DurationFormat::Display::Auto) {
                         // i. Let separator be dataLocaleData.[[formats]].[[digital]].[[separator]].
-                        auto separator = TRY_OR_THROW_OOM(vm, ::Locale::get_number_system_symbol(data_locale, duration_format.numbering_system(), ::Locale::NumericSymbol::TimeSeparator)).value_or(":"sv);
+                        auto separator = ::Locale::get_number_system_symbol(data_locale, duration_format.numbering_system(), ::Locale::NumericSymbol::TimeSeparator).value_or(":"sv);
 
                         // ii. Append the new Record { [[Type]]: "literal", [[Value]]: separator} to the end of result.
-                        TRY_OR_THROW_OOM(vm, result.try_append({ "literal"sv, TRY_OR_THROW_OOM(vm, String::from_utf8(separator)) }));
+                        result.append({ "literal"sv, MUST(String::from_utf8(separator)) });
                     }
                 }
             }
             // ii. Else,
             else {
                 // 1. Perform ! CreateDataPropertyOrThrow(nfOpts, "style", "unit").
-                MUST(number_format_options->create_data_property_or_throw(vm.names.style, MUST_OR_THROW_OOM(PrimitiveString::create(vm, "unit"sv))));
+                MUST(number_format_options->create_data_property_or_throw(vm.names.style, PrimitiveString::create(vm, "unit"_string)));
 
                 // 2. Perform ! CreateDataPropertyOrThrow(nfOpts, "unit", numberFormatUnit).
-                MUST(number_format_options->create_data_property_or_throw(vm.names.unit, MUST_OR_THROW_OOM(PrimitiveString::create(vm, number_format_unit))));
+                MUST(number_format_options->create_data_property_or_throw(vm.names.unit, PrimitiveString::create(vm, number_format_unit)));
 
                 // 3. Perform ! CreateDataPropertyOrThrow(nfOpts, "unitDisplay", style).
                 auto unicode_style = ::Locale::style_to_string(static_cast<::Locale::Style>(style));
-                MUST(number_format_options->create_data_property_or_throw(vm.names.unitDisplay, MUST_OR_THROW_OOM(PrimitiveString::create(vm, unicode_style))));
+                MUST(number_format_options->create_data_property_or_throw(vm.names.unitDisplay, PrimitiveString::create(vm, unicode_style)));
 
                 // 4. Let nf be ! Construct(%NumberFormat%, « durationFormat.[[Locale]], nfOpts »).
-                auto* number_format = static_cast<NumberFormat*>(MUST(construct(vm, *realm.intrinsics().intl_number_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), number_format_options)).ptr());
+                auto* number_format = static_cast<NumberFormat*>(MUST(construct(vm, realm.intrinsics().intl_number_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), number_format_options)).ptr());
 
                 // 5. Let parts be ! PartitionNumberPattern(nf, 𝔽(value)).
-                auto parts = MUST_OR_THROW_OOM(partition_number_pattern(vm, *number_format, MathematicalValue(value)));
+                auto parts = partition_number_pattern(vm, *number_format, MathematicalValue(value));
 
                 // 6. Let concat be an empty String.
-                ThrowableStringBuilder concat(vm);
+                StringBuilder concat;
 
                 // 7. For each Record { [[Type]], [[Value]], [[Unit]] } part in parts, do
                 for (auto const& part : parts) {
                     // a. Set concat to the string-concatenation of concat and part.[[Value]].
-                    TRY(concat.append(part.value));
+                    concat.append(part.value);
                 }
 
                 // 8. Append the new Record { [[Type]]: unit, [[Value]]: concat } to the end of result.
-                TRY_OR_THROW_OOM(vm, result.try_append({ unit, MUST_OR_THROW_OOM(concat.to_string()) }));
+                result.append({ unit, MUST(concat.to_string()) });
             }
         }
     }
@@ -526,7 +529,7 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
     auto list_format_options = Object::create(realm, nullptr);
 
     // 5. Perform ! CreateDataPropertyOrThrow(lfOpts, "type", "unit").
-    MUST(list_format_options->create_data_property_or_throw(vm.names.type, MUST_OR_THROW_OOM(PrimitiveString::create(vm, "unit"sv))));
+    MUST(list_format_options->create_data_property_or_throw(vm.names.type, PrimitiveString::create(vm, "unit"_string)));
 
     // 6. Let listStyle be durationFormat.[[Style]].
     auto list_style = duration_format.style();
@@ -540,10 +543,10 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
     auto unicode_list_style = ::Locale::style_to_string(static_cast<::Locale::Style>(list_style));
 
     // 8. Perform ! CreateDataPropertyOrThrow(lfOpts, "style", listStyle).
-    MUST(list_format_options->create_data_property_or_throw(vm.names.style, MUST_OR_THROW_OOM(PrimitiveString::create(vm, unicode_list_style))));
+    MUST(list_format_options->create_data_property_or_throw(vm.names.style, PrimitiveString::create(vm, unicode_list_style)));
 
     // 9. Let lf be ! Construct(%ListFormat%, « durationFormat.[[Locale]], lfOpts »).
-    auto* list_format = static_cast<ListFormat*>(MUST(construct(vm, *realm.intrinsics().intl_list_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), list_format_options)).ptr());
+    auto* list_format = static_cast<ListFormat*>(MUST(construct(vm, realm.intrinsics().intl_list_format_constructor(), PrimitiveString::create(vm, duration_format.locale()), list_format_options)).ptr());
 
     // FIXME: CreatePartsFromList expects a list of strings and creates a list of Pattern Partition records, but we already created a list of Pattern Partition records
     //  so we try to hack something together from it that looks mostly right
@@ -552,20 +555,20 @@ ThrowCompletionOr<Vector<PatternPartition>> partition_duration_format_pattern(VM
     for (size_t i = 0; i < result.size(); ++i) {
         auto const& part = result[i];
         if (part.type == "literal") {
-            string_result.last() = TRY_OR_THROW_OOM(vm, String::formatted("{}{}", string_result.last(), part.value));
+            string_result.last() = MUST(String::formatted("{}{}", string_result.last(), part.value));
             merge = true;
             continue;
         }
         if (merge) {
-            string_result.last() = TRY_OR_THROW_OOM(vm, String::formatted("{}{}", string_result.last(), part.value));
+            string_result.last() = MUST(String::formatted("{}{}", string_result.last(), part.value));
             merge = false;
             continue;
         }
-        TRY_OR_THROW_OOM(vm, string_result.try_append(part.value));
+        string_result.append(part.value);
     }
 
     // 10. Set result to ! CreatePartsFromList(lf, result).
-    auto final_result = MUST_OR_THROW_OOM(create_parts_from_list(vm, *list_format, string_result));
+    auto final_result = create_parts_from_list(*list_format, string_result);
 
     // 11. Return result.
     return final_result;

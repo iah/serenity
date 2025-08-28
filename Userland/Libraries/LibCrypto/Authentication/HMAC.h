@@ -13,14 +13,13 @@
 #include <AK/Vector.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
 constexpr static auto IPAD = 0x36;
 constexpr static auto OPAD = 0x5c;
 
-namespace Crypto {
-namespace Authentication {
+namespace Crypto::Authentication {
 
 template<typename HashT>
 class HMAC {
@@ -74,12 +73,12 @@ public:
     }
 
 #ifndef KERNEL
-    DeprecatedString class_name() const
+    ByteString class_name() const
     {
         StringBuilder builder;
         builder.append("HMAC-"sv);
         builder.append(m_inner_hasher.class_name());
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
 #endif
 
@@ -99,7 +98,7 @@ private:
             auto digest = m_inner_hasher.digest();
             // FIXME: should we check if the hash function creates more data than its block size?
             key_buffer.overwrite(0, digest.immutable_data(), m_inner_hasher.digest_size());
-        } else {
+        } else if (length > 0) {
             key_buffer.overwrite(0, key, length);
         }
 
@@ -120,5 +119,4 @@ private:
     u8 m_key_data[2048];
 };
 
-}
 }

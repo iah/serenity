@@ -43,7 +43,7 @@ static void child_process(Core::Account const& account)
     exit(127);
 }
 
-static void login(Core::Account const& account, LoginWindow& window)
+static void login(Core::Account const& account, LoginServer::LoginWindow& window)
 {
     pid_t pid = fork();
     if (pid == 0)
@@ -61,7 +61,7 @@ static void login(Core::Account const& account, LoginWindow& window)
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio recvfd sendfd cpath chown rpath exec proc id"));
     TRY(Core::System::unveil("/home", "r"));
@@ -73,7 +73,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/res", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto window = LoginWindow::construct();
+    auto window = LoginServer::LoginWindow::construct();
     window->on_submit = [&]() {
         auto username = window->username();
         auto password = Core::SecretString::take_ownership(window->password().to_byte_buffer());

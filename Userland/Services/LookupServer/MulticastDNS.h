@@ -24,7 +24,7 @@ public:
     ErrorOr<Vector<Answer>> lookup(Name const&, RecordType record_type);
 
 private:
-    explicit MulticastDNS(Object* parent = nullptr);
+    explicit MulticastDNS(Core::EventReceiver* parent = nullptr);
 
     void announce();
     ErrorOr<size_t> emit_packet(Packet const&, sockaddr_in const* destination = nullptr);
@@ -37,7 +37,7 @@ private:
     Name m_hostname;
 
     static constexpr sockaddr_in mdns_addr {
-#ifdef AK_OS_BSD_GENERIC
+#if defined(AK_OS_BSD_GENERIC) || defined(AK_OS_GNU_HURD)
         .sin_len = sizeof(struct sockaddr_in),
 #endif
         .sin_family = AF_INET,

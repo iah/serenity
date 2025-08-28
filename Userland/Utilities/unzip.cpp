@@ -11,17 +11,19 @@
 #include <LibArchive/Zip.h>
 #include <LibCompress/Deflate.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/DateTime.h>
 #include <LibCore/Directory.h>
+#include <LibCore/File.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/System.h>
 #include <LibCrypto/Checksum/CRC32.h>
+#include <LibFileSystem/FileSystem.h>
 #include <sys/stat.h>
 
 static ErrorOr<void> adjust_modification_time(Archive::ZipMember const& zip_member)
 {
     auto time = time_from_packed_dos(zip_member.modification_date, zip_member.modification_time);
-    auto seconds = static_cast<time_t>(time.to_seconds());
+    auto seconds = static_cast<time_t>(time.seconds_since_epoch());
     struct utimbuf buf {
         .actime = seconds,
         .modtime = seconds
@@ -41,12 +43,13 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
             outln(" extracting: {}", zip_member.name);
         return true;
     }
-    MUST(Core::Directory::create(LexicalPath(zip_member.name.to_deprecated_string()).parent(), Core::Directory::CreateDirectories::Yes));
-    auto new_file = Core::DeprecatedFile::construct(zip_member.name.to_deprecated_string());
-    if (!new_file->open(Core::OpenMode::WriteOnly)) {
-        warnln("Can't write file {}: {}", zip_member.name, new_file->error_string());
+    MUST(Core::Directory::create(LexicalPath(zip_member.name.to_byte_string()).parent(), Core::Directory::CreateDirectories::Yes));
+    auto new_file_or_error = Core::File::open(zip_member.name.to_byte_string(), Core::File::OpenMode::Write);
+    if (new_file_or_error.is_error()) {
+        warnln("Can't write file {}: {}", zip_member.name, new_file_or_error.release_error());
         return false;
     }
+    auto new_file = new_file_or_error.release_value();
 
     if (!quiet)
         outln(" extracting: {}", zip_member.name);
@@ -54,8 +57,8 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
     Crypto::Checksum::CRC32 checksum;
     switch (zip_member.compression_method) {
     case Archive::ZipCompressionMethod::Store: {
-        if (!new_file->write(zip_member.compressed_data.data(), zip_member.compressed_data.size())) {
-            warnln("Can't write file contents in {}: {}", zip_member.name, new_file->error_string());
+        if (auto maybe_error = new_file->write_until_depleted(zip_member.compressed_data); maybe_error.is_error()) {
+            warnln("Can't write file contents in {}: {}", zip_member.name, maybe_error.release_error());
             return false;
         }
         checksum.update({ zip_member.compressed_data.data(), zip_member.compressed_data.size() });
@@ -71,11 +74,11 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
             warnln("Failed decompressing file {}", zip_member.name);
             return false;
         }
-        if (!new_file->write(decompressed_data.value().data(), decompressed_data.value().size())) {
-            warnln("Can't write file contents in {}: {}", zip_member.name, new_file->error_string());
+        if (auto maybe_error = new_file->write_until_depleted(decompressed_data.value()); maybe_error.is_error()) {
+            warnln("Can't write file contents in {}: {}", zip_member.name, maybe_error.release_error());
             return false;
         }
-        checksum.update({ decompressed_data.value().data(), decompressed_data.value().size() });
+        checksum.update(decompressed_data.value());
         break;
     }
     default:
@@ -87,14 +90,11 @@ static bool unpack_zip_member(Archive::ZipMember zip_member, bool quiet)
         return false;
     }
 
-    if (!new_file->close()) {
-        warnln("Can't close file {}: {}", zip_member.name, new_file->error_string());
-        return false;
-    }
+    new_file->close();
 
     if (checksum.digest() != zip_member.crc32) {
         warnln("Failed decompressing file {}: CRC32 mismatch", zip_member.name);
-        MUST(Core::DeprecatedFile::remove(zip_member.name, Core::DeprecatedFile::RecursionMode::Disallowed));
+        MUST(FileSystem::remove(zip_member.name, FileSystem::RecursionMode::Disallowed));
         return false;
     }
 
@@ -105,10 +105,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     StringView zip_file_path;
     bool quiet { false };
+    bool list_files { false };
     StringView output_directory_path;
     Vector<StringView> file_filters;
 
     Core::ArgsParser args_parser;
+    args_parser.add_option(list_files, "Only list files in the archive", "list", 'l');
     args_parser.add_option(output_directory_path, "Directory to receive the archive content", "output-directory", 'd', "path");
     args_parser.add_option(quiet, "Be less verbose", "quiet", 'q');
     args_parser.add_positional_argument(zip_file_path, "File to unzip", "path", Core::ArgsParser::Required::Yes);
@@ -120,7 +122,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // FIXME: Map file chunk-by-chunk once we have mmap() with offset.
     //        This will require mapping some parts then unmapping them repeatedly,
     //        but it would be significantly faster and less syscall heavy than seek()/read() at every read.
-    RefPtr<Core::MappedFile> mapped_file;
+    OwnPtr<Core::MappedFile> mapped_file;
     ReadonlyBytes input_bytes;
     if (st.st_size > 0) {
         mapped_file = TRY(Core::MappedFile::map(zip_file_path));
@@ -139,6 +141,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (!output_directory_path.is_null()) {
         TRY(Core::Directory::create(output_directory_path, Core::Directory::CreateDirectories::Yes));
         TRY(Core::System::chdir(output_directory_path));
+    }
+
+    if (list_files) {
+        outln("  Length     Date      Time     Name");
+        outln("--------- ---------- --------   ----");
+        TRY(zip_file->for_each_member([&](auto zip_member) -> ErrorOr<IterationDecision> {
+            auto time = time_from_packed_dos(zip_member.modification_date, zip_member.modification_time);
+            auto time_str = TRY(Core::DateTime::from_timestamp(time.seconds_since_epoch()).to_string());
+
+            outln("{:>9} {}   {}", zip_member.uncompressed_size, time_str, zip_member.name);
+
+            return IterationDecision::Continue;
+        }));
+        auto statistics = TRY(zip_file->calculate_statistics());
+        outln("---------                       ----");
+        outln("{:>9}                       {} files", statistics.total_uncompressed_bytes(), statistics.member_count());
+        return 0;
     }
 
     Vector<Archive::ZipMember> zip_directories;

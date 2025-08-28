@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/Font/PathRasterizer.h>
+#include <LibGfx/AntiAliasingPainter.h>
+#include <LibGfx/Painter.h>
 #include <LibPDF/Fonts/Type1FontProgram.h>
 
 namespace PDF {
@@ -33,7 +34,8 @@ enum Command {
     RLineCurve,
     VVCurveTo,
     HHCurveTo,
-    VHCurveTo = 30,
+    CallGsubr = 29, // Type 2 only
+    VHCurveTo,
     HVCurveTo
 };
 
@@ -54,15 +56,19 @@ enum ExtendedCommand {
 
 RefPtr<Gfx::Bitmap> Type1FontProgram::rasterize_glyph(DeprecatedFlyString const& char_name, float width, Gfx::GlyphSubpixelOffset subpixel_offset)
 {
+    constexpr auto base_color = Color::White;
     auto path = build_char(char_name, width, subpixel_offset);
     auto bounding_box = path.bounding_box().size();
 
     u32 w = (u32)ceilf(bounding_box.width()) + 2;
     u32 h = (u32)ceilf(bounding_box.height()) + 2;
 
-    Gfx::PathRasterizer rasterizer(Gfx::IntSize(w, h));
-    rasterizer.draw_path(path);
-    return rasterizer.accumulate();
+    auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, { w, h }).release_value_but_fixme_should_propagate_errors();
+    Gfx::Painter painter { bitmap };
+    Gfx::AntiAliasingPainter aa_painter { painter };
+
+    aa_painter.fill_path(path, base_color);
+    return bitmap;
 }
 
 Gfx::Path Type1FontProgram::build_char(DeprecatedFlyString const& char_name, float width, Gfx::GlyphSubpixelOffset subpixel_offset)
@@ -101,7 +107,7 @@ Gfx::FloatPoint Type1FontProgram::glyph_translation(DeprecatedFlyString const& c
 
 Gfx::AffineTransform Type1FontProgram::glyph_transform_to_device_space(Glyph const& glyph, float width) const
 {
-    auto scale = width / (m_font_matrix.a() * glyph.width() + m_font_matrix.e());
+    auto scale = width == 0.0f ? 0.0f : (width / (m_font_matrix.a() * glyph.width() + m_font_matrix.e()));
     auto transform = m_font_matrix;
 
     // Convert character space to device space.
@@ -121,18 +127,23 @@ void Type1FontProgram::consolidate_glyphs()
         auto glyph_path = maybe_base_glyph.value().path();
         auto maybe_accent_glyph = m_glyph_map.get(glyph.accented_character().accent_character);
         if (maybe_accent_glyph.has_value()) {
+            auto origin = glyph.accented_character().accent_origin;
             auto path = maybe_accent_glyph.value().path();
-            glyph_path.append_path(move(path));
+            Gfx::AffineTransform translation { 1, 0, 0, 1, origin.x(), origin.y() };
+            glyph_path.append_path(path.copy_transformed(translation));
         }
         glyph.path() = glyph_path;
     }
 }
 
-PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes const& data, Vector<ByteBuffer> const& subroutines, GlyphParserState& state, bool is_type2)
+ErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes const& data, Vector<ByteBuffer> const& local_subroutines, Vector<ByteBuffer> const& global_subroutines, GlyphParserState& state, bool is_type2)
 {
-    auto push = [&](float value) -> PDFErrorOr<void> {
+    // Type 1 Font Format: https://adobe-type-tools.github.io/font-tech-notes/pdfs/T1_SPEC.pdf (Chapter 6: CharStrings dictionary)
+    // Type 2 Charstring Format: https://adobe-type-tools.github.io/font-tech-notes/pdfs/5177.Type2.pdf
+
+    auto push = [&](float value) -> ErrorOr<void> {
         if (state.sp >= state.stack.size())
-            return error("Operand stack overflow");
+            return AK::Error::from_string_literal("Operand stack overflow");
         state.stack[state.sp++] = value;
         return {};
     };
@@ -176,6 +187,18 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
             point + Gfx::FloatPoint(dx1 + dx2, dy1 + dy2),
             point + Gfx::FloatPoint(dx1 + dx2 + dx3, dy1 + dy2 + dy3));
         point.translate_by(dx1 + dx2 + dx3, dy1 + dy2 + dy3);
+    };
+
+    auto flex = [&](float dx1, float dy1, float dx2, float dy2, float dx3, float dy3,
+                    float dx4, float dy4, float dx5, float dy5, float dx6, float dy6,
+                    float flex_depth) {
+        // FIXME: The beziers are supposed to collapse to a line if the displacement is less
+        //        than flex_depth. For now, we rely on antialiasing, but if we want to implement
+        //        this, we'd have to add a Flex segment type to path and then look at flex_depth
+        //        at rasterization time.
+        (void)flex_depth;
+        cube_bezier_curve_to(dx1, dy1, dx2, dy2, dx3, dy3);
+        cube_bezier_curve_to(dx4, dy4, dx5, dy5, dx6, dy6);
     };
 
     // Shared operator logic
@@ -223,38 +246,40 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
     };
 
     // Potential font width parsing for some commands (type2 only)
-    bool is_first_command = true;
     enum EvenOrOdd {
         Even,
         Odd
     };
     auto maybe_read_width = [&](EvenOrOdd required_argument_count) {
-        if (!is_type2 || !is_first_command || state.sp % 2 != required_argument_count)
+        if (!is_type2 || !state.is_first_command)
             return;
-        state.glyph.set_width(pop_front());
+        state.is_first_command = false;
+        if (state.sp % 2 == required_argument_count)
+            state.glyph.set_width(pop_front());
     };
 
     // Parse the stream of parameters and commands that make up a glyph outline.
     for (size_t i = 0; i < data.size(); ++i) {
-        auto require = [&](unsigned num) -> PDFErrorOr<void> {
+        auto require = [&](unsigned num) -> ErrorOr<void> {
             if (i + num >= data.size())
-                return error("Malformed glyph outline definition");
+                return AK::Error::from_string_literal("Malformed glyph outline definition");
             return {};
         };
 
         int v = data[i];
         if (v == 255) {
             TRY(require(4));
-            int a = data[++i];
-            int b = data[++i];
-            int c = data[++i];
-            int d = data[++i];
+            // Both Type 1 and Type 2 spec:
+            // "If the charstring byte contains the value 255, the next four bytes indicate a two’s complement signed number.
+            //  The first of these four bytes contains the highest order bits [...]"
+            i32 a = static_cast<i32>((data[i + 1] << 24) | (data[i + 2] << 16) | (data[i + 3] << 8) | data[i + 4]);
+            i += 4;
             if (is_type2) {
-                auto integer = float((a << 8) | b);
-                auto fraction = float((c << 8) | d) / AK::NumericLimits<u16>::max();
-                TRY(push(integer + fraction));
-            } else
-                TRY(push((a << 24) + (b << 16) + (c << 8) + d));
+                // Just in the Type 2 spec: "This number is interpreted as a Fixed; that is, a signed number with 16 bits of fraction."
+                TRY(push(a / (float)0x1'0000));
+            } else {
+                TRY(push(a));
+            }
         } else if (v >= 251) {
             TRY(require(1));
             auto w = data[++i];
@@ -265,6 +290,17 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
             TRY(push(((v - 247) * 256) + w + 108));
         } else if (v >= 32) {
             TRY(push(v - 139));
+        } else if (v == 28) {
+            if (is_type2) {
+                // Type 2 spec: "In addition to the 32 to 255 range of values, a ShortInt value is specified by using the operator (28)
+                // followed by two bytes which represent numbers between –32768 and +32767. The most significant byte follows the (28)."
+                TRY(require(2));
+                i16 a = static_cast<i16>((data[i + 1] << 8) | data[i + 2]);
+                i += 2;
+                TRY(push(a));
+            } else {
+                return AK::Error::from_string_literal("CFF Subr command 28 only valid in type2 data");
+            }
         } else {
             // Not a parameter but a command byte.
             switch (v) {
@@ -351,42 +387,36 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
                 state.sp = 0;
                 break;
 
+            case CallGsubr:
+                if (!is_type2)
+                    return AK::Error::from_string_literal("CFF Gsubr only valid in type2 data");
+                [[fallthrough]];
             case CallSubr: {
+                Vector<ByteBuffer> const& subroutines = v == CallSubr ? local_subroutines : global_subroutines;
                 auto subr_number = pop();
-                if (static_cast<size_t>(subr_number) >= subroutines.size())
-                    return error("Subroutine index out of range");
 
-                // Subroutines 0-2 handle the flex feature.
-                if (subr_number == 0) {
-                    if (state.flex_index != 14)
-                        break;
-
-                    auto& flex = state.flex_sequence;
-
-                    path.cubic_bezier_curve_to(
-                        { flex[2], flex[3] },
-                        { flex[4], flex[5] },
-                        { flex[6], flex[7] });
-                    path.cubic_bezier_curve_to(
-                        { flex[8], flex[9] },
-                        { flex[10], flex[11] },
-                        { flex[12], flex[13] });
-
-                    state.flex_feature = false;
-                    state.sp = 0;
-                } else if (subr_number == 1) {
-                    state.flex_feature = true;
-                    state.flex_index = 0;
-                    state.sp = 0;
-                } else if (subr_number == 2) {
-                    state.sp = 0;
-                } else {
-                    auto const& subr = subroutines[subr_number];
-                    if (subr.is_empty())
-                        return error("Empty subroutine");
-
-                    TRY(parse_glyph(subr, subroutines, state, is_type2));
+                if (is_type2) {
+                    // Type 2 spec:
+                    // "The numbering of subroutines is encoded more compactly by using the negative half of the number space, which effectively
+                    //  doubles the number of compactly encodable subroutine numbers. The bias applied depends on the number of subrs (gsubrs).
+                    //  If the number of subrs (gsubrs) is less than 1240, the bias is 107. Otherwise if it is less than 33900, it is 1131; otherwise
+                    //  it is 32768. This bias is added to the encoded subr (gsubr) number to find the appropriate entry in the subr (gsubr) array."
+                    if (subroutines.size() < 1240)
+                        subr_number += 107;
+                    else if (subroutines.size() < 33900)
+                        subr_number += 1131;
+                    else
+                        subr_number += 32768;
                 }
+
+                if (static_cast<size_t>(subr_number) >= subroutines.size())
+                    return AK::Error::from_string_literal("Subroutine index out of range");
+
+                auto const& subr = subroutines[subr_number];
+                if (subr.is_empty())
+                    return AK::Error::from_string_literal("Empty subroutine");
+
+                TRY(parse_glyph(subr, local_subroutines, global_subroutines, state, is_type2));
                 break;
             }
 
@@ -423,10 +453,83 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
                 }
 
                 case CallOtherSubr: {
-                    [[maybe_unused]] auto othersubr_number = pop();
+                    // Type 1 spec, 8.3 Flex:
+                    // "5. Insert at the beginning of the sequence the coordinate of the reference point relative to the starting point.
+                    //     There are now seven coordinate values (14 numbers) in the sequence.
+                    //  6. Place a call to Subrs entry 1 at the beginning of this sequence of coordinates, and place an rmoveto command
+                    //     and a call to Subrs entry 2 after each of the seven coordinate pairs in the sequence.
+                    //  7. Place the Flex height control parameter and the final coordinate expressed in absolute terms (in character space)
+                    //     followed by a call to Subrs entry 0 at the end."
+                    // [...]
+                    // Type 1 spec, 8.4 First Four Subrs Entries:
+                    // "Subrs entry number 0: 3 0 callothersubr pop pop setcurrentpoint return
+                    //  Subrs entry number 1: 0 1 callothersubr return
+                    //  Subrs entry number 2: 0 2 callothersubr return
+                    //  Subrs entry number 3: return
+                    // [...]
+                    //  Subrs entry 0 passes the final three arguments in the Flex mechanism into OtherSubrs entry 0.
+                    //  That procedure puts the new current point on top of the Post- Script interpreter operand stack.
+                    //  Subrs entry 0 then transfers these two coordinate values to the Type 1 BuildChar operand stack
+                    // with two pop commands and makes them the current point coordinates with a setcurrentpoint command."
+                    enum OtherSubrCommand {
+                        EndFlex = 0,
+                        StartFlex = 1,
+                        AddFlexPoint = 2,
+                    };
+                    auto othersubr_number = (OtherSubrCommand)pop();
+
                     auto n = static_cast<int>(pop());
-                    for (int i = 0; i < n; ++i)
-                        state.postscript_stack[state.postscript_sp++] = pop();
+
+                    switch ((OtherSubrCommand)othersubr_number) {
+                    case EndFlex: {
+                        if (n != 3)
+                            return AK::Error::from_string_literal("Unexpected argument code for othersubr 0");
+
+                        auto y = pop();
+                        auto x = pop();
+                        [[maybe_unused]] auto flex_height = pop();
+
+                        state.postscript_stack[state.postscript_sp++] = y;
+                        state.postscript_stack[state.postscript_sp++] = x;
+
+                        if (state.flex_index != 14)
+                            return AK::Error::from_string_literal("Unexpected stack size for othersubr 0");
+
+                        auto& flex = state.flex_sequence;
+
+                        // FIXME: This should probably call the flex() lambda.
+                        path.cubic_bezier_curve_to(
+                            { flex[2], flex[3] },
+                            { flex[4], flex[5] },
+                            { flex[6], flex[7] });
+                        path.cubic_bezier_curve_to(
+                            { flex[8], flex[9] },
+                            { flex[10], flex[11] },
+                            { flex[12], flex[13] });
+
+                        state.flex_feature = false;
+                        state.sp = 0;
+                        break;
+                    }
+                    case StartFlex:
+                        if (n != 0)
+                            return AK::Error::from_string_literal("Unexpected argument code for othersubr 1");
+                        state.flex_feature = true;
+                        state.flex_index = 0;
+                        state.sp = 0;
+                        break;
+                    case AddFlexPoint:
+                        if (n != 0)
+                            return AK::Error::from_string_literal("Unexpected argument code for othersubr 2");
+                        // We do this directly in move_to().
+                        state.sp = 0;
+                        break;
+                    default:
+                        for (int i = 0; i < n; ++i)
+                            state.postscript_stack[state.postscript_sp++] = pop();
+                        break;
+                    }
+
                     break;
                 }
 
@@ -437,23 +540,90 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
                 case SetCurrentPoint: {
                     auto y = pop();
                     auto x = pop();
-
                     state.point = { x, y };
-                    path.move_to(state.point);
                     state.sp = 0;
                     break;
                 }
 
-                case Hflex:
-                case Flex:
-                case Hflex1:
-                case Flex1:
-                    // TODO: implement these
+                case Flex: {
+                    auto flex_depth = pop();
+                    auto dy6 = pop();
+                    auto dx6 = pop();
+                    auto dy5 = pop();
+                    auto dx5 = pop();
+                    auto dy4 = pop();
+                    auto dx4 = pop();
+                    auto dy3 = pop();
+                    auto dx3 = pop();
+                    auto dy2 = pop();
+                    auto dx2 = pop();
+                    auto dy1 = pop();
+                    auto dx1 = pop();
+                    flex(dx1, dy1, dx2, dy2, dx3, dy3, dx4, dy4, dx5, dy5, dx6, dy6, flex_depth);
                     state.sp = 0;
                     break;
+                }
+                case Hflex: {
+                    auto flex_depth = 50;
+                    auto dx6 = pop();
+                    auto dx5 = pop();
+                    auto dx4 = pop();
+                    auto dx3 = pop();
+                    auto dy2 = pop();
+                    auto dx2 = pop();
+                    auto dx1 = pop();
+                    flex(dx1, 0, dx2, dy2, dx3, 0, dx4, 0, dx5, -dy2, dx6, 0, flex_depth);
+                    state.sp = 0;
+                    break;
+                }
+                case Hflex1: {
+                    auto flex_depth = 50;
+                    auto dx6 = pop();
+                    auto dy5 = pop();
+                    auto dx5 = pop();
+                    auto dx4 = pop();
+                    auto dx3 = pop();
+                    auto dy2 = pop();
+                    auto dx2 = pop();
+                    auto dy1 = pop();
+                    auto dx1 = pop();
+                    flex(dx1, dy1, dx2, dy2, dx3, 0, dx4, 0, dx5, dy5, dx6, -(dy1 + dy2 + dy5), flex_depth);
+                    state.sp = 0;
+                    break;
+                }
+                case Flex1: {
+                    auto flex_depth = 50;
+                    auto d6 = pop();
+                    auto dy5 = pop();
+                    auto dx5 = pop();
+                    auto dy4 = pop();
+                    auto dx4 = pop();
+                    auto dy3 = pop();
+                    auto dx3 = pop();
+                    auto dy2 = pop();
+                    auto dx2 = pop();
+                    auto dy1 = pop();
+                    auto dx1 = pop();
+
+                    float dx6, dy6;
+                    auto dx = dx1 + dx2 + dx3 + dx4 + dx5;
+                    auto dy = dy1 + dy2 + dy3 + dy4 + dy5;
+                    if (fabs(dx) > fabs(dy)) {
+                        dx6 = d6;
+                        dy6 = -dy;
+                    } else {
+                        dx6 = -dx;
+                        dy6 = d6;
+                    }
+
+                    flex(dx1, dy1, dx2, dy2, dx3, dy3, dx4, dy4, dx5, dy5, dx6, dy6, flex_depth);
+                    state.sp = 0;
+                    break;
+                }
 
                 default:
-                    return error(DeprecatedString::formatted("Unhandled command: 12 {}", data[i]));
+                    dbgln("Unhandled command: 12 {}", data[i]);
+                    return AK::Error::from_string_literal("Unhandled command");
                 }
                 break;
             }
@@ -470,8 +640,20 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
 
             case EndChar: {
                 maybe_read_width(Odd);
-                if (is_type2)
+                if (is_type2) {
+                    // Type 2 spec:
+                    // "In addition to the optional width (...) endchar may have four extra arguments that correspond exactly
+                    //  to the last four arguments of the Type 1 charstring command “seac”"
+                    if (state.sp == 4) {
+                        auto achar = pop();
+                        auto bchar = pop();
+                        auto ady = pop();
+                        auto adx = pop();
+                        state.glyph.set_accented_character(AccentedCharacter { (u8)bchar, (u8)achar, adx, ady });
+                    }
                     path.close();
+                }
+                state.sp = 0;
                 break;
             }
 
@@ -537,29 +719,22 @@ PDFErrorOr<Type1FontProgram::Glyph> Type1FontProgram::parse_glyph(ReadonlyBytes 
             }
 
             default:
-                return error(DeprecatedString::formatted("Unhandled command: {}", v));
+                dbgln("Unhandled command: {}", v);
+                // https://adobe-type-tools.github.io/font-tech-notes/pdfs/5177.Type2.pdf
+                // says "The behavior of undefined operators is unspecified." but
+                // https://learn.microsoft.com/en-us/typography/opentype/spec/cff2
+                // says "When an unrecognized operator is encountered, it is ignored and
+                // the stack is cleared."
+                //
+                // Some type 0 CIDFontType0C fonts (i.e. CID-keyed non-OpenType CFF fonts)
+                // depend on the latter, even though they're governed by the former spec.
+                state.sp = 0;
+                break;
             }
-
-            is_first_command = false;
         }
     }
 
     return state.glyph;
-}
-
-Error Type1FontProgram::error(
-    DeprecatedString const& message
-#ifdef PDF_DEBUG
-    ,
-    SourceLocation loc
-#endif
-)
-{
-#ifdef PDF_DEBUG
-    dbgln("\033[31m{} Type 1 font error: {}\033[0m", loc, message);
-#endif
-
-    return Error { Error::Type::MalformedPDF, message };
 }
 
 }

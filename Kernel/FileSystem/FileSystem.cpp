@@ -10,7 +10,7 @@
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/InterruptDisabler.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Net/LocalSocket.h>
 
@@ -27,11 +27,12 @@ FileSystem::~FileSystem()
 {
 }
 
-ErrorOr<void> FileSystem::prepare_to_unmount()
+ErrorOr<void> FileSystem::prepare_to_unmount(Inode& mount_guest_inode)
 {
     return m_attach_count.with([&](auto& attach_count) -> ErrorOr<void> {
+        dbgln_if(VFS_DEBUG, "VFS: File system {} (id {}) is attached {} time(s)", class_name(), m_fsid.value(), attach_count);
         if (attach_count == 1)
-            return prepare_to_clear_last_mount();
+            return prepare_to_clear_last_mount(mount_guest_inode);
         return {};
     });
 }
@@ -46,12 +47,7 @@ FileSystem::DirectoryEntryView::DirectoryEntryView(StringView n, InodeIdentifier
 void FileSystem::sync()
 {
     Inode::sync_all();
-    VirtualFileSystem::the().sync_filesystems();
-}
-
-void FileSystem::lock_all()
-{
-    VirtualFileSystem::the().lock_all_filesystems();
+    VirtualFileSystem::sync_filesystems();
 }
 
 }

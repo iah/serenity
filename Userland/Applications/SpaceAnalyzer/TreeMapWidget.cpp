@@ -9,15 +9,13 @@
 #include "ProgressWindow.h"
 #include "Tree.h"
 #include <AK/Array.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/NumberFormat.h>
 #include <LibGUI/ConnectionToWindowServer.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Statusbar.h>
 #include <LibGfx/Font/Font.h>
 #include <WindowServer/WindowManager.h>
-
-REGISTER_WIDGET(SpaceAnalyzer, TreeMapWidget)
 
 namespace SpaceAnalyzer {
 
@@ -99,7 +97,7 @@ void TreeMapWidget::paint_cell_frame(GUI::Painter& painter, TreeNode const& node
             text_rect.take_from_top(font().presentation_size() + 1);
             painter.draw_text(text_rect, human_readable_size(node.area()), font(), Gfx::TextAlignment::TopLeft, Color::Black);
         } else {
-            painter.draw_text(text_rect, DeprecatedString::formatted("{} - {}", node.name(), human_readable_size(node.area())), font(), Gfx::TextAlignment::TopLeft, Color::Black);
+            painter.draw_text(text_rect, ByteString::formatted("{} - {}", node.name(), human_readable_size(node.area())), font(), Gfx::TextAlignment::TopLeft, Color::Black);
         }
         painter.clear_clip_rect();
     }
@@ -124,12 +122,12 @@ void TreeMapWidget::lay_out_children(TreeNode const& node, Gfx::IntRect const& r
     Gfx::IntRect canvas = rect;
     bool remaining_nodes_are_too_small = false;
     for (size_t i = 0; !remaining_nodes_are_too_small && i < node.num_children(); i++) {
-        const i64 i_node_area = node.child_at(i).area();
+        i64 const i_node_area = node.child_at(i).area();
         if (i_node_area == 0)
             break;
 
-        const size_t long_side_size = max(canvas.width(), canvas.height());
-        const size_t short_side_size = min(canvas.width(), canvas.height());
+        size_t const long_side_size = max(canvas.width(), canvas.height());
+        size_t const short_side_size = min(canvas.width(), canvas.height());
 
         size_t row_or_column_size = long_side_size * i_node_area / total_area;
         i64 node_area_sum = i_node_area;
@@ -165,7 +163,7 @@ void TreeMapWidget::lay_out_children(TreeNode const& node, Gfx::IntRect const& r
 
         // Paint the elements from 'i' up to and including 'k-1'.
         {
-            const size_t fixed_side_size = row_or_column_size;
+            size_t const fixed_side_size = row_or_column_size;
             i64 placement_area = node_area_sum;
             size_t main_dim = short_side_size;
 
@@ -263,13 +261,13 @@ void TreeMapWidget::paint_event(GUI::PaintEvent& event)
     }
 }
 
-Vector<DeprecatedString> TreeMapWidget::path_to_position(Gfx::IntPoint position)
+Vector<ByteString> TreeMapWidget::path_to_position(Gfx::IntPoint position)
 {
     TreeNode const* node = path_node(m_viewpoint);
     if (!node) {
         return {};
     }
-    Vector<DeprecatedString> path;
+    Vector<ByteString> path;
     lay_out_children(*node, frame_inner_rect(), m_viewpoint, [&](TreeNode const& node, int, Gfx::IntRect const& rect, Gfx::IntRect const&, int, HasLabel, IsRemainder is_remainder) {
         if (is_remainder == IsRemainder::No && rect.contains(position)) {
             path.append(node.name());
@@ -293,7 +291,7 @@ void TreeMapWidget::mousemove_event(GUI::MouseEvent& event)
         }
     });
 
-    set_tooltip(DeprecatedString::formatted("{}\n{}", hovered_node->name(), human_readable_size(hovered_node->area())));
+    set_tooltip(MUST(String::formatted("{}\n{}", hovered_node->name(), human_readable_size(hovered_node->area()))));
 }
 
 void TreeMapWidget::mousedown_event(GUI::MouseEvent& event)
@@ -383,8 +381,8 @@ static ErrorOr<void> fill_mounts(Vector<MountInfo>& output)
     TRY(json.as_array().try_for_each([&output](JsonValue const& value) -> ErrorOr<void> {
         auto& filesystem_object = value.as_object();
         MountInfo mount_info;
-        mount_info.mount_point = filesystem_object.get_deprecated_string("mount_point"sv).value_or({});
-        mount_info.source = filesystem_object.get_deprecated_string("source"sv).value_or("none");
+        mount_info.mount_point = filesystem_object.get_byte_string("mount_point"sv).value_or({});
+        mount_info.source = filesystem_object.get_byte_string("source"sv).value_or("none");
         TRY(output.try_append(mount_info));
         return {};
     }));
@@ -394,7 +392,7 @@ static ErrorOr<void> fill_mounts(Vector<MountInfo>& output)
 
 ErrorOr<void> TreeMapWidget::analyze(GUI::Statusbar& statusbar)
 {
-    statusbar.set_text("");
+    statusbar.set_text({});
     auto progress_window = TRY(ProgressWindow::try_create("Space Analyzer"sv));
     progress_window->show();
 
@@ -422,7 +420,7 @@ ErrorOr<void> TreeMapWidget::analyze(GUI::Statusbar& statusbar)
             builder.append({ error, strlen(error) });
             builder.append(" ("sv);
             int value = errors.get(key).value();
-            builder.append(DeprecatedString::number(value));
+            builder.append(ByteString::number(value));
             if (value == 1) {
                 builder.append(" time"sv);
             } else {
@@ -431,9 +429,9 @@ ErrorOr<void> TreeMapWidget::analyze(GUI::Statusbar& statusbar)
             builder.append(')');
             first = false;
         }
-        statusbar.set_text(builder.to_deprecated_string());
+        statusbar.set_text(TRY(builder.to_string()));
     } else {
-        statusbar.set_text("No errors");
+        statusbar.set_text("No errors"_string);
     }
 
     m_tree = move(tree);

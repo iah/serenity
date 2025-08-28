@@ -8,10 +8,11 @@
 
 #include <AK/Atomic.h>
 #include <Kernel/FileSystem/FileBackedFileSystem.h>
+#include <Kernel/FileSystem/FileSystemSpecificOption.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/Plan9FS/Definitions.h>
 #include <Kernel/FileSystem/Plan9FS/Message.h>
-#include <Kernel/KBufferBuilder.h>
+#include <Kernel/Library/KBufferBuilder.h>
 
 namespace Kernel {
 
@@ -22,11 +23,13 @@ class Plan9FS final : public FileBackedFileSystem {
 
 public:
     virtual ~Plan9FS() override;
-    static ErrorOr<NonnullLockRefPtr<FileSystem>> try_create(OpenFileDescription&);
+    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, FileSystemSpecificOptions const&);
 
     virtual bool supports_watchers() const override { return false; }
 
     virtual Inode& root_inode() override;
+
+    virtual ErrorOr<void> rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename) override;
 
     u16 allocate_tag() { return m_next_tag++; }
     u32 allocate_fid() { return m_next_fid++; }
@@ -40,7 +43,7 @@ public:
 private:
     Plan9FS(OpenFileDescription&);
 
-    virtual ErrorOr<void> prepare_to_clear_last_mount() override;
+    virtual ErrorOr<void> prepare_to_clear_last_mount(Inode&) override;
 
     virtual bool is_initialized_while_locked() override;
     virtual ErrorOr<void> initialize_while_locked() override;
@@ -69,7 +72,7 @@ private:
     struct ReceiveCompletion final : public AtomicRefCounted<ReceiveCompletion> {
         mutable Spinlock<LockRank::None> lock {};
         bool completed { false };
-        const u16 tag;
+        u16 const tag;
         OwnPtr<Plan9FSMessage> message;
         ErrorOr<void> result;
 
@@ -125,7 +128,7 @@ private:
     void thread_main();
     void ensure_thread();
 
-    LockRefPtr<Plan9FSInode> m_root_inode;
+    RefPtr<Plan9FSInode> m_root_inode;
     Atomic<u16> m_next_tag { (u16)-1 };
     Atomic<u32> m_next_fid { 1 };
 
@@ -137,9 +140,8 @@ private:
     HashMap<u16, NonnullLockRefPtr<ReceiveCompletion>> m_completions;
 
     Spinlock<LockRank::None> m_thread_lock {};
-    LockRefPtr<Thread> m_thread;
+    RefPtr<Thread> m_thread;
     Atomic<bool> m_thread_running { false };
-    Atomic<bool, AK::MemoryOrder::memory_order_relaxed> m_thread_shutdown { false };
 };
 
 }

@@ -81,7 +81,7 @@ void UndoStack::set_current_unmodified()
         return;
 
     m_clean_index = m_stack_index;
-    m_last_unmodified_timestamp = Time::now_monotonic();
+    m_last_unmodified_timestamp = MonotonicTime::now();
 
     if (on_state_change)
         on_state_change();
@@ -111,14 +111,14 @@ void UndoStack::clear()
         on_state_change();
 }
 
-Optional<DeprecatedString> UndoStack::undo_action_text() const
+Optional<ByteString> UndoStack::undo_action_text() const
 {
     if (!can_undo())
         return {};
     return m_stack[m_stack_index - 1]->action_text();
 }
 
-Optional<DeprecatedString> UndoStack::redo_action_text() const
+Optional<ByteString> UndoStack::redo_action_text() const
 {
     if (!can_redo())
         return {};

@@ -6,16 +6,16 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Error.h>
 #include <AK/Function.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/Variant.h>
 #include <AK/WeakPtr.h>
-#include <LibCore/Object.h>
 #include <LibGUI/FocusSource.h>
 #include <LibGUI/Forward.h>
+#include <LibGUI/Object.h>
 #include <LibGUI/ResizeDirection.h>
 #include <LibGUI/WindowMode.h>
 #include <LibGUI/WindowType.h>
@@ -27,7 +27,7 @@ namespace GUI {
 
 class WindowBackingStore;
 
-class Window : public Core::Object {
+class Window : public GUI::Object {
     C_OBJECT(Window)
 public:
     virtual ~Window() override;
@@ -63,6 +63,9 @@ public:
     bool is_obeying_widget_min_size() { return m_obey_widget_min_size; }
     void set_obey_widget_min_size(bool);
 
+    bool is_auto_shrinking() const { return m_auto_shrink; }
+    void set_auto_shrink(bool);
+
     bool is_minimizable() const { return m_minimizable; }
     void set_minimizable(bool minimizable) { m_minimizable = minimizable; }
 
@@ -72,8 +75,6 @@ public:
     void set_double_buffering_enabled(bool);
     void set_has_alpha_channel(bool);
     bool has_alpha_channel() const { return m_has_alpha_channel; }
-    void set_opacity(float);
-    float opacity() const { return m_opacity_when_windowless; }
 
     void set_alpha_hit_threshold(float);
     float alpha_hit_threshold() const { return m_alpha_hit_threshold; }
@@ -88,14 +89,15 @@ public:
 
     void make_window_manager(unsigned event_mask);
 
-    DeprecatedString title() const;
-    void set_title(DeprecatedString);
+    ByteString title() const;
+    void set_title(ByteString);
 
     enum class CloseRequestDecision {
         StayOpen,
         Close,
     };
 
+    Function<void()> on_font_change;
     Function<void()> on_close;
     Function<CloseRequestDecision()> on_close_request;
     Function<void(bool is_preempted)> on_input_preemption_change;
@@ -107,6 +109,7 @@ public:
     int height() const { return rect().height(); }
 
     Gfx::IntRect rect() const;
+    Gfx::IntRect floating_rect() const;
     Gfx::IntRect applet_rect_on_screen() const;
     Gfx::IntSize size() const { return rect().size(); }
     void set_rect(Gfx::IntRect const&);
@@ -125,7 +128,10 @@ public:
     void resize(Gfx::IntSize size) { set_rect({ position(), size }); }
 
     void center_on_screen();
+    void constrain_to_desktop();
+
     void center_within(Window const&);
+    void center_within(Gfx::IntRect const&);
 
     virtual void event(Core::Event&) override;
 
@@ -145,9 +151,9 @@ public:
     void set_main_widget(Widget*);
 
     template<class T, class... Args>
-    inline ErrorOr<NonnullRefPtr<T>> set_main_widget(Args&&... args)
+    inline NonnullRefPtr<T> set_main_widget(Args&&... args)
     {
-        auto widget = TRY(T::try_create(forward<Args>(args)...));
+        auto widget = T::construct(forward<Args>(args)...);
         set_main_widget(widget.ptr());
         return widget;
     }
@@ -214,9 +220,8 @@ public:
 
     void did_disable_focused_widget(Badge<Widget>);
 
-    Menu& add_menu(DeprecatedString name);
-    ErrorOr<NonnullRefPtr<Menu>> try_add_menu(DeprecatedString name);
-    ErrorOr<void> try_add_menu(NonnullRefPtr<Menu> menu);
+    [[nodiscard]] NonnullRefPtr<Menu> add_menu(String name);
+    void add_menu(NonnullRefPtr<Menu> menu);
     void flash_menubar_menu_for(MenuItem const&);
 
     void flush_pending_paints_immediately();
@@ -229,10 +234,19 @@ public:
 
     void set_always_on_top(bool always_on_top = true);
 
-    void propagate_shortcuts_up_to_application(KeyEvent& event, Widget* widget);
+    enum class ShortcutPropagationBoundary {
+        Window,
+        Application,
+    };
+
+    void propagate_shortcuts(KeyEvent& event, Widget* widget, ShortcutPropagationBoundary = ShortcutPropagationBoundary::Application);
+
+    void restore_size_and_position(StringView domain, StringView group = "Window"sv, Optional<Gfx::IntSize> fallback_size = {}, Optional<Gfx::IntPoint> fallback_position = {});
+    void save_size_and_position(StringView domain, StringView group = "Window"sv) const;
+    void save_size_and_position_on_close(StringView domain, StringView group = "Window"sv);
 
 protected:
-    Window(Core::Object* parent = nullptr);
+    Window(Core::EventReceiver* parent = nullptr);
     virtual void wm_event(WMEvent&);
     virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
     virtual void applet_area_rect_change_event(AppletAreaRectChangeEvent&);
@@ -270,8 +284,6 @@ private:
     void flip(Vector<Gfx::IntRect, 32> const& dirty_rects);
     void force_update();
 
-    bool are_cursors_the_same(AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const&, AK::Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> const&) const;
-
     WeakPtr<Widget> m_previously_focused_widget;
 
     OwnPtr<WindowBackingStore> m_front_store;
@@ -281,7 +293,6 @@ private:
 
     RefPtr<Gfx::Bitmap const> m_icon;
     int m_window_id { 0 };
-    float m_opacity_when_windowless { 1.0f };
     float m_alpha_hit_threshold { 0.0f };
     RefPtr<Widget> m_main_widget;
     WeakPtr<Widget> m_default_return_key_widget;
@@ -290,7 +301,8 @@ private:
     WeakPtr<Widget> m_hovered_widget;
     Gfx::IntRect m_rect_when_windowless;
     Gfx::IntSize m_minimum_size_when_windowless { 0, 0 };
-    DeprecatedString m_title_when_windowless;
+    Gfx::IntRect m_floating_rect;
+    ByteString m_title_when_windowless;
     Vector<Gfx::IntRect, 32> m_pending_paint_event_rects;
     Gfx::IntSize m_size_increment;
     Gfx::IntSize m_base_size;
@@ -316,10 +328,16 @@ private:
     bool m_moved_by_client { false };
     bool m_blocks_emoji_input { false };
     bool m_resizing { false };
+    bool m_auto_shrink { false };
+    bool m_save_size_and_position_on_close { false };
+    StringView m_save_domain;
+    StringView m_save_group;
+
+    pid_t m_pid;
 };
 
 }
 
 template<>
-struct AK::Formatter<GUI::Window> : Formatter<Core::Object> {
+struct AK::Formatter<GUI::Window> : Formatter<Core::EventReceiver> {
 };

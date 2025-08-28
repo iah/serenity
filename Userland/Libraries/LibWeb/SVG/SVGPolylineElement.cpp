@@ -5,46 +5,40 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGPolylineElementPrototype.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/AttributeParser.h>
 #include <LibWeb/SVG/SVGPolylineElement.h>
 
 namespace Web::SVG {
 
+JS_DEFINE_ALLOCATOR(SVGPolylineElement);
+
 SVGPolylineElement::SVGPolylineElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGGeometryElement(document, qualified_name)
 {
 }
 
-JS::ThrowCompletionOr<void> SVGPolylineElement::initialize(JS::Realm& realm)
+void SVGPolylineElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGPolylineElementPrototype>(realm, "SVGPolylineElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGPolylineElement);
 }
 
-void SVGPolylineElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
+void SVGPolylineElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGeometryElement::parse_attribute(name, value);
+    SVGGeometryElement::attribute_changed(name, old_value, value);
 
-    if (name == SVG::AttributeNames::points) {
-        m_points = AttributeParser::parse_points(value);
-        m_path.clear();
-    }
+    if (name == SVG::AttributeNames::points)
+        m_points = AttributeParser::parse_points(value.value_or(String {}));
 }
 
-Gfx::Path& SVGPolylineElement::get_path()
+Gfx::Path SVGPolylineElement::get_path(CSSPixelSize)
 {
-    if (m_path.has_value())
-        return m_path.value();
-
     Gfx::Path path;
 
-    if (m_points.is_empty()) {
-        m_path = move(path);
-        return m_path.value();
-    }
+    if (m_points.is_empty())
+        return path;
 
     // 1. perform an absolute moveto operation to the first coordinate pair in the list of points
     path.move_to(m_points.first());
@@ -53,8 +47,7 @@ Gfx::Path& SVGPolylineElement::get_path()
     for (size_t point_index = 1; point_index < m_points.size(); ++point_index)
         path.line_to(m_points[point_index]);
 
-    m_path = move(path);
-    return m_path.value();
+    return path;
 }
 
 }

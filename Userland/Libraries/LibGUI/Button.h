@@ -29,7 +29,7 @@ public:
     virtual ~Button() override;
 
     void set_icon(RefPtr<Gfx::Bitmap const>);
-    void set_icon_from_path(DeprecatedString const&);
+    void set_icon_from_path(ByteString const&);
     Gfx::Bitmap const* icon() const { return m_icon.ptr(); }
 
     void set_text_alignment(Gfx::TextAlignment text_alignment) { m_text_alignment = text_alignment; }
@@ -95,8 +95,11 @@ public:
     explicit DialogButton(String text = {})
         : Button(move(text))
     {
-        set_fixed_width(80);
+        set_min_size({ SpecialDimension::Shrink });
+        set_preferred_size({ SpecialDimension::Shrink });
     }
+
+    virtual Optional<UISize> calculated_min_size() const override;
 };
 
 }

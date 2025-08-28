@@ -14,7 +14,7 @@
 
 namespace Core {
 
-HashMap<uid_t, DeprecatedString> ProcessStatisticsReader::s_usernames;
+HashMap<uid_t, ByteString> ProcessStatisticsReader::s_usernames;
 
 ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(SeekableStream& proc_all_file, bool include_usernames)
 {
@@ -25,7 +25,7 @@ ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(SeekableStream&
     auto file_contents = TRY(proc_all_file.read_until_eof());
     auto json_obj = TRY(JsonValue::from_string(file_contents)).as_object();
     json_obj.get_array("processes"sv)->for_each([&](auto& value) {
-        const JsonObject& process_object = value.as_object();
+        JsonObject const& process_object = value.as_object();
         Core::ProcessStatistics process;
 
         // kernel data first
@@ -36,13 +36,13 @@ ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(SeekableStream&
         process.uid = process_object.get_u32("uid"sv).value_or(0);
         process.gid = process_object.get_u32("gid"sv).value_or(0);
         process.ppid = process_object.get_u32("ppid"sv).value_or(0);
-        process.nfds = process_object.get_u32("nfds"sv).value_or(0);
         process.kernel = process_object.get_bool("kernel"sv).value_or(false);
-        process.name = process_object.get_deprecated_string("name"sv).value_or("");
-        process.executable = process_object.get_deprecated_string("executable"sv).value_or("");
-        process.tty = process_object.get_deprecated_string("tty"sv).value_or("");
-        process.pledge = process_object.get_deprecated_string("pledge"sv).value_or("");
-        process.veil = process_object.get_deprecated_string("veil"sv).value_or("");
+        process.name = process_object.get_byte_string("name"sv).value_or("");
+        process.executable = process_object.get_byte_string("executable"sv).value_or("");
+        process.tty = process_object.get_byte_string("tty"sv).value_or("");
+        process.pledge = process_object.get_byte_string("pledge"sv).value_or("");
+        process.veil = process_object.get_byte_string("veil"sv).value_or("");
+        process.creation_time = UnixDateTime::from_nanoseconds_since_epoch(process_object.get_i64("creation_time"sv).value_or(0));
         process.amount_virtual = process_object.get_u32("amount_virtual"sv).value_or(0);
         process.amount_resident = process_object.get_u32("amount_resident"sv).value_or(0);
         process.amount_shared = process_object.get_u32("amount_shared"sv).value_or(0);
@@ -58,8 +58,8 @@ ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(SeekableStream&
             Core::ThreadStatistics thread;
             thread.tid = thread_object.get_u32("tid"sv).value_or(0);
             thread.times_scheduled = thread_object.get_u32("times_scheduled"sv).value_or(0);
-            thread.name = thread_object.get_deprecated_string("name"sv).value_or("");
-            thread.state = thread_object.get_deprecated_string("state"sv).value_or("");
+            thread.name = thread_object.get_byte_string("name"sv).value_or("");
+            thread.state = thread_object.get_byte_string("state"sv).value_or("");
             thread.time_user = thread_object.get_u64("time_user"sv).value_or(0);
             thread.time_kernel = thread_object.get_u64("time_kernel"sv).value_or(0);
             thread.cpu = thread_object.get_u32("cpu"sv).value_or(0);
@@ -68,12 +68,12 @@ ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(SeekableStream&
             thread.inode_faults = thread_object.get_u32("inode_faults"sv).value_or(0);
             thread.zero_faults = thread_object.get_u32("zero_faults"sv).value_or(0);
             thread.cow_faults = thread_object.get_u32("cow_faults"sv).value_or(0);
-            thread.unix_socket_read_bytes = thread_object.get_u32("unix_socket_read_bytes"sv).value_or(0);
-            thread.unix_socket_write_bytes = thread_object.get_u32("unix_socket_write_bytes"sv).value_or(0);
-            thread.ipv4_socket_read_bytes = thread_object.get_u32("ipv4_socket_read_bytes"sv).value_or(0);
-            thread.ipv4_socket_write_bytes = thread_object.get_u32("ipv4_socket_write_bytes"sv).value_or(0);
-            thread.file_read_bytes = thread_object.get_u32("file_read_bytes"sv).value_or(0);
-            thread.file_write_bytes = thread_object.get_u32("file_write_bytes"sv).value_or(0);
+            thread.unix_socket_read_bytes = thread_object.get_u64("unix_socket_read_bytes"sv).value_or(0);
+            thread.unix_socket_write_bytes = thread_object.get_u64("unix_socket_write_bytes"sv).value_or(0);
+            thread.ipv4_socket_read_bytes = thread_object.get_u64("ipv4_socket_read_bytes"sv).value_or(0);
+            thread.ipv4_socket_write_bytes = thread_object.get_u64("ipv4_socket_write_bytes"sv).value_or(0);
+            thread.file_read_bytes = thread_object.get_u64("file_read_bytes"sv).value_or(0);
+            thread.file_write_bytes = thread_object.get_u64("file_write_bytes"sv).value_or(0);
             process.threads.append(move(thread));
         });
 
@@ -95,7 +95,7 @@ ErrorOr<AllProcessesStatistics> ProcessStatisticsReader::get_all(bool include_us
     return get_all(*proc_all_file, include_usernames);
 }
 
-DeprecatedString ProcessStatisticsReader::username_from_uid(uid_t uid)
+ByteString ProcessStatisticsReader::username_from_uid(uid_t uid)
 {
     if (s_usernames.is_empty()) {
         setpwent();
@@ -107,6 +107,6 @@ DeprecatedString ProcessStatisticsReader::username_from_uid(uid_t uid)
     auto it = s_usernames.find(uid);
     if (it != s_usernames.end())
         return (*it).value;
-    return DeprecatedString::number(uid);
+    return ByteString::number(uid);
 }
 }

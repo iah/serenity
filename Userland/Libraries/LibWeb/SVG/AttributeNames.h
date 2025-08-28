@@ -1,12 +1,13 @@
 /*
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
+#include <AK/Error.h>
+#include <AK/FlyString.h>
 
 namespace Web::SVG::AttributeNames {
 
@@ -16,18 +17,25 @@ namespace Web::SVG::AttributeNames {
     E(baseFrequency)                \
     E(baseProfile)                  \
     E(calcMode)                     \
+    E(class_)                       \
     E(clipPathUnits)                \
     E(contentScriptType)            \
     E(contentStyleType)             \
     E(cx)                           \
     E(cy)                           \
+    E(dx)                           \
+    E(dy)                           \
     E(diffuseConstant)              \
     E(edgeMode)                     \
     E(filterUnits)                  \
+    E(fr)                           \
+    E(fx)                           \
+    E(fy)                           \
     E(glyphRef)                     \
     E(gradientTransform)            \
     E(gradientUnits)                \
     E(height)                       \
+    E(href)                         \
     E(kernelMatrix)                 \
     E(kernelUnitLength)             \
     E(keyPoints)                    \
@@ -41,6 +49,8 @@ namespace Web::SVG::AttributeNames {
     E(maskContentUnits)             \
     E(maskUnits)                    \
     E(numOctaves)                   \
+    E(offset)                       \
+    E(opacity)                      \
     E(pathLength)                   \
     E(patternContentUnits)          \
     E(patternTransform)             \
@@ -58,9 +68,9 @@ namespace Web::SVG::AttributeNames {
     E(repeatCount)                  \
     E(repeatDur)                    \
     E(requiredExtensions)           \
+    E(requiredFeatures)             \
     E(rx)                           \
     E(ry)                           \
-    E(requiredFeatures)             \
     E(specularConstant)             \
     E(specularExponent)             \
     E(spreadMethod)                 \
@@ -81,14 +91,17 @@ namespace Web::SVG::AttributeNames {
     E(x1)                           \
     E(x2)                           \
     E(xChannelSelector)             \
+    E(xlink_href)                   \
     E(y)                            \
     E(y1)                           \
     E(y2)                           \
     E(yChannelSelector)             \
     E(zoomAndPan)
 
-#define __ENUMERATE_SVG_ATTRIBUTE(name) extern DeprecatedFlyString name;
+#define __ENUMERATE_SVG_ATTRIBUTE(name) extern FlyString name;
 ENUMERATE_SVG_ATTRIBUTES(__ENUMERATE_SVG_ATTRIBUTE)
 #undef __ENUMERATE_SVG_ATTRIBUTE
+
+void initialize_strings();
 
 }

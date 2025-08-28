@@ -12,9 +12,10 @@ namespace JS::Intl {
 
 class PluralRulesConstructor final : public NativeFunction {
     JS_OBJECT(PluralRulesConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(PluralRulesConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PluralRulesConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -28,6 +29,6 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(supported_locales_of);
 };
 
-ThrowCompletionOr<PluralRules*> initialize_plural_rules(VM&, PluralRules&, Value locales_value, Value options_value);
+ThrowCompletionOr<NonnullGCPtr<PluralRules>> initialize_plural_rules(VM&, PluralRules&, Value locales_value, Value options_value);
 
 }

@@ -13,8 +13,10 @@
 #include <AK/Variant.h>
 #include <LibCore/SharedCircularQueue.h>
 #include <LibIPC/Concepts.h>
+#include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 #include <LibIPC/Message.h>
+#include <LibURL/Forward.h>
 
 namespace IPC {
 
@@ -37,25 +39,20 @@ public:
 
     ErrorOr<void> extend_capacity(size_t capacity)
     {
-        return m_buffer.data.try_ensure_capacity(m_buffer.data.size() + capacity);
-    }
-
-    void append(u8 value)
-    {
-        m_buffer.data.unchecked_append(value);
+        TRY(m_buffer.extend_data_capacity(capacity));
+        return {};
     }
 
     ErrorOr<void> append(u8 const* values, size_t count)
     {
-        TRY(extend_capacity(count));
-        m_buffer.data.unchecked_append(values, count);
+        TRY(m_buffer.append_data(values, count));
         return {};
     }
 
     ErrorOr<void> append_file_descriptor(int fd)
     {
-        auto auto_fd = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) AutoCloseFileDescriptor(fd)));
-        return m_buffer.fds.try_append(move(auto_fd));
+        TRY(m_buffer.append_file_descriptor(fd));
+        return {};
     }
 
     ErrorOr<void> encode_size(size_t size);
@@ -67,31 +64,7 @@ private:
 template<Arithmetic T>
 ErrorOr<void> encode(Encoder& encoder, T const& value)
 {
-    TRY(encoder.extend_capacity(sizeof(T)));
-
-    if constexpr (sizeof(T) == 1) {
-        encoder.append(static_cast<u8>(value));
-    } else if constexpr (sizeof(T) == 2) {
-        encoder.append(static_cast<u8>(value));
-        encoder.append(static_cast<u8>(value >> 8));
-    } else if constexpr (sizeof(T) == 4) {
-        encoder.append(static_cast<u8>(value));
-        encoder.append(static_cast<u8>(value >> 8));
-        encoder.append(static_cast<u8>(value >> 16));
-        encoder.append(static_cast<u8>(value >> 24));
-    } else if constexpr (sizeof(T) == 8) {
-        encoder.append(static_cast<u8>(value));
-        encoder.append(static_cast<u8>(value >> 8));
-        encoder.append(static_cast<u8>(value >> 16));
-        encoder.append(static_cast<u8>(value >> 24));
-        encoder.append(static_cast<u8>(value >> 32));
-        encoder.append(static_cast<u8>(value >> 40));
-        encoder.append(static_cast<u8>(value >> 48));
-        encoder.append(static_cast<u8>(value >> 56));
-    } else {
-        static_assert(DependentFalse<T>);
-    }
-
+    TRY(encoder.append(reinterpret_cast<u8 const*>(&value), sizeof(value)));
     return {};
 }
 
@@ -114,7 +87,7 @@ template<>
 ErrorOr<void> encode(Encoder&, StringView const&);
 
 template<>
-ErrorOr<void> encode(Encoder&, DeprecatedString const&);
+ErrorOr<void> encode(Encoder&, ByteString const&);
 
 template<>
 ErrorOr<void> encode(Encoder&, ByteBuffer const&);
@@ -123,19 +96,33 @@ template<>
 ErrorOr<void> encode(Encoder&, JsonValue const&);
 
 template<>
-ErrorOr<void> encode(Encoder&, Time const&);
+ErrorOr<void> encode(Encoder&, Duration const&);
 
 template<>
-ErrorOr<void> encode(Encoder&, URL const&);
+ErrorOr<void> encode(Encoder&, UnixDateTime const&);
 
 template<>
-ErrorOr<void> encode(Encoder&, Dictionary const&);
+ErrorOr<void> encode(Encoder&, URL::URL const&);
+
+template<>
+ErrorOr<void> encode(Encoder&, URL::Origin const&);
 
 template<>
 ErrorOr<void> encode(Encoder&, File const&);
 
 template<>
 ErrorOr<void> encode(Encoder&, Empty const&);
+
+template<typename T, size_t N>
+ErrorOr<void> encode(Encoder& encoder, Array<T, N> const& array)
+{
+    TRY(encoder.encode_size(array.size()));
+
+    for (auto const& value : array)
+        TRY(encoder.encode(value));
+
+    return {};
+}
 
 template<Concepts::Vector T>
 ErrorOr<void> encode(Encoder& encoder, T const& vector)
@@ -165,7 +152,8 @@ ErrorOr<void> encode(Encoder& encoder, T const& hashmap)
 template<Concepts::SharedSingleProducerCircularQueue T>
 ErrorOr<void> encode(Encoder& encoder, T const& queue)
 {
-    return encoder.encode(IPC::File { queue.fd() });
+    TRY(encoder.encode(TRY(IPC::File::clone_fd(queue.fd()))));
+    return {};
 }
 
 template<Concepts::Optional T>

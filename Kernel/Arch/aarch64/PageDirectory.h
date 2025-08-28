@@ -12,36 +12,43 @@
 #include <AK/HashMap.h>
 #include <AK/IntrusiveRedBlackTree.h>
 #include <AK/RefPtr.h>
+#include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Locking/Spinlock.h>
-#include <Kernel/Memory/PhysicalPage.h>
-#include <Kernel/PhysicalAddress.h>
+#include <Kernel/Memory/MemoryType.h>
+#include <Kernel/Memory/PhysicalAddress.h>
+#include <Kernel/Memory/PhysicalRAMPage.h>
 
 namespace Kernel::Memory {
 
 // 4KiB page size was chosen to make this code slightly simpler
-constexpr u32 GRANULE_SIZE = 0x1000;
-constexpr u32 PAGE_TABLE_SIZE = 0x1000;
+constexpr size_t GRANULE_SIZE = 0x1000;
+constexpr size_t PAGE_TABLE_SIZE = 0x1000;
 
 // Documentation for translation table format
 // https://developer.arm.com/documentation/101811/0101/Controlling-address-translation
-constexpr u32 PAGE_DESCRIPTOR = 0b11;
-constexpr u32 TABLE_DESCRIPTOR = 0b11;
-constexpr u32 DESCRIPTOR_MASK = ~0b11;
+constexpr u64 PAGE_DESCRIPTOR = 0b11;
+constexpr u64 TABLE_DESCRIPTOR = 0b11;
+constexpr u64 DESCRIPTOR_MASK = ~0b11;
 
-constexpr u32 ACCESS_FLAG = 1 << 10;
+constexpr u64 ACCESS_FLAG = 1 << 10;
+
+// UXN (Unprivileged Execute-never) and PXN (Privileged Execute-never)
+constexpr u64 EXECUTE_NEVER = (1uz << 54) | (1uz << 53);
 
 // shareability
-constexpr u32 OUTER_SHAREABLE = (2 << 8);
-constexpr u32 INNER_SHAREABLE = (3 << 8);
+constexpr u64 OUTER_SHAREABLE = (2 << 8);
+constexpr u64 INNER_SHAREABLE = (3 << 8);
 
 // these index into the MAIR attribute table
-constexpr u32 NORMAL_MEMORY = (0 << 2);
-constexpr u32 DEVICE_MEMORY = (1 << 2);
+constexpr u64 NORMAL_MEMORY = (0 << 2);
+constexpr u64 DEVICE_MEMORY = (1 << 2);
+constexpr u64 NORMAL_NONCACHEABLE_MEMORY = (2 << 2);
+constexpr u64 ATTR_INDX_MASK = (0b111 << 2);
 
-constexpr u32 ACCESS_PERMISSION_EL0 = (1 << 6);
-constexpr u32 ACCESS_PERMISSION_READONLY = (1 << 7);
+constexpr u64 ACCESS_PERMISSION_EL0 = (1 << 6);
+constexpr u64 ACCESS_PERMISSION_READONLY = (1 << 7);
 
 // Figure D5-15 of Arm Architecture Reference Manual Armv8 - page D5-2588
 class PageDirectoryEntry {
@@ -78,17 +85,10 @@ public:
     bool is_writable() const { TODO_AARCH64(); }
     void set_writable(bool) { }
 
-    bool is_write_through() const { TODO_AARCH64(); }
-    void set_write_through(bool) { }
-
-    bool is_cache_disabled() const { TODO_AARCH64(); }
-    void set_cache_disabled(bool) { }
+    void set_memory_type(MemoryType) { }
 
     bool is_global() const { TODO_AARCH64(); }
     void set_global(bool) { }
-
-    bool is_execute_disabled() const { TODO_AARCH64(); }
-    void set_execute_disabled(bool) { }
 
 private:
     void set_bit(u64 bit, bool value)
@@ -131,20 +131,22 @@ public:
     bool is_writable() const { return !((raw() & ACCESS_PERMISSION_READONLY) == ACCESS_PERMISSION_READONLY); }
     void set_writable(bool b) { set_bit(ACCESS_PERMISSION_READONLY, !b); }
 
-    bool is_write_through() const { TODO_AARCH64(); }
-    void set_write_through(bool) { }
-
-    bool is_cache_disabled() const { TODO_AARCH64(); }
-    void set_cache_disabled(bool) { }
+    void set_memory_type(MemoryType t)
+    {
+        m_raw &= ~ATTR_INDX_MASK;
+        if (t == MemoryType::Normal)
+            m_raw |= NORMAL_MEMORY;
+        else if (t == MemoryType::NonCacheable)
+            m_raw |= NORMAL_NONCACHEABLE_MEMORY;
+        else if (t == MemoryType::IO)
+            m_raw |= DEVICE_MEMORY;
+    }
 
     bool is_global() const { TODO_AARCH64(); }
     void set_global(bool) { }
 
     bool is_execute_disabled() const { TODO_AARCH64(); }
-    void set_execute_disabled(bool) { }
-
-    bool is_pat() const { TODO_AARCH64(); }
-    void set_pat(bool) { }
+    void set_execute_disabled(bool b) { set_bit(EXECUTE_NEVER, b); }
 
     bool is_null() const { return m_raw == 0; }
     void clear() { m_raw = 0; }
@@ -179,7 +181,7 @@ class PageDirectory final : public AtomicRefCounted<PageDirectory> {
     friend class MemoryManager;
 
 public:
-    static ErrorOr<NonnullLockRefPtr<PageDirectory>> try_create_for_userspace();
+    static ErrorOr<NonnullLockRefPtr<PageDirectory>> try_create_for_userspace(Process&);
     static NonnullLockRefPtr<PageDirectory> must_create_kernel_page_directory();
     static LockRefPtr<PageDirectory> find_current();
 
@@ -197,10 +199,7 @@ public:
         return m_root_table;
     }
 
-    AddressSpace* address_space() { return m_space; }
-    AddressSpace const* address_space() const { return m_space; }
-
-    void set_space(Badge<AddressSpace>, AddressSpace& space) { m_space = &space; }
+    Process* process() { return m_process; }
 
     RecursiveSpinlock<LockRank::None>& get_lock() { return m_lock; }
 
@@ -212,10 +211,10 @@ private:
     static void register_page_directory(PageDirectory* directory);
     static void deregister_page_directory(PageDirectory* directory);
 
-    AddressSpace* m_space { nullptr };
-    RefPtr<PhysicalPage> m_root_table;
-    RefPtr<PhysicalPage> m_directory_table;
-    RefPtr<PhysicalPage> m_directory_pages[512];
+    Process* m_process { nullptr };
+    RefPtr<PhysicalRAMPage> m_root_table;
+    RefPtr<PhysicalRAMPage> m_directory_table;
+    RefPtr<PhysicalRAMPage> m_directory_pages[512];
     RecursiveSpinlock<LockRank::None> m_lock {};
 };
 

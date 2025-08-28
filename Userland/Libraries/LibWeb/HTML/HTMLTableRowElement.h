@@ -13,6 +13,7 @@ namespace Web::HTML {
 
 class HTMLTableRowElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLTableRowElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLTableRowElement);
 
 public:
     virtual ~HTMLTableRowElement() override;
@@ -30,10 +31,18 @@ public:
 private:
     HTMLTableRowElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual bool is_html_table_row_element() const override { return true; }
+
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 
     JS::GCPtr<DOM::HTMLCollection> mutable m_cells;
 };
 
+}
+
+namespace Web::DOM {
+template<>
+inline bool Node::fast_is<HTML::HTMLTableRowElement>() const { return is_html_table_row_element(); }
 }

@@ -10,7 +10,7 @@
 #include <Kernel/FileSystem/InodeWatcher.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -39,7 +39,7 @@ ErrorOr<FlatPtr> Process::sys$create_inode_watcher(u32 flags)
 
 ErrorOr<FlatPtr> Process::sys$inode_watcher_add_watch(Userspace<Syscall::SC_inode_watcher_add_watch_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::rpath));
     auto params = TRY(copy_typed_from_user(user_params));
 
@@ -48,7 +48,7 @@ ErrorOr<FlatPtr> Process::sys$inode_watcher_add_watch(Userspace<Syscall::SC_inod
         return EBADF;
     auto* inode_watcher = description->inode_watcher();
     auto path = TRY(get_syscall_path_argument(params.user_path));
-    auto custody = TRY(VirtualFileSystem::the().resolve_path(credentials(), path->view(), current_directory()));
+    auto custody = TRY(VirtualFileSystem::resolve_path(vfs_root_context(), credentials(), path->view(), current_directory()));
     if (!custody->inode().fs().supports_watchers())
         return ENOTSUP;
 
@@ -57,7 +57,7 @@ ErrorOr<FlatPtr> Process::sys$inode_watcher_add_watch(Userspace<Syscall::SC_inod
 
 ErrorOr<FlatPtr> Process::sys$inode_watcher_remove_watch(int fd, int wd)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     auto description = TRY(open_file_description(fd));
     if (!description->is_inode_watcher())
         return EBADF;

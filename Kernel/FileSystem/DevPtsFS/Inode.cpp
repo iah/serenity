@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/FileSystem/DevPtsFS/Inode.h>
+#include <Kernel/FileSystem/RAMBackedFileType.h>
 
 namespace Kernel {
 
@@ -15,11 +16,16 @@ static InodeIndex pty_index_to_inode_index(unsigned pty_index)
     return pty_index + 2;
 }
 
-DevPtsFSInode::DevPtsFSInode(DevPtsFS& fs, InodeIndex index, SlavePTY* pty)
-    : Inode(fs, index)
+// NOTE: This constructor is used for the root inode only.
+DevPtsFSInode::DevPtsFSInode(DevPtsFS& fs)
+    : Inode(fs, 1)
 {
-    if (pty)
-        m_pty = *pty;
+}
+
+DevPtsFSInode::DevPtsFSInode(DevPtsFS& fs, InodeIndex index, LockWeakPtr<SlavePTY> pty)
+    : Inode(fs, index)
+    , m_pty(move(pty))
+{
 }
 
 DevPtsFSInode::~DevPtsFSInode() = default;
@@ -38,7 +44,7 @@ InodeMetadata DevPtsFSInode::metadata() const
 {
     if (auto pty = m_pty.strong_ref()) {
         auto metadata = m_metadata;
-        metadata.mtime = Time::from_timespec({ pty->time_of_last_write(), 0 });
+        metadata.mtime = pty->time_of_last_write();
         return metadata;
     }
     return m_metadata;
@@ -49,39 +55,34 @@ ErrorOr<void> DevPtsFSInode::traverse_as_directory(Function<ErrorOr<void>(FileSy
     if (identifier().index() > 1)
         return ENOTDIR;
 
-    TRY(callback({ "."sv, identifier(), 0 }));
-    TRY(callback({ ".."sv, identifier(), 0 }));
+    TRY(callback({ "."sv, identifier(), to_underlying(RAMBackedFileType::Directory) }));
+    TRY(callback({ ".."sv, identifier(), to_underlying(RAMBackedFileType::Directory) }));
 
     return SlavePTY::all_instances().with([&](auto& list) -> ErrorOr<void> {
         StringBuilder builder;
         for (SlavePTY& slave_pty : list) {
             builder.clear();
             TRY(builder.try_appendff("{}", slave_pty.index()));
-            TRY(callback({ builder.string_view(), { fsid(), pty_index_to_inode_index(slave_pty.index()) }, 0 }));
+            // NOTE: We represent directory entries with DT_CHR as all
+            // inodes in this filesystem are assumed to be char devices.
+            TRY(callback({ builder.string_view(), { fsid(), pty_index_to_inode_index(slave_pty.index()) }, to_underlying(RAMBackedFileType::Character) }));
         }
         return {};
     });
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> DevPtsFSInode::lookup(StringView name)
+ErrorOr<NonnullRefPtr<Inode>> DevPtsFSInode::lookup(StringView name)
 {
     VERIFY(identifier().index() == 1);
 
     if (name == "." || name == "..")
         return *this;
 
-    auto pty_index = name.to_uint();
+    auto pty_index = name.to_number<unsigned>();
     if (!pty_index.has_value())
         return ENOENT;
 
-    return SlavePTY::all_instances().with([&](auto& list) -> ErrorOr<NonnullLockRefPtr<Inode>> {
-        for (SlavePTY& slave_pty : list) {
-            if (slave_pty.index() != pty_index.value())
-                continue;
-            return fs().get_inode({ fsid(), pty_index_to_inode_index(pty_index.value()) });
-        }
-        return ENOENT;
-    });
+    return fs().get_inode({ fsid(), pty_index_to_inode_index(pty_index.value()) });
 }
 
 ErrorOr<void> DevPtsFSInode::flush_metadata()
@@ -94,17 +95,12 @@ ErrorOr<void> DevPtsFSInode::add_child(Inode&, StringView, mode_t)
     return EROFS;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> DevPtsFSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
+ErrorOr<NonnullRefPtr<Inode>> DevPtsFSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
 {
     return EROFS;
 }
 
 ErrorOr<void> DevPtsFSInode::remove_child(StringView)
-{
-    return EROFS;
-}
-
-ErrorOr<void> DevPtsFSInode::replace_child(StringView, Inode&)
 {
     return EROFS;
 }

@@ -23,11 +23,11 @@ namespace Web::Fetch {
 // - Fetch has use-cases beyond its JS interface, so having to refer to the 'Bindings' namespace
 //   constantly is irritating.
 
-Optional<ReferrerPolicy::ReferrerPolicy> from_bindings_enum(Bindings::ReferrerPolicy referrer_policy)
+ReferrerPolicy::ReferrerPolicy from_bindings_enum(Bindings::ReferrerPolicy referrer_policy)
 {
     switch (referrer_policy) {
     case Bindings::ReferrerPolicy::Empty:
-        return {};
+        return ReferrerPolicy::ReferrerPolicy::EmptyString;
     case Bindings::ReferrerPolicy::NoReferrer:
         return ReferrerPolicy::ReferrerPolicy::NoReferrer;
     case Bindings::ReferrerPolicy::NoReferrerWhenDowngrade:
@@ -113,11 +113,25 @@ Infrastructure::Request::RedirectMode from_bindings_enum(Bindings::RequestRedire
     }
 }
 
-Bindings::ReferrerPolicy to_bindings_enum(Optional<ReferrerPolicy::ReferrerPolicy> const& referrer_policy)
+Infrastructure::Request::Priority from_bindings_enum(Bindings::RequestPriority request_priority)
 {
-    if (!referrer_policy.has_value())
+    switch (request_priority) {
+    case Bindings::RequestPriority::High:
+        return Infrastructure::Request::Priority::High;
+    case Bindings::RequestPriority::Low:
+        return Infrastructure::Request::Priority::Low;
+    case Bindings::RequestPriority::Auto:
+        return Infrastructure::Request::Priority::Auto;
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+Bindings::ReferrerPolicy to_bindings_enum(ReferrerPolicy::ReferrerPolicy referrer_policy)
+{
+    switch (referrer_policy) {
+    case ReferrerPolicy::ReferrerPolicy::EmptyString:
         return Bindings::ReferrerPolicy::Empty;
-    switch (*referrer_policy) {
     case ReferrerPolicy::ReferrerPolicy::NoReferrer:
         return Bindings::ReferrerPolicy::NoReferrer;
     case ReferrerPolicy::ReferrerPolicy::NoReferrerWhenDowngrade:
@@ -160,6 +174,8 @@ Bindings::RequestDestination to_bindings_enum(Optional<Infrastructure::Request::
         return Bindings::RequestDestination::Iframe;
     case Infrastructure::Request::Destination::Image:
         return Bindings::RequestDestination::Image;
+    case Infrastructure::Request::Destination::JSON:
+        return Bindings::RequestDestination::Json;
     case Infrastructure::Request::Destination::Manifest:
         return Bindings::RequestDestination::Manifest;
     case Infrastructure::Request::Destination::Object:

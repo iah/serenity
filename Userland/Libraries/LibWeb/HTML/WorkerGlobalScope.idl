@@ -1,11 +1,13 @@
+#import <CSS/FontFaceSet.idl>
 #import <DOM/EventTarget.idl>
 #import <DOM/EventHandler.idl>
 #import <HTML/WindowOrWorkerGlobalScope.idl>
 #import <HTML/WorkerLocation.idl>
 #import <HTML/WorkerNavigator.idl>
+#import <HTML/MessagePort.idl>
 
 // https://html.spec.whatwg.org/multipage/workers.html#workerglobalscope
-[Exposed=Worker, UseNewAKString]
+[Exposed=Worker]
 interface WorkerGlobalScope : EventTarget {
     readonly attribute WorkerGlobalScope self;
     readonly attribute WorkerLocation location;
@@ -21,3 +23,4 @@ interface WorkerGlobalScope : EventTarget {
 };
 
 WorkerGlobalScope includes WindowOrWorkerGlobalScope;
+WorkerGlobalScope includes FontFaceSource;

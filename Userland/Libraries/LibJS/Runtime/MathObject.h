@@ -12,10 +12,20 @@ namespace JS {
 
 class MathObject final : public Object {
     JS_OBJECT(MathObject, Object);
+    JS_DECLARE_ALLOCATOR(MathObject);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~MathObject() override = default;
+
+    static ThrowCompletionOr<Value> log_impl(VM&, Value);
+    static ThrowCompletionOr<Value> sqrt_impl(VM&, Value);
+    static ThrowCompletionOr<Value> pow_impl(VM&, Value base, Value exponent);
+    static ThrowCompletionOr<Value> floor_impl(VM&, Value);
+    static ThrowCompletionOr<Value> ceil_impl(VM&, Value);
+    static ThrowCompletionOr<Value> round_impl(VM&, Value);
+    static ThrowCompletionOr<Value> exp_impl(VM&, Value);
+    static ThrowCompletionOr<Value> abs_impl(VM&, Value);
 
 private:
     explicit MathObject(Realm&);

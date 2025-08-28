@@ -4,20 +4,22 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/SetOnce.h>
+#include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Arch/x86_64/IO.h>
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Initializer.h>
-#include <Kernel/CommandLine.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Bus/PCI/BusDirectory.h>
 #include <Kernel/Firmware/ACPI/Parser.h>
-#include <Kernel/Panic.h>
+#include <Kernel/Library/Panic.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel::PCI {
 
-READONLY_AFTER_INIT bool g_pci_access_io_probe_failed;
-READONLY_AFTER_INIT bool g_pci_access_is_disabled_from_commandline;
+READONLY_AFTER_INIT SetOnce g_pci_access_io_probe_failed;
+READONLY_AFTER_INIT SetOnce g_pci_access_is_disabled_from_commandline;
 
 static bool test_pci_io();
 
@@ -30,7 +32,7 @@ UNMAP_AFTER_INIT static PCIAccessLevel detect_optimal_access_type()
     if (boot_determined != PCIAccessLevel::IOAddressing)
         return boot_determined;
 
-    if (!g_pci_access_io_probe_failed)
+    if (!g_pci_access_io_probe_failed.was_set())
         return PCIAccessLevel::IOAddressing;
 
     PANIC("No PCI bus access method detected!");
@@ -38,7 +40,9 @@ UNMAP_AFTER_INIT static PCIAccessLevel detect_optimal_access_type()
 
 UNMAP_AFTER_INIT void initialize()
 {
-    g_pci_access_is_disabled_from_commandline = kernel_command_line().is_pci_disabled();
+    if (kernel_command_line().is_pci_disabled())
+        g_pci_access_is_disabled_from_commandline.set();
+
     Optional<PhysicalAddress> possible_mcfg;
     // FIXME: There are other arch-specific methods to find the memory range
     // for accessing the PCI configuration space.
@@ -46,11 +50,13 @@ UNMAP_AFTER_INIT void initialize()
     // parse it to find a PCI host bridge.
     if (ACPI::is_enabled()) {
         possible_mcfg = ACPI::Parser::the()->find_table("MCFG"sv);
-        g_pci_access_io_probe_failed = (!test_pci_io()) && (!possible_mcfg.has_value());
+        if ((!test_pci_io()) && (!possible_mcfg.has_value()))
+            g_pci_access_io_probe_failed.set();
     } else {
-        g_pci_access_io_probe_failed = !test_pci_io();
+        if (!test_pci_io())
+            g_pci_access_io_probe_failed.set();
     }
-    if (g_pci_access_is_disabled_from_commandline || g_pci_access_io_probe_failed)
+    if (g_pci_access_is_disabled_from_commandline.was_set() || g_pci_access_io_probe_failed.was_set())
         return;
     switch (detect_optimal_access_type()) {
     case PCIAccessLevel::MemoryAddressing: {
@@ -69,6 +75,16 @@ UNMAP_AFTER_INIT void initialize()
     }
 
     PCIBusSysFSDirectory::initialize();
+
+    // IRQ from pin-based interrupt should be set as reserved as soon as possible so that the PCI device
+    // that chooses to use MSI(x) based interrupt can avoid sharing the IRQ with other devices.
+    MUST(PCI::enumerate([&](DeviceIdentifier const& device_identifier) {
+        // A simple sanity check to avoid getting a panic in get_interrupt_handler() before setting the IRQ as reserved.
+        if (auto irq = device_identifier.interrupt_line().value(); irq < GENERIC_INTERRUPT_HANDLERS_COUNT) {
+            auto& handler = get_interrupt_handler(irq);
+            handler.set_reserved();
+        }
+    }));
 
     MUST(PCI::enumerate([&](DeviceIdentifier const& device_identifier) {
         dmesgln("{} {}", device_identifier.address(), device_identifier.hardware_id());

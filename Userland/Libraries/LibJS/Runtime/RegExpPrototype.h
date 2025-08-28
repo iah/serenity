@@ -17,9 +17,10 @@ size_t advance_string_index(Utf16View const& string, size_t index, bool unicode)
 
 class RegExpPrototype final : public PrototypeObject<RegExpPrototype, RegExpObject> {
     JS_PROTOTYPE_OBJECT(RegExpPrototype, RegExpObject, RegExp);
+    JS_DECLARE_ALLOCATOR(RegExpPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~RegExpPrototype() override = default;
 
 private:
@@ -37,7 +38,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(to_string);
     JS_DECLARE_NATIVE_FUNCTION(compile);
 
-#define __JS_ENUMERATE(_, flag_name, ...) \
+#define __JS_ENUMERATE(FlagName, flagName, flag_name, ...) \
     JS_DECLARE_NATIVE_FUNCTION(flag_name);
     JS_ENUMERATE_REGEXP_FLAGS
 #undef __JS_ENUMERATE

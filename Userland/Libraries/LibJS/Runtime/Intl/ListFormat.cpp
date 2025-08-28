@@ -4,13 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Intl/ListFormat.h>
-#include <LibJS/Runtime/IteratorOperations.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
+#include <LibJS/Runtime/Iterator.h>
 
 namespace JS::Intl {
+
+JS_DEFINE_ALLOCATOR(ListFormat);
 
 // 13 ListFormat Objects, https://tc39.es/ecma402/#listformat-objects
 ListFormat::ListFormat(Object& prototype)
@@ -46,10 +48,10 @@ StringView ListFormat::type_string() const
 }
 
 // 13.5.1 DeconstructPattern ( pattern, placeables ), https://tc39.es/ecma402/#sec-deconstructpattern
-ThrowCompletionOr<Vector<PatternPartition>> deconstruct_pattern(VM& vm, StringView pattern, Placeables placeables)
+Vector<PatternPartition> deconstruct_pattern(StringView pattern, Placeables placeables)
 {
     // 1. Let patternParts be ! PartitionPattern(pattern).
-    auto pattern_parts = MUST_OR_THROW_OOM(partition_pattern(vm, pattern));
+    auto pattern_parts = partition_pattern(pattern);
 
     // 2. Let result be a new empty List.
     Vector<PatternPartition> result {};
@@ -62,7 +64,7 @@ ThrowCompletionOr<Vector<PatternPartition>> deconstruct_pattern(VM& vm, StringVi
         // b. If part is "literal", then
         if (part == "literal"sv) {
             // i. Append Record { [[Type]]: "literal", [[Value]]: patternPart.[[Value]] } to result.
-            TRY_OR_THROW_OOM(vm, result.try_append({ part, move(pattern_part.value) }));
+            result.append({ part, move(pattern_part.value) });
         }
         // c. Else,
         else {
@@ -71,22 +73,18 @@ ThrowCompletionOr<Vector<PatternPartition>> deconstruct_pattern(VM& vm, StringVi
             auto subst = placeables.get(part);
             VERIFY(subst.has_value());
 
-            MUST_OR_THROW_OOM(subst.release_value().visit(
+            subst.release_value().visit(
                 // iii. If Type(subst) is List, then
-                [&](Vector<PatternPartition>& partition) -> ThrowCompletionOr<void> {
+                [&](Vector<PatternPartition>& partition) {
                     // 1. For each element s of subst, do
-                    for (auto& element : partition) {
-                        // a. Append s to result.
-                        TRY_OR_THROW_OOM(vm, result.try_append(move(element)));
-                    }
-                    return {};
+                    //     a. Append s to result.
+                    result.extend(move(partition));
                 },
                 // iv. Else,
-                [&](PatternPartition& partition) -> ThrowCompletionOr<void> {
+                [&](PatternPartition& partition) {
                     // 1. Append subst to result.
-                    TRY_OR_THROW_OOM(vm, result.try_append(move(partition)));
-                    return {};
-                }));
+                    result.append(move(partition));
+                });
         }
     }
 
@@ -95,11 +93,11 @@ ThrowCompletionOr<Vector<PatternPartition>> deconstruct_pattern(VM& vm, StringVi
 }
 
 // 13.5.2 CreatePartsFromList ( listFormat, list ), https://tc39.es/ecma402/#sec-createpartsfromlist
-ThrowCompletionOr<Vector<PatternPartition>> create_parts_from_list(VM& vm, ListFormat const& list_format, Vector<String> const& list)
+Vector<PatternPartition> create_parts_from_list(ListFormat const& list_format, Vector<String> const& list)
 {
     auto list_patterns = ::Locale::get_locale_list_patterns(list_format.locale(), list_format.type_string(), list_format.style());
     if (!list_patterns.has_value())
-        return Vector<PatternPartition> {};
+        return {};
 
     // 1. Let size be the number of elements of list.
     auto size = list.size();
@@ -107,7 +105,7 @@ ThrowCompletionOr<Vector<PatternPartition>> create_parts_from_list(VM& vm, ListF
     // 2. If size is 0, then
     if (size == 0) {
         // a. Return a new empty List.
-        return Vector<PatternPartition> {};
+        return {};
     }
 
     // 3. If size is 2, then
@@ -128,7 +126,7 @@ ThrowCompletionOr<Vector<PatternPartition>> create_parts_from_list(VM& vm, ListF
         placeables.set("1"sv, move(second));
 
         // f. Return ! DeconstructPattern(pattern, placeables).
-        return MUST_OR_THROW_OOM(deconstruct_pattern(vm, pattern, move(placeables)));
+        return deconstruct_pattern(pattern, move(placeables));
     }
 
     // 4. Let last be a new Record { [[Type]]: "element", [[Value]]: list[size - 1] }.
@@ -174,7 +172,7 @@ ThrowCompletionOr<Vector<PatternPartition>> create_parts_from_list(VM& vm, ListF
         placeables.set("1"sv, move(parts));
 
         // g. Set parts to ! DeconstructPattern(pattern, placeables).
-        parts = MUST_OR_THROW_OOM(deconstruct_pattern(vm, pattern, move(placeables)));
+        parts = deconstruct_pattern(pattern, move(placeables));
 
         // h. Decrement i by 1.
     } while (i-- != 0);
@@ -184,31 +182,31 @@ ThrowCompletionOr<Vector<PatternPartition>> create_parts_from_list(VM& vm, ListF
 }
 
 // 13.5.3 FormatList ( listFormat, list ), https://tc39.es/ecma402/#sec-formatlist
-ThrowCompletionOr<String> format_list(VM& vm, ListFormat const& list_format, Vector<String> const& list)
+String format_list(ListFormat const& list_format, Vector<String> const& list)
 {
     // 1. Let parts be ! CreatePartsFromList(listFormat, list).
-    auto parts = MUST_OR_THROW_OOM(create_parts_from_list(vm, list_format, list));
+    auto parts = create_parts_from_list(list_format, list);
 
     // 2. Let result be an empty String.
-    ThrowableStringBuilder result(vm);
+    StringBuilder result;
 
     // 3. For each Record { [[Type]], [[Value]] } part in parts, do
     for (auto& part : parts) {
         // a. Set result to the string-concatenation of result and part.[[Value]].
-        TRY(result.append(part.value));
+        result.append(part.value);
     }
 
     // 4. Return result.
-    return result.to_string();
+    return MUST(result.to_string());
 }
 
 // 13.5.4 FormatListToParts ( listFormat, list ), https://tc39.es/ecma402/#sec-formatlisttoparts
-ThrowCompletionOr<Array*> format_list_to_parts(VM& vm, ListFormat const& list_format, Vector<String> const& list)
+NonnullGCPtr<Array> format_list_to_parts(VM& vm, ListFormat const& list_format, Vector<String> const& list)
 {
     auto& realm = *vm.current_realm();
 
     // 1. Let parts be ! CreatePartsFromList(listFormat, list).
-    auto parts = MUST_OR_THROW_OOM(create_parts_from_list(vm, list_format, list));
+    auto parts = create_parts_from_list(list_format, list);
 
     // 2. Let result be ! ArrayCreate(0).
     auto result = MUST(Array::create(realm, 0));
@@ -222,7 +220,7 @@ ThrowCompletionOr<Array*> format_list_to_parts(VM& vm, ListFormat const& list_fo
         auto object = Object::create(realm, realm.intrinsics().object_prototype());
 
         // b. Perform ! CreateDataPropertyOrThrow(O, "type", part.[[Type]]).
-        MUST(object->create_data_property_or_throw(vm.names.type, MUST_OR_THROW_OOM(PrimitiveString::create(vm, part.type))));
+        MUST(object->create_data_property_or_throw(vm.names.type, PrimitiveString::create(vm, part.type)));
 
         // c. Perform ! CreateDataPropertyOrThrow(O, "value", part.[[Value]]).
         MUST(object->create_data_property_or_throw(vm.names.value, PrimitiveString::create(vm, move(part.value))));
@@ -235,7 +233,7 @@ ThrowCompletionOr<Array*> format_list_to_parts(VM& vm, ListFormat const& list_fo
     }
 
     // 5. Return result.
-    return result.ptr();
+    return result;
 }
 
 // 13.5.5 StringListFromIterable ( iterable ), https://tc39.es/ecma402/#sec-createstringlistfromiterable
@@ -247,41 +245,35 @@ ThrowCompletionOr<Vector<String>> string_list_from_iterable(VM& vm, Value iterab
         return Vector<String> {};
     }
 
-    // 2. Let iteratorRecord be ? GetIterator(iterable).
-    auto iterator_record = TRY(get_iterator(vm, iterable));
+    // 2. Let iteratorRecord be ? GetIterator(iterable, sync).
+    auto iterator_record = TRY(get_iterator(vm, iterable, IteratorHint::Sync));
 
     // 3. Let list be a new empty List.
     Vector<String> list;
 
-    // 4. Let next be true.
-    Object* next = nullptr;
+    // 4. Repeat,
+    while (true) {
+        // a. Let next be ? IteratorStepValue(iteratorRecord).
+        auto next = TRY(iterator_step_value(vm, iterator_record));
 
-    // 5. Repeat, while next is not false,
-    do {
-        // a. Set next to ? IteratorStep(iteratorRecord).
-        next = TRY(iterator_step(vm, iterator_record));
-
-        // b. If next is not false, then
-        if (next != nullptr) {
-            // i. Let nextValue be ? IteratorValue(next).
-            auto next_value = TRY(iterator_value(vm, *next));
-
-            // ii. If Type(nextValue) is not String, then
-            if (!next_value.is_string()) {
-                // 1. Let error be ThrowCompletion(a newly created TypeError object).
-                auto error = vm.throw_completion<TypeError>(ErrorType::NotAString, next_value);
-
-                // 2. Return ? IteratorClose(iteratorRecord, error).
-                return iterator_close(vm, iterator_record, move(error));
-            }
-
-            // iii. Append nextValue to the end of the List list.
-            TRY_OR_THROW_OOM(vm, list.try_append(TRY(next_value.as_string().utf8_string())));
+        // b. If next is DONE, then
+        if (!next.has_value()) {
+            // a. Return list.
+            return list;
         }
-    } while (next != nullptr);
 
-    // 6. Return list.
-    return list;
+        // c. If Type(next) is not String, then
+        if (!next->is_string()) {
+            // 1. Let error be ThrowCompletion(a newly created TypeError object).
+            auto error = vm.throw_completion<TypeError>(ErrorType::NotAString, *next);
+
+            // 2. Return ? IteratorClose(iteratorRecord, error).
+            return iterator_close(vm, iterator_record, move(error));
+        }
+
+        // iii. Append next to list.
+        list.append(next->as_string().utf8_string());
+    }
 }
 
 }

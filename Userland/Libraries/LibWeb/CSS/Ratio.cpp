@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,7 +9,7 @@
 
 namespace Web::CSS {
 
-Ratio::Ratio(float first, float second)
+Ratio::Ratio(double first, double second)
     : m_first_value(first)
     , m_second_value(second)
 {
@@ -22,9 +22,9 @@ bool Ratio::is_degenerate() const
         || !isfinite(m_second_value) || m_second_value == 0;
 }
 
-ErrorOr<String> Ratio::to_string() const
+String Ratio::to_string() const
 {
-    return String::formatted("{} / {}", m_first_value, m_second_value);
+    return MUST(String::formatted("{:.5} / {:.5}", m_first_value, m_second_value));
 }
 
 }

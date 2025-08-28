@@ -23,16 +23,15 @@ public:
     // ^Inode
     virtual InodeMetadata metadata() const override;
     virtual ErrorOr<void> traverse_as_directory(Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)>) const override;
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> lookup(StringView name) override;
+    virtual ErrorOr<NonnullRefPtr<Inode>> lookup(StringView name) override;
     virtual ErrorOr<void> flush_metadata() override;
-    virtual ErrorOr<NonnullLockRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
+    virtual ErrorOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
     virtual ErrorOr<void> add_child(Inode&, StringView name, mode_t) override;
     virtual ErrorOr<void> remove_child(StringView name) override;
-    virtual ErrorOr<void> replace_child(StringView name, Inode& child) override;
     virtual ErrorOr<void> chmod(mode_t) override;
     virtual ErrorOr<void> chown(UserID, GroupID) override;
-    virtual ErrorOr<void> truncate(u64) override;
-    virtual ErrorOr<void> update_timestamps(Optional<Time> atime, Optional<Time> ctime, Optional<Time> mtime) override;
+    virtual ErrorOr<void> truncate_locked(u64) override;
+    virtual ErrorOr<void> update_timestamps(Optional<UnixDateTime> atime, Optional<UnixDateTime> ctime, Optional<UnixDateTime> mtime) override;
 
 private:
     // HACK: The base ISO 9660 standard says the maximum filename length is 37
@@ -45,13 +44,13 @@ private:
     virtual ErrorOr<size_t> write_bytes_locked(off_t, size_t, UserOrKernelBuffer const& buffer, OpenFileDescription*) override;
 
     ISO9660Inode(ISO9660FS&, ISO::DirectoryRecordHeader const& record, StringView name);
-    static ErrorOr<NonnullLockRefPtr<ISO9660Inode>> try_create_from_directory_record(ISO9660FS&, ISO::DirectoryRecordHeader const& record, StringView name);
+    static ErrorOr<NonnullRefPtr<ISO9660Inode>> try_create_from_directory_record(ISO9660FS&, ISO::DirectoryRecordHeader const& record, StringView name);
 
     static InodeIndex get_inode_index(ISO::DirectoryRecordHeader const& record, StringView name);
     static StringView get_normalized_filename(ISO::DirectoryRecordHeader const& record, Bytes buffer);
 
     void create_metadata();
-    time_t parse_numerical_date_time(ISO::NumericalDateAndTime const&);
+    UnixDateTime parse_numerical_date_time(ISO::NumericalDateAndTime const&);
 
     InodeMetadata m_metadata;
     ISO::DirectoryRecordHeader m_record;

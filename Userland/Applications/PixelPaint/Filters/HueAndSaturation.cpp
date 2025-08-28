@@ -30,28 +30,28 @@ void HueAndSaturation::apply(Gfx::Bitmap& target_bitmap) const
 ErrorOr<RefPtr<GUI::Widget>> HueAndSaturation::get_settings_widget()
 {
     if (!m_settings_widget) {
-        auto settings_widget = TRY(GUI::Widget::try_create());
-        (void)TRY(settings_widget->try_set_layout<GUI::VerticalBoxLayout>());
+        auto settings_widget = GUI::Widget::construct();
+        settings_widget->set_layout<GUI::VerticalBoxLayout>();
 
-        auto add_slider = [&](auto name, int min, int max, auto member) -> ErrorOr<void> {
-            auto name_label = TRY(settings_widget->try_add<GUI::Label>(name));
-            name_label->set_font_weight(Gfx::FontWeight::Bold);
-            name_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
-            name_label->set_fixed_height(20);
+        auto add_slider = [&](StringView name, int min, int max, auto member) -> ErrorOr<void> {
+            auto& name_label = settings_widget->add<GUI::Label>(TRY(String::from_utf8(name)));
+            name_label.set_font_weight(Gfx::FontWeight::Bold);
+            name_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+            name_label.set_fixed_height(20);
 
-            auto slider = TRY(settings_widget->try_add<GUI::ValueSlider>(Orientation::Horizontal));
-            slider->set_range(min, max);
-            slider->set_value(m_hue);
-            slider->on_change = [this, member](int value) {
+            auto& slider = settings_widget->add<GUI::ValueSlider>(Orientation::Horizontal);
+            slider.set_range(min, max);
+            slider.set_value(m_hue);
+            slider.on_change = [this, member](int value) {
                 this->*member = value;
                 update_preview();
             };
             return {};
         };
 
-        TRY(add_slider("Hue", -180, 180, &HueAndSaturation::m_hue));
-        TRY(add_slider("Saturation", -100, 100, &HueAndSaturation::m_saturation));
-        TRY(add_slider("Lightness", -100, 100, &HueAndSaturation::m_lightness));
+        TRY(add_slider("Hue"sv, -180, 180, &HueAndSaturation::m_hue));
+        TRY(add_slider("Saturation"sv, -100, 100, &HueAndSaturation::m_saturation));
+        TRY(add_slider("Lightness"sv, -100, 100, &HueAndSaturation::m_lightness));
         m_settings_widget = settings_widget;
     }
 

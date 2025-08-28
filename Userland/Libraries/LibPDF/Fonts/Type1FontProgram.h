@@ -11,7 +11,6 @@
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Path.h>
 #include <LibPDF/Encoding.h>
-#include <LibPDF/Error.h>
 
 namespace PDF {
 
@@ -20,9 +19,16 @@ class Encoding;
 class Type1FontProgram : public RefCounted<Type1FontProgram> {
 
 public:
+    enum Kind {
+        NameKeyed,
+        CIDKeyed,
+    };
+
     RefPtr<Gfx::Bitmap> rasterize_glyph(DeprecatedFlyString const& char_name, float width, Gfx::GlyphSubpixelOffset subpixel_offset);
     Gfx::FloatPoint glyph_translation(DeprecatedFlyString const& char_name, float width) const;
     RefPtr<Encoding> encoding() const { return m_encoding; }
+
+    Kind kind() const { return m_kind; }
 
 protected:
     struct AccentedCharacter {
@@ -79,17 +85,11 @@ protected:
 
         size_t postscript_sp { 0 };
         Array<float, 24> postscript_stack;
+
+        bool is_first_command { true };
     };
 
-    static PDFErrorOr<Glyph> parse_glyph(ReadonlyBytes const&, Vector<ByteBuffer> const&, GlyphParserState&, bool is_type2);
-
-    static Error error(
-        DeprecatedString const& message
-#ifdef PDF_DEBUG
-        ,
-        SourceLocation loc = SourceLocation::current()
-#endif
-    );
+    static ErrorOr<Glyph> parse_glyph(ReadonlyBytes const&, Vector<ByteBuffer> const& local_subroutines, Vector<ByteBuffer> const& global_subroutines, GlyphParserState&, bool is_type2);
 
     void set_encoding(RefPtr<Encoding>&& encoding)
     {
@@ -101,7 +101,7 @@ protected:
         m_font_matrix = move(font_matrix);
     }
 
-    PDFErrorOr<void> add_glyph(DeprecatedFlyString name, Glyph&& glyph)
+    ErrorOr<void> add_glyph(DeprecatedFlyString name, Glyph&& glyph)
     {
         TRY(m_glyph_map.try_set(move(name), move(glyph)));
         return {};
@@ -109,10 +109,13 @@ protected:
 
     void consolidate_glyphs();
 
+    void set_kind(Kind kind) { m_kind = kind; }
+
 private:
     HashMap<DeprecatedFlyString, Glyph> m_glyph_map;
     Gfx::AffineTransform m_font_matrix;
     RefPtr<Encoding> m_encoding;
+    Kind m_kind { NameKeyed };
 
     Gfx::Path build_char(DeprecatedFlyString const& char_name, float width, Gfx::GlyphSubpixelOffset subpixel_offset);
     Gfx::AffineTransform glyph_transform_to_device_space(Glyph const& glyph, float width) const;

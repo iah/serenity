@@ -5,7 +5,7 @@
  */
 
 #include "FontPluginSerenity.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <LibGfx/Font/FontDatabase.h>
 
 namespace Web::Platform {
@@ -29,7 +29,7 @@ Gfx::Font& FontPluginSerenity::default_fixed_width_font()
     return Gfx::FontDatabase::default_fixed_width_font();
 }
 
-DeprecatedString FontPluginSerenity::generic_font_name(GenericFont generic_font)
+FlyString FontPluginSerenity::generic_font_name(GenericFont generic_font)
 {
     // FIXME: Make these configurable at the browser settings level. Fall back to system defaults.
     switch (generic_font) {
@@ -43,9 +43,9 @@ DeprecatedString FontPluginSerenity::generic_font_name(GenericFont generic_font)
         return default_fixed_width_font().family();
     case GenericFont::Serif:
     case GenericFont::UiSerif:
-        return "Roman";
+        return "Roman"_fly_string;
     case GenericFont::Fantasy:
-        return "Comic Book";
+        return "Comic Book"_fly_string;
     case GenericFont::__Count:
         VERIFY_NOT_REACHED();
     }

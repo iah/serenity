@@ -6,9 +6,9 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
 #include <AK/Forward.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/Traits.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Runtime/PropertyKey.h>
@@ -16,7 +16,7 @@
 namespace Web::HTML {
 
 struct CrossOriginProperty {
-    DeprecatedString property;
+    String property;
     Optional<bool> needs_get {};
     Optional<bool> needs_set {};
 };
@@ -34,7 +34,7 @@ using CrossOriginPropertyDescriptorMap = HashMap<CrossOriginKey, JS::PropertyDes
 namespace AK {
 
 template<>
-struct Traits<Web::HTML::CrossOriginKey> : public GenericTraits<Web::HTML::CrossOriginKey> {
+struct Traits<Web::HTML::CrossOriginKey> : public DefaultTraits<Web::HTML::CrossOriginKey> {
     static unsigned hash(Web::HTML::CrossOriginKey const& key)
     {
         return pair_int_hash(

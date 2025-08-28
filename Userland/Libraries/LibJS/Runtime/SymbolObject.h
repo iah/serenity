@@ -13,6 +13,7 @@ namespace JS {
 
 class SymbolObject : public Object {
     JS_OBJECT(SymbolObject, Object);
+    JS_DECLARE_ALLOCATOR(SymbolObject);
 
 public:
     static NonnullGCPtr<SymbolObject> create(Realm&, Symbol&);
@@ -27,7 +28,7 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    Symbol& m_symbol;
+    NonnullGCPtr<Symbol> m_symbol;
 };
 
 }

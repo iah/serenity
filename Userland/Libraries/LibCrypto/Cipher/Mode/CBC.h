@@ -11,11 +11,10 @@
 #include <LibCrypto/Cipher/Mode/Mode.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
-namespace Crypto {
-namespace Cipher {
+namespace Crypto::Cipher {
 
 template<typename T>
 class CBC : public Mode<T> {
@@ -24,18 +23,18 @@ public:
 
     virtual ~CBC() = default;
     template<typename... Args>
-    explicit constexpr CBC<T>(Args... args)
+    explicit constexpr CBC(Args... args)
         : Mode<T>(args...)
     {
     }
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const override
+    virtual ByteString class_name() const override
     {
         StringBuilder builder;
         builder.append(this->cipher().class_name());
         builder.append("_CBC"sv);
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
 #endif
 
@@ -124,7 +123,5 @@ public:
 private:
     typename T::BlockType m_cipher_block {};
 };
-
-}
 
 }

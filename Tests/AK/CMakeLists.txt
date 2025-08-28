@@ -1,4 +1,5 @@
 set(AK_TEST_SOURCES
+    TestAKMath.cpp
     TestAllOf.cpp
     TestAnyOf.cpp
     TestArbitrarySizedEnum.cpp
@@ -13,25 +14,33 @@ set(AK_TEST_SOURCES
     TestBitStream.cpp
     TestBuiltinWrappers.cpp
     TestByteBuffer.cpp
+    TestByteString.cpp
     TestCharacterTypes.cpp
     TestChecked.cpp
     TestCircularBuffer.cpp
     TestCircularDeque.cpp
     TestCircularQueue.cpp
     TestComplex.cpp
-    TestDeprecatedString.cpp
+    TestConstrainedStream.cpp
+    TestCoroutine.cpp
+    TestDOSPackedTime.cpp
     TestDisjointChunks.cpp
     TestDistinctNumeric.cpp
     TestDoublyLinkedList.cpp
     TestEndian.cpp
     TestEnumBits.cpp
+    TestEnumerate.cpp
     TestFind.cpp
     TestFixedArray.cpp
     TestFixedPoint.cpp
     TestFloatingPoint.cpp
     TestFloatingPointParsing.cpp
+    TestFloatingPointStringConversions.cpp
     TestFlyString.cpp
     TestFormat.cpp
+    TestFunction.cpp
+    TestFuzzyMatch.cpp
+    TestGeneratorAK.cpp
     TestGenericLexer.cpp
     TestHashFunctions.cpp
     TestHashMap.cpp
@@ -51,9 +60,11 @@ set(AK_TEST_SOURCES
     TestMemory.cpp
     TestMemoryStream.cpp
     TestNeverDestroyed.cpp
+    TestNonnullOwnPtr.cpp
     TestNonnullRefPtr.cpp
     TestNumberFormat.cpp
     TestOptional.cpp
+    TestOptionParser.cpp
     TestOwnPtr.cpp
     TestPrint.cpp
     TestQueue.cpp
@@ -61,8 +72,11 @@ set(AK_TEST_SOURCES
     TestQuickSort.cpp
     TestRedBlackTree.cpp
     TestRefPtr.cpp
+    TestSegmentedVector.cpp
     TestSIMD.cpp
+    TestSIMDExtras.cpp
     TestSinglyLinkedList.cpp
+    TestSlugify.cpp
     TestSourceGenerator.cpp
     TestSourceLocation.cpp
     TestSpan.cpp
@@ -73,13 +87,13 @@ set(AK_TEST_SOURCES
     TestStringFloatingPointConversions.cpp
     TestStringUtils.cpp
     TestStringView.cpp
-    TestTime.cpp
+    TestSyncGenerator.cpp
+    TestDuration.cpp
     TestTrie.cpp
     TestTuple.cpp
     TestTypeTraits.cpp
     TestTypedTransfer.cpp
     TestUFixedBigInt.cpp
-    TestURL.cpp
     TestUtf16.cpp
     TestUtf8.cpp
     TestVariant.cpp

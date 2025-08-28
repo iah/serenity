@@ -30,15 +30,15 @@ void ConnectionFromClient::die()
     s_connections.remove(client_id());
 }
 
-void ConnectionFromClient::set_clipboard_data(Core::AnonymousBuffer const& data, DeprecatedString const& mime_type, IPC::Dictionary const& metadata)
+void ConnectionFromClient::set_clipboard_data(Core::AnonymousBuffer const& data, ByteString const& mime_type, HashMap<ByteString, ByteString> const& metadata)
 {
-    Storage::the().set_data(data, mime_type, metadata.entries());
+    Storage::the().set_data(data, mime_type, metadata);
 }
 
 Messages::ClipboardServer::GetClipboardDataResponse ConnectionFromClient::get_clipboard_data()
 {
     auto& storage = Storage::the();
-    return { storage.buffer(), storage.mime_type(), storage.metadata() };
+    return { storage.buffer(), storage.mime_type(), storage.metadata().clone().release_value_but_fixme_should_propagate_errors() };
 }
 
 void ConnectionFromClient::notify_about_clipboard_change()

@@ -1,24 +1,22 @@
 /*
  * Copyright (c) 2020, Sahan Fernando <sahan.h.fernando@gmail.com>
+ * Copyright (c) 2023, Tim Ledbetter <timledbetter@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/FileWatcher.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <errno.h>
-#include <spawn.h>
 #include <stdio.h>
-#include <sys/time.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -26,40 +24,53 @@ static int opt_interval = 2;
 static bool flag_noheader = false;
 static bool flag_beep_on_fail = false;
 static int volatile exit_code = 0;
-static volatile pid_t child_pid = -1;
+static pid_t volatile child_pid = -1;
 
-static DeprecatedString build_header_string(Vector<DeprecatedString> const& command, struct timeval const& interval)
+static struct termios g_save;
+
+static ErrorOr<void> setup_tty()
 {
-    StringBuilder builder;
-    builder.appendff("Every {}.{}s: \x1b[1m", interval.tv_sec, interval.tv_usec / 100000);
-    builder.join(' ', command);
-    builder.append("\x1b[0m"sv);
-    return builder.to_deprecated_string();
+    // Save previous tty settings.
+    g_save = TRY(Core::System::tcgetattr(STDOUT_FILENO));
+
+    struct termios raw = g_save;
+    raw.c_lflag &= ~(ECHO | ICANON);
+
+    // Disable echo and line buffering
+    TRY(Core::System::tcsetattr(STDOUT_FILENO, TCSAFLUSH, raw));
+
+    // Save cursor and switch to alternate buffer.
+    out("\e[s\e[?1047h");
+    return {};
 }
 
-static DeprecatedString build_header_string(Vector<DeprecatedString> const& command, Vector<DeprecatedString> const& filenames)
+static void teardown_tty()
+{
+    auto maybe_error = Core::System::tcsetattr(STDOUT_FILENO, TCSAFLUSH, g_save);
+    if (maybe_error.is_error())
+        warnln("Failed to reset original terminal state: {}", strerror(maybe_error.error().code()));
+
+    out("\e[?1047l\e[u");
+}
+
+static ByteString build_header_string(Vector<ByteString> const& command, Duration const& interval)
+{
+    StringBuilder builder;
+    auto interval_seconds = interval.to_truncated_seconds();
+    auto interval_fractional_seconds = (interval.to_truncated_milliseconds() % 1000) / 100;
+    builder.appendff("Every {}.{}s: \x1b[1m", interval_seconds, interval_fractional_seconds);
+    builder.join(' ', command);
+    builder.append("\x1b[0m"sv);
+    return builder.to_byte_string();
+}
+
+static ByteString build_header_string(Vector<ByteString> const& command, Vector<ByteString> const& filenames)
 {
     StringBuilder builder;
     builder.appendff("Every time any of {} changes: \x1b[1m", filenames);
     builder.join(' ', command);
     builder.append("\x1b[0m"sv);
-    return builder.to_deprecated_string();
-}
-
-static struct timeval get_current_time()
-{
-    struct timespec ts;
-    struct timeval tv;
-    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
-    timespec_to_timeval(ts, tv);
-    return tv;
-}
-
-static int64_t usecs_from(struct timeval const& start, struct timeval const& end)
-{
-    struct timeval diff;
-    timeval_sub(end, start, diff);
-    return 1000000 * diff.tv_sec + diff.tv_usec;
+    return builder.to_byte_string();
 }
 
 static void handle_signal(int signal)
@@ -75,49 +86,57 @@ static void handle_signal(int signal)
             exit_code = 1;
         }
     }
+    auto is_a_tty_or_error = Core::System::isatty(STDOUT_FILENO);
+    if (!is_a_tty_or_error.is_error() && is_a_tty_or_error.value())
+        teardown_tty();
+
     exit(exit_code);
 }
 
-static int run_command(Vector<DeprecatedString> const& command)
+static int run_command(Vector<ByteString> const& command)
 {
     Vector<char const*> argv;
     argv.ensure_capacity(command.size() + 1);
     for (auto& arg : command)
         argv.unchecked_append(arg.characters());
     argv.unchecked_append(nullptr);
-
-    if ((errno = posix_spawnp(const_cast<pid_t*>(&child_pid), argv[0], nullptr, nullptr, const_cast<char**>(argv.data()), environ))) {
+    auto child_pid_or_error = Core::System::posix_spawnp(command[0], nullptr, nullptr, const_cast<char**>(argv.data()), environ);
+    if (child_pid_or_error.is_error()) {
         exit_code = 1;
-        perror("posix_spawn");
-        return errno;
+        warnln("posix_spawn: {}", strerror(child_pid_or_error.error().code()));
+        return child_pid_or_error.error().code();
     }
+
+    child_pid = child_pid_or_error.release_value();
 
     // Wait for the child to terminate, then return its exit code.
-    int status;
-    pid_t exited_pid;
+    Core::System::WaitPidResult waitpid_result;
+    int error_code = 0;
     do {
-        exited_pid = waitpid(child_pid, &status, 0);
-    } while (exited_pid < 0 && errno == EINTR);
-    VERIFY(exited_pid == child_pid);
+        auto result_or_error = Core::System::waitpid(child_pid, 0);
+        if (result_or_error.is_error())
+            error_code = result_or_error.error().code();
+        else
+            waitpid_result = result_or_error.release_value();
+    } while (waitpid_result.pid < 0 && error_code == EINTR);
+    VERIFY(waitpid_result.pid == child_pid);
     child_pid = -1;
-    if (exited_pid < 0) {
-        perror("waitpid");
+    if (error_code > 0) {
+        warnln("waitpid: {}", strerror(error_code));
         return 1;
     }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    } else {
-        return 1;
+    if (WIFEXITED(waitpid_result.status)) {
+        return WEXITSTATUS(waitpid_result.status);
     }
+    return 1;
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::signal(SIGINT, handle_signal));
-    TRY(Core::System::pledge("stdio proc exec rpath"));
+    TRY(Core::System::pledge("stdio proc exec rpath tty sigaction"));
 
-    Vector<DeprecatedString> files_to_watch;
-    Vector<DeprecatedString> command;
+    Vector<ByteString> files_to_watch;
+    Vector<ByteString> command;
     Core::ArgsParser args_parser;
     args_parser.set_stop_on_first_non_option(true);
     args_parser.set_general_help("Execute a command repeatedly, and watch its output over time.");
@@ -139,23 +158,31 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_positional_argument(command, "Command to run", "command");
     args_parser.parse(arguments);
 
-    DeprecatedString header;
+    if (TRY(Core::System::isatty(STDOUT_FILENO)))
+        TRY(setup_tty());
+
+    struct sigaction quit_action;
+    quit_action.sa_handler = handle_signal;
+    TRY(Core::System::sigaction(SIGTERM, &quit_action, nullptr));
+    TRY(Core::System::sigaction(SIGINT, &quit_action, nullptr));
+
+    ByteString header;
 
     auto watch_callback = [&] {
         // Clear the screen, then reset the cursor position to the top left.
-        warn("\033[H\033[2J");
+        out("\033[H\033[2J");
         // Print the header.
         if (!flag_noheader) {
-            warnln("{}", header);
-            warnln();
+            outln("{}", header);
+            outln();
         } else {
-            fflush(stderr);
+            fflush(stdout);
         }
         if (run_command(command) != 0) {
             exit_code = 1;
             if (flag_beep_on_fail) {
-                warnln("\a");
-                fflush(stderr);
+                out("\a");
+                fflush(stdout);
             }
         }
     };
@@ -165,7 +192,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto file_watcher = Core::BlockingFileWatcher();
         for (auto const& file : files_to_watch) {
-            if (!Core::DeprecatedFile::exists(file)) {
+            if (!FileSystem::exists(file)) {
                 warnln("Cannot watch '{}', it does not exist.", file);
                 return 1;
             }
@@ -186,31 +213,30 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
         }
     } else {
-        TRY(Core::System::pledge("stdio proc exec"));
+        TRY(Core::System::pledge("stdio proc exec tty"));
 
-        struct timeval interval;
+        Duration interval;
         if (opt_interval <= 0) {
-            interval = { 0, 100000 };
+            interval = Duration::from_milliseconds(100);
         } else {
-            interval = { opt_interval, 0 };
+            interval = Duration::from_seconds(opt_interval);
         }
 
-        auto now = get_current_time();
+        auto now = MonotonicTime::now();
         auto next_run_time = now;
         header = build_header_string(command, interval);
         while (true) {
-            int usecs_to_sleep = usecs_from(now, next_run_time);
-            while (usecs_to_sleep > 0) {
-                usleep(usecs_to_sleep);
-                now = get_current_time();
-                usecs_to_sleep = usecs_from(now, next_run_time);
-            }
+            auto duration_to_sleep = (next_run_time - now).to_timespec();
+            timespec remaining_sleep {};
+            do {
+                clock_nanosleep(CLOCK_MONOTONIC, 0, &duration_to_sleep, &remaining_sleep);
+            } while (remaining_sleep.tv_sec || remaining_sleep.tv_nsec);
 
             watch_callback();
 
-            now = get_current_time();
-            timeval_add(next_run_time, interval, next_run_time);
-            if (usecs_from(now, next_run_time) < 0) {
+            now = MonotonicTime::now();
+            next_run_time = next_run_time + interval;
+            if (next_run_time < now) {
                 // The next execution is overdue, so we set next_run_time to now to prevent drift.
                 next_run_time = now;
             }

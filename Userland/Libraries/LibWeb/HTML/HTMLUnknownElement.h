@@ -12,6 +12,7 @@ namespace Web::HTML {
 
 class HTMLUnknownElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLUnknownElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLUnknownElement);
 
 public:
     virtual ~HTMLUnknownElement() override;
@@ -19,7 +20,7 @@ public:
 private:
     HTMLUnknownElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

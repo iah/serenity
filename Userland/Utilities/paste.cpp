@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/Environment.h>
 #include <LibCore/System.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>
@@ -27,7 +28,7 @@ static void spawn_command(Span<StringView> command, ByteBuffer const& data, char
         MUST(Core::System::dup2(pipefd[0], 0));
         MUST(Core::System::close(pipefd[0]));
         MUST(Core::System::close(pipefd[1]));
-        MUST(Core::System::setenv("CLIPBOARD_STATE"sv, { state, strlen(state) }, true));
+        MUST(Core::Environment::set("CLIPBOARD_STATE"sv, { state, strlen(state) }, Core::Environment::Overwrite::Yes));
         MUST(Core::System::exec(command[0], command, Core::System::SearchInPath::Yes));
         perror("exec");
         exit(1);
@@ -56,23 +57,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Paste from the clipboard to stdout.");
-    args_parser.add_option(print_type, "Display the copied type", "print-type", 0);
+    args_parser.add_option(print_type, "Display the copied type", "print-type");
     args_parser.add_option(no_newline, "Do not append a newline", "no-newline", 'n');
     args_parser.add_option(watch, "Run a command when clipboard data changes", "watch", 'w');
     args_parser.add_positional_argument(watch_command, "Command to run in watch mode", "command", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     auto& clipboard = GUI::Clipboard::the();
 
     if (watch) {
         watch_command.append({});
 
-        clipboard.on_change = [&](DeprecatedString const&) {
+        clipboard.on_change = [&](ByteString const&) {
             // Technically there's a race here...
             auto data_and_type = clipboard.fetch_data_and_type();
-            if (data_and_type.mime_type.is_null()) {
+            if (data_and_type.mime_type.is_empty()) {
                 spawn_command(watch_command, {}, "clear");
             } else {
                 spawn_command(watch_command, data_and_type.data, "data");
@@ -87,7 +88,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto data_and_type = clipboard.fetch_data_and_type();
 
-    if (data_and_type.mime_type.is_null()) {
+    if (data_and_type.mime_type.is_empty()) {
         warnln("Nothing copied");
         return 1;
     }

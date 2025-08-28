@@ -15,11 +15,12 @@ namespace JS {
 
 class Set : public Object {
     JS_OBJECT(Set, Object);
+    JS_DECLARE_ALLOCATOR(Set);
 
 public:
     static NonnullGCPtr<Set> create(Realm&);
 
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~Set() override = default;
 
     // NOTE: Unlike what the spec says, we implement Sets using an underlying map,
@@ -45,5 +46,16 @@ private:
 
     GCPtr<Map> m_values;
 };
+
+// 24.2.1.1 Set Records, https://tc39.es/ecma262/#sec-set-records
+struct SetRecord {
+    NonnullGCPtr<Object const> set_object; // [[SetObject]]
+    double size { 0 };                     // [[Size]
+    NonnullGCPtr<FunctionObject> has;      // [[Has]]
+    NonnullGCPtr<FunctionObject> keys;     // [[Keys]]
+};
+
+ThrowCompletionOr<SetRecord> get_set_record(VM&, Value);
+bool set_data_has(NonnullGCPtr<Set>, Value);
 
 }

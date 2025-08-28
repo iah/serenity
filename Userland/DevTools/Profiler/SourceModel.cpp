@@ -17,7 +17,7 @@ namespace Profiler {
 class SourceFile final {
 public:
     struct Line {
-        DeprecatedString content;
+        ByteString content;
         size_t num_samples { 0 };
     };
 
@@ -25,11 +25,11 @@ public:
 
     SourceFile(StringView filename)
     {
-        DeprecatedString source_file_name = filename.replace("../../"sv, source_root_path, ReplaceMode::FirstOnly);
+        ByteString source_file_name = filename.replace("../../"sv, source_root_path, ReplaceMode::FirstOnly);
 
         auto try_read_lines = [&]() -> ErrorOr<void> {
             auto unbuffered_file = TRY(Core::File::open(source_file_name, Core::File::OpenMode::Read));
-            auto file = TRY(Core::BufferedFile::create(move(unbuffered_file)));
+            auto file = TRY(Core::InputBufferedFile::create(move(unbuffered_file)));
 
             Array<u8, 1024> buffer;
             while (!file->is_eof())
@@ -70,7 +70,7 @@ SourceModel::SourceModel(Profile& profile, ProfileNode& node)
             return;
         base_address = maybe_kernel_base.release_value();
         if (g_kernel_debug_info == nullptr)
-            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, DeprecatedString::empty(), base_address);
+            g_kernel_debug_info = make<Debug::DebugInfo>(g_kernel_debuginfo_object->elf, ByteString::empty(), base_address);
         debug_info = g_kernel_debug_info.ptr();
     } else {
         auto const& process = node.process();
@@ -86,7 +86,7 @@ SourceModel::SourceModel(Profile& profile, ProfileNode& node)
     VERIFY(debug_info != nullptr);
 
     // Try to read all source files contributing to the selected function and aggregate the samples by line.
-    HashMap<DeprecatedString, SourceFile> source_files;
+    HashMap<ByteString, SourceFile> source_files;
     for (auto const& pair : node.events_per_address()) {
         auto position = debug_info->get_source_position(pair.key - base_address);
         if (position.has_value()) {
@@ -122,20 +122,19 @@ int SourceModel::row_count(GUI::ModelIndex const&) const
     return m_source_lines.size();
 }
 
-DeprecatedString SourceModel::column_name(int column) const
+ErrorOr<String> SourceModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleCount:
-        return m_profile.show_percentages() ? "% Samples" : "# Samples";
+        return m_profile.show_percentages() ? "% Samples"_string : "# Samples"_string;
     case Column::SourceCode:
-        return "Source Code";
+        return "Source Code"_string;
     case Column::Location:
-        return "Location";
+        return "Location"_string;
     case Column::LineNumber:
-        return "Line";
+        return "Line"_string;
     default:
         VERIFY_NOT_REACHED();
-        return {};
     }
 }
 

@@ -14,6 +14,7 @@ namespace JS {
 
 class ProxyObject final : public FunctionObject {
     JS_OBJECT(ProxyObject, FunctionObject);
+    JS_DECLARE_ALLOCATOR(ProxyObject);
 
 public:
     static NonnullGCPtr<ProxyObject> create(Realm&, Object& target, Object& handler);
@@ -36,25 +37,25 @@ public:
     virtual ThrowCompletionOr<bool> internal_is_extensible() const override;
     virtual ThrowCompletionOr<bool> internal_prevent_extensions() override;
     virtual ThrowCompletionOr<Optional<PropertyDescriptor>> internal_get_own_property(PropertyKey const&) const override;
-    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const&, PropertyDescriptor const&) override;
+    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const&, PropertyDescriptor const&, Optional<PropertyDescriptor>* precomputed_get_own_property = nullptr) override;
     virtual ThrowCompletionOr<bool> internal_has_property(PropertyKey const&) const override;
-    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const&, Value receiver) const override;
-    virtual ThrowCompletionOr<bool> internal_set(PropertyKey const&, Value value, Value receiver) override;
+    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const&, Value receiver, CacheablePropertyMetadata*, PropertyLookupPhase) const override;
+    virtual ThrowCompletionOr<bool> internal_set(PropertyKey const&, Value value, Value receiver, CacheablePropertyMetadata*) override;
     virtual ThrowCompletionOr<bool> internal_delete(PropertyKey const&) override;
     virtual ThrowCompletionOr<MarkedVector<Value>> internal_own_property_keys() const override;
-    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, MarkedVector<Value> arguments_list) override;
-    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct(MarkedVector<Value> arguments_list, FunctionObject& new_target) override;
+    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, ReadonlySpan<Value> arguments_list) override;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct(ReadonlySpan<Value> arguments_list, FunctionObject& new_target) override;
 
 private:
     ProxyObject(Object& target, Object& handler, Object& prototype);
 
     virtual void visit_edges(Visitor&) override;
 
-    virtual bool is_function() const override { return m_target.is_function(); }
+    virtual bool is_function() const override { return m_target->is_function(); }
     virtual bool is_proxy_object() const final { return true; }
 
-    Object& m_target;
-    Object& m_handler;
+    NonnullGCPtr<Object> m_target;
+    NonnullGCPtr<Object> m_handler;
     bool m_is_revoked { false };
 };
 

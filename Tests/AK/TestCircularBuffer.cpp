@@ -12,10 +12,7 @@ namespace {
 
 CircularBuffer create_circular_buffer(size_t size)
 {
-    auto buffer_or_error = CircularBuffer::create_empty(size);
-    EXPECT(!buffer_or_error.is_error());
-
-    return buffer_or_error.release_value();
+    return MUST(CircularBuffer::create_empty(size));
 }
 
 void safe_write(CircularBuffer& buffer, u8 i)
@@ -23,7 +20,7 @@ void safe_write(CircularBuffer& buffer, u8 i)
     Bytes b { &i, 1 };
     auto written_bytes = buffer.write(b);
     EXPECT_EQ(written_bytes, 1ul);
-};
+}
 
 void safe_read(CircularBuffer& buffer, u8 supposed_result)
 {
@@ -32,13 +29,12 @@ void safe_read(CircularBuffer& buffer, u8 supposed_result)
     b = buffer.read(b);
     EXPECT_EQ(b.size(), 1ul);
     EXPECT_EQ(*b.data(), supposed_result);
-};
+}
 
 void safe_discard(CircularBuffer& buffer, size_t size)
 {
-    auto result = buffer.discard(size);
-    EXPECT(!result.is_error());
-};
+    TRY_OR_FAIL(buffer.discard(size));
+}
 
 }
 
@@ -177,13 +173,9 @@ TEST_CASE(full_write_non_aligned)
 TEST_CASE(create_from_bytebuffer)
 {
     u8 const source[] = { 2, 4, 6 };
-    auto byte_buffer_or_error = ByteBuffer::copy(source, AK::array_size(source));
-    EXPECT(!byte_buffer_or_error.is_error());
-    auto byte_buffer = byte_buffer_or_error.release_value();
+    auto byte_buffer = TRY_OR_FAIL(ByteBuffer::copy(source, AK::array_size(source)));
 
-    auto circular_buffer_or_error = CircularBuffer::create_initialized(move(byte_buffer));
-    EXPECT(!circular_buffer_or_error.is_error());
-    auto circular_buffer = circular_buffer_or_error.release_value();
+    auto circular_buffer = TRY_OR_FAIL(CircularBuffer::create_initialized(move(byte_buffer)));
     EXPECT_EQ(circular_buffer.used_space(), circular_buffer.capacity());
     EXPECT_EQ(circular_buffer.used_space(), 3ul);
 
@@ -247,13 +239,9 @@ TEST_CASE(discard_too_much)
 TEST_CASE(offset_of)
 {
     auto const source = "Well Hello Friends!"sv;
-    auto byte_buffer_or_error = ByteBuffer::copy(source.bytes());
-    EXPECT(!byte_buffer_or_error.is_error());
-    auto byte_buffer = byte_buffer_or_error.release_value();
+    auto byte_buffer = TRY_OR_FAIL(ByteBuffer::copy(source.bytes()));
 
-    auto circular_buffer_or_error = CircularBuffer::create_initialized(byte_buffer);
-    EXPECT(!circular_buffer_or_error.is_error());
-    auto circular_buffer = circular_buffer_or_error.release_value();
+    auto circular_buffer = TRY_OR_FAIL(CircularBuffer::create_initialized(byte_buffer));
 
     auto result = circular_buffer.offset_of("Well"sv);
     EXPECT(result.has_value());
@@ -283,13 +271,9 @@ TEST_CASE(offset_of)
 TEST_CASE(offset_of_with_until_and_after)
 {
     auto const source = "Well Hello Friends!"sv;
-    auto byte_buffer_or_error = ByteBuffer::copy(source.bytes());
-    EXPECT(!byte_buffer_or_error.is_error());
-    auto byte_buffer = byte_buffer_or_error.release_value();
+    auto byte_buffer = TRY_OR_FAIL(ByteBuffer::copy(source.bytes()));
 
-    auto circular_buffer_or_error = CircularBuffer::create_initialized(byte_buffer);
-    EXPECT(!circular_buffer_or_error.is_error());
-    auto circular_buffer = circular_buffer_or_error.release_value();
+    auto circular_buffer = TRY_OR_FAIL(CircularBuffer::create_initialized(byte_buffer));
 
     auto result = circular_buffer.offset_of("Well Hello Friends!"sv, 0, 19);
     EXPECT_EQ(result.value_or(42), 0ul);
@@ -317,13 +301,9 @@ TEST_CASE(offset_of_with_until_and_after)
 TEST_CASE(offset_of_with_until_and_after_wrapping_around)
 {
     auto const source = "Well Hello Friends!"sv;
-    auto byte_buffer_or_error = ByteBuffer::copy(source.bytes());
-    EXPECT(!byte_buffer_or_error.is_error());
-    auto byte_buffer = byte_buffer_or_error.release_value();
+    auto byte_buffer = TRY_OR_FAIL(ByteBuffer::copy(source.bytes()));
 
-    auto circular_buffer_or_error = CircularBuffer::create_empty(19);
-    EXPECT(!circular_buffer_or_error.is_error());
-    auto circular_buffer = circular_buffer_or_error.release_value();
+    auto circular_buffer = TRY_OR_FAIL(CircularBuffer::create_empty(19));
 
     auto written_bytes = circular_buffer.write(byte_buffer.span().trim(5));
     EXPECT_EQ(written_bytes, 5ul);
@@ -347,4 +327,117 @@ TEST_CASE(offset_of_with_until_and_after_wrapping_around)
 
     result = circular_buffer.offset_of("Well "sv, 14, 19);
     EXPECT_EQ(result.value_or(42), 14ul);
+}
+
+TEST_CASE(find_copy_in_seekback)
+{
+    auto haystack = "ABABCABCDAB"sv.bytes();
+    auto needle = "ABCD"sv.bytes();
+
+    // Set up the buffer for testing.
+    auto buffer = MUST(SearchableCircularBuffer::create_empty(haystack.size() + needle.size()));
+    auto written_haystack_bytes = buffer.write(haystack);
+    VERIFY(written_haystack_bytes == haystack.size());
+    MUST(buffer.discard(haystack.size()));
+    auto written_needle_bytes = buffer.write(needle);
+    VERIFY(written_needle_bytes == needle.size());
+
+    // Note: As of now, the preference during a tie is determined by which algorithm found the match.
+    //       Hash-based matching finds the shortest distance first, while memmem finds the greatest distance first.
+    //       A matching TODO can be found in CircularBuffer.cpp.
+
+    {
+        // Find the largest match with a length between 1 and 1 (all "A").
+        auto match = buffer.find_copy_in_seekback(1, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 11ul);
+        EXPECT_EQ(match.value().length, 1ul);
+    }
+
+    {
+        // Find the largest match with a length between 1 and 2 (all "AB", everything smaller gets eliminated).
+        auto match = buffer.find_copy_in_seekback(2, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 11ul);
+        EXPECT_EQ(match.value().length, 2ul);
+    }
+
+    {
+        // Find the largest match with a length between 1 and 3 (all "ABC", everything smaller gets eliminated).
+        auto match = buffer.find_copy_in_seekback(3, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 6ul);
+        EXPECT_EQ(match.value().length, 3ul);
+    }
+
+    {
+        // Find the largest match with a length between 1 and 4 (all "ABCD", everything smaller gets eliminated).
+        auto match = buffer.find_copy_in_seekback(4, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 6ul);
+        EXPECT_EQ(match.value().length, 4ul);
+    }
+
+    {
+        // Find the largest match with a length between 1 and 5 (all "ABCD", everything smaller gets eliminated, and nothing larger exists).
+        auto match = buffer.find_copy_in_seekback(5, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 6ul);
+        EXPECT_EQ(match.value().length, 4ul);
+    }
+
+    {
+        // Find the largest match with a length between 4 and 5 (all "ABCD", everything smaller never gets found, nothing larger exists).
+        auto match = buffer.find_copy_in_seekback(5, 4);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 6ul);
+        EXPECT_EQ(match.value().length, 4ul);
+    }
+
+    {
+        // Find the largest match with a length between 5 and 5 (nothing is found).
+        auto match = buffer.find_copy_in_seekback(5, 5);
+        EXPECT(!match.has_value());
+    }
+
+    {
+        // Find the largest match with a length between 1 and 2 (selected "AB", everything smaller gets eliminated).
+        // Since we have a tie, the first qualified match is preferred.
+        auto match = buffer.find_copy_in_seekback(Vector<size_t> { 6ul, 9ul }, 2, 1);
+        EXPECT_EQ(match.value().distance, 6ul);
+        EXPECT_EQ(match.value().length, 2ul);
+    }
+
+    {
+        // Check that we don't find anything for hints before the valid range.
+        auto match = buffer.find_copy_in_seekback(Vector<size_t> { 0ul }, 2, 1);
+        EXPECT(!match.has_value());
+    }
+
+    {
+        // Check that we don't find anything for hints after the valid range.
+        auto match = buffer.find_copy_in_seekback(Vector<size_t> { 12ul }, 2, 1);
+        EXPECT(!match.has_value());
+    }
+
+    {
+        // Check that we don't find anything for a minimum length beyond the whole buffer size.
+        auto match = buffer.find_copy_in_seekback(12, 13);
+        EXPECT(!match.has_value());
+    }
+}
+
+BENCHMARK_CASE(looping_copy_from_seekback)
+{
+    auto circular_buffer = MUST(CircularBuffer::create_empty(16 * MiB));
+
+    {
+        auto written_bytes = circular_buffer.write("\0"sv.bytes());
+        EXPECT_EQ(written_bytes, 1ul);
+    }
+
+    {
+        auto copied_bytes = TRY_OR_FAIL(circular_buffer.copy_from_seekback(1, 15 * MiB));
+        EXPECT_EQ(copied_bytes, 15 * MiB);
+    }
 }

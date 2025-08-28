@@ -10,6 +10,7 @@
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PropertyDescriptor.h>
 #include <LibJS/Runtime/Value.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS {
 
@@ -92,7 +93,7 @@ ThrowCompletionOr<PropertyDescriptor> to_property_descriptor(VM& vm, Value argum
 {
     // 1. If Type(Obj) is not Object, throw a TypeError exception.
     if (!argument.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, argument.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, argument.to_string_without_side_effects());
 
     auto& object = argument.as_object();
 

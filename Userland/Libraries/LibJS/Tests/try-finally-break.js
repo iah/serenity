@@ -339,3 +339,154 @@ test("labelled break in finally overrides labelled break in try", () => {
 
     expect(executionOrder).toEqual([1, 2]);
 });
+
+test("Throw while breaking", () => {
+    const executionOrder = [];
+    expect(() => {
+        try {
+            for (const i = 1337; ; expect().fail("Jumped to for loop update block")) {
+                try {
+                    executionOrder.push(1);
+                    break;
+                } finally {
+                    executionOrder.push(2);
+                    throw Error(1);
+                }
+            }
+        } finally {
+            executionOrder.push(3);
+        }
+        expect().fail("Running code after for loop");
+    }).toThrowWithMessage(Error, 1);
+
+    expect(() => {
+        i;
+    }).toThrowWithMessage(ReferenceError, "'i' is not defined");
+
+    expect(executionOrder).toEqual([1, 2, 3]);
+});
+
+test("Throw while breaking with nested try-catch in finalizer", () => {
+    const executionOrder = [];
+    try {
+        for (const i = 1337; ; expect().fail("Jumped to for loop update block")) {
+            try {
+                executionOrder.push(1);
+                break;
+            } finally {
+                try {
+                    throw 1;
+                } catch {
+                    executionOrder.push(2);
+                }
+                executionOrder.push(3);
+            }
+            expect().fail("Jumped out of inner finally statement");
+        }
+    } finally {
+        executionOrder.push(4);
+    }
+    expect(() => {
+        i;
+    }).toThrowWithMessage(ReferenceError, "'i' is not defined");
+
+    expect(executionOrder).toEqual([1, 2, 3, 4]);
+});
+
+test("Throw while breaking with nested try-catch-finally in finalizer", () => {
+    const executionOrder = [];
+    try {
+        for (const i = 1337; ; expect().fail("Jumped to for loop update block")) {
+            try {
+                executionOrder.push(1);
+                break;
+            } finally {
+                try {
+                    executionOrder.push(2);
+                } catch {
+                    expect.fail("Entered catch");
+                } finally {
+                    executionOrder.push(3);
+                }
+                executionOrder.push(4);
+            }
+            expect().fail("Jumped out of inner finally statement");
+        }
+    } finally {
+        executionOrder.push(5);
+    }
+    expect(() => {
+        i;
+    }).toThrowWithMessage(ReferenceError, "'i' is not defined");
+
+    expect(executionOrder).toEqual([1, 2, 3, 4, 5]);
+});
+
+test("Throw while breaking with nested try-catch-finally with throw in finalizer", () => {
+    const executionOrder = [];
+    try {
+        for (const i = 1337; ; expect().fail("Jumped to for loop update block")) {
+            try {
+                executionOrder.push(1);
+                break;
+            } finally {
+                try {
+                    throw 1;
+                } catch {
+                    executionOrder.push(2);
+                } finally {
+                    executionOrder.push(3);
+                }
+                executionOrder.push(4);
+            }
+            expect().fail("Jumped out of inner finally statement");
+        }
+    } finally {
+        executionOrder.push(5);
+    }
+    expect(() => {
+        i;
+    }).toThrowWithMessage(ReferenceError, "'i' is not defined");
+
+    expect(executionOrder).toEqual([1, 2, 3, 4, 5]);
+});
+
+test("Labelled break with nested mixed try-catch/finally", () => {
+    const executionOrder = [];
+    scope: {
+        try {
+            try {
+                executionOrder.push(1);
+                break scope;
+            } catch {
+                expect.fail("Entered catch");
+            }
+            expect.fail("Continued after inner try");
+        } finally {
+            executionOrder.push(2);
+        }
+        expect.fail("Continued after outer try");
+    }
+
+    expect(executionOrder).toEqual([1, 2]);
+});
+
+test("Break with nested mixed try-catch/finally", () => {
+    const executionOrder = [];
+    do {
+        try {
+            try {
+                executionOrder.push(1);
+                break;
+            } catch {
+                expect.fail("Entered catch");
+            }
+            expect.fail("Continued after inner try");
+        } finally {
+            executionOrder.push(2);
+        }
+        expect.fail("Continued after outer try");
+    } while (expect.fail("Continued after do-while loop"));
+
+    expect(executionOrder).toEqual([1, 2]);
+});

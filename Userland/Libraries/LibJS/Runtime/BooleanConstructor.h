@@ -12,9 +12,10 @@ namespace JS {
 
 class BooleanConstructor final : public NativeFunction {
     JS_OBJECT(BooleanConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(BooleanConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~BooleanConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

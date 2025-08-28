@@ -5,8 +5,9 @@
  */
 
 #include <Kernel/Bus/USB/USBTransfer.h>
+#include <Kernel/Library/StdLib.h>
+#include <Kernel/Library/UserOrKernelBuffer.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/StdLib.h>
 
 namespace Kernel::USB {
 
@@ -42,7 +43,7 @@ void Transfer::set_setup_packet(USBRequestData const& request)
     m_request = request;
 }
 
-ErrorOr<void> Transfer::write_buffer(u16 len, void* data)
+ErrorOr<void> Transfer::write_buffer(u16 len, void const* data)
 {
     VERIFY(len <= m_dma_buffer.size());
     m_transfer_data_size = len;
@@ -51,8 +52,17 @@ ErrorOr<void> Transfer::write_buffer(u16 len, void* data)
     return {};
 }
 
+ErrorOr<void> Transfer::write_buffer(u16 len, UserOrKernelBuffer const data)
+{
+    VERIFY(len <= m_dma_buffer.size());
+    m_transfer_data_size = len;
+    return data.read(buffer().as_ptr(), len);
+}
+
 void Transfer::invoke_async_callback()
 {
+    if (transfer_data_size() == 0)
+        return;
     if (m_callback)
         m_callback(this);
 }

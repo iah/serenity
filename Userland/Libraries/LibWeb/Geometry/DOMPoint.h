@@ -14,9 +14,11 @@ namespace Web::Geometry {
 // https://drafts.fxtf.org/geometry/#DOMPoint
 class DOMPoint final : public DOMPointReadOnly {
     WEB_PLATFORM_OBJECT(DOMPoint, DOMPointReadOnly);
+    JS_DECLARE_ALLOCATOR(DOMPoint);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMPoint>> construct_impl(JS::Realm&, double x = 0, double y = 0, double z = 0, double w = 1);
+    static JS::NonnullGCPtr<DOMPoint> construct_impl(JS::Realm&, double x = 0, double y = 0, double z = 0, double w = 1);
+    static JS::NonnullGCPtr<DOMPoint> create(JS::Realm&);
 
     static JS::NonnullGCPtr<DOMPoint> from_point(JS::VM&, DOMPointInit const&);
 
@@ -32,10 +34,13 @@ public:
     void set_z(double z) { m_z = z; }
     void set_w(double w) { m_w = w; }
 
+    virtual StringView interface_name() const override { return "DOMPoint"sv; }
+
 private:
     DOMPoint(JS::Realm&, double x, double y, double z, double w);
+    DOMPoint(JS::Realm&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

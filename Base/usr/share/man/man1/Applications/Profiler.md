@@ -2,7 +2,7 @@
 
 ![Icon](/res/icons/16x16/app-profiler.png) Profiler - Serenity process profiler
 
-[Open](file:///bin/Profiler)
+[Open](launch:///bin/Profiler)
 
 ## Synopsis
 
@@ -27,11 +27,11 @@ Profiler can also load performance information from previously created
 
 ## Options
 
-* `-p PID`, `--pid PID`: PID to profile
+-   `-p PID`, `--pid PID`: PID to profile
 
 ## Arguments
 
-* `perfcore-file`: Path of perfcore file to load
+-   `perfcore-file`: Path of perfcore file to load
 
 ## Examples
 
@@ -49,5 +49,5 @@ $ Profiler perfcore.123
 
 ## See also
 
-* [`perfcore`(5)](help://man/5/perfcore)
-
+-   [`perfcore`(5)](help://man/5/perfcore)
+-   [`profile`(1)](help://man/1/profile)

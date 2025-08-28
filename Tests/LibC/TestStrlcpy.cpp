@@ -22,7 +22,7 @@ struct Testcase {
     size_t dest_expected_n; // == dest_n
 };
 
-static DeprecatedString show(ByteBuffer const& buf)
+static ByteString show(ByteBuffer const& buf)
 {
     StringBuilder builder;
     for (size_t i = 0; i < buf.size(); ++i) {
@@ -37,7 +37,7 @@ static DeprecatedString show(ByteBuffer const& buf)
             builder.append('_');
     }
     builder.append(')');
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 static bool test_single(Testcase const& testcase)
@@ -56,7 +56,7 @@ static bool test_single(Testcase const& testcase)
 
     // Setup
     ByteBuffer actual = ByteBuffer::create_uninitialized(SANDBOX_CANARY_SIZE + testcase.dest_n + SANDBOX_CANARY_SIZE).release_value();
-    fill_with_random(actual.data(), actual.size());
+    fill_with_random(actual);
     ByteBuffer expected = actual;
     VERIFY(actual.offset_pointer(0) != expected.offset_pointer(0));
     actual.overwrite(SANDBOX_CANARY_SIZE, testcase.dest, testcase.dest_n);

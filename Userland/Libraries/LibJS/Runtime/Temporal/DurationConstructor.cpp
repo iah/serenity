@@ -10,18 +10,21 @@
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
 #include <LibJS/Runtime/Temporal/Duration.h>
 #include <LibJS/Runtime/Temporal/DurationConstructor.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(DurationConstructor);
+
 // 7.1 The Temporal.Duration Constructor, https://tc39.es/proposal-temporal/#sec-temporal-duration-constructor
 DurationConstructor::DurationConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Duration.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Duration.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> DurationConstructor::initialize(Realm& realm)
+void DurationConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -33,8 +36,6 @@ ThrowCompletionOr<void> DurationConstructor::initialize(Realm& realm)
     define_native_function(realm, vm.names.compare, compare, 2, attr);
 
     define_direct_property(vm.names.length, Value(0), Attribute::Configurable);
-
-    return {};
 }
 
 // 7.1.1 Temporal.Duration ( [ years [ , months [ , weeks [ , days [ , hours [ , minutes [ , seconds [ , milliseconds [ , microseconds [ , nanoseconds ] ] ] ] ] ] ] ] ] ] ), https://tc39.es/proposal-temporal/#sec-temporal.duration
@@ -83,7 +84,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> DurationConstructor::construct(FunctionO
     auto ns = TRY(to_integer_if_integral(vm, vm.argument(9), ErrorType::TemporalInvalidDuration));
 
     // 12. Return ? CreateTemporalDuration(y, mo, w, d, h, m, s, ms, mis, ns, NewTarget).
-    return *TRY(create_temporal_duration(vm, y, mo, w, d, h, m, s, ms, mis, ns, &new_target));
+    return TRY(create_temporal_duration(vm, y, mo, w, d, h, m, s, ms, mis, ns, &new_target));
 }
 
 // 7.2.2 Temporal.Duration.from ( item ), https://tc39.es/proposal-temporal/#sec-temporal.duration.from
@@ -107,16 +108,16 @@ JS_DEFINE_NATIVE_FUNCTION(DurationConstructor::from)
 JS_DEFINE_NATIVE_FUNCTION(DurationConstructor::compare)
 {
     // 1. Set one to ? ToTemporalDuration(one).
-    auto* one = TRY(to_temporal_duration(vm, vm.argument(0)));
+    auto one = TRY(to_temporal_duration(vm, vm.argument(0)));
 
     // 2. Set two to ? ToTemporalDuration(two).
-    auto* two = TRY(to_temporal_duration(vm, vm.argument(1)));
+    auto two = TRY(to_temporal_duration(vm, vm.argument(1)));
 
     // 3. Set options to ? GetOptionsObject(options).
     auto const* options = TRY(get_options_object(vm, vm.argument(2)));
 
     // 4. Let relativeTo be ? ToRelativeTemporalObject(options).
-    auto relative_to = TRY(to_relative_temporal_object(vm, *options));
+    auto relative_to = relative_to_converted_to_value(TRY(to_relative_temporal_object(vm, *options)));
 
     // 5. Let shift1 be ? CalculateOffsetShift(relativeTo, one.[[Years]], one.[[Months]], one.[[Weeks]], one.[[Days]]).
     auto shift1 = TRY(calculate_offset_shift(vm, relative_to, one->years(), one->months(), one->weeks(), one->days()));

@@ -2,7 +2,7 @@
 
 ![Icon](/res/icons/16x16/app-sql-studio.png) SQL Studio - SerenityOS SQL Manager
 
-[Open](file:///bin/SQLStudio)
+[Open](launch:///bin/SQLStudio)
 
 ## Synopsis
 
@@ -17,8 +17,8 @@ SQL scripts.
 
 ## Arguments
 
-* `script.sql`: SQL script to open, edit or run
-* `database.db`: SQL database to open and run scripts against
+-   `script.sql`: SQL script to open, edit or run
+-   `database.db`: SQL database to open and run scripts against
 
 ## Examples
 

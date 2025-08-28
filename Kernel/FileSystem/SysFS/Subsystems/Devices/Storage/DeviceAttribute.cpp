@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Storage/DeviceAttribute.h>
 #include <Kernel/Sections.h>
@@ -25,9 +24,9 @@ StringView StorageDeviceAttributeSysFSComponent::name() const
     }
 }
 
-NonnullLockRefPtr<StorageDeviceAttributeSysFSComponent> StorageDeviceAttributeSysFSComponent::must_create(StorageDeviceSysFSDirectory const& device_directory, Type type)
+NonnullRefPtr<StorageDeviceAttributeSysFSComponent> StorageDeviceAttributeSysFSComponent::must_create(StorageDeviceSysFSDirectory const& device_directory, Type type)
 {
-    return adopt_lock_ref(*new (nothrow) StorageDeviceAttributeSysFSComponent(device_directory, type));
+    return adopt_ref(*new (nothrow) StorageDeviceAttributeSysFSComponent(device_directory, type));
 }
 
 StorageDeviceAttributeSysFSComponent::StorageDeviceAttributeSysFSComponent(StorageDeviceSysFSDirectory const& device_directory, Type type)

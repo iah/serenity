@@ -4,19 +4,20 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <bits/sighow.h>
-
 //
 // /!\ Read setjmp.h before modifying this file!
 //
 
 .global _setjmp
 .global setjmp
+.type _setjmp, @function
+.type setjmp, @function
 _setjmp:
 setjmp:
     mov $0, %esi            // Set val argument to 0
 
 .global sigsetjmp
+.type sigsetjmp, @function
 sigsetjmp:
     mov %esi, 64(%rdi)      // Store val into did_save_signal_mask
     movl $0, 68(%rdi)       // Clear saved_signal_mask
@@ -42,12 +43,14 @@ sigsetjmp:
     mov %rbp, (5 * 8)(%rdi)
     mov %rsp, (6 * 8)(%rdi)
     mov (%rsp), %rax        // Grab return address
-    mov %rax, (7 * 8)(%rdi)    
+    mov %rax, (7 * 8)(%rdi)
     xor %eax, %eax
     ret
 
 .global _longjmp
 .global longjmp
+.type _longjmp, @function
+.type longjmp, @function
 _longjmp:
 longjmp:
     mov %esi, %eax

@@ -1,7 +1,8 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, the SerenityOS developers.
  * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2023, Srikavin Ramkumar <me@srikavin.me>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,7 +10,11 @@
 #pragma once
 
 #include <LibWeb/DOM/DocumentLoadEventDelayer.h>
+#include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
+#include <LibWeb/HTML/CORSSettingAttribute.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/Loader/Resource.h>
 
 namespace Web::HTML {
 
@@ -17,34 +22,111 @@ class HTMLLinkElement final
     : public HTMLElement
     , public ResourceClient {
     WEB_PLATFORM_OBJECT(HTMLLinkElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLLinkElement);
 
 public:
     virtual ~HTMLLinkElement() override;
 
     virtual void inserted() override;
+    virtual void removed_from(Node* old_parent) override;
 
-    DeprecatedString rel() const { return attribute(HTML::AttributeNames::rel); }
-    DeprecatedString type() const { return attribute(HTML::AttributeNames::type); }
-    DeprecatedString href() const { return attribute(HTML::AttributeNames::href); }
+    String rel() const { return get_attribute_value(HTML::AttributeNames::rel); }
+    String type() const { return get_attribute_value(HTML::AttributeNames::type); }
+    String href() const { return get_attribute_value(HTML::AttributeNames::href); }
+    String as() const;
+    WebIDL::ExceptionOr<void> set_as(String const&);
+
+    JS::NonnullGCPtr<DOM::DOMTokenList> rel_list();
 
     bool has_loaded_icon() const;
     bool load_favicon_and_use_if_window_is_active();
 
+    static WebIDL::ExceptionOr<void> load_fallback_favicon_if_needed(JS::NonnullGCPtr<DOM::Document>);
+
 private:
     HTMLLinkElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-    void parse_attribute(DeprecatedFlyString const&, DeprecatedString const&) override;
+    virtual void initialize(JS::Realm&) override;
+    virtual void attribute_changed(FlyString const&, Optional<String> const& old_value, Optional<String> const&) override;
 
     // ^ResourceClient
     virtual void resource_did_fail() override;
     virtual void resource_did_load() override;
 
-    // ^ HTMLElement
-    virtual void did_remove_attribute(DeprecatedFlyString const&) override;
+    // ^DOM::Node
+    virtual bool is_html_link_element() const override { return true; }
+
+    // ^HTMLElement
     virtual void visit_edges(Cell::Visitor&) override;
 
-    void resource_did_load_stylesheet();
+    struct LinkProcessingOptions {
+        // href (default the empty string)
+        String href {};
+        // destination (default the empty string)
+        Optional<Fetch::Infrastructure::Request::Destination> destination {};
+        // initiator (default "link")
+        Optional<Fetch::Infrastructure::Request::InitiatorType> initiator { Fetch::Infrastructure::Request::InitiatorType::Link };
+        // integrity (default the empty string)
+        String integrity {};
+        // type (default the empty string)
+        String type {};
+        // cryptographic nonce metadata (default the empty string)
+        //     A string
+        String cryptographic_nonce_metadata {};
+        // crossorigin (default No CORS)
+        //     A CORS settings attribute state
+        CORSSettingAttribute crossorigin { CORSSettingAttribute::NoCORS };
+        // referrer policy (default the empty string)
+        //      A referrer policy
+        ReferrerPolicy::ReferrerPolicy referrer_policy { ReferrerPolicy::ReferrerPolicy::EmptyString };
+        // FIXME: source set (default null)
+        //          Null or a source set
+        // base URL
+        //      A URL
+        URL::URL base_url;
+        // origin
+        //      An origin
+        URL::Origin origin;
+        // environment
+        //      An environment
+        JS::GCPtr<HTML::EnvironmentSettingsObject> environment;
+        // policy container
+        //      A policy container
+        HTML::PolicyContainer policy_container;
+        // document (default null)
+        //      Null or a Document
+        JS::GCPtr<Web::DOM::Document> document;
+        // FIXME: on document ready (default null)
+        //          Null or an algorithm accepting a Document
+        // fetch priority (default auto)
+        //      A fetch priority attribute state
+        Fetch::Infrastructure::Request::Priority fetch_priority { Fetch::Infrastructure::Request::Priority::Auto };
+    };
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#create-link-options-from-element
+    LinkProcessingOptions create_link_options();
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#create-a-link-request
+    JS::GCPtr<Fetch::Infrastructure::Request> create_link_request(LinkProcessingOptions const&);
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#linked-resource-fetch-setup-steps
+    bool linked_resource_fetch_setup_steps(Fetch::Infrastructure::Request&);
+
+    // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet:linked-resource-fetch-setup-steps
+    bool stylesheet_linked_resource_fetch_setup_steps(Fetch::Infrastructure::Request&);
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#fetch-and-process-the-linked-resource
+    void fetch_and_process_linked_resource();
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#process-the-linked-resource
+    void process_linked_resource(bool success, Fetch::Infrastructure::Response const&, Variant<Empty, Fetch::Infrastructure::FetchAlgorithms::ConsumeBodyFailureTag, ByteBuffer>);
+
+    // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet:process-the-linked-resource
+    void process_stylesheet_resource(bool success, Fetch::Infrastructure::Response const&, Variant<Empty, Fetch::Infrastructure::FetchAlgorithms::ConsumeBodyFailureTag, ByteBuffer>);
+
+    // https://html.spec.whatwg.org/multipage/semantics.html#default-fetch-and-process-the-linked-resource
+    void default_fetch_and_process_linked_resource();
+
     void resource_did_load_favicon();
 
     struct Relationship {
@@ -58,11 +140,15 @@ private:
         };
     };
 
-    RefPtr<Resource> m_preload_resource;
+    JS::GCPtr<Fetch::Infrastructure::FetchController> m_fetch_controller;
+
     JS::GCPtr<CSS::CSSStyleSheet> m_loaded_style_sheet;
 
     Optional<DOM::DocumentLoadEventDelayer> m_document_load_event_delayer;
+    JS::GCPtr<DOM::DOMTokenList> m_rel_list;
     unsigned m_relationship { 0 };
+    // https://html.spec.whatwg.org/multipage/semantics.html#explicitly-enabled
+    bool m_explicitly_enabled { false };
 };
 
 }

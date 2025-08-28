@@ -12,10 +12,10 @@
 #include <AK/Base64.h>
 #include <AK/JsonObject.h>
 #include <LibGUI/Painter.h>
-#include <LibGfx/BMPWriter.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/PNGWriter.h>
-#include <LibGfx/QOIWriter.h>
+#include <LibGfx/ImageFormats/BMPWriter.h>
+#include <LibGfx/ImageFormats/PNGWriter.h>
+#include <LibGfx/ImageFormats/QOIWriter.h>
 #include <LibImageDecoderClient/Client.h>
 #include <stdio.h>
 
@@ -50,25 +50,18 @@ void Image::paint_into(GUI::Painter& painter, Gfx::IntRect const& dest_rect, flo
     }
 }
 
-ErrorOr<NonnullRefPtr<Gfx::Bitmap>> Image::decode_bitmap(ReadonlyBytes bitmap_data)
+ErrorOr<NonnullRefPtr<Gfx::Bitmap>> Image::decode_bitmap(ReadonlyBytes bitmap_data, Optional<StringView> guessed_mime_type)
 {
     // Spawn a new ImageDecoder service process and connect to it.
     auto client = TRY(ImageDecoderClient::Client::try_create());
+    auto optional_mime_type = guessed_mime_type.map([](auto mime_type) { return mime_type.to_byte_string(); });
 
     // FIXME: Find a way to avoid the memory copying here.
-    auto maybe_decoded_image = client->decode_image(bitmap_data);
-    if (!maybe_decoded_image.has_value())
-        return Error::from_string_literal("Image decode failed");
+    // FIXME: Support multi-frame images
+    // FIXME: Refactor image decoding to be more async-aware, and don't await this promise
+    auto decoded_image = TRY(client->decode_image(bitmap_data, {}, {}, OptionalNone {}, optional_mime_type)->await());
 
-    // FIXME: Support multi-frame images?
-    auto decoded_image = maybe_decoded_image.release_value();
-    if (decoded_image.frames.is_empty())
-        return Error::from_string_literal("Image decode failed (no frames)");
-
-    auto decoded_bitmap = decoded_image.frames.first().bitmap;
-    if (decoded_bitmap.is_null())
-        return Error::from_string_literal("Image decode failed (no bitmap for frame)");
-    return decoded_bitmap.release_nonnull();
+    return decoded_image.frames.first().bitmap;
 }
 
 ErrorOr<NonnullRefPtr<Image>> Image::create_from_bitmap(NonnullRefPtr<Gfx::Bitmap> const& bitmap)
@@ -87,17 +80,17 @@ ErrorOr<NonnullRefPtr<Image>> Image::create_from_pixel_paint_json(JsonObject con
     auto layers_value = json.get_array("layers"sv).value();
     for (auto& layer_value : layers_value.values()) {
         auto const& layer_object = layer_value.as_object();
-        auto name = layer_object.get_deprecated_string("name"sv).value();
+        auto name = layer_object.get_byte_string("name"sv).value();
 
-        auto bitmap_base64_encoded = layer_object.get_deprecated_string("bitmap"sv).value();
+        auto bitmap_base64_encoded = layer_object.get_byte_string("bitmap"sv).value();
         auto bitmap_data = TRY(decode_base64(bitmap_base64_encoded));
-        auto bitmap = TRY(decode_bitmap(bitmap_data));
+        auto bitmap = TRY(decode_bitmap(bitmap_data, {}));
         auto layer = TRY(Layer::create_with_bitmap(*image, move(bitmap), name));
 
-        if (auto const& mask_object = layer_object.get_deprecated_string("mask"sv); mask_object.has_value()) {
+        if (auto const& mask_object = layer_object.get_byte_string("mask"sv); mask_object.has_value()) {
             auto mask_base64_encoded = mask_object.value();
             auto mask_data = TRY(decode_base64(mask_base64_encoded));
-            auto mask = TRY(decode_bitmap(mask_data));
+            auto mask = TRY(decode_bitmap(mask_data, {}));
             TRY(layer->set_bitmaps(layer->content_bitmap(), mask));
         }
 
@@ -176,9 +169,8 @@ ErrorOr<void> Image::export_bmp_to_file(NonnullOwnPtr<Stream> stream, bool prese
     auto bitmap_format = preserve_alpha_channel ? Gfx::BitmapFormat::BGRA8888 : Gfx::BitmapFormat::BGRx8888;
     auto bitmap = TRY(compose_bitmap(bitmap_format));
 
-    Gfx::BMPWriter dumper;
-    auto encoded_data = dumper.dump(bitmap);
-    TRY(stream->write_entire_buffer(encoded_data));
+    auto encoded_data = TRY(Gfx::BMPWriter::encode(*bitmap));
+    TRY(stream->write_until_depleted(encoded_data));
     return {};
 }
 
@@ -188,7 +180,7 @@ ErrorOr<void> Image::export_png_to_file(NonnullOwnPtr<Stream> stream, bool prese
     auto bitmap = TRY(compose_bitmap(bitmap_format));
 
     auto encoded_data = TRY(Gfx::PNGWriter::encode(*bitmap));
-    TRY(stream->write_entire_buffer(encoded_data));
+    TRY(stream->write_until_depleted(encoded_data));
     return {};
 }
 
@@ -196,22 +188,33 @@ ErrorOr<void> Image::export_qoi_to_file(NonnullOwnPtr<Stream> stream) const
 {
     auto bitmap = TRY(compose_bitmap(Gfx::BitmapFormat::BGRA8888));
 
-    auto encoded_data = Gfx::QOIWriter::encode(bitmap);
-    TRY(stream->write_entire_buffer(encoded_data));
+    auto encoded_data = TRY(Gfx::QOIWriter::encode(bitmap));
+    TRY(stream->write_until_depleted(encoded_data));
     return {};
+}
+
+void Image::insert_layer(NonnullRefPtr<Layer> layer, size_t index)
+{
+    VERIFY(index <= m_layers.size());
+
+    for (auto& existing_layer : m_layers) {
+        VERIFY(existing_layer != layer);
+    }
+
+    if (index == m_layers.size())
+        m_layers.append(move(layer));
+    else
+        m_layers.insert(index, move(layer));
+
+    for (auto* client : m_clients)
+        client->image_did_add_layer(index);
+
+    did_modify_layer_stack();
 }
 
 void Image::add_layer(NonnullRefPtr<Layer> layer)
 {
-    for (auto& existing_layer : m_layers) {
-        VERIFY(existing_layer != layer);
-    }
-    m_layers.append(move(layer));
-
-    for (auto* client : m_clients)
-        client->image_did_add_layer(m_layers.size() - 1);
-
-    did_modify_layer_stack();
+    insert_layer(move(layer), m_layers.size());
 }
 
 ErrorOr<NonnullRefPtr<Image>> Image::take_snapshot() const
@@ -511,7 +514,7 @@ void Image::did_change_rect(Gfx::IntRect const& a_modified_rect)
         client->image_did_change_rect(modified_rect);
 }
 
-ImageUndoCommand::ImageUndoCommand(Image& image, DeprecatedString action_text)
+ImageUndoCommand::ImageUndoCommand(Image& image, ByteString action_text)
     : m_snapshot(image.take_snapshot().release_value_but_fixme_should_propagate_errors())
     , m_image(image)
     , m_action_text(move(action_text))
@@ -594,21 +597,24 @@ ErrorOr<void> Image::rotate(Gfx::RotationDirection direction)
 
 ErrorOr<void> Image::crop(Gfx::IntRect const& cropped_rect)
 {
+    VERIFY(!cropped_rect.is_empty());
+
     Vector<NonnullRefPtr<Layer>> cropped_layers;
     TRY(cropped_layers.try_ensure_capacity(m_layers.size()));
 
     VERIFY(m_layers.size() > 0);
 
-    size_t selected_layer_index = 0;
-    for (size_t i = 0; i < m_layers.size(); ++i) {
-        auto& layer = m_layers[i];
-        auto new_layer = TRY(Layer::create_snapshot(*this, layer));
-
+    RefPtr<Layer> selected_layer;
+    for (auto const& layer : m_layers) {
         if (layer->is_selected())
-            selected_layer_index = i;
+            selected_layer = layer;
 
-        auto layer_location = new_layer->location();
-        auto layer_local_crop_rect = new_layer->relative_rect().intersected(cropped_rect).translated(-layer_location.x(), -layer_location.y());
+        auto layer_location = layer->location();
+        auto layer_local_crop_rect = layer->relative_rect().intersected(cropped_rect).translated(-layer_location.x(), -layer_location.y());
+        if (!layer->rect().intersects(layer_local_crop_rect))
+            continue;
+
+        auto new_layer = TRY(Layer::create_snapshot(*this, layer));
         TRY(new_layer->crop(layer_local_crop_rect, Layer::NotifyClients::No));
 
         auto new_layer_x = max(0, layer_location.x() - cropped_rect.x());
@@ -619,11 +625,23 @@ ErrorOr<void> Image::crop(Gfx::IntRect const& cropped_rect)
         cropped_layers.unchecked_append(new_layer);
     }
 
-    m_layers = move(cropped_layers);
-    for (auto& layer : m_layers)
-        layer->did_modify_bitmap({}, Layer::NotifyClients::Yes);
+    if (cropped_layers.is_empty()) {
+        auto layer_name = selected_layer ? selected_layer->name() : "Background";
+        auto new_layer = TRY(Layer::create_with_size(*this, cropped_rect.size(), layer_name));
+        new_layer->set_selected(true);
+        cropped_layers.append(new_layer);
+    }
 
-    select_layer(m_layers[selected_layer_index]);
+    auto new_selected_layer = cropped_layers.last_matching([](auto& layer) {
+        return layer->is_selected();
+    });
+    selected_layer = new_selected_layer.has_value() ? new_selected_layer.release_value() : cropped_layers.first();
+    selected_layer->set_selected(true);
+
+    m_layers = move(cropped_layers);
+
+    select_layer(selected_layer);
+    did_modify_layer_stack();
 
     m_size = { cropped_rect.width(), cropped_rect.height() };
     did_change_rect(cropped_rect);
@@ -640,7 +658,8 @@ Optional<Gfx::IntRect> Image::nonempty_content_bounding_rect() const
     for (auto const& layer : m_layers) {
         auto layer_content_rect_in_layer_coordinates = layer->nonempty_content_bounding_rect();
         if (!layer_content_rect_in_layer_coordinates.has_value())
-            continue;
+            layer_content_rect_in_layer_coordinates = layer->rect();
+
         auto layer_content_rect_in_image_coordinates = layer_content_rect_in_layer_coordinates->translated(layer->location());
         if (!bounding_rect.has_value())
             bounding_rect = layer_content_rect_in_image_coordinates;
@@ -648,10 +667,14 @@ Optional<Gfx::IntRect> Image::nonempty_content_bounding_rect() const
             bounding_rect = bounding_rect->united(layer_content_rect_in_image_coordinates);
     }
 
+    bounding_rect->intersect(rect());
+    if (bounding_rect == rect())
+        return OptionalNone {};
+
     return bounding_rect;
 }
 
-ErrorOr<void> Image::resize(Gfx::IntSize new_size, Gfx::Painter::ScalingMode scaling_mode)
+ErrorOr<void> Image::resize(Gfx::IntSize new_size, Gfx::ScalingMode scaling_mode)
 {
     float scale_x = 1.0f;
     float scale_y = 1.0f;
@@ -664,30 +687,35 @@ ErrorOr<void> Image::resize(Gfx::IntSize new_size, Gfx::Painter::ScalingMode sca
         scale_y = new_size.height() / static_cast<float>(size().height());
     }
 
-    Vector<NonnullRefPtr<Layer>> resized_layers;
-    TRY(resized_layers.try_ensure_capacity(m_layers.size()));
+    if (scaling_mode != Gfx::ScalingMode::None) {
+        Vector<NonnullRefPtr<Layer>> scaled_layers;
+        TRY(scaled_layers.try_ensure_capacity(m_layers.size()));
 
-    VERIFY(m_layers.size() > 0);
+        VERIFY(m_layers.size() > 0);
 
-    size_t selected_layer_index = 0;
-    for (size_t i = 0; i < m_layers.size(); ++i) {
-        auto& layer = m_layers[i];
-        auto new_layer = TRY(Layer::create_snapshot(*this, layer));
+        size_t selected_layer_index = 0;
+        for (size_t i = 0; i < m_layers.size(); ++i) {
+            auto& layer = m_layers[i];
+            auto new_layer = TRY(Layer::create_snapshot(*this, layer));
 
-        if (layer->is_selected())
-            selected_layer_index = i;
+            if (layer->is_selected())
+                selected_layer_index = i;
 
-        Gfx::IntPoint new_location(scale_x * new_layer->location().x(), scale_y * new_layer->location().y());
-        TRY(new_layer->resize(new_size, new_location, scaling_mode, Layer::NotifyClients::No));
+            auto layer_rect = layer->relative_rect().to_type<float>();
+            auto scaled_top_left = layer_rect.top_left().scaled(scale_x, scale_y).to_rounded<int>();
+            auto scaled_bottom_right = layer_rect.bottom_right().scaled(scale_x, scale_y).to_rounded<int>();
+            auto scaled_layer_rect = Gfx::IntRect::from_two_points(scaled_top_left, scaled_bottom_right);
+            TRY(new_layer->scale(scaled_layer_rect, scaling_mode, Layer::NotifyClients::No));
 
-        resized_layers.unchecked_append(new_layer);
+            scaled_layers.unchecked_append(new_layer);
+        }
+
+        m_layers = move(scaled_layers);
+        for (auto& layer : m_layers)
+            layer->did_modify_bitmap({}, Layer::NotifyClients::Yes);
+
+        select_layer(m_layers[selected_layer_index]);
     }
-
-    m_layers = move(resized_layers);
-    for (auto& layer : m_layers)
-        layer->did_modify_bitmap({}, Layer::NotifyClients::Yes);
-
-    select_layer(m_layers[selected_layer_index]);
 
     m_size = { new_size.width(), new_size.height() };
     did_change_rect();

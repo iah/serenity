@@ -80,7 +80,7 @@ host_env() {
     enable_ccache
 }
 
-packagesdb="${DESTDIR}/usr/Ports/packages.db"
+installedpackagesdb="${DESTDIR}/usr/Ports/installed.db"
 
 makeopts=("-j${MAKEJOBS}")
 installopts=()
@@ -93,9 +93,6 @@ use_fresh_config_sub=false
 use_fresh_config_guess=false
 depends=()
 patchlevel=1
-auth_type=
-auth_import_key=
-auth_opts=()
 launcher_name=
 launcher_category=
 launcher_command=
@@ -115,9 +112,16 @@ else
     PORT_BUILD_DIR="${SERENITY_BUILD_DIR}/Ports/${port}"
 fi
 
-
 mkdir -p "${PORT_BUILD_DIR}"
 cd "${PORT_BUILD_DIR}"
+
+# 1 = url
+# 2 = sha256sum
+FILES_SIMPLE_PATTERN='^(https?:\/\/.+)#([0-9a-f]{64})$'
+
+# 1 = repository
+# 2 = revision
+FILES_GIT_PATTERN='^git\+(.+)#(.+)$'
 
 cleanup_git() {
     echo "WARNING: Reverting changes to $workdir as we are in dev mode!"
@@ -217,22 +221,24 @@ install_icon() {
     local icon="$1"
     local launcher="$2"
 
-    command -v convert >/dev/null || true
-    local convert_exists=$?
-    command -v identify >/dev/null || true
-    local identify_exists=$?
-
-    if [ "${convert_exists}" != "0" ] || [ "${identify_exists}" != 0 ]; then
-        echo 'Unable to install icon: missing convert or identify, did you install ImageMagick?'
-        return
+    if command -v magick >/dev/null; then
+        magick_convert=magick
+    elif command -v convert >/dev/null; then
+        magick_convert=convert
+    else
+        magick_convert=""
+    fi
+    if [ -z "${magick_convert}" ] || ! command -v identify >/dev/null; then
+        echo 'Unable to install icon: missing magick/convert or identify, did you install ImageMagick?'
+        exit 1
     fi
 
     for icon_size in "16x16" "32x32"; do
-        index=$(run identify "$icon" | grep "$icon_size" | grep -oE "\[[0-9]+\]" | tr -d "[]" | head -n1)
+        index=$(run identify -format '%p;%wx%h\n' "$icon" | grep "$icon_size" | cut -d";" -f1 | head -n1)
         if [ -n "$index" ]; then
-            run convert "${icon}[${index}]" "app-${icon_size}.png"
+            run "${magick_convert}" "${icon}[${index}]" "app-${icon_size}.png"
         else
-            run convert "$icon[0]" -resize $icon_size "app-${icon_size}.png"
+            run "${magick_convert}" "$icon[0]" -resize $icon_size "app-${icon_size}.png"
         fi
     done
     run $OBJCOPY --add-section serenity_icon_s="app-16x16.png" "${DESTDIR}${launcher}"
@@ -300,138 +306,129 @@ do_download_file() {
     local filename="$2"
     local accept_existing="${3:-true}"
 
-    echo "Downloading URL: ${url}"
-
-    # FIXME: Serenity's curl port does not support https, even with openssl installed.
-    if which curl >/dev/null 2>&1 && ! curl https://example.com -so /dev/null; then
-        url=$(echo "$url" | sed "s/^https:\/\//http:\/\//")
-    fi
-
-    # download files
     if $accept_existing && [ -f "$filename" ]; then
         echo "$filename already exists"
+        return
+    fi
+
+    echo "Downloading URL: ${url}"
+
+    if which curl; then
+        run_nocd curl ${curlopts:-} "$url" -L -o "$filename"
     else
-        if which curl; then
-            run_nocd curl ${curlopts:-} "$url" -L -o "$filename"
-        else
-            run_nocd pro "$url" > "$filename"
+        run_nocd pro "$url" > "$filename"
+    fi
+}
+
+fetch_simple() {
+    url="${1}"
+    checksum="${2}"
+
+    filename="$(basename "${url}")"
+
+    tried_download_again=0
+
+    while true; do
+        do_download_file "${url}" "${PORT_META_DIR}/${filename}"
+
+        actual_checksum="$(sha256sum "${PORT_META_DIR}/${filename}" | cut -f1 -d' ')"
+
+        if [ "${actual_checksum}" = "${checksum}" ]; then
+            break
         fi
+
+        echo "SHA256 checksum of downloaded file '${filename}' does not match!"
+        echo "Expected: ${checksum}"
+        echo "Actual:   ${actual_checksum}"
+        rm -f "${PORT_META_DIR}/${filename}"
+        echo "Removed erroneous download."
+        if [ "${tried_download_again}" -eq 1 ]; then
+            echo "Please run script again."
+            exit 1
+        fi
+        echo "Trying to download the file again."
+        tried_download_again=1
+    done
+
+    if [ ! -f "$workdir"/.${filename}_extracted ]; then
+        case "$filename" in
+            *.tar.gz|*.tar.bz|*.tar.bz2|*.tar.xz|*.tar.lz|*.tar.zst|.tbz*|*.txz|*.tgz)
+                run_nocd tar -xf "${PORT_META_DIR}/${filename}"
+                run touch ".${filename}_extracted"
+                ;;
+            *.gz)
+                run_nocd gunzip "${PORT_META_DIR}/${filename}"
+                run touch ".${filename}_extracted"
+                ;;
+            *.zip)
+                run_nocd bsdtar xf "${PORT_META_DIR}/${filename}" || run_nocd unzip -qo "${PORT_META_DIR}/${filename}"
+                run touch ".${filename}_extracted"
+                ;;
+            *.exe|*.htm)
+                cp "${PORT_META_DIR}/${filename}" ./
+                ;;
+            *)
+                echo "Note: no case for file $filename."
+                cp "${PORT_META_DIR}/${filename}" ./
+                ;;
+        esac
+    fi
+}
+
+fetch_git() {
+    repository="${1}"
+    revision="${2}"
+
+    directory="$(basename "${repository}")"
+    backing_copy="${PORT_META_DIR}/${directory}"
+    working_copy="${PORT_BUILD_DIR}/${workdir}"
+
+    run_nocd git init --bare "${backing_copy}"
+    run_nocd git -C "${backing_copy}" config core.autocrlf false
+    run_nocd git -C "${backing_copy}" worktree prune
+    run_nocd git -C "${backing_copy}" fetch --tags "${repository}" "${revision}"
+
+    revision="$(git -C "${backing_copy}" rev-parse FETCH_HEAD)"
+
+    if [ ! -e "${working_copy}/.git" ]; then
+        run_nocd git -C "${backing_copy}" worktree add "${working_copy}" "${revision}"
+        run_nocd git -C "${working_copy}" submodule update --init --recursive
+    fi
+
+    old_revision=""
+    if [ -e "${backing_copy}/refs/tags/source" ]; then
+        old_revision="$(git -C "${working_copy}" rev-parse refs/tags/source)"
+    fi
+
+    if ! [ "${old_revision}" = "${revision}" ]; then
+        run_nocd git -C "${working_copy}" clean -ffdx
+        run_nocd git -C "${working_copy}" reset --hard
+        run_nocd git -C "${working_copy}" tag --no-sign -f source "${revision}"
+        run_nocd git -C "${working_copy}" checkout "${revision}"
+        run_nocd git -C "${working_copy}" submodule update --init --recursive
     fi
 }
 
 fetch() {
     pre_fetch
 
-    if [ "$auth_type" = "sig" ] && [ ! -z "${auth_import_key}" ]; then
-        # import gpg key if not existing locally
-        # The default keyserver keys.openpgp.org prints "new key but contains no user ID - skipped"
-        # and fails. Use a different key server.
-        gpg --list-keys $auth_import_key || gpg --keyserver hkps://keyserver.ubuntu.com --recv-key $auth_import_key
-    fi
-
-    tried_download_again=0
-
-    while true; do
-        OLDIFS=$IFS
-        IFS=$'\n'
-        for f in $files; do
-            IFS=$OLDIFS
-            read url filename auth_sum<<< $(echo "$f")
-            do_download_file "$url" "${PORT_META_DIR}/${filename}"
-        done
-
-        verification_failed=0
-
-        OLDIFS=$IFS
-        IFS=$'\n'
-        for f in $files; do
-            IFS=$OLDIFS
-            read url filename auth_sum<<< $(echo "$f")
-
-            # check sha256sum if given
-            if [ "$auth_type" = "sha256" ]; then
-                echo "Expecting ${auth_type}sum: $auth_sum"
-                calc_sum="$(sha256sum "${PORT_META_DIR}/${filename}" | cut -f1 -d' ')"
-                echo "${auth_type}sum($filename) = '$calc_sum'"
-                if [ "$calc_sum" != "$auth_sum" ]; then
-                    # remove downloaded file to re-download on next run
-                    rm -f "${PORT_META_DIR}/${filename}"
-                    echo "${auth_type}sums mismatching, removed erronous download."
-                    if [ $tried_download_again -eq 1 ]; then
-                        echo "Please run script again."
-                        exit 1
-                    fi
-                    echo "Trying to download the files again."
-                    tried_download_again=1
-                    verification_failed=1
-                fi
-            fi
-        done
-
-        # check signature
-        if [ "$auth_type" = "sig" ]; then
-            if $NO_GPG; then
-                echo "WARNING: gpg signature check was disabled by --no-gpg-verification"
-            else
-                if $(cd "${PORT_META_DIR}" && gpg --verify "${auth_opts[@]}"); then
-                    echo "- Signature check OK."
-                else
-                    echo "- Signature check NOT OK"
-                    for f in $files; do
-                        rm -f $f
-                    done
-                    rm -rf "$workdir"
-                    echo "  Signature mismatching, removed erronous download."
-                    if [ $tried_download_again -eq 1 ]; then
-                        echo "Please run script again."
-                        exit 1
-                    fi
-                    echo "Trying to download the files again."
-                    tried_download_again=1
-                    verification_failed=1
-                fi
-            fi
+    for f in "${files[@]}"; do
+        if [[ "${f}" =~ ${FILES_SIMPLE_PATTERN} ]]; then
+            url="${BASH_REMATCH[1]}"
+            sha256sum="${BASH_REMATCH[2]}"
+            fetch_simple "${url}" "${sha256sum}"
+            continue
         fi
 
-        if [ $verification_failed -ne 1 ]; then
-            break
+        if [[ "${f}" =~ ${FILES_GIT_PATTERN} ]]; then
+            repository="${BASH_REMATCH[1]}"
+            revision="${BASH_REMATCH[2]}"
+            fetch_git "${repository}" "${revision}"
+            continue
         fi
-    done
 
-    # extract
-    OLDIFS=$IFS
-    IFS=$'\n'
-    for f in $files; do
-        IFS=$OLDIFS
-        read url filename auth_sum<<< $(echo "$f")
-
-        if [ ! -f "$workdir"/.${filename}_extracted ]; then
-            case "$filename" in
-                *.tar.gz|*.tgz)
-                    run_nocd tar -xzf "${PORT_META_DIR}/${filename}"
-                    run touch .${filename}_extracted
-                    ;;
-                *.tar.gz|*.tar.bz|*.tar.bz2|*.tar.xz|*.tar.lz|.tbz*|*.txz|*.tgz)
-                    run_nocd tar -xf "${PORT_META_DIR}/${filename}"
-                    run touch .${filename}_extracted
-                    ;;
-                *.gz)
-                    run_nocd gunzip "${PORT_META_DIR}/${filename}"
-                    run touch .${filename}_extracted
-                    ;;
-                *.zip)
-                    run_nocd bsdtar xf "${PORT_META_DIR}/${filename}" || run_nocd unzip -qo "${PORT_META_DIR}/${filename}"
-                    run touch .${filename}_extracted
-                    ;;
-                *.asc)
-                    run_nocd gpg --import "${PORT_META_DIR}/${filename}" || true
-                    ;;
-                *)
-                    echo "Note: no case for file $filename."
-                    cp "${PORT_META_DIR}/${filename}" ./
-                    ;;
-            esac
-        fi
+        echo "error: Unknown syntax for files entry '${f}'"
+        exit 1
     done
 
     post_fetch
@@ -445,16 +442,30 @@ func_defined pre_patch || pre_patch() {
     :
 }
 
-func_defined patch_internal || patch_internal() {
+patch_internal() {
+    if [ -n "${IN_SERENITY_PORT_DEV:-}" ]; then
+        return
+    fi
+
     # patch if it was not yet patched (applying patches multiple times doesn't work!)
-    if [ -z "${IN_SERENITY_PORT_DEV:-}" ] && [ -d "${PORT_META_DIR}/patches" ]; then
+    if [ -d "${PORT_META_DIR}/patches" ]; then
         for filepath in "${PORT_META_DIR}"/patches/*.patch; do
             filename=$(basename $filepath)
-            if [ ! -f "$workdir"/.${filename}_applied ]; then
+            if [ -f "$workdir"/.${filename}_applied ]; then
+                continue
+            fi
+
+            if [ -e "${workdir}/.git" ]; then
+                run git am --keep-cr --keep-non-patch "${filepath}"
+            else
                 run patch -p"$patchlevel" < "$filepath"
                 run touch .${filename}_applied
             fi
         done
+    fi
+
+    if [ -e "${workdir}/.git" ]; then
+        run git tag --no-sign -f patched
     fi
 }
 func_defined pre_configure || pre_configure() {
@@ -481,15 +492,26 @@ func_defined post_install || post_install() {
     :
 }
 clean() {
-    rm -rf "${PORT_BUILD_DIR}"
+    rm -rf "${PORT_BUILD_DIR}/"*
 }
 clean_dist() {
-    OLDIFS=$IFS
-    IFS=$'\n'
-    for f in $files; do
-        IFS=$OLDIFS
-        read url filename hash <<< $(echo "$f")
-        rm -f "${PORT_META_DIR}/${filename}"
+    for f in "${files[@]}"; do
+        if [[ "${f}" =~ ${FILES_SIMPLE_PATTERN} ]]; then
+            url="${BASH_REMATCH[1]}"
+            filename=$(basename "$url")
+            rm -f "${PORT_META_DIR}/${filename}"
+            continue
+        fi
+
+        if [[ "${f}" =~ ${FILES_GIT_PATTERN} ]]; then
+            repository="${BASH_REMATCH[1]}"
+            directory=$(basename "$repository")
+            rm -rf "${PORT_META_DIR}/${directory}"
+            continue
+        fi
+
+        echo "error: Unknown syntax for files entry '${f}'"
+        exit 1
     done
 }
 clean_all() {
@@ -503,27 +525,27 @@ addtodb() {
         return
     fi
     if [ "${1:-}" = "--auto" ]; then
-        echo "auto $port $version" >> "$packagesdb"
+        echo "auto $port $version" >> "$installedpackagesdb"
     else
-        echo "manual $port $version" >> "$packagesdb"
+        echo "manual $port $version" >> "$installedpackagesdb"
     fi
     if [ "${#depends[@]}" -gt 0 ]; then
-        echo "dependency $port ${depends[@]}" >> "$packagesdb"
+        echo "dependency $port ${depends[@]}" >> "$installedpackagesdb"
     fi
     echo "Successfully installed $port $version."
 }
-ensure_packagesdb() {
-    if [ ! -f "$packagesdb" ]; then
-        mkdir -p "$(dirname $packagesdb)"
-        touch "$packagesdb"
+ensure_installedpackagesdb() {
+    if [ ! -f "$installedpackagesdb" ]; then
+        mkdir -p "$(dirname $installedpackagesdb)"
+        touch "$installedpackagesdb"
     fi
 }
 package_install_state() {
     local port=$1
     local version=${2:-}
 
-    ensure_packagesdb
-    grep -E "^(auto|manual) $port $version" "$packagesdb" | cut -d' ' -f1
+    ensure_installedpackagesdb
+    grep -E "^(auto|manual) $port $version" "$installedpackagesdb" | cut -d' ' -f1
 }
 installdepends() {
     for depend in "${depends[@]}"; do
@@ -563,8 +585,8 @@ uninstall() {
         esac
     done
     # Without || true, mv will not be executed if you are uninstalling your only remaining port.
-    grep -v "^manual $port " "$packagesdb" > packages.db.tmp || true
-    mv packages.db.tmp "$packagesdb"
+    grep -v "^manual $port " "$installedpackagesdb" > installed.db.tmp || true
+    mv installed.db.tmp "$installedpackagesdb"
 }
 do_installdepends() {
     buildstep_intro "Installing dependencies of $port..."
@@ -773,74 +795,35 @@ do_dev() {
         exit 1
     fi
 
-    [ -d "$workdir" ] || (
+    if [ "${1:-}" != "--no-depends" ]; then
+        do_installdepends
+    fi
+    if [ -d "$workdir" ] && [ ! -e "$workdir/.git" ]; then
+        if prompt_yes_no "- Would you like to clean the working directory (i.e. ./package.sh clean)?"; then
+            do_clean
+        fi
+    fi
+
+    local force_patch_regeneration='false'
+
+    [ -d "$workdir" ] || {
         do_fetch
         pushd "$workdir"
-        if [ ! -d ".git" ]; then
+        if [ ! -e ".git" ]; then
             git init .
             git config core.autocrlf false
             git add --all --force
             git commit -a -m 'Initial import'
-            git tag import
+            git tag --no-sign source
         fi
 
-        # Import patches as commits, or ask the user to commit them
-        # if they're not git patches already.
         if [ -d "${PORT_META_DIR}/patches" ] && [ -n "$(find -L "${PORT_META_DIR}/patches" -maxdepth 1 -name '*.patch' -print -quit)" ]; then
             for patch in "${PORT_META_DIR}"/patches/*.patch; do
-                if [ -f "$workdir/.$(basename $patch).applied" ]; then
-                    continue
-                fi
-
-                echo "Importing patch $(basename "${patch}")..."
-                git am --keep-cr --keep-non-patch "$patch" >/dev/null 2>&1 || {
-                    git am --abort >/dev/null 2>&1 || true
-                    if git apply < $patch; then
-                        git add -A
-                        if prompt_yes_no "- This patch does not appear to be a git patch, would you like to modify its changes before continuing?"; then
-                            >&2 echo "Apply any changes you want, commit them into the current repo and quit this shell to continue."
-
-                            launch_user_shell
-                        fi
-                        main_author=''
-                        co_authors=()
-                        while read -r line; do
-                            author="$(echo "$line" | cut -f2 -d'	')"
-                            if [[ -z "$main_author" ]]; then
-                                main_author="$author"
-                            else
-                                co_authors+=("$author")
-                            fi
-                        done < <(git -C "${PORT_META_DIR}" shortlog -esn -- "patches/$(basename "$patch")")
-
-                        if [[ -n "$main_author" ]]; then
-                            date="$(git -C "${PORT_META_DIR}" log --format=%ad -n1 -- "patches/$(basename "$patch")")"
-                            >&2 echo -n "- This patch was authored by $main_author"
-                            if [[ ${#co_authors[@]} -ne 0 ]]; then
-                                >&2 echo -n " (and ${co_authors[*]})"
-                            fi
-                            >&2 echo " at $date"
-                            if prompt_yes_no_default_yes "- Would you like to preserve that information?"; then
-                                trailers=()
-                                for a in "${co_authors[@]}"; do
-                                    trailers+=("--trailer" "Co-Authored-By: $a")
-                                done
-                                git commit --verbose --author "$main_author" --date "$date" "${trailers[@]}"
-                            else
-                                >&2 echo " Okay, using your current git identity as the author."
-                                git commit --verbose
-                            fi
-                        else
-                            git commit --verbose
-                        fi
-                    else
-                        # The patch didn't apply, oh no!
-                        # Ask the user to figure it out :shrug:
-                        git am "$patch" || true
-                        >&2 echo "- This patch does not apply, you'll be dropped into a shell to investigate and fix this, quit the shell when the problem is resolved."
-                        >&2 echo "Note that the patch needs to be committed into the current repository!"
-                        launch_user_shell
-                    fi
+                if ! git am --keep-cr --keep-non-patch --3way "$patch"; then
+                    # The patch didn't apply, oh no!
+                    # `git am` already printed instructions, so drop into a shell for the user to follow them.
+                    launch_user_shell
+                    force_patch_regeneration='true'
 
                     if ! git diff --quiet >/dev/null 2>&1; then
                         >&2 echo "- It appears that there are uncommitted changes from applying the previous patch:"
@@ -853,16 +836,16 @@ do_dev() {
                             >&2 echo "- The uncommitted changes will be committed with the next patch or left in the tree."
                         fi
                     fi
-                }
+                fi
             done
         fi
 
-        git tag original
+        git tag --no-sign -f patched
 
         popd
-    )
+    }
 
-    [ -d "$workdir/.git" ] || {
+    [ -e "$workdir/.git" ] || {
         >&2 echo "$workdir does not appear to be a git repository."
         >&2 echo "If you want to use './package.sh dev', please run './package.sh clean' first."
         exit 1
@@ -872,14 +855,14 @@ do_dev() {
     launch_user_shell
     popd >/dev/null 2>&1
 
-    local original_hash="$(git -C "$workdir" rev-parse refs/tags/original)"
+    local original_hash="$(git -C "$workdir" rev-parse refs/tags/patched)"
     local current_hash="$(git -C "$workdir" rev-parse HEAD)"
 
     # If the hashes are the same, we have no changes, otherwise generate patches
-    if [ "$original_hash" != "$current_hash" ]; then
+    if [ "$original_hash" != "$current_hash" ] || [ "${force_patch_regeneration}" = "true" ]; then
         >&2 echo "Note: Regenerating patches as there are changed commits in the port repo (started at $original_hash, now is $current_hash)"
         rm -fr "${PORT_META_DIR}"/patches/*.patch
-        git -C "$workdir" format-patch --no-numbered --zero-commit --no-signature --full-index refs/tags/import -o "$(realpath "${PORT_META_DIR}/patches")"
+        git -C "$workdir" format-patch --no-numbered --zero-commit --no-signature --full-index refs/tags/source -o "$(realpath "${PORT_META_DIR}/patches")"
         do_generate_patch_readme
     fi
 }
@@ -891,7 +874,7 @@ parse_arguments() {
         return
     fi
     case "$1" in
-        fetch|patch|shell|configure|build|install|installdepends|clean|clean_dist|clean_all|uninstall|showproperty|generate_patch_readme)
+        build|clean|clean_all|clean_dist|configure|dev|fetch|generate_patch_readme|install|installdepends|patch|shell|showproperty|uninstall)
             method=$1
             shift
             do_${method} "$@"
@@ -908,20 +891,8 @@ parse_arguments() {
             export PS1="(serenity):\w$ "
             bash --norc
             ;;
-        dev)
-            shift
-            if [ "${1:-}" != "--no-depends" ]; then
-                do_installdepends
-            fi
-            if [ -d "$workdir" ] && [ ! -d "$workdir/.git" ]; then
-                if prompt_yes_no "- Would you like to clean the working direcory (i.e. ./package.sh clean)?"; then
-                    do_clean
-                fi
-            fi
-            do_dev
-            ;;
         *)
-            >&2 echo "I don't understand $1! Supported arguments: fetch, patch, configure, build, install, installdepends, interactive, clean, clean_dist, clean_all, uninstall, showproperty, generate_patch_readme, dev."
+            >&2 echo "I don't understand $1! Supported arguments: build, clean, clean_all, clean_dist, configure, dev, fetch, generate_patch_readme, install, installdepends, interactive, patch, shell, showproperty, uninstall."
             exit 1
             ;;
     esac

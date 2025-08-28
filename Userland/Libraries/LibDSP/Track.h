@@ -7,8 +7,10 @@
 #pragma once
 
 #include <AK/DisjointChunks.h>
+#include <AK/FixedArray.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefCounted.h>
+#include <AK/Weakable.h>
 #include <LibDSP/Clip.h>
 #include <LibDSP/Effects.h>
 #include <LibDSP/Keyboard.h>
@@ -19,7 +21,8 @@
 namespace DSP {
 
 // A track is also known as a channel and serves as a container for the audio pipeline: clips -> processors -> mixing & output
-class Track : public RefCounted<Track> {
+class Track : public RefCounted<Track>
+    , public Weakable<Track> {
 public:
     virtual ~Track() = default;
 
@@ -28,6 +31,8 @@ public:
 
     // Creates the current signal of the track by processing current note or audio data through the processing chain.
     void current_signal(FixedArray<Sample>& output_signal);
+
+    void write_cached_signal_to(Span<Sample> output_signal);
 
     // We are informed of an audio buffer size change. This happens off-audio-thread so we can allocate.
     ErrorOr<void> resize_internal_buffers_to(size_t buffer_size);
@@ -64,6 +69,11 @@ protected:
     Signal m_secondary_sample_buffer { FixedArray<Sample> {} };
     // A note buffer possibly used by the processor chain.
     Signal m_secondary_note_buffer { RollNotes {} };
+
+private:
+    Atomic<bool> m_sample_lock;
+
+    FixedArray<Sample> m_cached_sample_buffer = {};
 };
 
 class NoteTrack final : public Track {

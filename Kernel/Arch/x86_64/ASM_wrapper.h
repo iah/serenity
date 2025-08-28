@@ -23,7 +23,7 @@ ALWAYS_INLINE void sti()
     asm volatile("sti" ::
                      : "memory");
 }
-ALWAYS_INLINE FlatPtr cpu_flags()
+ALWAYS_INLINE NO_SANITIZE_COVERAGE FlatPtr cpu_flags()
 {
     FlatPtr flags;
     asm volatile(
@@ -52,7 +52,7 @@ ALWAYS_INLINE void write_gs_value(FlatPtr offset, T val)
         : "memory");
 }
 
-ALWAYS_INLINE FlatPtr read_gs_ptr(FlatPtr offset)
+ALWAYS_INLINE NO_SANITIZE_COVERAGE FlatPtr read_gs_ptr(FlatPtr offset)
 {
     FlatPtr val;
     asm volatile(
@@ -69,7 +69,7 @@ ALWAYS_INLINE void write_gs_ptr(u32 offset, FlatPtr val)
         : "memory");
 }
 
-ALWAYS_INLINE bool are_interrupts_enabled()
+ALWAYS_INLINE NO_SANITIZE_COVERAGE bool are_interrupts_enabled()
 {
     return (cpu_flags() & 0x200) != 0;
 }
@@ -104,15 +104,6 @@ FlatPtr read_dr6();
 void write_dr6(FlatPtr);
 FlatPtr read_dr7();
 void write_dr7(FlatPtr);
-
-ALWAYS_INLINE static bool is_kernel_mode()
-{
-    u16 cs;
-    asm volatile(
-        "mov %%cs, %[cs] \n"
-        : [cs] "=g"(cs));
-    return (cs & 3) == 0;
-}
 
 ALWAYS_INLINE void read_tsc(u32& lsw, u32& msw)
 {

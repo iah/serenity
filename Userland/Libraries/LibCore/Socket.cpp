@@ -5,10 +5,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Coroutine.h>
 #include <LibCore/Socket.h>
 #include <LibCore/System.h>
 
 namespace Core {
+
+static constexpr size_t MAX_LOCAL_SOCKET_TRANSFER_FDS = 64;
 
 ErrorOr<int> Socket::create_fd(SocketDomain domain, SocketType type)
 {
@@ -46,7 +49,7 @@ ErrorOr<int> Socket::create_fd(SocketDomain domain, SocketType type)
 #endif
 }
 
-ErrorOr<IPv4Address> Socket::resolve_host(DeprecatedString const& host, SocketType type)
+ErrorOr<IPv4Address> Socket::resolve_host(ByteString const& host, SocketType type)
 {
     int socket_type;
     switch (type) {
@@ -79,7 +82,7 @@ ErrorOr<IPv4Address> Socket::resolve_host(DeprecatedString const& host, SocketTy
     return Error::from_string_literal("Could not resolve to IPv4 address");
 }
 
-ErrorOr<void> Socket::connect_local(int fd, DeprecatedString const& path)
+ErrorOr<void> Socket::connect_local(int fd, ByteString const& path)
 {
     auto address = SocketAddress::local(path);
     auto maybe_sockaddr = address.to_sockaddr_un();
@@ -105,15 +108,21 @@ ErrorOr<Bytes> PosixSocketHelper::read(Bytes buffer, int flags)
     }
 
     ssize_t nread = TRY(System::recv(m_fd, buffer.data(), buffer.size(), flags));
-    m_last_read_was_eof = nread == 0;
+    if (nread == 0)
+        did_reach_eof_on_read();
+
+    return buffer.trim(nread);
+}
+
+void PosixSocketHelper::did_reach_eof_on_read()
+{
+    m_last_read_was_eof = true;
 
     // If a socket read is EOF, then no more data can be read from it because
     // the protocol has disconnected. In this case, we can just disable the
     // notifier if we have one.
-    if (m_last_read_was_eof && m_notifier)
+    if (m_notifier)
         m_notifier->set_enabled(false);
-
-    return buffer.trim(nread);
 }
 
 ErrorOr<size_t> PosixSocketHelper::write(ReadonlyBytes buffer, int flags)
@@ -177,7 +186,7 @@ ErrorOr<void> PosixSocketHelper::set_close_on_exec(bool enabled)
     return {};
 }
 
-ErrorOr<void> PosixSocketHelper::set_receive_timeout(Time timeout)
+ErrorOr<void> PosixSocketHelper::set_receive_timeout(Duration timeout)
 {
     auto timeout_spec = timeout.to_timespec();
     return System::setsockopt(m_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout_spec, sizeof(timeout_spec));
@@ -186,10 +195,10 @@ ErrorOr<void> PosixSocketHelper::set_receive_timeout(Time timeout)
 void PosixSocketHelper::setup_notifier()
 {
     if (!m_notifier)
-        m_notifier = Core::Notifier::construct(m_fd, Core::Notifier::Read);
+        m_notifier = Core::Notifier::construct(m_fd, Core::Notifier::Type::Read);
 }
 
-ErrorOr<NonnullOwnPtr<TCPSocket>> TCPSocket::connect(DeprecatedString const& host, u16 port)
+ErrorOr<NonnullOwnPtr<TCPSocket>> TCPSocket::connect(ByteString const& host, u16 port)
 {
     auto ip_address = TRY(resolve_host(host, SocketType::Stream));
     return connect(SocketAddress { ip_address, port });
@@ -206,6 +215,16 @@ ErrorOr<NonnullOwnPtr<TCPSocket>> TCPSocket::connect(SocketAddress const& addres
 
     socket->setup_notifier();
     return socket;
+}
+
+Coroutine<ErrorOr<NonnullOwnPtr<TCPSocket>>> TCPSocket::async_connect(Core::SocketAddress const& address)
+{
+    co_return CO_TRY(connect(address));
+}
+
+Coroutine<ErrorOr<NonnullOwnPtr<TCPSocket>>> TCPSocket::async_connect(const AK::ByteString& host, u16 port)
+{
+    co_return CO_TRY(connect(host, port));
 }
 
 ErrorOr<NonnullOwnPtr<TCPSocket>> TCPSocket::adopt_fd(int fd)
@@ -231,13 +250,13 @@ ErrorOr<size_t> PosixSocketHelper::pending_bytes() const
     return static_cast<size_t>(value);
 }
 
-ErrorOr<NonnullOwnPtr<UDPSocket>> UDPSocket::connect(DeprecatedString const& host, u16 port, Optional<Time> timeout)
+ErrorOr<NonnullOwnPtr<UDPSocket>> UDPSocket::connect(ByteString const& host, u16 port, Optional<Duration> timeout)
 {
     auto ip_address = TRY(resolve_host(host, SocketType::Datagram));
     return connect(SocketAddress { ip_address, port }, timeout);
 }
 
-ErrorOr<NonnullOwnPtr<UDPSocket>> UDPSocket::connect(SocketAddress const& address, Optional<Time> timeout)
+ErrorOr<NonnullOwnPtr<UDPSocket>> UDPSocket::connect(SocketAddress const& address, Optional<Duration> timeout)
 {
     auto socket = TRY(adopt_nonnull_own_or_enomem(new (nothrow) UDPSocket()));
 
@@ -253,7 +272,7 @@ ErrorOr<NonnullOwnPtr<UDPSocket>> UDPSocket::connect(SocketAddress const& addres
     return socket;
 }
 
-ErrorOr<NonnullOwnPtr<LocalSocket>> LocalSocket::connect(DeprecatedString const& path, PreventSIGPIPE prevent_sigpipe)
+ErrorOr<NonnullOwnPtr<LocalSocket>> LocalSocket::connect(ByteString const& path, PreventSIGPIPE prevent_sigpipe)
 {
     auto socket = TRY(adopt_nonnull_own_or_enomem(new (nothrow) LocalSocket(prevent_sigpipe)));
 
@@ -282,7 +301,7 @@ ErrorOr<int> LocalSocket::receive_fd(int flags)
 {
 #if defined(AK_OS_SERENITY)
     return Core::System::recvfd(m_helper.fd(), flags);
-#elif defined(AK_OS_LINUX) || defined(AK_OS_BSD_GENERIC)
+#elif defined(AK_OS_LINUX) || defined(AK_OS_GNU_HURD) || defined(AK_OS_BSD_GENERIC) || defined(AK_OS_HAIKU)
     union {
         struct cmsghdr cmsghdr;
         char control[CMSG_SPACE(sizeof(int))];
@@ -323,7 +342,7 @@ ErrorOr<void> LocalSocket::send_fd(int fd)
 {
 #if defined(AK_OS_SERENITY)
     return Core::System::sendfd(m_helper.fd(), fd);
-#elif defined(AK_OS_LINUX) || defined(AK_OS_BSD_GENERIC)
+#elif defined(AK_OS_LINUX) || defined(AK_OS_GNU_HURD) || defined(AK_OS_BSD_GENERIC) || defined(AK_OS_HAIKU)
     char c = 'F';
     struct iovec iov {
         .iov_base = &c,
@@ -356,9 +375,78 @@ ErrorOr<void> LocalSocket::send_fd(int fd)
 #endif
 }
 
+ErrorOr<ssize_t> LocalSocket::send_message(ReadonlyBytes data, int flags, Vector<int, 1> fds)
+{
+    size_t const num_fds = fds.size();
+    if (num_fds == 0)
+        return m_helper.write(data, flags | default_flags());
+    if (num_fds > MAX_LOCAL_SOCKET_TRANSFER_FDS)
+        return Error::from_string_literal("Too many file descriptors to send");
+
+    auto const fd_payload_size = num_fds * sizeof(int);
+
+    alignas(struct cmsghdr) char control_buf[CMSG_SPACE(sizeof(int) * MAX_LOCAL_SOCKET_TRANSFER_FDS)] {};
+
+    // Note: We don't use designated initializers here due to weirdness with glibc's flexible array members.
+    auto* header = new (control_buf) cmsghdr {};
+    header->cmsg_len = static_cast<socklen_t>(CMSG_LEN(fd_payload_size));
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(header), fds.data(), fd_payload_size);
+
+    struct iovec iov {
+        .iov_base = const_cast<u8*>(data.data()),
+        .iov_len = data.size(),
+    };
+    struct msghdr msg = {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = header;
+    msg.msg_controllen = CMSG_LEN(fd_payload_size);
+
+    return TRY(Core::System::sendmsg(m_helper.fd(), &msg, default_flags() | flags));
+}
+
+ErrorOr<Bytes> LocalSocket::receive_message(AK::Bytes buffer, int flags, Vector<int>& fds)
+{
+    struct iovec iov {
+        .iov_base = buffer.data(),
+        .iov_len = buffer.size(),
+    };
+
+    alignas(struct cmsghdr) char control_buf[CMSG_SPACE(sizeof(int) * MAX_LOCAL_SOCKET_TRANSFER_FDS)] {};
+
+    struct msghdr msg = {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control_buf;
+    msg.msg_controllen = sizeof(control_buf);
+
+    auto nread = TRY(Core::System::recvmsg(m_helper.fd(), &msg, default_flags() | flags));
+    if (nread == 0) {
+        m_helper.did_reach_eof_on_read();
+        return buffer.trim(nread);
+    }
+
+    fds.clear();
+
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    while (cmsg != nullptr) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+            size_t num_fds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+            auto* fd_data = reinterpret_cast<int*>(CMSG_DATA(cmsg));
+            for (size_t i = 0; i < num_fds; ++i) {
+                fds.append(fd_data[i]);
+            }
+        }
+        AK_IGNORE_DIAGNOSTIC("-Wsign-compare", cmsg = CMSG_NXTHDR(&msg, cmsg));
+    }
+    return buffer.trim(nread);
+}
+
 ErrorOr<pid_t> LocalSocket::peer_pid() const
 {
-#ifdef AK_OS_MACOS
+#if defined(AK_OS_MACOS) || defined(AK_OS_IOS)
     pid_t pid;
     socklen_t pid_size = sizeof(pid);
 #elif defined(AK_OS_FREEBSD)
@@ -373,12 +461,14 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
 #elif defined(AK_OS_SOLARIS)
     ucred_t* creds = NULL;
     socklen_t creds_size = sizeof(creds);
+#elif defined(AK_OS_GNU_HURD)
+    return Error::from_errno(ENOTSUP);
 #else
     struct ucred creds = {};
     socklen_t creds_size = sizeof(creds);
 #endif
 
-#ifdef AK_OS_MACOS
+#if defined(AK_OS_MACOS) || defined(AK_OS_IOS)
     TRY(System::getsockopt(m_helper.fd(), SOL_LOCAL, LOCAL_PEERPID, &pid, &pid_size));
     return pid;
 #elif defined(AK_OS_FREEBSD)
@@ -390,7 +480,7 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
 #elif defined(AK_OS_SOLARIS)
     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_RECVUCRED, &creds, &creds_size));
     return ucred_getpid(creds);
-#else
+#elif !defined(AK_OS_GNU_HURD)
     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_PEERCRED, &creds, &creds_size));
     return creds.pid;
 #endif

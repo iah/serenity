@@ -13,9 +13,10 @@ namespace JS {
 
 class TypedArrayPrototype final : public Object {
     JS_OBJECT(TypedArrayPrototype, Object);
+    JS_DECLARE_ALLOCATOR(TypedArrayPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~TypedArrayPrototype() override = default;
 
 private:

@@ -34,26 +34,26 @@ int CookiesModel::row_count(GUI::ModelIndex const& index) const
     return 0;
 }
 
-DeprecatedString CookiesModel::column_name(int column) const
+ErrorOr<String> CookiesModel::column_name(int column) const
 {
     switch (column) {
     case Column::Domain:
-        return "Domain";
+        return "Domain"_string;
     case Column::Path:
-        return "Path";
+        return "Path"_string;
     case Column::Name:
-        return "Name";
+        return "Name"_string;
     case Column::Value:
-        return "Value";
+        return "Value"_string;
     case Column::ExpiryTime:
-        return "Expiry time";
+        return "Expiry time"_string;
     case Column::SameSite:
-        return "SameSite";
+        return "SameSite"_string;
     case Column::__Count:
-        return {};
+        return String {};
     }
 
-    return {};
+    return String {};
 }
 
 GUI::ModelIndex CookiesModel::index(int row, int column, GUI::ModelIndex const&) const
@@ -88,17 +88,18 @@ GUI::Variant CookiesModel::data(GUI::ModelIndex const& index, GUI::ModelRole rol
     VERIFY_NOT_REACHED();
 }
 
-TriState CookiesModel::data_matches(GUI::ModelIndex const& index, GUI::Variant const& term) const
+GUI::Model::MatchResult CookiesModel::data_matches(GUI::ModelIndex const& index, GUI::Variant const& term) const
 {
     auto needle = term.as_string();
     if (needle.is_empty())
-        return TriState::True;
+        return { TriState::True };
 
     auto const& cookie = m_cookies[index.row()];
-    auto haystack = DeprecatedString::formatted("{} {} {} {}", cookie.domain, cookie.path, cookie.name, cookie.value);
-    if (fuzzy_match(needle, haystack).score > 0)
-        return TriState::True;
-    return TriState::False;
+    auto haystack = ByteString::formatted("{} {} {} {}", cookie.domain, cookie.path, cookie.name, cookie.value);
+    auto match_result = fuzzy_match(needle, haystack);
+    if (match_result.score > 0)
+        return { TriState::True, match_result.score };
+    return { TriState::False };
 }
 
 Web::Cookie::Cookie CookiesModel::take_cookie(GUI::ModelIndex const& index)

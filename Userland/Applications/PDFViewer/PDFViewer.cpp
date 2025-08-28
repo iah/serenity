@@ -48,6 +48,11 @@ PDFViewer::PDFViewer()
     m_page_view_mode = static_cast<PageViewMode>(Config::read_i32("PDFViewer"sv, "Display"sv, "PageMode"sv, 0));
     m_rendering_preferences.show_clipping_paths = Config::read_bool("PDFViewer"sv, "Rendering"sv, "ShowClippingPaths"sv, false);
     m_rendering_preferences.show_images = Config::read_bool("PDFViewer"sv, "Rendering"sv, "ShowImages"sv, true);
+    m_rendering_preferences.show_hidden_text = Config::read_bool("PDFViewer"sv, "Rendering"sv, "ShowHiddenText"sv, false);
+    m_rendering_preferences.apply_clip = Config::read_bool("PDFViewer"sv, "Rendering"sv, "ApplyClip"sv, true);
+    m_rendering_preferences.use_constant_alpha = Config::read_bool("PDFViewer"sv, "Rendering"sv, "UseConstantAlpha"sv, true);
+
+    m_show_rendering_diagnostics = Config::read_bool("PDFViewer"sv, "Rendering"sv, "ShowDiagnostics"sv, false);
 }
 
 PDF::PDFErrorOr<void> PDFViewer::set_document(RefPtr<PDF::Document> document)
@@ -167,6 +172,13 @@ void PDFViewer::set_current_page(u32 current_page)
     update();
 }
 
+void PDFViewer::set_show_rendering_diagnostics(bool show_diagnostics)
+{
+    m_show_rendering_diagnostics = show_diagnostics;
+    Config::write_bool("PDFViewer"sv, "Rendering"sv, "ShowDiagnostics"sv, show_diagnostics);
+    update();
+}
+
 void PDFViewer::set_show_clipping_paths(bool show_clipping_paths)
 {
     m_rendering_preferences.show_clipping_paths = show_clipping_paths;
@@ -178,6 +190,27 @@ void PDFViewer::set_show_images(bool show_images)
 {
     m_rendering_preferences.show_images = show_images;
     Config::write_bool("PDFViewer"sv, "Rendering"sv, "ShowImages"sv, show_images);
+    update();
+}
+
+void PDFViewer::set_show_hidden_text(bool show_hidden_text)
+{
+    m_rendering_preferences.show_hidden_text = show_hidden_text;
+    Config::write_bool("PDFViewer"sv, "Rendering"sv, "ShowHiddenText"sv, show_hidden_text);
+    update();
+}
+
+void PDFViewer::set_apply_clip(bool apply_clip)
+{
+    m_rendering_preferences.apply_clip = apply_clip;
+    Config::write_bool("PDFViewer"sv, "Rendering"sv, "ApplyClip"sv, apply_clip);
+    update();
+}
+
+void PDFViewer::set_use_constant_alpha(bool use_constant_alpha)
+{
+    m_rendering_preferences.use_constant_alpha = use_constant_alpha;
+    Config::write_bool("PDFViewer"sv, "Rendering"sv, "UseConstantAlpha"sv, use_constant_alpha);
     update();
 }
 
@@ -319,24 +352,14 @@ PDF::PDFErrorOr<NonnullRefPtr<Gfx::Bitmap>> PDFViewer::render_page(u32 page_inde
     auto& page_size = m_page_dimension_cache.render_info[page_index].size;
     auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, page_size.to_type<int>()));
 
-    auto maybe_errors = PDF::Renderer::render(*m_document, page, bitmap, m_rendering_preferences);
+    auto maybe_errors = PDF::Renderer::render(*m_document, page, bitmap, Color::White, m_rendering_preferences);
     if (maybe_errors.is_error()) {
         auto errors = maybe_errors.release_error();
         on_render_errors(page_index, errors);
         return bitmap;
     }
 
-    if (page.rotate + m_rotations != 0) {
-        int rotation_count = ((page.rotate + m_rotations) / 90) % 4;
-        if (rotation_count == 3) {
-            bitmap = TRY(bitmap->rotated(Gfx::RotationDirection::CounterClockwise));
-        } else {
-            for (int i = 0; i < rotation_count; i++)
-                bitmap = TRY(bitmap->rotated(Gfx::RotationDirection::Clockwise));
-        }
-    }
-
-    return bitmap;
+    return TRY(PDF::Renderer::apply_page_rotation(bitmap, page, m_rotations));
 }
 
 PDF::PDFErrorOr<void> PDFViewer::cache_page_dimensions(bool recalculate_fixed_info)

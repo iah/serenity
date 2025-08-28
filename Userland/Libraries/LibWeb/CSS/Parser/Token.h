@@ -8,7 +8,6 @@
 #pragma once
 
 #include <AK/FlyString.h>
-#include <AK/Utf8View.h>
 #include <LibWeb/CSS/Number.h>
 
 namespace Web::CSS::Parser {
@@ -59,40 +58,40 @@ public:
     Type type() const { return m_type; }
     bool is(Type type) const { return m_type == type; }
 
-    StringView ident() const
+    FlyString const& ident() const
     {
         VERIFY(m_type == Type::Ident);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
-    StringView function() const
+    FlyString const& function() const
     {
         VERIFY(m_type == Type::Function);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
     u32 delim() const
     {
         VERIFY(m_type == Type::Delim);
-        return *Utf8View(m_value.bytes_as_string_view()).begin();
+        return *m_value.code_points().begin();
     }
 
-    StringView string() const
+    FlyString const& string() const
     {
         VERIFY(m_type == Type::String);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
-    StringView url() const
+    FlyString const& url() const
     {
         VERIFY(m_type == Type::Url);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
-    StringView at_keyword() const
+    FlyString const& at_keyword() const
     {
         VERIFY(m_type == Type::AtKeyword);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
     HashType hash_type() const
@@ -100,10 +99,10 @@ public:
         VERIFY(m_type == Type::Hash);
         return m_hash_type;
     }
-    StringView hash_value() const
+    FlyString const& hash_value() const
     {
         VERIFY(m_type == Type::Hash);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
 
     Number const& number() const
@@ -111,7 +110,7 @@ public:
         VERIFY(m_type == Type::Number || m_type == Type::Dimension || m_type == Type::Percentage);
         return m_number_value;
     }
-    float number_value() const
+    double number_value() const
     {
         VERIFY(m_type == Type::Number);
         return m_number_value.value();
@@ -122,19 +121,19 @@ public:
         return m_number_value.integer_value();
     }
 
-    StringView dimension_unit() const
+    FlyString const& dimension_unit() const
     {
         VERIFY(m_type == Type::Dimension);
-        return m_value.bytes_as_string_view();
+        return m_value;
     }
-    float dimension_value() const
+    double dimension_value() const
     {
         VERIFY(m_type == Type::Dimension);
         return m_number_value.value();
     }
     i64 dimension_value_int() const { return m_number_value.integer_value(); }
 
-    float percentage() const
+    double percentage() const
     {
         VERIFY(m_type == Type::Percentage);
         return m_number_value.value();
@@ -144,13 +143,14 @@ public:
     StringView bracket_string() const;
     StringView bracket_mirror_string() const;
 
-    ErrorOr<String> to_string() const;
-    ErrorOr<String> to_debug_string() const;
+    String to_string() const;
+    String to_debug_string() const;
 
+    String const& original_source_text() const { return m_original_source_text; }
     Position const& start_position() const { return m_start_position; }
     Position const& end_position() const { return m_end_position; }
 
-    static Token of_string(FlyString str)
+    static Token create_string(FlyString str)
     {
         Token token;
         token.m_type = Type::String;
@@ -158,19 +158,44 @@ public:
         return token;
     }
 
-    static Token create_number(float value)
+    static Token create_number(double value, Number::Type number_type)
     {
         Token token;
         token.m_type = Type::Number;
-        token.m_number_value = Number(Number::Type::Number, value);
+        token.m_number_value = Number(number_type, value);
         return token;
     }
 
-    static Token create_percentage(float value)
+    static Token create_percentage(double value)
     {
         Token token;
         token.m_type = Type::Percentage;
         token.m_number_value = Number(Number::Type::Number, value);
+        return token;
+    }
+
+    static Token create_dimension(double value, FlyString unit)
+    {
+        Token token;
+        token.m_type = Type::Dimension;
+        token.m_number_value = Number(Number::Type::Number, value);
+        token.m_value = move(unit);
+        return token;
+    }
+
+    static Token create_ident(FlyString ident)
+    {
+        Token token;
+        token.m_type = Type::Ident;
+        token.m_value = move(ident);
+        return token;
+    }
+
+    static Token create_url(FlyString url)
+    {
+        Token token;
+        token.m_type = Type::Url;
+        token.m_value = move(url);
         return token;
     }
 
@@ -181,6 +206,7 @@ private:
     Number m_number_value;
     HashType m_hash_type { HashType::Unrestricted };
 
+    String m_original_source_text;
     Position m_start_position;
     Position m_end_position;
 };

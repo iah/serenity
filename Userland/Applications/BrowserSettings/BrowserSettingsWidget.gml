@@ -1,4 +1,4 @@
-@GUI::Frame {
+@BrowserSettings::BrowserSettingsWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         margins: [8]
@@ -17,10 +17,10 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/icons/32x32/home.png"
+                bitmap: "/res/icons/32x32/home.png"
             }
 
             @GUI::Widget {
@@ -49,7 +49,7 @@
                     }
 
                     @GUI::Label {
-                        text: "New Tab:"
+                        text: "New tab:"
                         text_alignment: "CenterLeft"
                         fixed_width: 45
                     }
@@ -76,10 +76,10 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/icons/32x32/color-chooser.png"
+                bitmap: "/res/icons/32x32/color-chooser.png"
             }
 
             @GUI::Label {
@@ -122,14 +122,14 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/icons/32x32/search-engine.png"
+                bitmap: "/res/icons/32x32/search-engine.png"
             }
 
             @GUI::CheckBox {
-                text: "Search using '?' in the URL box"
+                text: "Search in the URL box"
                 name: "enable_search_engine_checkbox"
             }
         }
@@ -191,10 +191,10 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/icons/32x32/downloads.png"
+                bitmap: "/res/icons/32x32/downloads.png"
             }
 
             @GUI::CheckBox {

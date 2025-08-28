@@ -7,6 +7,7 @@
 
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
+#include <AK/GenericShorthands.h>
 #include <AK/SourceLocation.h>
 #include <LibTextCodec/Decoder.h>
 #include <LibWeb/HTML/Parser/Entities.h>
@@ -136,11 +137,17 @@ namespace Web::HTML {
         return m_queued_tokens.dequeue();               \
     } while (0)
 
-#define EMIT_CURRENT_TOKEN                              \
+#define EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF              \
     do {                                                \
         VERIFY(m_current_builder.is_empty());           \
         will_emit(m_current_token);                     \
         m_queued_tokens.enqueue(move(m_current_token)); \
+                                                        \
+        m_has_emitted_eof = true;                       \
+        create_new_token(HTMLToken::Type::EndOfFile);   \
+        will_emit(m_current_token);                     \
+        m_queued_tokens.enqueue(move(m_current_token)); \
+                                                        \
         return m_queued_tokens.dequeue();               \
     } while (0)
 
@@ -165,11 +172,14 @@ namespace Web::HTML {
 #define SWITCH_TO_AND_EMIT_CURRENT_CHARACTER(new_state) \
     SWITCH_TO_AND_EMIT_CHARACTER(current_input_character.value(), new_state)
 
+// clang-format-18 handles the `state:` label rather badly.
+// clang-format off
 #define BEGIN_STATE(state) \
     state:                 \
     case State::state: {   \
         {                  \
             {
+// clang-format on
 
 #define END_STATE         \
     VERIFY_NOT_REACHED(); \
@@ -222,6 +232,7 @@ void HTMLTokenizer::skip(size_t count)
             } else {
                 m_source_positions.last().column++;
             }
+            m_source_positions.last().byte_offset += m_utf8_iterator.underlying_code_point_length_in_bytes();
         }
         ++m_utf8_iterator;
     }
@@ -246,7 +257,7 @@ HTMLToken::Position HTMLTokenizer::nth_last_position(size_t n)
     return m_source_positions.at(m_source_positions.size() - 1 - n);
 }
 
-Optional<HTMLToken> HTMLTokenizer::next_token()
+Optional<HTMLToken> HTMLTokenizer::next_token(StopAtInsertionPoint stop_at_insertion_point)
 {
     if (!m_source_positions.is_empty()) {
         auto last_position = m_source_positions.last();
@@ -261,6 +272,9 @@ _StartOfFunction:
         return {};
 
     for (;;) {
+        if (stop_at_insertion_point == StopAtInsertionPoint::Yes && is_insertion_point_reached())
+            return {};
+
         auto current_input_character = next_code_point();
         switch (m_state) {
             // 13.2.5.1 Data state, https://html.spec.whatwg.org/multipage/parsing.html#data-state
@@ -346,7 +360,6 @@ _StartOfFunction:
                 ON('>')
                 {
                     m_current_token.set_tag_name(consume_current_builder());
-                    m_current_token.set_end_position({}, nth_last_position(1));
                     SWITCH_TO_AND_EMIT_CURRENT_TOKEN(Data);
                 }
                 ON_ASCII_UPPER_ALPHA
@@ -365,7 +378,6 @@ _StartOfFunction:
                 ON_EOF
                 {
                     log_parse_error();
-                    m_current_token.set_end_position({}, nth_last_position(0));
                     EMIT_EOF;
                 }
                 ANYTHING_ELSE
@@ -421,7 +433,7 @@ _StartOfFunction:
                 if (consume_next_if_match("[CDATA["sv)) {
                     // We keep the parser optional so that syntax highlighting can be lexer-only.
                     // The parser registers itself with the lexer it creates.
-                    if (m_parser != nullptr && m_parser->adjusted_current_node().namespace_() != Namespace::HTML) {
+                    if (m_parser != nullptr && m_parser->adjusted_current_node().namespace_uri() != Namespace::HTML) {
                         SWITCH_TO(CDATASection);
                     } else {
                         create_new_token(HTMLToken::Type::Comment);
@@ -1052,8 +1064,6 @@ _StartOfFunction:
                 }
                 ON('/')
                 {
-                    if (m_current_token.has_attributes())
-                        m_current_token.last_attribute().name_end_position = nth_last_position(1);
                     RECONSUME_IN(AfterAttributeName);
                 }
                 ON('>')
@@ -1109,21 +1119,25 @@ _StartOfFunction:
             {
                 ON_WHITESPACE
                 {
+                    m_current_token.last_attribute().name_end_position = nth_last_position(1);
                     m_current_token.last_attribute().local_name = consume_current_builder();
                     RECONSUME_IN(AfterAttributeName);
                 }
                 ON('/')
                 {
+                    m_current_token.last_attribute().name_end_position = nth_last_position(1);
                     m_current_token.last_attribute().local_name = consume_current_builder();
                     RECONSUME_IN(AfterAttributeName);
                 }
                 ON('>')
                 {
+                    m_current_token.last_attribute().name_end_position = nth_last_position(1);
                     m_current_token.last_attribute().local_name = consume_current_builder();
                     RECONSUME_IN(AfterAttributeName);
                 }
                 ON_EOF
                 {
+                    m_current_token.last_attribute().name_end_position = nth_last_position(1);
                     m_current_token.last_attribute().local_name = consume_current_builder();
                     RECONSUME_IN(AfterAttributeName);
                 }
@@ -1197,7 +1211,7 @@ _StartOfFunction:
                 {
                     m_current_token.add_attribute({});
                     if (!m_source_positions.is_empty())
-                        m_current_token.last_attribute().name_start_position = m_source_positions.last();
+                        m_current_token.last_attribute().name_start_position = nth_last_position(1);
                     RECONSUME_IN(AttributeName);
                 }
             }
@@ -1423,7 +1437,7 @@ _StartOfFunction:
                 ON_EOF
                 {
                     log_parse_error();
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1455,7 +1469,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1486,7 +1500,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1514,7 +1528,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1535,7 +1549,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -2772,19 +2786,9 @@ bool HTMLTokenizer::consume_next_if_match(StringView string, CaseSensitivity cas
 void HTMLTokenizer::create_new_token(HTMLToken::Type type)
 {
     m_current_token = { type };
-    size_t offset = 0;
-    switch (type) {
-    case HTMLToken::Type::StartTag:
-        offset = 1;
-        break;
-    case HTMLToken::Type::EndTag:
-        offset = 2;
-        break;
-    default:
-        break;
-    }
 
-    m_current_token.set_start_position({}, nth_last_position(offset));
+    auto is_start_or_end_tag = type == HTMLToken::Type::StartTag || type == HTMLToken::Type::EndTag;
+    m_current_token.set_start_position({}, nth_last_position(is_start_or_end_tag ? 1 : 0));
 }
 
 HTMLTokenizer::HTMLTokenizer()
@@ -2796,30 +2800,32 @@ HTMLTokenizer::HTMLTokenizer()
     m_source_positions.empend(0u, 0u);
 }
 
-HTMLTokenizer::HTMLTokenizer(StringView input, DeprecatedString const& encoding)
+HTMLTokenizer::HTMLTokenizer(StringView input, ByteString const& encoding)
 {
     auto decoder = TextCodec::decoder_for(encoding);
     VERIFY(decoder.has_value());
-    m_decoded_input = decoder->to_utf8(input).release_value_but_fixme_should_propagate_errors().to_deprecated_string();
+    m_decoded_input = decoder->to_utf8(input).release_value_but_fixme_should_propagate_errors().to_byte_string();
     m_utf8_view = Utf8View(m_decoded_input);
     m_utf8_iterator = m_utf8_view.begin();
     m_prev_utf8_iterator = m_utf8_view.begin();
     m_source_positions.empend(0u, 0u);
 }
 
-void HTMLTokenizer::insert_input_at_insertion_point(DeprecatedString const& input)
+void HTMLTokenizer::insert_input_at_insertion_point(StringView input)
 {
     auto utf8_iterator_byte_offset = m_utf8_view.byte_offset_of(m_utf8_iterator);
+    auto prev_utf8_iterator_byte_offset = m_utf8_view.byte_offset_of(m_prev_utf8_iterator);
 
     // FIXME: Implement a InputStream to handle insertion_point and iterators.
     StringBuilder builder {};
-    builder.append(m_decoded_input.substring(0, m_insertion_point.position));
+    builder.append(m_decoded_input.substring_view(0, m_insertion_point.position));
     builder.append(input);
-    builder.append(m_decoded_input.substring(m_insertion_point.position));
-    m_decoded_input = builder.to_deprecated_string();
+    builder.append(m_decoded_input.substring_view(m_insertion_point.position));
+    m_decoded_input = builder.to_byte_string();
 
     m_utf8_view = Utf8View(m_decoded_input);
     m_utf8_iterator = m_utf8_view.iterator_at_byte_offset(utf8_iterator_byte_offset);
+    m_prev_utf8_iterator = m_utf8_view.iterator_at_byte_offset(prev_utf8_iterator_byte_offset);
 
     m_insertion_point.position += input.length();
 }
@@ -2853,8 +2859,13 @@ void HTMLTokenizer::switch_to(Badge<HTMLParser>, State new_state)
 void HTMLTokenizer::will_emit(HTMLToken& token)
 {
     if (token.is_start_tag())
-        m_last_emitted_start_tag_name = token.tag_name();
-    token.set_end_position({}, nth_last_position(0));
+        m_last_emitted_start_tag_name = token.tag_name().to_deprecated_fly_string();
+
+    auto is_start_or_end_tag = token.type() == HTMLToken::Type::StartTag || token.type() == HTMLToken::Type::EndTag;
+    token.set_end_position({}, nth_last_position(is_start_or_end_tag ? 1 : 0));
+
+    if (is_start_or_end_tag)
+        token.normalize_attributes();
 }
 
 bool HTMLTokenizer::current_end_tag_token_is_appropriate() const
@@ -2862,7 +2873,7 @@ bool HTMLTokenizer::current_end_tag_token_is_appropriate() const
     VERIFY(m_current_token.is_end_tag());
     if (!m_last_emitted_start_tag_name.has_value())
         return false;
-    return m_current_token.tag_name() == m_last_emitted_start_tag_name.value();
+    return m_current_token.tag_name().to_deprecated_fly_string() == m_last_emitted_start_tag_name.value();
 }
 
 bool HTMLTokenizer::consumed_as_part_of_an_attribute() const
@@ -2885,9 +2896,9 @@ void HTMLTokenizer::restore_to(Utf8CodePointIterator const& new_iterator)
     m_utf8_iterator = new_iterator;
 }
 
-DeprecatedString HTMLTokenizer::consume_current_builder()
+String HTMLTokenizer::consume_current_builder()
 {
-    auto string = m_current_builder.to_deprecated_string();
+    auto string = m_current_builder.to_string_without_validation();
     m_current_builder.clear();
     return string;
 }

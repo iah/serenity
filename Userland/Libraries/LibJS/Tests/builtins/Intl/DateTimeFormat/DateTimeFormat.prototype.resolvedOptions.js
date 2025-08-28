@@ -85,12 +85,58 @@ describe("correct behavior", () => {
         });
     });
 
+    test("hour12", () => {
+        const en1 = Intl.DateTimeFormat("en", { hour: "numeric" });
+        expect(en1.resolvedOptions().hourCycle).toBe("h12");
+        expect(en1.resolvedOptions().hour12).toBeTrue();
+
+        const en2 = Intl.DateTimeFormat("en", { hour: "numeric", hour12: true });
+        expect(en2.resolvedOptions().hourCycle).toBe("h12");
+        expect(en2.resolvedOptions().hour12).toBeTrue();
+
+        const en3 = Intl.DateTimeFormat("en", { hour: "numeric", hour12: false });
+        expect(en3.resolvedOptions().hourCycle).toBe("h23");
+        expect(en3.resolvedOptions().hour12).toBeFalse();
+
+        const ja1 = Intl.DateTimeFormat("ja", { hour: "numeric" });
+        expect(ja1.resolvedOptions().hourCycle).toBe("h23");
+        expect(ja1.resolvedOptions().hour12).toBeFalse();
+
+        const ja2 = Intl.DateTimeFormat("ja", { hour: "numeric", hour12: true });
+        expect(ja2.resolvedOptions().hourCycle).toBe("h11");
+        expect(ja2.resolvedOptions().hour12).toBeTrue();
+
+        const ja3 = Intl.DateTimeFormat("ja", { hour: "numeric", hour12: false });
+        expect(ja3.resolvedOptions().hourCycle).toBe("h23");
+        expect(ja3.resolvedOptions().hour12).toBeFalse();
+
+        const fr1 = Intl.DateTimeFormat("fr", { hour: "numeric" });
+        expect(fr1.resolvedOptions().hourCycle).toBe("h23");
+        expect(fr1.resolvedOptions().hour12).toBeFalse();
+
+        const fr2 = Intl.DateTimeFormat("fr", { hour: "numeric", hour12: true });
+        expect(fr2.resolvedOptions().hourCycle).toBe("h12");
+        expect(fr2.resolvedOptions().hour12).toBeTrue();
+
+        const fr3 = Intl.DateTimeFormat("fr", { hour: "numeric", hour12: false });
+        expect(fr3.resolvedOptions().hourCycle).toBe("h23");
+        expect(fr3.resolvedOptions().hour12).toBeFalse();
+    });
+
     test("timeZone", () => {
         const en = new Intl.DateTimeFormat("en", { timeZone: "EST" });
         expect(en.resolvedOptions().timeZone).toBe("EST");
 
         const el = new Intl.DateTimeFormat("el", { timeZone: "UTC" });
         expect(el.resolvedOptions().timeZone).toBe("UTC");
+
+        ["UTC", "EST", "+01:02", "-20:30", "+00:00"].forEach(timeZone => {
+            const en = new Intl.DateTimeFormat("en", { timeZone: timeZone });
+            expect(en.resolvedOptions().timeZone).toBe(timeZone);
+
+            const el = new Intl.DateTimeFormat("el", { timeZone: timeZone });
+            expect(el.resolvedOptions().timeZone).toBe(timeZone);
+        });
     });
 
     test("dateStyle", () => {

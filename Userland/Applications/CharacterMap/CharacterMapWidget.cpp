@@ -37,7 +37,7 @@ CharacterMapWidget::CharacterMapWidget()
     m_statusbar = find_descendant_of_type_named<GUI::Statusbar>("statusbar");
     m_unicode_block_listview = find_descendant_of_type_named<GUI::ListView>("unicode_block_listview");
 
-    m_choose_font_action = GUI::Action::create("Choose Font...", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-font-editor.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
+    m_choose_font_action = GUI::Action::create("Change &Font...", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-font-editor.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
         auto font_picker = GUI::FontPicker::construct(window(), &font(), false);
         if (font_picker->exec() == GUI::Dialog::ExecResult::OK) {
             auto& font = *font_picker->font();
@@ -54,23 +54,23 @@ CharacterMapWidget::CharacterMapWidget()
                 continue;
             builder.append_code_point(code_point);
         }
-        GUI::Clipboard::the().set_plain_text(builder.to_deprecated_string());
+        GUI::Clipboard::the().set_plain_text(builder.to_byte_string());
     });
-    m_copy_selection_action->set_status_tip("Copy the highlighted characters to the clipboard");
+    m_copy_selection_action->set_status_tip("Copy the highlighted characters to the clipboard"_string);
 
-    m_previous_glyph_action = GUI::Action::create("Previous character", { Mod_Alt, Key_Left }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-back.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
+    m_previous_glyph_action = GUI::Action::create("&Previous Glyph", { Mod_Alt, Key_Left }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-back.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
         m_glyph_map->select_previous_existing_glyph();
     });
-    m_previous_glyph_action->set_status_tip("Seek the previous visible glyph");
+    m_previous_glyph_action->set_status_tip("Seek the previous visible glyph"_string);
 
     m_next_glyph_action = GUI::Action::create("&Next Glyph", { Mod_Alt, Key_Right }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
         m_glyph_map->select_next_existing_glyph();
     });
-    m_next_glyph_action->set_status_tip("Seek the next visible glyph");
+    m_next_glyph_action->set_status_tip("Seek the next visible glyph"_string);
 
-    m_go_to_glyph_action = GUI::Action::create("Go to glyph...", { Mod_Ctrl, Key_G }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-to.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
-        DeprecatedString input;
-        if (GUI::InputBox::show(window(), input, "Hexadecimal:"sv, "Go to glyph"sv, GUI::InputType::NonemptyText) == GUI::InputBox::ExecResult::OK) {
+    m_go_to_glyph_action = GUI::Action::create("&Go to Glyph...", { Mod_Ctrl, Key_G }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-to.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
+        String input;
+        if (GUI::InputBox::show(window(), input, "Hexadecimal:"sv, "Go to Glyph"sv, GUI::InputType::NonemptyText) == GUI::InputBox::ExecResult::OK) {
             auto maybe_code_point = AK::StringUtils::convert_to_uint_from_hex(input);
             if (!maybe_code_point.has_value())
                 return;
@@ -81,18 +81,18 @@ CharacterMapWidget::CharacterMapWidget()
             m_glyph_map->scroll_to_glyph(code_point);
         }
     });
-    m_go_to_glyph_action->set_status_tip("Go to the specified code point");
+    m_go_to_glyph_action->set_status_tip("Go to the specified code point"_string);
 
-    m_find_glyphs_action = GUI::Action::create("&Find glyphs...", { Mod_Ctrl, Key_F }, Gfx::Bitmap::load_from_file("/res/icons/16x16/find.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
+    m_find_glyphs_action = GUI::Action::create("&Find Glyphs...", { Mod_Ctrl, Key_F }, Gfx::Bitmap::load_from_file("/res/icons/16x16/find.png"sv).release_value_but_fixme_should_propagate_errors(), [&](auto&) {
         if (m_find_window.is_null()) {
             m_find_window = GUI::Window::construct(window());
-            auto search_widget = m_find_window->set_main_widget<CharacterSearchWidget>().release_value_but_fixme_should_propagate_errors();
+            auto search_widget = m_find_window->set_main_widget<CharacterSearchWidget>();
             search_widget->on_character_selected = [&](auto code_point) {
                 m_glyph_map->set_active_glyph(code_point);
                 m_glyph_map->scroll_to_glyph(code_point);
             };
             m_find_window->set_icon(GUI::Icon::try_create_default_icon("find"sv).value().bitmap_for_size(16));
-            m_find_window->set_title("Find a character");
+            m_find_window->set_title("Find a Character");
             m_find_window->resize(300, 400);
             m_find_window->set_window_mode(GUI::WindowMode::Modeless);
         }
@@ -139,35 +139,48 @@ CharacterMapWidget::CharacterMapWidget()
     for (auto& block : unicode_blocks)
         m_unicode_block_list.append(block.display_name);
 
-    m_unicode_block_model = GUI::ItemListModel<DeprecatedString>::create(m_unicode_block_list);
+    m_unicode_block_model = GUI::ItemListModel<ByteString>::create(m_unicode_block_list);
     m_unicode_block_listview->set_model(*m_unicode_block_model);
     m_unicode_block_listview->set_activates_on_selection(true);
     m_unicode_block_listview->horizontal_scrollbar().set_visible(false);
     m_unicode_block_listview->set_cursor(m_unicode_block_model->index(0, 0), GUI::AbstractView::SelectionUpdate::Set);
 
+    GUI::Application::the()->on_action_enter = [this](GUI::Action& action) {
+        m_statusbar->set_override_text(action.status_tip());
+    };
+
+    GUI::Application::the()->on_action_leave = [this](GUI::Action&) {
+        m_statusbar->set_override_text({});
+    };
+
     did_change_font();
     update_statusbar();
 }
 
-void CharacterMapWidget::initialize_menubar(GUI::Window& window)
+ErrorOr<void> CharacterMapWidget::initialize_menubar(GUI::Window& window)
 {
-    auto& file_menu = window.add_menu("&File");
-    file_menu.add_action(GUI::CommonActions::make_quit_action([](GUI::Action&) {
+    auto file_menu = window.add_menu("&File"_string);
+    file_menu->add_action(GUI::CommonActions::make_quit_action([](GUI::Action&) {
         GUI::Application::the()->quit();
     }));
 
-    auto& help_menu = window.add_menu("&Help");
-    help_menu.add_action(GUI::CommonActions::make_command_palette_action(&window));
-    help_menu.add_action(GUI::CommonActions::make_help_action([&](auto&) {
-        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/CharacterMap.md"), "/bin/Help");
+    auto view_menu = window.add_menu("&View"_string);
+    view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window.set_fullscreen(!window.is_fullscreen());
     }));
-    help_menu.add_action(GUI::CommonActions::make_about_action("Character Map", GUI::Icon::default_icon("app-character-map"sv), &window));
+
+    auto help_menu = window.add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(&window));
+    help_menu->add_action(GUI::CommonActions::make_help_action([&](auto&) {
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Applications/CharacterMap.md"), "/bin/Help");
+    }));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Character Map"_string, GUI::Icon::default_icon("app-character-map"sv), &window));
+    return {};
 }
 
 void CharacterMapWidget::did_change_font()
 {
-    // No need to track glyph modifications by cloning
-    m_glyph_map->GUI::AbstractScrollableWidget::set_font(font());
+    m_glyph_map->set_font(font());
     m_font_name_label->set_text(font().human_readable_name());
     m_output_box->set_font(font());
 }
@@ -179,5 +192,5 @@ void CharacterMapWidget::update_statusbar()
     builder.appendff("U+{:04X}", code_point);
     if (auto display_name = Unicode::code_point_display_name(code_point); display_name.has_value())
         builder.appendff(" - {}", display_name.value());
-    m_statusbar->set_text(builder.to_deprecated_string());
+    m_statusbar->set_text(builder.to_string().release_value_but_fixme_should_propagate_errors());
 }

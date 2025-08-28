@@ -4,20 +4,20 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Devices/Storage/StorageDevice.h>
 #include <Kernel/FileSystem/SysFS/RootDirectory.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Directory.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Storage/DeviceDirectory.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Devices/Storage/Directory.h>
 #include <Kernel/Sections.h>
-#include <Kernel/Storage/StorageDevice.h>
 
 namespace Kernel {
 
 static SysFSStorageDirectory* s_the { nullptr };
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<SysFSStorageDirectory> SysFSStorageDirectory::must_create(SysFSDevicesDirectory const& parent_directory)
+UNMAP_AFTER_INIT NonnullRefPtr<SysFSStorageDirectory> SysFSStorageDirectory::must_create(SysFSDevicesDirectory const& parent_directory)
 {
-    auto directory = adopt_lock_ref(*new (nothrow) SysFSStorageDirectory(parent_directory));
+    auto directory = adopt_ref(*new (nothrow) SysFSStorageDirectory(parent_directory));
     s_the = directory;
     return directory;
 }

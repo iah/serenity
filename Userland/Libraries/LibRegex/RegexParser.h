@@ -55,6 +55,10 @@ public:
         Token error_token;
         Vector<DeprecatedFlyString> capture_groups;
         AllOptions options;
+
+        struct {
+            Optional<ByteString> pure_substring_search;
+        } optimization_data {};
     };
 
     explicit Parser(Lexer& lexer)
@@ -82,7 +86,7 @@ protected:
     ALWAYS_INLINE bool match_ordinary_characters();
     ALWAYS_INLINE Token consume();
     ALWAYS_INLINE Token consume(TokenType type, Error error);
-    ALWAYS_INLINE bool consume(DeprecatedString const&);
+    ALWAYS_INLINE bool consume(ByteString const&);
     ALWAYS_INLINE Optional<u32> consume_escaped_code_point(bool unicode);
     ALWAYS_INLINE bool try_skip(StringView);
     ALWAYS_INLINE bool lookahead_any(StringView);
@@ -93,11 +97,6 @@ protected:
     ALWAYS_INLINE bool set_error(Error error);
 
     size_t tell() const { return m_parser_state.current_token.position(); }
-
-    struct NamedCaptureGroup {
-        size_t group_index { 0 };
-        size_t minimum_length { 0 };
-    };
 
     struct ParserState {
         Lexer& lexer;
@@ -110,8 +109,8 @@ protected:
         size_t match_length_minimum { 0 };
         size_t repetition_mark_count { 0 };
         AllOptions regex_options;
-        HashMap<int, size_t> capture_group_minimum_lengths;
-        HashMap<DeprecatedFlyString, NamedCaptureGroup> named_capture_groups;
+        HashMap<size_t, size_t> capture_group_minimum_lengths;
+        HashMap<DeprecatedFlyString, size_t> named_capture_groups;
 
         explicit ParserState(Lexer& lexer)
             : lexer(lexer)
@@ -290,7 +289,7 @@ private:
     {
         for (auto& index : m_capture_groups_in_scope.last())
             stack.insert_bytecode_clear_capture_group(index);
-    };
+    }
 
     // ECMA-262's flavour of regex is a bit weird in that it allows backrefs to reference "future" captures, and such backrefs
     // always match the empty string. So we have to know how many capturing parenthesis there are, but we don't want to always

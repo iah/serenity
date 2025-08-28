@@ -52,11 +52,11 @@ ToolboxWidget::ToolboxWidget()
 void ToolboxWidget::setup_tools()
 {
     auto add_tool = [&](StringView icon_name, GUI::Shortcut const& shortcut, NonnullOwnPtr<Tool> tool, bool is_default_tool = false) {
-        auto action = GUI::Action::create_checkable(tool->tool_name(), shortcut, Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/pixelpaint/{}.png", icon_name)).release_value_but_fixme_should_propagate_errors(),
+        auto action = GUI::Action::create_checkable(tool->tool_name(), shortcut, Gfx::Bitmap::load_from_file(ByteString::formatted("/res/icons/pixelpaint/{}.png", icon_name)).release_value_but_fixme_should_propagate_errors(),
             [this, tool = tool.ptr()](auto& action) {
                 if (action.is_checked()) {
-                    on_tool_selection(tool);
                     m_active_tool = tool;
+                    ensure_tool_selection();
                 } else {
                     on_tool_selection(nullptr);
                 }
@@ -71,8 +71,11 @@ void ToolboxWidget::setup_tools()
         m_tools.append(move(tool));
         if (is_default_tool) {
             VERIFY(m_active_tool == nullptr);
-            m_active_tool = m_tools[m_tools.size() - 1];
             action->set_checked(true);
+            m_active_tool = m_tools[m_tools.size() - 1];
+            deferred_invoke([&]() {
+                ensure_tool_selection();
+            });
         }
     };
 
@@ -97,4 +100,9 @@ void ToolboxWidget::setup_tools()
     add_tool("gradients"sv, { Mod_Ctrl, Key_G }, make<GradientTool>());
 }
 
+void ToolboxWidget::ensure_tool_selection()
+{
+    if (on_tool_selection)
+        on_tool_selection(m_active_tool);
+}
 }

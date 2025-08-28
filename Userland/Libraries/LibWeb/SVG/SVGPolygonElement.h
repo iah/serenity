@@ -12,20 +12,19 @@ namespace Web::SVG {
 
 class SVGPolygonElement final : public SVGGeometryElement {
     WEB_PLATFORM_OBJECT(SVGPolygonElement, SVGGeometryElement);
+    JS_DECLARE_ALLOCATOR(SVGPolygonElement);
 
 public:
     virtual ~SVGPolygonElement() override = default;
 
-    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
 
-    virtual Gfx::Path& get_path() override;
+    virtual Gfx::Path get_path(CSSPixelSize viewport_size) override;
 
 private:
     SVGPolygonElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
-
-    Optional<Gfx::Path> m_path;
+    virtual void initialize(JS::Realm&) override;
 
     Vector<Gfx::FloatPoint> m_points;
 };

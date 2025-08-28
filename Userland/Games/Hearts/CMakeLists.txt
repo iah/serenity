@@ -5,7 +5,7 @@ serenity_component(
     TARGETS Hearts
 )
 
-compile_gml(Hearts.gml HeartsGML.h hearts_gml)
+compile_gml(Hearts.gml HeartsGML.cpp)
 
 set(SOURCES
     Game.cpp
@@ -13,11 +13,8 @@ set(SOURCES
     Player.cpp
     ScoreCard.cpp
     SettingsDialog.cpp
-)
-
-set(GENERATED_SOURCES
-    HeartsGML.h
+    HeartsGML.cpp
 )
 
 serenity_app(Hearts ICON app-hearts)
-target_link_libraries(Hearts PRIVATE LibCards LibGUI LibGfx LibCore LibConfig LibMain LibDesktop)
+target_link_libraries(Hearts PRIVATE LibCards LibGUI LibGfx LibCore LibConfig LibMain LibDesktop LibURL)

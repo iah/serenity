@@ -7,7 +7,9 @@
 #include <LibTest/TestCase.h>
 
 #include <AK/BinaryHeap.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+
+using namespace Test::Randomized;
 
 TEST_CASE(construct)
 {
@@ -44,7 +46,7 @@ TEST_CASE(populate_int)
 
 TEST_CASE(populate_string)
 {
-    BinaryHeap<int, DeprecatedString, 5> strings;
+    BinaryHeap<int, ByteString, 5> strings;
     strings.insert(1, "ABC");
     strings.insert(2, "DEF");
     EXPECT_EQ(strings.size(), 2u);
@@ -63,5 +65,40 @@ TEST_CASE(large_populate_reverse)
     for (int i = 0; i < 1024; i++) {
         EXPECT_EQ(ints.peek_min(), i);
         EXPECT_EQ(ints.pop_min(), i);
+    }
+}
+
+RANDOMIZED_TEST_CASE(pop_min_is_min)
+{
+    GEN(vec, Gen::vector(1, 10, []() { return Gen::number_u64(); }));
+
+    auto sorted { vec };
+    AK::quick_sort(sorted);
+
+    BinaryHeap<u64, u64, 10> heap;
+
+    // insert in a non-sorted order
+    for (u64 n : vec) {
+        heap.insert(n, n);
+    }
+
+    // check in a sorted order
+    for (u64 sorted_n : sorted) {
+        EXPECT_EQ(heap.pop_min(), sorted_n);
+    }
+}
+
+RANDOMIZED_TEST_CASE(peek_min_same_as_pop_min)
+{
+    GEN(vec, Gen::vector(1, 10, []() { return Gen::number_u64(); }));
+    BinaryHeap<u64, u64, 10> heap;
+    for (u64 n : vec) {
+        heap.insert(n, n);
+    }
+
+    while (!heap.is_empty()) {
+        u64 peeked = heap.peek_min();
+        u64 popped = heap.pop_min();
+        EXPECT_EQ(peeked, popped);
     }
 }

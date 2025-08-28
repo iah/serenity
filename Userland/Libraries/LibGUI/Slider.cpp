@@ -6,6 +6,7 @@
  */
 
 #include <AK/StdLibExtras.h>
+#include <LibGUI/HorizontalSlider.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Slider.h>
 #include <LibGfx/Palette.h>
@@ -35,14 +36,16 @@ void Slider::paint_event(PaintEvent& event)
 
     Gfx::IntRect track_rect;
 
+    // To avoid drop shadow peeking out behind the slider knob, we paint the track slightly shorter
+    int shadow_thickness = 1;
     if (orientation() == Orientation::Horizontal) {
-        track_rect = { inner_rect().x(), 0, inner_rect().width(), track_size() };
+        track_rect = { inner_rect().x(), 0, inner_rect().width() - shadow_thickness, track_size() };
         track_rect.center_vertically_within(inner_rect());
     } else {
-        track_rect = { 0, inner_rect().y(), track_size(), inner_rect().height() };
+        track_rect = { 0, inner_rect().y(), track_size(), inner_rect().height() - shadow_thickness };
         track_rect.center_horizontally_within(inner_rect());
     }
-    Gfx::StylePainter::paint_frame(painter, track_rect, palette(), Gfx::FrameShape::Panel, Gfx::FrameShadow::Sunken, 1);
+    Gfx::StylePainter::paint_frame(painter, track_rect, palette(), Gfx::FrameStyle::SunkenPanel);
     if (is_enabled())
         Gfx::StylePainter::paint_button(painter, knob_rect(), palette(), Gfx::ButtonStyle::Normal, false, m_knob_hovered);
     else
@@ -133,7 +136,7 @@ void Slider::mousemove_event(MouseEvent& event)
         float scrubbable_range = inner_rect().primary_size_for_orientation(orientation());
         float value_steps_per_scrubbed_pixel = (max() - min()) / scrubbable_range;
         float new_value = m_drag_origin_value + (value_steps_per_scrubbed_pixel * delta);
-        set_value((int)new_value);
+        set_value((int)roundf(new_value));
         return;
     }
     return Widget::mousemove_event(event);

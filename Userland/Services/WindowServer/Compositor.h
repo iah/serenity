@@ -8,7 +8,7 @@
 
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/DisjointRectSet.h>
 #include <LibGfx/Font/Font.h>
@@ -87,7 +87,7 @@ struct CompositorScreenData {
     }
 };
 
-class Compositor final : public Core::Object {
+class Compositor final : public Core::EventReceiver {
     C_OBJECT(Compositor)
     friend struct CompositorScreenData;
     friend class Overlay;
@@ -103,9 +103,9 @@ public:
 
     void screen_resolution_changed();
 
-    bool set_background_color(DeprecatedString const& background_color);
+    bool set_background_color(ByteString const& background_color);
 
-    bool set_wallpaper_mode(DeprecatedString const& mode);
+    bool set_wallpaper_mode(ByteString const& mode);
 
     bool set_wallpaper(RefPtr<Gfx::Bitmap const>);
     RefPtr<Gfx::Bitmap const> wallpaper_bitmap() const { return m_wallpaper; }
@@ -130,7 +130,6 @@ public:
         invalidate_screen();
     }
 
-    void animation_started(Badge<Animation>);
     void invalidate_occlusions() { m_occlusions_dirty = true; }
     void overlay_rects_changed();
 
@@ -223,9 +222,11 @@ private:
     bool m_invalidated_window { false };
     bool m_invalidated_cursor { false };
     bool m_overlay_rects_changed { false };
+    bool m_animations_running { false };
 
     IntrusiveList<&Overlay::m_list_node> m_overlay_list;
     Gfx::DisjointIntRectSet m_overlay_rects;
+    Gfx::DisjointIntRectSet m_last_rendered_overlay_rects;
     Gfx::DisjointIntRectSet m_dirty_screen_rects;
     Gfx::DisjointIntRectSet m_opaque_wallpaper_rects;
     Gfx::DisjointIntRectSet m_transparent_wallpaper_rects;

@@ -8,10 +8,11 @@
 #include "Spreadsheet.h"
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace Spreadsheet {
 
-void Cell::set_data(DeprecatedString new_data)
+void Cell::set_data(ByteString new_data)
 {
     // If we are a formula, we do not save the beginning '=', if the new_data is "" we can simply change our kind
     if (m_kind == Formula && m_data.is_empty() && new_data.is_empty()) {
@@ -41,8 +42,8 @@ void Cell::set_data(JS::Value new_data)
 
     StringBuilder builder;
 
-    builder.append(new_data.to_string_without_side_effects().release_value_but_fixme_should_propagate_errors());
-    m_data = builder.to_deprecated_string();
+    builder.append(new_data.to_string_without_side_effects());
+    m_data = builder.to_byte_string();
 
     m_evaluated_data = move(new_data);
 }
@@ -62,6 +63,11 @@ void Cell::set_type(StringView name)
     VERIFY_NOT_REACHED();
 }
 
+void Cell::set_type_metadata(CellTypeMetadata const& metadata)
+{
+    m_type_metadata = metadata;
+}
+
 void Cell::set_type_metadata(CellTypeMetadata&& metadata)
 {
     m_type_metadata = move(metadata);
@@ -73,14 +79,14 @@ CellType const& Cell::type() const
         return *m_type;
 
     if (m_kind == LiteralString) {
-        if (m_data.to_int().has_value())
+        if (m_data.to_number<int>().has_value())
             return *CellType::get_by_name("Numeric"sv);
     }
 
     return *CellType::get_by_name("Identity"sv);
 }
 
-JS::ThrowCompletionOr<DeprecatedString> Cell::typed_display() const
+JS::ThrowCompletionOr<ByteString> Cell::typed_display() const
 {
     return type().display(const_cast<Cell&>(*this), m_type_metadata);
 }
@@ -153,17 +159,17 @@ JS::Value Cell::js_data()
     if (m_kind == Formula)
         return m_evaluated_data;
 
-    auto& vm = m_sheet->interpreter().vm();
+    auto& vm = m_sheet->vm();
     return JS::PrimitiveString::create(vm, m_data);
 }
 
-DeprecatedString Cell::source() const
+ByteString Cell::source() const
 {
     StringBuilder builder;
     if (m_kind == Formula)
         builder.append('=');
     builder.append(m_data);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 // FIXME: Find a better way to figure out dependencies

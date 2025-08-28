@@ -10,11 +10,15 @@
 
 namespace AK {
 
+// FIXME: This hashing algorithm isn't well-known and may not be good at all.
+//        We can't use SipHash since that depends on runtime parameters,
+//        but some string hashes like IPC endpoint magic numbers need to be deterministic.
+//        Maybe use a SipHash with a statically-known key?
 constexpr u32 string_hash(char const* characters, size_t length, u32 seed = 0)
 {
     u32 hash = seed;
     for (size_t i = 0; i < length; ++i) {
-        hash += (u32)characters[i];
+        hash += static_cast<u32>(characters[i]);
         hash += (hash << 10);
         hash ^= (hash >> 6);
     }

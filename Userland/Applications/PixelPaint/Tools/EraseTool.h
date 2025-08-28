@@ -20,12 +20,13 @@ public:
     EraseTool() = default;
     virtual ~EraseTool() override = default;
 
-    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual NonnullRefPtr<GUI::Widget> get_properties_widget() override;
 
 protected:
     virtual Color color_for(GUI::MouseEvent const& event) override;
     virtual void draw_point(Gfx::Bitmap& bitmap, Gfx::Color color, Gfx::IntPoint point) override;
     virtual NonnullRefPtr<Gfx::Bitmap> build_cursor() override;
+    virtual float preferred_cursor_size() override;
 
 private:
     virtual StringView tool_name() const override { return "Erase Tool"sv; }

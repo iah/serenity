@@ -41,6 +41,7 @@ private:
 
 class CanvasPattern final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(CanvasPattern, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(CanvasPattern);
 
 public:
     static WebIDL::ExceptionOr<JS::GCPtr<CanvasPattern>> create(JS::Realm&, CanvasImageSource const& image, StringView repetition);
@@ -52,7 +53,7 @@ public:
 private:
     CanvasPattern(JS::Realm&, CanvasPatternPaintStyle&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     NonnullRefPtr<CanvasPatternPaintStyle> m_pattern;
 };

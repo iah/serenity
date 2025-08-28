@@ -32,10 +32,10 @@ ValueSlider::ValueSlider(Gfx::Orientation orientation, String suffix)
     m_textbox->set_font_size(8);
 
     m_textbox->on_change = [&]() {
-        DeprecatedString value = m_textbox->text();
+        ByteString value = m_textbox->text();
         if (value.ends_with(m_suffix, AK::CaseSensitivity::CaseInsensitive))
             value = value.substring_view(0, value.length() - m_suffix.bytes_as_string_view().length());
-        auto integer_value = value.to_int();
+        auto integer_value = value.to_number<int>();
         if (integer_value.has_value())
             AbstractSlider::set_value(integer_value.value());
     };
@@ -68,9 +68,9 @@ ValueSlider::ValueSlider(Gfx::Orientation orientation, String suffix)
     };
 }
 
-DeprecatedString ValueSlider::formatted_value() const
+ByteString ValueSlider::formatted_value() const
 {
-    return DeprecatedString::formatted("{:2}{}", value(), m_suffix);
+    return ByteString::formatted("{:2}{}", value(), m_suffix);
 }
 
 void ValueSlider::paint_event(PaintEvent& event)
@@ -84,10 +84,10 @@ void ValueSlider::paint_event(PaintEvent& event)
         painter.fill_rect_with_gradient(m_orientation, bar_rect(), palette().inactive_window_border1(), palette().inactive_window_border2());
 
     auto unfilled_rect = bar_rect();
-    unfilled_rect.set_left(knob_rect().right());
+    unfilled_rect.set_left(knob_rect().right() - 1);
     painter.fill_rect(unfilled_rect, palette().base());
 
-    Gfx::StylePainter::paint_frame(painter, bar_rect(), palette(), Gfx::FrameShape::Container, Gfx::FrameShadow::Sunken, 2);
+    Gfx::StylePainter::paint_frame(painter, bar_rect(), palette(), Gfx::FrameStyle::SunkenContainer);
     Gfx::StylePainter::paint_button(painter, knob_rect(), palette(), Gfx::ButtonStyle::Normal, false, m_hovered);
 
     auto paint_knurl = [&](int x, int y) {
@@ -139,14 +139,17 @@ Gfx::IntRect ValueSlider::knob_rect() const
 
 int ValueSlider::value_at(Gfx::IntPoint position) const
 {
-    if (position.x() < bar_rect().left())
+    int knob_thickness = knob_length();
+    float leftmost_knob_center = (float)bar_rect().left() + (float)knob_thickness / 2;
+    if (position.x() < leftmost_knob_center)
         return min();
-    if (position.x() > bar_rect().right())
+    float rightmost_knob_center = (float)(bar_rect().right() - 1) - (float)knob_thickness / 2;
+    if (position.x() > rightmost_knob_center)
         return max();
-    float relative_offset = (float)(position.x() - bar_rect().left()) / (float)bar_rect().width();
+    float relative_offset = (float)(position.x() - leftmost_knob_center) / (rightmost_knob_center - leftmost_knob_center);
 
     int range = max() - min();
-    return min() + (int)(relative_offset * (float)range);
+    return min() + (int)roundf(relative_offset * (float)range);
 }
 
 void ValueSlider::set_value(int value, AllowCallback allow_callback, DoClamp do_clamp)

@@ -32,15 +32,15 @@ bool is_cors_safelisted_method(ReadonlyBytes method)
 bool is_forbidden_method(ReadonlyBytes method)
 {
     // A forbidden method is a method that is a byte-case-insensitive match for `CONNECT`, `TRACE`, or `TRACK`.
-    return StringView { method }.is_one_of_ignoring_case("CONNECT"sv, "TRACE"sv, "TRACK"sv);
+    return StringView { method }.is_one_of_ignoring_ascii_case("CONNECT"sv, "TRACE"sv, "TRACK"sv);
 }
 
 // https://fetch.spec.whatwg.org/#concept-method-normalize
-ErrorOr<ByteBuffer> normalize_method(ReadonlyBytes method)
+ByteBuffer normalize_method(ReadonlyBytes method)
 {
     // To normalize a method, if it is a byte-case-insensitive match for `DELETE`, `GET`, `HEAD`, `OPTIONS`, `POST`, or `PUT`, byte-uppercase it.
-    auto bytes = TRY(ByteBuffer::copy(method));
-    if (StringView { method }.is_one_of_ignoring_case("DELETE"sv, "GET"sv, "HEAD"sv, "OPTIONS"sv, "POST"sv, "PUT"sv))
+    auto bytes = MUST(ByteBuffer::copy(method));
+    if (StringView { method }.is_one_of_ignoring_ascii_case("DELETE"sv, "GET"sv, "HEAD"sv, "OPTIONS"sv, "POST"sv, "PUT"sv))
         Infra::byte_uppercase(bytes);
     return bytes;
 }

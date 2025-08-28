@@ -8,7 +8,7 @@
 #include <AK/Assertions.h>
 #include <AK/Checked.h>
 #include <Kernel/API/serenity_limits.h>
-#include <LibC/elf.h>
+#include <LibELF/ELFABI.h>
 #include <LibELF/Validation.h>
 
 #ifndef KERNEL
@@ -18,7 +18,7 @@
 
 namespace ELF {
 
-bool validate_elf_header(ElfW(Ehdr) const& elf_header, size_t file_size, bool verbose)
+bool validate_elf_header(Elf_Ehdr const& elf_header, size_t file_size, bool verbose)
 {
     if (!IS_ELF(elf_header)) {
         if (verbose)
@@ -59,8 +59,8 @@ bool validate_elf_header(ElfW(Ehdr) const& elf_header, size_t file_size, bool ve
         return false;
     }
 
-    auto expected_machines = Array { EM_X86_64, EM_AARCH64 };
-    auto expected_machine_names = Array { "x86-64"sv, "aarch64"sv };
+    auto expected_machines = Array { EM_X86_64, EM_AARCH64, EM_RISCV };
+    auto expected_machine_names = Array { "x86-64"sv, "aarch64"sv, "riscv64"sv };
 
     if (!expected_machines.span().contains_slow(elf_header.e_machine)) {
         if (verbose)
@@ -80,9 +80,9 @@ bool validate_elf_header(ElfW(Ehdr) const& elf_header, size_t file_size, bool ve
         return false;
     }
 
-    if (sizeof(ElfW(Ehdr)) != elf_header.e_ehsize) {
+    if (sizeof(Elf_Ehdr) != elf_header.e_ehsize) {
         if (verbose)
-            dbgln("File has incorrect ELF header size..? ({}), expected ({})!", elf_header.e_ehsize, sizeof(ElfW(Ehdr)));
+            dbgln("File has incorrect ELF header size..? ({}), expected ({})!", elf_header.e_ehsize, sizeof(Elf_Ehdr));
         return false;
     }
 
@@ -117,20 +117,32 @@ bool validate_elf_header(ElfW(Ehdr) const& elf_header, size_t file_size, bool ve
     }
 
     if (0 != elf_header.e_flags) {
+        // TODO: Refuse to run C ABI binaries on system without the C extension.
+        // TODO: Refuse to run TSO ABI binaries on system without the Ztso extension.
+        if (elf_header.e_machine == EM_RISCV) {
+            auto float_abi = elf_header.e_flags & EF_RISCV_FLOAT_ABI;
+            // TODO: Support 32-bit hardware float ABI somehow?
+            if (float_abi != EF_RISCV_FLOAT_ABI_DOUBLE) {
+                if (verbose)
+                    dbgln("File has unsupported float ABI ({}), only double ({}) is supported.", float_abi, EF_RISCV_FLOAT_ABI_DOUBLE);
+                return false;
+            }
+        } else {
+            if (verbose)
+                dbgln("File has incorrect ELF header flags...? ({}), expected ({}).", elf_header.e_flags, 0);
+            return false;
+        }
+    }
+
+    if (0 != elf_header.e_phnum && sizeof(Elf_Phdr) != elf_header.e_phentsize) {
         if (verbose)
-            dbgln("File has incorrect ELF header flags...? ({}), expected ({}).", elf_header.e_flags, 0);
+            dbgln("File has incorrect program header size..? ({}), expected ({}).", elf_header.e_phentsize, sizeof(Elf_Phdr));
         return false;
     }
 
-    if (0 != elf_header.e_phnum && sizeof(ElfW(Phdr)) != elf_header.e_phentsize) {
+    if (sizeof(Elf_Shdr) != elf_header.e_shentsize) {
         if (verbose)
-            dbgln("File has incorrect program header size..? ({}), expected ({}).", elf_header.e_phentsize, sizeof(ElfW(Phdr)));
-        return false;
-    }
-
-    if (sizeof(ElfW(Shdr)) != elf_header.e_shentsize) {
-        if (verbose)
-            dbgln("File has incorrect section header size..? ({}), expected ({}).", elf_header.e_shentsize, sizeof(ElfW(Shdr)));
+            dbgln("File has incorrect section header size..? ({}), expected ({}).", elf_header.e_shentsize, sizeof(Elf_Shdr));
         return false;
     }
 
@@ -187,7 +199,7 @@ bool validate_elf_header(ElfW(Ehdr) const& elf_header, size_t file_size, bool ve
     return true;
 }
 
-ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file_size, ReadonlyBytes buffer, StringBuilder* interpreter_path_builder, bool verbose)
+bool validate_program_headers(Elf_Ehdr const& elf_header, size_t file_size, ReadonlyBytes buffer, Optional<Elf_Phdr>& interpreter_path_program_header, Optional<size_t>* requested_stack_size, bool verbose)
 {
     Checked<size_t> total_size_of_program_headers = elf_header.e_phnum;
     total_size_of_program_headers *= elf_header.e_phentsize;
@@ -214,10 +226,16 @@ ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file
     }
 
     size_t num_program_headers = elf_header.e_phnum;
-    auto program_header_begin = (const ElfW(Phdr)*)buffer.offset(elf_header.e_phoff);
+    auto program_header_begin = (Elf_Phdr const*)buffer.offset(elf_header.e_phoff);
 
     for (size_t header_index = 0; header_index < num_program_headers; ++header_index) {
         auto& program_header = program_header_begin[header_index];
+
+        if (elf_header.e_machine == EM_RISCV && program_header.p_type == PT_RISCV_ATTRIBUTES) {
+            // TODO: Handle RISC-V attribute section.
+            //       We have to continue here, as `p_memsz` is 0 when using the GNU toolchain
+            continue;
+        }
 
         if (program_header.p_filesz > program_header.p_memsz) {
             if (verbose)
@@ -232,9 +250,9 @@ ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file
                 return false;
             }
 
-            if (program_header.p_type == PT_LOAD && program_header.p_align % (size_t)PAGE_SIZE != 0) {
+            if (program_header.p_type == PT_LOAD && program_header.p_align % (size_t)SERENITY_PAGE_SIZE != 0) {
                 if (verbose)
-                    dbgln("Program header ({}) with p_type PT_LOAD has p_align ({}) not divisible by page size ({})", header_index, program_header.p_align, PAGE_SIZE);
+                    dbgln("Program header ({}) with p_type PT_LOAD has p_align ({}) not divisible by page size ({})", header_index, program_header.p_align, SERENITY_PAGE_SIZE);
                 return false;
             }
 
@@ -253,9 +271,9 @@ ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file
                     dbgln("Integer overflow while validating PT_INTERP header");
                 return false;
             }
-            if (program_header.p_offset + program_header.p_filesz > buffer.size()) {
+            if (program_header.p_offset + program_header.p_filesz > file_size) {
                 if (verbose)
-                    dbgln("Found PT_INTERP header ({}), but the .interp section was not within the buffer :(", header_index);
+                    dbgln("SHENANIGANS! PT_INTERP header segment leaks beyond end of file!");
                 return false;
             }
             if (program_header.p_filesz <= 1) {
@@ -263,8 +281,7 @@ ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file
                     dbgln("Found PT_INTERP header ({}), but p_filesz is invalid ({})", header_index, program_header.p_filesz);
                 return false;
             }
-            if (interpreter_path_builder)
-                TRY(interpreter_path_builder->try_append({ buffer.offset(program_header.p_offset), program_header.p_filesz - 1 }));
+            interpreter_path_program_header = program_header;
             break;
         case PT_LOAD:
         case PT_DYNAMIC:
@@ -295,17 +312,24 @@ ErrorOr<bool> validate_program_headers(ElfW(Ehdr) const& elf_header, size_t file
             }
 
             if (program_header.p_memsz != 0) {
-                if (program_header.p_memsz < static_cast<unsigned>(PTHREAD_STACK_MIN) || program_header.p_memsz > static_cast<unsigned>(PTHREAD_STACK_MAX)) {
+                if (
+#ifdef PTHREAD_STACK_MIN
+                    program_header.p_memsz < static_cast<unsigned>(PTHREAD_STACK_MIN) ||
+#endif
+                    program_header.p_memsz > static_cast<unsigned>(PTHREAD_STACK_MAX)) {
                     if (verbose)
                         dbgln("PT_GNU_STACK defines an unacceptable stack size.");
                     return false;
                 }
 
-                if (program_header.p_memsz % PAGE_SIZE != 0) {
+                if (program_header.p_memsz % SERENITY_PAGE_SIZE != 0) {
                     if (verbose)
                         dbgln("PT_GNU_STACK size is not page-aligned.");
                     return false;
                 }
+
+                if (requested_stack_size)
+                    *requested_stack_size = program_header.p_memsz;
             }
 
             break;

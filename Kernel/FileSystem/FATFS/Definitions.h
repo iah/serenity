@@ -9,39 +9,23 @@
 #include <AK/DOSPackedTime.h>
 #include <AK/EnumBits.h>
 #include <AK/Types.h>
+#include <Kernel/API/FileSystem/FATStructures.h>
+#include <Kernel/Library/KBuffer.h>
 
 namespace Kernel {
 
-struct [[gnu::packed]] FAT32BootRecord {
-    u8 boot_jump[3];
-    char oem_identifier[8];
-    u16 bytes_per_sector;
-    u8 sectors_per_cluster;
-    u16 reserved_sector_count;
-    u8 fat_count;
-    u16 root_directory_entry_count;
-    u16 unused1;
-    u8 media_descriptor_type;
-    u16 unused2;
-    u16 sectors_per_track;
-    u16 head_count;
-    u32 hidden_sector_count;
-    u32 sector_count;
-    u32 sectors_per_fat;
-    u16 flags;
-    u16 fat_version;
-    u32 root_directory_cluster;
-    u16 fs_info_sector;
-    u16 backup_boot_sector;
-    u8 unused3[12];
-    u8 drive_number;
-    u8 unused4;
-    u8 signature;
-    u32 volume_id;
-    char volume_label_string[11];
-    char system_identifier_string[8];
+enum DOSBIOSParameterBlockVersion {
+    DOS_BPB_UNKNOWN,
+    DOS_BPB_3, // Version 3.4.
+    DOS_BPB_4, // Version 4.0
+    DOS_BPB_7  // Version 7.0
 };
-static_assert(sizeof(FAT32BootRecord) == 90);
+
+enum class FATVersion {
+    FAT12,
+    FAT16,
+    FAT32,
+};
 
 enum class FATAttributes : u8 {
     ReadOnly = 0x01,
@@ -70,7 +54,7 @@ struct [[gnu::packed]] FATEntry {
     u16 first_cluster_low;
     u32 file_size;
 };
-static_assert(sizeof(FATEntry) == 32);
+static_assert(AssertSize<FATEntry, 32>());
 
 struct [[gnu::packed]] FATLongFileNameEntry {
     u8 entry_index;
@@ -82,6 +66,6 @@ struct [[gnu::packed]] FATLongFileNameEntry {
     u16 zero;
     u16 characters3[2];
 };
-static_assert(sizeof(FATLongFileNameEntry) == 32);
+static_assert(AssertSize<FATLongFileNameEntry, 32>());
 
 }

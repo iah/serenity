@@ -227,7 +227,7 @@ size_t get_BAR_space_size(DeviceIdentifier const& identifier, HeaderType0BaseReg
     write32_offsetted(identifier, field, 0xFFFFFFFF);
     u32 space_size = read32_offsetted(identifier, field);
     write32_offsetted(identifier, field, bar_reserved);
-    space_size &= 0xfffffff0;
+    space_size &= bar_address_mask;
     space_size = (~space_size) + 1;
     return space_size;
 }
@@ -240,7 +240,7 @@ size_t get_expansion_rom_space_size(DeviceIdentifier const& identifier)
     write32_offsetted(identifier, field, 0xFFFFFFFF);
     u32 space_size = read32_offsetted(identifier, field);
     write32_offsetted(identifier, field, bar_reserved);
-    space_size &= 0xfffffff0;
+    space_size &= bar_address_mask;
     space_size = (~space_size) + 1;
     return space_size;
 }
@@ -285,9 +285,35 @@ u32 Capability::read32(size_t offset) const
     return read32_offsetted(identifier, m_ptr + offset);
 }
 
+void Capability::write8(size_t offset, u8 value) const
+{
+    auto& identifier = get_device_identifier(m_address);
+    SpinlockLocker locker(identifier.operation_lock());
+    write8_offsetted(identifier, m_ptr + offset, value);
+}
+
+void Capability::write16(size_t offset, u16 value) const
+{
+    auto& identifier = get_device_identifier(m_address);
+    SpinlockLocker locker(identifier.operation_lock());
+    write16_offsetted(identifier, m_ptr + offset, value);
+}
+
+void Capability::write32(size_t offset, u32 value) const
+{
+    auto& identifier = get_device_identifier(m_address);
+    SpinlockLocker locker(identifier.operation_lock());
+    write32_offsetted(identifier, m_ptr + offset, value);
+}
+
 DeviceIdentifier const& get_device_identifier(Address address)
 {
     return Access::the().get_device_identifier(address);
+}
+
+ErrorOr<PhysicalAddress> translate_bus_address_to_host_address(DeviceIdentifier const& identifier, BARSpaceType address_space_type, u64 bus_address)
+{
+    return Access::the().translate_bus_address_to_host_address(identifier, address_space_type, bus_address);
 }
 
 }

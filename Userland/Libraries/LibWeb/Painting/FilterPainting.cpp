@@ -19,7 +19,7 @@
 
 namespace Web::Painting {
 
-void apply_filter_list(Gfx::Bitmap& target_bitmap, Layout::Node const& node, ReadonlySpan<CSS::FilterFunction> filter_list)
+void apply_filter_list(Gfx::Bitmap& target_bitmap, ReadonlySpan<CSS::ResolvedFilter::FilterFunction> filter_list)
 {
     auto apply_color_filter = [&](Gfx::ColorFilter const& filter) {
         const_cast<Gfx::ColorFilter&>(filter).apply(target_bitmap, target_bitmap.rect(), target_bitmap, target_bitmap.rect());
@@ -27,54 +27,54 @@ void apply_filter_list(Gfx::Bitmap& target_bitmap, Layout::Node const& node, Rea
     for (auto& filter_function : filter_list) {
         // See: https://drafts.fxtf.org/filter-effects-1/#supported-filter-functions
         filter_function.visit(
-            [&](CSS::Filter::Blur const& blur) {
+            [&](CSS::ResolvedFilter::Blur const& blur_filter) {
                 // Applies a Gaussian blur to the input image.
                 // The passed parameter defines the value of the standard deviation to the Gaussian function.
                 Gfx::StackBlurFilter filter { target_bitmap };
-                filter.process_rgba(blur.resolved_radius(node), Color::Transparent);
+                filter.process_rgba(blur_filter.radius, Color::Transparent);
             },
-            [&](CSS::Filter::Color const& color) {
-                auto amount = color.resolved_amount();
+            [&](CSS::ResolvedFilter::Color const& color) {
+                auto amount = color.amount;
                 auto amount_clamped = clamp(amount, 0.0f, 1.0f);
-                switch (color.operation) {
-                case CSS::Filter::Color::Operation::Grayscale: {
+                switch (color.type) {
+                case CSS::FilterOperation::Color::Type::Grayscale: {
                     // Converts the input image to grayscale. The passed parameter defines the proportion of the conversion.
                     // A value of 100% is completely grayscale. A value of 0% leaves the input unchanged.
                     apply_color_filter(Gfx::GrayscaleFilter { amount_clamped });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Brightness: {
+                case CSS::FilterOperation::Color::Type::Brightness: {
                     // Applies a linear multiplier to input image, making it appear more or less bright.
                     // A value of 0% will create an image that is completely black. A value of 100% leaves the input unchanged.
                     // Values of amount over 100% are allowed, providing brighter results.
                     apply_color_filter(Gfx::BrightnessFilter { amount });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Contrast: {
+                case CSS::FilterOperation::Color::Type::Contrast: {
                     // Adjusts the contrast of the input. A value of 0% will create an image that is completely gray.
                     // A value of 100% leaves the input unchanged. Values of amount over 100% are allowed, providing results with more contrast.
                     apply_color_filter(Gfx::ContrastFilter { amount });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Invert: {
+                case CSS::FilterOperation::Color::Type::Invert: {
                     // Inverts the samples in the input image. The passed parameter defines the proportion of the conversion.
                     // A value of 100% is completely inverted. A value of 0% leaves the input unchanged.
                     apply_color_filter(Gfx::InvertFilter { amount_clamped });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Opacity: {
+                case CSS::FilterOperation::Color::Type::Opacity: {
                     // Applies transparency to the samples in the input image. The passed parameter defines the proportion of the conversion.
                     // A value of 0% is completely transparent. A value of 100% leaves the input unchanged.
                     apply_color_filter(Gfx::OpacityFilter { amount_clamped });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Sepia: {
+                case CSS::FilterOperation::Color::Type::Sepia: {
                     // Converts the input image to sepia. The passed parameter defines the proportion of the conversion.
                     // A value of 100% is completely sepia. A value of 0% leaves the input unchanged.
                     apply_color_filter(Gfx::SepiaFilter { amount_clamped });
                     break;
                 }
-                case CSS::Filter::Color::Operation::Saturate: {
+                case CSS::FilterOperation::Color::Type::Saturate: {
                     // Saturates the input image. The passed parameter defines the proportion of the conversion.
                     // A value of 0% is completely un-saturated. A value of 100% leaves the input unchanged.
                     // Other values are linear multipliers on the effect.
@@ -86,54 +86,24 @@ void apply_filter_list(Gfx::Bitmap& target_bitmap, Layout::Node const& node, Rea
                     break;
                 }
             },
-            [&](CSS::Filter::HueRotate const& hue_rotate) {
+            [&](CSS::ResolvedFilter::HueRotate const& hue_rotate) {
                 // Applies a hue rotation on the input image.
                 // The passed parameter defines the number of degrees around the color circle the input samples will be adjusted.
                 // A value of 0deg leaves the input unchanged. Implementations must not normalize this value in order to allow animations beyond 360deg.
-                apply_color_filter(Gfx::HueRotateFilter { hue_rotate.angle_degrees() });
+                apply_color_filter(Gfx::HueRotateFilter { hue_rotate.angle_degrees });
             },
-            [&](CSS::Filter::DropShadow const&) {
+            [&](CSS::ResolvedFilter::DropShadow const&) {
                 dbgln("TODO: Implement drop-shadow() filter function!");
             });
     }
 }
 
-void apply_backdrop_filter(PaintContext& context, Layout::Node const& node, CSSPixelRect const& backdrop_rect, BorderRadiiData const& border_radii_data, CSS::BackdropFilter const& backdrop_filter)
+void apply_backdrop_filter(PaintContext& context, CSSPixelRect const& backdrop_rect, BorderRadiiData const& border_radii_data, CSS::ResolvedFilter const& backdrop_filter)
 {
-    // This performs the backdrop filter operation: https://drafts.fxtf.org/filter-effects-2/#backdrop-filter-operation
-
     auto backdrop_region = context.rounded_device_rect(backdrop_rect);
 
-    // Note: The region bitmap can be smaller than the backdrop_region if it's at the edge of canvas.
-    // Note: This is in DevicePixels, but we use an IntRect because `get_region_bitmap()` below writes to it.
-    Gfx::IntRect actual_region {};
-
-    // FIXME: Go through the steps to find the "Backdrop Root Image"
-    // https://drafts.fxtf.org/filter-effects-2/#BackdropRoot
-
-    // 1. Copy the Backdrop Root Image into a temporary buffer, such as a raster image. Call this buffer T’.
-    auto maybe_backdrop_bitmap = context.painter().get_region_bitmap(backdrop_region.to_type<int>(), Gfx::BitmapFormat::BGRA8888, actual_region);
-    if (actual_region.is_empty())
-        return;
-    if (maybe_backdrop_bitmap.is_error()) {
-        dbgln("Failed get region bitmap for backdrop-filter");
-        return;
-    }
-    auto backdrop_bitmap = maybe_backdrop_bitmap.release_value();
-    // 2. Apply the backdrop-filter’s filter operations to the entire contents of T'.
-    apply_filter_list(*backdrop_bitmap, node, backdrop_filter.filters());
-
-    // FIXME: 3. If element B has any transforms (between B and the Backdrop Root), apply the inverse of those transforms to the contents of T’.
-
-    // 4. Apply a clip to the contents of T’, using the border box of element B, including border-radius if specified. Note that the children of B are not considered for the sizing or location of this clip.
-    ScopedCornerRadiusClip corner_clipper { context, context.painter(), backdrop_region, border_radii_data };
-
-    // FIXME: 5. Draw all of element B, including its background, border, and any children elements, into T’.
-
-    // FXIME: 6. If element B has any transforms, effects, or clips, apply those to T’.
-
-    // 7. Composite the contents of T’ into element B’s parent, using source-over compositing.
-    context.painter().blit(actual_region.location(), *backdrop_bitmap, backdrop_bitmap->rect());
+    ScopedCornerRadiusClip corner_clipper { context, backdrop_region, border_radii_data };
+    context.display_list_recorder().apply_backdrop_filter(backdrop_region.to_type<int>(), border_radii_data, backdrop_filter);
 }
 
 }

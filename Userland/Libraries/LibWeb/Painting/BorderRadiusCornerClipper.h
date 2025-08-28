@@ -16,76 +16,61 @@ enum class CornerClip {
     Inside
 };
 
-class BorderRadiusCornerClipper {
-public:
-    enum class UseCachedBitmap {
-        Yes,
-        No
+struct BorderRadiusSamplingConfig {
+    CornerRadii corner_radii;
+    struct CornerLocations {
+        Gfx::IntPoint top_left;
+        Gfx::IntPoint top_right;
+        Gfx::IntPoint bottom_right;
+        Gfx::IntPoint bottom_left;
     };
+    CornerLocations page_locations;
+    CornerLocations bitmap_locations;
+    Gfx::IntSize corners_bitmap_size;
+};
 
-    static ErrorOr<BorderRadiusCornerClipper> create(PaintContext&, DevicePixelRect const& border_rect, BorderRadiiData const& border_radii, CornerClip corner_clip = CornerClip::Outside, UseCachedBitmap use_cached_bitmap = UseCachedBitmap::Yes);
+BorderRadiusSamplingConfig calculate_border_radius_sampling_config(CornerRadii const& corner_radii, Gfx::IntRect const& border_rect);
+
+class BorderRadiusCornerClipper : public RefCounted<BorderRadiusCornerClipper> {
+public:
+    static ErrorOr<NonnullRefPtr<BorderRadiusCornerClipper>> create(CornerRadii const&, DevicePixelRect const& border_rect, CornerClip corner_clip = CornerClip::Outside);
 
     void sample_under_corners(Gfx::Painter& page_painter);
     void blit_corner_clipping(Gfx::Painter& page_painter);
 
-private:
-    using CornerRadius = Gfx::AntiAliasingPainter::CornerRadius;
-    struct CornerData {
-        struct CornerRadii {
-            CornerRadius top_left;
-            CornerRadius top_right;
-            CornerRadius bottom_right;
-            CornerRadius bottom_left;
-        } corner_radii;
-        struct CornerLocations {
-            DevicePixelPoint top_left;
-            DevicePixelPoint top_right;
-            DevicePixelPoint bottom_right;
-            DevicePixelPoint bottom_left;
-        };
-        CornerLocations page_locations;
-        CornerLocations bitmap_locations;
-        DevicePixelSize corner_bitmap_size;
-    } m_data;
+    BorderRadiusSamplingConfig m_data;
 
+    DevicePixelRect border_rect() const { return m_border_rect; }
+
+    BorderRadiusCornerClipper(BorderRadiusSamplingConfig corner_data, NonnullRefPtr<Gfx::Bitmap> corner_bitmap, CornerClip corner_clip, DevicePixelRect const& border_rect)
+        : m_data(corner_data)
+        , m_corner_bitmap(corner_bitmap)
+        , m_corner_clip(corner_clip)
+        , m_border_rect(border_rect)
+    {
+    }
+
+private:
     NonnullRefPtr<Gfx::Bitmap> m_corner_bitmap;
     bool m_has_sampled { false };
     CornerClip m_corner_clip { false };
-
-    BorderRadiusCornerClipper(CornerData corner_data, NonnullRefPtr<Gfx::Bitmap> corner_bitmap, CornerClip corner_clip)
-        : m_data(move(corner_data))
-        , m_corner_bitmap(corner_bitmap)
-        , m_corner_clip(corner_clip)
-    {
-    }
+    DevicePixelRect m_border_rect;
 };
 
 struct ScopedCornerRadiusClip {
-    ScopedCornerRadiusClip(PaintContext& context, Gfx::Painter& painter, DevicePixelRect const& border_rect, BorderRadiiData const& border_radii, CornerClip corner_clip = CornerClip::Outside, BorderRadiusCornerClipper::UseCachedBitmap use_cached_bitmap = BorderRadiusCornerClipper::UseCachedBitmap::Yes)
-        : m_painter(painter)
-    {
-        if (border_radii.has_any_radius()) {
-            auto clipper = BorderRadiusCornerClipper::create(context, border_rect, border_radii, corner_clip, use_cached_bitmap);
-            if (!clipper.is_error()) {
-                m_corner_clipper = clipper.release_value();
-                m_corner_clipper->sample_under_corners(m_painter);
-            }
-        }
-    }
+    ScopedCornerRadiusClip(PaintContext& context, DevicePixelRect const& border_rect, BorderRadiiData const& border_radii, CornerClip corner_clip = CornerClip::Outside);
 
-    ~ScopedCornerRadiusClip()
-    {
-        if (m_corner_clipper.has_value()) {
-            m_corner_clipper->blit_corner_clipping(m_painter);
-        }
-    }
+    ~ScopedCornerRadiusClip();
 
     AK_MAKE_NONMOVABLE(ScopedCornerRadiusClip);
     AK_MAKE_NONCOPYABLE(ScopedCornerRadiusClip);
 
 private:
-    Gfx::Painter& m_painter;
-    Optional<BorderRadiusCornerClipper> m_corner_clipper;
+    PaintContext& m_context;
+    RefPtr<BorderRadiusCornerClipper> m_corner_clipper;
+    u32 m_id;
+    bool m_has_radius { false };
+    Gfx::IntRect m_border_rect;
 };
 
 }

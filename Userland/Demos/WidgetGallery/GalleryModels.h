@@ -27,13 +27,13 @@ public:
 
     virtual int row_count(const GUI::ModelIndex&) const override { return m_cursors.size(); }
     virtual int column_count(const GUI::ModelIndex&) const override { return Column::__Count; }
-    virtual DeprecatedString column_name(int column_index) const override
+    virtual ErrorOr<String> column_name(int column_index) const override
     {
         switch (column_index) {
         case Column::Bitmap:
-            return {};
+            return String {};
         case Column::Name:
-            return "Name";
+            return "Name"_string;
         }
         VERIFY_NOT_REACHED();
     }
@@ -60,7 +60,7 @@ public:
     {
         m_cursors.clear();
 
-        Core::DirIterator iterator(DeprecatedString::formatted("/res/cursor-themes/{}", GUI::ConnectionToWindowServer::the().get_cursor_theme()), Core::DirIterator::Flags::SkipDots);
+        Core::DirIterator iterator(ByteString::formatted("/res/cursor-themes/{}", GUI::ConnectionToWindowServer::the().get_cursor_theme()), Core::DirIterator::Flags::SkipDots);
 
         while (iterator.has_next()) {
             auto path = iterator.next_full_path();
@@ -90,8 +90,8 @@ private:
 
     struct Cursor {
         RefPtr<Gfx::Bitmap> bitmap;
-        DeprecatedString path;
-        DeprecatedString name;
+        ByteString path;
+        ByteString name;
         Gfx::CursorParams params;
     };
 
@@ -112,15 +112,15 @@ public:
 
     virtual int row_count(const GUI::ModelIndex&) const override { return m_icon_sets.size(); }
     virtual int column_count(const GUI::ModelIndex&) const override { return Column::__Count; }
-    virtual DeprecatedString column_name(int column_index) const override
+    virtual ErrorOr<String> column_name(int column_index) const override
     {
         switch (column_index) {
         case Column::BigIcon:
-            return {};
+            return String {};
         case Column::LittleIcon:
-            return {};
+            return String {};
         case Column::Name:
-            return "Name";
+            return "Name"_string;
         }
         VERIFY_NOT_REACHED();
     }
@@ -194,7 +194,7 @@ private:
     struct IconSet {
         RefPtr<Gfx::Bitmap> big_icon;
         RefPtr<Gfx::Bitmap> little_icon;
-        DeprecatedString name;
+        ByteString name;
     };
 
     Vector<IconSet> m_icon_sets;

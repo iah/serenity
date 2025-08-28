@@ -17,16 +17,25 @@ class HTMLOutputElement final
     : public HTMLElement
     , public FormAssociatedElement {
     WEB_PLATFORM_OBJECT(HTMLOutputElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLOutputElement);
     FORM_ASSOCIATED_ELEMENT(HTMLElement, HTMLOutputElement)
 
 public:
     virtual ~HTMLOutputElement() override;
 
-    DeprecatedString const& type() const
+    JS::NonnullGCPtr<DOM::DOMTokenList> html_for();
+
+    String const& type() const
     {
-        static DeprecatedString output = "output";
+        static String const output = "output"_string;
         return output;
     }
+
+    String default_value() const;
+    void set_default_value(String const&);
+
+    String value() const override;
+    void set_value(String const&);
 
     // ^FormAssociatedElement
     // https://html.spec.whatwg.org/multipage/forms.html#category-listed
@@ -43,6 +52,7 @@ public:
     virtual bool is_labelable() const override { return true; }
 
     virtual void reset_algorithm() override;
+    virtual void clear_algorithm() override;
 
     // https://www.w3.org/TR/html-aria/#el-output
     virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::status; }
@@ -50,7 +60,14 @@ public:
 private:
     HTMLOutputElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor& visitor) override;
+
+    virtual void form_associated_element_attribute_changed(FlyString const& name, Optional<String> const& value) override;
+
+    JS::GCPtr<DOM::DOMTokenList> m_html_for;
+
+    Optional<String> m_default_value_override {};
 };
 
 }

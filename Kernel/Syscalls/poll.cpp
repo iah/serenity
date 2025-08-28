@@ -9,7 +9,7 @@
 #include <Kernel/API/POSIX/select.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -17,7 +17,7 @@ using BlockFlags = Thread::FileBlocker::BlockFlags;
 
 ErrorOr<FlatPtr> Process::sys$poll(Userspace<Syscall::SC_poll_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::stdio));
 
     auto params = TRY(copy_typed_from_user(user_params));
@@ -131,7 +131,7 @@ ErrorOr<FlatPtr> Process::sys$poll(Userspace<Syscall::SC_poll_params const*> use
     }
 
     if (params.nfds > 0)
-        TRY(copy_to_user(&params.fds[0], fds_copy.data(), params.nfds * sizeof(pollfd)));
+        TRY(copy_n_to_user(&params.fds[0], fds_copy.data(), params.nfds));
 
     return fds_with_revents;
 }

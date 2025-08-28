@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,15 +15,17 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(ReflectObject);
+
 ReflectObject::ReflectObject(Realm& realm)
-    : Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
+    : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> ReflectObject::initialize(Realm& realm)
+void ReflectObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.apply, apply, 3, attr);
     define_native_function(realm, vm.names.construct, construct, 2, attr);
@@ -40,9 +42,7 @@ ThrowCompletionOr<void> ReflectObject::initialize(Realm& realm)
     define_native_function(realm, vm.names.setPrototypeOf, set_prototype_of, 2, attr);
 
     // 28.1.14 Reflect [ @@toStringTag ], https://tc39.es/ecma262/#sec-reflect-@@tostringtag
-    define_direct_property(*vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.Reflect.as_string()), Attribute::Configurable);
-
-    return {};
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, vm.names.Reflect.as_string()), Attribute::Configurable);
 }
 
 // 28.1.1 Reflect.apply ( target, thisArgument, argumentsList ), https://tc39.es/ecma262/#sec-reflect.apply
@@ -54,14 +54,14 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::apply)
 
     // 1. If IsCallable(target) is false, throw a TypeError exception.
     if (!target.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, target.to_string_without_side_effects());
 
     // 2. Let args be ? CreateListFromArrayLike(argumentsList).
     auto args = TRY(create_list_from_array_like(vm, arguments_list));
 
     // 3. Perform PrepareForTailCall().
     // 4. Return ? Call(target, thisArgument, args).
-    return TRY(call(vm, target.as_function(), this_argument, move(args)));
+    return TRY(call(vm, target.as_function(), this_argument, args.span()));
 }
 
 // 28.1.2 Reflect.construct ( target, argumentsList [ , newTarget ] ), https://tc39.es/ecma262/#sec-reflect.construct
@@ -73,20 +73,20 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::construct)
 
     // 1. If IsConstructor(target) is false, throw a TypeError exception.
     if (!target.is_constructor())
-        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, target.to_string_without_side_effects());
 
     // 2. If newTarget is not present, set newTarget to target.
     if (vm.argument_count() < 3)
         new_target = target;
     // 3. Else if IsConstructor(newTarget) is false, throw a TypeError exception.
     else if (!new_target.is_constructor())
-        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, TRY_OR_THROW_OOM(vm, new_target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, new_target.to_string_without_side_effects());
 
     // 4. Let args be ? CreateListFromArrayLike(argumentsList).
     auto args = TRY(create_list_from_array_like(vm, arguments_list));
 
     // 5. Return ? Construct(target, args, newTarget).
-    return TRY(JS::construct(vm, target.as_function(), move(args), &new_target.as_function()));
+    return TRY(JS::construct(vm, target.as_function(), args.span(), &new_target.as_function()));
 }
 
 // 28.1.3 Reflect.defineProperty ( target, propertyKey, attributes ), https://tc39.es/ecma262/#sec-reflect.defineproperty
@@ -98,7 +98,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::define_property)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -118,7 +118,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::delete_property)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -136,7 +136,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::get)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -159,7 +159,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::get_own_property_descriptor)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -178,7 +178,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::get_prototype_of)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Return ? target.[[GetPrototypeOf]]().
     return TRY(target.as_object().internal_get_prototype_of());
@@ -192,7 +192,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::has)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -208,7 +208,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::is_extensible)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Return ? target.[[IsExtensible]]().
     return Value(TRY(target.as_object().internal_is_extensible()));
@@ -223,7 +223,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::own_keys)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let keys be ? target.[[OwnPropertyKeys]]().
     auto keys = TRY(target.as_object().internal_own_property_keys());
@@ -239,7 +239,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::prevent_extensions)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Return ? target.[[PreventExtensions]]().
     return Value(TRY(target.as_object().internal_prevent_extensions()));
@@ -255,7 +255,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::set)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let key be ? ToPropertyKey(propertyKey).
     auto key = TRY(property_key.to_property_key(vm));
@@ -278,7 +278,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReflectObject::set_prototype_of)
 
     // 1. If Type(target) is not Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. If Type(proto) is not Object and proto is not null, throw a TypeError exception.
     if (!proto.is_object() && !proto.is_null())

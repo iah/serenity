@@ -17,7 +17,7 @@
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath recvfd sendfd unix thread"));
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     Config::pledge_domain("Games");
 
     StringView selected_tab;
@@ -35,8 +35,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto window = TRY(GUI::SettingsWindow::create("Games Settings", GUI::SettingsWindow::ShowDefaultsButton::Yes));
     window->set_icon(app_icon.bitmap_for_size(16));
-    (void)TRY(window->add_tab<GamesSettings::CardSettingsWidget>("Cards"sv, "cards"sv));
-    (void)TRY(window->add_tab<GamesSettings::ChessSettingsWidget>("Chess"sv, "chess"sv));
+    (void)TRY(window->add_tab<GamesSettings::CardSettingsWidget>("Cards"_string, "cards"sv));
+    (void)TRY(window->add_tab<GamesSettings::ChessSettingsWidget>("Chess"_string, "chess"sv));
     window->set_active_tab(selected_tab);
 
     window->show();

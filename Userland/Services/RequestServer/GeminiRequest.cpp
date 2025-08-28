@@ -12,8 +12,8 @@
 
 namespace RequestServer {
 
-GeminiRequest::GeminiRequest(ConnectionFromClient& client, NonnullRefPtr<Gemini::Job> job, NonnullOwnPtr<Core::File>&& output_stream)
-    : Request(client, move(output_stream))
+GeminiRequest::GeminiRequest(ConnectionFromClient& client, NonnullRefPtr<Gemini::Job> job, NonnullOwnPtr<Core::File>&& output_stream, i32 request_id)
+    : Request(client, move(output_stream), request_id)
     , m_job(move(job))
 {
     m_job->on_finish = [this](bool success) {
@@ -23,7 +23,7 @@ GeminiRequest::GeminiRequest(ConnectionFromClient& client, NonnullRefPtr<Gemini:
         if (auto* response = m_job->response()) {
             set_downloaded_size(MUST(m_job->response_length()));
             if (!response->meta().is_empty()) {
-                HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> headers;
+                HTTP::HeaderMap headers;
                 headers.set("meta", response->meta());
                 // Note: We're setting content-type to meta only on status==SUCCESS
                 //       we should perhaps have a better mechanism for this, since we
@@ -41,12 +41,12 @@ GeminiRequest::GeminiRequest(ConnectionFromClient& client, NonnullRefPtr<Gemini:
 
         did_finish(success);
     };
-    m_job->on_progress = [this](Optional<u32> total, u32 current) {
+    m_job->on_progress = [this](Optional<u64> total, u64 current) {
         did_progress(move(total), current);
     };
 }
 
-void GeminiRequest::set_certificate(DeprecatedString, DeprecatedString)
+void GeminiRequest::set_certificate(ByteString, ByteString)
 {
 }
 
@@ -57,9 +57,9 @@ GeminiRequest::~GeminiRequest()
     m_job->cancel();
 }
 
-NonnullOwnPtr<GeminiRequest> GeminiRequest::create_with_job(Badge<GeminiProtocol>, ConnectionFromClient& client, NonnullRefPtr<Gemini::Job> job, NonnullOwnPtr<Core::File>&& output_stream)
+NonnullOwnPtr<GeminiRequest> GeminiRequest::create_with_job(Badge<GeminiProtocol>, ConnectionFromClient& client, NonnullRefPtr<Gemini::Job> job, NonnullOwnPtr<Core::File>&& output_stream, i32 request_id)
 {
-    return adopt_own(*new GeminiRequest(client, move(job), move(output_stream)));
+    return adopt_own(*new GeminiRequest(client, move(job), move(output_stream), request_id));
 }
 
 }

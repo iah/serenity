@@ -53,7 +53,7 @@ ErrorOr<Directory> Directory::adopt_fd(int fd, LexicalPath path)
     return Directory { fd, move(path) };
 }
 
-ErrorOr<Directory> Directory::create(DeprecatedString path, CreateDirectories create_directories, mode_t creation_mode)
+ErrorOr<Directory> Directory::create(ByteString path, CreateDirectories create_directories, mode_t creation_mode)
 {
     return create(LexicalPath { move(path) }, create_directories, creation_mode);
 }
@@ -86,6 +86,11 @@ ErrorOr<NonnullOwnPtr<File>> Directory::open(StringView filename, File::OpenMode
 {
     auto fd = TRY(System::openat(m_directory_fd, filename, File::open_mode_to_options(mode)));
     return File::adopt_fd(fd, mode);
+}
+
+ErrorOr<struct stat> Directory::stat(StringView filename, int flags) const
+{
+    return System::fstatat(m_directory_fd, filename, flags);
 }
 
 ErrorOr<struct stat> Directory::stat() const

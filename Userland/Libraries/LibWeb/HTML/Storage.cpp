@@ -5,30 +5,41 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/String.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/StoragePrototype.h>
 #include <LibWeb/HTML/Storage.h>
 
 namespace Web::HTML {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<Storage>> Storage::create(JS::Realm& realm)
+JS_DEFINE_ALLOCATOR(Storage);
+
+JS::NonnullGCPtr<Storage> Storage::create(JS::Realm& realm)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<Storage>(realm, realm));
+    return realm.heap().allocate<Storage>(realm, realm);
 }
 
 Storage::Storage(JS::Realm& realm)
-    : Bindings::LegacyPlatformObject(realm)
+    : Bindings::PlatformObject(realm)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+        .supports_named_properties = true,
+        .has_indexed_property_setter = true,
+        .has_named_property_setter = true,
+        .has_named_property_deleter = true,
+        .indexed_property_setter_has_identifier = true,
+        .named_property_setter_has_identifier = true,
+        .named_property_deleter_has_identifier = true,
+    };
 }
 
 Storage::~Storage() = default;
 
-JS::ThrowCompletionOr<void> Storage::initialize(JS::Realm& realm)
+void Storage::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::StoragePrototype>(realm, "Storage"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(Storage);
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-length
@@ -39,7 +50,7 @@ size_t Storage::length() const
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-key
-DeprecatedString Storage::key(size_t index)
+Optional<String> Storage::key(size_t index)
 {
     // 1. If index is greater than or equal to this's map's size, then return null.
     if (index >= m_map.size())
@@ -53,7 +64,7 @@ DeprecatedString Storage::key(size_t index)
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-getitem
-DeprecatedString Storage::get_item(DeprecatedString const& key) const
+Optional<String> Storage::get_item(StringView key) const
 {
     // 1. If this's map[key] does not exist, then return null.
     auto it = m_map.find(key);
@@ -65,10 +76,10 @@ DeprecatedString Storage::get_item(DeprecatedString const& key) const
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-setitem
-WebIDL::ExceptionOr<void> Storage::set_item(DeprecatedString const& key, DeprecatedString const& value)
+WebIDL::ExceptionOr<void> Storage::set_item(String const& key, String const& value)
 {
     // 1. Let oldValue be null.
-    DeprecatedString old_value;
+    String old_value;
 
     // 2. Let reorder be true.
     bool reorder = true;
@@ -102,7 +113,7 @@ WebIDL::ExceptionOr<void> Storage::set_item(DeprecatedString const& key, Depreca
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-removeitem
-void Storage::remove_item(DeprecatedString const& key)
+void Storage::remove_item(StringView key)
 {
     // 1. If this's map[key] does not exist, then return null.
     // FIXME: Return null?
@@ -141,7 +152,7 @@ void Storage::reorder()
 }
 
 // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
-void Storage::broadcast(DeprecatedString const& key, DeprecatedString const& old_value, DeprecatedString const& new_value)
+void Storage::broadcast(StringView key, StringView old_value, StringView new_value)
 {
     (void)key;
     (void)old_value;
@@ -149,31 +160,54 @@ void Storage::broadcast(DeprecatedString const& key, DeprecatedString const& old
     // FIXME: Implement.
 }
 
-Vector<DeprecatedString> Storage::supported_property_names() const
+Vector<FlyString> Storage::supported_property_names() const
 {
     // The supported property names on a Storage object storage are the result of running get the keys on storage's map.
-    return m_map.keys();
+    Vector<FlyString> names;
+    names.ensure_capacity(m_map.size());
+    for (auto const& key : m_map.keys())
+        names.unchecked_append(key);
+    return names;
 }
 
-WebIDL::ExceptionOr<JS::Value> Storage::named_item_value(DeprecatedFlyString const& name) const
+Optional<JS::Value> Storage::item_value(size_t index) const
+{
+    // Handle index as a string since that's our key type
+    auto key = String::number(index);
+    auto value = get_item(key);
+    if (!value.has_value())
+        return {};
+    return JS::PrimitiveString::create(vm(), value.release_value());
+}
+
+JS::Value Storage::named_item_value(FlyString const& name) const
 {
     auto value = get_item(name);
-    if (value.is_null())
-        return JS::js_null();
-    return JS::PrimitiveString::create(vm(), value);
+    if (!value.has_value())
+        // AD-HOC: Spec leaves open to a description at: https://html.spec.whatwg.org/multipage/webstorage.html#the-storage-interface
+        // However correct behavior expected here: https://github.com/whatwg/html/issues/8684
+        return JS::js_undefined();
+    return JS::PrimitiveString::create(vm(), value.release_value());
 }
 
-WebIDL::ExceptionOr<Bindings::LegacyPlatformObject::DidDeletionFail> Storage::delete_value(DeprecatedString const& name)
+WebIDL::ExceptionOr<Bindings::PlatformObject::DidDeletionFail> Storage::delete_value(String const& name)
 {
     remove_item(name);
     return DidDeletionFail::NotRelevant;
 }
 
-WebIDL::ExceptionOr<void> Storage::set_value_of_named_property(DeprecatedString const& key, JS::Value unconverted_value)
+WebIDL::ExceptionOr<void> Storage::set_value_of_indexed_property(u32 index, JS::Value unconverted_value)
 {
-    // NOTE: Since LegacyPlatformObject does not know the type of value, we must convert it ourselves.
+    // Handle index as a string since that's our key type
+    auto key = String::number(index);
+    return set_value_of_named_property(key, unconverted_value);
+}
+
+WebIDL::ExceptionOr<void> Storage::set_value_of_named_property(String const& key, JS::Value unconverted_value)
+{
+    // NOTE: Since PlatformObject does not know the type of value, we must convert it ourselves.
     //       The type of `value` is `DOMString`.
-    auto value = TRY(unconverted_value.to_deprecated_string(vm()));
+    auto value = TRY(unconverted_value.to_string(vm()));
     return set_item(key, value);
 }
 

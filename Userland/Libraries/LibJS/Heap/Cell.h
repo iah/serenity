@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,14 +9,23 @@
 #include <AK/Badge.h>
 #include <AK/Format.h>
 #include <AK/Forward.h>
+#include <AK/HashMap.h>
 #include <AK/Noncopyable.h>
 #include <AK/StringView.h>
+#include <AK/Weakable.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/GCPtr.h>
-#include <LibJS/Runtime/Completion.h>
-#include <LibJS/Runtime/Value.h>
+#include <LibJS/Heap/Internals.h>
 
 namespace JS {
+
+// This instrumentation tells analysis tooling to ignore a potentially mis-wrapped GC-allocated member variable
+// It should only be used when the lifetime of the GC-allocated member is always longer than the object
+#if defined(AK_COMPILER_CLANG)
+#    define IGNORE_GC [[clang::annotate("serenity::ignore_gc")]]
+#else
+#    define IGNORE_GC
+#endif
 
 #define JS_CELL(class_, base_class)                \
 public:                                            \
@@ -27,18 +36,18 @@ public:                                            \
     }                                              \
     friend class JS::Heap;
 
-class Cell {
+class Cell : public Weakable<Cell> {
     AK_MAKE_NONCOPYABLE(Cell);
     AK_MAKE_NONMOVABLE(Cell);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) { return {}; }
+    virtual void initialize(Realm&);
     virtual ~Cell() = default;
 
     bool is_marked() const { return m_mark; }
     void set_marked(bool b) { m_mark = b; }
 
-    enum class State {
+    enum class State : bool {
         Live,
         Dead,
     };
@@ -74,18 +83,79 @@ public:
             visit_impl(const_cast<RemoveConst<T>&>(*cell.ptr()));
         }
 
-        void visit(Value value)
+        template<typename T>
+        void visit(ReadonlySpan<T> span)
         {
-            if (value.is_cell())
-                visit_impl(value.as_cell());
+            for (auto& value : span)
+                visit(value);
         }
+
+        template<typename T>
+        void visit(Span<T> span)
+        {
+            for (auto& value : span)
+                visit(value);
+        }
+
+        template<typename T>
+        void visit(Vector<T> const& vector)
+        {
+            for (auto& value : vector)
+                visit(value);
+        }
+
+        template<typename T>
+        void visit(HashTable<T> const& table)
+        {
+            for (auto& value : table)
+                visit(value);
+        }
+
+        template<typename T>
+        void visit(OrderedHashTable<T> const& table)
+        {
+            for (auto& value : table)
+                visit(value);
+        }
+
+        template<typename K, typename V, typename T>
+        void visit(HashMap<K, V, T> const& map)
+        {
+            for (auto& it : map) {
+                if constexpr (requires { visit(it.key); })
+                    visit(it.key);
+                if constexpr (requires { visit(it.value); })
+                    visit(it.value);
+            }
+        }
+
+        template<typename K, typename V, typename T>
+        void visit(OrderedHashMap<K, V, T> const& map)
+        {
+            for (auto& it : map) {
+                if constexpr (requires { visit(it.key); })
+                    visit(it.key);
+                if constexpr (requires { visit(it.value); })
+                    visit(it.value);
+            }
+        }
+
+        void visit(Value value);
+
+        // Allow explicitly ignoring a GC-allocated member in a visit_edges implementation instead
+        // of just not using it.
+        template<typename T>
+        void ignore(T const&)
+        {
+        }
+
+        virtual void visit_possible_values(ReadonlyBytes) = 0;
 
     protected:
         virtual void visit_impl(Cell&) = 0;
         virtual ~Visitor() = default;
     };
 
-    virtual bool is_environment() const { return false; }
     virtual void visit_edges(Visitor&) { }
 
     // This will be called on unmarked objects by the garbage collector in a separate pass before destruction.
@@ -98,8 +168,8 @@ public:
 
     bool overrides_must_survive_garbage_collection(Badge<Heap>) const { return m_overrides_must_survive_garbage_collection; }
 
-    Heap& heap() const;
-    VM& vm() const;
+    ALWAYS_INLINE Heap& heap() const { return HeapBlockBase::from_cell(this)->heap(); }
+    ALWAYS_INLINE VM& vm() const { return bit_cast<HeapBase*>(&heap())->vm(); }
 
 protected:
     Cell() = default;

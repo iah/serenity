@@ -13,15 +13,17 @@ namespace JS::Temporal {
 
 class PlainDateTimePrototype final : public PrototypeObject<PlainDateTimePrototype, PlainDateTime> {
     JS_PROTOTYPE_OBJECT(PlainDateTimePrototype, PlainDateTime, Temporal.PlainDateTime);
+    JS_DECLARE_ALLOCATOR(PlainDateTimePrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PlainDateTimePrototype() override = default;
 
 private:
     explicit PlainDateTimePrototype(Realm&);
 
     JS_DECLARE_NATIVE_FUNCTION(calendar_getter);
+    JS_DECLARE_NATIVE_FUNCTION(calendar_id_getter);
     JS_DECLARE_NATIVE_FUNCTION(year_getter);
     JS_DECLARE_NATIVE_FUNCTION(month_getter);
     JS_DECLARE_NATIVE_FUNCTION(month_code_getter);

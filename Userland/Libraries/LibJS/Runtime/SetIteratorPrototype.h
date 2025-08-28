@@ -13,9 +13,10 @@ namespace JS {
 
 class SetIteratorPrototype final : public PrototypeObject<SetIteratorPrototype, SetIterator> {
     JS_PROTOTYPE_OBJECT(SetIteratorPrototype, SetIterator, SetIterator);
+    JS_DECLARE_ALLOCATOR(SetIteratorPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~SetIteratorPrototype() override = default;
 
 private:

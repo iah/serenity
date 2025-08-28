@@ -8,9 +8,7 @@
         layout: @GUI::VerticalBoxLayout {
             margins: [4]
         }
-        shape: "Box"
-        shadow: "Sunken"
-        thickness: 2
+        frame_style: "SunkenBox"
 
         @GUI::Label {
             name: "preview_label"

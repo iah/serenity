@@ -4,23 +4,25 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StackUnwinder.h>
 #include <AK/TemporaryChange.h>
 #include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Arch/SmapDisabler.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/KSyms.h>
-#include <Kernel/Process.h>
-#include <Kernel/Scheduler.h>
 #include <Kernel/Sections.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/kstdio.h>
 
 namespace Kernel {
 
 FlatPtr g_lowest_kernel_symbol_address = 0xffffffff;
 FlatPtr g_highest_kernel_symbol_address = 0;
-bool g_kernel_symbols_available = false;
+SetOnce g_kernel_symbols_available;
 
 extern "C" {
-__attribute__((section(".kernel_symbols"))) char kernel_symbols[5 * MiB] {};
+__attribute__((section(".kernel_symbols"))) char kernel_symbols[8 * MiB] {};
 }
 
 static KernelSymbol* s_symbols;
@@ -85,16 +87,7 @@ UNMAP_AFTER_INIT static void load_kernel_symbols_from_data(Bytes buffer)
         }
         auto& ksym = s_symbols[current_symbol_index];
 
-        // FIXME: Remove this ifdef once the aarch64 kernel is loaded by the Prekernel.
-        //        Currently, the aarch64 kernel is linked at a high virtual memory address, instead
-        //        of zero, so the address of a symbol does not need to be offset by the kernel_load_base.
-#if ARCH(X86_64)
-        ksym.address = kernel_load_base + address;
-#elif ARCH(AARCH64)
-        ksym.address = address;
-#else
-#    error "Unknown architecture"
-#endif
+        ksym.address = g_boot_info.kernel_load_base + address;
         ksym.name = start_of_name;
 
         *bufptr = '\0';
@@ -107,67 +100,87 @@ UNMAP_AFTER_INIT static void load_kernel_symbols_from_data(Bytes buffer)
         ++bufptr;
         ++current_symbol_index;
     }
-    g_kernel_symbols_available = true;
+    g_kernel_symbols_available.set();
 }
 
-NEVER_INLINE static void dump_backtrace_impl(FlatPtr base_pointer, bool use_ksyms, PrintToScreen print_to_screen)
+NEVER_INLINE static void dump_backtrace_impl(FlatPtr frame_pointer, bool use_ksyms, PrintToScreen print_to_screen)
 {
-#define PRINT_LINE(fmtstr, ...)                    \
-    do {                                           \
-        if (print_to_screen == PrintToScreen::No)  \
-            dbgln(fmtstr, __VA_ARGS__);            \
-        else                                       \
-            critical_dmesgln(fmtstr, __VA_ARGS__); \
+#define PRINT_LINE(string, length)                \
+    do {                                          \
+        if (print_to_screen == PrintToScreen::No) \
+            dbgputstr(string, length);            \
+        else                                      \
+            kernelcriticalputstr(string, length); \
     } while (0)
 
     SmapDisabler disabler;
-    if (use_ksyms && !g_kernel_symbols_available)
+    if (use_ksyms && !g_kernel_symbols_available.was_set())
         Processor::halt();
 
     struct RecognizedSymbol {
         FlatPtr address;
         KernelSymbol const* symbol { nullptr };
     };
+
     constexpr size_t max_recognized_symbol_count = 256;
     RecognizedSymbol recognized_symbols[max_recognized_symbol_count];
     size_t recognized_symbol_count = 0;
-    if (use_ksyms) {
-        FlatPtr copied_stack_ptr[2];
-        for (FlatPtr* stack_ptr = (FlatPtr*)base_pointer; stack_ptr && recognized_symbol_count < max_recognized_symbol_count; stack_ptr = (FlatPtr*)copied_stack_ptr[0]) {
-            if ((FlatPtr)stack_ptr < kernel_mapping_base)
-                break;
 
+    MUST(AK::unwind_stack_from_frame_pointer(
+        frame_pointer,
+        [](FlatPtr address) -> ErrorOr<FlatPtr> {
+            if (address < g_boot_info.kernel_mapping_base)
+                return EINVAL;
+
+            FlatPtr value;
             void* fault_at;
-            if (!safe_memcpy(copied_stack_ptr, stack_ptr, sizeof(copied_stack_ptr), fault_at))
-                break;
-            FlatPtr retaddr = copied_stack_ptr[1];
-            recognized_symbols[recognized_symbol_count++] = { retaddr, symbolicate_kernel_address(retaddr) };
-        }
-    } else {
-        void* fault_at;
-        FlatPtr copied_stack_ptr[2];
-        FlatPtr* stack_ptr = (FlatPtr*)base_pointer;
-        while (stack_ptr && safe_memcpy(copied_stack_ptr, stack_ptr, sizeof(copied_stack_ptr), fault_at)) {
-            FlatPtr retaddr = copied_stack_ptr[1];
-            PRINT_LINE("{:p} (next: {:p})", retaddr, stack_ptr ? (FlatPtr*)copied_stack_ptr[0] : 0);
-            stack_ptr = (FlatPtr*)copied_stack_ptr[0];
-        }
+            if (!safe_memcpy(&value, bit_cast<FlatPtr*>(address), sizeof(FlatPtr), fault_at))
+                return EFAULT;
+
+            return value;
+        },
+        [use_ksyms, print_to_screen, &recognized_symbol_count, &recognized_symbols](AK::StackFrame stack_frame) -> ErrorOr<IterationDecision> {
+            if (use_ksyms) {
+                if (recognized_symbol_count >= max_recognized_symbol_count)
+                    return IterationDecision::Break;
+
+                recognized_symbols[recognized_symbol_count++] = { stack_frame.return_address, symbolicate_kernel_address(stack_frame.return_address) };
+            } else {
+                auto message_buffer = MUST(FixedStringBuffer<19>::formatted("{:p}"sv, stack_frame.return_address));
+                auto message = message_buffer.representable_view();
+                PRINT_LINE(message.characters_without_null_termination(), message.length());
+            }
+            return IterationDecision::Continue;
+        }));
+
+    if (!use_ksyms)
         return;
-    }
+
     VERIFY(recognized_symbol_count <= max_recognized_symbol_count);
     for (size_t i = 0; i < recognized_symbol_count; ++i) {
         auto& symbol = recognized_symbols[i];
         if (!symbol.address)
             break;
         if (!symbol.symbol) {
-            PRINT_LINE("Kernel + {:p}", symbol.address - kernel_load_base);
+            auto message_buffer = MUST(FixedStringBuffer<28>::formatted("Kernel + {:p}\n"sv, symbol.address - g_boot_info.kernel_load_base));
+            auto message = message_buffer.representable_view();
+            PRINT_LINE(message.characters_without_null_termination(), message.length());
             continue;
         }
         size_t offset = symbol.address - symbol.symbol->address;
-        if (symbol.symbol->address == g_highest_kernel_symbol_address && offset > 4096)
-            PRINT_LINE("Kernel + {:p}", symbol.address - kernel_load_base);
-        else
-            PRINT_LINE("Kernel + {:p}  {} +{:#x}", symbol.address - kernel_load_base, symbol.symbol->name, offset);
+        if (symbol.symbol->address == g_highest_kernel_symbol_address && offset > 4096) {
+            auto message_buffer = MUST(FixedStringBuffer<28>::formatted("Kernel + {:p}\n"sv, symbol.address - g_boot_info.kernel_load_base));
+            auto message = message_buffer.representable_view();
+            PRINT_LINE(message.characters_without_null_termination(), message.length());
+        } else {
+            constexpr auto buffer_size = 255;
+            constexpr auto maximum_printable_name_length = buffer_size - (sizeof("Kernel + 0x   +\n") - 1 + sizeof(FlatPtr) * 4);
+            size_t symbol_name_length = strlen(symbol.symbol->name);
+            auto symbol_name = StringView(symbol.symbol->name, min(symbol_name_length, maximum_printable_name_length));
+            auto message_buffer = MUST(FixedStringBuffer<buffer_size>::formatted("Kernel + {:p}  {} +{:#x}\n"sv, symbol.address - g_boot_info.kernel_load_base, symbol_name, offset));
+            auto message = message_buffer.representable_view();
+            PRINT_LINE(message.characters_without_null_termination(), message.length());
+        }
     }
 }
 
@@ -186,7 +199,7 @@ void dump_backtrace(PrintToScreen print_to_screen)
     TemporaryChange disable_kmalloc_stacks(g_dump_kmalloc_stacks, false);
 
     FlatPtr base_pointer = (FlatPtr)__builtin_frame_address(0);
-    dump_backtrace_impl(base_pointer, g_kernel_symbols_available, print_to_screen);
+    dump_backtrace_impl(base_pointer, g_kernel_symbols_available.was_set(), print_to_screen);
 }
 
 UNMAP_AFTER_INIT void load_kernel_symbol_table()

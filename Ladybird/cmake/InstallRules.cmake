@@ -2,11 +2,13 @@
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
-set(package ladybird)
+set(package Ladybird)
 
-set(ladybird_applications ladybird SQLServer WebContent WebDriver headless-browser)
+set(ladybird_applications ladybird ${ladybird_helper_processes})
 
-install(TARGETS ${ladybird_applications}
+set(app_install_targets ${ladybird_applications})
+
+install(TARGETS ladybird
   EXPORT ladybirdTargets
   RUNTIME
     COMPONENT ladybird_Runtime
@@ -18,6 +20,17 @@ install(TARGETS ${ladybird_applications}
     COMPONENT ladybird_Runtime
     NAMELINK_COMPONENT ladybird_Development
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  FILE_SET browser
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILE_SET ladybird
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(TARGETS ${ladybird_helper_processes}
+  EXPORT ladybirdTargets
+  RUNTIME
+    COMPONENT ladybird_Runtime
+    DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
 )
 
 include("${SERENITY_SOURCE_DIR}/Meta/Lagom/get_linked_lagom_libraries.cmake")
@@ -27,6 +40,22 @@ foreach (application IN LISTS ladybird_applications)
 endforeach()
 list(REMOVE_DUPLICATES all_required_lagom_libraries)
 
+# Remove ladybird shlib if it exists
+list(REMOVE_ITEM all_required_lagom_libraries ladybird)
+
+# Install service impl libraries if they exist
+macro(install_service_lib service)
+    if (TARGET ${service})
+      get_target_property(target_type ${service} TYPE)
+      if ("${target_type}" STREQUAL STATIC_LIBRARY)
+          list(APPEND all_required_lagom_libraries ${service})
+      endif()
+    endif()
+endmacro()
+foreach(service IN LISTS webcontent requestserver websocket webworker)
+    install_service_lib(${service})
+endforeach()
+
 install(TARGETS ${all_required_lagom_libraries}
   EXPORT ladybirdTargets
   COMPONENT ladybird_Runtime
@@ -34,6 +63,10 @@ install(TARGETS ${all_required_lagom_libraries}
     COMPONENT ladybird_Runtime
     NAMELINK_COMPONENT ladybird_Development
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  FILE_SET server
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILE_SET ladybird
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
 write_basic_package_version_file(
@@ -68,20 +101,22 @@ install(
     COMPONENT ladybird_Development
 )
 
-install(DIRECTORY
-    "${SERENITY_SOURCE_DIR}/Base/res/html"
-    "${SERENITY_SOURCE_DIR}/Base/res/fonts"
-    "${SERENITY_SOURCE_DIR}/Base/res/icons"
-    "${SERENITY_SOURCE_DIR}/Base/res/themes"
-    "${SERENITY_SOURCE_DIR}/Base/res/color-palettes"
-    "${SERENITY_SOURCE_DIR}/Base/res/cursor-themes"
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/res"
-  USE_SOURCE_PERMISSIONS MESSAGE_NEVER
-  COMPONENT ladybird_Runtime
-)
+if (NOT APPLE)
+    # On macOS the resources are handled via the MACOSX_PACKAGE_LOCATION property on each resource file
+    install_ladybird_resources("${CMAKE_INSTALL_DATADIR}/Lagom" ladybird_Runtime)
+endif()
 
-install(FILES
-    "${SERENITY_SOURCE_DIR}/Base/home/anon/.config/BrowserContentFilters.txt"
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/res/ladybird"
-  COMPONENT ladybird_Runtime
-)
+if (APPLE)
+  # Fixup the app bundle and copy:
+  #   - Libraries from lib/ to Ladybird.app/Contents/lib
+  install(CODE "
+    set(lib_dir \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
+    if (IS_ABSOLUTE ${CMAKE_INSTALL_LIBDIR})
+      set(lib_dir ${CMAKE_INSTALL_LIBDIR})
+    endif()
+
+    set(contents_dir \${CMAKE_INSTALL_PREFIX}/bundle/Ladybird.app/Contents)
+    file(COPY \${lib_dir} DESTINATION \${contents_dir})
+  "
+  COMPONENT ladybird_Runtime)
+endif()

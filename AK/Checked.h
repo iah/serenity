@@ -234,6 +234,24 @@ public:
         m_overflow = false;
     }
 
+    constexpr void saturating_mul(T other)
+    {
+        // Figure out if the result is positive, negative or zero beforehand.
+        auto either_is_zero = this->m_value == 0 || other == 0;
+        auto result_is_positive = (this->m_value > 0) == (other > 0);
+
+        mul(other);
+        if (m_overflow) {
+            if (either_is_zero)
+                m_value = 0;
+            else if (result_is_positive)
+                m_value = NumericLimits<T>::max();
+            else
+                m_value = NumericLimits<T>::min();
+        }
+        m_overflow = false;
+    }
+
     constexpr Checked& operator+=(Checked const& other)
     {
         m_overflow |= other.m_overflow;
@@ -330,6 +348,9 @@ public:
     {
 #if __has_builtin(__builtin_add_overflow_p)
         return __builtin_add_overflow_p(u, v, (T)0);
+#elif __has_builtin(__builtin_add_overflow)
+        T result;
+        return __builtin_add_overflow(u, v, &result);
 #else
         Checked checked;
         checked = u;
@@ -339,10 +360,53 @@ public:
     }
 
     template<typename U, typename V>
+    [[nodiscard]] static constexpr bool subtraction_would_overflow(U u, V v)
+    {
+#if __has_builtin(__builtin_sub_overflow_p)
+        return __builtin_sub_overflow_p(u, v, (T)0);
+#elif __has_builtin(__builtin_sub_overflow)
+        T result;
+        return __builtin_sub_overflow(u, v, &result);
+#else
+        Checked checked;
+        checked = u;
+        checked -= v;
+        return checked.has_overflow();
+#endif
+    }
+
+    template<typename U, typename V>
+    static constexpr T saturating_add(U a, V b)
+    {
+        Checked checked { a };
+        checked.saturating_add(b);
+        return checked.value();
+    }
+
+    template<typename U, typename V>
+    static constexpr T saturating_sub(U a, V b)
+    {
+        Checked checked { a };
+        checked.saturating_sub(b);
+        return checked.value();
+    }
+
+    template<typename U, typename V>
+    static constexpr T saturating_mul(U a, V b)
+    {
+        Checked checked { a };
+        checked.saturating_mul(b);
+        return checked.value();
+    }
+
+    template<typename U, typename V>
     [[nodiscard]] static constexpr bool multiplication_would_overflow(U u, V v)
     {
 #if __has_builtin(__builtin_mul_overflow_p)
         return __builtin_mul_overflow_p(u, v, (T)0);
+#elif __has_builtin(__builtin_mul_overflow)
+        T result;
+        return __builtin_mul_overflow(u, v, &result);
 #else
         Checked checked;
         checked = u;

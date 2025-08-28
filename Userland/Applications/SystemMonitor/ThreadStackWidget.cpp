@@ -26,19 +26,19 @@ class ThreadStackModel final : public GUI::Model {
     };
 
 public:
-    int column_count(GUI::ModelIndex const&) const override { return 3; };
-    int row_count(GUI::ModelIndex const&) const override { return m_symbols.size(); };
+    int column_count(GUI::ModelIndex const&) const override { return 3; }
+    int row_count(GUI::ModelIndex const&) const override { return m_symbols.size(); }
     bool is_column_sortable(int) const override { return false; }
 
-    DeprecatedString column_name(int column) const override
+    ErrorOr<String> column_name(int column) const override
     {
         switch (column) {
         case Column::Address:
-            return "Address";
+            return "Address"_string;
         case Column::Object:
-            return "Object";
+            return "Object"_string;
         case Column::Symbol:
-            return "Symbol";
+            return "Symbol"_string;
         default:
             VERIFY_NOT_REACHED();
         }
@@ -49,7 +49,7 @@ public:
         auto& symbol = m_symbols[model_index.row()];
         switch (model_index.column()) {
         case Column::Address:
-            return DeprecatedString::formatted("{:p}", symbol.address);
+            return ByteString::formatted("{:p}", symbol.address);
         case Column::Object:
             return symbol.object;
         case Column::Symbol:
@@ -57,7 +57,7 @@ public:
         default:
             VERIFY_NOT_REACHED();
         }
-    };
+    }
 
     void set_symbols(Vector<Symbolication::Symbol> const& symbols)
     {
@@ -71,11 +71,13 @@ private:
     Vector<Symbolication::Symbol> m_symbols;
 };
 
-ThreadStackWidget::ThreadStackWidget()
+ErrorOr<NonnullRefPtr<ThreadStackWidget>> ThreadStackWidget::try_create()
 {
-    set_layout<GUI::VerticalBoxLayout>(4);
-    m_stack_table = add<GUI::TableView>();
-    m_stack_table->set_model(adopt_ref(*new ThreadStackModel()));
+    auto widget = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ThreadStackWidget()));
+    widget->set_layout<GUI::VerticalBoxLayout>(4);
+    widget->m_stack_table = widget->add<GUI::TableView>();
+    widget->m_stack_table->set_model(TRY(try_make_ref_counted<ThreadStackModel>()));
+    return widget;
 }
 
 void ThreadStackWidget::show_event(GUI::ShowEvent&)
@@ -124,7 +126,7 @@ void ThreadStackWidget::refresh()
         [weak_this = make_weak_ptr()](auto result) -> ErrorOr<void> {
             if (!weak_this)
                 return {};
-            Core::EventLoop::current().post_event(const_cast<Core::Object&>(*weak_this), make<CompletionEvent>(move(result)));
+            Core::EventLoop::current().post_event(const_cast<Core::EventReceiver&>(*weak_this), make<CompletionEvent>(move(result)));
             return {};
         });
 }

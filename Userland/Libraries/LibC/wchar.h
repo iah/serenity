@@ -6,16 +6,28 @@
 
 #pragma once
 
-#include <bits/FILE.h>
-#include <bits/wchar_size.h>
+// Includes essentially mandated by POSIX:
+// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/wchar.h.html
+#include <ctype.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include <bits/FILE.h>
+#include <bits/wchar_size.h>
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
 
 #ifndef WEOF
 #    define WEOF (0xffffffffu)
+#endif
+
+#ifdef __cplusplus
+#    define _LIBCPP_WCHAR_H_HAS_CONST_OVERLOADS
 #endif
 
 typedef __WINT_TYPE__ wint_t;

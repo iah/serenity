@@ -6,19 +6,20 @@
 
 #pragma once
 
+#include <LibCore/EventReceiver.h>
 #include <LibCore/Notifier.h>
-#include <LibCore/Object.h>
 
 namespace Core {
 
-class LocalServer : public Object {
+class LocalServer : public EventReceiver {
     C_OBJECT(LocalServer)
 public:
     virtual ~LocalServer() override;
 
-    ErrorOr<void> take_over_from_system_server(DeprecatedString const& path = DeprecatedString());
+    ErrorOr<void> take_over_from_system_server(ByteString const& path = ByteString());
+    ErrorOr<void> take_over_fd(int socket_fd);
     bool is_listening() const { return m_listening; }
-    bool listen(DeprecatedString const& address);
+    bool listen(ByteString const& address);
 
     ErrorOr<NonnullOwnPtr<LocalSocket>> accept();
 
@@ -26,7 +27,7 @@ public:
     Function<void(Error)> on_accept_error;
 
 private:
-    explicit LocalServer(Object* parent = nullptr);
+    explicit LocalServer(EventReceiver* parent = nullptr);
 
     void setup_notifier();
 

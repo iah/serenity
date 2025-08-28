@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Forward.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
@@ -122,6 +122,9 @@ namespace Gfx {
 #define ENUMERATE_ALIGNMENT_ROLES(C) \
     C(TitleAlignment)
 
+#define ENUMERATE_WINDOW_THEME_ROLES(C) \
+    C(WindowTheme)
+
 #define ENUMERATE_FLAG_ROLES(C) \
     C(BoldTextAsBright)         \
     C(IsDark)                   \
@@ -132,7 +135,8 @@ namespace Gfx {
     C(BorderRadius)               \
     C(TitleHeight)                \
     C(TitleButtonWidth)           \
-    C(TitleButtonHeight)
+    C(TitleButtonHeight)          \
+    C(TitleButtonInactiveAlpha)
 
 #define ENUMERATE_PATH_ROLES(C) \
     C(TitleButtonIcons)         \
@@ -157,15 +161,15 @@ enum class ColorRole {
     DisabledText = ThreedShadow1,
 };
 
-inline char const* to_string(ColorRole role)
+inline StringView to_string(ColorRole role)
 {
     switch (role) {
     case ColorRole::NoRole:
-        return "NoRole";
+        return "NoRole"sv;
 #undef __ENUMERATE_COLOR_ROLE
 #define __ENUMERATE_COLOR_ROLE(role) \
     case ColorRole::role:            \
-        return #role;
+        return #role##sv;
         ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE)
 #undef __ENUMERATE_COLOR_ROLE
     default:
@@ -184,16 +188,43 @@ enum class AlignmentRole {
         __Count,
 };
 
-inline char const* to_string(AlignmentRole role)
+inline StringView to_string(AlignmentRole role)
 {
     switch (role) {
     case AlignmentRole::NoRole:
-        return "NoRole";
+        return "NoRole"sv;
 #undef __ENUMERATE_ALIGNMENT_ROLE
 #define __ENUMERATE_ALIGNMENT_ROLE(role) \
     case AlignmentRole::role:            \
-        return #role;
+        return #role##sv;
         ENUMERATE_ALIGNMENT_ROLES(__ENUMERATE_ALIGNMENT_ROLE)
+#undef __ENUMERATE_ALIGNMENT_ROLE
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+enum class WindowThemeRole {
+    NoRole,
+
+#undef __ENUMERATE_WINDOW_THEME_ROLE
+#define __ENUMERATE_WINDOW_THEME_ROLE(role) role,
+    ENUMERATE_WINDOW_THEME_ROLES(__ENUMERATE_WINDOW_THEME_ROLE)
+#undef __ENUMERATE_WINDOW_THEME_ROLE
+
+        __Count,
+};
+
+inline StringView to_string(WindowThemeRole role)
+{
+    switch (role) {
+    case WindowThemeRole::NoRole:
+        return "NoRole"sv;
+#undef __ENUMERATE_ALIGNMENT_ROLE
+#define __ENUMERATE_ALIGNMENT_ROLE(role) \
+    case WindowThemeRole::role:          \
+        return #role##sv;
+        ENUMERATE_WINDOW_THEME_ROLES(__ENUMERATE_ALIGNMENT_ROLE)
 #undef __ENUMERATE_ALIGNMENT_ROLE
     default:
         VERIFY_NOT_REACHED();
@@ -211,15 +242,15 @@ enum class FlagRole {
         __Count,
 };
 
-inline char const* to_string(FlagRole role)
+inline StringView to_string(FlagRole role)
 {
     switch (role) {
     case FlagRole::NoRole:
-        return "NoRole";
+        return "NoRole"sv;
 #undef __ENUMERATE_FLAG_ROLE
 #define __ENUMERATE_FLAG_ROLE(role) \
     case FlagRole::role:            \
-        return #role;
+        return #role##sv;
         ENUMERATE_FLAG_ROLES(__ENUMERATE_FLAG_ROLE)
 #undef __ENUMERATE_FLAG_ROLE
     default:
@@ -238,15 +269,15 @@ enum class MetricRole {
         __Count,
 };
 
-inline char const* to_string(MetricRole role)
+inline StringView to_string(MetricRole role)
 {
     switch (role) {
     case MetricRole::NoRole:
-        return "NoRole";
+        return "NoRole"sv;
 #undef __ENUMERATE_METRIC_ROLE
 #define __ENUMERATE_METRIC_ROLE(role) \
     case MetricRole::role:            \
-        return #role;
+        return #role##sv;
         ENUMERATE_METRIC_ROLES(__ENUMERATE_METRIC_ROLE)
 #undef __ENUMERATE_METRIC_ROLE
     default:
@@ -281,9 +312,41 @@ inline StringView to_string(PathRole role)
     }
 }
 
+#define ENUMERATE_WINDOW_THEMES(M) \
+    M(Classic)                     \
+    M(RedmondGlass)                \
+    M(RedmondPlastic)
+
+enum class WindowThemeProvider {
+#define __ENUMERATE(x) x,
+    ENUMERATE_WINDOW_THEMES(__ENUMERATE)
+#undef __ENUMERATE
+};
+
+inline Optional<WindowThemeProvider> window_theme_provider_from_string(StringView string)
+{
+#define __ENUMERATE(x) \
+    if (string == #x)  \
+        return WindowThemeProvider::x;
+    ENUMERATE_WINDOW_THEMES(__ENUMERATE)
+#undef __ENUMERATE
+    return {};
+}
+
+inline char const* to_string(WindowThemeProvider window_theme_provider)
+{
+#define __ENUMERATE(x)                                   \
+    if (window_theme_provider == WindowThemeProvider::x) \
+        return #x;
+    ENUMERATE_WINDOW_THEMES(__ENUMERATE)
+#undef __ENUMERATE
+    return {};
+}
+
 struct SystemTheme {
     ARGB32 color[(int)ColorRole::__Count];
     Gfx::TextAlignment alignment[(int)AlignmentRole::__Count];
+    WindowThemeProvider window_theme[(int)WindowThemeRole::__Count];
     bool flag[(int)FlagRole::__Count];
     int metric[(int)MetricRole::__Count];
     char path[(int)PathRole::__Count][256]; // TODO: PATH_MAX?
@@ -291,12 +354,13 @@ struct SystemTheme {
 
 Core::AnonymousBuffer& current_system_theme_buffer();
 void set_system_theme(Core::AnonymousBuffer);
-ErrorOr<Core::AnonymousBuffer> load_system_theme(Core::ConfigFile const&);
-ErrorOr<Core::AnonymousBuffer> load_system_theme(DeprecatedString const& path);
+ErrorOr<Core::AnonymousBuffer> load_system_theme(Core::ConfigFile const&, Optional<ByteString> const& color_scheme = OptionalNone());
+ErrorOr<Core::AnonymousBuffer> load_system_theme(ByteString const& path, Optional<ByteString> const& color_scheme = OptionalNone());
 
 struct SystemThemeMetaData {
-    DeprecatedString name;
-    DeprecatedString path;
+    ByteString name;
+    ByteString menu_name;
+    ByteString path;
 };
 
 ErrorOr<Vector<SystemThemeMetaData>> list_installed_system_themes();

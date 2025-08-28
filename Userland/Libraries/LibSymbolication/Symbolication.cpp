@@ -10,20 +10,21 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/File.h>
 #include <LibCore/MappedFile.h>
 #include <LibDebug/DebugInfo.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibSymbolication/Symbolication.h>
 
 namespace Symbolication {
 
 struct CachedELF {
-    NonnullRefPtr<Core::MappedFile> mapped_file;
+    NonnullOwnPtr<Core::MappedFile> mapped_file;
     NonnullOwnPtr<Debug::DebugInfo> debug_info;
     NonnullOwnPtr<ELF::Image> image;
 };
 
-static HashMap<DeprecatedString, OwnPtr<CachedELF>> s_cache;
+static HashMap<ByteString, OwnPtr<CachedELF>> s_cache;
 
 enum class KernelBaseState {
     Uninitialized,
@@ -37,14 +38,21 @@ static KernelBaseState s_kernel_base_state = KernelBaseState::Uninitialized;
 Optional<FlatPtr> kernel_base()
 {
     if (s_kernel_base_state == KernelBaseState::Uninitialized) {
-        auto file = Core::DeprecatedFile::open("/sys/kernel/constants/load_base", Core::OpenMode::ReadOnly);
+        auto file = Core::File::open("/sys/kernel/load_base"sv, Core::File::OpenMode::Read);
         if (file.is_error()) {
             s_kernel_base_state = KernelBaseState::Invalid;
             return {};
         }
-        auto kernel_base_str = DeprecatedString { file.value()->read_all(), NoChomp };
+
+        auto file_content = file.value()->read_until_eof();
+        if (file_content.is_error()) {
+            s_kernel_base_state = KernelBaseState::Invalid;
+            return {};
+        }
+
+        auto kernel_base_str = ByteString { file_content.value(), NoChomp };
         using AddressType = u64;
-        auto maybe_kernel_base = kernel_base_str.to_uint<AddressType>();
+        auto maybe_kernel_base = kernel_base_str.to_number<AddressType>();
         if (!maybe_kernel_base.has_value()) {
             s_kernel_base_state = KernelBaseState::Invalid;
             return {};
@@ -57,15 +65,15 @@ Optional<FlatPtr> kernel_base()
     return s_kernel_base;
 }
 
-Optional<Symbol> symbolicate(DeprecatedString const& path, FlatPtr address, IncludeSourcePosition include_source_positions)
+Optional<Symbol> symbolicate(ByteString const& path, FlatPtr address, IncludeSourcePosition include_source_positions)
 {
-    DeprecatedString full_path = path;
+    ByteString full_path = path;
     if (!path.starts_with('/')) {
         Array<StringView, 2> search_paths { "/usr/lib"sv, "/usr/local/lib"sv };
         bool found = false;
         for (auto& search_path : search_paths) {
             full_path = LexicalPath::join(search_path, path).string();
-            if (Core::DeprecatedFile::exists(full_path)) {
+            if (FileSystem::exists(full_path)) {
                 found = true;
                 break;
             }
@@ -131,7 +139,7 @@ Vector<Symbol> symbolicate_thread(pid_t pid, pid_t tid, IncludeSourcePosition in
     struct RegionWithSymbols {
         FlatPtr base { 0 };
         size_t size { 0 };
-        DeprecatedString path;
+        ByteString path;
     };
 
     Vector<FlatPtr> stack;
@@ -146,14 +154,20 @@ Vector<Symbol> symbolicate_thread(pid_t pid, pid_t tid, IncludeSourcePosition in
     }
 
     {
-        auto stack_path = DeprecatedString::formatted("/proc/{}/stacks/{}", pid, tid);
-        auto file_or_error = Core::DeprecatedFile::open(stack_path, Core::OpenMode::ReadOnly);
+        auto stack_path = ByteString::formatted("/proc/{}/stacks/{}", pid, tid);
+        auto file_or_error = Core::File::open(stack_path, Core::File::OpenMode::Read);
         if (file_or_error.is_error()) {
             warnln("Could not open {}: {}", stack_path, file_or_error.error());
             return {};
         }
 
-        auto json = JsonValue::from_string(file_or_error.value()->read_all());
+        auto file_content = file_or_error.value()->read_until_eof();
+        if (file_content.is_error()) {
+            warnln("Could not read {}: {}", stack_path, file_or_error.error());
+            return {};
+        }
+
+        auto json = JsonValue::from_string(file_content.value());
         if (json.is_error() || !json.value().is_array()) {
             warnln("Invalid contents in {}", stack_path);
             return {};
@@ -161,19 +175,25 @@ Vector<Symbol> symbolicate_thread(pid_t pid, pid_t tid, IncludeSourcePosition in
 
         stack.ensure_capacity(json.value().as_array().size());
         for (auto& value : json.value().as_array().values()) {
-            stack.append(value.to_addr());
+            stack.append(value.get_addr().value());
         }
     }
 
     {
-        auto vm_path = DeprecatedString::formatted("/proc/{}/vm", pid);
-        auto file_or_error = Core::DeprecatedFile::open(vm_path, Core::OpenMode::ReadOnly);
+        auto vm_path = ByteString::formatted("/proc/{}/vm", pid);
+        auto file_or_error = Core::File::open(vm_path, Core::File::OpenMode::Read);
         if (file_or_error.is_error()) {
             warnln("Could not open {}: {}", vm_path, file_or_error.error());
             return {};
         }
 
-        auto json = JsonValue::from_string(file_or_error.value()->read_all());
+        auto file_content = file_or_error.value()->read_until_eof();
+        if (file_content.is_error()) {
+            warnln("Could not read {}: {}", vm_path, file_or_error.error());
+            return {};
+        }
+
+        auto json = JsonValue::from_string(file_content.value());
         if (json.is_error() || !json.value().is_array()) {
             warnln("Invalid contents in {}", vm_path);
             return {};
@@ -181,11 +201,11 @@ Vector<Symbol> symbolicate_thread(pid_t pid, pid_t tid, IncludeSourcePosition in
 
         for (auto& region_value : json.value().as_array().values()) {
             auto& region = region_value.as_object();
-            auto name = region.get_deprecated_string("name"sv).value_or({});
+            auto name = region.get_byte_string("name"sv).value_or({});
             auto address = region.get_addr("address"sv).value_or(0);
             auto size = region.get_addr("size"sv).value_or(0);
 
-            DeprecatedString path;
+            ByteString path;
             if (name == "/usr/lib/Loader.so") {
                 path = name;
             } else if (name.ends_with(": .text"sv) || name.ends_with(": .rodata"sv)) {

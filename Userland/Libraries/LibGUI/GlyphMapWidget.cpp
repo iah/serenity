@@ -49,6 +49,7 @@ void GlyphMapWidget::Selection::extend_to(int glyph)
 }
 
 GlyphMapWidget::GlyphMapWidget()
+    : AbstractScrollableWidget()
 {
     set_focus_policy(FocusPolicy::StrongFocus);
     horizontal_scrollbar().set_visible(false);
@@ -119,6 +120,9 @@ void GlyphMapWidget::paint_event(PaintEvent& event)
 {
     Frame::paint_event(event);
 
+    if (!is_enabled())
+        return;
+
     Painter painter(*this);
     painter.add_clip_rect(widget_inner_rect());
     painter.add_clip_rect(event.rect());
@@ -145,7 +149,7 @@ void GlyphMapWidget::paint_event(PaintEvent& event)
                 painter.draw_emoji(inner_rect.location(), *emoji, font());
         } else if (font().contains_glyph(glyph)) {
             if (m_highlight_modifications && m_modified_glyphs.contains(glyph)) {
-                if (m_original_font->contains_glyph(glyph)) {
+                if (m_original_font && m_original_font->contains_glyph(glyph)) {
                     // Modified
                     if (palette().is_dark())
                         painter.fill_rect(outer_rect, Gfx::Color { 0, 65, 159 });
@@ -165,7 +169,7 @@ void GlyphMapWidget::paint_event(PaintEvent& event)
         } else if (auto* emoji = Gfx::Emoji::emoji_for_code_point(glyph); emoji && m_show_system_emoji) {
             painter.draw_emoji(inner_rect.location(), *emoji, font());
         } else {
-            if (m_highlight_modifications && m_original_font->contains_glyph(glyph)) {
+            if (m_highlight_modifications && m_original_font && m_original_font->contains_glyph(glyph)) {
                 // Deleted
                 if (palette().is_dark())
                     painter.fill_rect(outer_rect, Gfx::Color { 127, 0, 0 });
@@ -243,6 +247,17 @@ void GlyphMapWidget::mouseup_event(GUI::MouseEvent& event)
 void GlyphMapWidget::mousemove_event(GUI::MouseEvent& event)
 {
     m_last_mousemove_position = event.position();
+    if (auto maybe_glyph = glyph_at_position(event.position()); maybe_glyph.has_value() && maybe_glyph != m_tooltip_glyph) {
+        m_tooltip_glyph = maybe_glyph.value();
+        auto draw_tooltip = [this]() -> ErrorOr<void> {
+            StringBuilder builder;
+            TRY(builder.try_appendff("U+{:04X}", m_tooltip_glyph));
+            set_tooltip(TRY(builder.to_string()));
+            return {};
+        }();
+        if (draw_tooltip.is_error())
+            warnln("Failed to draw tooltip");
+    }
     if (m_in_drag_select) {
         auto constrained = event.position().constrained(widget_inner_rect());
         auto glyph = glyph_at_position_clamped(constrained);
@@ -333,6 +348,8 @@ void GlyphMapWidget::keydown_event(KeyEvent& event)
     }
 
     if (event.key() == KeyCode::Key_Left) {
+        if (event.alt())
+            return event.ignore();
         if (m_active_glyph - 1 < first_glyph)
             return;
         if (event.ctrl() && selection.start() - 1 < first_glyph)
@@ -347,6 +364,8 @@ void GlyphMapWidget::keydown_event(KeyEvent& event)
     }
 
     if (event.key() == KeyCode::Key_Right) {
+        if (event.alt())
+            return event.ignore();
         if (m_active_glyph + 1 > last_glyph)
             return;
         if (event.ctrl() && selection.start() + selection.size() > last_glyph)
@@ -568,9 +587,12 @@ bool GlyphMapWidget::glyph_is_modified(u32 glyph)
     return m_modified_glyphs.contains(glyph);
 }
 
-ErrorOr<void> GlyphMapWidget::set_font(Gfx::Font const& font)
+ErrorOr<void> GlyphMapWidget::initialize(Gfx::Font const* font)
 {
-    m_original_font = TRY(font.try_clone());
+    if (font)
+        m_original_font = TRY(font->try_clone());
+    else
+        m_original_font = nullptr;
     m_modified_glyphs.clear();
     AbstractScrollableWidget::set_font(font);
     return {};

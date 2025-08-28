@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/HashMap.h>
 #include <AK/IPv4Address.h>
 #include <AK/JsonArray.h>
@@ -32,6 +32,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool flag_numeric = false;
     bool flag_program = false;
     bool flag_wide = false;
+    bool flag_extend = false;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Display network connections");
@@ -42,6 +43,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(flag_numeric, "Display numerical addresses", "numeric", 'n');
     args_parser.add_option(flag_program, "Show the PID and name of the program to which each socket belongs", "program", 'p');
     args_parser.add_option(flag_wide, "Do not truncate IP addresses by printing out the whole symbolic host", "wide", 'W');
+    args_parser.add_option(flag_extend, "Display more information", "extend", 'e');
     args_parser.parse(arguments);
 
     TRY(Core::System::unveil("/sys/kernel/net", "r"));
@@ -57,7 +59,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     uid_t current_uid = getuid();
 
-    HashMap<pid_t, DeprecatedString> programs;
+    HashMap<pid_t, ByteString> programs;
 
     if (flag_program) {
         auto processes = TRY(Core::ProcessStatisticsReader::get_all());
@@ -73,10 +75,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
 
     struct Column {
-        DeprecatedString title;
+        ByteString title;
         Alignment alignment { Alignment::Left };
         int width { 0 };
-        DeprecatedString buffer;
+        ByteString buffer;
     };
 
     Vector<Column> columns;
@@ -87,6 +89,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     int local_address_column = -1;
     int peer_address_column = -1;
     int state_column = -1;
+    int user_column = -1;
     int program_column = -1;
 
     auto add_column = [&](auto title, auto alignment, auto width) {
@@ -100,6 +103,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     local_address_column = add_column("Local Address", Alignment::Left, 22);
     peer_address_column = add_column("Peer Address", Alignment::Left, 22);
     state_column = add_column("State", Alignment::Left, 11);
+    user_column = flag_extend ? add_column("User", Alignment::Left, 4) : -1;
     program_column = flag_program ? add_column("PID/Program", Alignment::Left, 11) : -1;
 
     auto print_column = [](auto& column, auto& string) {
@@ -114,22 +118,29 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
     };
 
-    auto get_formatted_address = [&](DeprecatedString const& address, DeprecatedString const& port) {
+    auto get_formatted_address = [&](ByteString const& address, String const& port) {
         if (flag_wide)
-            return DeprecatedString::formatted("{}:{}", address, port);
+            return ByteString::formatted("{}:{}", address, port);
 
-        if ((address.length() + port.length()) <= max_formatted_address_length)
-            return DeprecatedString::formatted("{}:{}", address, port);
+        if ((address.length() + port.bytes().size()) <= max_formatted_address_length)
+            return ByteString::formatted("{}:{}", address, port);
 
-        return DeprecatedString::formatted("{}:{}", address.substring_view(0, max_formatted_address_length - port.length()), port);
+        return ByteString::formatted("{}:{}", address.substring_view(0, max_formatted_address_length - port.bytes().size()), port);
     };
 
     auto get_formatted_program = [&](pid_t pid) {
         if (pid == -1)
-            return DeprecatedString("-");
+            return ByteString("-");
 
         auto program = programs.get(pid);
-        return DeprecatedString::formatted("{}/{}", pid, program.value());
+        return ByteString::formatted("{}/{}", pid, program.value());
+    };
+
+    auto get_formatted_user = [&](i32 uid) {
+        if (uid == -1)
+            return "-"_string;
+
+        return String::number(uid);
     };
 
     if (!has_protocol_flag || flag_tcp || flag_udp) {
@@ -171,10 +182,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         for (auto& value : sorted_regions) {
             auto& if_object = value.as_object();
 
-            auto bytes_in = if_object.get_deprecated_string("bytes_in"sv).value_or({});
-            auto bytes_out = if_object.get_deprecated_string("bytes_out"sv).value_or({});
+            auto bytes_in = if_object.get_u32("bytes_in"sv).value_or({});
+            auto bytes_out = if_object.get_u32("bytes_out"sv).value_or({});
 
-            auto peer_address = if_object.get_deprecated_string("peer_address"sv).value_or({});
+            auto peer_address = if_object.get_byte_string("peer_address"sv).value_or({});
             if (!flag_numeric) {
                 auto from_string = IPv4Address::from_string(peer_address);
                 auto addr = from_string.value().to_in_addr_t();
@@ -186,17 +197,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
             }
 
-            auto peer_port = if_object.get_deprecated_string("peer_port"sv).value_or({});
+            auto peer_port = String::number(if_object.get_u32("peer_port"sv).value_or({}));
             if (!flag_numeric) {
                 auto service = getservbyport(htons(if_object.get_u32("peer_port"sv).value_or(0)), "tcp");
                 if (service != nullptr) {
                     auto s_name = StringView { service->s_name, strlen(service->s_name) };
                     if (!s_name.is_empty())
-                        peer_port = s_name;
+                        peer_port = TRY(String::from_utf8(s_name));
                 }
             }
 
-            auto local_address = if_object.get_deprecated_string("local_address"sv).value_or({});
+            auto local_address = if_object.get_byte_string("local_address"sv).value_or({});
             if (!flag_numeric) {
                 auto from_string = IPv4Address::from_string(local_address);
                 auto addr = from_string.value().to_in_addr_t();
@@ -208,18 +219,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
             }
 
-            auto local_port = if_object.get_deprecated_string("local_port"sv).value_or({});
+            auto local_port = String::number(if_object.get_u32("local_port"sv).value_or({}));
             if (!flag_numeric) {
                 auto service = getservbyport(htons(if_object.get_u32("local_port"sv).value_or(0)), "tcp");
                 if (service != nullptr) {
                     auto s_name = StringView { service->s_name, strlen(service->s_name) };
                     if (!s_name.is_empty())
-                        local_port = s_name;
+                        local_port = TRY(String::from_utf8(s_name));
                 }
             }
 
-            auto state = if_object.get_deprecated_string("state"sv).value_or({});
-            auto origin_pid = (if_object.has("origin_pid"sv)) ? if_object.get_u32("origin_pid"sv).value_or(0) : -1;
+            auto state = if_object.get_byte_string("state"sv).value_or({});
+            auto origin_uid = if_object.get_i32("origin_uid"sv).value_or(-1);
+            auto origin_pid = if_object.get_i32("origin_pid"sv).value_or(-1);
 
             if (!flag_all && ((state == "Listen" && !flag_list) || (state != "Listen" && flag_list)))
                 continue;
@@ -227,15 +239,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             if (protocol_column != -1)
                 columns[protocol_column].buffer = "tcp";
             if (bytes_in_column != -1)
-                columns[bytes_in_column].buffer = bytes_in;
+                columns[bytes_in_column].buffer = String::number(bytes_in).to_byte_string();
             if (bytes_out_column != -1)
-                columns[bytes_out_column].buffer = bytes_out;
+                columns[bytes_out_column].buffer = String::number(bytes_out).to_byte_string();
             if (local_address_column != -1)
                 columns[local_address_column].buffer = get_formatted_address(local_address, local_port);
             if (peer_address_column != -1)
                 columns[peer_address_column].buffer = get_formatted_address(peer_address, peer_port);
             if (state_column != -1)
                 columns[state_column].buffer = state;
+            if (flag_extend && user_column != -1)
+                columns[user_column].buffer = get_formatted_user(origin_uid).to_byte_string();
             if (flag_program && program_column != -1)
                 columns[program_column].buffer = get_formatted_program(origin_pid);
 
@@ -258,7 +272,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         for (auto& value : sorted_regions) {
             auto& if_object = value.as_object();
 
-            auto local_address = if_object.get_deprecated_string("local_address"sv).value_or({});
+            auto local_address = if_object.get_byte_string("local_address"sv).value_or({});
             if (!flag_numeric) {
                 auto from_string = IPv4Address::from_string(local_address);
                 auto addr = from_string.value().to_in_addr_t();
@@ -270,17 +284,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
             }
 
-            auto local_port = if_object.get_deprecated_string("local_port"sv).value_or({});
+            auto local_port = String::number(if_object.get_u32("local_port"sv).value_or({}));
             if (!flag_numeric) {
                 auto service = getservbyport(htons(if_object.get_u32("local_port"sv).value_or(0)), "udp");
                 if (service != nullptr) {
                     auto s_name = StringView { service->s_name, strlen(service->s_name) };
                     if (!s_name.is_empty())
-                        local_port = s_name;
+                        local_port = TRY(String::from_utf8(s_name));
                 }
             }
 
-            auto peer_address = if_object.get_deprecated_string("peer_address"sv).value_or({});
+            auto peer_address = if_object.get_byte_string("peer_address"sv).value_or({});
             if (!flag_numeric) {
                 auto from_string = IPv4Address::from_string(peer_address);
                 auto addr = from_string.value().to_in_addr_t();
@@ -292,17 +306,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
             }
 
-            auto peer_port = if_object.get_deprecated_string("peer_port"sv).value_or({});
+            auto peer_port = String::number(if_object.get_u32("peer_port"sv).value_or({}));
             if (!flag_numeric) {
                 auto service = getservbyport(htons(if_object.get_u32("peer_port"sv).value_or(0)), "udp");
                 if (service != nullptr) {
                     auto s_name = StringView { service->s_name, strlen(service->s_name) };
                     if (!s_name.is_empty())
-                        peer_port = s_name;
+                        peer_port = TRY(String::from_utf8(s_name));
                 }
             }
 
-            auto origin_pid = (if_object.has("origin_pid"sv)) ? if_object.get_u32("origin_pid"sv).value_or(0) : -1;
+            auto origin_pid = if_object.get_i32("origin_pid"sv).value_or(-1);
+            auto origin_uid = if_object.get_i32("origin_uid"sv).value_or(-1);
 
             if (protocol_column != -1)
                 columns[protocol_column].buffer = "udp";
@@ -316,6 +331,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 columns[peer_address_column].buffer = get_formatted_address(peer_address, peer_port);
             if (state_column != -1)
                 columns[state_column].buffer = "-";
+            if (flag_extend && user_column != -1)
+                columns[user_column].buffer = get_formatted_user(origin_uid).to_byte_string();
             if (flag_program && program_column != -1)
                 columns[program_column].buffer = get_formatted_program(origin_pid);
 

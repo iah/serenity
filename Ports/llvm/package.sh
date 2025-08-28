@@ -1,13 +1,14 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='llvm'
 useconfigure='true'
-version='15.0.3'
+version='20.1.0'
 workdir="llvm-project-${version}.src"
 configopts=(
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
 )
-files="https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz llvm-project-${version}.src.tar.xz dd07bdab557866344d85ae21bbeca5259d37b4b0e2ebf6e0481f42d1ba0fee88"
-auth_type='sha256'
+files=(
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz#4579051e3c255fb4bb795d54324f5a7f3ef79bd9181e44293d7ee9a7f62aad9a"
+)
 depends=(
     "ncurses"
     "zlib"
@@ -35,15 +36,15 @@ configure() {
     cmake ${workdir}/llvm \
         -G Ninja \
         -B llvm-build "${configopts[@]}" \
-        -DCMAKE_BUILD_TYPE=MinSizeRel \
-        -DCMAKE_FIND_ROOT_PATH="$SERENITY_BUILD_DIR"/Root \
-        -DCROSS_TOOLCHAIN_FLAGS_NATIVE="-DCMAKE_C_COMPILER=$CC;-DCMAKE_CXX_COMPILER=$CXX" \
         -DCLANG_DEFAULT_CXX_STDLIB=$stdlib \
         -DCLANG_DEFAULT_UNWINDLIB=$unwindlib \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DCMAKE_FIND_ROOT_PATH="$SERENITY_BUILD_DIR"/Root \
         -DCOMPILER_RT_BUILD_CRT=ON \
         -DCOMPILER_RT_BUILD_ORC=OFF \
         -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=$exclude_atomic_builtin \
         -DCOMPILER_RT_OS_DIR=serenity \
+        -DCROSS_TOOLCHAIN_FLAGS_NATIVE="-DCMAKE_C_COMPILER=$CC;-DCMAKE_CXX_COMPILER=$CXX" \
         -DHAVE_LIBRT=OFF \
         -DLLVM_DEFAULT_TARGET_TRIPLE=$SERENITY_ARCH-pc-serenity \
         -DLLVM_ENABLE_PROJECTS="clang;lld;compiler-rt" \
@@ -51,8 +52,9 @@ configure() {
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+        -DLLVM_OCAML_INSTALL_PATH="${SERENITY_INSTALL_ROOT}/usr/local/ocaml" \
         -DLLVM_PTHREAD_LIB=pthread \
-        -DLLVM_TARGETS_TO_BUILD=X86
+        -DLLVM_TARGETS_TO_BUILD="X86;AArch64;RISCV"
 }
 
 build() {

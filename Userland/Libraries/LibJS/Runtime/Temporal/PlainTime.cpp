@@ -22,6 +22,8 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(PlainTime);
+
 // 4 Temporal.PlainTime Objects, https://tc39.es/proposal-temporal/#sec-temporal-plaintime-objects
 PlainTime::PlainTime(u8 iso_hour, u8 iso_minute, u8 iso_second, u16 iso_millisecond, u16 iso_microsecond, u16 iso_nanosecond, Calendar& calendar, Object& prototype)
     : Object(ConstructWithPrototypeTag::Tag, prototype)
@@ -38,7 +40,7 @@ PlainTime::PlainTime(u8 iso_hour, u8 iso_minute, u8 iso_second, u16 iso_millisec
 void PlainTime::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_calendar);
+    visitor.visit(m_calendar);
 }
 
 // 4.5.1 DifferenceTime ( h1, min1, s1, ms1, mus1, ns1, h2, min2, s2, ms2, mus2, ns2 ), https://tc39.es/proposal-temporal/#sec-temporal-differencetime
@@ -344,12 +346,12 @@ ThrowCompletionOr<TemporalTimeLikeRecord> to_temporal_time_record(VM& vm, Object
 
     // 2. Let partial be ? PrepareTemporalFields(temporalTimeLike, « "hour", "microsecond", "millisecond", "minute", "nanosecond", "second" », partial).
     auto* partial = TRY(prepare_temporal_fields(vm, temporal_time_like,
-        { TRY_OR_THROW_OOM(vm, "hour"_string),
-            TRY_OR_THROW_OOM(vm, "microsecond"_string),
-            TRY_OR_THROW_OOM(vm, "millisecond"_string),
-            TRY_OR_THROW_OOM(vm, "minute"_string),
-            TRY_OR_THROW_OOM(vm, "nanosecond"_string),
-            TRY_OR_THROW_OOM(vm, "second"_string) },
+        { "hour"_string,
+            "microsecond"_string,
+            "millisecond"_string,
+            "minute"_string,
+            "nanosecond"_string,
+            "second"_string },
         PrepareTemporalFieldsPartial {}));
 
     TemporalTimeLikeRecord result;
@@ -559,17 +561,17 @@ DaysAndTime round_time(u8 hour, u8 minute, u8 second, u16 millisecond, u16 micro
             day_length_ns = ns_per_day;
 
         // b. Let quantity be (((((hour × 60 + minute) × 60 + second) × 1000 + millisecond) × 1000 + microsecond) × 1000 + nanosecond) / dayLengthNs.
-        quantity = (((((hour * 60 + minute) * 60 + second) * 1000 + millisecond) * 1000 + microsecond) * 1000 + nanosecond) / *day_length_ns;
+        quantity = (((((hour * 60.0 + minute) * 60.0 + second) * 1000.0 + millisecond) * 1000.0 + microsecond) * 1000.0 + nanosecond) / *day_length_ns;
     }
     // 4. Else if unit is "hour", then
     else if (unit == "hour"sv) {
         // a. Let quantity be (fractionalSecond / 60 + minute) / 60 + hour.
-        quantity = (fractional_second / 60 + minute) / 60 + hour;
+        quantity = (fractional_second / 60.0 + minute) / 60.0 + hour;
     }
     // 5. Else if unit is "minute", then
     else if (unit == "minute"sv) {
         // a. Let quantity be fractionalSecond / 60 + minute.
-        quantity = fractional_second / 60 + minute;
+        quantity = fractional_second / 60.0 + minute;
     }
     // 6. Else if unit is "second", then
     else if (unit == "second"sv) {
@@ -642,7 +644,7 @@ DaysAndTime round_time(u8 hour, u8 minute, u8 second, u16 millisecond, u16 micro
 }
 
 // 4.5.13 DifferenceTemporalPlainTime ( operation, temporalTime, other, options ), https://tc39.es/proposal-temporal/#sec-temporal-differencetemporalplaintime
-ThrowCompletionOr<Duration*> difference_temporal_plain_time(VM& vm, DifferenceOperation operation, PlainTime const& temporal_time, Value other_value, Value options_value)
+ThrowCompletionOr<NonnullGCPtr<Duration>> difference_temporal_plain_time(VM& vm, DifferenceOperation operation, PlainTime const& temporal_time, Value other_value, Value options_value)
 {
     // 1. If operation is since, let sign be -1. Otherwise, let sign be 1.
     i8 sign = operation == DifferenceOperation::Since ? -1 : 1;

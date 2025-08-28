@@ -8,7 +8,7 @@
 
 #include <AK/Variant.h>
 #include <AK/Vector.h>
-#include <LibAudio/ConnectionToServer.h>
+#include <LibAudio/ConnectionToManagerServer.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
@@ -27,10 +27,9 @@ enum AudioVariable : u32 {
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::EventLoop loop;
-    auto audio_client = TRY(Audio::ConnectionToServer::try_create());
-    audio_client->async_pause_playback();
+    auto audio_client = TRY(Audio::ConnectionToManagerServer::try_create());
 
-    DeprecatedString command = DeprecatedString::empty();
+    StringView command;
     Vector<StringView> command_arguments;
     bool human_mode = false;
 
@@ -44,7 +43,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil(nullptr, nullptr));
     TRY(Core::System::pledge("stdio rpath wpath recvfd thread"));
 
-    if (command.equals_ignoring_case("get"sv) || command == "g") {
+    if (command.equals_ignoring_ascii_case("get"sv) || command == "g") {
         // Get variables
         Vector<AudioVariable> values_to_print;
         if (command_arguments.is_empty()) {
@@ -69,7 +68,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         for (auto to_print : values_to_print) {
             switch (to_print) {
             case AudioVariable::Volume: {
-                auto volume = static_cast<int>(round(audio_client->get_main_mix_volume() * 100));
+                auto volume = lround(audio_client->get_main_mix_volume() * 100);
                 if (human_mode)
                     outln("Volume: {}%", volume);
                 else
@@ -85,7 +84,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 break;
             }
             case AudioVariable::SampleRate: {
-                u32 sample_rate = audio_client->get_sample_rate();
+                u32 sample_rate = audio_client->get_device_sample_rate();
                 if (human_mode)
                     outln("Sample rate: {:5d} Hz", sample_rate);
                 else
@@ -96,7 +95,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
         if (!human_mode)
             outln();
-    } else if (command.equals_ignoring_case("set"sv) || command == "s") {
+    } else if (command.equals_ignoring_ascii_case("set"sv) || command == "s") {
         // Set variables
         HashMap<AudioVariable, Variant<int, bool>> values_to_set;
         for (size_t i = 0; i < command_arguments.size(); ++i) {
@@ -106,7 +105,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
             auto& variable = command_arguments[i];
             if (variable.is_one_of("v"sv, "volume"sv)) {
-                auto volume = command_arguments[++i].to_int();
+                auto volume = command_arguments[++i].to_number<int>();
                 if (!volume.has_value()) {
                     warnln("Error: {} is not an integer volume", command_arguments[i - 1]);
                     return 1;
@@ -119,9 +118,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             } else if (variable.is_one_of("m"sv, "mute"sv)) {
                 auto& mute_text = command_arguments[++i];
                 bool mute;
-                if (mute_text.equals_ignoring_case("true"sv) || mute_text == "1") {
+                if (mute_text.equals_ignoring_ascii_case("true"sv) || mute_text == "1") {
                     mute = true;
-                } else if (mute_text.equals_ignoring_case("false"sv) || mute_text == "0") {
+                } else if (mute_text.equals_ignoring_ascii_case("false"sv) || mute_text == "0") {
                     mute = false;
                 } else {
                     warnln("Error: {} is not one of {{0, 1, true, false}}", mute_text);
@@ -129,7 +128,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
                 values_to_set.set(AudioVariable::Mute, mute);
             } else if (variable.is_one_of("r"sv, "samplerate"sv)) {
-                auto sample_rate = command_arguments[++i].to_int();
+                auto sample_rate = command_arguments[++i].to_number<int>();
                 if (!sample_rate.has_value()) {
                     warnln("Error: {} is not an integer sample rate", command_arguments[i - 1]);
                     return 1;
@@ -155,7 +154,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
             case AudioVariable::SampleRate: {
                 int& sample_rate = to_set.value.get<int>();
-                audio_client->set_sample_rate(sample_rate);
+                audio_client->set_device_sample_rate(sample_rate);
                 break;
             }
             }

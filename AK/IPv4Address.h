@@ -9,14 +9,16 @@
 #include <AK/Endian.h>
 #include <AK/Format.h>
 #include <AK/Optional.h>
+#include <AK/SipHash.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
 
 #ifdef KERNEL
 #    include <AK/Error.h>
-#    include <Kernel/KString.h>
+#    include <Kernel/Library/KString.h>
 #else
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
+#    include <AK/String.h>
 #endif
 
 namespace AK {
@@ -39,7 +41,7 @@ public:
         m_data = (d << 24) | (c << 16) | (b << 8) | a;
     }
 
-    constexpr IPv4Address(const u8 data[4])
+    constexpr IPv4Address(u8 const data[4])
     {
         m_data = (u32(data[3]) << 24) | (u32(data[2]) << 16) | (u32(data[1]) << 8) | u32(data[0]);
     }
@@ -65,22 +67,31 @@ public:
             octet(SubnetClass::D));
     }
 #else
-    DeprecatedString to_deprecated_string() const
+    ByteString to_byte_string() const
     {
-        return DeprecatedString::formatted("{}.{}.{}.{}",
+        return ByteString::formatted("{}.{}.{}.{}",
             octet(SubnetClass::A),
             octet(SubnetClass::B),
             octet(SubnetClass::C),
             octet(SubnetClass::D));
     }
 
-    DeprecatedString to_deprecated_string_reversed() const
+    ByteString to_byte_string_reversed() const
     {
-        return DeprecatedString::formatted("{}.{}.{}.{}",
+        return ByteString::formatted("{}.{}.{}.{}",
             octet(SubnetClass::D),
             octet(SubnetClass::C),
             octet(SubnetClass::B),
             octet(SubnetClass::A));
+    }
+
+    ErrorOr<String> to_string() const
+    {
+        return String::formatted("{}.{}.{}.{}",
+            octet(SubnetClass::A),
+            octet(SubnetClass::B),
+            octet(SubnetClass::C),
+            octet(SubnetClass::D));
     }
 #endif
 
@@ -97,19 +108,19 @@ public:
         u32 d {};
 
         if (parts.size() == 1) {
-            d = parts[0].to_uint().value_or(256);
+            d = parts[0].to_number<u32>().value_or(256);
         } else if (parts.size() == 2) {
-            a = parts[0].to_uint().value_or(256);
-            d = parts[1].to_uint().value_or(256);
+            a = parts[0].to_number<u32>().value_or(256);
+            d = parts[1].to_number<u32>().value_or(256);
         } else if (parts.size() == 3) {
-            a = parts[0].to_uint().value_or(256);
-            b = parts[1].to_uint().value_or(256);
-            d = parts[2].to_uint().value_or(256);
+            a = parts[0].to_number<u32>().value_or(256);
+            b = parts[1].to_number<u32>().value_or(256);
+            d = parts[2].to_number<u32>().value_or(256);
         } else if (parts.size() == 4) {
-            a = parts[0].to_uint().value_or(256);
-            b = parts[1].to_uint().value_or(256);
-            c = parts[2].to_uint().value_or(256);
-            d = parts[3].to_uint().value_or(256);
+            a = parts[0].to_number<u32>().value_or(256);
+            b = parts[1].to_number<u32>().value_or(256);
+            c = parts[2].to_number<u32>().value_or(256);
+            d = parts[3].to_number<u32>().value_or(256);
         } else {
             return {};
         }
@@ -138,7 +149,7 @@ public:
     }
 
 private:
-    constexpr u32 octet(const SubnetClass subnet) const
+    constexpr u32 octet(SubnetClass const subnet) const
     {
         constexpr auto bits_per_byte = 8;
         auto const bits_to_shift = bits_per_byte * int(subnet);
@@ -151,8 +162,8 @@ private:
 static_assert(sizeof(IPv4Address) == 4);
 
 template<>
-struct Traits<IPv4Address> : public GenericTraits<IPv4Address> {
-    static constexpr unsigned hash(IPv4Address const& address) { return int_hash(address.to_u32()); }
+struct Traits<IPv4Address> : public DefaultTraits<IPv4Address> {
+    static unsigned hash(IPv4Address const& address) { return secure_sip_hash(static_cast<u64>(address.to_u32())); }
 };
 
 #ifdef KERNEL
@@ -168,7 +179,7 @@ template<>
 struct Formatter<IPv4Address> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, IPv4Address value)
     {
-        return Formatter<StringView>::format(builder, value.to_deprecated_string());
+        return Formatter<StringView>::format(builder, value.to_byte_string());
     }
 };
 #endif

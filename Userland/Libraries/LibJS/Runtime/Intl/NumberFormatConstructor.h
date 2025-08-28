@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class NumberFormatConstructor final : public NativeFunction {
     JS_OBJECT(NumberFormatConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(NumberFormatConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~NumberFormatConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -29,7 +30,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(supported_locales_of);
 };
 
-ThrowCompletionOr<NumberFormat*> initialize_number_format(VM&, NumberFormat&, Value locales_value, Value options_value);
+ThrowCompletionOr<NonnullGCPtr<NumberFormat>> initialize_number_format(VM&, NumberFormat&, Value locales_value, Value options_value);
 ThrowCompletionOr<void> set_number_format_digit_options(VM&, NumberFormatBase& intl_object, Object const& options, int default_min_fraction_digits, int default_max_fraction_digits, NumberFormat::Notation notation);
 ThrowCompletionOr<void> set_number_format_unit_options(VM&, NumberFormat& intl_object, Object const& options);
 

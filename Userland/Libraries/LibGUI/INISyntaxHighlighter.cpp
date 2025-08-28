@@ -11,13 +11,13 @@
 
 namespace GUI {
 
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, IniToken::Type type)
+static Gfx::TextAttributes style_for_token_type(Gfx::Palette const& palette, IniToken::Type type)
 {
     switch (type) {
     case IniToken::Type::LeftBracket:
     case IniToken::Type::RightBracket:
     case IniToken::Type::Section:
-        return { palette.syntax_keyword(), true };
+        return { palette.syntax_keyword(), {}, true };
     case IniToken::Type::Name:
         return { palette.syntax_identifier() };
     case IniToken::Type::Value:
@@ -25,7 +25,7 @@ static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, IniTo
     case IniToken::Type::Comment:
         return { palette.syntax_comment() };
     case IniToken::Type::Equal:
-        return { palette.syntax_operator(), true };
+        return { palette.syntax_operator(), {}, true };
     default:
         return { palette.base_text() };
     }
@@ -45,16 +45,14 @@ void IniSyntaxHighlighter::rehighlight(Palette const& palette)
 
     Optional<IniToken> previous_section_token;
     IniToken previous_token;
-    Vector<TextDocumentFoldingRegion> folding_regions;
+    Vector<Syntax::TextDocumentFoldingRegion> folding_regions;
 
-    Vector<GUI::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentSpan> spans;
     for (auto& token : tokens) {
-        GUI::TextDocumentSpan span;
+        Syntax::TextDocumentSpan span;
         span.range.set_start({ token.m_start.line, token.m_start.column });
         span.range.set_end({ token.m_end.line, token.m_end.column });
-        auto style = style_for_token_type(palette, token.m_type);
-        span.attributes.color = style.color;
-        span.attributes.bold = style.bold;
+        span.attributes = style_for_token_type(palette, token.m_type);
         span.is_skippable = token.m_type == IniToken::Type::Whitespace;
         span.data = static_cast<u64>(token.m_type);
         spans.append(span);
@@ -63,7 +61,7 @@ void IniSyntaxHighlighter::rehighlight(Palette const& palette)
             previous_section_token = token;
         } else if (token.m_type == IniToken::Type::LeftBracket) {
             if (previous_section_token.has_value()) {
-                TextDocumentFoldingRegion region;
+                Syntax::TextDocumentFoldingRegion region;
                 region.range.set_start({ previous_section_token->m_end.line, previous_section_token->m_end.column });
                 // If possible, leave a blank line between sections.
                 // `end_line - start_line > 1` means the whitespace contains at least 1 blank line,
@@ -82,7 +80,7 @@ void IniSyntaxHighlighter::rehighlight(Palette const& palette)
         previous_token = token;
     }
     if (previous_section_token.has_value()) {
-        TextDocumentFoldingRegion region;
+        Syntax::TextDocumentFoldingRegion region;
         auto& end_token = tokens.last();
         region.range.set_start({ previous_section_token->m_end.line, previous_section_token->m_end.column });
         region.range.set_end({ end_token.m_end.line, end_token.m_end.column });

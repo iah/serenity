@@ -12,11 +12,14 @@
     M(ArrayMaxSize, "Maximum array size exceeded")                                                                                      \
     M(AccessorBadField, "Accessor descriptor's '{}' field must be a function or undefined")                                             \
     M(AccessorValueOrWritable, "Accessor property descriptor cannot specify a value or writable key")                                   \
+    M(AgentCannotSuspend, "Agent is not allowed to suspend")                                                                            \
     M(BigIntBadOperator, "Cannot use {} operator with BigInt")                                                                          \
     M(BigIntBadOperatorOtherType, "Cannot use {} operator with BigInt and other type")                                                  \
     M(BigIntFromNonIntegral, "Cannot convert non-integral number to BigInt")                                                            \
     M(BigIntInvalidValue, "Invalid value for BigInt: {}")                                                                               \
     M(BindingNotInitialized, "Binding {} is not initialized")                                                                           \
+    M(BufferOutOfBounds, "{} contains a property which references a value at an index not contained within its buffer's bounds")        \
+    M(ByteLengthExceedsMaxByteLength, "ArrayBuffer byte length of {} exceeds the max byte length of {}")                                \
     M(CallStackSizeExceeded, "Call stack size limit exceeded")                                                                          \
     M(CannotDeclareGlobalFunction, "Cannot declare global function of name '{}'")                                                       \
     M(CannotDeclareGlobalVariable, "Cannot declare global variable of name '{}'")                                                       \
@@ -36,6 +39,7 @@
     M(DivisionByZero, "Division by zero")                                                                                               \
     M(DynamicImportNotAllowed, "Dynamic Imports are not allowed")                                                                       \
     M(FinalizationRegistrySameTargetAndValue, "Target and held value must not be the same")                                             \
+    M(FixedArrayBuffer, "ArrayBuffer is not resizable")                                                                                 \
     M(GetCapabilitiesExecutorCalledMultipleTimes, "GetCapabilitiesExecutor was called multiple times")                                  \
     M(GeneratorAlreadyExecuting, "Generator is already executing")                                                                      \
     M(GeneratorBrandMismatch, "Generator brand '{}' does not match generator brand '{}')")                                              \
@@ -52,8 +56,6 @@
     M(IntlInvalidTime, "Time value must be between -8.64E15 and 8.64E15")                                                               \
     M(IntlInvalidUnit, "Unit {} is not a valid time unit")                                                                              \
     M(IntlMinimumExceedsMaximum, "Minimum value {} is larger than maximum value {}")                                                    \
-    M(IntlNumberIsNaN, "{} must not be NaN")                                                                                            \
-    M(IntlNumberIsNaNOrInfinity, "Number must not be NaN or Infinity")                                                                  \
     M(IntlNumberIsNaNOrOutOfRange, "Value {} is NaN or is not between {} and {}")                                                       \
     M(IntlOptionUndefined, "Option {} must be defined when option {} is {}")                                                            \
     M(IntlNonNumericOr2DigitAfterNumericOr2Digit, "Styles other than 'numeric' and '2-digit' may not be used in smaller units after "   \
@@ -68,6 +70,7 @@
     M(InvalidLength, "Invalid {} length")                                                                                               \
     M(InvalidOrAmbiguousExportEntry, "Invalid or ambiguous export entry '{}'")                                                          \
     M(InvalidPrecision, "Precision must be an integer no less than 1, and no greater than 100")                                         \
+    M(InvalidRestrictedFloatingPointParameter, "Expected {} to be a finite floating-point number")                                      \
     M(InvalidTimeValue, "Invalid time value")                                                                                           \
     M(InvalidRadix, "Radix must be an integer no less than 2, and no greater than 36")                                                  \
     M(IsNotA, "{} is not a {}")                                                                                                         \
@@ -95,12 +98,16 @@
     M(NotAnObjectOfType, "Not an object of type {}")                                                                                    \
     M(NotAnObjectOrNull, "{} is neither an object nor null")                                                                            \
     M(NotAnObjectOrString, "{} is neither an object nor a string")                                                                      \
+    M(NotASharedArrayBuffer, "The array buffer object must be a SharedArrayBuffer")                                                     \
     M(NotAString, "{} is not a string")                                                                                                 \
     M(NotASymbol, "{} is not a symbol")                                                                                                 \
     M(NotImplemented, "TODO({} is not implemented in LibJS)")                                                                           \
     M(NotIterable, "{} is not iterable")                                                                                                \
     M(NotObjectCoercible, "{} cannot be converted to an object")                                                                        \
     M(NotUndefined, "{} is not undefined")                                                                                              \
+    M(NumberIsNaN, "{} must not be NaN")                                                                                                \
+    M(NumberIsNaNOrInfinity, "Number must not be NaN or Infinity")                                                                      \
+    M(NumberIsNegative, "{} must not be negative")                                                                                      \
     M(ObjectDefineOwnPropertyReturnedFalse, "Object's [[DefineOwnProperty]] method returned false")                                     \
     M(ObjectDeleteReturnedFalse, "Object's [[Delete]] method returned false")                                                           \
     M(ObjectFreezeFailed, "Could not freeze object")                                                                                    \
@@ -218,11 +225,13 @@
     M(RestrictedGlobalProperty, "Cannot declare global property '{}'")                                                                  \
     M(ShadowRealmEvaluateAbruptCompletion, "The evaluated script did not complete normally")                                            \
     M(ShadowRealmWrappedValueNonFunctionObject, "Wrapped value must be primitive or a function object, got {}")                         \
+    M(SharedArrayBuffer, "The array buffer object cannot be a SharedArrayBuffer")                                                       \
     M(SpeciesConstructorDidNotCreate, "Species constructor did not create {}")                                                          \
     M(SpeciesConstructorReturned, "Species constructor returned {}")                                                                    \
     M(StringNonGlobalRegExp, "RegExp argument is non-global")                                                                           \
     M(StringRawCannotConvert, "Cannot convert property 'raw' to object from {}")                                                        \
     M(StringRepeatCountMustBe, "repeat count must be a {} number")                                                                      \
+    M(StringRepeatCountMustNotOverflow, "repeat count must not overflow")                                                               \
     M(TemporalAmbiguousMonthOfPlainMonthDay, "Accessing month of PlainMonthDay is ambiguous, use monthCode instead")                    \
     M(TemporalDifferentCalendars, "Cannot compare dates from two different calendars")                                                  \
     M(TemporalDifferentTimeZones, "Cannot compare dates from two different time zones")                                                 \
@@ -295,6 +304,9 @@
     M(ThisHasNotBeenInitialized, "|this| has not been initialized")                                                                     \
     M(ThisIsAlreadyInitialized, "|this| is already initialized")                                                                        \
     M(ToObjectNullOrUndefined, "ToObject on null or undefined")                                                                         \
+    M(ToObjectNullOrUndefinedWithName, "\"{}\" is {}")                                                                                  \
+    M(ToObjectNullOrUndefinedWithProperty, "Cannot access property \"{}\" on {} object")                                                \
+    M(ToObjectNullOrUndefinedWithPropertyAndName, "Cannot access property \"{}\" on {} object \"{}\"")                                  \
     M(TopLevelVariableAlreadyDeclared, "Redeclaration of top level variable '{}'")                                                      \
     M(ToPrimitiveReturnedObject, "Can't convert {} to primitive with hint \"{}\", its @@toPrimitive method returned an object")         \
     M(TypedArrayContentTypeMismatch, "Can't create {} from {}")                                                                         \

@@ -13,9 +13,10 @@ namespace JS::Intl {
 
 class DateTimeFormatPrototype final : public PrototypeObject<DateTimeFormatPrototype, DateTimeFormat> {
     JS_PROTOTYPE_OBJECT(DateTimeFormatPrototype, DateTimeFormat, Intl.DateTimeFormat);
+    JS_DECLARE_ALLOCATOR(DateTimeFormatPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DateTimeFormatPrototype() override = default;
 
 private:

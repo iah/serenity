@@ -30,30 +30,30 @@ public:
         if (!entry.has_string("quote"sv) || !entry.has_string("author"sv) || !entry.has_u64("utc_time"sv) || !entry.has_string("url"sv))
             return {};
         // From here on, trust that it's probably fine.
-        q.m_quote = entry.get_deprecated_string("quote"sv).value();
-        q.m_author = entry.get_deprecated_string("author"sv).value();
+        q.m_quote = entry.get_byte_string("quote"sv).value();
+        q.m_author = entry.get_byte_string("author"sv).value();
         q.m_utc_time = entry.get_u64("utc_time"sv).value();
-        q.m_url = entry.get_deprecated_string("url"sv).value();
+        q.m_url = entry.get_byte_string("url"sv).value();
         if (entry.has("context"sv))
-            q.m_context = entry.get_deprecated_string("context"sv).value();
+            q.m_context = entry.get_byte_string("context"sv).value();
 
         return q;
     }
 
-    DeprecatedString const& quote() const { return m_quote; }
-    DeprecatedString const& author() const { return m_author; }
+    ByteString const& quote() const { return m_quote; }
+    ByteString const& author() const { return m_author; }
     u64 const& utc_time() const { return m_utc_time; }
-    DeprecatedString const& url() const { return m_url; }
-    Optional<DeprecatedString> const& context() const { return m_context; }
+    ByteString const& url() const { return m_url; }
+    Optional<ByteString> const& context() const { return m_context; }
 
 private:
     Quote() = default;
 
-    DeprecatedString m_quote;
-    DeprecatedString m_author;
+    ByteString m_quote;
+    ByteString m_author;
     u64 m_utc_time;
-    DeprecatedString m_url;
-    Optional<DeprecatedString> m_context;
+    ByteString m_url;
+    Optional<ByteString> m_context;
 };
 
 static Vector<Quote> parse_all(JsonArray const& array)
@@ -76,8 +76,28 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     StringView path = "/res/fortunes.json"sv;
 
+    Optional<bool> force_color;
+
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Open a fortune cookie, receive a free quote for the day!");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Choose when to color the output. Valid options are always, never, or auto (default). When color is set to auto, color codes will be emitted when stdout is a terminal",
+        .long_name = "color",
+        .value_name = "when",
+        .accept_value = [&force_color](StringView color_when_string) {
+            if (color_when_string.equals_ignoring_ascii_case("always"sv)) {
+                force_color = true;
+            } else if (color_when_string.equals_ignoring_ascii_case("never"sv)) {
+                force_color = false;
+            } else if (!color_when_string.equals_ignoring_ascii_case("auto"sv)) {
+                warnln("Unknown argument '{}'. Valid arguments for --color are always, never, or auto (default)", color_when_string);
+                return false;
+            }
+
+            return true;
+        },
+    });
     args_parser.add_positional_argument(path, "Path to JSON file with quotes (/res/fortunes.json by default)", "path", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
@@ -102,20 +122,34 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     u32 i = get_random_uniform(quotes.size());
     auto const& chosen_quote = quotes[i];
     auto datetime = Core::DateTime::from_timestamp(chosen_quote.utc_time());
+    auto stdout_is_tty = TRY(Core::System::isatty(STDOUT_FILENO));
+    auto show_color = force_color.has_value() ? force_color.value() : stdout_is_tty;
 
-    outln(); // Tasteful spacing
+    if (stdout_is_tty) {
+        outln();                                     // Tasteful spacing
+        out("\033]8;;{}\033\\", chosen_quote.url()); // Begin link
+    }
 
-    out("\033]8;;{}\033\\", chosen_quote.url());                // Begin link
-    out("\033[34m({})\033[m", datetime.to_deprecated_string()); // Datetime
-    out(" \033[34;1m<{}>\033[m", chosen_quote.author());        // Author
-    out(" \033[32m{}\033[m", chosen_quote.quote());             // Quote itself
-    out("\033]8;;\033\\");                                      // End link
+    if (show_color) {
+        out("\033[34m({})\033[m", datetime.to_byte_string());
+        out(" \033[34;1m<{}>\033[m", chosen_quote.author());
+        out(" \033[32m{}\033[m", chosen_quote.quote());
+    } else {
+        out("({})", datetime.to_byte_string());
+        out(" <{}>", chosen_quote.author());
+        out(" {}", chosen_quote.quote());
+    }
+
+    if (stdout_is_tty)
+        out("\033]8;;\033\\"); // End link
+
     outln();
 
     if (chosen_quote.context().has_value())
-        outln("\033[38;5;242m({})\033[m", chosen_quote.context().value()); // Some context
+        outln("{}", chosen_quote.context().value());
 
-    outln(); // Tasteful spacing
+    if (stdout_is_tty)
+        outln(); // Tasteful spacing
 
     return 0;
 }

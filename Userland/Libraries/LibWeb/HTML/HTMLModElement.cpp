@@ -5,10 +5,13 @@
  */
 
 #include <AK/Assertions.h>
+#include <LibWeb/Bindings/HTMLModElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLModElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLModElement);
 
 HTMLModElement::HTMLModElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -17,12 +20,10 @@ HTMLModElement::HTMLModElement(DOM::Document& document, DOM::QualifiedName quali
 
 HTMLModElement::~HTMLModElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLModElement::initialize(JS::Realm& realm)
+void HTMLModElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLModElementPrototype>(realm, "HTMLModElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLModElement);
 }
 
 Optional<ARIA::Role> HTMLModElement::default_role() const

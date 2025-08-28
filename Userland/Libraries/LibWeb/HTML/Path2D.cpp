@@ -7,6 +7,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/Path2DPrototype.h>
 #include <LibWeb/Geometry/DOMMatrix.h>
 #include <LibWeb/HTML/Path2D.h>
 #include <LibWeb/SVG/AttributeParser.h>
@@ -14,13 +15,15 @@
 
 namespace Web::HTML {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<Path2D>> Path2D::construct_impl(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, DeprecatedString>> const& path)
+JS_DEFINE_ALLOCATOR(Path2D);
+
+WebIDL::ExceptionOr<JS::NonnullGCPtr<Path2D>> Path2D::construct_impl(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, String>> const& path)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<Path2D>(realm, realm, path));
+    return realm.heap().allocate<Path2D>(realm, realm, path);
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-path2d
-Path2D::Path2D(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, DeprecatedString>> const& path)
+Path2D::Path2D(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, String>> const& path)
     : PlatformObject(realm)
     , CanvasPath(static_cast<Bindings::PlatformObject&>(*this))
 {
@@ -37,12 +40,12 @@ Path2D::Path2D(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, Deprecated
     }
 
     // 4. Let svgPath be the result of parsing and interpreting path according to SVG 2's rules for path data. [SVG]
-    auto path_instructions = SVG::AttributeParser::parse_path_data(path->get<DeprecatedString>());
+    auto path_instructions = SVG::AttributeParser::parse_path_data(path->get<String>());
     auto svg_path = SVG::path_from_path_instructions(path_instructions);
 
-    if (!svg_path.segments().is_empty()) {
+    if (!svg_path.is_empty()) {
         // 5. Let (x, y) be the last point in svgPath.
-        auto xy = svg_path.segments().last()->point();
+        auto xy = svg_path.last_point();
 
         // 6. Add all the subpaths, if any, from svgPath to output.
         this->path() = move(svg_path);
@@ -56,12 +59,10 @@ Path2D::Path2D(JS::Realm& realm, Optional<Variant<JS::Handle<Path2D>, Deprecated
 
 Path2D::~Path2D() = default;
 
-JS::ThrowCompletionOr<void> Path2D::initialize(JS::Realm& realm)
+void Path2D::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::Path2DPrototype>(realm, "Path2D"));
-
-    return {};
+    Base::initialize(realm);
+    set_prototype(&Bindings::ensure_web_prototype<Bindings::Path2DPrototype>(realm, "Path2D"_fly_string));
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-path2d-addpath
@@ -70,7 +71,7 @@ WebIDL::ExceptionOr<void> Path2D::add_path(JS::NonnullGCPtr<Path2D> path, Geomet
     // The addPath(path, transform) method, when invoked on a Path2D object a, must run these steps:
 
     // 1. If the Path2D object path has no subpaths, then return.
-    if (path->path().segments().is_empty())
+    if (path->path().is_empty())
         return {};
 
     // 2. Let matrix be the result of creating a DOMMatrix from the 2D dictionary transform.
@@ -85,11 +86,11 @@ WebIDL::ExceptionOr<void> Path2D::add_path(JS::NonnullGCPtr<Path2D> path, Geomet
     auto copy = path->path().copy_transformed(Gfx::AffineTransform { static_cast<float>(matrix->m11()), static_cast<float>(matrix->m12()), static_cast<float>(matrix->m21()), static_cast<float>(matrix->m22()), static_cast<float>(matrix->m41()), static_cast<float>(matrix->m42()) });
 
     // 6. Let (x, y) be the last point in the last subpath of c.
-    auto xy = copy.segments().last()->point();
+    auto xy = copy.last_point();
 
     // 7. Add all the subpaths in c to a.
     // FIXME: Is this correct?
-    this->path().add_path(copy);
+    this->path().append_path(copy);
 
     // 8. Create a new subpath in a with (x, y) as the only point in the subpath.
     this->move_to(xy.x(), xy.y());

@@ -11,7 +11,7 @@
 namespace Core {
 
 template<typename TFunction>
-auto debounce(TFunction function, int timeout)
+auto debounce(int timeout, TFunction function)
 {
     RefPtr<Core::Timer> timer;
     return [=]<typename... T>(T... args) mutable {
@@ -20,10 +20,10 @@ auto debounce(TFunction function, int timeout)
             timer->stop();
             timer->on_timeout = move(apply_function);
         } else {
-            timer = Core::Timer::create_single_shot(timeout, move(apply_function)).release_value_but_fixme_should_propagate_errors();
+            timer = Core::Timer::create_single_shot(timeout, move(apply_function));
         }
         timer->start();
     };
-};
+}
 
 }

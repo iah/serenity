@@ -4,24 +4,25 @@ serenity_component(
     TARGETS HexEditor
 )
 
-compile_gml(HexEditorWindow.gml HexEditorWindowGML.h hex_editor_window_gml)
-compile_gml(GoToOffsetDialog.gml GoToOffsetDialogGML.h go_to_offset_dialog_gml)
-compile_gml(FindDialog.gml FindDialogGML.h find_dialog_gml)
+compile_gml(EditAnnotationWidget.gml EditAnnotationWidgetGML.cpp)
+compile_gml(FindWidget.gml FindWidgetGML.cpp)
+compile_gml(GoToOffsetWidget.gml GoToOffsetWidgetGML.cpp)
+compile_gml(HexEditorWidget.gml HexEditorWidgetGML.cpp)
 
 set(SOURCES
+    AnnotationsModel.cpp
+    EditAnnotationDialog.cpp
+    EditAnnotationWidgetGML.cpp
     FindDialog.cpp
+    FindWidgetGML.cpp
     GoToOffsetDialog.cpp
+    GoToOffsetWidgetGML.cpp
     HexDocument.cpp
     HexEditor.cpp
+    HexEditorWidgetGML.cpp
     HexEditorWidget.cpp
     main.cpp
 )
 
-set(GENERATED_SOURCES
-    FindDialogGML.h
-    GoToOffsetDialogGML.h
-    HexEditorWindowGML.h
-)
-
 serenity_app(HexEditor ICON app-hex-editor)
-target_link_libraries(HexEditor PRIVATE LibCore LibGfx LibGUI LibConfig LibDesktop LibFileSystemAccessClient LibMain LibTextCodec)
+target_link_libraries(HexEditor PRIVATE LibCore LibGfx LibGUI LibConfig LibDesktop LibFileSystemAccessClient LibMain LibTextCodec LibURL)

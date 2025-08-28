@@ -9,19 +9,13 @@
 
 #include <LibGUI/Margins.h>
 #include <LibGUI/Widget.h>
+#include <LibGfx/TabPosition.h>
 
 namespace GUI {
 
 class TabWidget : public Widget {
     C_OBJECT(TabWidget)
 public:
-    enum TabPosition {
-        Top,
-        Bottom,
-        Left,
-        Right,
-    };
-
     virtual ~TabWidget() override = default;
 
     TabPosition tab_position() const { return m_tab_position; }
@@ -56,16 +50,7 @@ public:
     void remove_widget(Widget&);
 
     template<class T, class... Args>
-    ErrorOr<NonnullRefPtr<T>> try_add_tab(DeprecatedString title, Args&&... args)
-    {
-        auto t = TRY(T::try_create(forward<Args>(args)...));
-        t->set_title(move(title));
-        TRY(try_add_widget(*t));
-        return *t;
-    }
-
-    template<class T, class... Args>
-    T& add_tab(DeprecatedString title, Args&&... args)
+    T& add_tab(String title, Args&&... args)
     {
         auto t = T::construct(forward<Args>(args)...);
         t->set_title(move(title));
@@ -73,18 +58,18 @@ public:
         return *t;
     }
 
-    ErrorOr<void> add_tab(NonnullRefPtr<Widget> const& tab, DeprecatedString title)
+    void add_tab(NonnullRefPtr<Widget> const& tab, String title)
     {
         tab->set_title(move(title));
-        TRY(try_add_widget(*tab));
-        return {};
+        add_widget(*tab);
     }
 
     void remove_tab(Widget& tab) { remove_widget(tab); }
     void remove_all_tabs_except(Widget& tab);
 
-    void set_tab_title(Widget& tab, StringView title);
+    void set_tab_title(Widget& tab, String title);
     void set_tab_icon(Widget& tab, Gfx::Bitmap const*);
+    void set_tab_action_icon(Widget& tab, Gfx::Bitmap const*);
 
     bool is_tab_modified(Widget& tab);
     void set_tab_modified(Widget& tab, bool modified);
@@ -102,9 +87,9 @@ public:
     int uniform_tab_width() const;
 
     void set_bar_visible(bool bar_visible);
-    bool is_bar_visible() const { return m_bar_visible; };
+    bool is_bar_visible() const { return m_bar_visible; }
 
-    void set_close_button_enabled(bool close_button_enabled) { m_close_button_enabled = close_button_enabled; };
+    void set_close_button_enabled(bool close_button_enabled) { m_close_button_enabled = close_button_enabled; }
     bool close_button_enabled() const { return m_close_button_enabled; }
 
     void set_reorder_allowed(bool reorder_allowed) { m_reorder_allowed = reorder_allowed; }
@@ -126,6 +111,7 @@ protected:
     virtual void mousedown_event(MouseEvent&) override;
     virtual void mouseup_event(MouseEvent&) override;
     virtual void mousemove_event(MouseEvent&) override;
+    virtual void mousewheel_event(MouseEvent&) override;
     virtual void leave_event(Core::Event&) override;
     virtual void keydown_event(KeyEvent&) override;
     virtual void context_menu_event(ContextMenuEvent&) override;
@@ -147,7 +133,8 @@ private:
 
     struct TabData {
         int width(Gfx::Font const&) const;
-        DeprecatedString title;
+        String title;
+        RefPtr<Gfx::Bitmap const> action_icon;
         RefPtr<Gfx::Bitmap const> icon;
         Widget* widget { nullptr };
         bool modified { false };

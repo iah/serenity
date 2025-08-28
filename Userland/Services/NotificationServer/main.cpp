@@ -14,12 +14,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio recvfd sendfd accept rpath unix"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     auto server = TRY(IPC::MultiServer<NotificationServer::ConnectionFromClient>::try_create());
 
     TRY(Core::System::unveil("/res", "r"));
+    TRY(Core::System::unveil("/tmp/session/%sid/portal/launch", "rw"));
     TRY(Core::System::unveil(nullptr, nullptr));
-    TRY(Core::System::pledge("stdio recvfd sendfd accept rpath"));
+    TRY(Core::System::pledge("unix stdio recvfd sendfd accept rpath"));
 
     return app->exec();
 }

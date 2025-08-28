@@ -5,17 +5,18 @@ set -eo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+. "${DIR}/../Meta/shell_include.sh"
+
+exit_if_running_as_root "Do not run BuildClang.sh as root, parts of your Toolchain directory will become root-owned"
+
 echo "$DIR"
 
 PREFIX="$DIR/Local/clang/"
 BUILD="$DIR/../Build/"
-USERLAND_ARCHS="x86_64"
-ARCHS="$USERLAND_ARCHS aarch64"
+ARCHS="x86_64 aarch64 riscv64"
 
 MD5SUM="md5sum"
 REALPATH="realpath"
-NPROC="nproc"
-INSTALL="install"
 SED="sed"
 
 SYSTEM_NAME="$(uname -s)"
@@ -23,25 +24,17 @@ SYSTEM_NAME="$(uname -s)"
 if [ "$SYSTEM_NAME" = "OpenBSD" ]; then
     MD5SUM="md5 -q"
     REALPATH="readlink -f"
-    NPROC="sysctl -n hw.ncpuonline"
     export CC=egcc
     export CXX=eg++
     export LDFLAGS=-Wl,-z,notext
 elif [ "$SYSTEM_NAME" = "FreeBSD" ]; then
     MD5SUM="md5 -q"
-    NPROC="sysctl -n hw.ncpu"
 elif [ "$SYSTEM_NAME" = "Darwin" ]; then
     MD5SUM="md5 -q"
-    NPROC="sysctl -n hw.ncpu"
-    REALPATH="grealpath"  # GNU coreutils
-    INSTALL="ginstall"    # GNU coreutils
-    SED="gsed"            # GNU sed
 fi
 
-if [ -z "$MAKEJOBS" ]; then
-    MAKEJOBS=$($NPROC)
-fi
-
+NPROC=$(get_number_of_processing_units)
+[ -z "$MAKEJOBS" ] && MAKEJOBS=${NPROC}
 
 if [ ! -d "$BUILD" ]; then
     mkdir -p "$BUILD"
@@ -70,8 +63,8 @@ echo PREFIX is "$PREFIX"
 
 mkdir -p "$DIR/Tarballs"
 
-LLVM_VERSION="15.0.3"
-LLVM_MD5SUM="d435e1160fd16b8efe1e0f4d1058bd50"
+LLVM_VERSION="20.1.0"
+LLVM_MD5SUM="6d38445b43b3d347daee0423e23bbeec"
 LLVM_NAME="llvm-project-$LLVM_VERSION.src"
 LLVM_PKG="$LLVM_NAME.tar.xz"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$LLVM_PKG"
@@ -161,43 +154,6 @@ else
     buildstep setup echo "Using user-provided CFLAGS/CXXFLAGS."
 fi
 
-# === CHECK CACHE AND REUSE ===
-
-pushd "$DIR"
-    if [ "$TRY_USE_LOCAL_TOOLCHAIN" = "y" ]; then
-        mkdir -p Cache
-        echo "Cache (before):"
-        ls -l Cache
-        CACHED_TOOLCHAIN_ARCHIVE="Cache/ToolchainBinariesGithubActions.tar.gz"
-        if [ -r "${CACHED_TOOLCHAIN_ARCHIVE}" ] ; then
-            echo "Cache at ${CACHED_TOOLCHAIN_ARCHIVE} exists!"
-            echo "Extracting toolchain from cache:"
-            if tar xzf "${CACHED_TOOLCHAIN_ARCHIVE}" ; then
-                 echo "Done 'building' the toolchain."
-                 echo "Cache unchanged."
-                 exit 0
-            else
-                echo
-                echo
-                echo
-                echo "Could not extract cached toolchain archive."
-                echo "This means the cache is broken and *should be removed*!"
-                echo "As Github Actions cannot update a cache, this will unnecessarily"
-                echo "slow down all future builds for this hash, until someone"
-                echo "resets the cache."
-                echo
-                echo
-                echo
-                rm -f "${CACHED_TOOLCHAIN_ARCHIVE}"
-            fi
-        else
-            echo "Cache at ${CACHED_TOOLCHAIN_ARCHIVE} does not exist."
-            echo "Will rebuild toolchain from scratch, and save the result."
-        fi
-    fi
-    echo "::group::Actually building Toolchain"
-popd
-
 # === DOWNLOAD AND PATCH ===
 
 pushd "$DIR/Tarballs"
@@ -247,30 +203,9 @@ popd
 
 # === COPY HEADERS ===
 
-SRC_ROOT=$($REALPATH "$DIR"/..)
-FILES=$(find "$SRC_ROOT"/Kernel/API "$SRC_ROOT"/Userland/Libraries/LibC -name '*.h' -print)
-
 for arch in $ARCHS; do
-    mkdir -p "$BUILD/${arch}clang"
-    pushd "$BUILD/${arch}clang"
-        mkdir -p Root/usr/include/
-        for header in $FILES; do
-            target=$(echo "$header" | "$SED" -e "s@$SRC_ROOT/Userland/Libraries/LibC@@" -e "s@$SRC_ROOT/Kernel/@Kernel/@")
-            buildstep "system_headers" "$INSTALL" -D "$header" "Root/usr/include/$target"
-        done
-    popd
-done
-unset SRC_ROOT
-
-# === COPY LIBRARY STUBS ===
-
-for arch in $USERLAND_ARCHS; do
-    pushd "$BUILD/${arch}clang"
-        mkdir -p Root/usr/lib/
-        for lib in "$DIR/Stubs/${arch}clang/"*".so"; do
-            lib_name=$(basename "$lib")
-            [ ! -f "Root/usr/lib/${lib_name}" ] && cp "$lib" "Root/usr/lib/${lib_name}"
-        done
+    pushd "$DIR/.."
+        cmake -DSERENITY_ARCH="$arch" -DSERENITY_SYSROOT="$BUILD/${arch}clang/Root" -P Meta/CMake/link_libc_headers.cmake
     popd
 done
 
@@ -288,35 +223,20 @@ pushd "$DIR/Build/clang"
             -G Ninja \
             -DSERENITY_x86_64-pc-serenity_SYSROOT="$BUILD/x86_64clang/Root" \
             -DSERENITY_aarch64-pc-serenity_SYSROOT="$BUILD/aarch64clang/Root" \
+            -DSERENITY_riscv64-pc-serenity_SYSROOT="$BUILD/riscv64clang/Root" \
+            -DSERENITY_x86_64-pc-serenity_STUBS="$DIR/Stubs/x86_64" \
+            -DSERENITY_aarch64-pc-serenity_STUBS="$DIR/Stubs/aarch64" \
+            -DSERENITY_riscv64-pc-serenity_STUBS="$DIR/Stubs/riscv64" \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DSERENITY_MODULE_PATH="$DIR/CMake" \
             -C "$DIR/CMake/LLVMConfig.cmake" \
             ${link_lld:+"-DLLVM_ENABLE_LLD=ON"} \
             ${dev:+"-DLLVM_CCACHE_BUILD=ON"} \
             ${ci:+"-DLLVM_CCACHE_BUILD=ON"} \
-            ${ci:+"-DLLVM_CCACHE_DIR=$LLVM_CCACHE_DIR"} \
-            ${ci:+"-DLLVM_CCACHE_MAXSIZE=$LLVM_CCACHE_MAXSIZE"}
+            ${ci:+"-DLLVM_CCACHE_DIR=$LLVM_CCACHE_DIR"}
 
         buildstep_ninja "llvm/build" ninja -j "$MAKEJOBS"
         buildstep_ninja "llvm/install" ninja install/strip
     popd
-
-    for arch in $ARCHS; do
-        mkdir -p runtimes/"$arch"
-        pushd runtimes/"$arch"
-            buildstep "runtimes/$arch/configure" cmake "$DIR/Tarballs/$LLVM_NAME/runtimes" \
-                -G Ninja \
-                -DSERENITY_TOOLCHAIN_ARCH="$arch" \
-                -DSERENITY_TOOLCHAIN_ROOT="$PREFIX" \
-                -DSERENITY_BUILD_DIR="$BUILD/${arch}clang/" \
-                -DSERENITY_MODULE_PATH="$DIR/CMake" \
-                -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-                -C "$DIR/CMake/LLVMRuntimesConfig.cmake"
-
-            buildstep_ninja "runtimes/$arch/build" ninja -j "$MAKEJOBS"
-            buildstep_ninja "runtimes/$arch/install" ninja install
-        popd
-    done
 popd
 
 pushd "$DIR/Local/clang/bin/"
@@ -325,23 +245,7 @@ pushd "$DIR/Local/clang/bin/"
     for arch in $ARCHS; do
         ln -s clang "$arch"-pc-serenity-clang
         ln -s clang++ "$arch"-pc-serenity-clang++
+        ln -s llvm-nm "$arch"-pc-serenity-nm
         echo "--sysroot=$BUILD/${arch}clang/Root" > "$arch"-pc-serenity.cfg
     done
-popd
-
-# === SAVE TO CACHE ===
-
-pushd "$DIR"
-    if [ "$TRY_USE_LOCAL_TOOLCHAIN" = "y" ]; then
-        echo "::endgroup::"
-        echo "Building cache tar:"
-
-        echo "Building cache tar:"
-
-        rm -f "${CACHED_TOOLCHAIN_ARCHIVE}"  # Just in case
-
-        tar czf "${CACHED_TOOLCHAIN_ARCHIVE}" Local/
-        echo "Cache (after):"
-        ls -l Cache
-    fi
 popd

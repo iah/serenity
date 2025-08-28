@@ -6,7 +6,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Time Format"
+        title: "Time format"
         shrink_to_fit: false
         fixed_height: 240
         layout: @GUI::VerticalBoxLayout {
@@ -63,9 +63,7 @@
             }
 
             @GUI::Label {
-                shape: "Container"
-                thickness: 2
-                shadow: "Sunken"
+                frame_style: "SunkenContainer"
                 name: "clock_preview"
                 text: "12:34:56"
             }

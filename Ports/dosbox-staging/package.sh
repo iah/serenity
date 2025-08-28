@@ -1,20 +1,49 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=dosbox-staging
-version=0.76.0
-useconfigure=true
-configopts=("--disable-opus-cdda" "--disable-fluidsynth" "--disable-dynamic-core")
-files="https://github.com/dosbox-staging/dosbox-staging/archive/refs/tags/v${version}.tar.gz v${version}.tar.gz 7df53c22f7ce78c70afb60b26b06742b90193b56c510219979bf12e0bb2dc6c7"
-auth_type=sha256
-depends=("SDL2" "libpng")
-launcher_name=DOSBox
-launcher_category=Games
-launcher_command=/usr/local/bin/dosbox
-icon_file=contrib/icons/dosbox-staging.ico
-use_fresh_config_sub=true
+port='dosbox-staging'
+version='0.80.1'
+useconfigure='true'
+configopts=(
+    "--cross-file" "${SERENITY_BUILD_DIR}/meson-cross-file.txt"
+    '-Ddynamic_core=none'
+    '-Dtry_static_libs=opusfile'
+    '-Dunit_tests=disabled'
+    '-Duse_opengl=false'
+)
+files=(
+    "https://github.com/dosbox-staging/dosbox-staging/archive/refs/tags/v${version}.tar.gz#2ca69e65e6c181197b63388c60487a3bcea804232a28c44c37704e70d49a0392"
+)
+depends=(
+    'fluidsynth'
+    'libmt32emu'
+    'libslirp'
+    'libpng'
+    'opusfile'
+    'SDL2'
+    'SDL2_image'
+    'SDL2_net'
+)
+launcher_name='DOSBox'
+launcher_category='&Games'
+launcher_command='/usr/local/bin/dosbox'
+icon_file='contrib/icons/dosbox-staging.ico'
 
-export CFLAGS="-I${SERENITY_INSTALL_ROOT}/usr/local/include/SDL2"
-export CPPFLAGS="-I${SERENITY_INSTALL_ROOT}/usr/local/include/SDL2"
+configure() {
+    run meson setup build/release "${configopts[@]}"
+}
 
-pre_patch() {
-    run ./autogen.sh
+build() {
+    run ninja -C build/release
+}
+
+install() {
+    export DESTDIR="${SERENITY_INSTALL_ROOT}"
+    run meson install -C build/release
+}
+
+post_install() {
+    echo
+    echo "DOSBox Staging ${version} is installed!"
+    echo
+    echo "Release notes: https://dosbox-staging.github.io/downloads/release-notes/${version}/"
+    echo
 }

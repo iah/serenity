@@ -11,12 +11,15 @@
 
 namespace Web::Fetch::Infrastructure {
 
+JS_DEFINE_ALLOCATOR(FetchParams);
+
 FetchParams::FetchParams(JS::NonnullGCPtr<Request> request, JS::NonnullGCPtr<FetchAlgorithms> algorithms, JS::NonnullGCPtr<FetchController> controller, JS::NonnullGCPtr<FetchTimingInfo> timing_info)
     : m_request(request)
     , m_algorithms(algorithms)
     , m_controller(controller)
     , m_timing_info(timing_info)
 {
+    m_controller->set_fetch_params({}, *this);
 }
 
 JS::NonnullGCPtr<FetchParams> FetchParams::create(JS::VM& vm, JS::NonnullGCPtr<Request> request, JS::NonnullGCPtr<FetchTimingInfo> timing_info)

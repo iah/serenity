@@ -1,8 +1,14 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='sqlite'
-version='3380500'
-files="https://www.sqlite.org/2022/sqlite-autoconf-${version}.tar.gz sqlite-autoconf-${version}.tar.gz 5af07de982ba658fd91a03170c945f99c971f6955bc79df3266544373e39869c"
-auth_type='sha256'
+version='3470000'
+files=(
+    "https://www.sqlite.org/2024/sqlite-autoconf-${version}.tar.gz#83eb21a6f6a649f506df8bd3aab85a08f7556ceed5dbd8dea743ea003fc3a957"
+)
 useconfigure='true'
+launcher_name='SQLite'
+launcher_category='D&evelopment'
+launcher_command='/usr/local/bin/sqlite3 -interactive'
+launcher_run_in_terminal='true'
+#icon_file=FIXME
 use_fresh_config_sub='true'
 workdir="sqlite-autoconf-${version}"

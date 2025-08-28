@@ -6,17 +6,17 @@
 
 #include <Kernel/Arch/x86_64/IO.h>
 #include <Kernel/Arch/x86_64/Time/PIT.h>
-#include <Kernel/InterruptDisabler.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
-#include <Kernel/Scheduler.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Sections.h>
-#include <Kernel/Thread.h>
+#include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/Thread.h>
 #include <Kernel/Time/TimeManagement.h>
 
 #define IRQ_TIMER 0
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<PIT> PIT::initialize(Function<void(RegisterState const&)> callback)
+UNMAP_AFTER_INIT NonnullLockRefPtr<PIT> PIT::initialize(Function<void()> callback)
 {
     return adopt_lock_ref(*new PIT(move(callback)));
 }
@@ -28,7 +28,7 @@ UNMAP_AFTER_INIT NonnullLockRefPtr<PIT> PIT::initialize(Function<void(RegisterSt
     IO::out8(TIMER0_CTL, MSB(timer_reload));
 }
 
-PIT::PIT(Function<void(RegisterState const&)> callback)
+PIT::PIT(Function<void()> callback)
     : HardwareTimer(IRQ_TIMER, move(callback))
     , m_periodic(true)
 {
@@ -37,11 +37,6 @@ PIT::PIT(Function<void(RegisterState const&)> callback)
     dmesgln("PIT: {} Hz, square wave ({:#08x})", OPTIMAL_TICKS_PER_SECOND_RATE, BASE_FREQUENCY / OPTIMAL_TICKS_PER_SECOND_RATE);
     reset_to_default_ticks_per_second();
     enable_irq();
-}
-
-size_t PIT::ticks_per_second() const
-{
-    return m_frequency;
 }
 
 void PIT::set_periodic()

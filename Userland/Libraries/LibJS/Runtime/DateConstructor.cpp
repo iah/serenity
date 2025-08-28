@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2020, Nico Weber <thakis@chromium.org>
  * Copyright (c) 2021, Petróczi Zoltán <petroczizoltan@tutanota.com>
  * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
@@ -17,13 +17,16 @@
 #include <LibJS/Runtime/DatePrototype.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/VM.h>
+#include <LibJS/Runtime/ValueInlines.h>
 #include <sys/time.h>
 #include <time.h>
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(DateConstructor);
+
 // 21.4.3.2 Date.parse ( string ), https://tc39.es/ecma262/#sec-date.parse
-static double parse_simplified_iso8601(DeprecatedString const& iso_8601)
+static double parse_simplified_iso8601(ByteString const& iso_8601)
 {
     // 21.4.1.15 Date Time String Format, https://tc39.es/ecma262/#sec-date-time-string-format
     GenericLexer lexer(iso_8601);
@@ -131,8 +134,8 @@ static double parse_simplified_iso8601(DeprecatedString const& iso_8601)
 
     // We parsed a valid date simplified ISO 8601 string.
     VERIFY(year.has_value()); // A valid date string always has at least a year.
-    auto time = AK::Time::from_timestamp(*year, month.value_or(1), day.value_or(1), hours.value_or(0), minutes.value_or(0), seconds.value_or(0), milliseconds.value_or(0));
-    auto time_ms = static_cast<double>(time.to_milliseconds());
+    auto time = AK::UnixDateTime::from_unix_time_parts(*year, month.value_or(1), day.value_or(1), hours.value_or(0), minutes.value_or(0), seconds.value_or(0), milliseconds.value_or(0));
+    auto time_ms = static_cast<double>(time.milliseconds_since_epoch());
 
     // https://tc39.es/ecma262/#sec-date.parse:
     // "When the UTC offset representation is absent, date-only forms are interpreted as a UTC time and date-time forms are interpreted as a local time."
@@ -147,43 +150,70 @@ static double parse_simplified_iso8601(DeprecatedString const& iso_8601)
     return time_clip(time_ms);
 }
 
-static constexpr AK::Array<StringView, 3> extra_formats = {
-    "%a %b %e %T %z %Y"sv,
-    "%m/%e/%Y"sv,
-    "%m/%e/%Y %R %z"sv,
-};
-
-static double parse_date_string(DeprecatedString const& date_string)
+static double parse_date_string(VM& vm, ByteString const& date_string)
 {
+    if (date_string.is_empty())
+        return NAN;
+
     auto value = parse_simplified_iso8601(date_string);
     if (isfinite(value))
         return value;
 
     // Date.parse() is allowed to accept an arbitrary number of implementation-defined formats.
-    // Parse formats of this type: "Wed Apr 17 23:08:53 +0000 2019"
-    // And: "4/17/2019"
-    // And: "12/05/2022 10:00 -0800"
     // FIXME: Exactly what timezone and which additional formats we should support is unclear.
     //        Both Chrome and Firefox seem to support "4/17/2019 11:08 PM +0000" with most parts
     //        being optional, however this is not clearly documented anywhere.
+    static constexpr auto extra_formats = AK::Array {
+        "%a%t%b%t%d%t%Y%t%T%tGMT%z%t(%+)"sv,   // "Tue Nov 07 2023 10:05:55 GMT-0500 (Eastern Standard Time)"
+        "%a,%t%d%t%b%t%Y%t%T%t%Z"sv,           // "Tue, 07 Nov 2023 15:05:55 GMT"
+        "%a%t%b%t%e%t%T%t%z%t%Y"sv,            // "Wed Apr 17 23:08:53 +0000 2019"
+        "%m/%e/%Y"sv,                          // "4/17/2019"
+        "%m/%e/%Y%t%R%t%z"sv,                  // "12/05/2022 10:00 -0800"
+        "%Y/%m/%e%t%R"sv,                      // "2014/11/14 13:05"
+        "%Y-%m-%e%t%R"sv,                      // "2014-11-14 13:05"
+        "%B%t%e,%t%Y"sv,                       // "June 5, 2023"
+        "%B%t%e,%t%Y%t%T"sv,                   // "June 5, 2023 17:00:00"
+        "%b%t%d%t%Y%t%Z"sv,                    // "Jan 01 1970 GMT"
+        "%a%t%b%t%e%t%T%t%Y%t%z"sv,            // "Wed Apr 17 23:08:53 2019 +0000"
+        "%Y-%m-%e%t%R%z"sv,                    // "2021-07-01 03:00Z"
+        "%a,%t%e%t%b%t%Y%t%T%t%z"sv,           // "Wed, 17 Jan 2024 11:36:34 +0000"
+        "%a%t%b%t%e%t%Y%t%T%tGMT%t%x%t(%+)"sv, // "Sun Jan 21 2024 21:11:31 GMT 0100 (Central European Standard Time)"
+        "%Y-%m-%e%t%T"sv,                      // "2024-01-15 00:00:01"
+        "%a%t%b%t%e%t%Y%t%T%t%Z"sv,            // "Tue Nov 07 2023 10:05:55  UTC"
+        "%a%t%b%t%e%t%T%t%Y"sv,                // "Wed Apr 17 23:08:53 2019"
+        "%a%t%b%t%e%t%Y%t%T"sv,                // "Wed Apr 17 2019 23:08:53"
+        "%Y-%m-%eT%T%X%z"sv,                   // "2024-01-26T22:10:11.306+0000"
+        "%m/%e/%Y,%t%T%t%p"sv,                 // "1/27/2024, 9:28:30 AM"
+        "%Y-%m-%e"sv,                          // "2024-1-15"
+        "%Y-%m-%e%t%T%tGMT%z"sv,               // "2024-07-05 00:00:00 GMT-0800"
+        "%d%t%B%t%Y"sv,                        // "01 February 2013"
+        "%d%t%B%t%Y%t%R"sv,                    // "01 February 2013 08:00"
+        "%d%t%b%t%Y"sv,                        // "01 Jan 2000"
+        "%d%t%b%t%Y%t%R"sv,                    // "01 Jan 2000 08:00"
+        "%A,%t%B%t%e,%t%Y,%t%R%t%Z"sv,         // "Tuesday, October 29, 2024, 18:00 UTC"
+        "%B%t%d%t%Y%t%T%t%z"sv,                // "November 19 2024 00:00:00 +0900"
+        "%a%t%b%t%e%t%Y"sv                     // "Wed Nov 20 2024"
+    };
+
     for (auto const& format : extra_formats) {
         auto maybe_datetime = Core::DateTime::parse(format, date_string);
         if (maybe_datetime.has_value())
             return 1000.0 * maybe_datetime->timestamp();
     }
 
+    vm.host_unrecognized_date_string(date_string);
     return NAN;
 }
 
 DateConstructor::DateConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Date.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Date.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> DateConstructor::initialize(Realm& realm)
+void DateConstructor::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     // 21.4.3.3 Date.prototype, https://tc39.es/ecma262/#sec-date.prototype
     define_direct_property(vm.names.prototype, realm.intrinsics().date_prototype(), 0);
@@ -194,8 +224,6 @@ ThrowCompletionOr<void> DateConstructor::initialize(Realm& realm)
     define_native_function(realm, vm.names.UTC, utc, 7, attr);
 
     define_direct_property(vm.names.length, Value(7), Attribute::Configurable);
-
-    return {};
 }
 
 // 21.4.2.1 Date ( ...values ), https://tc39.es/ecma262/#sec-date
@@ -203,7 +231,7 @@ ThrowCompletionOr<Value> DateConstructor::call()
 {
     // 1. If NewTarget is undefined, then
     //     a. Let now be the time value (UTC) identifying the current time.
-    auto now = AK::Time::now_realtime().to_milliseconds();
+    auto now = AK::UnixDateTime::now().milliseconds_since_epoch();
 
     //     b. Return ToDateString(now).
     return PrimitiveString::create(vm(), to_date_string(now));
@@ -220,7 +248,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> DateConstructor::construct(FunctionObjec
     // 3. If numberOfArgs = 0, then
     if (vm.argument_count() == 0) {
         // a. Let dv be the time value (UTC) identifying the current time.
-        auto now = AK::Time::now_realtime().to_milliseconds();
+        auto now = AK::UnixDateTime::now().milliseconds_since_epoch();
         date_value = static_cast<double>(now);
     }
     // 4. Else if numberOfArgs = 1, then
@@ -243,7 +271,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> DateConstructor::construct(FunctionObjec
             if (primitive.is_string()) {
                 // 1. Assert: The next step never returns an abrupt completion because Type(v) is String.
                 // 2. Let tv be the result of parsing v as a date, in exactly the same manner as for the parse method (21.4.3.2).
-                time_value = parse_date_string(TRY(primitive.as_string().deprecated_string()));
+                time_value = parse_date_string(vm, primitive.as_string().byte_string());
             }
             // iii. Else,
             else {
@@ -318,9 +346,9 @@ JS_DEFINE_NATIVE_FUNCTION(DateConstructor::parse)
     if (!vm.argument_count())
         return js_nan();
 
-    auto date_string = TRY(vm.argument(0).to_deprecated_string(vm));
+    auto date_string = TRY(vm.argument(0).to_byte_string(vm));
 
-    return Value(parse_date_string(date_string));
+    return Value(parse_date_string(vm, date_string));
 }
 
 // 21.4.3.4 Date.UTC ( year [ , month [ , date [ , hours [ , minutes [ , seconds [ , ms ] ] ] ] ] ] ), https://tc39.es/ecma262/#sec-date.utc

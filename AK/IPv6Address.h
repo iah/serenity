@@ -10,13 +10,14 @@
 #include <AK/Format.h>
 #include <AK/Optional.h>
 #include <AK/StringView.h>
+#include <AK/UFixedBigInt.h>
 #include <AK/Vector.h>
 
 #ifdef KERNEL
 #    include <AK/Error.h>
-#    include <Kernel/KString.h>
+#    include <Kernel/Library/KString.h>
 #else
-#    include <AK/DeprecatedString.h>
+#    include <AK/String.h>
 #endif
 #include <AK/IPv4Address.h>
 #include <AK/StringBuilder.h>
@@ -51,25 +52,24 @@ public:
 #ifdef KERNEL
     ErrorOr<NonnullOwnPtr<Kernel::KString>> to_string() const
 #else
-    DeprecatedString to_deprecated_string() const
+    ErrorOr<String> to_string() const
 #endif
     {
         if (is_zero()) {
 #ifdef KERNEL
             return Kernel::KString::try_create("::"sv);
 #else
-            return "::"sv;
+            return "::"_string;
 #endif
         }
 
-        // TODO: Error propagation
         StringBuilder builder;
 
         if (is_ipv4_mapped()) {
 #ifdef KERNEL
             return Kernel::KString::formatted("::ffff:{}.{}.{}.{}", m_data[12], m_data[13], m_data[14], m_data[15]);
 #else
-            return DeprecatedString::formatted("::ffff:{}.{}.{}.{}", m_data[12], m_data[13], m_data[14], m_data[15]);
+            return String::formatted("::ffff:{}.{}.{}.{}", m_data[12], m_data[13], m_data[14], m_data[15]);
 #endif
         }
 
@@ -99,24 +99,24 @@ public:
         for (int i = 0; i < 8;) {
             if (longest_zero_span_start.has_value() && longest_zero_span_start.value() == i) {
                 if (longest_zero_span_start.value() + zero_span_length >= 8)
-                    builder.append("::"sv);
+                    TRY(builder.try_append("::"sv));
                 else
-                    builder.append(':');
+                    TRY(builder.try_append(':'));
                 i += zero_span_length;
                 continue;
             }
 
             if (i == 0)
-                builder.appendff("{:x}", group(i));
+                TRY(builder.try_appendff("{:x}", group(i)));
             else
-                builder.appendff(":{:x}", group(i));
+                TRY(builder.try_appendff(":{:x}", group(i)));
 
             i++;
         }
 #ifdef KERNEL
         return Kernel::KString::try_create(builder.string_view());
 #else
-        return builder.string_view();
+        return builder.to_string();
 #endif
     }
 
@@ -251,6 +251,59 @@ public:
         return {};
     }
 
+    // https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.3
+    [[nodiscard]] static IPv6Address loopback()
+    {
+        return IPv6Address({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 });
+    }
+
+    [[nodiscard]] constexpr bool is_loopback() const
+    {
+        return *this == loopback();
+    }
+
+    [[nodiscard]] constexpr bool is_in_subnet(IPv6Address subnet, u16 network_size) const
+    {
+        VERIFY(network_size <= 128);
+        return this->network(network_size) == subnet;
+    }
+
+    [[nodiscard]] constexpr IPv6Address network(u16 network_size) const
+    {
+        VERIFY(network_size <= 128);
+        IPv6Address net;
+        for (int i = 0; i < 16; ++i) {
+            if (network_size >= 8) {
+                net.m_data[i] = m_data[i];
+                network_size -= 8;
+            } else {
+                u8 mask = ((1 << network_size) - 1) << (8 - network_size);
+                net.m_data[i] = m_data[i] & mask;
+                break;
+            }
+        }
+        return net;
+    }
+
+    // https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.6
+    [[nodiscard]] constexpr bool is_link_local() const
+    {
+        return is_in_subnet({ { 0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }, 10);
+    }
+
+    // https://datatracker.ietf.org/doc/html/rfc4193
+    [[nodiscard]] constexpr bool is_unique_local() const
+    {
+        return is_in_subnet({ { 0xfc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }, 7);
+    }
+
+    // https://datatracker.ietf.org/doc/html/rfc2373#section-2.7
+    [[nodiscard]] constexpr bool is_multicast() const
+    {
+        return is_in_subnet({ { 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }, 8);
+    }
+    [[nodiscard]] constexpr bool is_unicast() const { return !is_multicast(); }
+
 private:
     constexpr u16 group(unsigned i) const
     {
@@ -264,19 +317,9 @@ private:
 static_assert(sizeof(IPv6Address) == 16);
 
 template<>
-struct Traits<IPv6Address> : public GenericTraits<IPv6Address> {
-    static constexpr unsigned hash(IPv6Address const& address)
-    {
-        unsigned h = 0;
-        for (int group = 0; group < 8; group += 2) {
-            u32 two_groups = ((u32)address[group] << 16) | (u32)address[group + 1];
-            if (group == 0)
-                h = int_hash(two_groups);
-            else
-                h = pair_int_hash(h, two_groups);
-        }
-        return h;
-    }
+struct Traits<IPv6Address> : public DefaultTraits<IPv6Address> {
+    // SipHash-4-8 is considered conservatively secure, even if not cryptographically secure.
+    static unsigned hash(IPv6Address const& address) { return sip_hash_bytes<4, 8>({ &address.to_in6_addr_t(), sizeof(address.to_in6_addr_t()) }); }
 };
 
 #ifdef KERNEL
@@ -292,7 +335,7 @@ template<>
 struct Formatter<IPv6Address> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, IPv6Address const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_deprecated_string());
+        return Formatter<StringView>::format(builder, TRY(value.to_string()));
     }
 };
 #endif

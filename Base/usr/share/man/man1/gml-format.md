@@ -14,10 +14,14 @@ $ gml-format [--inplace] [path...]
 
 ## Options
 
-* `-i`, `--inplace`: Write formatted contents back to file rather than standard output
+-   `-i`, `--inplace`: Write formatted contents back to file rather than standard output
 
 ## Examples
 
 ```sh
 $ gml-format -i /home/anon/example.gml
 ```
+
+## See Also
+
+-   [`GML`(5)](help://man/5/GML)

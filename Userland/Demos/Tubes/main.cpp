@@ -8,13 +8,12 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibGUI/Application.h>
-#include <LibGUI/Icon.h>
 #include <LibGUI/Window.h>
 #include <LibMain/Main.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath unix prot_exec"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath unix prot_exec map_fixed"));
 
     unsigned refresh_rate = 12;
 
@@ -23,14 +22,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(refresh_rate, "Refresh rate", "rate", 'r', "milliseconds");
     args_parser.parse(arguments);
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath prot_exec"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath prot_exec map_fixed"));
 
     auto window = TRY(Desktop::Screensaver::create_window("Tubes"sv, "app-tubes"sv));
     window->update();
 
-    auto tubes_widget = TRY(window->set_main_widget<Tubes>(refresh_rate));
+    auto tubes_widget = window->set_main_widget<Tubes>(refresh_rate);
     tubes_widget->set_fill_with_background_color(false);
     tubes_widget->set_override_cursor(Gfx::StandardCursor::Hidden);
     window->show();

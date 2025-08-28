@@ -6,32 +6,32 @@
 
 #include "GeneratorUtil.h"
 #include <AK/AnyOf.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/QuickSort.h>
 #include <AK/SourceGenerator.h>
 #include <AK/StringUtils.h>
 #include <AK/Types.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
-#include <LibCore/DirIterator.h>
 #include <LibCore/Directory.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibUnicode/Emoji.h>
 
 struct Emoji {
     size_t name { 0 };
     Optional<size_t> image_path;
     Unicode::EmojiGroup group;
-    DeprecatedString subgroup;
+    ByteString subgroup;
     u32 display_order { 0 };
     Vector<u32> code_points;
-    DeprecatedString encoded_code_points;
-    DeprecatedString status;
+    ByteString encoded_code_points;
+    ByteString status;
     size_t code_point_array_index { 0 };
 };
 
 struct EmojiData {
     UniqueStringStorage unique_strings;
     Vector<Emoji> emojis;
+    Vector<String> emoji_file_list;
 };
 
 static void set_image_path_for_emoji(StringView emoji_resource_path, EmojiData& emoji_data, Emoji& emoji)
@@ -46,15 +46,15 @@ static void set_image_path_for_emoji(StringView emoji_resource_path, EmojiData& 
         builder.appendff("U+{:X}", code_point);
     }
 
-    auto file = DeprecatedString::formatted("{}.png", builder.to_deprecated_string());
-    auto path = DeprecatedString::formatted("{}/{}", emoji_resource_path, file);
-    if (!Core::DeprecatedFile::exists(path))
+    auto file = ByteString::formatted("{}.png", builder.to_byte_string());
+    auto path = ByteString::formatted("{}/{}", emoji_resource_path, file);
+    if (!FileSystem::exists(path))
         return;
 
     emoji.image_path = emoji_data.unique_strings.ensure(move(file));
 }
 
-static ErrorOr<void> parse_emoji_test_data(Core::BufferedFile& file, EmojiData& emoji_data)
+static ErrorOr<void> parse_emoji_test_data(Core::InputBufferedFile& file, EmojiData& emoji_data)
 {
     static constexpr auto group_header = "# group: "sv;
     static constexpr auto subgroup_header = "# subgroup: "sv;
@@ -62,7 +62,7 @@ static ErrorOr<void> parse_emoji_test_data(Core::BufferedFile& file, EmojiData& 
     Array<u8, 1024> buffer;
 
     Unicode::EmojiGroup group;
-    DeprecatedString subgroup;
+    ByteString subgroup;
     u32 display_order { 0 };
 
     while (TRY(file.can_read_line())) {
@@ -118,7 +118,7 @@ static ErrorOr<void> parse_emoji_test_data(Core::BufferedFile& file, EmojiData& 
     return {};
 }
 
-static ErrorOr<void> parse_emoji_serenity_data(Core::BufferedFile& file, EmojiData& emoji_data)
+static ErrorOr<void> parse_emoji_serenity_data(Core::InputBufferedFile& file, EmojiData& emoji_data)
 {
     static constexpr auto code_point_header = "U+"sv;
 
@@ -158,7 +158,7 @@ static ErrorOr<void> parse_emoji_serenity_data(Core::BufferedFile& file, EmojiDa
             return {};
         }));
 
-        auto name = builder.to_deprecated_string();
+        auto name = builder.to_byte_string();
         if (!any_of(name, is_ascii_lower_alpha))
             name = name.to_titlecase();
 
@@ -169,25 +169,41 @@ static ErrorOr<void> parse_emoji_serenity_data(Core::BufferedFile& file, EmojiDa
     return {};
 }
 
+static ErrorOr<void> parse_emoji_file_list(Core::InputBufferedFile& file, EmojiData& emoji_data)
+{
+    HashTable<String> seen_emojis;
+    Array<u8, 1024> buffer;
+
+    while (TRY(file.can_read_line())) {
+        auto line = TRY(file.read_line(buffer));
+        if (line.is_empty())
+            continue;
+
+        if (seen_emojis.contains(line)) {
+            warnln("\x1b[1;31mError!\x1b[0m Duplicate emoji \x1b[35m{}\x1b[0m listed in emoji-file-list.txt.", line);
+            return Error::from_errno(EEXIST);
+        }
+
+        emoji_data.emoji_file_list.append(TRY(String::from_utf8(line)));
+        seen_emojis.set(emoji_data.emoji_file_list.last());
+    }
+
+    return {};
+}
+
 static ErrorOr<void> validate_emoji(StringView emoji_resource_path, EmojiData& emoji_data)
 {
-    Core::DirIterator iterator(emoji_resource_path, Core::DirIterator::SkipDots);
-
-    while (iterator.has_next()) {
-        auto filename = iterator.next_path();
-
-        auto lexical_path = LexicalPath(filename);
+    TRY(Core::Directory::for_each_entry(emoji_resource_path, Core::DirIterator::SkipDots, [&](auto& entry, auto&) -> ErrorOr<IterationDecision> {
+        auto lexical_path = LexicalPath(entry.name);
         if (lexical_path.extension() != "png")
-            continue;
+            return IterationDecision::Continue;
 
-        auto basename = lexical_path.basename();
-        if (!basename.starts_with("U+"sv))
-            continue;
-
-        basename = basename.substring_view(0, basename.length() - lexical_path.extension().length() - 1);
+        auto title = lexical_path.title();
+        if (!title.starts_with("U+"sv))
+            return IterationDecision::Continue;
 
         Vector<u32> code_points;
-        TRY(basename.for_each_split_view('_', SplitBehavior::Nothing, [&](auto segment) -> ErrorOr<void> {
+        TRY(title.for_each_split_view('_', SplitBehavior::Nothing, [&](auto segment) -> ErrorOr<void> {
             auto code_point = AK::StringUtils::convert_to_uint_from_hex<u32>(segment.substring_view(2));
             VERIFY(code_point.has_value());
 
@@ -200,30 +216,37 @@ static ErrorOr<void> validate_emoji(StringView emoji_resource_path, EmojiData& e
         });
 
         if (it == emoji_data.emojis.end()) {
-            warnln("\x1b[1;31mError!\x1b[0m Emoji data for \x1b[35m{}\x1b[0m not found. Please check emoji-test.txt and emoji-serenity.txt.", filename);
+            warnln("\x1b[1;31mError!\x1b[0m Emoji data for \x1b[35m{}\x1b[0m not found. Please check emoji-test.txt and emoji-serenity.txt.", entry.name);
             return Error::from_errno(ENOENT);
         }
-    }
+
+        if (!emoji_data.emoji_file_list.contains_slow(lexical_path.string().view())) {
+            warnln("\x1b[1;31mError!\x1b[0m Emoji entry for \x1b[35m{}\x1b[0m not found. Please check emoji-file-list.txt.", lexical_path);
+            return Error::from_errno(ENOENT);
+        }
+
+        return IterationDecision::Continue;
+    }));
 
     return {};
 }
 
-static ErrorOr<void> generate_emoji_data_header(Core::BufferedFile& file, EmojiData const&)
+static ErrorOr<void> generate_emoji_data_header(Core::InputBufferedFile& file, EmojiData const&)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
-static ErrorOr<void> generate_emoji_data_implementation(Core::BufferedFile& file, EmojiData const& emoji_data)
+static ErrorOr<void> generate_emoji_data_implementation(Core::InputBufferedFile& file, EmojiData const& emoji_data)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
 
     generator.set("string_index_type"sv, emoji_data.unique_strings.type_that_fits());
-    generator.set("emojis_size"sv, DeprecatedString::number(emoji_data.emojis.size()));
+    generator.set("emojis_size"sv, ByteString::number(emoji_data.emojis.size()));
 
     generator.append(R"~~~(
 #include <AK/Array.h>
@@ -243,7 +266,7 @@ namespace Unicode {
     for (auto const& emoji : emoji_data.emojis) {
         total_code_point_count += emoji.code_points.size();
     }
-    generator.set("total_code_point_count", DeprecatedString::number(total_code_point_count));
+    generator.set("total_code_point_count", ByteString::number(total_code_point_count));
 
     generator.append(R"~~~(
 static constexpr Array<u32, @total_code_point_count@> s_emoji_code_points { {)~~~");
@@ -252,7 +275,7 @@ static constexpr Array<u32, @total_code_point_count@> s_emoji_code_points { {)~~
     for (auto const& emoji : emoji_data.emojis) {
         for (auto code_point : emoji.code_points) {
             generator.append(first ? " "sv : ", "sv);
-            generator.append(DeprecatedString::formatted("{:#x}", code_point));
+            generator.append(ByteString::formatted("{:#x}", code_point));
             first = false;
         }
     }
@@ -293,12 +316,12 @@ struct EmojiData {
 static constexpr Array<EmojiData, @emojis_size@> s_emojis { {)~~~");
 
     for (auto const& emoji : emoji_data.emojis) {
-        generator.set("name"sv, DeprecatedString::number(emoji.name));
-        generator.set("image_path"sv, DeprecatedString::number(emoji.image_path.value_or(0)));
-        generator.set("group"sv, DeprecatedString::number(to_underlying(emoji.group)));
-        generator.set("display_order"sv, DeprecatedString::number(emoji.display_order));
-        generator.set("code_point_start"sv, DeprecatedString::number(emoji.code_point_array_index));
-        generator.set("code_point_count"sv, DeprecatedString::number(emoji.code_points.size()));
+        generator.set("name"sv, ByteString::number(emoji.name));
+        generator.set("image_path"sv, ByteString::number(emoji.image_path.value_or(0)));
+        generator.set("group"sv, ByteString::number(to_underlying(emoji.group)));
+        generator.set("display_order"sv, ByteString::number(emoji.display_order));
+        generator.set("code_point_start"sv, ByteString::number(emoji.code_point_array_index));
+        generator.set("code_point_count"sv, ByteString::number(emoji.code_points.size()));
 
         generator.append(R"~~~(
     { @name@, @image_path@, @group@, @display_order@, @code_point_start@, @code_point_count@ },)~~~");
@@ -334,11 +357,11 @@ Optional<Emoji> find_emoji_for_code_points(ReadonlySpan<u32> code_points)
 }
 )~~~");
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
-static ErrorOr<void> generate_emoji_installation(Core::BufferedFile& file, EmojiData const& emoji_data)
+static ErrorOr<void> generate_emoji_installation(Core::InputBufferedFile& file, EmojiData const& emoji_data)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -375,11 +398,11 @@ static ErrorOr<void> generate_emoji_installation(Core::BufferedFile& file, Emoji
 
         generator.append("@emoji@"sv);
         generator.append(" - "sv);
-        generator.append(DeprecatedString::join(" "sv, emoji.code_points, "U+{:X}"sv));
+        generator.append(ByteString::join(" "sv, emoji.code_points, "U+{:X}"sv));
         generator.append(" @name@ (@status@)\n"sv);
     }
 
-    TRY(file.write(generator.as_string_view().bytes()));
+    TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
 }
 
@@ -390,6 +413,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     StringView generated_installation_path;
     StringView emoji_test_path;
     StringView emoji_serenity_path;
+    StringView emoji_file_list_path;
     StringView emoji_resource_path;
 
     Core::ArgsParser args_parser;
@@ -398,19 +422,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(generated_installation_path, "Path to the emoji.txt file to generate", "generated-installation-path", 'i', "generated-installation-path");
     args_parser.add_option(emoji_test_path, "Path to emoji-test.txt file", "emoji-test-path", 'e', "emoji-test-path");
     args_parser.add_option(emoji_serenity_path, "Path to emoji-serenity.txt file", "emoji-serenity-path", 's', "emoji-serenity-path");
+    args_parser.add_option(emoji_file_list_path, "Path to the emoji-file-list.txt file", "emoji-file-list-path", 'f', "emoji-file-list-path");
     args_parser.add_option(emoji_resource_path, "Path to the /res/emoji directory", "emoji-resource-path", 'r', "emoji-resource-path");
     args_parser.parse(arguments);
 
-    VERIFY(!emoji_resource_path.is_empty() && Core::DeprecatedFile::exists(emoji_resource_path));
+    VERIFY(!emoji_resource_path.is_empty() && FileSystem::exists(emoji_resource_path));
 
     auto emoji_test_file = TRY(open_file(emoji_test_path, Core::File::OpenMode::Read));
 
     EmojiData emoji_data {};
     TRY(parse_emoji_test_data(*emoji_test_file, emoji_data));
 
-    if (!emoji_serenity_path.is_empty()) {
+    if (!emoji_serenity_path.is_empty() && !emoji_file_list_path.is_empty()) {
         auto emoji_serenity_file = TRY(open_file(emoji_serenity_path, Core::File::OpenMode::Read));
         TRY(parse_emoji_serenity_data(*emoji_serenity_file, emoji_data));
+
+        auto emoji_file_list_file = TRY(open_file(emoji_file_list_path, Core::File::OpenMode::Read));
+        TRY(parse_emoji_file_list(*emoji_file_list_file, emoji_data));
 
         TRY(validate_emoji(emoji_resource_path, emoji_data));
     }

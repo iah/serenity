@@ -12,6 +12,8 @@
 
 namespace Web::Fetch::Fetching {
 
+JS_DEFINE_ALLOCATOR(PendingResponse);
+
 JS::NonnullGCPtr<PendingResponse> PendingResponse::create(JS::VM& vm, JS::NonnullGCPtr<Infrastructure::Request> request)
 {
     return vm.heap().allocate_without_realm<PendingResponse>(request);
@@ -32,6 +34,7 @@ PendingResponse::PendingResponse(JS::NonnullGCPtr<Infrastructure::Request> reque
 void PendingResponse::visit_edges(JS::Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
+    visitor.visit(m_callback);
     visitor.visit(m_request);
     visitor.visit(m_response);
 }
@@ -39,7 +42,7 @@ void PendingResponse::visit_edges(JS::Cell::Visitor& visitor)
 void PendingResponse::when_loaded(Callback callback)
 {
     VERIFY(!m_callback);
-    m_callback = move(callback);
+    m_callback = JS::create_heap_function(heap(), move(callback));
     if (m_response)
         run_callback();
 }
@@ -56,9 +59,11 @@ void PendingResponse::run_callback()
 {
     VERIFY(m_callback);
     VERIFY(m_response);
-    Platform::EventLoopPlugin::the().deferred_invoke([strong_this = JS::make_handle(*this)] {
-        strong_this->m_callback(*strong_this->m_response);
-        strong_this->m_request->remove_pending_response({}, *strong_this.ptr());
+    Platform::EventLoopPlugin::the().deferred_invoke([this] {
+        VERIFY(m_callback);
+        VERIFY(m_response);
+        m_callback->function()(*m_response);
+        m_request->remove_pending_response({}, *this);
     });
 }
 

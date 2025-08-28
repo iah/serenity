@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/DirIterator.h>
@@ -21,7 +20,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath chown"));
 
-    DeprecatedString spec;
+    StringView spec;
     Vector<StringView> paths;
     bool no_dereference = false;
     bool recursive = false;
@@ -45,7 +44,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    auto number = parts[0].to_uint();
+    auto number = parts[0].to_number<uid_t>();
     if (number.has_value()) {
         new_uid = number.value();
     } else {
@@ -58,7 +57,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     if (parts.size() == 2) {
-        auto number = parts[1].to_uint();
+        auto number = parts[1].to_number<gid_t>();
         if (number.has_value()) {
             new_gid = number.value();
         } else {
@@ -71,31 +70,42 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
     }
 
-    Function<ErrorOr<void>(StringView)> update_path_owner = [&](StringView path) -> ErrorOr<void> {
-        auto stat = TRY(Core::System::lstat(path));
+    Function<bool(StringView)> update_path_owner = [&](StringView path) {
+        auto stat_or_error = Core::System::lstat(path);
+        if (stat_or_error.is_error()) {
+            warnln("Could not stat '{}': {}", path, stat_or_error.release_error());
+            return false;
+        }
+
+        auto stat = stat_or_error.release_value();
 
         if (S_ISLNK(stat.st_mode) && !follow_symlinks && !paths.contains_slow(path))
-            return {};
+            return false;
 
-        if (no_dereference) {
-            TRY(Core::System::lchown(path, new_uid, new_gid));
-        } else {
-            TRY(Core::System::chown(path, new_uid, new_gid));
+        auto success = true;
+        auto maybe_error = no_dereference
+            ? Core::System::lchown(path, new_uid, new_gid)
+            : Core::System::chown(path, new_uid, new_gid);
+
+        if (maybe_error.is_error()) {
+            warnln("Failed to change owner of '{}': {}", path, maybe_error.release_error());
+            success = false;
         }
 
         if (recursive && S_ISDIR(stat.st_mode)) {
             Core::DirIterator it(path, Core::DirIterator::Flags::SkipParentAndBaseDir);
 
             while (it.has_next())
-                TRY(update_path_owner(it.next_full_path()));
+                success &= update_path_owner(it.next_full_path());
         }
 
-        return {};
+        return success;
     };
 
-    for (auto path : paths) {
-        TRY(update_path_owner(path));
+    auto success = true;
+    for (auto const& path : paths) {
+        success &= update_path_owner(path);
     }
 
-    return 0;
+    return success ? 0 : 1;
 }

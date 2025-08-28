@@ -23,6 +23,7 @@ using HeadersInit = Variant<Vector<Vector<String>>, OrderedHashMap<String, Strin
 // https://fetch.spec.whatwg.org/#headers-class
 class Headers final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(Headers, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(Headers);
 
 public:
     enum class Guard {
@@ -50,7 +51,7 @@ public:
     WebIDL::ExceptionOr<void> append(String const& name, String const& value);
     WebIDL::ExceptionOr<void> delete_(String const& name);
     WebIDL::ExceptionOr<Optional<String>> get(String const& name);
-    WebIDL::ExceptionOr<Vector<String>> get_set_cookie();
+    [[nodiscard]] Vector<String> get_set_cookie();
     WebIDL::ExceptionOr<bool> has(String const& name);
     WebIDL::ExceptionOr<void> set(String const& name, String const& value);
 
@@ -62,7 +63,7 @@ private:
 
     Headers(JS::Realm&, JS::NonnullGCPtr<Infrastructure::HeaderList>);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
     WebIDL::ExceptionOr<bool> validate(Infrastructure::Header const&) const;

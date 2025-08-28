@@ -4,28 +4,23 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/Result.h>
 #include <AK/Types.h>
 #include <bits/dlfcn_integration.h>
 #include <dlfcn.h>
 #include <string.h>
 
-// These are filled in by the dynamic loader.
-DlCloseFunction __dlclose;
-DlOpenFunction __dlopen;
-DlSymFunction __dlsym;
-DlAddrFunction __dladdr;
+[[gnu::weak]] Result<void, DlErrorMessage> __dlclose(void*) asm("__dlclose");
+[[gnu::weak]] Result<void*, DlErrorMessage> __dlopen(char const*, int) asm("__dlopen");
+[[gnu::weak]] Result<void*, DlErrorMessage> __dlsym(void*, char const*) asm("__dlsym");
+[[gnu::weak]] Result<void, DlErrorMessage> __dladdr(void const*, Dl_info*) asm("__dladdr");
 
 // FIXME: use thread_local and a String once TLS works
-#ifdef NO_TLS
-char* s_dlerror_text = NULL;
-bool s_dlerror_retrieved = false;
-#else
-__thread char* s_dlerror_text = NULL;
-__thread bool s_dlerror_retrieved = false;
-#endif
+static __thread char* s_dlerror_text = NULL;
+static __thread bool s_dlerror_retrieved = false;
 
-static void store_error(DeprecatedString const& error)
+static void store_error(ByteString const& error)
 {
     free(s_dlerror_text);
     s_dlerror_text = strdup(error.characters());
@@ -72,7 +67,7 @@ void* dlsym(void* handle, char const* symbol_name)
     return result.value();
 }
 
-int dladdr(void* addr, Dl_info* info)
+int dladdr(void const* addr, Dl_info* info)
 {
     auto result = __dladdr(addr, info);
     if (result.is_error()) {

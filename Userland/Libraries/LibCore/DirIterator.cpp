@@ -8,10 +8,12 @@
 #include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 namespace Core {
 
-DirIterator::DirIterator(DeprecatedString path, Flags flags)
+DirIterator::DirIterator(ByteString path, Flags flags)
     : m_path(move(path))
     , m_flags(flags)
 {
@@ -39,6 +41,13 @@ DirIterator::DirIterator(DirIterator&& other)
     other.m_dir = nullptr;
 }
 
+static constexpr bool dirent_has_d_type =
+#if defined(AK_OS_SOLARIS) || defined(AK_OS_HAIKU)
+    false;
+#else
+    true;
+#endif
+
 bool DirIterator::advance_next()
 {
     if (!m_dir)
@@ -48,12 +57,18 @@ bool DirIterator::advance_next()
         errno = 0;
         auto* de = readdir(m_dir);
         if (!de) {
-            m_error = Error::from_errno(errno);
+            if (errno != 0) {
+                m_error = Error::from_errno(errno);
+                dbgln("DirIteration error: {}", m_error.value());
+            }
             m_next.clear();
             return false;
         }
 
-        m_next = DirectoryEntry::from_dirent(*de);
+        if constexpr (dirent_has_d_type)
+            m_next = DirectoryEntry::from_dirent(*de);
+        else
+            m_next = DirectoryEntry::from_stat(m_dir, *de);
 
         if (m_next->name.is_empty())
             return false;
@@ -63,6 +78,22 @@ bool DirIterator::advance_next()
 
         if (m_flags & Flags::SkipParentAndBaseDir && (m_next->name == "." || m_next->name == ".."))
             continue;
+
+        if constexpr (dirent_has_d_type) {
+            // dirent structures from readdir aren't guaranteed to contain valid file types,
+            // as it is possible that the underlying filesystem doesn't keep track of those.
+            // However, if we were requested to not do stat on the entries of this directory,
+            // the calling code will be given the raw unknown type.
+            if ((m_flags & Flags::NoStat) == 0 && m_next->type == DirectoryEntry::Type::Unknown) {
+                struct stat statbuf;
+                if (fstatat(dirfd(m_dir), de->d_name, &statbuf, AT_SYMLINK_NOFOLLOW) < 0) {
+                    m_error = Error::from_errno(errno);
+                    dbgln("DirIteration error: {}", m_error.value());
+                    return false;
+                }
+                m_next->type = DirectoryEntry::directory_entry_type_from_stat(statbuf.st_mode);
+            }
+        }
 
         return !m_next->name.is_empty();
     }
@@ -86,7 +117,7 @@ Optional<DirectoryEntry> DirIterator::next()
     return result;
 }
 
-DeprecatedString DirIterator::next_path()
+ByteString DirIterator::next_path()
 {
     auto entry = next();
     if (entry.has_value())
@@ -94,14 +125,14 @@ DeprecatedString DirIterator::next_path()
     return "";
 }
 
-DeprecatedString DirIterator::next_full_path()
+ByteString DirIterator::next_full_path()
 {
     StringBuilder builder;
     builder.append(m_path);
     if (!m_path.ends_with('/'))
         builder.append('/');
     builder.append(next_path());
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 int DirIterator::fd() const

@@ -9,19 +9,20 @@
 #pragma once
 
 #include <AK/Assertions.h>
+#include <AK/ByteString.h>
 #include <AK/Concepts.h>
-#include <AK/DeprecatedString.h>
 #include <AK/RefCounted.h>
-#include <Kernel/VirtualAddress.h>
-#include <LibC/elf.h>
-#include <LibC/link.h>
+#include <Kernel/Memory/VirtualAddress.h>
+#include <LibELF/Arch/GenericDynamicRelocationType.h>
+#include <LibELF/ELFABI.h>
+#include <link.h>
 
 namespace ELF {
 
 class DynamicObject : public RefCounted<DynamicObject> {
 public:
-    static NonnullRefPtr<DynamicObject> create(DeprecatedString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address);
-    static char const* name_for_dtag(ElfW(Sword) d_tag);
+    static NonnullRefPtr<DynamicObject> create(ByteString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address);
+    static char const* name_for_dtag(Elf_Sword d_tag);
 
     ~DynamicObject();
     void dump() const;
@@ -35,24 +36,24 @@ public:
 
     class DynamicEntry {
     public:
-        explicit DynamicEntry(const ElfW(Dyn) & dyn)
+        explicit DynamicEntry(Elf_Dyn const& dyn)
             : m_dyn(dyn)
         {
         }
 
         ~DynamicEntry() = default;
 
-        ElfW(Sword) tag() const { return m_dyn.d_tag; }
-        ElfW(Addr) ptr() const { return m_dyn.d_un.d_ptr; }
-        ElfW(Word) val() const { return m_dyn.d_un.d_val; }
+        Elf_Sword tag() const { return m_dyn.d_tag; }
+        Elf_Addr ptr() const { return m_dyn.d_un.d_ptr; }
+        Elf_Word val() const { return m_dyn.d_un.d_val; }
 
     private:
-        const ElfW(Dyn) & m_dyn;
+        Elf_Dyn const& m_dyn;
     };
 
     class Symbol {
     public:
-        Symbol(DynamicObject const& dynamic, unsigned index, const ElfW(Sym) & sym)
+        Symbol(DynamicObject const& dynamic, unsigned index, Elf_Sym const& sym)
             : m_dynamic(dynamic)
             , m_sym(sym)
             , m_index(index)
@@ -84,9 +85,15 @@ public:
         }
         DynamicObject const& object() const { return m_dynamic; }
 
+        // This might return false even if the two Symbol objects resolve to the same thing.
+        bool definitely_equals(Symbol const& other) const
+        {
+            return &m_dynamic == &other.m_dynamic && &m_sym == &other.m_sym && m_index == other.m_index;
+        }
+
     private:
         DynamicObject const& m_dynamic;
-        const ElfW(Sym) & m_sym;
+        Elf_Sym const& m_sym;
         unsigned const m_index;
     };
 
@@ -147,7 +154,7 @@ public:
 
     class Relocation {
     public:
-        Relocation(DynamicObject const& dynamic, const ElfW(Rela) & rel, unsigned offset_in_section, bool addend_used)
+        Relocation(DynamicObject const& dynamic, Elf_Rela const& rel, unsigned offset_in_section, bool addend_used)
             : m_dynamic(dynamic)
             , m_rel(rel)
             , m_offset_in_section(offset_in_section)
@@ -185,7 +192,7 @@ public:
 
     private:
         DynamicObject const& m_dynamic;
-        const ElfW(Rela) & m_rel;
+        Elf_Rela const& m_rel;
         unsigned const m_offset_in_section;
         bool const m_addend_used;
     };
@@ -239,14 +246,21 @@ public:
     Symbol symbol(unsigned) const;
 
     typedef void (*InitializationFunction)();
-    typedef ElfW(Addr) (*IfuncResolver)();
+    typedef void (*FinalizationFunction)();
+    typedef Elf_Addr (*IfuncResolver)();
 
     bool has_init_section() const { return m_init_offset != 0; }
     bool has_init_array_section() const { return m_init_array_offset != 0; }
     Section init_section() const;
     InitializationFunction init_section_function() const;
-    Section fini_section() const;
     Section init_array_section() const;
+
+    bool is_pie() const { return m_is_pie; }
+
+    bool has_fini_section() const { return m_fini_offset != 0; }
+    bool has_fini_array_section() const { return m_fini_array_offset != 0; }
+    Section fini_section() const;
+    FinalizationFunction fini_section_function() const;
     Section fini_array_section() const;
 
     HashSection hash_section() const
@@ -271,7 +285,7 @@ public:
     VirtualAddress plt_got_base_address() const { return m_base_address.offset(m_procedure_linkage_table_offset.value()); }
     VirtualAddress base_address() const { return m_base_address; }
 
-    DeprecatedString const& filepath() const { return m_filepath; }
+    ByteString const& filepath() const { return m_filepath; }
 
     StringView rpath() const { return m_has_rpath ? symbol_string_table_string(m_rpath_index) : StringView {}; }
     StringView runpath() const { return m_has_runpath ? symbol_string_table_string(m_runpath_index) : StringView {}; }
@@ -282,8 +296,8 @@ public:
     void set_tls_offset(FlatPtr offset) { m_tls_offset = offset; }
     void set_tls_size(FlatPtr size) { m_tls_size = size; }
 
-    ElfW(Half) program_header_count() const;
-    const ElfW(Phdr) * program_headers() const;
+    Elf_Half program_header_count() const;
+    Elf_Phdr const* program_headers() const;
 
     template<VoidFunction<StringView> F>
     void for_each_needed_library(F) const;
@@ -314,21 +328,18 @@ public:
     Optional<SymbolLookupResult> lookup_symbol(StringView name) const;
     Optional<SymbolLookupResult> lookup_symbol(HashSymbol const& symbol) const;
 
-    // Will be called from _fixup_plt_entry, as part of the PLT trampoline
-    VirtualAddress patch_plt_entry(u32 relocation_offset);
-
     bool elf_is_dynamic() const { return m_is_elf_dynamic; }
 
     void* symbol_for_name(StringView name);
 
 private:
-    explicit DynamicObject(DeprecatedString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address);
+    explicit DynamicObject(ByteString const& filepath, VirtualAddress base_address, VirtualAddress dynamic_section_address);
 
-    StringView symbol_string_table_string(ElfW(Word)) const;
-    char const* raw_symbol_string_table_string(ElfW(Word)) const;
+    StringView symbol_string_table_string(Elf_Word) const;
+    char const* raw_symbol_string_table_string(Elf_Word) const;
     void parse();
 
-    DeprecatedString m_filepath;
+    ByteString m_filepath;
 
     VirtualAddress m_base_address;
     VirtualAddress m_dynamic_address;
@@ -353,7 +364,7 @@ private:
     FlatPtr m_symbol_table_offset { 0 };
     size_t m_size_of_symbol_table_entry { 0 };
 
-    ElfW(Sword) m_procedure_linkage_table_relocation_type { -1 };
+    Elf_Sword m_procedure_linkage_table_relocation_type { -1 };
     FlatPtr m_plt_relocation_offset_location { 0 }; // offset of PLT relocations, at end of relocations
     size_t m_size_of_plt_relocation_entry_list { 0 };
     Optional<FlatPtr> m_procedure_linkage_table_offset;
@@ -370,15 +381,17 @@ private:
     FlatPtr m_relr_relocation_table_offset { 0 };
     bool m_is_elf_dynamic { false };
 
+    bool m_is_pie { false };
+
     // DT_FLAGS
-    ElfW(Word) m_dt_flags { 0 };
+    Elf_Word m_dt_flags { 0 };
 
     bool m_has_soname { false };
-    ElfW(Word) m_soname_index { 0 }; // Index into dynstr table for SONAME
+    Elf_Word m_soname_index { 0 }; // Index into dynstr table for SONAME
     bool m_has_rpath { false };
-    ElfW(Word) m_rpath_index { 0 }; // Index into dynstr table for RPATH
+    Elf_Word m_rpath_index { 0 }; // Index into dynstr table for RPATH
     bool m_has_runpath { false };
-    ElfW(Word) m_runpath_index { 0 }; // Index into dynstr table for RUNPATH
+    Elf_Word m_runpath_index { 0 }; // Index into dynstr table for RUNPATH
 
     Optional<FlatPtr> m_tls_offset;
     Optional<FlatPtr> m_tls_size;
@@ -390,7 +403,7 @@ inline void DynamicObject::RelocationSection::for_each_relocation(F func) const
 {
     for (unsigned i = 0; i < relocation_count(); ++i) {
         auto const reloc = relocation(i);
-        if (reloc.type() == 0)
+        if (static_cast<GenericDynamicRelocationType>(reloc.type()) == GenericDynamicRelocationType::NONE)
             continue;
         if (func(reloc) == IterationDecision::Break)
             break;
@@ -416,7 +429,7 @@ inline void DynamicObject::for_each_relr_relocation(F f) const
     VERIFY(section.entry_size() == sizeof(FlatPtr));
     VERIFY(section.size() >= section.entry_size() * section.entry_count());
 
-    auto* entries = reinterpret_cast<ElfW(Relr)*>(section.address().get());
+    auto* entries = reinterpret_cast<Elf_Relr*>(section.address().get());
     auto base = base_address().get();
     FlatPtr patch_addr = 0;
     for (unsigned i = 0; i < section.entry_count(); ++i) {
@@ -446,7 +459,7 @@ inline void DynamicObject::for_each_symbol(F func) const
 template<IteratorFunction<DynamicObject::DynamicEntry&> F>
 inline void DynamicObject::for_each_dynamic_entry(F func) const
 {
-    auto* dyns = reinterpret_cast<const ElfW(Dyn)*>(m_dynamic_address.as_ptr());
+    auto* dyns = reinterpret_cast<Elf_Dyn const*>(m_dynamic_address.as_ptr());
     for (unsigned i = 0;; ++i) {
         auto&& dyn = DynamicEntry(dyns[i]);
         if (dyn.tag() == DT_NULL)
@@ -471,7 +484,7 @@ inline void DynamicObject::for_each_needed_library(F func) const
     for_each_dynamic_entry([func, this](auto entry) {
         if (entry.tag() != DT_NEEDED)
             return;
-        ElfW(Word) offset = entry.val();
+        Elf_Word offset = entry.val();
         func(symbol_string_table_string(offset));
     });
 }

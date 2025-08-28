@@ -25,19 +25,19 @@ public:
     virtual void on_mousemove(Layer*, MouseEvent& event) override;
     virtual bool on_keydown(GUI::KeyEvent&) override;
     virtual void on_second_paint(Layer const*, GUI::PaintEvent&) override;
-    virtual ErrorOr<GUI::Widget*> get_properties_widget() override;
+    virtual NonnullRefPtr<GUI::Widget> get_properties_widget() override;
+    virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() override { return Gfx::StandardCursor::Crosshair; }
 
 private:
     virtual StringView tool_name() const override { return "Lasso Select Tool"sv; }
-    void flood_lasso_selection(Gfx::Bitmap&, Gfx::IntPoint);
+    void flood_lasso_selection(Gfx::Bitmap&);
 
     RefPtr<GUI::Widget> m_properties_widget;
     Selection::MergeMode m_merge_mode { Selection::MergeMode::Set };
 
     Gfx::IntPoint m_start_position;
     Gfx::IntPoint m_most_recent_position;
-    RefPtr<Gfx::Bitmap> m_selection_bitmap;
-    Vector<Gfx::IntPoint> m_preview_coords;
+    Vector<Gfx::IntPoint> m_path_points;
 
     Gfx::IntPoint m_top_left;
     Gfx::IntPoint m_bottom_right;

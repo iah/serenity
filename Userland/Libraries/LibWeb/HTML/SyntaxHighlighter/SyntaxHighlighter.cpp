@@ -7,21 +7,12 @@
 
 #include <AK/Debug.h>
 #include <LibJS/SyntaxHighlighter.h>
+#include <LibJS/Token.h>
 #include <LibWeb/CSS/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/HTML/Parser/HTMLTokenizer.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 
 namespace Web::HTML {
-
-enum class AugmentedTokenKind : u32 {
-    AttributeName,
-    AttributeValue,
-    OpenTag,
-    CloseTag,
-    Comment,
-    Doctype,
-    __Count,
-};
 
 bool SyntaxHighlighter::is_identifier(u64 token) const
 {
@@ -42,8 +33,8 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
     clear_nested_token_pairs();
 
     // FIXME: Add folding regions for start and end tags.
-    Vector<GUI::TextDocumentFoldingRegion> folding_regions;
-    Vector<GUI::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentFoldingRegion> folding_regions;
+    Vector<Syntax::TextDocumentSpan> spans;
     auto highlight = [&](auto start_line, auto start_column, auto end_line, auto end_column, Gfx::TextAttributes attributes, AugmentedTokenKind kind) {
         if (start_line > end_line || (start_line == end_line && start_column >= end_column)) {
             dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "(HTML::SyntaxHighlighter) discarding ({}-{}) to ({}-{}) because it has zero or negative length", start_line, start_column, end_line, end_column);
@@ -51,7 +42,7 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         }
         dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "(HTML::SyntaxHighlighter) highlighting ({}-{}) to ({}-{}) with color {}", start_line, start_column, end_line, end_column, attributes.color);
         spans.empend(
-            GUI::TextRange {
+            Syntax::TextRange {
                 { start_line, start_column },
                 { end_line, end_column },
             },
@@ -67,13 +58,13 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         CSS,
     } state { State::HTML };
     StringBuilder substring_builder;
-    GUI::TextPosition substring_start_position;
+    Syntax::TextPosition substring_start_position;
 
     for (;;) {
         auto token = tokenizer.next_token();
         if (!token.has_value() || token.value().is_end_of_file())
             break;
-        dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "(HTML::SyntaxHighlighter) got token of type {}", token->to_deprecated_string());
+        dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "(HTML::SyntaxHighlighter) got token of type {}", token->to_string());
 
         if (token->is_start_tag()) {
             if (token->tag_name() == "script"sv) {
@@ -88,10 +79,11 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
         } else if (token->is_end_tag()) {
             if (token->tag_name().is_one_of("script"sv, "style"sv)) {
                 if (state == State::Javascript) {
+                    VERIFY(static_cast<u64>(AugmentedTokenKind::__Count) + first_free_token_kind_serial_value() < JS_TOKEN_START_VALUE);
                     Syntax::ProxyHighlighterClient proxy_client {
                         *m_client,
                         substring_start_position,
-                        static_cast<u64>(AugmentedTokenKind::__Count) + first_free_token_kind_serial_value(),
+                        JS_TOKEN_START_VALUE,
                         substring_builder.string_view()
                     };
                     {
@@ -106,10 +98,11 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
                     folding_regions.extend(proxy_client.corrected_folding_regions());
                     substring_builder.clear();
                 } else if (state == State::CSS) {
+                    VERIFY(static_cast<u64>(AugmentedTokenKind::__Count) + first_free_token_kind_serial_value() + static_cast<u64>(JS::TokenType::_COUNT_OF_TOKENS) < CSS_TOKEN_START_VALUE);
                     Syntax::ProxyHighlighterClient proxy_client {
                         *m_client,
                         substring_start_position,
-                        static_cast<u64>(AugmentedTokenKind::__Count) + first_free_token_kind_serial_value(),
+                        CSS_TOKEN_START_VALUE,
                         substring_builder.string_view()
                     };
                     {
@@ -132,8 +125,6 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
             continue;
         }
 
-        size_t token_start_offset = token->is_end_tag() ? 1 : 0;
-
         if (token->is_comment()) {
             highlight(
                 token->start_position().line,
@@ -143,32 +134,32 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
                 { palette.syntax_comment(), {} },
                 AugmentedTokenKind::Comment);
 
-            GUI::TextDocumentFoldingRegion region;
+            Syntax::TextDocumentFoldingRegion region;
             region.range.set_start({ token->start_position().line, token->start_position().column + comment_prefix()->length() });
             region.range.set_end({ token->end_position().line, token->end_position().column - comment_suffix()->length() });
             folding_regions.append(move(region));
         } else if (token->is_start_tag() || token->is_end_tag()) {
             highlight(
                 token->start_position().line,
-                token->start_position().column + token_start_offset,
+                token->start_position().column,
                 token->start_position().line,
-                token->start_position().column + token_start_offset + token->tag_name().length(),
-                { palette.syntax_keyword(), {}, false, true },
+                token->start_position().column + token->tag_name().bytes().size(),
+                { palette.syntax_keyword(), {}, true },
                 token->is_start_tag() ? AugmentedTokenKind::OpenTag : AugmentedTokenKind::CloseTag);
 
             token->for_each_attribute([&](auto& attribute) {
                 highlight(
                     attribute.name_start_position.line,
-                    attribute.name_start_position.column + token_start_offset,
+                    attribute.name_start_position.column,
                     attribute.name_end_position.line,
-                    attribute.name_end_position.column + token_start_offset,
+                    attribute.name_end_position.column,
                     { palette.syntax_identifier(), {} },
                     AugmentedTokenKind::AttributeName);
                 highlight(
                     attribute.value_start_position.line,
-                    attribute.value_start_position.column + token_start_offset,
+                    attribute.value_start_position.column,
                     attribute.value_end_position.line,
-                    attribute.value_end_position.column + token_start_offset,
+                    attribute.value_end_position.column,
                     { palette.syntax_string(), {} },
                     AugmentedTokenKind::AttributeValue);
                 return IterationDecision::Continue;

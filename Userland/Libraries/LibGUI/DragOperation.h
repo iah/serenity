@@ -8,14 +8,14 @@
 #pragma once
 
 #include <AK/OwnPtr.h>
+#include <LibCore/EventReceiver.h>
 #include <LibCore/MimeData.h>
-#include <LibCore/Object.h>
 #include <LibGUI/Forward.h>
 #include <LibGfx/Forward.h>
 
 namespace GUI {
 
-class DragOperation : public Core::Object {
+class DragOperation : public Core::EventReceiver {
     C_OBJECT(DragOperation)
 public:
     enum class Outcome {
@@ -27,9 +27,9 @@ public:
     virtual ~DragOperation() override = default;
 
     void set_mime_data(RefPtr<Core::MimeData> mime_data) { m_mime_data = move(mime_data); }
-    void set_text(DeprecatedString const& text);
+    void set_text(ByteString const& text);
     void set_bitmap(Gfx::Bitmap const* bitmap);
-    void set_data(DeprecatedString const& data_type, DeprecatedString const& data);
+    void set_data(String const& data_type, ByteString const& data);
 
     Outcome exec();
     Outcome outcome() const { return m_outcome; }
@@ -38,7 +38,7 @@ public:
     static void notify_cancelled(Badge<ConnectionToWindowServer>);
 
 protected:
-    explicit DragOperation(Core::Object* parent = nullptr);
+    explicit DragOperation(Core::EventReceiver* parent = nullptr);
 
 private:
     void done(Outcome);

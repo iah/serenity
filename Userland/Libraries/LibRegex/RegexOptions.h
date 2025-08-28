@@ -6,13 +6,9 @@
 
 #pragma once
 
+#include "RegexDefs.h"
 #include <AK/Types.h>
 #include <stdio.h>
-#ifdef AK_OS_SERENITY
-#    include <bits/regex_defs.h>
-#else
-#    include <LibC/bits/regex_defs.h>
-#endif
 
 namespace regex {
 
@@ -116,7 +112,7 @@ public:
     void reset_flag(T flag) { m_flags = (T)((FlagsUnderlyingType)m_flags & ~(FlagsUnderlyingType)flag); }
     void set_flag(T flag) { *this |= flag; }
     bool has_flag_set(T flag) const { return (FlagsUnderlyingType)flag == ((FlagsUnderlyingType)m_flags & (FlagsUnderlyingType)flag); }
-    T value() const { return m_flags; }
+    constexpr T value() const { return m_flags; }
 
 private:
     T m_flags { T::Default };

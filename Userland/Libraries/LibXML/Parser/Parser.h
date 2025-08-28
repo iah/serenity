@@ -6,8 +6,8 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Function.h>
 #include <AK/GenericLexer.h>
 #include <AK/HashMap.h>
@@ -21,18 +21,23 @@
 
 namespace XML {
 
+struct Expectation {
+    StringView expected;
+};
+
 struct ParseError {
-    size_t offset;
-    DeprecatedString error;
+    LineTrackingLexer::Position position {};
+    Variant<ByteString, Expectation> error;
 };
 
 struct Listener {
     virtual ~Listener() { }
 
-    virtual void set_source(DeprecatedString) { }
+    virtual void set_source(ByteString) { }
+    virtual void set_doctype(XML::Doctype) { }
     virtual void document_start() { }
     virtual void document_end() { }
-    virtual void element_start(Name const&, HashMap<Name, DeprecatedString> const&) { }
+    virtual void element_start(Name const&, HashMap<Name, ByteString> const&) { }
     virtual void element_end(Name const&) { }
     virtual void text(StringView) { }
     virtual void comment(StringView) { }
@@ -45,7 +50,7 @@ public:
         bool preserve_cdata { true };
         bool preserve_comments { false };
         bool treat_errors_as_fatal { true };
-        Function<ErrorOr<DeprecatedString>(SystemID const&, Optional<PublicID> const&)> resolve_external_resource {};
+        Function<ErrorOr<Variant<ByteString, Vector<MarkupDeclaration>>>(SystemID const&, Optional<PublicID> const&)> resolve_external_resource {};
     };
 
     Parser(StringView source, Options options)
@@ -66,6 +71,8 @@ public:
 
     Vector<ParseError> const& parse_error_causes() const { return m_parse_errors; }
 
+    ErrorOr<Vector<MarkupDeclaration>, ParseError> parse_external_subset();
+
 private:
     struct EntityReference {
         Name name;
@@ -73,8 +80,8 @@ private:
 
     ErrorOr<void, ParseError> parse_internal();
     void append_node(NonnullOwnPtr<Node>);
-    void append_text(StringView);
-    void append_comment(StringView);
+    void append_text(StringView, LineTrackingLexer::Position);
+    void append_comment(StringView, LineTrackingLexer::Position);
     void enter_node(Node&);
     void leave_node();
 
@@ -82,7 +89,7 @@ private:
         AttributeValue,
         Content,
     };
-    ErrorOr<DeprecatedString, ParseError> resolve_reference(EntityReference const&, ReferencePlacement);
+    ErrorOr<ByteString, ParseError> resolve_reference(EntityReference const&, ReferencePlacement);
 
     enum class Required {
         No,
@@ -108,12 +115,12 @@ private:
     ErrorOr<Name, ParseError> parse_end_tag();
     ErrorOr<void, ParseError> parse_content();
     ErrorOr<Attribute, ParseError> parse_attribute();
-    ErrorOr<DeprecatedString, ParseError> parse_attribute_value();
-    ErrorOr<Variant<EntityReference, DeprecatedString>, ParseError> parse_reference();
+    ErrorOr<ByteString, ParseError> parse_attribute_value();
+    ErrorOr<Variant<EntityReference, ByteString>, ParseError> parse_reference();
     ErrorOr<StringView, ParseError> parse_char_data();
     ErrorOr<Vector<MarkupDeclaration>, ParseError> parse_internal_subset();
     ErrorOr<Optional<MarkupDeclaration>, ParseError> parse_markup_declaration();
-    ErrorOr<Optional<DeprecatedString>, ParseError> parse_declaration_separator();
+    ErrorOr<Optional<ByteString>, ParseError> parse_declaration_separator();
     ErrorOr<Vector<MarkupDeclaration>, ParseError> parse_external_subset_declaration();
     ErrorOr<ElementDeclaration, ParseError> parse_element_declaration();
     ErrorOr<AttributeListDeclaration, ParseError> parse_attribute_list_declaration();
@@ -128,20 +135,19 @@ private:
     ErrorOr<PublicID, ParseError> parse_public_id();
     ErrorOr<SystemID, ParseError> parse_system_id();
     ErrorOr<ExternalID, ParseError> parse_external_id();
-    ErrorOr<DeprecatedString, ParseError> parse_entity_value();
+    ErrorOr<ByteString, ParseError> parse_entity_value();
     ErrorOr<Name, ParseError> parse_notation_data_declaration();
     ErrorOr<StringView, ParseError> parse_public_id_literal();
     ErrorOr<StringView, ParseError> parse_system_id_literal();
     ErrorOr<StringView, ParseError> parse_cdata_section();
-    ErrorOr<DeprecatedString, ParseError> parse_attribute_value_inner(StringView disallow);
-    ErrorOr<Vector<MarkupDeclaration>, ParseError> parse_external_subset();
+    ErrorOr<ByteString, ParseError> parse_attribute_value_inner(StringView disallow);
     ErrorOr<void, ParseError> parse_text_declaration();
 
     ErrorOr<void, ParseError> expect(StringView);
     template<typename Pred>
     requires(IsCallableWithArguments<Pred, bool, char>) ErrorOr<StringView, ParseError> expect(Pred, StringView description);
     template<typename Pred>
-    requires(IsCallableWithArguments<Pred, bool, char>) ErrorOr<StringView, ParseError> expect_many(Pred, StringView description);
+    requires(IsCallableWithArguments<Pred, bool, char>) ErrorOr<StringView, ParseError> expect_many(Pred, StringView description, bool allow_empty = false);
 
     static size_t s_debug_indent_level;
     [[nodiscard]] auto rollback_point(SourceLocation location = SourceLocation::current())
@@ -180,19 +186,23 @@ private:
     {
         auto error = ParseError { forward<Ts>(args)... };
         if (m_current_rule.accept) {
-            auto rule_name = m_current_rule.rule.value_or("<?>");
+            auto rule_name = m_current_rule.rule.value_or("<?>"sv);
             if (rule_name.starts_with("parse_"sv))
                 rule_name = rule_name.substring_view(6);
+
+            auto error_string = error.error.visit(
+                [](ByteString const& error) -> ByteString { return error; },
+                [](XML::Expectation const& expectation) -> ByteString { return ByteString::formatted("Expected {}", expectation.expected); });
             m_parse_errors.append({
-                error.offset,
-                DeprecatedString::formatted("{}: {}", rule_name, error.error),
+                error.position,
+                ByteString::formatted("{}: {}", rule_name, error_string),
             });
         }
         return error;
     }
 
     StringView m_source;
-    GenericLexer m_lexer;
+    LineTrackingLexer m_lexer;
     Options m_options;
     Listener* m_listener { nullptr };
 
@@ -200,11 +210,11 @@ private:
     Node* m_entered_node { nullptr };
     Version m_version { Version::Version11 };
     bool m_in_compatibility_mode { false };
-    DeprecatedString m_encoding;
+    ByteString m_encoding;
     bool m_standalone { false };
-    HashMap<Name, DeprecatedString> m_processing_instructions;
+    HashMap<Name, ByteString> m_processing_instructions;
     struct AcceptedRule {
-        Optional<DeprecatedString> rule {};
+        Optional<StringView> rule {};
         bool accept { false };
     } m_current_rule {};
 
@@ -218,6 +228,9 @@ template<>
 struct AK::Formatter<XML::ParseError> : public AK::Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, XML::ParseError const& error)
     {
-        return Formatter<FormatString>::format(builder, "{} at offset {}"sv, error.error, error.offset);
+        auto error_string = error.error.visit(
+            [](ByteString const& error) -> ByteString { return error; },
+            [](XML::Expectation const& expectation) -> ByteString { return ByteString::formatted("Expected {}", expectation.expected); });
+        return Formatter<FormatString>::format(builder, "{} at line: {}, col: {} (offset {})"sv, error_string, error.position.line, error.position.column, error.position.offset);
     }
 };

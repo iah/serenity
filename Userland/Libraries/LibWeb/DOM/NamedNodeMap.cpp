@@ -6,57 +6,58 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/NamedNodeMapPrototype.h>
 #include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/NamedNodeMap.h>
+#include <LibWeb/Infra/Strings.h>
 #include <LibWeb/Namespace.h>
 
 namespace Web::DOM {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<NamedNodeMap>> NamedNodeMap::create(Element& element)
+JS_DEFINE_ALLOCATOR(NamedNodeMap);
+
+JS::NonnullGCPtr<NamedNodeMap> NamedNodeMap::create(Element& element)
 {
     auto& realm = element.realm();
-    return MUST_OR_THROW_OOM(realm.heap().allocate<NamedNodeMap>(realm, element));
+    return realm.heap().allocate<NamedNodeMap>(realm, element);
 }
 
 NamedNodeMap::NamedNodeMap(Element& element)
-    : Bindings::LegacyPlatformObject(element.realm())
+    : Bindings::PlatformObject(element.realm())
     , m_element(element)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+        .supports_named_properties = true,
+        .has_legacy_unenumerable_named_properties_interface_extended_attribute = true,
+    };
 }
 
-JS::ThrowCompletionOr<void> NamedNodeMap::initialize(JS::Realm& realm)
+void NamedNodeMap::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::NamedNodeMapPrototype>(realm, "NamedNodeMap"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(NamedNodeMap);
 }
 
 void NamedNodeMap::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_element.ptr());
-    for (auto& attribute : m_attributes)
-        visitor.visit(attribute.ptr());
-}
-
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices%E2%91%A3
-bool NamedNodeMap::is_supported_property_index(u32 index) const
-{
-    return index < m_attributes.size();
+    visitor.visit(m_element);
+    visitor.visit(m_attributes);
 }
 
 // https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-names%E2%91%A0
-Vector<DeprecatedString> NamedNodeMap::supported_property_names() const
+Vector<FlyString> NamedNodeMap::supported_property_names() const
 {
     // 1. Let names be the qualified names of the attributes in this NamedNodeMap object’s attribute list, with duplicates omitted, in order.
-    Vector<DeprecatedString> names;
+    Vector<FlyString> names;
     names.ensure_capacity(m_attributes.size());
 
     for (auto const& attribute : m_attributes) {
-        if (!names.contains_slow(attribute->name()))
-            names.append(attribute->name());
+        auto const attribute_name = attribute->name();
+        if (!names.contains_slow(attribute_name))
+            names.append(attribute_name.to_string());
     }
 
     // 2. If this NamedNodeMap object’s element is in the HTML namespace and its node document is an HTML document, then for each name in names:
@@ -64,7 +65,7 @@ Vector<DeprecatedString> NamedNodeMap::supported_property_names() const
     if (associated_element().namespace_uri() == Namespace::HTML) {
         // 1. Let lowercaseName be name, in ASCII lowercase.
         // 2. If lowercaseName is not equal to name, remove name from names.
-        names.remove_all_matching([](auto const& name) { return name != name.to_lowercase(); });
+        names.remove_all_matching([](auto const& name) { return name != name.to_ascii_lowercase(); });
     }
 
     // 3. Return names.
@@ -83,65 +84,65 @@ Attr const* NamedNodeMap::item(u32 index) const
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-getnameditem
-Attr const* NamedNodeMap::get_named_item(StringView qualified_name) const
+Attr const* NamedNodeMap::get_named_item(FlyString const& qualified_name) const
 {
     return get_attribute(qualified_name);
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-getnameditemns
-Attr const* NamedNodeMap::get_named_item_ns(StringView namespace_, StringView local_name) const
+Attr const* NamedNodeMap::get_named_item_ns(Optional<FlyString> const& namespace_, FlyString const& local_name) const
 {
     return get_attribute_ns(namespace_, local_name);
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-setnameditem
-WebIDL::ExceptionOr<Attr const*> NamedNodeMap::set_named_item(Attr& attribute)
+WebIDL::ExceptionOr<JS::GCPtr<Attr>> NamedNodeMap::set_named_item(Attr& attribute)
 {
     return set_attribute(attribute);
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-setnameditemns
-WebIDL::ExceptionOr<Attr const*> NamedNodeMap::set_named_item_ns(Attr& attribute)
+WebIDL::ExceptionOr<JS::GCPtr<Attr>> NamedNodeMap::set_named_item_ns(Attr& attribute)
 {
     return set_attribute(attribute);
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-removenameditem
-WebIDL::ExceptionOr<Attr const*> NamedNodeMap::remove_named_item(StringView qualified_name)
+WebIDL::ExceptionOr<Attr const*> NamedNodeMap::remove_named_item(FlyString const& qualified_name)
 {
     // 1. Let attr be the result of removing an attribute given qualifiedName and element.
     auto const* attribute = remove_attribute(qualified_name);
 
     // 2. If attr is null, then throw a "NotFoundError" DOMException.
     if (!attribute)
-        return WebIDL::NotFoundError::create(realm(), DeprecatedString::formatted("Attribute with name '{}' not found", qualified_name));
+        return WebIDL::NotFoundError::create(realm(), MUST(String::formatted("Attribute with name '{}' not found", qualified_name)));
 
     // 3. Return attr.
     return attribute;
 }
 
 // https://dom.spec.whatwg.org/#dom-namednodemap-removenameditemns
-WebIDL::ExceptionOr<Attr const*> NamedNodeMap::remove_named_item_ns(StringView namespace_, StringView local_name)
+WebIDL::ExceptionOr<Attr const*> NamedNodeMap::remove_named_item_ns(Optional<FlyString> const& namespace_, FlyString const& local_name)
 {
     // 1. Let attr be the result of removing an attribute given namespace, localName, and element.
     auto const* attribute = remove_attribute_ns(namespace_, local_name);
 
     // 2. If attr is null, then throw a "NotFoundError" DOMException.
     if (!attribute)
-        return WebIDL::NotFoundError::create(realm(), DeprecatedString::formatted("Attribute with namespace '{}' and local name '{}' not found", namespace_, local_name));
+        return WebIDL::NotFoundError::create(realm(), MUST(String::formatted("Attribute with namespace '{}' and local name '{}' not found", namespace_, local_name)));
 
     // 3. Return attr.
     return attribute;
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
-Attr* NamedNodeMap::get_attribute(StringView qualified_name, size_t* item_index)
+Attr* NamedNodeMap::get_attribute(FlyString const& qualified_name, size_t* item_index)
 {
     return const_cast<Attr*>(const_cast<NamedNodeMap const*>(this)->get_attribute(qualified_name, item_index));
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
-Attr const* NamedNodeMap::get_attribute(StringView qualified_name, size_t* item_index) const
+Attr const* NamedNodeMap::get_attribute(FlyString const& qualified_name, size_t* item_index) const
 {
     if (item_index)
         *item_index = 0;
@@ -153,11 +154,11 @@ Attr const* NamedNodeMap::get_attribute(StringView qualified_name, size_t* item_
     // 2. Return the first attribute in element’s attribute list whose qualified name is qualifiedName; otherwise null.
     for (auto const& attribute : m_attributes) {
         if (compare_as_lowercase) {
-            if (attribute->name().equals_ignoring_case(qualified_name))
-                return attribute.ptr();
+            if (attribute->name().equals_ignoring_ascii_case(qualified_name))
+                return attribute;
         } else {
             if (attribute->name() == qualified_name)
-                return attribute.ptr();
+                return attribute;
         }
 
         if (item_index)
@@ -167,25 +168,39 @@ Attr const* NamedNodeMap::get_attribute(StringView qualified_name, size_t* item_
     return nullptr;
 }
 
+Attr const* NamedNodeMap::get_attribute_with_lowercase_qualified_name(FlyString const& lowercase_qualified_name) const
+{
+    bool compare_as_lowercase = associated_element().namespace_uri() == Namespace::HTML;
+    VERIFY(compare_as_lowercase);
+
+    for (auto const& attribute : m_attributes) {
+        if (attribute->lowercase_name() == lowercase_qualified_name)
+            return attribute;
+    }
+
+    return nullptr;
+}
+
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-namespace
-Attr* NamedNodeMap::get_attribute_ns(StringView namespace_, StringView local_name, size_t* item_index)
+Attr* NamedNodeMap::get_attribute_ns(Optional<FlyString> const& namespace_, FlyString const& local_name, size_t* item_index)
 {
     return const_cast<Attr*>(const_cast<NamedNodeMap const*>(this)->get_attribute_ns(namespace_, local_name, item_index));
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-namespace
-Attr const* NamedNodeMap::get_attribute_ns(StringView namespace_, StringView local_name, size_t* item_index) const
+Attr const* NamedNodeMap::get_attribute_ns(Optional<FlyString> const& namespace_, FlyString const& local_name, size_t* item_index) const
 {
     if (item_index)
         *item_index = 0;
 
     // 1. If namespace is the empty string, then set it to null.
-    if (namespace_.is_empty())
-        namespace_ = {};
+    Optional<FlyString> normalized_namespace;
+    if (namespace_ != String {})
+        normalized_namespace = namespace_;
 
     // 2. Return the attribute in element’s attribute list whose namespace is namespace and local name is localName, if any; otherwise null.
     for (auto const& attribute : m_attributes) {
-        if (attribute->namespace_uri() == namespace_ && attribute->local_name() == local_name)
+        if (attribute->namespace_uri() == normalized_namespace && attribute->local_name() == local_name)
             return attribute.ptr();
         if (item_index)
             ++(*item_index);
@@ -195,11 +210,11 @@ Attr const* NamedNodeMap::get_attribute_ns(StringView namespace_, StringView loc
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-set
-WebIDL::ExceptionOr<Attr const*> NamedNodeMap::set_attribute(Attr& attribute)
+WebIDL::ExceptionOr<JS::GCPtr<Attr>> NamedNodeMap::set_attribute(Attr& attribute)
 {
     // 1. If attr’s element is neither null nor element, throw an "InUseAttributeError" DOMException.
     if ((attribute.owner_element() != nullptr) && (attribute.owner_element() != &associated_element()))
-        return WebIDL::InUseAttributeError::create(realm(), "Attribute must not already be in use"sv);
+        return WebIDL::InUseAttributeError::create(realm(), "Attribute must not already be in use"_string);
 
     // 2. Let oldAttr be the result of getting an attribute given attr’s namespace, attr’s local name, and element.
     size_t old_attribute_index = 0;
@@ -225,32 +240,33 @@ WebIDL::ExceptionOr<Attr const*> NamedNodeMap::set_attribute(Attr& attribute)
 // https://dom.spec.whatwg.org/#concept-element-attributes-replace
 void NamedNodeMap::replace_attribute(Attr& old_attribute, Attr& new_attribute, size_t old_attribute_index)
 {
-    // 1. Handle attribute changes for oldAttr with oldAttr’s element, oldAttr’s value, and newAttr’s value.
     VERIFY(old_attribute.owner_element());
-    old_attribute.handle_attribute_changes(*old_attribute.owner_element(), old_attribute.value(), new_attribute.value());
 
-    // 2. Replace oldAttr by newAttr in oldAttr’s element’s attribute list.
+    // 1. Replace oldAttr by newAttr in oldAttr’s element’s attribute list.
     m_attributes.remove(old_attribute_index);
     m_attributes.insert(old_attribute_index, new_attribute);
 
-    // 3. Set newAttr’s element to oldAttr’s element.
+    // 2. Set newAttr’s element to oldAttr’s element.
     new_attribute.set_owner_element(old_attribute.owner_element());
 
-    // 4 .Set oldAttr’s element to null.
+    // 3. Set oldAttr’s element to null.
     old_attribute.set_owner_element(nullptr);
+
+    // 4. Handle attribute changes for oldAttr with newAttr’s element, oldAttr’s value, and newAttr’s value.
+    old_attribute.handle_attribute_changes(*new_attribute.owner_element(), old_attribute.value(), new_attribute.value());
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-append
 void NamedNodeMap::append_attribute(Attr& attribute)
 {
-    // 1. Handle attribute changes for attribute with element, null, and attribute’s value.
-    attribute.handle_attribute_changes(associated_element(), {}, attribute.value());
-
-    // 2. Append attribute to element’s attribute list.
+    // 1. Append attribute to element’s attribute list.
     m_attributes.append(attribute);
 
-    // 3. Set attribute’s element to element.
+    // 2. Set attribute’s element to element.
     attribute.set_owner_element(&associated_element());
+
+    // 3. Handle attribute changes for attribute with element, null, and attribute’s value.
+    attribute.handle_attribute_changes(associated_element(), {}, attribute.value());
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-remove
@@ -258,19 +274,22 @@ void NamedNodeMap::remove_attribute_at_index(size_t attribute_index)
 {
     JS::NonnullGCPtr<Attr> attribute = m_attributes.at(attribute_index);
 
-    // 1. Handle attribute changes for attribute with attribute’s element, attribute’s value, and null.
-    VERIFY(attribute->owner_element());
-    attribute->handle_attribute_changes(*attribute->owner_element(), attribute->value(), {});
+    // 1. Let element be attribute’s element.
+    auto* element = attribute->owner_element();
+    VERIFY(element);
 
-    // 2. Remove attribute from attribute’s element’s attribute list.
+    // 2. Remove attribute from element’s attribute list.
     m_attributes.remove(attribute_index);
 
     // 3. Set attribute’s element to null.
     attribute->set_owner_element(nullptr);
+
+    // 4. Handle attribute changes for attribute with element, attribute’s value, and null.
+    attribute->handle_attribute_changes(*element, attribute->value(), {});
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-remove-by-name
-Attr const* NamedNodeMap::remove_attribute(StringView qualified_name)
+Attr const* NamedNodeMap::remove_attribute(FlyString const& qualified_name)
 {
     size_t item_index = 0;
 
@@ -286,7 +305,7 @@ Attr const* NamedNodeMap::remove_attribute(StringView qualified_name)
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-remove-by-namespace
-Attr const* NamedNodeMap::remove_attribute_ns(StringView namespace_, StringView local_name)
+Attr const* NamedNodeMap::remove_attribute_ns(Optional<FlyString> const& namespace_, FlyString const& local_name)
 {
     size_t item_index = 0;
 
@@ -301,20 +320,35 @@ Attr const* NamedNodeMap::remove_attribute_ns(StringView namespace_, StringView 
     return attribute;
 }
 
-WebIDL::ExceptionOr<JS::Value> NamedNodeMap::item_value(size_t index) const
+Optional<JS::Value> NamedNodeMap::item_value(size_t index) const
 {
     auto const* node = item(index);
     if (!node)
-        return JS::js_undefined();
+        return {};
     return node;
 }
 
-WebIDL::ExceptionOr<JS::Value> NamedNodeMap::named_item_value(DeprecatedFlyString const& name) const
+JS::Value NamedNodeMap::named_item_value(FlyString const& name) const
 {
     auto const* node = get_named_item(name);
     if (!node)
         return JS::js_undefined();
     return node;
+}
+
+// https://dom.spec.whatwg.org/#dom-element-removeattributenode
+WebIDL::ExceptionOr<JS::NonnullGCPtr<Attr>> NamedNodeMap::remove_attribute_node(JS::NonnullGCPtr<Attr> attr)
+{
+    // 1. If this’s attribute list does not contain attr, then throw a "NotFoundError" DOMException.
+    auto index = m_attributes.find_first_index(attr);
+    if (!index.has_value())
+        return WebIDL::NotFoundError::create(realm(), "Attribute not found"_string);
+
+    // 2. Remove attr.
+    remove_attribute_at_index(index.value());
+
+    // 3. Return attr.
+    return attr;
 }
 
 }

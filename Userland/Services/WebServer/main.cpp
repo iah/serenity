@@ -8,11 +8,11 @@
 
 #include <AK/String.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/System.h>
 #include <LibCore/TCPServer.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibHTTP/HttpRequest.h>
 #include <LibMain/Main.h>
 #include <WebServer/Client.h>
@@ -22,15 +22,15 @@
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    static auto const default_listen_address = TRY("0.0.0.0"_string);
+    static auto const default_listen_address = "0.0.0.0"_string;
     static auto const default_port = 8000;
-    static auto const default_document_root_path = TRY("/www"_string);
+    static auto const default_document_root_path = "/www"_string;
 
-    DeprecatedString listen_address = default_listen_address.to_deprecated_string();
+    ByteString listen_address = default_listen_address.to_byte_string();
     int port = default_port;
-    DeprecatedString username;
-    DeprecatedString password;
-    DeprecatedString document_root_path = default_document_root_path.to_deprecated_string();
+    ByteString username;
+    ByteString password;
+    ByteString document_root_path = default_document_root_path.to_byte_string();
 
     Core::ArgsParser args_parser;
     args_parser.add_option(listen_address, "IP address to listen on", "listen-address", 'l', "listen_address");
@@ -56,8 +56,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    auto real_document_root_path = Core::DeprecatedFile::real_path_for(document_root_path);
-    if (!Core::DeprecatedFile::exists(real_document_root_path)) {
+    auto real_document_root_path = TRY(FileSystem::real_path(document_root_path));
+    if (!FileSystem::exists(real_document_root_path)) {
         warnln("Root path does not exist: '{}'", document_root_path);
         return 1;
     }
@@ -68,7 +68,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (!username.is_empty() && !password.is_empty())
         credentials = HTTP::HttpRequest::BasicAuthenticationCredentials { username, password };
 
-    WebServer::Configuration configuration(real_document_root_path, credentials);
+    // FIXME: This should accept a ByteString for the path instead.
+    WebServer::Configuration configuration(TRY(String::from_byte_string(real_document_root_path)), credentials);
 
     Core::EventLoop loop;
 
@@ -96,8 +97,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(server->listen(ipv4_address.value(), port));
 
     out("Listening on ");
-    out("\033]8;;http://{}:{}\033\\", ipv4_address.value(), port);
-    out("{}:{}", ipv4_address.value(), port);
+    out("\033]8;;http://{}:{}\033\\", ipv4_address.value(), server->local_port());
+    out("{}:{}", ipv4_address.value(), server->local_port());
     outln("\033]8;;\033\\");
 
     TRY(Core::System::unveil("/etc/timezone", "r"));

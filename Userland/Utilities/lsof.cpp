@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
 #include <AK/GenericLexer.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
@@ -21,10 +22,10 @@
 struct OpenFile {
     int fd;
     int pid;
-    DeprecatedString type;
-    DeprecatedString name;
-    DeprecatedString state;
-    DeprecatedString full_name;
+    ByteString type;
+    ByteString name;
+    ByteString state;
+    ByteString full_name;
 };
 
 static bool parse_name(StringView name, OpenFile& file)
@@ -38,8 +39,8 @@ static bool parse_name(StringView name, OpenFile& file)
         return true;
     } else {
         file.type = component1;
-        auto component2 = lexer.consume_while([](char c) { return isprint(c) && c != '('; });
-        lexer.ignore_while(isspace);
+        auto component2 = lexer.consume_while([](char c) { return is_ascii_printable(c) && c != '('; });
+        lexer.ignore_while(is_ascii_space);
         file.name = component2;
 
         if (lexer.tell_remaining() == 0) {
@@ -65,7 +66,7 @@ static bool parse_name(StringView name, OpenFile& file)
 
 static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 {
-    auto file = Core::File::open(DeprecatedString::formatted("/proc/{}/fds", pid), Core::File::OpenMode::Read);
+    auto file = Core::File::open(ByteString::formatted("/proc/{}/fds", pid), Core::File::OpenMode::Read);
     if (file.is_error()) {
         outln("lsof: PID {}: {}", pid, file.error());
         return Vector<OpenFile>();
@@ -89,7 +90,7 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
         open_file.pid = pid;
         open_file.fd = object.as_object().get_integer<int>("fd"sv).value();
 
-        DeprecatedString name = object.as_object().get_deprecated_string("absolute_path"sv).value_or({});
+        ByteString name = object.as_object().get_byte_string("absolute_path"sv).value_or({});
         VERIFY(parse_name(name, open_file));
         open_file.full_name = name;
 
@@ -135,7 +136,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
     {
         // try convert UID to int
-        auto arg = DeprecatedString(arg_uid).to_int();
+        auto arg = ByteString(arg_uid).to_number<int>();
         if (arg.has_value())
             arg_uid_int = arg.value();
     }

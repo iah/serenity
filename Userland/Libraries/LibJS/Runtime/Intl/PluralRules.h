@@ -17,6 +17,7 @@ namespace JS::Intl {
 
 class PluralRules final : public NumberFormatBase {
     JS_OBJECT(PluralRules, NumberFormatBase);
+    JS_DECLARE_ALLOCATOR(PluralRules);
 
 public:
     virtual ~PluralRules() override = default;
@@ -38,8 +39,8 @@ struct ResolvedPlurality {
 
 ::Locale::PluralOperands get_operands(StringView string);
 ::Locale::PluralCategory plural_rule_select(StringView locale, ::Locale::PluralForm type, Value number, ::Locale::PluralOperands operands);
-ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM&, PluralRules const&, Value number);
-ThrowCompletionOr<ResolvedPlurality> resolve_plural(VM&, NumberFormatBase const& number_format, ::Locale::PluralForm type, Value number);
+ResolvedPlurality resolve_plural(PluralRules const&, Value number);
+ResolvedPlurality resolve_plural(NumberFormatBase const& number_format, ::Locale::PluralForm type, Value number);
 ::Locale::PluralCategory plural_rule_select_range(StringView locale, ::Locale::PluralForm, ::Locale::PluralCategory start, ::Locale::PluralCategory end);
 ThrowCompletionOr<::Locale::PluralCategory> resolve_plural_range(VM&, PluralRules const&, Value start, Value end);
 

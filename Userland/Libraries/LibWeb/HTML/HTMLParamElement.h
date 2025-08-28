@@ -12,6 +12,7 @@ namespace Web::HTML {
 
 class HTMLParamElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLParamElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLParamElement);
 
 public:
     virtual ~HTMLParamElement() override;
@@ -19,7 +20,7 @@ public:
 private:
     HTMLParamElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

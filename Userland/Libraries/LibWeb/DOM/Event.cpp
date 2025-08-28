@@ -7,63 +7,71 @@
  */
 
 #include <AK/TypeCasts.h>
+#include <LibWeb/Bindings/EventPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 
 namespace Web::DOM {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> Event::create(JS::Realm& realm, DeprecatedFlyString const& event_name, EventInit const& event_init)
+JS_DEFINE_ALLOCATOR(Event);
+
+// https://dom.spec.whatwg.org/#concept-event-create
+JS::NonnullGCPtr<Event> Event::create(JS::Realm& realm, FlyString const& event_name, EventInit const& event_init)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<Event>(realm, realm, event_name, event_init));
+    auto event = realm.heap().allocate<Event>(realm, realm, event_name, event_init);
+    // 4. Initialize event’s isTrusted attribute to true.
+    event->m_is_trusted = true;
+    return event;
 }
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> Event::construct_impl(JS::Realm& realm, DeprecatedFlyString const& event_name, EventInit const& event_init)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> Event::construct_impl(JS::Realm& realm, FlyString const& event_name, EventInit const& event_init)
 {
-    return create(realm, event_name, event_init);
+    return realm.heap().allocate<Event>(realm, realm, event_name, event_init);
 }
 
-Event::Event(JS::Realm& realm, DeprecatedFlyString const& type)
+// https://dom.spec.whatwg.org/#inner-event-creation-steps
+Event::Event(JS::Realm& realm, FlyString const& type)
     : PlatformObject(realm)
     , m_type(type)
     , m_initialized(true)
+    , m_time_stamp(HighResolutionTime::current_high_resolution_time(HTML::relevant_global_object(*this)))
 {
 }
 
-Event::Event(JS::Realm& realm, DeprecatedFlyString const& type, EventInit const& event_init)
+// https://dom.spec.whatwg.org/#inner-event-creation-steps
+Event::Event(JS::Realm& realm, FlyString const& type, EventInit const& event_init)
     : PlatformObject(realm)
     , m_type(type)
     , m_bubbles(event_init.bubbles)
     , m_cancelable(event_init.cancelable)
     , m_composed(event_init.composed)
     , m_initialized(true)
+    , m_time_stamp(HighResolutionTime::current_high_resolution_time(HTML::relevant_global_object(*this)))
 {
 }
 
-JS::ThrowCompletionOr<void> Event::initialize(JS::Realm& realm)
+void Event::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::EventPrototype>(realm, "Event"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(Event);
 }
 
 void Event::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_target.ptr());
-    visitor.visit(m_related_target.ptr());
-    visitor.visit(m_current_target.ptr());
+    visitor.visit(m_target);
+    visitor.visit(m_related_target);
+    visitor.visit(m_current_target);
     for (auto& it : m_path) {
-        visitor.visit(it.invocation_target.ptr());
-        visitor.visit(it.shadow_adjusted_target.ptr());
-        visitor.visit(it.related_target.ptr());
-        for (auto& itit : it.touch_target_list)
-            visitor.visit(itit.ptr());
+        visitor.visit(it.invocation_target);
+        visitor.visit(it.shadow_adjusted_target);
+        visitor.visit(it.related_target);
+        visitor.visit(it.touch_target_list);
     }
-    for (auto& it : m_touch_target_list)
-        visitor.visit(it.ptr());
+    visitor.visit(m_touch_target_list);
 }
 
 // https://dom.spec.whatwg.org/#concept-event-path-append
@@ -100,7 +108,7 @@ void Event::set_cancelled_flag()
 }
 
 // https://dom.spec.whatwg.org/#concept-event-initialize
-void Event::initialize_event(DeprecatedString const& type, bool bubbles, bool cancelable)
+void Event::initialize_event(String const& type, bool bubbles, bool cancelable)
 {
     // 1. Set event’s initialized flag.
     m_initialized = true;
@@ -127,7 +135,7 @@ void Event::initialize_event(DeprecatedString const& type, bool bubbles, bool ca
 }
 
 // https://dom.spec.whatwg.org/#dom-event-initevent
-void Event::init_event(DeprecatedString const& type, bool bubbles, bool cancelable)
+void Event::init_event(String const& type, bool bubbles, bool cancelable)
 {
     // 1. If this’s dispatch flag is set, then return.
     if (m_dispatch)
@@ -135,12 +143,6 @@ void Event::init_event(DeprecatedString const& type, bool bubbles, bool cancelab
 
     // 2. Initialize this with type, bubbles, and cancelable.
     initialize_event(type, bubbles, cancelable);
-}
-
-// https://dom.spec.whatwg.org/#dom-event-timestamp
-double Event::time_stamp() const
-{
-    return m_time_stamp;
 }
 
 // https://dom.spec.whatwg.org/#dom-event-composedpath

@@ -13,9 +13,10 @@ namespace JS {
 
 class MapPrototype final : public PrototypeObject<MapPrototype, Map> {
     JS_PROTOTYPE_OBJECT(MapPrototype, Map, Map);
+    JS_DECLARE_ALLOCATOR(MapPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~MapPrototype() override = default;
 
 private:

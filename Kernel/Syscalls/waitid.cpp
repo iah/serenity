@@ -6,11 +6,11 @@
 
 #include <AK/Variant.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
-ErrorOr<siginfo_t> Process::do_waitid(Variant<Empty, NonnullLockRefPtr<Process>, NonnullLockRefPtr<ProcessGroup>> waitee, int options)
+ErrorOr<siginfo_t> Process::do_waitid(Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee, int options)
 {
     ErrorOr<siginfo_t> result = siginfo_t {};
     if (Thread::current()->block<Thread::WaitBlocker>({}, options, move(waitee), result).was_interrupted())
@@ -25,12 +25,12 @@ ErrorOr<FlatPtr> Process::sys$waitid(Userspace<Syscall::SC_waitid_params const*>
     TRY(require_promise(Pledge::proc));
     auto params = TRY(copy_typed_from_user(user_params));
 
-    Variant<Empty, NonnullLockRefPtr<Process>, NonnullLockRefPtr<ProcessGroup>> waitee;
+    Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee;
     switch (params.idtype) {
     case P_ALL:
         break;
     case P_PID: {
-        auto waitee_process = Process::from_pid_in_same_jail(params.id);
+        auto waitee_process = Process::from_pid_in_same_process_list(params.id);
         if (!waitee_process)
             return ECHILD;
         bool waitee_is_child = waitee_process->ppid() == Process::current().pid();

@@ -17,7 +17,7 @@ class CharacterMapWidget final : public GUI::Widget {
 public:
     virtual ~CharacterMapWidget() override = default;
 
-    void initialize_menubar(GUI::Window& window);
+    ErrorOr<void> initialize_menubar(GUI::Window& window);
 
 private:
     CharacterMapWidget();
@@ -42,6 +42,6 @@ private:
     RefPtr<GUI::Action> m_go_to_glyph_action;
     RefPtr<GUI::Action> m_find_glyphs_action;
 
-    Vector<DeprecatedString> m_unicode_block_list;
+    Vector<ByteString> m_unicode_block_list;
     Unicode::CodePointRange m_range { 0x0000, 0x10FFFF };
 };

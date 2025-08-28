@@ -12,8 +12,7 @@
 #include <LibCrypto/ASN1/PEM.h>
 #include <LibCrypto/PK/RSA.h>
 
-namespace Crypto {
-namespace PK {
+namespace Crypto::PK {
 
 static constexpr Array<int, 7> pkcs8_rsa_key_oid { 1, 2, 840, 113549, 1, 1, 1 };
 
@@ -133,81 +132,85 @@ RSA::KeyPairType RSA::parse_rsa_key(ReadonlyBytes der)
         if (first_integer == 0) {
             // This is a private key, parse the rest.
             auto modulus_result = decoder.read<UnsignedBigInteger>();
-            if (modulus_result.is_error()) {
-                dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 private key parse failed: {}", modulus_result.error());
-                return keypair;
-            }
-            auto modulus = modulus_result.release_value();
-
             auto public_exponent_result = decoder.read<UnsignedBigInteger>();
-            if (public_exponent_result.is_error()) {
-                dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 private key parse failed: {}", public_exponent_result.error());
-                return keypair;
-            }
-            auto public_exponent = public_exponent_result.release_value();
-
             auto private_exponent_result = decoder.read<UnsignedBigInteger>();
-            if (private_exponent_result.is_error()) {
-                dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 private key parse failed: {}", private_exponent_result.error());
-                return keypair;
-            }
-            auto private_exponent = private_exponent_result.release_value();
+            auto prime1_result = decoder.read<UnsignedBigInteger>();
+            auto prime2_result = decoder.read<UnsignedBigInteger>();
+            auto exponent1_result = decoder.read<UnsignedBigInteger>();
+            auto exponent2_result = decoder.read<UnsignedBigInteger>();
+            auto coefficient_result = decoder.read<UnsignedBigInteger>();
 
-            // Drop the rest of the fields on the floor, we don't use them.
-            // FIXME: Actually use them...
-            keypair.private_key = { modulus, move(private_exponent), public_exponent };
-            keypair.public_key = { move(modulus), move(public_exponent) };
+            Array results = { &modulus_result, &public_exponent_result, &private_exponent_result, &prime1_result, &prime2_result, &exponent1_result, &exponent2_result, &coefficient_result };
+            for (auto& result : results) {
+                if (result->is_error()) {
+                    dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 private key parse failed: {}", result->error());
+                    return keypair;
+                }
+            }
+
+            keypair.private_key = {
+                modulus_result.value(),
+                private_exponent_result.release_value(),
+                public_exponent_result.value(),
+                prime1_result.release_value(),
+                prime2_result.release_value(),
+                exponent1_result.release_value(),
+                exponent2_result.release_value(),
+                coefficient_result.release_value(),
+            };
+            keypair.public_key = { modulus_result.release_value(), public_exponent_result.release_value() };
 
             return keypair;
-        } else if (first_integer == 1) {
+        }
+
+        if (first_integer == 1) {
             // This is a multi-prime key, we don't support that.
             dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 private key parse failed: Multi-prime key not supported");
             return keypair;
-        } else {
-            auto&& modulus = move(first_integer);
+        }
 
-            // Try reading a public key, `first_integer` is the modulus.
-            auto public_exponent_result = decoder.read<UnsignedBigInteger>();
-            if (public_exponent_result.is_error()) {
-                // Bad public key.
-                dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 public key parse failed: {}", public_exponent_result.error());
-                return keypair;
-            }
+        auto&& modulus = move(first_integer);
 
-            auto public_exponent = public_exponent_result.release_value();
-            keypair.public_key.set(move(modulus), move(public_exponent));
-
+        // Try reading a public key, `first_integer` is the modulus.
+        auto public_exponent_result = decoder.read<UnsignedBigInteger>();
+        if (public_exponent_result.is_error()) {
+            // Bad public key.
+            dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 public key parse failed: {}", public_exponent_result.error());
             return keypair;
         }
 
-    } else {
-        // It wasn't a PKCS#1 key, let's try our luck with PKCS#8.
-        if (!check_if_pkcs8_rsa_key())
-            return keypair;
+        auto public_exponent = public_exponent_result.release_value();
+        keypair.public_key.set(move(modulus), move(public_exponent));
 
-        if (has_read_error)
-            return keypair;
-
-        // Now we have a bit string, which contains the PKCS#1 encoded public key.
-        auto data_result = decoder.read<BitmapView>();
-        if (data_result.is_error()) {
-            dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#8 public key parse failed: {}", data_result.error());
-            return keypair;
-        }
-
-        // Now just read it as a PKCS#1 DER.
-        auto data = data_result.release_value();
-        // FIXME: This is pretty awkward, maybe just generate a zero'd out ByteBuffer from the parser instead?
-        auto padded_data_result = ByteBuffer::create_zeroed(data.size_in_bytes());
-        if (padded_data_result.is_error()) {
-            dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 key parse failed: Not enough memory");
-            return keypair;
-        }
-        auto padded_data = padded_data_result.release_value();
-        padded_data.overwrite(0, data.data(), data.size_in_bytes());
-
-        return parse_rsa_key(padded_data.bytes());
+        return keypair;
     }
+
+    // It wasn't a PKCS#1 key, let's try our luck with PKCS#8.
+    if (!check_if_pkcs8_rsa_key())
+        return keypair;
+
+    if (has_read_error)
+        return keypair;
+
+    // Now we have a bit string, which contains the PKCS#1 encoded public key.
+    auto data_result = decoder.read<BitmapView>();
+    if (data_result.is_error()) {
+        dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#8 public key parse failed: {}", data_result.error());
+        return keypair;
+    }
+
+    // Now just read it as a PKCS#1 DER.
+    auto data = data_result.release_value();
+    // FIXME: This is pretty awkward, maybe just generate a zero'd out ByteBuffer from the parser instead?
+    auto padded_data_result = ByteBuffer::create_zeroed(data.size_in_bytes());
+    if (padded_data_result.is_error()) {
+        dbgln_if(RSA_PARSE_DEBUG, "RSA PKCS#1 key parse failed: Not enough memory");
+        return keypair;
+    }
+    auto padded_data = padded_data_result.release_value();
+    padded_data.overwrite(0, data.data(), data.size_in_bytes());
+
+    return parse_rsa_key(padded_data.bytes());
 }
 
 void RSA::encrypt(ReadonlyBytes in, Bytes& out)
@@ -292,39 +295,6 @@ void RSA::import_public_key(ReadonlyBytes bytes, bool pem)
     m_public_key = key.public_key;
 }
 
-template<typename HashFunction>
-void RSA_EMSA_PSS<HashFunction>::sign(ReadonlyBytes in, Bytes& out)
-{
-    // -- encode via EMSA_PSS
-    auto mod_bits = m_rsa.private_key().modulus().trimmed_length() * sizeof(u32) * 8;
-
-    Vector<u8, 2048> EM;
-    EM.resize(mod_bits);
-    auto EM_buf = Bytes { EM };
-    m_emsa_pss.encode(in, EM_buf, mod_bits - 1);
-
-    // -- sign via RSA
-    m_rsa.sign(EM_buf, out);
-}
-
-template<typename HashFunction>
-VerificationConsistency RSA_EMSA_PSS<HashFunction>::verify(ReadonlyBytes in)
-{
-    auto mod_bytes = m_rsa.public_key().modulus().trimmed_length() * sizeof(u32);
-    if (in.size() != mod_bytes)
-        return VerificationConsistency::Inconsistent;
-
-    Vector<u8, 256> EM;
-    EM.resize(mod_bytes);
-    auto EM_buf = Bytes { EM };
-
-    // -- verify via RSA
-    m_rsa.verify(in, EM_buf);
-
-    // -- verify via EMSA_PSS
-    return m_emsa_pss.verify(in, EM, mod_bytes * 8 - 1);
-}
-
 void RSA_PKCS1_EME::encrypt(ReadonlyBytes in, Bytes& out)
 {
     auto mod_len = (m_public_key.modulus().trimmed_length() * sizeof(u32) * 8 + 7) / 8;
@@ -343,12 +313,13 @@ void RSA_PKCS1_EME::encrypt(ReadonlyBytes in, Bytes& out)
     Vector<u8, 8096> ps;
     ps.resize(ps_length);
 
-    fill_with_random(ps.data(), ps_length);
+    fill_with_random(ps);
     // since fill_with_random can create zeros (shocking!)
     // we have to go through and un-zero the zeros
-    for (size_t i = 0; i < ps_length; ++i)
+    for (size_t i = 0; i < ps_length; ++i) {
         while (!ps[i])
-            fill_with_random(ps.span().offset(i), 1);
+            ps[i] = get_random<u8>();
+    }
 
     u8 paddings[] { 0x00, 0x02 };
 
@@ -415,6 +386,5 @@ void RSA_PKCS1_EME::sign(ReadonlyBytes, Bytes&)
 void RSA_PKCS1_EME::verify(ReadonlyBytes, Bytes&)
 {
     dbgln("FIXME: RSA_PKCS_EME::verify");
-}
 }
 }

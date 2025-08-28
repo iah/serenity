@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sin-ack <sin-ack@users.noreply.github.com>
+Date: Sun, 11 Dec 2022 17:22:27 +0000
+Subject: [PATCH] build: Adjust build process for SerenityOS
+
+---
+ build | 35 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/build b/build
+index 5a807c1a31ac357de2dcae8ca937652a62e6e23e..0a71c76353fdbed4b2de884879a1a406ccab78ce 100755
+--- a/build
++++ b/build
+@@ -19,6 +19,7 @@ case $TARGET_OS_CMAKE in
+   netbsd*) TARGET_OS_CMAKE="NetBSD";;
+   windows*) TARGET_OS_CMAKE="Windows";;
+   linux*) TARGET_OS_CMAKE="Linux";;
++  serenity*) TARGET_OS_CMAKE="Serenity";;
+   native) TARGET_OS_CMAKE="";;
+ esac
+ 
+@@ -68,6 +69,36 @@ cmake "$ROOTDIR/zig" \
+   -DCMAKE_BUILD_TYPE=Release \
+   -DZIG_VERSION="$ZIG_VERSION"
+ cmake --build . --target install
++ 
++# Create a libc installation file so Zig knows where to look for headers and
++# libraries while compiling for the Serenity target.
++cat <<EOF > "$ROOTDIR/out/libc_installation.txt"
++include_dir=$SERENITY_INSTALL_ROOT/usr/include
++sys_include_dir=$SERENITY_INSTALL_ROOT/usr/include
++crt_dir=$SERENITY_INSTALL_ROOT/usr/lib
++msvc_lib_dir=
++kernel32_lib_dir=
++gcc_dir=$SERENITY_INSTALL_ROOT/usr/local/lib/gcc/$SERENITY_ARCH-pc-serenity/$SERENITY_GCC_VERSION
++EOF
++
++export ZIG_LIBC="$ROOTDIR/out/libc_installation.txt"
++
++# Create a CMakeToolchain.txt file to tell CMake about the SerenityOS platform.
++# Adapted from Toolchain/CMake/GNUToolchain.txt.in, with the tool settings
++# removed as zig-bootstrap overrides them manually with the cmake command.
++cat <<EOF > "$ROOTDIR/out/CMakeToolchain.txt"
++set(CMAKE_SYSTEM_NAME SerenityOS)
++set(CMAKE_SYSTEM_PROCESSOR "$SERENITY_ARCH")
++
++set(CMAKE_C_COMPILER_WORKS TRUE)
++set(CMAKE_CXX_COMPILER_WORKS TRUE)
++
++set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
++set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
++set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
++set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
++EOF
++
+ 
+ # Now we have Zig as a cross compiler.
+ ZIG="$ROOTDIR/out/host/bin/zig"
+@@ -88,7 +119,8 @@ cmake "$ROOTDIR/zlib" \
+   -DCMAKE_LINK_DEPENDS_USE_LINKER=OFF \
+   -DCMAKE_RC_COMPILER="$ROOTDIR/out/host/bin/llvm-rc" \
+   -DCMAKE_AR="$ROOTDIR/out/host/bin/llvm-ar" \
+-  -DCMAKE_RANLIB="$ROOTDIR/out/host/bin/llvm-ranlib"
++  -DCMAKE_RANLIB="$ROOTDIR/out/host/bin/llvm-ranlib" \
++  -DCMAKE_TOOLCHAIN_FILE="$ROOTDIR/out/CMakeToolchain.txt"
+ cmake --build . --target install
+ 
+ # Same deal for zstd.
+@@ -152,6 +184,7 @@ cmake "$ROOTDIR/llvm" \
+   -DCMAKE_RC_COMPILER="$ROOTDIR/out/host/bin/llvm-rc" \
+   -DCMAKE_AR="$ROOTDIR/out/host/bin/llvm-ar" \
+   -DCMAKE_RANLIB="$ROOTDIR/out/host/bin/llvm-ranlib" \
++  -DCMAKE_TOOLCHAIN_FILE="$ROOTDIR/out/CMakeToolchain.txt" \
+   -DLLVM_ENABLE_BACKTRACES=OFF \
+   -DLLVM_ENABLE_BINDINGS=OFF \
+   -DLLVM_ENABLE_CRASH_OVERRIDES=OFF \

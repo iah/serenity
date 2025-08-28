@@ -55,33 +55,34 @@ double Token::double_value() const
 {
     VERIFY(type() == TokenType::NumericLiteral);
 
-    StringBuilder builder;
+    Vector<char, 32> buffer;
 
     for (auto ch : value()) {
         if (ch == '_')
             continue;
-        builder.append(ch);
+        buffer.append(ch);
     }
+    buffer.append('\0');
 
-    auto value_string = builder.to_deprecated_string();
+    auto value_string = StringView { buffer.data(), buffer.size() - 1 };
     if (value_string[0] == '0' && value_string.length() >= 2) {
         if (value_string[1] == 'x' || value_string[1] == 'X') {
             // hexadecimal
-            return static_cast<double>(strtoul(value_string.characters() + 2, nullptr, 16));
+            return static_cast<double>(strtoul(value_string.characters_without_null_termination() + 2, nullptr, 16));
         } else if (value_string[1] == 'o' || value_string[1] == 'O') {
             // octal
-            return static_cast<double>(strtoul(value_string.characters() + 2, nullptr, 8));
+            return static_cast<double>(strtoul(value_string.characters_without_null_termination() + 2, nullptr, 8));
         } else if (value_string[1] == 'b' || value_string[1] == 'B') {
             // binary
-            return static_cast<double>(strtoul(value_string.characters() + 2, nullptr, 2));
+            return static_cast<double>(strtoul(value_string.characters_without_null_termination() + 2, nullptr, 2));
         } else if (is_ascii_digit(value_string[1])) {
             // also octal, but syntax error in strict mode
             if (!value().contains('8') && !value().contains('9'))
-                return static_cast<double>(strtoul(value_string.characters() + 1, nullptr, 8));
+                return static_cast<double>(strtoul(value_string.characters_without_null_termination() + 1, nullptr, 8));
         }
     }
     // This should always be a valid double
-    return value_string.to_double().release_value();
+    return value_string.to_number<double>().release_value();
 }
 
 static u32 hex2int(char x)
@@ -92,14 +93,14 @@ static u32 hex2int(char x)
     return 10u + (to_ascii_lowercase(x) - 'a');
 }
 
-DeprecatedString Token::string_value(StringValueStatus& status) const
+ByteString Token::string_value(StringValueStatus& status) const
 {
     VERIFY(type() == TokenType::StringLiteral || type() == TokenType::TemplateLiteralString);
 
     auto is_template = type() == TokenType::TemplateLiteralString;
     GenericLexer lexer(is_template ? value() : value().substring_view(1, value().length() - 2));
 
-    auto encoding_failure = [&status](StringValueStatus parse_status) -> DeprecatedString {
+    auto encoding_failure = [&status](StringValueStatus parse_status) -> ByteString {
         status = parse_status;
         return {};
     };
@@ -173,7 +174,7 @@ DeprecatedString Token::string_value(StringValueStatus& status) const
 
         // In non-strict mode LegacyOctalEscapeSequence is allowed in strings:
         // https://tc39.es/ecma262/#sec-additional-syntax-string-literals
-        DeprecatedString octal_str;
+        Optional<ByteString> octal_str;
 
         auto is_octal_digit = [](char ch) { return ch >= '0' && ch <= '7'; };
         auto is_zero_to_three = [](char ch) { return ch >= '0' && ch <= '3'; };
@@ -192,9 +193,9 @@ DeprecatedString Token::string_value(StringValueStatus& status) const
         else if (is_zero_to_three(lexer.peek()) && is_octal_digit(lexer.peek(1)) && is_octal_digit(lexer.peek(2)))
             octal_str = lexer.consume(3);
 
-        if (!octal_str.is_null()) {
+        if (octal_str.has_value()) {
             status = StringValueStatus::LegacyOctalEscapeSequence;
-            auto code_point = strtoul(octal_str.characters(), nullptr, 8);
+            auto code_point = strtoul(octal_str->characters(), nullptr, 8);
             VERIFY(code_point <= 255);
             builder.append_code_point(code_point);
             continue;
@@ -209,11 +210,11 @@ DeprecatedString Token::string_value(StringValueStatus& status) const
         lexer.retreat();
         builder.append(lexer.consume_escaped_character('\\', "b\bf\fn\nr\rt\tv\v"sv));
     }
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 // 12.8.6.2 Static Semantics: TRV, https://tc39.es/ecma262/#sec-static-semantics-trv
-DeprecatedString Token::raw_template_value() const
+ByteString Token::raw_template_value() const
 {
     return value().replace("\r\n"sv, "\n"sv, ReplaceMode::All).replace("\r"sv, "\n"sv, ReplaceMode::All);
 }

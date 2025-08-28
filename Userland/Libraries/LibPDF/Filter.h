@@ -15,20 +15,23 @@ namespace PDF {
 
 class Filter {
 public:
-    static PDFErrorOr<ByteBuffer> decode(ReadonlyBytes bytes, DeprecatedFlyString const& encoding_type, RefPtr<DictObject> decode_parms);
+    static PDFErrorOr<ByteBuffer> decode(Document* document, ReadonlyBytes bytes, DeprecatedFlyString const& encoding_type, RefPtr<DictObject> decode_parms);
 
 private:
     static PDFErrorOr<ByteBuffer> decode_ascii_hex(ReadonlyBytes bytes);
     static PDFErrorOr<ByteBuffer> decode_ascii85(ReadonlyBytes bytes);
-    static PDFErrorOr<ByteBuffer> decode_png_prediction(Bytes bytes, int bytes_per_row);
-    static PDFErrorOr<ByteBuffer> decode_lzw(ReadonlyBytes bytes);
-    static PDFErrorOr<ByteBuffer> decode_flate(ReadonlyBytes bytes, int predictor, int columns, int colors, int bits_per_component);
+    static PDFErrorOr<ByteBuffer> decode_png_prediction(Bytes bytes, size_t bytes_per_row, size_t bytes_per_pixel);
+    static PDFErrorOr<ByteBuffer> decode_tiff_prediction(Bytes bytes, int columns, int colors, int bits_per_component);
+    static PDFErrorOr<ByteBuffer> decode_lzw(ReadonlyBytes bytes, RefPtr<DictObject> decode_parms);
+    static PDFErrorOr<ByteBuffer> decode_flate(ReadonlyBytes bytes, RefPtr<DictObject> decode_parms);
     static PDFErrorOr<ByteBuffer> decode_run_length(ReadonlyBytes bytes);
-    static PDFErrorOr<ByteBuffer> decode_ccitt(ReadonlyBytes bytes);
-    static PDFErrorOr<ByteBuffer> decode_jbig2(ReadonlyBytes bytes);
+    static PDFErrorOr<ByteBuffer> decode_ccitt(ReadonlyBytes bytes, RefPtr<DictObject> decode_parms);
+    static PDFErrorOr<ByteBuffer> decode_jbig2(Document* document, ReadonlyBytes bytes, RefPtr<DictObject> decode_parms);
     static PDFErrorOr<ByteBuffer> decode_dct(ReadonlyBytes bytes);
     static PDFErrorOr<ByteBuffer> decode_jpx(ReadonlyBytes bytes);
     static PDFErrorOr<ByteBuffer> decode_crypt(ReadonlyBytes bytes);
+
+    static PDFErrorOr<ByteBuffer> handle_lzw_and_flate_parameters(ByteBuffer buffer, RefPtr<DictObject> decode_parms);
 };
 
 }

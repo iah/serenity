@@ -7,7 +7,8 @@
 #pragma once
 
 #include <AK/IntrusiveList.h>
-#include <Kernel/DoubleBuffer.h>
+#include <AK/SetOnce.h>
+#include <Kernel/Library/DoubleBuffer.h>
 #include <Kernel/Net/Socket.h>
 
 namespace Kernel {
@@ -22,13 +23,13 @@ struct SocketPair {
 class LocalSocket final : public Socket {
 
 public:
-    static ErrorOr<NonnullLockRefPtr<LocalSocket>> try_create(int type);
+    static ErrorOr<NonnullRefPtr<LocalSocket>> try_create(int type);
     static ErrorOr<SocketPair> try_create_connected_pair(int type);
     virtual ~LocalSocket() override;
 
     ErrorOr<void> sendfd(OpenFileDescription const& socket_description, NonnullRefPtr<OpenFileDescription> passing_description);
     ErrorOr<NonnullRefPtr<OpenFileDescription>> recvfd(OpenFileDescription const& socket_description);
-    ErrorOr<Vector<NonnullRefPtr<OpenFileDescription>>> recvfds(OpenFileDescription const& socket_description, int n);
+    ErrorOr<void> recvfds(OpenFileDescription const& socket_description, int n, Function<ErrorOr<void>(OpenFileDescription&)> callback);
 
     static void for_each(Function<void(LocalSocket const&)>);
     static ErrorOr<void> try_for_each(Function<ErrorOr<void>(LocalSocket const&)>);
@@ -47,7 +48,7 @@ public:
     virtual bool can_read(OpenFileDescription const&, u64) const override;
     virtual bool can_write(OpenFileDescription const&, u64) const override;
     virtual ErrorOr<size_t> sendto(OpenFileDescription&, UserOrKernelBuffer const&, size_t, int, Userspace<sockaddr const*>, socklen_t) override;
-    virtual ErrorOr<size_t> recvfrom(OpenFileDescription&, UserOrKernelBuffer&, size_t, int flags, Userspace<sockaddr*>, Userspace<socklen_t*>, Time&, bool blocking) override;
+    virtual ErrorOr<size_t> recvfrom(OpenFileDescription&, UserOrKernelBuffer&, size_t, int flags, Userspace<sockaddr*>, Userspace<socklen_t*>, UnixDateTime&, bool blocking) override;
     virtual ErrorOr<void> getsockopt(OpenFileDescription&, int level, int option, Userspace<void*>, Userspace<socklen_t*>) override;
     virtual ErrorOr<void> ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg) override;
     virtual ErrorOr<void> chown(Credentials const&, OpenFileDescription&, UserID, GroupID) override;
@@ -74,7 +75,7 @@ private:
     ErrorOr<void> try_set_path(StringView);
 
     // The inode this socket is bound to.
-    LockRefPtr<Inode> m_inode;
+    RefPtr<Inode> m_inode;
 
     UserID m_prebind_uid { 0 };
     GroupID m_prebind_gid { 0 };
@@ -94,7 +95,7 @@ private:
         return m_role;
     }
 
-    bool m_bound { false };
+    SetOnce m_bound;
     bool m_accept_side_fd_open { false };
     OwnPtr<KString> m_path;
 

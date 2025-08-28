@@ -130,15 +130,16 @@ struct VariantConstructTag {
 
 template<typename T, typename Base>
 struct VariantConstructors {
+    // The pointless `typename Base` constraints are a workaround for https://gcc.gnu.org/bugzilla/show_bug.cgi?id=109683
     ALWAYS_INLINE VariantConstructors(T&& t)
-    requires(requires { T(move(t)); })
+    requires(requires { T(move(t)); typename Base; })
     {
         internal_cast().clear_without_destruction();
         internal_cast().set(move(t), VariantNoClearTag {});
     }
 
     ALWAYS_INLINE VariantConstructors(T const& t)
-    requires(requires { T(t); })
+    requires(requires { T(t); typename Base; })
     {
         internal_cast().clear_without_destruction();
         internal_cast().set(t, VariantNoClearTag {});
@@ -181,14 +182,14 @@ inline constexpr bool IsTypeInPack<T, ParameterPack<Ts...>> = (IsSame<T, Ts> || 
 template<typename T, typename... Qs>
 using BlankIfDuplicate = Conditional<(IsTypeInPack<T, Qs> || ...), Blank<T>, T>;
 
-template<unsigned I, typename...>
+template<size_t I, typename...>
 struct InheritFromUniqueEntries;
 
 // InheritFromUniqueEntries will inherit from both Qs and Ts, but only scan entries going *forwards*
 // that is to say, if it's scanning from index I in Qs, it won't scan for duplicates for entries before I
 // as that has already been checked before.
 // This makes sure that the search is linear in time (like the 'merge' step of merge sort).
-template<unsigned I, typename... Ts, unsigned... Js, typename... Qs>
+template<size_t I, typename... Ts, size_t... Js, typename... Qs>
 struct InheritFromUniqueEntries<I, ParameterPack<Ts...>, IndexSequence<Js...>, Qs...>
     : public BlankIfDuplicate<Ts, Conditional<Js <= I, ParameterPack<>, Qs>...>... {
 
@@ -200,7 +201,7 @@ struct InheritFromPacks;
 
 // InheritFromPacks will attempt to 'merge' the pack 'Ps' with *itself*, but skip the duplicate entries
 // (via InheritFromUniqueEntries).
-template<unsigned... Is, typename... Ps>
+template<size_t... Is, typename... Ps>
 struct InheritFromPacks<IndexSequence<Is...>, Ps...>
     : public InheritFromUniqueEntries<Is, Ps, IndexSequence<Is...>, Ps...>... {
 
@@ -215,12 +216,8 @@ using MergeAndDeduplicatePacks = InheritFromPacks<MakeIndexSequence<sizeof...(Ps
 
 namespace AK {
 
-struct Empty {
-};
-
 template<typename T>
-concept NotLvalueReference = !
-IsLvalueReference<T>;
+concept NotLvalueReference = !IsLvalueReference<T>;
 
 template<NotLvalueReference... Ts>
 struct Variant
@@ -266,7 +263,6 @@ public:
     {
     }
 
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     Variant(Variant const&)
     requires(!(IsCopyConstructible<Ts> && ...))
     = delete;
@@ -291,12 +287,9 @@ public:
     requires(!(IsMoveConstructible<Ts> && ...) || !(IsDestructible<Ts> && ...))
     = delete;
     Variant& operator=(Variant&&) = default;
-#endif
 
     ALWAYS_INLINE Variant(Variant const& old)
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     requires(!(IsTriviallyCopyConstructible<Ts> && ...))
-#endif
         : Detail::MergeAndDeduplicatePacks<Detail::VariantConstructors<Ts, Variant<Ts...>>...>()
         , m_data {}
         , m_index(old.m_index)
@@ -309,9 +302,7 @@ public:
     //       and if a variant with a nontrivial move ctor is moved from, it may or may not be valid
     //       but it will still contain the "moved-from" state of the object it previously contained.
     ALWAYS_INLINE Variant(Variant&& old)
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     requires(!(IsTriviallyMoveConstructible<Ts> && ...))
-#endif
         : Detail::MergeAndDeduplicatePacks<Detail::VariantConstructors<Ts, Variant<Ts...>>...>()
         , m_index(old.m_index)
     {
@@ -319,17 +310,13 @@ public:
     }
 
     ALWAYS_INLINE ~Variant()
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     requires(!(IsTriviallyDestructible<Ts> && ...))
-#endif
     {
         Helper::delete_(m_index, m_data);
     }
 
     ALWAYS_INLINE Variant& operator=(Variant const& other)
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     requires(!(IsTriviallyCopyConstructible<Ts> && ...) || !(IsTriviallyDestructible<Ts> && ...))
-#endif
     {
         if (this != &other) {
             if constexpr (!(IsTriviallyDestructible<Ts> && ...)) {
@@ -342,9 +329,7 @@ public:
     }
 
     ALWAYS_INLINE Variant& operator=(Variant&& other)
-#ifdef AK_HAS_CONDITIONALLY_TRIVIAL
     requires(!(IsTriviallyMoveConstructible<Ts> && ...) || !(IsTriviallyDestructible<Ts> && ...))
-#endif
     {
         if (this != &other) {
             if constexpr (!(IsTriviallyDestructible<Ts> && ...)) {
@@ -461,7 +446,7 @@ public:
     decltype(auto) downcast() const&
     {
         if constexpr (sizeof...(NewTs) == 1 && (IsSpecializationOf<NewTs, Variant> && ...)) {
-            return (*this).template downcast_variant(TypeWrapper<NewTs...> {});
+            return (*this).downcast_variant(TypeWrapper<NewTs...> {});
         } else {
             Variant<NewTs...> instance { Variant<NewTs...>::invalid_index, Detail::VariantConstructTag {} };
             visit([&](auto const& value) {
@@ -533,6 +518,5 @@ struct TypeList<Variant<Ts...>> : TypeList<Ts...> { };
 }
 
 #if USING_AK_GLOBALLY
-using AK::Empty;
 using AK::Variant;
 #endif

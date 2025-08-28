@@ -7,7 +7,6 @@
  */
 
 #include <AK/Concepts.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Stream.h>
 #include <LibJS/Print.h>
 #include <LibJS/Runtime/Array.h>
@@ -117,10 +116,10 @@ ErrorOr<void> print_value(JS::PrintContext& print_context, JS::ThrowCompletionOr
     return print_value(print_context, value_or_error.release_value(), seen_objects);
 }
 
-DeprecatedString strip_ansi(StringView format_string)
+ErrorOr<String> strip_ansi(StringView format_string)
 {
     if (format_string.is_empty())
-        return DeprecatedString::empty();
+        return String();
 
     StringBuilder builder;
     size_t i;
@@ -129,26 +128,23 @@ DeprecatedString strip_ansi(StringView format_string)
             while (i < format_string.length() && format_string[i] != 'm')
                 ++i;
         } else {
-            builder.append(format_string[i]);
+            TRY(builder.try_append(format_string[i]));
         }
     }
     if (i < format_string.length())
-        builder.append(format_string[i]);
-    return builder.to_deprecated_string();
+        TRY(builder.try_append(format_string[i]));
+    return builder.to_string();
 }
 
 template<typename... Args>
 ErrorOr<void> js_out(JS::PrintContext& print_context, CheckedFormatString<Args...> format_string, Args const&... args)
 {
-    DeprecatedString formatted;
-    if (print_context.strip_ansi)
-        formatted = DeprecatedString::formatted(strip_ansi(format_string.view()), args...);
-    else
-        formatted = DeprecatedString::formatted(format_string.view(), args...);
-
-    auto bytes = formatted.bytes();
-    while (!bytes.is_empty())
-        bytes = bytes.slice(TRY(print_context.stream.write(bytes)));
+    if (print_context.strip_ansi) {
+        auto format_string_without_ansi = TRY(strip_ansi(format_string.view()));
+        TRY(print_context.stream.write_formatted(format_string_without_ansi, args...));
+    } else {
+        TRY(print_context.stream.write_formatted(format_string.view(), args...));
+    }
 
     return {};
 }
@@ -169,6 +165,7 @@ ErrorOr<void> print_array(JS::PrintContext& print_context, JS::Array const& arra
 {
     TRY(js_out(print_context, "["));
     bool first = true;
+    size_t printed_count = 0;
     for (auto it = array.indexed_properties().begin(false); it != array.indexed_properties().end(); ++it) {
         TRY(print_separator(print_context, first));
         auto value_or_error = array.get(it.index());
@@ -179,6 +176,10 @@ ErrorOr<void> print_array(JS::PrintContext& print_context, JS::Array const& arra
             return {};
         auto value = value_or_error.release_value();
         TRY(print_value(print_context, value, seen_objects));
+        if (++printed_count > 100 && it != array.indexed_properties().end()) {
+            TRY(js_out(print_context, ", ..."));
+            break;
+        }
     }
     if (!first)
         TRY(js_out(print_context, " "));
@@ -278,8 +279,8 @@ ErrorOr<void> print_error(JS::PrintContext& print_context, JS::Object const& obj
     if (name.is_accessor() || message.is_accessor()) {
         TRY(print_value(print_context, &object, seen_objects));
     } else {
-        auto name_string = TRY(name.to_string_without_side_effects());
-        auto message_string = TRY(message.to_string_without_side_effects());
+        auto name_string = name.to_string_without_side_effects();
+        auto message_string = message.to_string_without_side_effects();
         TRY(print_type(print_context, name_string));
         if (!message_string.is_empty())
             TRY(js_out(print_context, " \033[31;1m{}\033[0m", message_string));
@@ -356,7 +357,7 @@ ErrorOr<void> print_weak_ref(JS::PrintContext& print_context, JS::WeakRef const&
 {
     TRY(print_type(print_context, "WeakRef"sv));
     TRY(js_out(print_context, " "));
-    TRY(print_value(print_context, weak_ref.value().visit([](Empty) -> JS::Value { return JS::js_undefined(); }, [](auto* value) -> JS::Value { return value; }), seen_objects));
+    TRY(print_value(print_context, weak_ref.value().visit([](Empty) -> JS::Value { return JS::js_undefined(); }, [](auto value) -> JS::Value { return value; }), seen_objects));
     return {};
 }
 
@@ -388,13 +389,20 @@ ErrorOr<void> print_promise(JS::PrintContext& print_context, JS::Promise const& 
 
 ErrorOr<void> print_array_buffer(JS::PrintContext& print_context, JS::ArrayBuffer const& array_buffer, HashTable<JS::Object*>& seen_objects)
 {
-    auto& buffer = array_buffer.buffer();
-    auto byte_length = array_buffer.byte_length();
     TRY(print_type(print_context, "ArrayBuffer"sv));
+
+    auto byte_length = array_buffer.byte_length();
     TRY(js_out(print_context, "\n  byteLength: "));
     TRY(print_value(print_context, JS::Value((double)byte_length), seen_objects));
+    if (array_buffer.is_detached()) {
+        TRY(js_out(print_context, "\n  Detached"));
+        return {};
+    }
+
     if (byte_length == 0)
         return {};
+
+    auto& buffer = array_buffer.buffer();
     TRY(js_out(print_context, "\n"));
     for (size_t i = 0; i < byte_length; ++i) {
         TRY(js_out(print_context, "{:02x}", buffer[i]));
@@ -418,15 +426,15 @@ ErrorOr<void> print_shadow_realm(JS::PrintContext& print_context, JS::ShadowReal
     return {};
 }
 
-ErrorOr<void> print_generator(JS::PrintContext& print_context, JS::GeneratorObject const&, HashTable<JS::Object*>&)
+ErrorOr<void> print_generator(JS::PrintContext& print_context, JS::GeneratorObject const& generator, HashTable<JS::Object*>&)
 {
-    TRY(print_type(print_context, "Generator"sv));
+    TRY(print_type(print_context, generator.class_name()));
     return {};
 }
 
-ErrorOr<void> print_async_generator(JS::PrintContext& print_context, JS::AsyncGenerator const&, HashTable<JS::Object*>&)
+ErrorOr<void> print_async_generator(JS::PrintContext& print_context, JS::AsyncGenerator const& generator, HashTable<JS::Object*>&)
 {
-    TRY(print_type(print_context, "AsyncGenerator"sv));
+    TRY(print_type(print_context, generator.class_name()));
     return {};
 }
 
@@ -442,30 +450,43 @@ ErrorOr<void> print_number(JS::PrintContext& print_context, T number)
 ErrorOr<void> print_typed_array(JS::PrintContext& print_context, JS::TypedArrayBase const& typed_array_base, HashTable<JS::Object*>& seen_objects)
 {
     auto& array_buffer = *typed_array_base.viewed_array_buffer();
-    auto length = typed_array_base.array_length();
+
+    auto typed_array_record = JS::make_typed_array_with_buffer_witness_record(typed_array_base, JS::ArrayBuffer::Order::SeqCst);
     TRY(print_type(print_context, typed_array_base.class_name()));
+
+    TRY(js_out(print_context, "\n  buffer: "));
+    TRY(print_type(print_context, "ArrayBuffer"sv));
+    TRY(js_out(print_context, " @ {:p}", &array_buffer));
+
+    if (JS::is_typed_array_out_of_bounds(typed_array_record)) {
+        TRY(js_out(print_context, "\n  <out of bounds>"));
+        return {};
+    }
+
+    auto length = JS::typed_array_length(typed_array_record);
+
     TRY(js_out(print_context, "\n  length: "));
     TRY(print_value(print_context, JS::Value(length), seen_objects));
     TRY(js_out(print_context, "\n  byteLength: "));
-    TRY(print_value(print_context, JS::Value(typed_array_base.byte_length()), seen_objects));
-    TRY(js_out(print_context, "\n  buffer: "));
-    TRY(print_type(print_context, "ArrayBuffer"sv));
-    if (array_buffer.is_detached())
-        TRY(js_out(print_context, " (detached)"));
-    TRY(js_out(print_context, " @ {:p}", &array_buffer));
-    if (length == 0 || array_buffer.is_detached())
-        return {};
+    TRY(print_value(print_context, JS::Value(JS::typed_array_byte_length(typed_array_record)), seen_objects));
+
     TRY(js_out(print_context, "\n"));
-    // FIXME: This kinda sucks.
+    // FIXME: Find a better way to print typed arrays to the console.
+    // The current solution is limited to 100 lines, is hard to read, and hampers debugging.
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType) \
     if (is<JS::ClassName>(typed_array_base)) {                                           \
         TRY(js_out(print_context, "[ "));                                                \
         auto& typed_array = static_cast<JS::ClassName const&>(typed_array_base);         \
         auto data = typed_array.data();                                                  \
+        size_t printed_count = 0;                                                        \
         for (size_t i = 0; i < length; ++i) {                                            \
             if (i > 0)                                                                   \
                 TRY(js_out(print_context, ", "));                                        \
             TRY(print_number(print_context, data[i]));                                   \
+            if (++printed_count > 100 && i < length) {                                   \
+                TRY(js_out(print_context, ", ..."));                                     \
+                break;                                                                   \
+            }                                                                            \
         }                                                                                \
         TRY(js_out(print_context, " ]"));                                                \
         return {};                                                                       \
@@ -477,14 +498,22 @@ ErrorOr<void> print_typed_array(JS::PrintContext& print_context, JS::TypedArrayB
 
 ErrorOr<void> print_data_view(JS::PrintContext& print_context, JS::DataView const& data_view, HashTable<JS::Object*>& seen_objects)
 {
+    auto view_record = JS::make_data_view_with_buffer_witness_record(data_view, JS::ArrayBuffer::Order::SeqCst);
     TRY(print_type(print_context, "DataView"sv));
-    TRY(js_out(print_context, "\n  byteLength: "));
-    TRY(print_value(print_context, JS::Value(data_view.byte_length()), seen_objects));
-    TRY(js_out(print_context, "\n  byteOffset: "));
-    TRY(print_value(print_context, JS::Value(data_view.byte_offset()), seen_objects));
+
     TRY(js_out(print_context, "\n  buffer: "));
     TRY(print_type(print_context, "ArrayBuffer"sv));
     TRY(js_out(print_context, " @ {:p}", data_view.viewed_array_buffer()));
+
+    if (JS::is_view_out_of_bounds(view_record)) {
+        TRY(js_out(print_context, "\n  <out of bounds>"));
+        return {};
+    }
+
+    TRY(js_out(print_context, "\n  byteLength: "));
+    TRY(print_value(print_context, JS::Value(JS::get_view_byte_length(view_record)), seen_objects));
+    TRY(js_out(print_context, "\n  byteOffset: "));
+    TRY(print_value(print_context, JS::Value(data_view.byte_offset()), seen_objects));
     return {};
 }
 
@@ -844,15 +873,11 @@ ErrorOr<void> print_intl_segmenter(JS::PrintContext& print_context, JS::Intl::Se
 
 ErrorOr<void> print_intl_segments(JS::PrintContext& print_context, JS::Intl::Segments const& segments, HashTable<JS::Object*>& seen_objects)
 {
-    auto segments_string = JS::Utf16String::create(segments.vm(), segments.segments_string());
-    if (segments_string.is_error())
-        return Error::from_errno(ENOMEM);
+    auto segments_string = JS::Utf16String::create(segments.segments_string());
 
     TRY(print_type(print_context, "Segments"sv));
     out("\n  string: ");
-    TRY(print_value(print_context, JS::PrimitiveString::create(segments.vm(), segments_string.release_value()), seen_objects));
-    out("\n  segmenter: ");
-    TRY(print_value(print_context, &segments.segments_segmenter(), seen_objects));
+    TRY(print_value(print_context, JS::PrimitiveString::create(segments.vm(), move(segments_string)), seen_objects));
     return {};
 }
 
@@ -1068,7 +1093,7 @@ ErrorOr<void> print_value(JS::PrintContext& print_context, JS::Value value, Hash
     else if (value.is_negative_zero())
         TRY(js_out(print_context, "-"));
 
-    auto contents = TRY(value.to_string_without_side_effects());
+    auto contents = value.to_string_without_side_effects();
     if (value.is_string())
         TRY(js_out(print_context, "{}", TRY(escape_for_string_literal(contents))));
     else

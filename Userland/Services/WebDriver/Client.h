@@ -10,7 +10,7 @@
 
 #include <AK/Function.h>
 #include <AK/NonnullRefPtr.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibWeb/WebDriver/Client.h>
 #include <LibWeb/WebDriver/Error.h>
 #include <LibWeb/WebDriver/Response.h>
@@ -19,23 +19,27 @@
 namespace WebDriver {
 
 struct LaunchBrowserCallbacks {
-    Function<ErrorOr<pid_t>(DeprecatedString const&)> launch_browser;
-    Function<ErrorOr<pid_t>(DeprecatedString const&)> launch_headless_browser;
+    Function<ErrorOr<pid_t>(ByteString const&)> launch_browser;
+    Function<ErrorOr<pid_t>(ByteString const&)> launch_headless_browser;
 };
 
 class Client final : public Web::WebDriver::Client {
     C_OBJECT_ABSTRACT(Client);
 
 public:
-    static ErrorOr<NonnullRefPtr<Client>> try_create(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallbacks, Core::Object* parent);
+    static ErrorOr<NonnullRefPtr<Client>> try_create(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallbacks, Core::EventReceiver* parent);
     virtual ~Client() override;
 
     void close_session(unsigned session_id);
 
 private:
-    Client(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallbacks, Core::Object* parent);
+    Client(NonnullOwnPtr<Core::BufferedTCPSocket>, LaunchBrowserCallbacks, Core::EventReceiver* parent);
 
-    ErrorOr<NonnullRefPtr<Session>, Web::WebDriver::Error> find_session_with_id(StringView session_id);
+    enum class AllowInvalidWindowHandle {
+        No,
+        Yes,
+    };
+    ErrorOr<NonnullRefPtr<Session>, Web::WebDriver::Error> find_session_with_id(StringView session_id, AllowInvalidWindowHandle = AllowInvalidWindowHandle::No);
 
     virtual Web::WebDriver::Response new_session(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response delete_session(Web::WebDriver::Parameters parameters, JsonValue payload) override;
@@ -52,11 +56,15 @@ private:
     virtual Web::WebDriver::Response close_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response switch_to_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response get_window_handles(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response new_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response switch_to_frame(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response switch_to_parent_frame(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response get_window_rect(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response set_window_rect(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response maximize_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response minimize_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response fullscreen_window(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response consume_user_activation(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response find_element(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response find_elements(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response find_element_from_element(Web::WebDriver::Parameters parameters, JsonValue payload) override;
@@ -76,6 +84,8 @@ private:
     virtual Web::WebDriver::Response get_computed_role(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response get_computed_label(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response element_click(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response element_clear(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response element_send_keys(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response get_source(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response execute_script(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response execute_async_script(Web::WebDriver::Parameters parameters, JsonValue payload) override;
@@ -84,6 +94,8 @@ private:
     virtual Web::WebDriver::Response add_cookie(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response delete_cookie(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response delete_all_cookies(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response perform_actions(Web::WebDriver::Parameters parameters, JsonValue payload) override;
+    virtual Web::WebDriver::Response release_actions(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response dismiss_alert(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response accept_alert(Web::WebDriver::Parameters parameters, JsonValue payload) override;
     virtual Web::WebDriver::Response get_alert_text(Web::WebDriver::Parameters parameters, JsonValue payload) override;

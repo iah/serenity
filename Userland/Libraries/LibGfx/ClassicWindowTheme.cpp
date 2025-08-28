@@ -64,8 +64,8 @@ void ClassicWindowTheme::paint_normal_frame(Painter& painter, WindowState window
 
     auto [title_color, border_color, border_color2, stripes_color, shadow_color] = compute_frame_colors(window_state, palette);
 
-    painter.draw_line(titlebar_rect.bottom_left().translated(0, 1), titlebar_rect.bottom_right().translated(0, 1), palette.button());
-    painter.draw_line(titlebar_rect.bottom_left().translated(0, 2), titlebar_rect.bottom_right().translated(0, 2), palette.button());
+    painter.draw_line(titlebar_rect.bottom_left(), titlebar_rect.bottom_right().moved_left(1), palette.button());
+    painter.draw_line(titlebar_rect.bottom_left().moved_down(1), titlebar_rect.bottom_right().translated(-1, 1), palette.button());
 
     painter.fill_rect_with_gradient(titlebar_rect, border_color, border_color2);
 
@@ -87,7 +87,7 @@ void ClassicWindowTheme::paint_normal_frame(Painter& painter, WindowState window
     if (stripes_color.alpha() > 0) {
         switch (title_alignment) {
         case Gfx::TextAlignment::CenterLeft: {
-            int stripe_left = titlebar_title_rect.right() + 5;
+            int stripe_left = titlebar_title_rect.right() + 4;
 
             if (stripe_left && stripe_right && stripe_left < stripe_right) {
                 for (int i = 2; i <= titlebar_inner_rect.height() - 2; i += 2) {
@@ -164,12 +164,11 @@ void ClassicWindowTheme::paint_notification_frame(Painter& painter, WindowMode w
     painter.fill_rect_with_gradient(Gfx::Orientation::Vertical, titlebar_rect, palette.active_window_border1(), palette.active_window_border2());
 
     if (palette.active_window_title_stripes().alpha() > 0) {
-        int stripe_top = close_button_rect.bottom() + 4;
+        int stripe_top = close_button_rect.bottom() + 3;
         int stripe_bottom = window_rect.height() - 3;
         if (stripe_top && stripe_bottom && stripe_top < stripe_bottom) {
-            for (int i = 2; i <= palette.window_title_height() - 2; i += 2) {
+            for (int i = 2; i <= palette.window_title_height() - 2; i += 2)
                 painter.draw_line({ titlebar_rect.x() + i, stripe_top }, { titlebar_rect.x() + i, stripe_bottom }, palette.active_window_title_stripes());
-            }
         }
     }
 }
@@ -199,8 +198,9 @@ IntRect ClassicWindowTheme::frame_rect_for_window(WindowType window_type, Window
     }
 }
 
-Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette, size_t buttons) const
+Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette, size_t buttons, bool is_maximized) const
 {
+    (void)is_maximized;
     int window_button_width = palette.window_title_button_width();
     int window_button_height = palette.window_title_button_height();
     int pos;
@@ -208,7 +208,7 @@ Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, Windo
     if (window_type == WindowType::Notification)
         pos = titlebar_rect(window_type, window_mode, window_rect, palette).top() + 2;
     else
-        pos = titlebar_text_rect(window_type, window_mode, window_rect, palette).right() + 1;
+        pos = titlebar_text_rect(window_type, window_mode, window_rect, palette).right();
 
     for (size_t i = 0; i < buttons; i++) {
         if (window_type == WindowType::Notification) {
@@ -241,6 +241,17 @@ int ClassicWindowTheme::titlebar_height(WindowType window_type, WindowMode windo
     default:
         return 0;
     }
+}
+
+void ClassicWindowTheme::paint_taskbar(Painter& painter, IntRect const& taskbar_rect, Palette const& palette) const
+{
+    painter.fill_rect(taskbar_rect, palette.button());
+    painter.draw_line({ 0, 1 }, { taskbar_rect.width() - 1, 1 }, palette.threed_highlight());
+}
+
+void ClassicWindowTheme::paint_button(Painter& painter, IntRect const& rect, Palette const& palette, ButtonStyle button_style, bool pressed, bool hovered, bool checked, bool enabled, bool focused, bool default_button) const
+{
+    StylePainter::current().paint_button(painter, rect, palette, button_style, pressed, hovered, checked, enabled, focused, default_button);
 }
 
 }

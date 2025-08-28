@@ -4,11 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTemplateElementPrototype.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLTemplateElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTemplateElement);
 
 HTMLTemplateElement::HTMLTemplateElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -17,21 +20,19 @@ HTMLTemplateElement::HTMLTemplateElement(DOM::Document& document, DOM::Qualified
 
 HTMLTemplateElement::~HTMLTemplateElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLTemplateElement::initialize(JS::Realm& realm)
+void HTMLTemplateElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTemplateElementPrototype>(realm, "HTMLTemplateElement"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTemplateElement);
 
-    m_content = MUST_OR_THROW_OOM(heap().allocate<DOM::DocumentFragment>(realm, m_document->appropriate_template_contents_owner_document()));
+    m_content = heap().allocate<DOM::DocumentFragment>(realm, m_document->appropriate_template_contents_owner_document());
     m_content->set_host(this);
-
-    return {};
 }
 
 void HTMLTemplateElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_content.ptr());
+    visitor.visit(m_content);
 }
 
 // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element:concept-node-adopt-ext
@@ -45,19 +46,26 @@ void HTMLTemplateElement::adopted_from(DOM::Document&)
 }
 
 // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element:concept-node-clone-ext
-void HTMLTemplateElement::cloned(Node& copy, bool clone_children)
+WebIDL::ExceptionOr<void> HTMLTemplateElement::cloned(Node& copy, bool clone_children)
 {
+    // 1. If the clone children flag is not set in the calling clone algorithm, return.
     if (!clone_children)
-        return;
+        return {};
 
+    // 2. Let copied contents be the result of cloning all the children of node's template contents,
+    //    with document set to copy's template contents's node document, and with the clone children flag set.
+    // 3. Append copied contents to copy's template contents.
     auto& template_clone = verify_cast<HTMLTemplateElement>(copy);
+    for (auto child = content()->first_child(); child; child = child->next_sibling()) {
+        auto cloned_child = TRY(child->clone_node(&template_clone.content()->document(), true));
+        TRY(template_clone.content()->append_child(cloned_child));
+    }
+    return {};
+}
 
-    content()->for_each_child([&](auto& child) {
-        auto cloned_child = child.clone_node(&template_clone.content()->document(), true);
-
-        // FIXME: Should this use TreeNode::append_child instead?
-        MUST(template_clone.content()->append_child(cloned_child));
-    });
+void HTMLTemplateElement::set_template_contents(JS::NonnullGCPtr<DOM::DocumentFragment> contents)
+{
+    m_content = contents;
 }
 
 }

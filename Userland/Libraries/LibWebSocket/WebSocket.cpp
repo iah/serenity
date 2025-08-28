@@ -74,7 +74,7 @@ ReadyState WebSocket::ready_state()
     }
 }
 
-DeprecatedString WebSocket::subprotocol_in_use()
+ByteString WebSocket::subprotocol_in_use()
 {
     return m_subprotocol_in_use;
 }
@@ -90,7 +90,7 @@ void WebSocket::send(Message const& message)
         send_frame(WebSocket::OpCode::Binary, message.data(), true);
 }
 
-void WebSocket::close(u16 code, DeprecatedString const& message)
+void WebSocket::close(u16 code, ByteString const& message)
 {
     VERIFY(m_impl);
 
@@ -171,7 +171,7 @@ void WebSocket::send_client_handshake()
 
     // 4. Host
     auto url = m_connection.url();
-    builder.appendff("Host: {}", url.host());
+    builder.appendff("Host: {}", url.serialized_host().release_value_but_fixme_should_propagate_errors());
     if (!m_connection.is_secure() && url.port_or_default() != 80)
         builder.appendff(":{}", url.port_or_default());
     else if (m_connection.is_secure() && url.port_or_default() != 443)
@@ -184,9 +184,9 @@ void WebSocket::send_client_handshake()
 
     // 7. 16-byte nonce encoded as Base64
     u8 nonce_data[16];
-    fill_with_random(nonce_data, 16);
+    fill_with_random(nonce_data);
     // FIXME: change to TRY() and make method fallible
-    m_websocket_key = MUST(encode_base64({ nonce_data, 16 })).to_deprecated_string();
+    m_websocket_key = MUST(encode_base64({ nonce_data, 16 })).to_byte_string();
     builder.appendff("Sec-WebSocket-Key: {}\r\n", m_websocket_key);
 
     // 8. Origin (optional field)
@@ -212,14 +212,14 @@ void WebSocket::send_client_handshake()
     }
 
     // 12. Additional headers
-    for (auto& header : m_connection.headers()) {
+    for (auto& header : m_connection.headers().headers()) {
         builder.appendff("{}: {}\r\n", header.name, header.value);
     }
 
     builder.append("\r\n"sv);
 
     m_state = WebSocket::InternalState::WaitingForServerHandshake;
-    auto success = m_impl->send(builder.to_deprecated_string().bytes());
+    auto success = m_impl->send(builder.string_view().bytes());
     VERIFY(success);
 }
 
@@ -297,9 +297,9 @@ void WebSocket::read_server_handshake()
 
         auto header_name = parts[0];
 
-        if (header_name.equals_ignoring_case("Upgrade"sv)) {
+        if (header_name.equals_ignoring_ascii_case("Upgrade"sv)) {
             // 2. |Upgrade| should be case-insensitive "websocket"
-            if (!parts[1].trim_whitespace().equals_ignoring_case("websocket"sv)) {
+            if (!parts[1].trim_whitespace().equals_ignoring_ascii_case("websocket"sv)) {
                 dbgln("WebSocket: Server HTTP Handshake Header |Upgrade| should be 'websocket', got '{}'. Failing connection.", parts[1]);
                 fatal_error(WebSocket::Error::ConnectionUpgradeFailed);
                 return;
@@ -309,9 +309,9 @@ void WebSocket::read_server_handshake()
             continue;
         }
 
-        if (header_name.equals_ignoring_case("Connection"sv)) {
+        if (header_name.equals_ignoring_ascii_case("Connection"sv)) {
             // 3. |Connection| should be case-insensitive "Upgrade"
-            if (!parts[1].trim_whitespace().equals_ignoring_case("Upgrade"sv)) {
+            if (!parts[1].trim_whitespace().equals_ignoring_ascii_case("Upgrade"sv)) {
                 dbgln("WebSocket: Server HTTP Handshake Header |Connection| should be 'Upgrade', got '{}'. Failing connection.", parts[1]);
                 return;
             }
@@ -320,9 +320,9 @@ void WebSocket::read_server_handshake()
             continue;
         }
 
-        if (header_name.equals_ignoring_case("Sec-WebSocket-Accept"sv)) {
+        if (header_name.equals_ignoring_ascii_case("Sec-WebSocket-Accept"sv)) {
             // 4. |Sec-WebSocket-Accept| should be base64(SHA1(|Sec-WebSocket-Key| + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-            auto expected_content = DeprecatedString::formatted("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", m_websocket_key);
+            auto expected_content = ByteString::formatted("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", m_websocket_key);
 
             Crypto::Hash::Manager hash;
             hash.initialize(Crypto::Hash::HashKind::SHA1);
@@ -330,7 +330,7 @@ void WebSocket::read_server_handshake()
             auto expected_sha1 = hash.digest();
             // FIXME: change to TRY() and make method fallible
             auto expected_sha1_string = MUST(encode_base64({ expected_sha1.immutable_data(), expected_sha1.data_length() }));
-            if (!parts[1].trim_whitespace().equals_ignoring_case(expected_sha1_string)) {
+            if (!parts[1].trim_whitespace().equals_ignoring_ascii_case(expected_sha1_string)) {
                 dbgln("WebSocket: Server HTTP Handshake Header |Sec-Websocket-Accept| should be '{}', got '{}'. Failing connection.", expected_sha1_string, parts[1]);
                 fatal_error(WebSocket::Error::ConnectionUpgradeFailed);
                 return;
@@ -340,14 +340,14 @@ void WebSocket::read_server_handshake()
             continue;
         }
 
-        if (header_name.equals_ignoring_case("Sec-WebSocket-Extensions"sv)) {
+        if (header_name.equals_ignoring_ascii_case("Sec-WebSocket-Extensions"sv)) {
             // 5. |Sec-WebSocket-Extensions| should not contain an extension that doesn't appear in m_connection->extensions()
             auto server_extensions = parts[1].split(',');
             for (auto const& extension : server_extensions) {
                 auto trimmed_extension = extension.trim_whitespace();
                 bool found_extension = false;
                 for (auto const& supported_extension : m_connection.extensions()) {
-                    if (trimmed_extension.equals_ignoring_case(supported_extension)) {
+                    if (trimmed_extension.equals_ignoring_ascii_case(supported_extension)) {
                         found_extension = true;
                     }
                 }
@@ -360,13 +360,13 @@ void WebSocket::read_server_handshake()
             continue;
         }
 
-        if (header_name.equals_ignoring_case("Sec-WebSocket-Protocol"sv)) {
+        if (header_name.equals_ignoring_ascii_case("Sec-WebSocket-Protocol"sv)) {
             // 6. If the response includes a |Sec-WebSocket-Protocol| header field and this header field indicates the use of a subprotocol that was not present in the client's handshake (the server has indicated a subprotocol not requested by the client), the client MUST _Fail the WebSocket Connection_.
             // Additionally, Section 4.2.2 says this is "Either a single value representing the subprotocol the server is ready to use or null."
             auto server_protocol = parts[1].trim_whitespace();
             bool found_protocol = false;
             for (auto const& supported_protocol : m_connection.protocols()) {
-                if (server_protocol.equals_ignoring_case(supported_protocol)) {
+                if (server_protocol.equals_ignoring_ascii_case(supported_protocol)) {
                     found_protocol = true;
                 }
             }
@@ -406,13 +406,8 @@ void WebSocket::read_frame()
         return;
     }
 
-    bool is_final_frame = head_bytes[0] & 0x80;
-    if (!is_final_frame) {
-        // FIXME: Support fragmented frames
-        TODO();
-    }
-
     auto op_code = (WebSocket::OpCode)(head_bytes[0] & 0x0f);
+    bool is_final_frame = head_bytes[0] & 0x80;
     bool is_masked = head_bytes[1] & 0x80;
 
     // Parse the payload length.
@@ -490,7 +485,7 @@ void WebSocket::read_frame()
     if (op_code == WebSocket::OpCode::ConnectionClose) {
         if (payload.size() > 1) {
             m_last_close_code = (((u16)(payload[0] & 0xff) << 8) | ((u16)(payload[1] & 0xff)));
-            m_last_close_message = DeprecatedString(ReadonlyBytes(payload.offset_pointer(2), payload.size() - 2));
+            m_last_close_message = ByteString(ReadonlyBytes(payload.offset_pointer(2), payload.size() - 2));
         }
         m_state = WebSocket::InternalState::Closing;
         return;
@@ -504,9 +499,22 @@ void WebSocket::read_frame()
         // We can safely ignore the pong
         return;
     }
-    if (op_code == WebSocket::OpCode::Continuation) {
-        // FIXME: Support fragmented frames
-        TODO();
+    if (!is_final_frame) {
+        if (op_code != WebSocket::OpCode::Continuation) {
+            // First fragmented message
+            m_initial_fragment_opcode = op_code;
+        }
+        // First and next fragmented message
+        m_fragmented_data_buffer.append(payload.data(), payload_length);
+        return;
+    }
+    if (is_final_frame && op_code == WebSocket::OpCode::Continuation) {
+        // Last fragmented message
+        m_fragmented_data_buffer.append(payload.data(), payload_length);
+        op_code = m_initial_fragment_opcode;
+        payload.clear();
+        payload.append(m_fragmented_data_buffer.data(), m_fragmented_data_buffer.size());
+        m_fragmented_data_buffer.clear();
     }
     if (op_code == WebSocket::OpCode::Text) {
         notify_message(Message(payload, true));
@@ -523,7 +531,7 @@ void WebSocket::send_frame(WebSocket::OpCode op_code, ReadonlyBytes payload, boo
 {
     VERIFY(m_impl);
     VERIFY(m_state == WebSocket::InternalState::Open);
-    u8 frame_head[1] = { (u8)((is_final ? 0x80 : 0x00) | ((u8)(op_code)&0xf)) };
+    u8 frame_head[1] = { (u8)((is_final ? 0x80 : 0x00) | ((u8)(op_code) & 0xf)) };
     m_impl->send(ReadonlyBytes(frame_head, 1));
     // Section 5.1 : a client MUST mask all frames that it sends to the server
     bool has_mask = true;
@@ -579,7 +587,7 @@ void WebSocket::send_frame(WebSocket::OpCode op_code, ReadonlyBytes payload, boo
         // > Clients MUST choose a new masking key for each frame, using an algorithm
         // > that cannot be predicted by end applications that provide data
         u8 masking_key[4];
-        fill_with_random(masking_key, 4);
+        fill_with_random(masking_key);
         m_impl->send(ReadonlyBytes(masking_key, 4));
         // don't try to send empty payload
         if (payload.size() == 0)
@@ -607,6 +615,10 @@ void WebSocket::fatal_error(WebSocket::Error error)
 
 void WebSocket::discard_connection()
 {
+    if (m_discard_connection_requested)
+        return;
+    m_discard_connection_requested = true;
+
     deferred_invoke([this] {
         VERIFY(m_impl);
         m_impl->discard_connection();
@@ -624,7 +636,7 @@ void WebSocket::notify_open()
     on_open();
 }
 
-void WebSocket::notify_close(u16 code, DeprecatedString reason, bool was_clean)
+void WebSocket::notify_close(u16 code, ByteString reason, bool was_clean)
 {
     if (!on_close)
         return;

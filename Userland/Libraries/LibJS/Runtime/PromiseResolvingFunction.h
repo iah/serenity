@@ -13,6 +13,7 @@ namespace JS {
 
 struct AlreadyResolved final : public Cell {
     JS_CELL(AlreadyResolved, Cell);
+    JS_DECLARE_ALLOCATOR(AlreadyResolved);
 
     bool value { false };
 
@@ -24,13 +25,14 @@ protected:
 
 class PromiseResolvingFunction final : public NativeFunction {
     JS_OBJECT(PromiseResolvingFunction, NativeFunction);
+    JS_DECLARE_ALLOCATOR(PromiseResolvingFunction);
 
 public:
-    using FunctionType = Function<ThrowCompletionOr<Value>(VM&, Promise&, AlreadyResolved&)>;
+    using FunctionType = Function<Value(VM&, Promise&, AlreadyResolved&)>;
 
     static NonnullGCPtr<PromiseResolvingFunction> create(Realm&, Promise&, AlreadyResolved&, FunctionType);
 
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PromiseResolvingFunction() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -40,8 +42,8 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    Promise& m_promise;
-    AlreadyResolved& m_already_resolved;
+    NonnullGCPtr<Promise> m_promise;
+    NonnullGCPtr<AlreadyResolved> m_already_resolved;
     FunctionType m_native_function;
 };
 

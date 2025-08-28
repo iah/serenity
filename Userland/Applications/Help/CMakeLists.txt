@@ -5,19 +5,15 @@ serenity_component(
     DEPENDS WebContent
 )
 
-compile_gml(HelpWindow.gml HelpWindowGML.h help_window_gml)
+compile_gml(HelpWindow.gml HelpWindowGML.cpp)
 
 set(SOURCES
     History.cpp
     main.cpp
     MainWidget.cpp
     ManualModel.cpp
-)
-
-set(GENERATED_SOURCES
-    HelpWindowGML.h
+    HelpWindowGML.cpp
 )
 
 serenity_app(Help ICON app-help)
-target_link_libraries(Help PRIVATE LibCore LibWebView LibWeb LibMarkdown LibGfx LibGUI LibDesktop LibMain LibManual LibLocale)
-link_with_locale_data(Help)
+target_link_libraries(Help PRIVATE LibCore LibWebView LibWeb LibMarkdown LibGfx LibGUI LibDesktop LibMain LibManual LibLocale LibURL)

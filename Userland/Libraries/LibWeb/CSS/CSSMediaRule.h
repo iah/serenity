@@ -16,30 +16,30 @@ namespace Web::CSS {
 // https://www.w3.org/TR/css-conditional-3/#the-cssmediarule-interface
 class CSSMediaRule final : public CSSConditionRule {
     WEB_PLATFORM_OBJECT(CSSMediaRule, CSSConditionRule);
+    JS_DECLARE_ALLOCATOR(CSSMediaRule);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSMediaRule>> create(JS::Realm&, MediaList& media_queries, CSSRuleList&);
+    [[nodiscard]] static JS::NonnullGCPtr<CSSMediaRule> create(JS::Realm&, MediaList& media_queries, CSSRuleList&);
 
     virtual ~CSSMediaRule() = default;
 
-    virtual Type type() const override { return Type::Media; };
+    virtual Type type() const override { return Type::Media; }
 
-    virtual DeprecatedString condition_text() const override;
-    virtual void set_condition_text(DeprecatedString) override;
-    virtual bool condition_matches() const override { return m_media.matches(); }
+    virtual String condition_text() const override;
+    virtual bool condition_matches() const override { return m_media->matches(); }
 
-    MediaList* media() const { return &m_media; }
+    MediaList* media() const { return m_media; }
 
-    bool evaluate(HTML::Window const& window) { return m_media.evaluate(window); }
+    bool evaluate(HTML::Window const& window) { return m_media->evaluate(window); }
 
 private:
     CSSMediaRule(JS::Realm&, MediaList&, CSSRuleList&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
-    virtual DeprecatedString serialized() const override;
+    virtual String serialized() const override;
 
-    MediaList& m_media;
+    JS::NonnullGCPtr<MediaList> m_media;
 };
 
 template<>

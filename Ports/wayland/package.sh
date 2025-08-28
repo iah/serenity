@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='wayland'
-version='1.21.0'
+version='1.24.0'
 useconfigure='true'
 configopts=(
     "--buildtype=release"
@@ -12,10 +12,12 @@ configopts=(
 )
 depends=(
     'expat'
+    'libffi'
     'libxml2'
 )
-files="https://gitlab.freedesktop.org/wayland/wayland/-/releases/${version}/downloads/wayland-${version}.tar.xz wayland-${version}.tar.xz 6dc64d7fc16837a693a51cfdb2e568db538bfdc9f457d4656285bb9594ef11ac"
-auth_type='sha256'
+files=(
+    "https://gitlab.freedesktop.org/wayland/wayland/-/releases/${version}/downloads/wayland-${version}.tar.xz#82892487a01ad67b334eca83b54317a7c86a03a89cfadacfef5211f11a5d0536"
+)
 
 configure() {
     # TODO: Figure out why GCC doesn't autodetect that libgcc_s is needed.

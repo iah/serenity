@@ -19,13 +19,12 @@ TimelineHeader::TimelineHeader(Profile& profile, Process const& process)
     : m_profile(profile)
     , m_process(process)
 {
-    set_frame_shape(Gfx::FrameShape::Panel);
-    set_frame_shadow(Gfx::FrameShadow::Raised);
+    set_frame_style(Gfx::FrameStyle::RaisedPanel);
     set_fixed_size(200, 40);
     update_selection();
 
     m_icon = GUI::FileIconProvider::icon_for_executable(m_process.executable).bitmap_for_size(32);
-    m_text = DeprecatedString::formatted("{} ({})", LexicalPath::basename(m_process.executable), m_process.pid);
+    m_text = ByteString::formatted("{} ({})", LexicalPath::basename(m_process.executable), m_process.pid);
 }
 
 void TimelineHeader::paint_event(GUI::PaintEvent& event)
@@ -43,7 +42,7 @@ void TimelineHeader::paint_event(GUI::PaintEvent& event)
         painter.blit(icon_rect.location(), *m_icon, m_icon->rect());
 
     Gfx::IntRect text_rect {
-        icon_rect.right() + 6,
+        icon_rect.right() + 5,
         icon_rect.y(),
         width() - 32,
         32

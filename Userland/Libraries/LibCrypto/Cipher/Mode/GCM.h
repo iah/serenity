@@ -15,11 +15,10 @@
 #include <LibCrypto/Verification.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
-namespace Crypto {
-namespace Cipher {
+namespace Crypto::Cipher {
 
 using IncrementFunction = IncrementInplace;
 
@@ -31,7 +30,7 @@ public:
     virtual ~GCM() = default;
 
     template<typename... Args>
-    explicit constexpr GCM<T>(Args... args)
+    explicit constexpr GCM(Args... args)
         : CTR<T>(args...)
     {
         static_assert(T::BlockSizeInBits == 128u, "GCM Mode is only available for 128-bit Ciphers");
@@ -45,12 +44,12 @@ public:
     }
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const override
+    virtual ByteString class_name() const override
     {
         StringBuilder builder;
         builder.append(this->cipher().class_name());
         builder.append("_GCM"sv);
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
 #endif
 
@@ -64,9 +63,12 @@ public:
     {
         VERIFY(!ivec.is_empty());
 
-        static ByteBuffer dummy;
+        static ByteBuffer dummy = MUST(ByteBuffer::create_uninitialized(T::BlockSizeInBits / 8));
 
-        encrypt(in, out, ivec, dummy, dummy);
+        // FIXME: Taking `out` by reference suggests that we should modify its length to match the
+        //        ciphertext size. In practice, however, noone does that and I don't want to be the
+        //        person who fixes this.
+        encrypt(in, out.slice(0, in.size()), ivec, dummy, dummy);
     }
     virtual void decrypt(ReadonlyBytes in, Bytes& out, ReadonlyBytes ivec = {}) override
     {
@@ -146,7 +148,5 @@ private:
     Bytes m_auth_key { m_auth_key_storage, block_size };
     Optional<Authentication::GHash> m_ghash;
 };
-
-}
 
 }

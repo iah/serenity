@@ -7,28 +7,28 @@
 #pragma once
 
 #include <AK/Types.h>
-#include <Kernel/CommandLine.h>
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/FileSystem/SysFS/Component.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Firmware/Directory.h>
 #include <Kernel/Firmware/ACPI/Definitions.h>
 #include <Kernel/Firmware/ACPI/Initialize.h>
 #include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Library/LockRefPtr.h>
+#include <Kernel/Memory/PhysicalAddress.h>
 #include <Kernel/Memory/Region.h>
 #include <Kernel/Memory/TypedMapping.h>
-#include <Kernel/PhysicalAddress.h>
-#include <Kernel/VirtualAddress.h>
+#include <Kernel/Memory/VirtualAddress.h>
 
 namespace Kernel::ACPI {
 
 class ACPISysFSDirectory : public SysFSDirectory {
 public:
     virtual StringView name() const override { return "acpi"sv; }
-    static NonnullLockRefPtr<ACPISysFSDirectory> must_create(FirmwareSysFSDirectory& firmware_directory);
+    static NonnullLockRefPtr<ACPISysFSDirectory> must_create(SysFSFirmwareDirectory& firmware_directory);
 
 private:
     void find_tables_and_register_them_as_components();
-    explicit ACPISysFSDirectory(FirmwareSysFSDirectory& firmware_directory);
+    explicit ACPISysFSDirectory(SysFSFirmwareDirectory& firmware_directory);
 };
 
 class ACPISysFSComponent : public SysFSComponent {
@@ -55,7 +55,7 @@ public:
     static void must_initialize(PhysicalAddress rsdp, PhysicalAddress fadt, u8 irq_number);
 
     virtual StringView purpose() const override { return "ACPI Parser"sv; }
-    virtual bool handle_irq(RegisterState const&) override;
+    virtual bool handle_irq() override;
 
     Optional<PhysicalAddress> find_table(StringView signature);
 

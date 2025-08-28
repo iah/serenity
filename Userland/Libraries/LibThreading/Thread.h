@@ -8,11 +8,12 @@
 #pragma once
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/AtomicRefCounted.h>
+#include <AK/ByteString.h>
 #include <AK/DistinctNumeric.h>
 #include <AK/Function.h>
 #include <AK/Result.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <pthread.h>
 
 namespace Threading {
@@ -41,10 +42,19 @@ enum class ThreadState : u8 {
     Joined,
 };
 
-class Thread final : public Core::Object {
-    C_OBJECT(Thread);
-
+class Thread final
+    : public AtomicRefCounted<Thread>
+    , public Weakable<Thread> {
 public:
+    static NonnullRefPtr<Thread> construct(ESCAPING Function<intptr_t()> action, StringView thread_name = {})
+    {
+        return adopt_ref(*new Thread(move(action), thread_name));
+    }
+    static ErrorOr<NonnullRefPtr<Thread>> try_create(ESCAPING Function<intptr_t()> action, StringView thread_name = {})
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) Thread(move(action), thread_name));
+    }
+
     virtual ~Thread();
 
     ErrorOr<void> set_priority(int priority);
@@ -59,7 +69,7 @@ public:
     template<typename T = void>
     Result<T, ThreadError> join();
 
-    DeprecatedString thread_name() const;
+    ByteString thread_name() const;
     pthread_t tid() const;
     ThreadState state() const;
     bool is_started() const;
@@ -67,10 +77,10 @@ public:
     bool has_exited() const;
 
 private:
-    explicit Thread(Function<intptr_t()> action, StringView thread_name = {});
+    explicit Thread(ESCAPING Function<intptr_t()> action, StringView thread_name = {});
     Function<intptr_t()> m_action;
     pthread_t m_tid { 0 };
-    DeprecatedString m_thread_name;
+    ByteString m_thread_name;
     Atomic<ThreadState> m_state { ThreadState::Startable };
 };
 
@@ -110,7 +120,7 @@ template<>
 struct AK::Formatter<Threading::ThreadState> : AK::Formatter<FormatString> {
     ErrorOr<void> format(FormatBuilder& builder, Threading::ThreadState state)
     {
-        DeprecatedString name = "";
+        ByteString name = "";
         switch (state) {
         case Threading::ThreadState::Detached:
             name = "Detached";

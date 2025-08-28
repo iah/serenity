@@ -7,6 +7,7 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <AK/String.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
@@ -42,6 +43,10 @@ static int parse_options(StringView options)
             flags |= MS_AXALLOWED;
         else if (part == "noregular")
             flags |= MS_NOREGULAR;
+        else if (part == "srchidden")
+            flags |= MS_SRCHIDDEN;
+        else if (part == "immutable")
+            flags |= MS_IMMUTABLE;
         else
             warnln("Ignoring invalid option: {}", part);
     }
@@ -63,13 +68,13 @@ static ErrorOr<int> get_source_fd(StringView source)
     return fd_or_error;
 }
 
-static bool mount_by_line(DeprecatedString const& line)
+static bool mount_by_line(ByteString const& line)
 {
     // Skip comments and blank lines.
     if (line.is_empty() || line.starts_with('#'))
         return true;
 
-    Vector<DeprecatedString> parts = line.split('\t');
+    Vector<ByteString> parts = line.split('\t');
     if (parts.size() < 3) {
         warnln("Invalid fstab entry: {}", line);
         return false;
@@ -95,7 +100,15 @@ static bool mount_by_line(DeprecatedString const& line)
 
     dbgln("Mounting {} ({}) on {}", filename, fstype, mountpoint);
 
-    auto error_or_void = Core::System::mount(fd, mountpoint, fstype, flags);
+    ErrorOr<void> error_or_void;
+
+    if (flags & MS_BIND)
+        error_or_void = Core::System::bindmount({}, fd, mountpoint, flags & ~MS_BIND);
+    else if (flags & MS_REMOUNT)
+        error_or_void = Core::System::remount({}, mountpoint, flags & ~MS_REMOUNT);
+    else
+        error_or_void = Core::System::mount({}, fd, mountpoint, fstype, flags);
+
     if (error_or_void.is_error()) {
         warnln("Failed to mount {} (FD: {}) ({}) on {}: {}", filename, fd, fstype, mountpoint, error_or_void.error());
         return false;
@@ -113,7 +126,7 @@ static ErrorOr<void> mount_all()
     bool all_ok = true;
     auto process_fstab_entries = [&](StringView path) -> ErrorOr<void> {
         auto file_unbuffered = TRY(Core::File::open(path, Core::File::OpenMode::Read));
-        auto file = TRY(Core::BufferedFile::create(move(file_unbuffered)));
+        auto file = TRY(Core::InputBufferedFile::create(move(file_unbuffered)));
 
         while (TRY(file->can_read_line())) {
             auto line = TRY(file->read_line(buffer));
@@ -155,9 +168,9 @@ static ErrorOr<void> print_mounts()
 
     json.as_array().for_each([](auto& value) {
         auto& fs_object = value.as_object();
-        auto class_name = fs_object.get_deprecated_string("class_name"sv).value_or({});
-        auto mount_point = fs_object.get_deprecated_string("mount_point"sv).value_or({});
-        auto source = fs_object.get_deprecated_string("source"sv).value_or("none");
+        auto class_name = fs_object.get_byte_string("class_name"sv).value_or({});
+        auto mount_point = fs_object.get_byte_string("mount_point"sv).value_or({});
+        auto source = fs_object.get_byte_string("source"sv).value_or("none");
         auto readonly = fs_object.get_bool("readonly"sv).value_or(false);
         auto mount_flags = fs_object.get_u32("mount_flags"sv).value_or(0);
 
@@ -168,10 +181,14 @@ static ErrorOr<void> print_mounts()
         else
             out("rw");
 
+        if (mount_flags & MS_IMMUTABLE)
+            out(",immutable");
         if (mount_flags & MS_NODEV)
             out(",nodev");
         if (mount_flags & MS_NOREGULAR)
             out(",noregular");
+        if (mount_flags & MS_SRCHIDDEN)
+            out(",srchidden");
         if (mount_flags & MS_NOEXEC)
             out(",noexec");
         if (mount_flags & MS_NOSUID)
@@ -187,6 +204,21 @@ static ErrorOr<void> print_mounts()
     });
 
     return {};
+}
+
+static ErrorOr<void> mount_using_loop_device(int inode_fd, StringView mountpoint, StringView fs_type, int flags)
+{
+    int devctl_fd = TRY(Core::System::open("/dev/devctl"sv, O_RDONLY));
+    int value = inode_fd;
+    TRY(Core::System::ioctl(devctl_fd, DEVCTL_CREATE_LOOP_DEVICE, &value));
+    int loop_device_index = value;
+
+    auto loop_device_path = TRY(String::formatted("/dev/loop/{}", loop_device_index));
+    int loop_device_fd = TRY(Core::System::open(loop_device_path.bytes_as_string_view(), O_RDONLY));
+
+    auto result = Core::System::mount({}, loop_device_fd, mountpoint, fs_type, flags);
+    TRY(Core::System::ioctl(devctl_fd, DEVCTL_DESTROY_LOOP_DEVICE, &loop_device_index));
+    return result;
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -215,15 +247,34 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 0;
     }
 
-    if (!source.is_empty() && !mountpoint.is_empty()) {
-        if (fs_type.is_empty())
-            fs_type = "ext2"sv;
+    if (source.is_empty() && !mountpoint.is_empty()) {
         int flags = !options.is_empty() ? parse_options(options) : 0;
+        if (!(flags & MS_REMOUNT))
+            return Error::from_string_literal("Expected valid source.");
+        TRY(Core::System::remount({}, mountpoint, flags & ~MS_REMOUNT));
+        return 0;
+    }
 
+    if (!source.is_empty() && !mountpoint.is_empty()) {
+        int flags = !options.is_empty() ? parse_options(options) : 0;
         int const fd = TRY(get_source_fd(source));
 
-        TRY(Core::System::mount(fd, mountpoint, fs_type, flags));
-
+        if (flags & MS_BIND) {
+            TRY(Core::System::bindmount({}, fd, mountpoint, flags & ~MS_BIND));
+        } else if (flags & MS_REMOUNT) {
+            TRY(Core::System::remount({}, mountpoint, flags & ~MS_REMOUNT));
+        } else {
+            if (fs_type.is_empty())
+                fs_type = "ext2"sv;
+            if (fd >= 0) {
+                auto stat = TRY(Core::System::fstat(fd));
+                if (!S_ISBLK(stat.st_mode)) {
+                    TRY(mount_using_loop_device(fd, mountpoint, fs_type, flags));
+                    return 0;
+                }
+            }
+            TRY(Core::System::mount({}, fd, mountpoint, fs_type, flags));
+        }
         return 0;
     }
 

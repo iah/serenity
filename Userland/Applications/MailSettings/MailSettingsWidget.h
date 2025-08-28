@@ -11,24 +11,29 @@
 #include <LibGUI/TextEditor.h>
 #include <LibGUI/Window.h>
 
+namespace MailSettings {
 class MailSettingsWidget final : public GUI::SettingsWindow::Tab {
-    C_OBJECT(MailSettingsWidget)
+    C_OBJECT_ABSTRACT(MailSettingsWidget)
 
 public:
+    static ErrorOr<NonnullRefPtr<MailSettingsWidget>> try_create();
+    ErrorOr<void> initialize();
+
     virtual void apply_settings() override;
     virtual void reset_default_values() override;
 
 private:
-    MailSettingsWidget();
+    MailSettingsWidget() = default;
 
-    DeprecatedString m_server;
-    DeprecatedString m_port;
+    ByteString m_server;
+    ByteString m_port;
     bool m_tls { false };
-    DeprecatedString m_email;
-    Vector<DeprecatedString> m_common_ports;
+    ByteString m_email;
+    Vector<ByteString> m_common_ports;
 
     RefPtr<GUI::TextBox> m_server_inputbox;
     RefPtr<GUI::ComboBox> m_port_combobox;
     RefPtr<GUI::CheckBox> m_tls_checkbox;
     RefPtr<GUI::TextBox> m_email_inputbox;
 };
+}

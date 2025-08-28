@@ -6,18 +6,19 @@
  */
 
 #include <AK/Array.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/StandardPaths.h>
+#include <LibCore/System.h>
 #include <LibELF/Image.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/FileIconProvider.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/PNGLoader.h>
+#include <LibGfx/ImageFormats/PNGLoader.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -41,8 +42,8 @@ static Icon s_filetype_image_icon;
 static RefPtr<Gfx::Bitmap> s_symlink_emblem;
 static RefPtr<Gfx::Bitmap> s_symlink_emblem_small;
 
-static HashMap<DeprecatedString, Icon> s_filetype_icons;
-static HashMap<DeprecatedString, Vector<DeprecatedString>> s_filetype_patterns;
+static HashMap<ByteString, Icon> s_filetype_icons;
+static HashMap<ByteString, Vector<ByteString>> s_filetype_patterns;
 
 static void initialize_executable_icon_if_needed()
 {
@@ -90,7 +91,7 @@ static void initialize_if_needed()
     initialize_executable_icon_if_needed();
 
     for (auto& filetype : config->keys("Icons")) {
-        s_filetype_icons.set(filetype, Icon::default_icon(DeprecatedString::formatted("filetype-{}", filetype)));
+        s_filetype_icons.set(filetype, Icon::default_icon(ByteString::formatted("filetype-{}", filetype)));
         s_filetype_patterns.set(filetype, config->read_entry("Icons", filetype).split(','));
     }
 
@@ -145,17 +146,17 @@ Icon FileIconProvider::filetype_image_icon()
     return s_filetype_image_icon;
 }
 
-Icon FileIconProvider::icon_for_path(DeprecatedString const& path)
+Icon FileIconProvider::icon_for_path(StringView path)
 {
-    struct stat stat;
-    if (::stat(path.characters(), &stat) < 0)
+    auto stat_or_error = Core::System::stat(path);
+    if (stat_or_error.is_error())
         return s_file_icon;
-    return icon_for_path(path, stat.st_mode);
+    return icon_for_path(path, stat_or_error.release_value().st_mode);
 }
 
-Icon FileIconProvider::icon_for_executable(DeprecatedString const& path)
+Icon FileIconProvider::icon_for_executable(ByteString const& path)
 {
-    static HashMap<DeprecatedString, Icon> app_icon_cache;
+    static HashMap<ByteString, Icon> app_icon_cache;
 
     if (auto it = app_icon_cache.find(path); it != app_icon_cache.end())
         return it->value;
@@ -173,7 +174,7 @@ Icon FileIconProvider::icon_for_executable(DeprecatedString const& path)
 
     auto& mapped_file = file_or_error.value();
 
-    if (mapped_file->size() < SELFMAG) {
+    if (mapped_file->size().release_value() < SELFMAG) {
         app_icon_cache.set(path, s_executable_icon);
         return s_executable_icon;
     }
@@ -183,7 +184,7 @@ Icon FileIconProvider::icon_for_executable(DeprecatedString const& path)
         return s_executable_icon;
     }
 
-    auto image = ELF::Image((u8 const*)mapped_file->data(), mapped_file->size());
+    auto image = ELF::Image((u8 const*)mapped_file->data(), mapped_file->size().release_value());
     if (!image.is_valid()) {
         app_icon_cache.set(path, s_executable_icon);
         return s_executable_icon;
@@ -211,9 +212,9 @@ Icon FileIconProvider::icon_for_executable(DeprecatedString const& path)
         } else {
             // FIXME: Use the ImageDecoder service.
             if (Gfx::PNGImageDecoderPlugin::sniff({ section->raw_data(), section->size() })) {
-                auto png_decoder = Gfx::PNGImageDecoderPlugin::create({ section->raw_data(), section->size() }).release_value_but_fixme_should_propagate_errors();
-                if (png_decoder->initialize()) {
-                    auto frame_or_error = png_decoder->frame(0);
+                auto png_decoder = Gfx::PNGImageDecoderPlugin::create({ section->raw_data(), section->size() });
+                if (!png_decoder.is_error()) {
+                    auto frame_or_error = png_decoder.value()->frame(0);
                     if (!frame_or_error.is_error()) {
                         bitmap = frame_or_error.value().image;
                     }
@@ -238,7 +239,7 @@ Icon FileIconProvider::icon_for_executable(DeprecatedString const& path)
     return icon;
 }
 
-Icon FileIconProvider::icon_for_path(DeprecatedString const& path, mode_t mode)
+Icon FileIconProvider::icon_for_path(StringView path, mode_t mode)
 {
     initialize_if_needed();
     if (path == "/")
@@ -248,26 +249,27 @@ Icon FileIconProvider::icon_for_path(DeprecatedString const& path, mode_t mode)
             return s_home_directory_icon;
         if (path == Core::StandardPaths::desktop_directory())
             return s_desktop_directory_icon;
-        if (access(path.characters(), R_OK | X_OK) < 0)
+        if (Core::System::access(path, R_OK | X_OK).is_error())
             return s_inaccessible_directory_icon;
         if (path.ends_with(".git"sv))
             return s_git_directory_icon;
         return s_directory_icon;
     }
     if (S_ISLNK(mode)) {
-        auto raw_symlink_target_or_error = Core::DeprecatedFile::read_link(path);
+        auto raw_symlink_target_or_error = FileSystem::read_link(path);
         if (raw_symlink_target_or_error.is_error())
             return s_symlink_icon;
-
         auto raw_symlink_target = raw_symlink_target_or_error.release_value();
-        if (raw_symlink_target.is_null())
-            return s_symlink_icon;
 
-        DeprecatedString target_path;
+        ByteString target_path;
         if (raw_symlink_target.starts_with('/')) {
             target_path = raw_symlink_target;
         } else {
-            target_path = Core::DeprecatedFile::real_path_for(DeprecatedString::formatted("{}/{}", LexicalPath::dirname(path), raw_symlink_target));
+            auto error_or_path = FileSystem::real_path(ByteString::formatted("{}/{}", LexicalPath::dirname(path), raw_symlink_target));
+            if (error_or_path.is_error())
+                return s_symlink_icon;
+
+            target_path = error_or_path.release_value();
         }
         auto target_icon = icon_for_path(target_path);
 
@@ -295,7 +297,7 @@ Icon FileIconProvider::icon_for_path(DeprecatedString const& path, mode_t mode)
     if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
         return icon_for_executable(path);
 
-    if (Gfx::Bitmap::is_path_a_supported_image_format(path.view()))
+    if (Gfx::Bitmap::is_path_a_supported_image_format(path))
         return s_filetype_image_icon;
 
     for (auto& filetype : s_filetype_icons.keys()) {

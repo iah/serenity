@@ -11,7 +11,6 @@
 #include <LibCrypto/ASN1/DER.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 #include <LibCrypto/NumberTheory/ModularFunctions.h>
-#include <LibCrypto/PK/Code/EMSA_PSS.h>
 #include <LibTLS/TLSv12.h>
 
 namespace TLS {
@@ -126,12 +125,25 @@ bool TLSv12::compute_master_secret_from_pre_master_secret(size_t length)
         return false;
     }
 
-    pseudorandom_function(
-        m_context.master_key,
-        m_context.premaster_key,
-        (u8 const*)"master secret", 13,
-        ReadonlyBytes { m_context.local_random, sizeof(m_context.local_random) },
-        ReadonlyBytes { m_context.remote_random, sizeof(m_context.remote_random) });
+    if (m_context.extensions.extended_master_secret) {
+        Crypto::Hash::Manager handshake_hash_copy = m_context.handshake_hash.copy();
+        auto digest = handshake_hash_copy.digest();
+        auto session_hash = ReadonlyBytes { digest.immutable_data(), handshake_hash_copy.digest_size() };
+
+        pseudorandom_function(
+            m_context.master_key,
+            m_context.premaster_key,
+            (u8 const*)"extended master secret", 22,
+            session_hash,
+            {});
+    } else {
+        pseudorandom_function(
+            m_context.master_key,
+            m_context.premaster_key,
+            (u8 const*)"master secret", 13,
+            ReadonlyBytes { m_context.local_random, sizeof(m_context.local_random) },
+            ReadonlyBytes { m_context.remote_random, sizeof(m_context.remote_random) });
+    }
 
     m_context.premaster_key.clear();
     if constexpr (TLS_DEBUG) {
@@ -141,11 +153,11 @@ bool TLSv12::compute_master_secret_from_pre_master_secret(size_t length)
 
     if constexpr (TLS_SSL_KEYLOG_DEBUG) {
         auto file = MUST(Core::File::open("/home/anon/ssl_keylog"sv, Core::File::OpenMode::Append | Core::File::OpenMode::Write));
-        MUST(file->write_entire_buffer("CLIENT_RANDOM "sv.bytes()));
-        MUST(file->write_entire_buffer(encode_hex({ m_context.local_random, 32 }).bytes()));
-        MUST(file->write_entire_buffer(" "sv.bytes()));
-        MUST(file->write_entire_buffer(encode_hex(m_context.master_key).bytes()));
-        MUST(file->write_entire_buffer("\n"sv.bytes()));
+        MUST(file->write_until_depleted("CLIENT_RANDOM "sv));
+        MUST(file->write_until_depleted(encode_hex({ m_context.local_random, 32 })));
+        MUST(file->write_until_depleted(" "sv));
+        MUST(file->write_until_depleted(encode_hex(m_context.master_key)));
+        MUST(file->write_until_depleted("\n"sv));
     }
 
     expand_key();
@@ -157,7 +169,7 @@ void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
     u8 random_bytes[48];
     size_t bytes = 48;
 
-    fill_with_random(random_bytes, bytes);
+    fill_with_random(random_bytes);
 
     // remove zeros from the random bytes
     for (size_t i = 0; i < bytes; ++i) {
@@ -169,7 +181,7 @@ void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
         dbgln("Server mode not supported");
         return;
     } else {
-        *(u16*)random_bytes = AK::convert_between_host_and_network_endian((u16)Version::V12);
+        *(u16*)random_bytes = AK::convert_between_host_and_network_endian((u16)ProtocolVersion::VERSION_1_2);
     }
 
     auto premaster_key_result = ByteBuffer::copy(random_bytes, bytes);
@@ -186,7 +198,7 @@ void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
         print_buffer(m_context.premaster_key);
     }
 
-    Crypto::PK::RSA_PKCS1_EME rsa(certificate.public_key.modulus(), 0, certificate.public_key.public_exponent());
+    Crypto::PK::RSA_PKCS1_EME rsa(certificate.public_key.rsa.modulus(), 0, certificate.public_key.rsa.public_exponent());
 
     Vector<u8, 32> out;
     out.resize(rsa.output_size());
@@ -196,11 +208,6 @@ void TLSv12::build_rsa_pre_master_secret(PacketBuilder& builder)
     if constexpr (TLS_DEBUG) {
         dbgln("Encrypted: ");
         print_buffer(outbuf);
-    }
-
-    if (!compute_master_secret_from_pre_master_secret(bytes)) {
-        dbgln("oh noes we could not derive a master key :(");
-        return;
     }
 
     builder.append_u24(outbuf.size() + 2);
@@ -243,11 +250,6 @@ void TLSv12::build_dhe_rsa_pre_master_secret(PacketBuilder& builder)
         dbgln("dh_random: {}", dh_random.to_base_deprecated(16));
         dbgln("dh_Yc: {:hex-dump}", (ReadonlyBytes)dh_Yc_bytes);
         dbgln("premaster key: {:hex-dump}", (ReadonlyBytes)m_context.premaster_key);
-    }
-
-    if (!compute_master_secret_from_pre_master_secret(48)) {
-        dbgln("oh noes we could not derive a master key :(");
-        return;
     }
 
     builder.append_u24(dh_key_size + 2);
@@ -297,11 +299,6 @@ void TLSv12::build_ecdhe_rsa_pre_master_secret(PacketBuilder& builder)
         dbgln("premaster key:      {:hex-dump}", (ReadonlyBytes)m_context.premaster_key);
     }
 
-    if (!compute_master_secret_from_pre_master_secret(48)) {
-        dbgln("oh noes we could not derive a master key :(");
-        return;
-    }
-
     builder.append_u24(public_key.size() + 1);
     builder.append((u8)public_key.size());
     builder.append(public_key);
@@ -309,7 +306,7 @@ void TLSv12::build_ecdhe_rsa_pre_master_secret(PacketBuilder& builder)
 
 ByteBuffer TLSv12::build_certificate()
 {
-    PacketBuilder builder { MessageType::Handshake, m_context.options.version };
+    PacketBuilder builder { ContentType::HANDSHAKE, m_context.options.version };
 
     Vector<Certificate const&> certificates;
     Vector<Certificate>* local_certificates = nullptr;
@@ -338,7 +335,7 @@ ByteBuffer TLSv12::build_certificate()
         }
     }
 
-    builder.append((u8)HandshakeType::CertificateMessage);
+    builder.append((u8)HandshakeType::CERTIFICATE);
 
     if (!total_certificate_size) {
         dbgln_if(TLS_DEBUG, "No certificates, sending empty certificate message");
@@ -365,12 +362,12 @@ ByteBuffer TLSv12::build_client_key_exchange()
     bool chain_verified = m_context.verify_chain(m_context.extensions.SNI);
     if (!chain_verified) {
         dbgln("certificate verification failed :(");
-        alert(AlertLevel::Critical, AlertDescription::BadCertificate);
+        alert(AlertLevel::FATAL, AlertDescription::BAD_CERTIFICATE);
         return {};
     }
 
-    PacketBuilder builder { MessageType::Handshake, m_context.options.version };
-    builder.append((u8)HandshakeType::ClientKeyExchange);
+    PacketBuilder builder { ContentType::HANDSHAKE, m_context.options.version };
+    builder.append((u8)HandshakeType::CLIENT_KEY_EXCHANGE_RESERVED);
 
     switch (get_key_exchange_algorithm(m_context.cipher)) {
     case KeyExchangeAlgorithm::RSA:
@@ -393,11 +390,11 @@ ByteBuffer TLSv12::build_client_key_exchange()
         TODO();
         break;
     case KeyExchangeAlgorithm::ECDHE_RSA:
+    case KeyExchangeAlgorithm::ECDHE_ECDSA:
         build_ecdhe_rsa_pre_master_secret(builder);
         break;
     case KeyExchangeAlgorithm::ECDH_ECDSA:
     case KeyExchangeAlgorithm::ECDH_RSA:
-    case KeyExchangeAlgorithm::ECDHE_ECDSA:
     case KeyExchangeAlgorithm::ECDH_anon:
         dbgln("Client key exchange for ECDHE algorithms is not implemented");
         TODO();
@@ -413,6 +410,10 @@ ByteBuffer TLSv12::build_client_key_exchange()
     auto packet = builder.build();
 
     update_packet(packet);
+
+    if (!compute_master_secret_from_pre_master_secret(48)) {
+        dbgln("oh noes we could not derive a master key :(");
+    }
 
     return packet;
 }

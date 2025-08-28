@@ -8,16 +8,15 @@
 #include "Screen.h"
 #include "Compositor.h"
 #include "Event.h"
-#include "EventLoop.h"
 #include "ScreenBackend.h"
 #include "VirtualScreenBackend.h"
 #include "WindowManager.h"
 #include <AK/Debug.h>
 #include <AK/Format.h>
-#include <Kernel/API/Graphics.h>
 #include <Kernel/API/MousePacket.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/devices/gpu.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -54,7 +53,7 @@ Screen const& ScreenInput::cursor_location_screen() const
     return *screen;
 }
 
-bool Screen::apply_layout(ScreenLayout&& screen_layout, DeprecatedString& error_msg)
+bool Screen::apply_layout(ScreenLayout&& screen_layout, ByteString& error_msg)
 {
     if (!screen_layout.is_valid(&error_msg))
         return false;
@@ -85,22 +84,21 @@ bool Screen::apply_layout(ScreenLayout&& screen_layout, DeprecatedString& error_
     }
     HashMap<Screen*, size_t> screens_with_resolution_change;
     HashMap<Screen*, size_t> screens_with_scale_change;
-    for (auto& it : current_to_new_indices_map) {
-        auto& screen = s_layout.screens[it.key];
-        auto& new_screen = screen_layout.screens[it.value];
+    for (auto [current_index, new_index] : current_to_new_indices_map) {
+        auto& screen = s_layout.screens[current_index];
+        auto& new_screen = screen_layout.screens[new_index];
         if (screen.resolution != new_screen.resolution)
-            screens_with_resolution_change.set(s_screens[it.key], it.value);
+            screens_with_resolution_change.set(s_screens[current_index], new_index);
         if (screen.scale_factor != new_screen.scale_factor)
-            screens_with_scale_change.set(s_screens[it.key], it.value);
+            screens_with_scale_change.set(s_screens[current_index], new_index);
     }
 
     auto screens_backup = move(s_screens);
     auto layout_backup = move(s_layout);
 
-    for (auto& it : screens_with_resolution_change) {
-        auto& existing_screen = *it.key;
-        dbgln("Closing device {} in preparation for resolution change", layout_backup.screens[existing_screen.index()].device.value_or("<virtual screen>"));
-        existing_screen.close_device();
+    for (auto& [existing_screen, _] : screens_with_resolution_change) {
+        dbgln("Closing device {} in preparation for resolution change", layout_backup.screens[existing_screen->index()].device.value_or("<virtual screen>"));
+        existing_screen->close_device();
     }
 
     AK::ArmedScopeGuard rollback([&] {
@@ -145,7 +143,7 @@ bool Screen::apply_layout(ScreenLayout&& screen_layout, DeprecatedString& error_
         } else {
             screen = WindowServer::Screen::create(index);
             if (!screen) {
-                error_msg = DeprecatedString::formatted("Error creating screen #{}", index);
+                error_msg = ByteString::formatted("Error creating screen #{}", index);
                 return false;
             }
 
@@ -153,7 +151,7 @@ bool Screen::apply_layout(ScreenLayout&& screen_layout, DeprecatedString& error_
         }
 
         if (need_to_open_device && !screen->open_device()) {
-            error_msg = DeprecatedString::formatted("Error opening device for screen #{}", index);
+            error_msg = ByteString::formatted("Error opening device for screen #{}", index);
             return false;
         }
 
@@ -421,7 +419,7 @@ void ScreenInput::on_receive_mouse_data(MousePacket const& packet)
 
     auto* moved_to_screen = Screen::find_by_location(m_cursor_location);
     if (!moved_to_screen) {
-        m_cursor_location = m_cursor_location.constrained(current_screen.rect());
+        m_cursor_location.constrain(current_screen.rect());
         moved_to_screen = &current_screen;
     }
 
@@ -440,10 +438,9 @@ void ScreenInput::on_receive_mouse_data(MousePacket const& packet)
     post_mousedown_or_mouseup_if_needed(MouseButton::Middle);
     post_mousedown_or_mouseup_if_needed(MouseButton::Backward);
     post_mousedown_or_mouseup_if_needed(MouseButton::Forward);
+
     if (m_cursor_location != prev_location) {
         auto message = make<MouseEvent>(Event::MouseMove, m_cursor_location, buttons, MouseButton::None, m_modifiers);
-        if (WindowManager::the().dnd_client())
-            message->set_mime_data(WindowManager::the().dnd_mime_data());
         Core::EventLoop::current().post_event(WindowManager::the(), move(message));
     }
 
@@ -459,7 +456,7 @@ void ScreenInput::on_receive_mouse_data(MousePacket const& packet)
 void ScreenInput::on_receive_keyboard_data(::KeyEvent kernel_event)
 {
     m_modifiers = kernel_event.modifiers();
-    auto message = make<KeyEvent>(kernel_event.is_press() ? Event::KeyDown : Event::KeyUp, kernel_event.key, kernel_event.code_point, kernel_event.modifiers(), kernel_event.scancode);
+    auto message = make<KeyEvent>(kernel_event.is_press() ? Event::KeyDown : Event::KeyUp, kernel_event.key, kernel_event.map_entry_index, kernel_event.code_point, kernel_event.modifiers(), kernel_event.scancode);
     Core::EventLoop::current().post_event(WindowManager::the(), move(message));
 }
 

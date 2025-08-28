@@ -1,75 +1,60 @@
 /*
- * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Angle.h"
 #include <AK/Math.h>
-#include <LibWeb/CSS/StyleValue.h>
+#include <LibWeb/CSS/Percentage.h>
+#include <LibWeb/CSS/StyleValues/CSSMathValue.h>
 
 namespace Web::CSS {
 
-Angle::Angle(int value, Type type)
+Angle::Angle(double value, Type type)
     : m_type(type)
     , m_value(value)
 {
 }
 
-Angle::Angle(float value, Type type)
-    : m_type(type)
-    , m_value(value)
-{
-}
-
-Angle Angle::make_calculated(NonnullRefPtr<CalculatedStyleValue> calculated_style_value)
-{
-    Angle angle { 0, Type::Calculated };
-    angle.m_calculated_style = move(calculated_style_value);
-    return angle;
-}
-
-Angle Angle::make_degrees(float value)
+Angle Angle::make_degrees(double value)
 {
     return { value, Type::Deg };
 }
 
 Angle Angle::percentage_of(Percentage const& percentage) const
 {
-    VERIFY(!is_calculated());
-
     return Angle { percentage.as_fraction() * m_value, m_type };
 }
 
-ErrorOr<String> Angle::to_string() const
+String Angle::to_string() const
 {
-    if (is_calculated())
-        return m_calculated_style->to_string();
-    return String::formatted("{}{}", m_value, unit_name());
+    return MUST(String::formatted("{}deg", to_degrees()));
 }
 
-float Angle::to_degrees() const
+double Angle::to_degrees() const
 {
     switch (m_type) {
-    case Type::Calculated:
-        return m_calculated_style->resolve_angle()->to_degrees();
     case Type::Deg:
         return m_value;
     case Type::Grad:
-        return m_value * (360.0f / 400.0f);
+        return m_value * (360.0 / 400.0);
     case Type::Rad:
-        return m_value * (180.0f / AK::Pi<float>);
+        return AK::to_degrees(m_value);
     case Type::Turn:
-        return m_value * 360.0f;
+        return m_value * 360.0;
     }
     VERIFY_NOT_REACHED();
+}
+
+double Angle::to_radians() const
+{
+    return AK::to_radians(to_degrees());
 }
 
 StringView Angle::unit_name() const
 {
     switch (m_type) {
-    case Type::Calculated:
-        return "calculated"sv;
     case Type::Deg:
         return "deg"sv;
     case Type::Grad:
@@ -84,22 +69,24 @@ StringView Angle::unit_name() const
 
 Optional<Angle::Type> Angle::unit_from_name(StringView name)
 {
-    if (name.equals_ignoring_case("deg"sv)) {
+    if (name.equals_ignoring_ascii_case("deg"sv)) {
         return Type::Deg;
-    } else if (name.equals_ignoring_case("grad"sv)) {
+    }
+    if (name.equals_ignoring_ascii_case("grad"sv)) {
         return Type::Grad;
-    } else if (name.equals_ignoring_case("rad"sv)) {
+    }
+    if (name.equals_ignoring_ascii_case("rad"sv)) {
         return Type::Rad;
-    } else if (name.equals_ignoring_case("turn"sv)) {
+    }
+    if (name.equals_ignoring_ascii_case("turn"sv)) {
         return Type::Turn;
     }
     return {};
 }
 
-NonnullRefPtr<CalculatedStyleValue> Angle::calculated_style_value() const
+Angle Angle::resolve_calculated(NonnullRefPtr<CSSMathValue> const& calculated, Layout::Node const&, Angle const& reference_value)
 {
-    VERIFY(!m_calculated_style.is_null());
-    return *m_calculated_style;
+    return calculated->resolve_angle_percentage(reference_value).value();
 }
 
 }

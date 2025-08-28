@@ -11,18 +11,12 @@
 
 namespace Core {
 
-NetworkJob::NetworkJob(Stream& output_stream)
+NetworkJob::NetworkJob(Core::File& output_stream)
     : m_output_stream(output_stream)
 {
 }
 
-void NetworkJob::start(Core::Socket&)
-{
-}
-
-void NetworkJob::shutdown(ShutdownMode)
-{
-}
+NetworkJob::~NetworkJob() = default;
 
 void NetworkJob::did_finish(NonnullRefPtr<NetworkResponse>&& response)
 {
@@ -56,7 +50,7 @@ void NetworkJob::did_fail(Error error)
     shutdown(ShutdownMode::DetachFromSocket);
 }
 
-void NetworkJob::did_progress(Optional<u32> total_size, u32 downloaded)
+void NetworkJob::did_progress(Optional<u64> total_size, u64 downloaded)
 {
     if (is_cancelled())
         return;

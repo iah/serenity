@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,26 +10,26 @@
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/GlobalObject.h>
-#include <LibJS/Runtime/IteratorOperations.h>
+#include <LibJS/Runtime/Iterator.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(AggregateErrorConstructor);
 
 AggregateErrorConstructor::AggregateErrorConstructor(Realm& realm)
     : NativeFunction(static_cast<Object&>(*realm.intrinsics().error_constructor()))
 {
 }
 
-ThrowCompletionOr<void> AggregateErrorConstructor::initialize(Realm& realm)
+void AggregateErrorConstructor::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     // 20.5.7.2.1 AggregateError.prototype, https://tc39.es/ecma262/#sec-aggregate-error.prototype
     define_direct_property(vm.names.prototype, realm.intrinsics().aggregate_error_prototype(), 0);
 
     define_direct_property(vm.names.length, Value(2), Attribute::Configurable);
-
-    return {};
 }
 
 // 20.5.7.1.1 AggregateError ( errors, message [ , options ] ), https://tc39.es/ecma262/#sec-aggregate-error
@@ -55,7 +55,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> AggregateErrorConstructor::construct(Fun
     // 3. If message is not undefined, then
     if (!message.is_undefined()) {
         // a. Let msg be ? ToString(message).
-        auto msg = TRY(message.to_deprecated_string(vm));
+        auto msg = TRY(message.to_byte_string(vm));
 
         // b. Perform CreateNonEnumerableDataPropertyOrThrow(O, "message", msg).
         aggregate_error->create_non_enumerable_data_property_or_throw(vm.names.message, PrimitiveString::create(vm, msg));
@@ -64,8 +64,8 @@ ThrowCompletionOr<NonnullGCPtr<Object>> AggregateErrorConstructor::construct(Fun
     // 4. Perform ? InstallErrorCause(O, options).
     TRY(aggregate_error->install_error_cause(options));
 
-    // 5. Let errorsList be ? IterableToList(errors).
-    auto errors_list = TRY(iterable_to_list(vm, errors));
+    // 5. Let errorsList be ? IteratorToList(? GetIterator(errors, sync)).
+    auto errors_list = TRY(iterator_to_list(vm, TRY(get_iterator(vm, errors, IteratorHint::Sync))));
 
     // 6. Perform ! DefinePropertyOrThrow(O, "errors", PropertyDescriptor { [[Configurable]]: true, [[Enumerable]]: false, [[Writable]]: true, [[Value]]: CreateArrayFromList(errorsList) }).
     MUST(aggregate_error->define_property_or_throw(vm.names.errors, { .value = Array::create_from(realm, errors_list), .writable = true, .enumerable = false, .configurable = true }));

@@ -6,9 +6,9 @@
  */
 
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/File.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <string.h>
 #include <strings.h>
@@ -22,8 +22,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath"));
 
-    DeprecatedString file1_path;
-    DeprecatedString file2_path;
+    ByteString file1_path;
+    ByteString file2_path;
     bool suppress_col1 { false };
     bool suppress_col2 { false };
     bool suppress_col3 { false };
@@ -39,7 +39,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(suppress_col3, "Suppress column 3 (lines common to both files)", nullptr, '3');
     args_parser.add_option(case_insensitive, "Use case-insensitive comparison of lines", nullptr, 'i');
     args_parser.add_option(color, "Always print colored output", "color", 'c');
-    args_parser.add_option(no_color, "Do not print colored output", "no-color", 0);
+    args_parser.add_option(no_color, "Do not print colored output", "no-color");
     args_parser.add_option(print_total, "Print a summary", "total", 't');
     args_parser.add_positional_argument(file1_path, "First file to compare", "file1");
     args_parser.add_positional_argument(file2_path, "Second file to compare", "file2");
@@ -61,19 +61,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    auto open_file = [](DeprecatedString const& path, auto& file, int file_number) {
+    auto open_file = [](ByteString const& path, auto& file, int file_number) {
         auto file_or_error = Core::File::open_file_or_standard_stream(path, Core::File::OpenMode::Read);
         if (file_or_error.is_error()) {
             warnln("Failed to open file{} '{}': {}", file_number, path, file_or_error.error());
             return false;
         }
 
-        if (path != "-" && Core::DeprecatedFile::is_directory(path)) {
+        if (path != "-" && FileSystem::is_directory(path)) {
             warnln("Failed to open file{} '{}': is a directory", file_number, path);
             return false;
         }
 
-        auto buffered_file_or_error = Core::BufferedFile::create(file_or_error.release_value());
+        auto buffered_file_or_error = Core::InputBufferedFile::create(file_or_error.release_value());
         if (buffered_file_or_error.is_error()) {
             warnln("Failed to create buffer for file{} '{}': {}", file_number, path, buffered_file_or_error.error());
             return false;
@@ -83,24 +83,24 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return true;
     };
 
-    OwnPtr<Core::BufferedFile> file1;
-    OwnPtr<Core::BufferedFile> file2;
+    OwnPtr<Core::InputBufferedFile> file1;
+    OwnPtr<Core::InputBufferedFile> file2;
     if (!(open_file(file1_path, file1, 1) && open_file(file2_path, file2, 2)))
         return 1;
 
     char tab { '\t' };
     size_t tab_count { 0 };
-    DeprecatedString col1_fmt;
-    DeprecatedString col2_fmt;
-    DeprecatedString col3_fmt;
+    ByteString col1_fmt;
+    ByteString col2_fmt;
+    ByteString col3_fmt;
     if (!suppress_col1)
-        col1_fmt = DeprecatedString::formatted("{}{}", DeprecatedString::repeated(tab, tab_count++), print_color ? COL1_COLOR : "{}");
+        col1_fmt = ByteString::formatted("{}{}", ByteString::repeated(tab, tab_count++), print_color ? COL1_COLOR : "{}");
     if (!suppress_col2)
-        col2_fmt = DeprecatedString::formatted("{}{}", DeprecatedString::repeated(tab, tab_count++), print_color ? COL2_COLOR : "{}");
+        col2_fmt = ByteString::formatted("{}{}", ByteString::repeated(tab, tab_count++), print_color ? COL2_COLOR : "{}");
     if (!suppress_col3)
-        col3_fmt = DeprecatedString::formatted("{}{}", DeprecatedString::repeated(tab, tab_count++), print_color ? COL3_COLOR : "{}");
+        col3_fmt = ByteString::formatted("{}{}", ByteString::repeated(tab, tab_count++), print_color ? COL3_COLOR : "{}");
 
-    auto cmp = [&](DeprecatedString const& str1, DeprecatedString const& str2) {
+    auto cmp = [&](ByteString const& str1, ByteString const& str2) {
         if (case_insensitive)
             return strcasecmp(str1.characters(), str2.characters());
         return strcmp(str1.characters(), str2.characters());
@@ -111,29 +111,29 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     int col1_count { 0 };
     int col2_count { 0 };
     int col3_count { 0 };
-    DeprecatedString file1_line;
-    DeprecatedString file2_line;
-    Array<u8, PAGE_SIZE> buffer;
+    ByteString file1_line;
+    ByteString file2_line;
+    auto buffer = TRY(ByteBuffer::create_uninitialized(PAGE_SIZE));
 
     auto should_continue_comparing_files = [&]() {
-        if (read_file1) {
-            auto can_read_file1_line = file1->can_read_line();
-            if (can_read_file1_line.is_error() || !can_read_file1_line.value())
-                return false;
-        }
-        if (read_file2) {
-            auto can_read_file2_line = file2->can_read_line();
-            if (can_read_file2_line.is_error() || !can_read_file2_line.value())
-                return false;
-        }
+        if (read_file1 && file1->is_eof())
+            return false;
+        if (read_file2 && file2->is_eof())
+            return false;
         return true;
     };
 
     while (should_continue_comparing_files()) {
-        if (read_file1)
-            file1_line = TRY(file1->read_line(buffer));
-        if (read_file2)
-            file2_line = TRY(file2->read_line(buffer));
+        if (read_file1) {
+            file1_line = TRY(file1->read_line_with_resize(buffer));
+            if (file1_line.is_empty() && file1->is_eof())
+                break;
+        }
+        if (read_file2) {
+            file2_line = TRY(file2->read_line_with_resize(buffer));
+            if (file2_line.is_empty() && file2->is_eof())
+                break;
+        }
 
         int cmp_result = cmp(file1_line, file2_line);
 
@@ -167,14 +167,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         outln(col2_fmt, file2_line);
     }
 
-    auto process_remaining = [&](DeprecatedString const& fmt, auto& file, int& count, bool print) {
-        while (true) {
-            auto can_read_result = file->can_read_line();
-            if (can_read_result.is_error() || !can_read_result.value())
-                break;
+    auto process_remaining = [&](ByteString const& fmt, auto& file, int& count, bool print) {
+        while (!file->is_eof()) {
             ++count;
-            auto line = file->read_line(buffer);
-            if (line.is_error())
+            auto line = file->read_line_with_resize(buffer);
+            if (line.is_error() || (line.value().is_empty() && file->is_eof()))
                 break;
             if (print)
                 outln(fmt, line.value());

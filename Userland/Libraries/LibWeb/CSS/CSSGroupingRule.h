@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2024, Sam Atkins <sam@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -22,22 +22,22 @@ public:
 
     CSSRuleList const& css_rules() const { return m_rules; }
     CSSRuleList& css_rules() { return m_rules; }
-    CSSRuleList* css_rules_for_bindings() { return &m_rules; }
+    CSSRuleList* css_rules_for_bindings() { return m_rules; }
     WebIDL::ExceptionOr<u32> insert_rule(StringView rule, u32 index = 0);
     WebIDL::ExceptionOr<void> delete_rule(u32 index);
 
-    virtual void for_each_effective_style_rule(Function<void(CSSStyleRule const&)> const& callback) const;
+    virtual void for_each_effective_rule(TraversalOrder, Function<void(CSSRule const&)> const& callback) const;
 
     virtual void set_parent_style_sheet(CSSStyleSheet*) override;
 
 protected:
     CSSGroupingRule(JS::Realm&, CSSRuleList&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
 private:
-    CSSRuleList& m_rules;
+    JS::NonnullGCPtr<CSSRuleList> m_rules;
 };
 
 }

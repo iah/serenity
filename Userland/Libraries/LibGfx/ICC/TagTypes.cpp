@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
 #include <AK/Endian.h>
 #include <LibGfx/ICC/BinaryFormat.h>
 #include <LibGfx/ICC/TagTypes.h>
@@ -389,6 +388,23 @@ static ErrorOr<Vector<LutCurveType>> read_curves(ReadonlyBytes bytes, u32 offset
     return curves;
 }
 
+static bool is_valid_curve(LutCurveType const& curve)
+{
+    return curve->type() == CurveTagData::Type || curve->type() == ParametricCurveTagData::Type;
+}
+
+bool are_valid_curves(Optional<Vector<LutCurveType>> const& curves)
+{
+    if (!curves.has_value())
+        return true;
+
+    for (auto const& curve : curves.value()) {
+        if (!is_valid_curve(curve))
+            return false;
+    }
+    return true;
+}
+
 ErrorOr<NonnullRefPtr<LutAToBTagData>> LutAToBTagData::from_bytes(ReadonlyBytes bytes, u32 offset, u32 size)
 {
     // ICC v4, 10.12 lutAToBType
@@ -678,7 +694,11 @@ ErrorOr<NonnullRefPtr<MultiLocalizedUnicodeTagData>> MultiLocalizedUnicodeTagDat
     // encoding, should the need arise, without having to define a new tag type."
     if (record_size < sizeof(MultiLocalizedUnicodeRawRecord))
         return Error::from_string_literal("ICC::Profile: multiLocalizedUnicodeType record size too small");
-    if (bytes.size() < 16 + number_of_records * record_size)
+
+    Checked<size_t> records_size_in_bytes = number_of_records;
+    records_size_in_bytes *= record_size;
+    records_size_in_bytes += 16;
+    if (records_size_in_bytes.has_overflow() || bytes.size() < records_size_in_bytes.value())
         return Error::from_string_literal("ICC::Profile: multiLocalizedUnicodeType not enough data for records");
 
     Vector<Record> records;
@@ -699,10 +719,17 @@ ErrorOr<NonnullRefPtr<MultiLocalizedUnicodeTagData>> MultiLocalizedUnicodeTagDat
         if (record.string_length_in_bytes % 2 != 0)
             return Error::from_string_literal("ICC::Profile: multiLocalizedUnicodeType odd UTF-16 byte length");
 
-        if (record.string_offset_in_bytes + record.string_length_in_bytes > bytes.size())
+        if (static_cast<u64>(record.string_offset_in_bytes) + record.string_length_in_bytes > bytes.size())
             return Error::from_string_literal("ICC::Profile: multiLocalizedUnicodeType string offset out of bounds");
 
         StringView utf_16be_data { bytes.data() + record.string_offset_in_bytes, record.string_length_in_bytes };
+
+        // Despite the "should not be NULL terminated" in the spec, some files in the wild have trailing NULLs.
+        // Fix up this case here, so that application code doesn't have to worry about it.
+        // (If this wasn't hit in practice, we'd return an Error instead.)
+        while (utf_16be_data.length() >= 2 && utf_16be_data.ends_with(StringView("\0", 2)))
+            utf_16be_data = utf_16be_data.substring_view(0, utf_16be_data.length() - 2);
+
         records[i].text = TRY(utf_16be_decoder.to_utf8(utf_16be_data));
     }
 
@@ -737,8 +764,15 @@ ErrorOr<NonnullRefPtr<NamedColor2TagData>> NamedColor2TagData::from_bytes(Readon
 
     auto& header = *bit_cast<NamedColorHeader const*>(bytes.data() + 8);
 
-    unsigned const record_byte_size = 32 + sizeof(u16) * (3 + header.number_of_device_coordinates_of_each_named_color);
-    if (bytes.size() < 2 * sizeof(u32) + sizeof(NamedColorHeader) + header.count_of_named_colors * record_byte_size)
+    Checked<u32> record_byte_size = 3;
+    record_byte_size += header.number_of_device_coordinates_of_each_named_color;
+    record_byte_size *= sizeof(u16);
+    record_byte_size += 32;
+
+    Checked<u32> end_of_record = record_byte_size;
+    end_of_record *= header.count_of_named_colors;
+    end_of_record += 2 * sizeof(u32) + sizeof(NamedColorHeader);
+    if (end_of_record.has_overflow() || bytes.size() < end_of_record.value())
         return Error::from_string_literal("ICC::Profile: namedColor2Type has not enough color data");
 
     auto buffer_to_string = [](u8 const* buffer) -> ErrorOr<String> {
@@ -763,7 +797,7 @@ ErrorOr<NonnullRefPtr<NamedColor2TagData>> NamedColor2TagData::from_bytes(Readon
     TRY(device_coordinates.try_resize(header.count_of_named_colors * header.number_of_device_coordinates_of_each_named_color));
 
     for (size_t i = 0; i < header.count_of_named_colors; ++i) {
-        u8 const* root_name = bytes.data() + 8 + sizeof(NamedColorHeader) + i * record_byte_size;
+        u8 const* root_name = bytes.data() + 8 + sizeof(NamedColorHeader) + i * record_byte_size.value();
         auto* components = bit_cast<BigEndian<u16> const*>(root_name + 32);
 
         root_names[i] = TRY(buffer_to_string(root_name));
@@ -1024,7 +1058,9 @@ ErrorOr<NonnullRefPtr<TextDescriptionTagData>> TextDescriptionTagData::from_byte
         return Error::from_string_literal("ICC::Profile: textDescriptionType has not enough data for ASCII size");
     u32 ascii_description_length = *bit_cast<BigEndian<u32> const*>(bytes.data() + 8);
 
-    if (bytes.size() < 3 * sizeof(u32) + ascii_description_length)
+    Checked<u32> ascii_description_end = 3 * sizeof(u32);
+    ascii_description_end += ascii_description_length;
+    if (ascii_description_end.has_overflow() || bytes.size() < ascii_description_end.value())
         return Error::from_string_literal("ICC::Profile: textDescriptionType has not enough data for ASCII description");
 
     u8 const* ascii_description_data = bytes.data() + 3 * sizeof(u32);
@@ -1043,7 +1079,9 @@ ErrorOr<NonnullRefPtr<TextDescriptionTagData>> TextDescriptionTagData::from_byte
 
     // Unicode
 
-    if (bytes.size() < 3 * sizeof(u32) + ascii_description_length + 2 * sizeof(u32))
+    Checked<u32> unicode_metadata_end = ascii_description_end;
+    unicode_metadata_end += 2 * sizeof(u32);
+    if (unicode_metadata_end.has_overflow() || bytes.size() < unicode_metadata_end.value())
         return Error::from_string_literal("ICC::Profile: textDescriptionType has not enough data for Unicode metadata");
 
     // "Because the Unicode language code and Unicode count immediately follow the ASCII description,
@@ -1058,7 +1096,10 @@ ErrorOr<NonnullRefPtr<TextDescriptionTagData>> TextDescriptionTagData::from_byte
     u32 unicode_description_length = (u32)(cursor[0] << 24) | (u32)(cursor[1] << 16) | (u32)(cursor[2] << 8) | (u32)cursor[3];
     cursor += 4;
 
-    if (bytes.size() < 3 * sizeof(u32) + ascii_description_length + 2 * sizeof(u32) + 2 * unicode_description_length)
+    Checked<u32> unicode_desciption_end = unicode_description_length;
+    unicode_desciption_end *= 2;
+    unicode_desciption_end += unicode_metadata_end;
+    if (unicode_desciption_end.has_overflow() || bytes.size() < unicode_desciption_end.value())
         return Error::from_string_literal("ICC::Profile: textDescriptionType has not enough data for Unicode description");
 
     u8 const* unicode_description_data = cursor;
@@ -1110,7 +1151,10 @@ ErrorOr<NonnullRefPtr<TextDescriptionTagData>> TextDescriptionTagData::from_byte
     u8 macintosh_description_length = *cursor;
     cursor += 1;
 
-    if (macintosh_description_length > 67)
+    Checked<u32> macintosh_description_end = unicode_desciption_end;
+    macintosh_description_end += 3;
+    macintosh_description_end += macintosh_description_length;
+    if (macintosh_description_length > 67 || macintosh_description_end.has_overflow() || macintosh_description_end.value() > bytes.size())
         return Error::from_string_literal("ICC::Profile: textDescriptionType ScriptCode description too long");
 
     u8 const* macintosh_description_data = cursor;

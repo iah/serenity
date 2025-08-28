@@ -15,10 +15,11 @@
 #include <LibCore/System.h>
 #include <LibDebug/DebugInfo.h>
 #include <LibDebug/DebugSession.h>
+#include <LibDisassembly/Architecture.h>
+#include <LibDisassembly/Disassembler.h>
+#include <LibDisassembly/x86/Instruction.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
-#include <LibX86/Disassembler.h>
-#include <LibX86/Instruction.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,23 +43,37 @@ static void handle_print_registers(PtraceRegisters const& regs)
 #if ARCH(X86_64)
     outln("rax={:p} rbx={:p} rcx={:p} rdx={:p}", regs.rax, regs.rbx, regs.rcx, regs.rdx);
     outln("rsp={:p} rbp={:p} rsi={:p} rdi={:p}", regs.rsp, regs.rbp, regs.rsi, regs.rdi);
-    outln("r8 ={:p} r9 ={:p} r10={:p} r11={:p}", regs.r8, regs.r9, regs.r10, regs.r11);
+    outln(" r8={:p}  r9={:p} r10={:p} r11={:p}", regs.r8, regs.r9, regs.r10, regs.r11);
     outln("r12={:p} r13={:p} r14={:p} r15={:p}", regs.r12, regs.r13, regs.r14, regs.r15);
     outln("rip={:p} rflags={:p}", regs.rip, regs.rflags);
 #elif ARCH(AARCH64)
-    (void)regs;
-    TODO_AARCH64();
+    outln("Stack pointer   sp={:p}", regs.sp);
+    outln("Program counter pc={:p}", regs.pc);
+    outln("Process state   pstate={:p}", regs.spsr_el1);
+    outln(" x0={:p}  x1={:p}  x2={:p}  x3={:p}  x4={:p}", regs.x[0], regs.x[1], regs.x[2], regs.x[3], regs.x[4]);
+    outln(" x5={:p}  x6={:p}  x7={:p}  x8={:p}  x9={:p}", regs.x[5], regs.x[6], regs.x[7], regs.x[8], regs.x[9]);
+    outln("x10={:p} x11={:p} x12={:p} x13={:p} x14={:p}", regs.x[10], regs.x[11], regs.x[12], regs.x[13], regs.x[14]);
+    outln("x15={:p} x16={:p} x17={:p} x18={:p} x19={:p}", regs.x[15], regs.x[16], regs.x[17], regs.x[18], regs.x[19]);
+    outln("x20={:p} x21={:p} x22={:p} x23={:p} x24={:p}", regs.x[20], regs.x[21], regs.x[22], regs.x[23], regs.x[24]);
+    outln("x25={:p} x26={:p} x27={:p} x28={:p} x29={:p}", regs.x[25], regs.x[26], regs.x[27], regs.x[28], regs.x[29]);
+    outln("x30={:p}", regs.x[30]);
+#elif ARCH(RISCV64)
+    outln("Program counter pc={:p}", regs.pc);
+    outln("ra={:p} sp={:p} gp={:p} tp={:p} fp={:p}", regs.x[0], regs.x[1], regs.x[2], regs.x[3], regs.x[7]);
+    outln("a0={:p} a1={:p} a2={:p} a3={:p} a4={:p} a5={:p} a6={:p} a7={:p}", regs.x[9], regs.x[10], regs.x[11], regs.x[12], regs.x[13], regs.x[14], regs.x[15], regs.x[16]);
+    outln("t0={:p} t1={:p} t2={:p} t3={:p} t4={:p} t5={:p} t6={:p}", regs.x[4], regs.x[5], regs.x[6], regs.x[27], regs.x[28], regs.x[29], regs.x[30]);
+    outln("s1={:p} s2={:p} s3={:p} s4={:p} s5={:p} s6={:p} s7={:p} s8={:p} s9={:p} s10={:p} s11={:p}", regs.x[8], regs.x[17], regs.x[18], regs.x[19], regs.x[20], regs.x[21], regs.x[22], regs.x[23], regs.x[24], regs.x[25], regs.x[26]);
 #else
 #    error Unknown architecture
 #endif
 }
 
-static bool handle_disassemble_command(DeprecatedString const& command, FlatPtr first_instruction)
+static bool handle_disassemble_command(ByteString const& command, FlatPtr first_instruction)
 {
     auto parts = command.split(' ');
     size_t number_of_instructions_to_disassemble = 5;
     if (parts.size() == 2) {
-        auto number = parts[1].to_uint();
+        auto number = parts[1].to_number<unsigned>();
         if (!number.has_value())
             return false;
         number_of_instructions_to_disassemble = number.value();
@@ -76,8 +91,8 @@ static bool handle_disassemble_command(DeprecatedString const& command, FlatPtr 
             break;
     }
 
-    X86::SimpleInstructionStream stream(code.data(), code.size());
-    X86::Disassembler disassembler(stream);
+    Disassembly::SimpleInstructionStream stream(code.data(), code.size());
+    Disassembly::Disassembler disassembler(stream, Disassembly::host_architecture());
 
     for (size_t i = 0; i < number_of_instructions_to_disassemble; ++i) {
         auto offset = stream.offset();
@@ -85,7 +100,7 @@ static bool handle_disassemble_command(DeprecatedString const& command, FlatPtr 
         if (!insn.has_value())
             break;
 
-        outln("    {:p} <+{}>:\t{}", offset + first_instruction, offset, insn.value().to_deprecated_string(offset));
+        outln("    {:p} <+{}>:\t{}", offset + first_instruction, offset, insn.value()->to_byte_string(offset));
     }
 
     return true;
@@ -103,7 +118,7 @@ static bool insert_breakpoint_at_address(FlatPtr address)
     return g_debug_session->insert_breakpoint(address);
 }
 
-static bool insert_breakpoint_at_source_position(DeprecatedString const& file, size_t line)
+static bool insert_breakpoint_at_source_position(ByteString const& file, size_t line)
 {
     auto result = g_debug_session->insert_breakpoint(file, line);
     if (!result.has_value()) {
@@ -114,7 +129,7 @@ static bool insert_breakpoint_at_source_position(DeprecatedString const& file, s
     return true;
 }
 
-static bool insert_breakpoint_at_symbol(DeprecatedString const& symbol)
+static bool insert_breakpoint_at_symbol(ByteString const& symbol)
 {
     auto result = g_debug_session->insert_breakpoint(symbol);
     if (!result.has_value()) {
@@ -125,7 +140,7 @@ static bool insert_breakpoint_at_symbol(DeprecatedString const& symbol)
     return true;
 }
 
-static bool handle_breakpoint_command(DeprecatedString const& command)
+static bool handle_breakpoint_command(ByteString const& command)
 {
     auto parts = command.split(' ');
     if (parts.size() != 2)
@@ -139,7 +154,7 @@ static bool handle_breakpoint_command(DeprecatedString const& command)
         auto source_arguments = argument.split(':');
         if (source_arguments.size() != 2)
             return false;
-        auto line = source_arguments[1].to_uint();
+        auto line = source_arguments[1].to_number<unsigned>();
         if (!line.has_value())
             return false;
         auto file = source_arguments[0];
@@ -152,7 +167,7 @@ static bool handle_breakpoint_command(DeprecatedString const& command)
     return insert_breakpoint_at_symbol(argument);
 }
 
-static bool handle_examine_command(DeprecatedString const& command)
+static bool handle_examine_command(ByteString const& command)
 {
     auto parts = command.split(' ');
     if (parts.size() != 2)
@@ -245,12 +260,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
         VERIFY(optional_regs.has_value());
-        const PtraceRegisters& regs = optional_regs.value();
+        PtraceRegisters const& regs = optional_regs.value();
 #if ARCH(X86_64)
-        const FlatPtr ip = regs.rip;
+        FlatPtr const ip = regs.rip;
 #elif ARCH(AARCH64)
-        const FlatPtr ip = 0; // FIXME
-        TODO_AARCH64();
+        FlatPtr const ip = regs.pc;
+#elif ARCH(RISCV64)
+        FlatPtr const ip = regs.pc;
 #else
 #    error Unknown architecture
 #endif

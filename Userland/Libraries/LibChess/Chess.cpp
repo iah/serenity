@@ -1,11 +1,13 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/CharacterTypes.h>
+#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibChess/Chess.h>
@@ -13,40 +15,45 @@
 
 namespace Chess {
 
-StringView char_for_piece(Chess::Type type)
+Optional<char> char_for_piece(Type type, Notation notation)
 {
     switch (type) {
     case Type::Knight:
-        return "N"sv;
+        return 'N';
     case Type::Bishop:
-        return "B"sv;
+        return 'B';
     case Type::Rook:
-        return "R"sv;
+        return 'R';
     case Type::Queen:
-        return "Q"sv;
+        return 'Q';
     case Type::King:
-        return "K"sv;
+        return 'K';
     case Type::Pawn:
-    default:
-        return ""sv;
+        if (notation == Notation::FEN)
+            return 'P';
+        return {};
+    case Type::None:
+        return {};
     }
+    VERIFY_NOT_REACHED();
 }
 
-Chess::Type piece_for_char_promotion(StringView str)
+Type piece_from_char(char c)
 {
-    DeprecatedString string = DeprecatedString(str).to_lowercase();
-    if (string == "")
-        return Type::None;
-    if (string == "n")
+    switch (to_ascii_lowercase(c)) {
+    case 'n':
         return Type::Knight;
-    if (string == "b")
+    case 'b':
         return Type::Bishop;
-    if (string == "r")
+    case 'r':
         return Type::Rook;
-    if (string == "q")
+    case 'q':
         return Type::Queen;
-    if (string == "k")
+    case 'k':
         return Type::King;
+    case 'p':
+        return Type::Pawn;
+    }
 
     return Type::None;
 }
@@ -77,33 +84,41 @@ Square::Square(StringView name)
     }
 }
 
-DeprecatedString Square::to_algebraic() const
+char Square::file_char() const
 {
-    StringBuilder builder;
-    builder.append(file + 'a');
-    builder.append(rank + '1');
-    return builder.to_deprecated_string();
+    return file + 'a';
+}
+
+char Square::rank_char() const
+{
+    return rank + '1';
+}
+
+ErrorOr<String> Square::to_algebraic() const
+{
+    return String::formatted("{}{}", file_char(), rank_char());
 }
 
 Move::Move(StringView long_algebraic)
     : from(long_algebraic.substring_view(0, 2))
     , to(long_algebraic.substring_view(2, 2))
-    , promote_to(piece_for_char_promotion((long_algebraic.length() >= 5) ? long_algebraic.substring_view(4, 1) : ""sv))
+    , promote_to((long_algebraic.length() >= 5) ? piece_from_char(long_algebraic[4]) : Type::None)
 {
 }
 
-DeprecatedString Move::to_long_algebraic() const
+ErrorOr<String> Move::to_long_algebraic() const
 {
     StringBuilder builder;
-    builder.append(from.to_algebraic());
-    builder.append(to.to_algebraic());
-    builder.append(DeprecatedString(char_for_piece(promote_to)).to_lowercase());
-    return builder.to_deprecated_string();
+    TRY(builder.try_append(TRY(from.to_algebraic())));
+    TRY(builder.try_append(TRY(to.to_algebraic())));
+    if (auto promoted_char = char_for_piece(promote_to, Notation::Algebraic); promoted_char.has_value())
+        TRY(builder.try_append(to_ascii_lowercase(promoted_char.value())));
+    return builder.to_string();
 }
 
-Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& board)
+Move Move::from_algebraic(StringView algebraic, Color const turn, Board const& board)
 {
-    DeprecatedString move_string = algebraic;
+    auto move_string = algebraic;
     Move move({ 50, 50 }, { 50, 50 });
 
     if (move_string.contains('-')) {
@@ -117,47 +132,48 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& b
 
     if (algebraic.contains('#')) {
         move.is_mate = true;
-        move_string = move_string.substring(0, move_string.length() - 1);
+        move_string = move_string.substring_view(0, move_string.length() - 1);
     } else if (algebraic.contains('+')) {
         move.is_check = true;
-        move_string = move_string.substring(0, move_string.length() - 1);
+        move_string = move_string.substring_view(0, move_string.length() - 1);
     }
 
     if (algebraic.contains('=')) {
-        move.promote_to = piece_for_char_promotion(move_string.split('=').at(1).substring(0, 1));
-        move_string = move_string.split('=').at(0);
+        auto parts = move_string.split_view('=');
+        move.promote_to = piece_from_char(parts[1][0]);
+        move_string = parts[0];
     }
 
-    move.to = Square(move_string.substring(move_string.length() - 2, 2));
-    move_string = move_string.substring(0, move_string.length() - 2);
+    move.to = Square(move_string.substring_view(move_string.length() - 2, 2));
+    move_string = move_string.substring_view(0, move_string.length() - 2);
 
     if (move_string.contains('x')) {
         move.is_capture = true;
-        move_string = move_string.substring(0, move_string.length() - 1);
+        move_string = move_string.substring_view(0, move_string.length() - 1);
     }
 
-    if (move_string.is_empty() || move_string.characters()[0] >= 'a') {
+    if (move_string.is_empty() || move_string[0] >= 'a') {
         move.piece = Piece(turn, Type::Pawn);
     } else {
-        move.piece = Piece(turn, piece_for_char_promotion(move_string.substring(0, 1)));
-        move_string = move_string.substring(1, move_string.length() - 1);
+        move.piece = Piece(turn, piece_from_char(move_string[0]));
+        move_string = move_string.substring_view(1, move_string.length() - 1);
     }
 
     Square::for_each([&](Square const& square) {
         if (!move_string.is_empty()) {
-            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to), turn)) {
+            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to, move.promote_to), turn)) {
                 if (move_string.length() >= 2) {
-                    if (square == Square(move_string.substring(0, 2))) {
+                    if (square == Square(move_string.substring_view(0, 2))) {
                         move.from = square;
                         return IterationDecision::Break;
                     }
-                } else if (move_string.characters()[0] <= 57) {
-                    if (square.rank == (move_string.characters()[0] - '0')) {
+                } else if (move_string[0] <= 57) {
+                    if (square.rank == (move_string[0] - '0')) {
                         move.from = square;
                         return IterationDecision::Break;
                     }
                 } else {
-                    if (square.file == (move_string.characters()[0] - 'a')) {
+                    if (square.file == (move_string[0] - 'a')) {
                         move.from = square;
                         return IterationDecision::Break;
                     }
@@ -176,47 +192,48 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& b
     return move;
 }
 
-DeprecatedString Move::to_algebraic() const
+ErrorOr<String> Move::to_algebraic() const
 {
     if (piece.type == Type::King && from.file == 4) {
         if (to.file == 2)
-            return "O-O-O";
+            return "O-O-O"_string;
         if (to.file == 6)
-            return "O-O";
+            return "O-O"_string;
     }
 
     StringBuilder builder;
 
-    builder.append(char_for_piece(piece.type));
+    if (auto piece_char = char_for_piece(piece.type, Notation::Algebraic); piece_char.has_value())
+        TRY(builder.try_append(*piece_char));
 
     if (is_ambiguous) {
         if (from.file != ambiguous.file)
-            builder.append(from.to_algebraic().substring(0, 1));
+            TRY(builder.try_append(from.file_char()));
         else if (from.rank != ambiguous.rank)
-            builder.append(from.to_algebraic().substring(1, 1));
+            TRY(builder.try_append(from.rank_char()));
         else
-            builder.append(from.to_algebraic());
+            TRY(builder.try_append(TRY(from.to_algebraic())));
     }
 
     if (is_capture) {
         if (piece.type == Type::Pawn && !is_ambiguous)
-            builder.append(from.to_algebraic().substring(0, 1));
-        builder.append('x');
+            TRY(builder.try_append(from.file_char()));
+        TRY(builder.try_append('x'));
     }
 
-    builder.append(to.to_algebraic());
+    TRY(builder.try_append(TRY(to.to_algebraic())));
 
-    if (promote_to != Type::None) {
-        builder.append('=');
-        builder.append(char_for_piece(promote_to));
+    if (promote_to != Type::None && promote_to != Type::Pawn) {
+        TRY(builder.try_append('='));
+        TRY(builder.try_append(char_for_piece(promote_to, Notation::Algebraic).value()));
     }
 
     if (is_mate)
-        builder.append('#');
+        TRY(builder.try_append('#'));
     else if (is_check)
-        builder.append('+');
+        TRY(builder.try_append('+'));
 
-    return builder.to_deprecated_string();
+    return builder.to_string();
 }
 
 Board::Board()
@@ -269,7 +286,7 @@ Board Board::clone_without_history() const
     return result;
 }
 
-DeprecatedString Board::to_fen() const
+ErrorOr<String> Board::to_fen() const
 {
     StringBuilder builder;
 
@@ -277,63 +294,67 @@ DeprecatedString Board::to_fen() const
     int empty = 0;
     for (int rank = 0; rank < 8; rank++) {
         for (int file = 0; file < 8; file++) {
-            const Piece p(get_piece({ 7 - rank, file }));
+            Piece const p(get_piece({ 7 - rank, file }));
             if (p.type == Type::None) {
                 empty++;
                 continue;
             }
             if (empty > 0) {
-                builder.append(DeprecatedString::number(empty));
+                TRY(builder.try_appendff("{}", empty));
                 empty = 0;
             }
-            auto const piece = char_for_piece(p.type);
+            auto const piece = char_for_piece(p.type, Notation::FEN).value();
             if (p.color == Color::Black)
-                builder.append(DeprecatedString(piece).to_lowercase());
+                TRY(builder.try_append(to_ascii_lowercase(piece)));
             else
-                builder.append(piece);
+                TRY(builder.try_append(piece));
         }
         if (empty > 0) {
-            builder.append(DeprecatedString::number(empty));
+            TRY(builder.try_appendff("{}", empty));
             empty = 0;
         }
         if (rank < 7)
-            builder.append('/');
+            TRY(builder.try_append('/'));
     }
 
     // 2. Active color
     VERIFY(m_turn != Color::None);
-    builder.append(m_turn == Color::White ? " w "sv : " b "sv);
+    TRY(builder.try_append(m_turn == Color::White ? " w "sv : " b "sv));
 
     // 3. Castling availability
-    builder.append(m_white_can_castle_kingside ? "K"sv : ""sv);
-    builder.append(m_white_can_castle_queenside ? "Q"sv : ""sv);
-    builder.append(m_black_can_castle_kingside ? "k"sv : ""sv);
-    builder.append(m_black_can_castle_queenside ? "q"sv : ""sv);
-    builder.append(' ');
+    if (m_white_can_castle_kingside)
+        TRY(builder.try_append('K'));
+    if (m_white_can_castle_queenside)
+        TRY(builder.try_append('Q'));
+    if (m_black_can_castle_kingside)
+        TRY(builder.try_append('k'));
+    if (m_black_can_castle_queenside)
+        TRY(builder.try_append('q'));
+    TRY(builder.try_append(' '));
 
     // 4. En passant target square
     if (!m_last_move.has_value())
-        builder.append('-');
+        TRY(builder.try_append('-'));
     else if (m_last_move.value().piece.type == Type::Pawn) {
         if (m_last_move.value().from.rank == 1 && m_last_move.value().to.rank == 3)
-            builder.append(Square(m_last_move.value().to.rank - 1, m_last_move.value().to.file).to_algebraic());
+            TRY(builder.try_append(TRY(Square(m_last_move.value().to.rank - 1, m_last_move.value().to.file).to_algebraic())));
         else if (m_last_move.value().from.rank == 6 && m_last_move.value().to.rank == 4)
-            builder.append(Square(m_last_move.value().to.rank + 1, m_last_move.value().to.file).to_algebraic());
+            TRY(builder.try_append(TRY(Square(m_last_move.value().to.rank + 1, m_last_move.value().to.file).to_algebraic())));
         else
-            builder.append('-');
+            TRY(builder.try_append('-'));
     } else {
-        builder.append('-');
+        TRY(builder.try_append('-'));
     }
-    builder.append(' ');
+    TRY(builder.try_append(' '));
 
     // 5. Halfmove clock
-    builder.append(DeprecatedString::number(min(m_moves_since_capture, m_moves_since_pawn_advance)));
-    builder.append(' ');
+    TRY(builder.try_appendff("{}", (min(m_moves_since_capture, m_moves_since_pawn_advance))));
+    TRY(builder.try_append(' '));
 
     // 6. Fullmove number
-    builder.append(DeprecatedString::number(1 + m_moves.size() / 2));
+    TRY(builder.try_appendff("{}", (1 + m_moves.size() / 2)));
 
-    return builder.to_deprecated_string();
+    return builder.to_string();
 }
 
 Piece Board::get_piece(Square const& square) const
@@ -753,9 +774,11 @@ Board::Result Board::game_result() const
     });
 
     if (are_legal_moves) {
-        if (m_moves_since_capture >= 75 * 2)
+        if (m_moves_since_capture >= 75 * 2 && m_moves_since_pawn_advance >= 75 * 2)
             return Result::SeventyFiveMoveRule;
-        if (m_moves_since_capture == 50 * 2)
+
+        if ((m_moves_since_capture >= 50 * 2 && m_moves_since_pawn_advance == 50 * 2)
+            || (m_moves_since_pawn_advance >= 50 * 2 && m_moves_since_capture == 50 * 2))
             return Result::FiftyMoveRule;
 
         auto repeats = m_previous_states.get(Traits<Board>::hash(*this));

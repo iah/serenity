@@ -12,9 +12,10 @@ namespace JS {
 
 class SuppressedErrorPrototype final : public Object {
     JS_OBJECT(SuppressedErrorPrototype, Object);
+    JS_DECLARE_ALLOCATOR(SuppressedErrorPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~SuppressedErrorPrototype() override = default;
 
 private:

@@ -16,20 +16,18 @@
 
 namespace GUI {
 
-WizardDialog::WizardDialog(Window* parent_window)
-    : Dialog(parent_window)
-    , m_page_stack()
+ErrorOr<NonnullRefPtr<WizardDialog>> WizardDialog::create(Window* parent_window)
 {
-    resize(500, 360);
-    set_title(DeprecatedString::formatted("Sample wizard"));
-    set_resizable(false);
+    auto dialog = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) WizardDialog(parent_window)));
+    TRY(dialog->build());
+    return dialog;
+}
 
-    if (parent_window)
-        set_icon(parent_window->icon());
-
-    auto main_widget = set_main_widget<Widget>().release_value_but_fixme_should_propagate_errors();
+ErrorOr<void> WizardDialog::build()
+{
+    auto main_widget = set_main_widget<Widget>();
     main_widget->set_fill_with_background_color(true);
-    main_widget->set_layout<VerticalBoxLayout>(GUI::Margins {}, 0);
+    main_widget->set_layout<VerticalBoxLayout>(Margins {}, 0);
 
     m_page_container_widget = main_widget->add<Widget>();
     m_page_container_widget->set_fixed_size(500, 315);
@@ -39,16 +37,16 @@ WizardDialog::WizardDialog(Window* parent_window)
     separator.set_fixed_height(2);
 
     auto& nav_container_widget = main_widget->add<Widget>();
-    nav_container_widget.set_layout<HorizontalBoxLayout>(GUI::Margins { 0, 10 }, 0);
+    nav_container_widget.set_layout<HorizontalBoxLayout>(Margins { 0, 10 }, 0);
     nav_container_widget.set_fixed_height(42);
-    nav_container_widget.add_spacer().release_value_but_fixme_should_propagate_errors();
+    nav_container_widget.add_spacer();
 
-    m_back_button = nav_container_widget.add<DialogButton>("< Back"_short_string);
+    m_back_button = nav_container_widget.add<DialogButton>("< Back"_string);
     m_back_button->on_click = [&](auto) {
         pop_page();
     };
 
-    m_next_button = nav_container_widget.add<DialogButton>("Next >"_short_string);
+    m_next_button = nav_container_widget.add<DialogButton>("Next >"_string);
     m_next_button->on_click = [&](auto) {
         VERIFY(has_pages());
 
@@ -65,12 +63,22 @@ WizardDialog::WizardDialog(Window* parent_window)
     auto& button_spacer = nav_container_widget.add<Widget>();
     button_spacer.set_fixed_width(10);
 
-    m_cancel_button = nav_container_widget.add<DialogButton>("Cancel"_short_string);
+    m_cancel_button = nav_container_widget.add<DialogButton>("Cancel"_string);
     m_cancel_button->on_click = [&](auto) {
         handle_cancel();
     };
 
     update_navigation();
+
+    return {};
+}
+
+WizardDialog::WizardDialog(Window* parent_window)
+    : Dialog(parent_window)
+    , m_page_stack()
+{
+    resize(500, 360);
+    set_resizable(false);
 }
 
 void WizardDialog::push_page(AbstractWizardPage& page)
@@ -120,11 +128,11 @@ void WizardDialog::update_navigation()
     if (has_pages()) {
         m_next_button->set_enabled(current_page().is_final_page() || current_page().can_go_next());
         if (current_page().is_final_page())
-            m_next_button->set_text("Finish"_short_string);
+            m_next_button->set_text("Finish"_string);
         else
-            m_next_button->set_text("Next >"_short_string);
+            m_next_button->set_text("Next >"_string);
     } else {
-        m_next_button->set_text("Next >"_short_string);
+        m_next_button->set_text("Next >"_string);
         m_next_button->set_enabled(false);
     }
 }

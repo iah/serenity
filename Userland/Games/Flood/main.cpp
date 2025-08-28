@@ -5,9 +5,9 @@
  */
 
 #include "BoardWidget.h"
+#include "MainWidget.h"
 #include "SettingsDialog.h"
-#include <AK/URL.h>
-#include <Games/Flood/FloodWindowGML.h>
+#include <AK/String.h>
 #include <LibConfig/Client.h>
 #include <LibCore/System.h>
 #include <LibDesktop/Launcher.h>
@@ -20,6 +20,7 @@
 #include <LibGUI/Window.h>
 #include <LibGfx/Painter.h>
 #include <LibMain/Main.h>
+#include <LibURL/URL.h>
 
 // FIXME: Improve this AI.
 // Currently, this AI always chooses a move that gets the most cells flooded immediately.
@@ -56,10 +57,10 @@ static int get_number_of_moves_from_ai(Board const& board)
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath recvfd sendfd unix"));
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-flood"sv));
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
 
     Config::pledge_domain("Flood");
 
@@ -82,8 +83,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     window->set_title("Flood");
     window->resize(304, 325);
 
-    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
-    TRY(main_widget->load_from_gml(flood_window_gml));
+    auto main_widget = TRY(Flood::MainWidget::try_create());
+    window->set_main_widget(main_widget);
 
     auto board_widget = TRY(main_widget->find_descendant_of_type_named<GUI::Widget>("board_widget_container")->try_add<BoardWidget>(board_rows, board_columns));
     board_widget->board()->randomize();
@@ -93,10 +94,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto statusbar = main_widget->find_descendant_of_type_named<GUI::Statusbar>("statusbar");
 
     app->on_action_enter = [&](GUI::Action& action) {
-        auto text = action.status_tip();
-        if (text.is_empty())
-            text = Gfx::parse_ampersand_string(action.text());
-        statusbar->set_override_text(move(text));
+        statusbar->set_override_text(action.status_tip());
     };
 
     app->on_action_leave = [&](GUI::Action&) {
@@ -105,13 +103,19 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto update = [&]() {
         board_widget->update();
-        statusbar->set_text(DeprecatedString::formatted("Moves remaining: {}", ai_moves - moves_made));
+        statusbar->set_text(String::formatted("Moves remaining: {}", ai_moves - moves_made).release_value_but_fixme_should_propagate_errors());
     };
 
     update();
 
     auto change_settings = [&] {
-        auto settings_dialog = SettingsDialog::construct(window, board_rows, board_columns);
+        auto settings_dialog_or_error = SettingsDialog::try_create(window, board_rows, board_columns);
+        if (settings_dialog_or_error.is_error()) {
+            GUI::MessageBox::show(window, "Failed to load the settings window"sv, "Unable to Open Settings"sv, GUI::MessageBox::Type::Error);
+            return;
+        }
+
+        auto settings_dialog = settings_dialog_or_error.release_value();
         if (settings_dialog->exec() != GUI::Dialog::ExecResult::OK)
             return;
 
@@ -142,12 +146,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             board_widget->board()->update_values();
             update();
             if (board_widget->board()->is_flooded()) {
-                DeprecatedString dialog_text("You have tied with the AI."sv);
+                auto dialog_text = "You have tied with the AI."_string;
                 auto dialog_title("Congratulations!"sv);
                 if (ai_moves - moves_made == 1)
-                    dialog_text = "You defeated the AI by 1 move."sv;
+                    dialog_text = "You defeated the AI by 1 move."_string;
                 else if (ai_moves - moves_made > 1)
-                    dialog_text = DeprecatedString::formatted("You defeated the AI by {} moves.", ai_moves - moves_made);
+                    dialog_text = String::formatted("You defeated the AI by {} moves.", ai_moves - moves_made).release_value_but_fixme_should_propagate_errors();
                 else
                     dialog_title = "Game over!"sv;
                 GUI::MessageBox::show(window,
@@ -167,28 +171,33 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
     };
 
-    auto game_menu = TRY(window->try_add_menu("&Game"));
+    auto game_menu = window->add_menu("&Game"_string);
 
-    TRY(game_menu->try_add_action(GUI::Action::create("&New Game", { Mod_None, Key_F2 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/reload.png"sv)), [&](auto&) {
+    game_menu->add_action(GUI::Action::create("&New Game", { Mod_None, Key_F2 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/reload.png"sv)), [&](auto&) {
         start_a_new_game();
-    })));
+    }));
 
-    TRY(game_menu->try_add_separator());
-    TRY(game_menu->try_add_action(GUI::Action::create("&Settings", TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/settings.png"sv)), [&](auto&) {
+    game_menu->add_separator();
+    game_menu->add_action(GUI::Action::create("&Settings", TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/settings.png"sv)), [&](auto&) {
         change_settings();
-    })));
+    }));
 
-    TRY(game_menu->try_add_separator());
-    TRY(game_menu->try_add_action(GUI::CommonActions::make_quit_action([](auto&) {
+    game_menu->add_separator();
+    game_menu->add_action(GUI::CommonActions::make_quit_action([](auto&) {
         GUI::Application::the()->quit();
-    })));
+    }));
 
-    auto help_menu = TRY(window->try_add_menu("&Help"));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_help_action([](auto&) {
+    auto view_menu = window->add_menu("&View"_string);
+    view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window->set_fullscreen(!window->is_fullscreen());
+    }));
+
+    auto help_menu = window->add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(window));
+    help_menu->add_action(GUI::CommonActions::make_help_action([](auto&) {
         Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man6/Flood.md"), "/bin/Help");
-    })));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Flood", app_icon, window)));
+    }));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Flood"_string, app_icon, window));
 
     window->show();
 

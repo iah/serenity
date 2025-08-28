@@ -9,10 +9,10 @@
 #include <AK/StringBuilder.h>
 #include <LibCore/MappedFile.h>
 #include <LibDebug/DebugSession.h>
+#include <LibDisassembly/Disassembler.h>
+#include <LibDisassembly/ELFSymbolProvider.h>
 #include <LibELF/Image.h>
 #include <LibSymbolication/Symbolication.h>
-#include <LibX86/Disassembler.h>
-#include <LibX86/ELFSymbolProvider.h>
 #include <stdio.h>
 
 namespace HackStudio {
@@ -50,9 +50,9 @@ DisassemblyModel::DisassemblyModel(Debug::DebugSession const& debug_session, Ptr
 
     auto view = symbol.value().raw_data();
 
-    X86::ELFSymbolProvider symbol_provider(*elf);
-    X86::SimpleInstructionStream stream((u8 const*)view.characters_without_null_termination(), view.length());
-    X86::Disassembler disassembler(stream);
+    Disassembly::ELFSymbolProvider symbol_provider(*elf);
+    Disassembly::SimpleInstructionStream stream((u8 const*)view.characters_without_null_termination(), view.length());
+    Disassembly::Disassembler disassembler(stream, Disassembly::architecture_from_elf_machine(elf->machine()).value_or(Disassembly::host_architecture()));
 
     size_t offset_into_symbol = 0;
     for (;;) {
@@ -60,11 +60,12 @@ DisassemblyModel::DisassemblyModel(Debug::DebugSession const& debug_session, Ptr
         if (!insn.has_value())
             break;
         FlatPtr address_in_profiled_program = symbol.value().value() + offset_into_symbol;
-        auto disassembly = insn.value().to_deprecated_string(address_in_profiled_program, &symbol_provider);
-        StringView instruction_bytes = view.substring_view(offset_into_symbol, insn.value().length());
-        m_instructions.append({ insn.value(), disassembly, instruction_bytes, address_in_profiled_program });
+        auto disassembly = insn.value()->to_byte_string(address_in_profiled_program, symbol_provider);
+        auto length = insn.value()->length();
+        StringView instruction_bytes = view.substring_view(offset_into_symbol, length);
+        m_instructions.append({ insn.release_value(), disassembly, instruction_bytes, address_in_profiled_program });
 
-        offset_into_symbol += insn.value().length();
+        offset_into_symbol += length;
     }
 }
 
@@ -73,18 +74,17 @@ int DisassemblyModel::row_count(const GUI::ModelIndex&) const
     return m_instructions.size();
 }
 
-DeprecatedString DisassemblyModel::column_name(int column) const
+ErrorOr<String> DisassemblyModel::column_name(int column) const
 {
     switch (column) {
     case Column::Address:
-        return "Address";
+        return "Address"_string;
     case Column::InstructionBytes:
-        return "Insn Bytes";
+        return "Insn Bytes"_string;
     case Column::Disassembly:
-        return "Disassembly";
+        return "Disassembly"_string;
     default:
         VERIFY_NOT_REACHED();
-        return {};
     }
 }
 
@@ -94,12 +94,12 @@ GUI::Variant DisassemblyModel::data(const GUI::ModelIndex& index, GUI::ModelRole
 
     if (role == GUI::ModelRole::Display) {
         if (index.column() == Column::Address)
-            return DeprecatedString::formatted("{:p}", insn.address);
+            return ByteString::formatted("{:p}", insn.address);
         if (index.column() == Column::InstructionBytes) {
             StringBuilder builder;
             for (auto ch : insn.bytes)
                 builder.appendff("{:02x} ", static_cast<unsigned char>(ch));
-            return builder.to_deprecated_string();
+            return builder.to_byte_string();
         }
         if (index.column() == Column::Disassembly)
             return insn.disassembly;

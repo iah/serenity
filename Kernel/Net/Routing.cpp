@@ -12,7 +12,7 @@
 #include <Kernel/Net/NetworkTask.h>
 #include <Kernel/Net/NetworkingManagement.h>
 #include <Kernel/Net/Routing.h>
-#include <Kernel/Thread.h>
+#include <Kernel/Tasks/Thread.h>
 
 namespace Kernel {
 
@@ -71,7 +71,7 @@ protected:
     {
         VERIFY(b.blocker_type() == Thread::Blocker::Type::Routing);
         auto& blocker = static_cast<ARPTableBlocker&>(b);
-        auto maybe_mac_address = arp_table().with([&](auto const& table) -> auto{
+        auto maybe_mac_address = arp_table().with([&](auto const& table) -> auto {
             return table.get(blocker.ip_address());
         });
         if (!maybe_mac_address.has_value())
@@ -95,14 +95,14 @@ bool ARPTableBlocker::setup_blocker()
 
 void ARPTableBlocker::will_unblock_immediately_without_blocking(UnblockImmediatelyReason)
 {
-    auto addr = arp_table().with([&](auto const& table) -> auto{
+    auto addr = arp_table().with([&](auto const& table) -> auto {
         return table.get(ip_address());
     });
 
     SpinlockLocker lock(m_lock);
     if (!m_did_unblock) {
         m_did_unblock = true;
-        m_mac_address = move(addr);
+        m_mac_address = addr.copy();
     }
 }
 
@@ -135,11 +135,11 @@ SpinlockProtected<Route::RouteList, LockRank::None>& routing_table()
     return *s_routing_table;
 }
 
-ErrorOr<void> update_routing_table(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, LockRefPtr<NetworkAdapter> adapter, UpdateTable update)
+ErrorOr<void> update_routing_table(IPv4Address const& destination, IPv4Address const& gateway, IPv4Address const& netmask, u16 flags, RefPtr<NetworkAdapter> adapter, UpdateTable update)
 {
     dbgln_if(ROUTING_DEBUG, "update_routing_table {} {} {} {} {} {}", destination, gateway, netmask, flags, adapter, update == UpdateTable::Set ? "Set" : "Delete");
 
-    auto route_entry = adopt_lock_ref_if_nonnull(new (nothrow) Route { destination, gateway, netmask, flags, adapter.release_nonnull() });
+    auto route_entry = adopt_ref_if_nonnull(new (nothrow) Route { destination, gateway, netmask, flags, adapter.release_nonnull() });
     if (!route_entry)
         return ENOMEM;
 
@@ -178,7 +178,7 @@ static MACAddress multicast_ethernet_address(IPv4Address const& address)
     return MACAddress { 0x01, 0x00, 0x5e, (u8)(address[1] & 0x7f), address[2], address[3] };
 }
 
-RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, LockRefPtr<NetworkAdapter> const through, AllowUsingGateway allow_using_gateway)
+RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, RefPtr<NetworkAdapter> const through, AllowBroadcast allow_broadcast, AllowUsingGateway allow_using_gateway)
 {
     auto matches = [&](auto& adapter) {
         if (!through)
@@ -200,8 +200,8 @@ RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, L
     auto target_addr = target.to_u32();
     auto source_addr = source.to_u32();
 
-    LockRefPtr<NetworkAdapter> local_adapter = nullptr;
-    LockRefPtr<Route> chosen_route = nullptr;
+    RefPtr<NetworkAdapter> local_adapter = nullptr;
+    RefPtr<Route> chosen_route = nullptr;
 
     NetworkingManagement::the().for_each([source_addr, &target_addr, &local_adapter, &matches, &through](NetworkAdapter& adapter) {
         auto adapter_addr = adapter.ipv4_address().to_u32();
@@ -263,7 +263,7 @@ RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, L
         return { nullptr, {} };
     }
 
-    LockRefPtr<NetworkAdapter> adapter = nullptr;
+    RefPtr<NetworkAdapter> adapter = nullptr;
     IPv4Address next_hop_ip;
 
     if (local_adapter) {
@@ -291,17 +291,20 @@ RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, L
     // If it's a broadcast, we already know everything we need to know.
     // FIXME: We should also deal with the case where `target_addr` is
     //        a broadcast to a subnet rather than a full broadcast.
-    if (target_addr == 0xffffffff && matches(adapter))
-        return { adapter, { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } };
+    if (target_addr == 0xffffffff && matches(adapter)) {
+        if (allow_broadcast == AllowBroadcast::Yes)
+            return { adapter, { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } };
+        return { nullptr, {} };
+    }
 
     if (adapter == NetworkingManagement::the().loopback_adapter())
         return { adapter, adapter->mac_address() };
 
-    if ((target_addr & IPv4Address { 240, 0, 0, 0 }.to_u32()) == IPv4Address { 224, 0, 0, 0 }.to_u32())
+    if ((target_addr & (IPv4Address { 240, 0, 0, 0 }.to_u32())) == IPv4Address { 224, 0, 0, 0 }.to_u32())
         return { adapter, multicast_ethernet_address(target) };
 
     {
-        auto addr = arp_table().with([&](auto const& table) -> auto{
+        auto addr = arp_table().with([&](auto const& table) -> auto {
             return table.get(next_hop_ip);
         });
         if (addr.has_value()) {

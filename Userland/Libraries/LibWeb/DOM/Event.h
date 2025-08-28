@@ -6,9 +6,10 @@
 
 #pragma once
 
-#include <AK/DeprecatedFlyString.h>
+#include <AK/FlyString.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/DOM/EventTarget.h>
+#include <LibWeb/HighResolutionTime/DOMHighResTimeStamp.h>
 
 namespace Web::DOM {
 
@@ -20,6 +21,7 @@ struct EventInit {
 
 class Event : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(Event, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(Event);
 
 public:
     enum Phase : u16 {
@@ -45,18 +47,19 @@ public:
 
     using Path = Vector<PathEntry>;
 
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> create(JS::Realm&, DeprecatedFlyString const& event_name, EventInit const& event_init = {});
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> construct_impl(JS::Realm&, DeprecatedFlyString const& event_name, EventInit const& event_init);
+    [[nodiscard]] static JS::NonnullGCPtr<Event> create(JS::Realm&, FlyString const& event_name, EventInit const& event_init = {});
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> construct_impl(JS::Realm&, FlyString const& event_name, EventInit const& event_init);
 
-    Event(JS::Realm&, DeprecatedFlyString const& type);
-    Event(JS::Realm&, DeprecatedFlyString const& type, EventInit const& event_init);
+    Event(JS::Realm&, FlyString const& type);
+    Event(JS::Realm&, FlyString const& type, EventInit const& event_init);
 
     virtual ~Event() = default;
 
-    double time_stamp() const;
+    // https://dom.spec.whatwg.org/#dom-event-timestamp
+    HighResolutionTime::DOMHighResTimeStamp time_stamp() const { return m_time_stamp; }
 
-    DeprecatedFlyString const& type() const { return m_type; }
-    void set_type(StringView type) { m_type = type; }
+    FlyString const& type() const { return m_type; }
+    void set_type(FlyString const& type) { m_type = type; }
 
     JS::GCPtr<EventTarget> target() const { return m_target; }
     void set_target(EventTarget* target) { m_target = target; }
@@ -110,7 +113,7 @@ public:
     void clear_path() { m_path.clear(); }
 
     void set_touch_target_list(TouchTargetList& touch_target_list) { m_touch_target_list = touch_target_list; }
-    TouchTargetList& touch_target_list() { return m_touch_target_list; };
+    TouchTargetList& touch_target_list() { return m_touch_target_list; }
     void clear_touch_target_list() { m_touch_target_list.clear(); }
 
     bool bubbles() const { return m_bubbles; }
@@ -137,20 +140,26 @@ public:
         m_stop_immediate_propagation = true;
     }
 
-    void init_event(DeprecatedString const&, bool, bool);
+    void init_event(String const&, bool, bool);
 
     void set_time_stamp(double time_stamp) { m_time_stamp = time_stamp; }
 
     Vector<JS::Handle<EventTarget>> composed_path() const;
 
-protected:
-    void initialize_event(DeprecatedString const&, bool, bool);
+    template<typename T>
+    bool fast_is() const = delete;
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual bool is_mouse_event() const { return false; }
+    virtual bool is_pointer_event() const { return false; }
+
+protected:
+    void initialize_event(String const&, bool, bool);
+
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Visitor&) override;
 
 private:
-    DeprecatedFlyString m_type;
+    FlyString m_type;
     JS::GCPtr<EventTarget> m_target;
     JS::GCPtr<EventTarget> m_related_target;
     JS::GCPtr<EventTarget> m_current_target;
@@ -168,12 +177,12 @@ private:
     bool m_initialized { false };
     bool m_dispatch { false };
 
-    bool m_is_trusted { true };
+    bool m_is_trusted { false };
 
     Path m_path;
     TouchTargetList m_touch_target_list;
 
-    double m_time_stamp { 0 };
+    HighResolutionTime::DOMHighResTimeStamp m_time_stamp { 0 };
 
     void set_cancelled_flag();
 };

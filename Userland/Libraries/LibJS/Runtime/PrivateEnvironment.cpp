@@ -8,6 +8,8 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(PrivateEnvironment);
+
 PrivateEnvironment::PrivateEnvironment(PrivateEnvironment* parent)
     : m_outer_environment(parent)
     , m_unique_id(s_next_id++)
@@ -32,7 +34,7 @@ PrivateName PrivateEnvironment::resolve_private_identifier(DeprecatedFlyString c
     return m_outer_environment->resolve_private_identifier(identifier);
 }
 
-void PrivateEnvironment::add_private_name(Badge<ClassExpression>, DeprecatedFlyString description)
+void PrivateEnvironment::add_private_name(DeprecatedFlyString description)
 {
     if (!find_private_name(description).is_end())
         return;
@@ -47,7 +49,7 @@ bool PrivateName::operator==(PrivateName const& rhs) const
 
 void PrivateEnvironment::visit_edges(Visitor& visitor)
 {
-    Cell::visit_edges(visitor);
+    Base::visit_edges(visitor);
     visitor.visit(m_outer_environment);
 }
 

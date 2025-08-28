@@ -18,7 +18,7 @@ static ProfileHeader rgb_header()
     header.device_class = DeviceClass::DisplayDevice;
     header.data_color_space = ColorSpace::RGB;
     header.connection_space = ColorSpace::PCSXYZ;
-    header.creation_timestamp = time(NULL);
+    header.creation_timestamp = MUST(DateTime::from_time_t(0));
     header.rendering_intent = RenderingIntent::Perceptual;
     header.pcs_illuminant = XYZ { 0.9642, 1.0, 0.8249 };
     return header;
@@ -38,6 +38,13 @@ static ErrorOr<NonnullRefPtr<XYZTagData>> XYZ_data(XYZ xyz)
     return try_make_ref_counted<XYZTagData>(0, 0, move(xyzs));
 }
 
+ErrorOr<NonnullRefPtr<TagData>> sRGB_curve()
+{
+    // Numbers from https://en.wikipedia.org/wiki/SRGB#From_sRGB_to_CIE_XYZ
+    Array<S15Fixed16, 7> curve_parameters = { 2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045 };
+    return try_make_ref_counted<ParametricCurveTagData>(0, 0, ParametricCurveTagData::FunctionType::sRGB, curve_parameters);
+}
+
 ErrorOr<NonnullRefPtr<Profile>> sRGB()
 {
     // Returns an sRGB profile.
@@ -45,6 +52,7 @@ ErrorOr<NonnullRefPtr<Profile>> sRGB()
 
     // FIXME: There are many different sRGB ICC profiles in the wild.
     //        Explain why, and why this picks the numbers it does.
+    //        In the meantime, https://github.com/SerenityOS/serenity/pull/17714 has a few notes.
 
     auto header = rgb_header();
 
@@ -54,15 +62,13 @@ ErrorOr<NonnullRefPtr<Profile>> sRGB()
     TRY(tag_table.try_set(copyrightTag, TRY(en_US("Public Domain"sv))));
 
     // Transfer function.
-    // Numbers from https://en.wikipedia.org/wiki/SRGB#From_sRGB_to_CIE_XYZ
-    Array<S15Fixed16, 7> curve_parameters = { 2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045 };
-    auto curve = TRY(try_make_ref_counted<ParametricCurveTagData>(0, 0, ParametricCurveTagData::FunctionType::sRGB, curve_parameters));
+    auto curve = TRY(sRGB_curve());
     TRY(tag_table.try_set(redTRCTag, curve));
     TRY(tag_table.try_set(greenTRCTag, curve));
     TRY(tag_table.try_set(blueTRCTag, curve));
 
     // White point.
-    // ICC v4, 9.2.36 mediaWhitePointTag: " For displays, the values specified shall be those of the PCS illuminant as defined in 7.2.16."
+    // ICC v4, 9.2.36 mediaWhitePointTag: "For displays, the values specified shall be those of the PCS illuminant as defined in 7.2.16."
     TRY(tag_table.try_set(mediaWhitePointTag, TRY(XYZ_data(header.pcs_illuminant))));
 
     // The chromatic_adaptation_matrix values are from https://www.color.org/chadtag.xalter

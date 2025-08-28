@@ -7,7 +7,7 @@
 #pragma once
 
 #include <AK/Optional.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGUI/EditingEngine.h>
 #include <LibGUI/TextRange.h>
 
@@ -170,7 +170,7 @@ private:
     VimMotion m_motion;
 
     YankType m_yank_type {};
-    DeprecatedString m_yank_buffer {};
+    ByteString m_yank_buffer {};
     void yank(YankType);
     void yank(TextRange, YankType yank_type);
     void put_before();

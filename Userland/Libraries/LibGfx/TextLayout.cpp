@@ -6,6 +6,10 @@
  */
 
 #include "TextLayout.h"
+#include "Font/Emoji.h"
+#include <AK/Debug.h>
+#include <LibUnicode/CharacterTypes.h>
+#include <LibUnicode/Emoji.h>
 
 namespace Gfx {
 
@@ -40,7 +44,7 @@ FloatRect TextLayout::bounding_rect(TextWrapping wrapping) const
     return bounding_rect;
 }
 
-Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWrapping wrapping) const
+Vector<ByteString, 32> TextLayout::wrap_lines(TextElision elision, TextWrapping wrapping) const
 {
     Vector<Block> blocks;
 
@@ -69,8 +73,11 @@ Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWra
 
             continue;
         }
-        case '\n':
-        case '\r': {
+        case '\r':
+            if (it.peek(1) == static_cast<u32>('\n'))
+                ++it;
+            [[fallthrough]];
+        case '\n': {
             if (current_block_type.has_value()) {
                 blocks.append({
                     current_block_type.value(),
@@ -106,14 +113,14 @@ Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWra
         });
     }
 
-    Vector<DeprecatedString> lines;
+    Vector<ByteString> lines;
     StringBuilder builder;
     float line_width = 0;
     size_t current_block = 0;
     for (Block& block : blocks) {
         switch (block.type) {
         case BlockType::Newline: {
-            lines.append(builder.to_deprecated_string());
+            lines.append(builder.to_byte_string());
             builder.clear();
             line_width = 0;
             current_block++;
@@ -129,7 +136,7 @@ Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWra
             }
 
             if (wrapping == TextWrapping::Wrap && line_width + block_width > m_rect.width()) {
-                lines.append(builder.to_deprecated_string());
+                lines.append(builder.to_byte_string());
                 builder.clear();
                 line_width = 0;
             }
@@ -141,7 +148,7 @@ Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWra
         }
     }
 
-    auto last_line = builder.to_deprecated_string();
+    auto last_line = builder.to_byte_string();
     if (!last_line.is_empty())
         lines.append(last_line);
 
@@ -157,7 +164,7 @@ Vector<DeprecatedString, 32> TextLayout::wrap_lines(TextElision elision, TextWra
     return lines;
 }
 
-DeprecatedString TextLayout::elide_text_from_right(Utf8View text) const
+ByteString TextLayout::elide_text_from_right(Utf8View text) const
 {
     float text_width = m_font.width(text);
     if (text_width > static_cast<float>(m_rect.width())) {
@@ -185,11 +192,62 @@ DeprecatedString TextLayout::elide_text_from_right(Utf8View text) const
             StringBuilder builder;
             builder.append(text.substring_view(0, offset).as_string());
             builder.append("..."sv);
-            return builder.to_deprecated_string();
+            return builder.to_byte_string();
         }
     }
 
     return text.as_string();
+}
+
+DrawGlyphOrEmoji prepare_draw_glyph_or_emoji(FloatPoint point, Utf8CodePointIterator& it, Font const& font)
+{
+    u32 code_point = *it;
+    auto next_code_point = it.peek(1);
+
+    ScopeGuard consume_variation_selector = [&, initial_it = it] {
+        // If we advanced the iterator to consume an emoji sequence, don't look for another variation selector.
+        if (initial_it != it)
+            return;
+
+        // Otherwise, discard one code point if it's a variation selector.
+        if (next_code_point.has_value() && Unicode::code_point_has_variation_selector_property(*next_code_point))
+            ++it;
+    };
+
+    // NOTE: We don't check for emoji
+    auto font_contains_glyph = font.contains_glyph(code_point);
+    auto check_for_emoji = !font.has_color_bitmaps() && Unicode::could_be_start_of_emoji_sequence(it, font_contains_glyph ? Unicode::SequenceType::EmojiPresentation : Unicode::SequenceType::Any);
+
+    // If the font contains the glyph, and we know it's not the start of an emoji, draw a text glyph.
+    if (font_contains_glyph && !check_for_emoji) {
+        return DrawGlyph {
+            .position = point,
+            .code_point = code_point,
+        };
+    }
+
+    // If we didn't find a text glyph, or have an emoji variation selector or regional indicator, try to draw an emoji glyph.
+    if (auto const* emoji = Emoji::emoji_for_code_point_iterator(it)) {
+        return DrawEmoji {
+            .position = point,
+            .emoji = emoji,
+        };
+    }
+
+    // If that failed, but we have a text glyph fallback, draw that.
+    if (font_contains_glyph) {
+        return DrawGlyph {
+            .position = point,
+            .code_point = code_point,
+        };
+    }
+
+    // No suitable glyph found, draw a replacement character.
+    dbgln_if(EMOJI_DEBUG, "Failed to find a glyph or emoji for code_point {}", code_point);
+    return DrawGlyph {
+        .position = point,
+        .code_point = 0xFFFD,
+    };
 }
 
 }

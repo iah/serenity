@@ -6,8 +6,7 @@
 
 #pragma once
 
-#include <AK/URL.h>
-#include <LibWeb/Bindings/DedicatedWorkerExposedInterfaces.h>
+#include <LibURL/URL.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Forward.h>
 
@@ -15,45 +14,34 @@ namespace Web::HTML {
 
 class WorkerEnvironmentSettingsObject final
     : public EnvironmentSettingsObject {
-    JS_CELL(WindowEnvironmentSettingsObject, EnvironmentSettingsObject);
+    JS_CELL(WorkerEnvironmentSettingsObject, EnvironmentSettingsObject);
+    JS_DECLARE_ALLOCATOR(WorkerEnvironmentSettingsObject);
 
 public:
-    WorkerEnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext> execution_context)
+    WorkerEnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext> execution_context, JS::NonnullGCPtr<WorkerGlobalScope> global_scope)
         : EnvironmentSettingsObject(move(execution_context))
+        , m_global_scope(global_scope)
     {
     }
 
-    static JS::NonnullGCPtr<WorkerEnvironmentSettingsObject> setup(NonnullOwnPtr<JS::ExecutionContext> execution_context /* FIXME: null or an environment reservedEnvironment, a URL topLevelCreationURL, and an origin topLevelOrigin */)
-    {
-        auto* realm = execution_context->realm;
-        VERIFY(realm);
-        auto settings_object = realm->heap().allocate<WorkerEnvironmentSettingsObject>(*realm, move(execution_context)).release_allocated_value_but_fixme_should_propagate_errors();
-        settings_object->target_browsing_context = nullptr;
-
-        auto intrinsics = realm->heap().allocate<Bindings::Intrinsics>(*realm, *realm).release_allocated_value_but_fixme_should_propagate_errors();
-        auto host_defined = make<Bindings::HostDefined>(settings_object, intrinsics);
-        realm->set_host_defined(move(host_defined));
-
-        // FIXME: Shared workers should use the shared worker method
-        Bindings::add_dedicated_worker_exposed_interfaces(realm->global_object());
-
-        return settings_object;
-    }
+    static JS::NonnullGCPtr<WorkerEnvironmentSettingsObject> setup(JS::NonnullGCPtr<Page> page, NonnullOwnPtr<JS::ExecutionContext> execution_context, SerializedEnvironmentSettingsObject const& outside_settings, HighResolutionTime::DOMHighResTimeStamp unsafe_worker_creation_time);
 
     virtual ~WorkerEnvironmentSettingsObject() override = default;
 
     JS::GCPtr<DOM::Document> responsible_document() override { return nullptr; }
-    DeprecatedString api_url_character_encoding() override { return m_api_url_character_encoding; }
-    AK::URL api_base_url() override { return m_url; }
-    Origin origin() override { return m_origin; }
-    PolicyContainer policy_container() override { return m_policy_container; }
-    CanUseCrossOriginIsolatedAPIs cross_origin_isolated_capability() override { TODO(); }
+    String api_url_character_encoding() override { return m_api_url_character_encoding; }
+    URL::URL api_base_url() override;
+    URL::Origin origin() override;
+    PolicyContainer policy_container() override;
+    CanUseCrossOriginIsolatedAPIs cross_origin_isolated_capability() override;
 
 private:
-    DeprecatedString m_api_url_character_encoding;
-    AK::URL m_url;
-    HTML::Origin m_origin;
-    HTML::PolicyContainer m_policy_container;
+    virtual void visit_edges(JS::Cell::Visitor&) override;
+
+    String m_api_url_character_encoding;
+    URL::Origin m_origin;
+
+    JS::NonnullGCPtr<WorkerGlobalScope> m_global_scope;
 };
 
 }

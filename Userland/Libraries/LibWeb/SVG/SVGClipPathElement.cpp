@@ -5,9 +5,13 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGClipPathElementPrototype.h>
+#include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/SVGClipPathElement.h>
 
 namespace Web::SVG {
+
+JS_DEFINE_ALLOCATOR(SVGClipPathElement);
 
 SVGClipPathElement::SVGClipPathElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : SVGElement(document, move(qualified_name))
@@ -18,16 +22,22 @@ SVGClipPathElement::~SVGClipPathElement()
 {
 }
 
-JS::ThrowCompletionOr<void> SVGClipPathElement::initialize(JS::Realm& realm)
+void SVGClipPathElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGClipPathElementPrototype>(realm, "SVGClipPathElement"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGClipPathElement);
+}
 
-    return {};
+void SVGClipPathElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
+{
+    SVGElement::attribute_changed(name, old_value, value);
+    if (name == AttributeNames::clipPathUnits)
+        m_clip_path_units = AttributeParser::parse_units(value.value_or(String {}));
 }
 
 JS::GCPtr<Layout::Node> SVGClipPathElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties>)
 {
+    // Clip paths are handled as a special case in the TreeBuilder.
     return nullptr;
 }
 

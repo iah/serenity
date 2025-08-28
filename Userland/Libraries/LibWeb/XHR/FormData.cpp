@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Kenneth Myhra <kennethmyhra@serenityos.org>
+ * Copyright (c) 2023-2024, Kenneth Myhra <kennethmyhra@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,17 +15,19 @@
 
 namespace Web::XHR {
 
+JS_DEFINE_ALLOCATOR(FormData);
+
 // https://xhr.spec.whatwg.org/#dom-formdata
-WebIDL::ExceptionOr<JS::NonnullGCPtr<FormData>> FormData::construct_impl(JS::Realm& realm, Optional<JS::NonnullGCPtr<HTML::HTMLFormElement>> form)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<FormData>> FormData::construct_impl(JS::Realm& realm, JS::GCPtr<HTML::HTMLFormElement> form)
 {
     Vector<FormDataEntry> list;
     // 1. If form is given, then:
-    if (form.has_value()) {
+    if (form) {
         // 1. Let list be the result of constructing the entry list for form.
-        auto entry_list = TRY(construct_entry_list(realm, form.value()));
+        auto entry_list = TRY(construct_entry_list(realm, *form));
         // 2. If list is null, then throw an "InvalidStateError" DOMException.
         if (!entry_list.has_value())
-            return WebIDL::InvalidStateError::create(realm, "Form element does not contain any entries.");
+            return WebIDL::InvalidStateError::create(realm, "Form element does not contain any entries."_string);
         // 3. Set this’s entry list to list.
         list = entry_list.release_value();
     }
@@ -35,7 +37,17 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<FormData>> FormData::construct_impl(JS::Rea
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<FormData>> FormData::construct_impl(JS::Realm& realm, Vector<FormDataEntry> entry_list)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<FormData>(realm, realm, move(entry_list)));
+    return realm.heap().allocate<FormData>(realm, realm, move(entry_list));
+}
+
+WebIDL::ExceptionOr<JS::NonnullGCPtr<FormData>> FormData::create(JS::Realm& realm, Vector<DOMURL::QueryParam> entry_list)
+{
+    Vector<FormDataEntry> list;
+    list.ensure_capacity(entry_list.size());
+    for (auto& entry : entry_list)
+        list.unchecked_append({ .name = move(entry.name), .value = move(entry.value) });
+
+    return construct_impl(realm, move(list));
 }
 
 FormData::FormData(JS::Realm& realm, Vector<FormDataEntry> entry_list)
@@ -46,12 +58,10 @@ FormData::FormData(JS::Realm& realm, Vector<FormDataEntry> entry_list)
 
 FormData::~FormData() = default;
 
-JS::ThrowCompletionOr<void> FormData::initialize(JS::Realm& realm)
+void FormData::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::FormDataPrototype>(realm, "FormData"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(FormData);
 }
 
 // https://xhr.spec.whatwg.org/#dom-formdata-append
@@ -166,6 +176,16 @@ WebIDL::ExceptionOr<void> FormData::set_impl(String const& name, Variant<JS::Non
     // 4. Otherwise, append entry to this’s entry list.
     else {
         TRY_OR_THROW_OOM(vm, m_entry_list.try_append(move(entry)));
+    }
+
+    return {};
+}
+
+JS::ThrowCompletionOr<void> FormData::for_each(ForEachCallback callback)
+{
+    for (auto i = 0u; i < m_entry_list.size(); ++i) {
+        auto& entry = m_entry_list[i];
+        TRY(callback(entry.name, entry.value));
     }
 
     return {};

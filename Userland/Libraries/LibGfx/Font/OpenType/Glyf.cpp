@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGfx/AntiAliasingPainter.h>
 #include <LibGfx/Font/OpenType/Glyf.h>
+#include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 
@@ -32,21 +34,6 @@ enum class SimpleGlyfFlags {
     YNegativeShortVector = 0x04,
     XPositiveShortVector = 0x12,
     YPositiveShortVector = 0x24,
-};
-
-enum class CompositeGlyfFlags {
-    Arg1AndArg2AreWords = 0x0001,
-    ArgsAreXYValues = 0x0002,
-    RoundXYToGrid = 0x0004,
-    WeHaveAScale = 0x0008,
-    MoreComponents = 0x0020,
-    WeHaveAnXAndYScale = 0x0040,
-    WeHaveATwoByTwo = 0x0080,
-    WeHaveInstructions = 0x0100,
-    UseMyMetrics = 0x0200,
-    OverlapCompound = 0x0400, // Not relevant - can overlap without this set
-    ScaledComponentOffset = 0x0800,
-    UnscaledComponentOffset = 0x1000,
 };
 
 class PointIterator {
@@ -81,7 +68,7 @@ public:
         }
         switch (m_flag & (u8)SimpleGlyfFlags::XMask) {
         case (u8)SimpleGlyfFlags::XLongVector:
-            m_last_point.set_x(m_last_point.x() + be_i16(m_slice.offset_pointer(m_x_offset)));
+            m_last_point.set_x(m_last_point.x() + be_i16(m_slice.offset(m_x_offset)));
             m_x_offset += 2;
             break;
         case (u8)SimpleGlyfFlags::XNegativeShortVector:
@@ -95,7 +82,7 @@ public:
         }
         switch (m_flag & (u8)SimpleGlyfFlags::YMask) {
         case (u8)SimpleGlyfFlags::YLongVector:
-            m_last_point.set_y(m_last_point.y() + be_i16(m_slice.offset_pointer(m_y_offset)));
+            m_last_point.set_y(m_last_point.y() + be_i16(m_slice.offset(m_y_offset)));
             m_y_offset += 2;
             break;
         case (u8)SimpleGlyfFlags::YNegativeShortVector:
@@ -132,75 +119,73 @@ Optional<Glyf::Glyph::ComponentIterator::Item> Glyf::Glyph::ComponentIterator::n
     if (!m_has_more) {
         return {};
     }
-    u16 flags = be_u16(m_slice.offset_pointer(m_offset));
+    u16 flags = be_u16(m_slice.offset(m_offset));
     m_offset += 2;
-    u16 glyph_id = be_u16(m_slice.offset_pointer(m_offset));
+    u16 glyph_id = be_u16(m_slice.offset(m_offset));
     m_offset += 2;
     i16 arg1 = 0, arg2 = 0;
-    if (flags & (u16)CompositeGlyfFlags::Arg1AndArg2AreWords) {
-        arg1 = be_i16(m_slice.offset_pointer(m_offset));
+    if (flags & (u16)CompositeFlags::Arg1AndArg2AreWords) {
+        arg1 = be_i16(m_slice.offset(m_offset));
         m_offset += 2;
-        arg2 = be_i16(m_slice.offset_pointer(m_offset));
+        arg2 = be_i16(m_slice.offset(m_offset));
         m_offset += 2;
     } else {
         arg1 = (i8)m_slice[m_offset++];
         arg2 = (i8)m_slice[m_offset++];
     }
     float a = 1.0, b = 0.0, c = 0.0, d = 1.0, e = 0.0, f = 0.0;
-    if (flags & (u16)CompositeGlyfFlags::WeHaveATwoByTwo) {
-        a = be_fword(m_slice.offset_pointer(m_offset));
+    if (flags & (u16)CompositeFlags::WeHaveATwoByTwo) {
+        a = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-        b = be_fword(m_slice.offset_pointer(m_offset));
+        b = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-        c = be_fword(m_slice.offset_pointer(m_offset));
+        c = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-        d = be_fword(m_slice.offset_pointer(m_offset));
+        d = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-    } else if (flags & (u16)CompositeGlyfFlags::WeHaveAnXAndYScale) {
-        a = be_fword(m_slice.offset_pointer(m_offset));
+    } else if (flags & (u16)CompositeFlags::WeHaveAnXAndYScale) {
+        a = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-        d = be_fword(m_slice.offset_pointer(m_offset));
+        d = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
-    } else if (flags & (u16)CompositeGlyfFlags::WeHaveAScale) {
-        a = be_fword(m_slice.offset_pointer(m_offset));
+    } else if (flags & (u16)CompositeFlags::WeHaveAScale) {
+        a = be_fword(m_slice.offset(m_offset));
         m_offset += 2;
         d = a;
     }
     // FIXME: Handle UseMyMetrics, ScaledComponentOffset, UnscaledComponentOffset, non-ArgsAreXYValues
-    if (flags & (u16)CompositeGlyfFlags::ArgsAreXYValues) {
+    if (flags & (u16)CompositeFlags::ArgsAreXYValues) {
         e = arg1;
         f = arg2;
     } else {
         // FIXME: Implement this. There's no TODO() here since many fonts work just fine without this.
     }
-    if (flags & (u16)CompositeGlyfFlags::UseMyMetrics) {
+    if (flags & (u16)CompositeFlags::UseMyMetrics) {
         // FIXME: Implement this. There's no TODO() here since many fonts work just fine without this.
     }
-    if (flags & (u16)CompositeGlyfFlags::ScaledComponentOffset) {
+    if (flags & (u16)CompositeFlags::ScaledComponentOffset) {
         // FIXME: Implement this. There's no TODO() here since many fonts work just fine without this.
     }
-    if (flags & (u16)CompositeGlyfFlags::UnscaledComponentOffset) {
+    if (flags & (u16)CompositeFlags::UnscaledComponentOffset) {
         // FIXME: Implement this. There's no TODO() here since many fonts work just fine without this.
     }
-    m_has_more = (flags & (u16)CompositeGlyfFlags::MoreComponents);
+    m_has_more = (flags & (u16)CompositeFlags::MoreComponents);
     return Item {
         .glyph_id = glyph_id,
         .affine = Gfx::AffineTransform(a, b, c, d, e, f),
     };
 }
 
-Optional<Loca> Loca::from_slice(ReadonlyBytes slice, u32 num_glyphs, IndexToLocFormat index_to_loc_format)
+ErrorOr<Loca> Loca::from_slice(ReadonlyBytes slice, u32 num_glyphs, IndexToLocFormat index_to_loc_format)
 {
     switch (index_to_loc_format) {
     case IndexToLocFormat::Offset16:
-        if (slice.size() < num_glyphs * 2) {
-            return {};
-        }
+        if (slice.size() < num_glyphs * 2)
+            return Error::from_string_literal("Could not load Loca: Not enough data");
         break;
     case IndexToLocFormat::Offset32:
-        if (slice.size() < num_glyphs * 4) {
-            return {};
-        }
+        if (slice.size() < num_glyphs * 4)
+            return Error::from_string_literal("Could not load Loca: Not enough data");
         break;
     }
     return Loca(slice, num_glyphs, index_to_loc_format);
@@ -208,12 +193,13 @@ Optional<Loca> Loca::from_slice(ReadonlyBytes slice, u32 num_glyphs, IndexToLocF
 
 u32 Loca::get_glyph_offset(u32 glyph_id) const
 {
-    VERIFY(glyph_id < m_num_glyphs);
+    // NOTE: The value of n is numGlyphs + 1.
+    VERIFY(glyph_id <= m_num_glyphs);
     switch (m_index_to_loc_format) {
     case IndexToLocFormat::Offset16:
-        return ((u32)be_u16(m_slice.offset_pointer(glyph_id * 2))) * 2;
+        return ((u32)be_u16(m_slice.offset(glyph_id * 2))) * 2;
     case IndexToLocFormat::Offset32:
-        return be_u32(m_slice.offset_pointer(glyph_id * 4));
+        return be_u32(m_slice.offset(glyph_id * 4));
     default:
         VERIFY_NOT_REACHED();
     }
@@ -252,124 +238,94 @@ static void get_ttglyph_offsets(ReadonlyBytes slice, u32 num_points, u32 flags_o
 
 ReadonlyBytes Glyf::Glyph::program() const
 {
+    if (m_num_contours == 0)
+        return {};
+
     auto instructions_start = m_num_contours * 2;
-    u16 num_instructions = be_u16(m_slice.offset_pointer(instructions_start));
+    u16 num_instructions = be_u16(m_slice.offset(instructions_start));
     return m_slice.slice(instructions_start + 2, num_instructions);
 }
 
-void Glyf::Glyph::rasterize_impl(Gfx::PathRasterizer& rasterizer, Gfx::AffineTransform const& transform) const
+void Glyf::Glyph::append_path_impl(Gfx::Path& path, Gfx::AffineTransform const& transform) const
 {
+    if (m_num_contours == 0)
+        return;
+
     // Get offset for flags, x, and y.
-    u16 num_points = be_u16(m_slice.offset_pointer((m_num_contours - 1) * 2)) + 1;
-    u16 num_instructions = be_u16(m_slice.offset_pointer(m_num_contours * 2));
+    u16 num_points = be_u16(m_slice.offset((m_num_contours - 1) * 2)) + 1;
+    u16 num_instructions = be_u16(m_slice.offset(m_num_contours * 2));
     u32 flags_offset = m_num_contours * 2 + 2 + num_instructions;
     u32 x_offset = 0;
     u32 y_offset = 0;
     get_ttglyph_offsets(m_slice, num_points, flags_offset, &x_offset, &y_offset);
 
     // Prepare to render glyph.
-    Gfx::Path path;
     PointIterator point_iterator(m_slice, num_points, flags_offset, x_offset, y_offset, transform);
 
-    int last_contour_end = -1;
-    i32 contour_index = 0;
-    u32 contour_size = 0;
-    Optional<Gfx::FloatPoint> contour_start = {};
-    Optional<Gfx::FloatPoint> last_offcurve_point = {};
+    u32 current_point_index = 0;
+    for (u16 contour_index = 0; contour_index < m_num_contours; contour_index++) {
+        u32 current_contour_last_point_index = be_u16(m_slice.offset(contour_index * 2));
 
-    // Render glyph
-    while (true) {
-        if (!contour_start.has_value()) {
-            if (contour_index >= m_num_contours) {
-                break;
-            }
-            int current_contour_end = be_u16(m_slice.offset_pointer(contour_index++ * 2));
-            contour_size = current_contour_end - last_contour_end;
-            last_contour_end = current_contour_end;
-            auto opt_item = point_iterator.next();
-            VERIFY(opt_item.has_value());
-            contour_start = opt_item.value().point;
-            path.move_to(contour_start.value());
-            contour_size--;
-        } else if (!last_offcurve_point.has_value()) {
-            if (contour_size > 0) {
-                auto opt_item = point_iterator.next();
-                // FIXME: Should we draw a line to the first point here?
-                if (!opt_item.has_value()) {
-                    break;
-                }
-                auto item = opt_item.value();
-                contour_size--;
-                if (item.on_curve) {
-                    path.line_to(item.point);
-                } else if (contour_size > 0) {
-                    auto opt_next_item = point_iterator.next();
-                    // FIXME: Should we draw a quadratic bezier to the first point here?
-                    if (!opt_next_item.has_value()) {
-                        break;
-                    }
-                    auto next_item = opt_next_item.value();
-                    contour_size--;
-                    if (next_item.on_curve) {
-                        path.quadratic_bezier_curve_to(item.point, next_item.point);
-                    } else {
-                        auto mid_point = (item.point + next_item.point) * 0.5f;
-                        path.quadratic_bezier_curve_to(item.point, mid_point);
-                        last_offcurve_point = next_item.point;
-                    }
-                } else {
-                    path.quadratic_bezier_curve_to(item.point, contour_start.value());
-                    contour_start = {};
-                }
-            } else {
-                path.line_to(contour_start.value());
-                contour_start = {};
-            }
+        Vector<PointIterator::Item> points;
+        while (current_point_index <= current_contour_last_point_index) {
+            points.append(*point_iterator.next());
+            current_point_index++;
+        }
+
+        if (points.is_empty())
+            continue;
+
+        auto current = points.last();
+        auto next = points.first();
+
+        if (current.on_curve) {
+            path.move_to(current.point);
+        } else if (next.on_curve) {
+            path.move_to(next.point);
         } else {
-            auto point0 = last_offcurve_point.value();
-            last_offcurve_point = {};
-            if (contour_size > 0) {
-                auto opt_item = point_iterator.next();
-                // FIXME: Should we draw a quadratic bezier to the first point here?
-                if (!opt_item.has_value()) {
-                    break;
-                }
-                auto item = opt_item.value();
-                contour_size--;
-                if (item.on_curve) {
-                    path.quadratic_bezier_curve_to(point0, item.point);
-                } else {
-                    auto mid_point = (point0 + item.point) * 0.5f;
-                    path.quadratic_bezier_curve_to(point0, mid_point);
-                    last_offcurve_point = item.point;
-                }
+            auto implied_point = (current.point + next.point) * 0.5f;
+            path.move_to(implied_point);
+        }
+
+        for (size_t i = 0; i < points.size(); i++) {
+            current = next;
+            next = points[(i + 1) % points.size()];
+            if (current.on_curve) {
+                path.line_to(current.point);
+            } else if (next.on_curve) {
+                path.quadratic_bezier_curve_to(current.point, next.point);
             } else {
-                path.quadratic_bezier_curve_to(point0, contour_start.value());
-                contour_start = {};
+                auto implied_point = (current.point + next.point) * 0.5f;
+                path.quadratic_bezier_curve_to(current.point, implied_point);
             }
         }
     }
-
-    rasterizer.draw_path(path);
 }
 
-RefPtr<Gfx::Bitmap> Glyf::Glyph::rasterize_simple(i16 font_ascender, i16 font_descender, float x_scale, float y_scale, Gfx::GlyphSubpixelOffset subpixel_offset) const
+bool Glyf::Glyph::append_simple_path(Gfx::Path& path, i16 font_ascender, i16 font_descender, float x_scale, float y_scale) const
 {
-    u32 width = (u32)(ceilf((m_xmax - m_xmin) * x_scale)) + 2;
-    u32 height = (u32)(ceilf((font_ascender - font_descender) * y_scale)) + 2;
-    Gfx::PathRasterizer rasterizer(Gfx::IntSize(width, height));
+    if (m_xmin > m_xmax) [[unlikely]] {
+        dbgln("OpenType: Glyph has invalid xMin ({}) > xMax ({})", m_xmin, m_xmax);
+        return false;
+    }
+    if (font_descender > font_ascender) [[unlikely]] {
+        dbgln("OpenType: Glyph has invalid ascender ({}) > descender ({})", font_ascender, font_descender);
+        return false;
+    }
     auto affine = Gfx::AffineTransform()
-                      .translate(subpixel_offset.to_float_point())
+                      .translate(path.last_point())
                       .scale(x_scale, -y_scale)
                       .translate(-m_xmin, -font_ascender);
-    rasterize_impl(rasterizer, affine);
-    return rasterizer.accumulate();
+    append_path_impl(path, affine);
+    return true;
 }
 
-Glyf::Glyph Glyf::glyph(u32 offset) const
+Optional<Glyf::Glyph> Glyf::glyph(u32 offset) const
 {
+    if (offset + sizeof(GlyphHeader) > m_slice.size())
+        return {};
     VERIFY(m_slice.size() >= offset + sizeof(GlyphHeader));
-    auto const& glyph_header = *bit_cast<GlyphHeader const*>(m_slice.offset_pointer(offset));
+    auto const& glyph_header = *bit_cast<GlyphHeader const*>(m_slice.offset(offset));
     i16 num_contours = glyph_header.number_of_contours;
     i16 xmin = glyph_header.x_min;
     i16 ymin = glyph_header.y_min;

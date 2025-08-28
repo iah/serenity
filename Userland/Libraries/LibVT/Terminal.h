@@ -16,7 +16,8 @@
 #include <LibVT/Position.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
+#    include <AK/HashTable.h>
 #    include <LibVT/Attribute.h>
 #    include <LibVT/Line.h>
 #else
@@ -49,6 +50,7 @@ public:
     virtual void set_window_progress(int value, int max) = 0;
     virtual void terminal_did_resize(u16 columns, u16 rows) = 0;
     virtual void terminal_history_changed(int delta) = 0;
+    virtual void terminal_did_perform_possibly_partial_clear() = 0;
     virtual void emit(u8 const*, size_t) = 0;
     virtual void set_cursor_shape(CursorShape) = 0;
     virtual void set_cursor_blinking(bool) = 0;
@@ -85,8 +87,12 @@ public:
     }
 
 #ifndef KERNEL
+    void mark_cursor();
+    OrderedHashTable<Mark> const& marks() const { return m_valid_marks; }
+
     void clear();
     void clear_history();
+    void clear_to_mark(Mark);
 #else
     virtual void clear() = 0;
     virtual void clear_history() = 0;
@@ -180,7 +186,7 @@ public:
     bool needs_bracketed_paste() const
     {
         return m_needs_bracketed_paste;
-    };
+    }
 
     bool is_within_scroll_region(u16 line) const
     {
@@ -366,10 +372,10 @@ protected:
     void DECDC(Parameters);
 
     // DECPNM - Set numeric keypad mode
-    void DECPNM();
+    void DECKPNM();
 
     // DECPAM - Set application keypad mode
-    void DECPAM();
+    void DECKPAM();
 
 #ifndef KERNEL
     TerminalClient& m_client;
@@ -400,8 +406,8 @@ protected:
         m_history_start = (m_history_start + 1) % m_history.size();
     }
 
-    Vector<NonnullOwnPtr<Line>>& active_buffer() { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; };
-    Vector<NonnullOwnPtr<Line>> const& active_buffer() const { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; };
+    Vector<NonnullOwnPtr<Line>>& active_buffer() { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; }
+    Vector<NonnullOwnPtr<Line>> const& active_buffer() const { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; }
     Vector<NonnullOwnPtr<Line>> m_normal_screen_buffer;
     Vector<NonnullOwnPtr<Line>> m_alternate_screen_buffer;
 #endif
@@ -424,6 +430,7 @@ protected:
 
     bool m_swallow_current { false };
     bool m_stomp { false };
+    bool m_in_application_keypad_mode { false };
 
     CursorShape m_cursor_shape { VT::CursorShape::Block };
     CursorShape m_saved_cursor_shape { VT::CursorShape::Block };
@@ -435,8 +442,9 @@ protected:
     Attribute m_saved_attribute;
 
 #ifndef KERNEL
-    DeprecatedString m_current_window_title;
-    Vector<DeprecatedString> m_title_stack;
+    ByteString m_current_window_title;
+    Vector<ByteString> m_title_stack;
+    OrderedHashTable<Mark> m_valid_marks;
 #endif
 
 #ifndef KERNEL

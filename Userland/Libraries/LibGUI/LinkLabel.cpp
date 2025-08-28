@@ -19,24 +19,40 @@ REGISTER_WIDGET(GUI, LinkLabel)
 
 namespace GUI {
 
-LinkLabel::LinkLabel(DeprecatedString text)
+ErrorOr<NonnullRefPtr<LinkLabel>> LinkLabel::try_create(String text)
+{
+    auto label = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) LinkLabel(move(text))));
+    TRY(label->create_actions());
+    label->create_menus();
+    return label;
+}
+
+LinkLabel::LinkLabel(String text)
     : Label(move(text))
 {
     set_foreground_role(Gfx::ColorRole::Link);
     set_focus_policy(FocusPolicy::TabFocus);
-    setup_actions();
 }
 
-void LinkLabel::setup_actions()
+ErrorOr<void> LinkLabel::create_actions()
 {
     m_open_action = GUI::Action::create(
-        "Show in File Manager", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv).release_value_but_fixme_should_propagate_errors(), [&](const GUI::Action&) {
+        "Show in File Manager", TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-file-manager.png"sv)), [&](const GUI::Action&) {
             if (on_click)
                 on_click();
         },
         this);
 
     m_copy_action = CommonActions::make_copy_action([this](auto&) { Clipboard::the().set_plain_text(text()); }, this);
+    return {};
+}
+
+void LinkLabel::create_menus()
+{
+    m_context_menu = Menu::construct();
+    m_context_menu->add_action(*m_open_action);
+    m_context_menu->add_separator();
+    m_context_menu->add_action(*m_copy_action);
 }
 
 void LinkLabel::set_hovered(bool hover)
@@ -81,7 +97,7 @@ void LinkLabel::paint_event(PaintEvent& event)
     GUI::Painter painter(*this);
 
     if (m_hovered)
-        painter.draw_line({ 0, rect().bottom() }, { static_cast<int>(ceilf(font().width(text()))), rect().bottom() }, palette().link());
+        painter.draw_line({ 0, rect().bottom() - 1 }, { font().width_rounded_up(text()), rect().bottom() - 1 }, palette().link());
 
     if (is_focused())
         painter.draw_focus_rect(text_rect(), palette().focus_outline());
@@ -116,12 +132,6 @@ void LinkLabel::resize_event(ResizeEvent& event)
 
 void LinkLabel::context_menu_event(ContextMenuEvent& event)
 {
-    if (!m_context_menu) {
-        m_context_menu = Menu::construct();
-        m_context_menu->add_action(*m_open_action);
-        m_context_menu->add_separator();
-        m_context_menu->add_action(*m_copy_action);
-    }
     m_context_menu->popup(event.screen_position(), m_open_action);
 }
 

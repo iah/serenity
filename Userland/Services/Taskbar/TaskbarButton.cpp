@@ -12,7 +12,7 @@
 #include <LibGUI/Painter.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
-#include <LibGfx/StylePainter.h>
+#include <LibGfx/WindowTheme.h>
 
 TaskbarButton::TaskbarButton(WindowIdentifier const& identifier)
     : m_identifier(identifier)
@@ -91,7 +91,7 @@ void TaskbarButton::paint_event(GUI::PaintEvent& event)
     GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
-    Gfx::StylePainter::paint_button(painter, rect(), palette(), button_style(), is_being_pressed(), is_hovered(), is_checked(), is_enabled());
+    palette().window_theme().paint_button(painter, rect(), palette(), button_style(), is_being_pressed(), is_hovered(), is_checked(), is_enabled());
 
     if (text().is_empty())
         return;
@@ -106,7 +106,7 @@ void TaskbarButton::paint_event(GUI::PaintEvent& event)
         content_rect.set_width(content_rect.width() - icon.width() - 4);
     }
 
-    Gfx::IntRect text_rect { 0, 0, static_cast<int>(ceilf(font.width(text()))), font.pixel_size_rounded_up() };
+    Gfx::IntRect text_rect { 0, 0, font.width_rounded_up(text()), font.pixel_size_rounded_up() };
     if (text_rect.width() > content_rect.width())
         text_rect.set_width(content_rect.width());
     text_rect.align_within(content_rect, text_alignment());

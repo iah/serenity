@@ -24,7 +24,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio thread recvfd sendfd rpath cpath wpath unix proc exec"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
     Config::pledge_domain("WindowManager");
 
     StringView selected_tab;
@@ -37,12 +37,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool background_settings_changed = false;
 
     auto window = TRY(GUI::SettingsWindow::create("Display Settings"));
-    (void)TRY(window->add_tab<DisplaySettings::BackgroundSettingsWidget>("Background"sv, "background"sv, background_settings_changed));
-    (void)TRY(window->add_tab<DisplaySettings::ThemesSettingsWidget>("Themes"sv, "themes"sv, background_settings_changed));
-    (void)TRY(window->add_tab<DisplaySettings::FontSettingsWidget>("Fonts"sv, "fonts"sv));
-    (void)TRY(window->add_tab<DisplaySettings::MonitorSettingsWidget>("Monitor"sv, "monitor"sv));
-    (void)TRY(window->add_tab<DisplaySettings::DesktopSettingsWidget>("Workspaces"sv, "workspaces"sv));
-    (void)TRY(window->add_tab<GUI::DisplaySettings::EffectsSettingsWidget>("Effects"sv, "effects"sv));
+    (void)TRY(window->add_tab<DisplaySettings::BackgroundSettingsWidget>("Background"_string, "background"sv, background_settings_changed));
+    (void)TRY(window->add_tab<DisplaySettings::ThemesSettingsWidget>("Themes"_string, "themes"sv, background_settings_changed));
+    (void)TRY(window->add_tab<DisplaySettings::FontSettingsWidget>("Fonts"_string, "fonts"sv));
+    (void)TRY(window->add_tab<DisplaySettings::MonitorSettingsWidget>("Monitor"_string, "monitor"sv));
+    (void)TRY(window->add_tab<DisplaySettings::DesktopSettingsWidget>("Workspaces"_string, "workspaces"sv));
+    (void)TRY(window->add_tab<GUI::DisplaySettings::EffectsSettingsWidget>("Effects"_string, "effects"sv));
     window->set_active_tab(selected_tab);
 
     window->set_icon(app_icon.bitmap_for_size(16));

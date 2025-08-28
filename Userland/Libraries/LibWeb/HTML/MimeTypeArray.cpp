@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/MimeTypeArrayPrototype.h>
 #include <LibWeb/HTML/MimeTypeArray.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Window.h>
@@ -12,45 +13,41 @@
 
 namespace Web::HTML {
 
+JS_DEFINE_ALLOCATOR(MimeTypeArray);
+
 MimeTypeArray::MimeTypeArray(JS::Realm& realm)
-    : Bindings::LegacyPlatformObject(realm)
+    : Bindings::PlatformObject(realm)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+        .supports_named_properties = true,
+        .has_legacy_unenumerable_named_properties_interface_extended_attribute = true,
+    };
 }
 
 MimeTypeArray::~MimeTypeArray() = default;
 
-JS::ThrowCompletionOr<void> MimeTypeArray::initialize(JS::Realm& realm)
+void MimeTypeArray::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::MimeTypeArrayPrototype>(realm, "MimeTypeArray"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(MimeTypeArray);
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:support-named-properties-2
-Vector<DeprecatedString> MimeTypeArray::supported_property_names() const
+Vector<FlyString> MimeTypeArray::supported_property_names() const
 {
     // The MimeTypeArray interface supports named properties. If the user agent's PDF viewer supported is true, then they are the PDF viewer mime types. Otherwise, they are the empty list.
     auto const& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    VERIFY(window.page());
-    if (!window.page()->pdf_viewer_supported())
+    if (!window.page().pdf_viewer_supported())
         return {};
 
     // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-mime-types
-    static Vector<DeprecatedString> mime_types = {
-        "application/pdf"sv,
-        "text/pdf"sv,
+    static Vector<FlyString> const mime_types = {
+        "application/pdf"_fly_string,
+        "text/pdf"_fly_string,
     };
 
     return mime_types;
-}
-
-// https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:supports-indexed-properties-2
-bool MimeTypeArray::is_supported_property_index(u32 index) const
-{
-    // The MimeTypeArray interface supports indexed properties. The supported property indices are the indices of this's relevant global object's PDF viewer mime type objects.
-    auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    return index < window.pdf_viewer_mime_type_objects().size();
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-length
@@ -77,7 +74,7 @@ JS::GCPtr<MimeType> MimeTypeArray::item(u32 index) const
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-nameditem
-JS::GCPtr<MimeType> MimeTypeArray::named_item(String const& name) const
+JS::GCPtr<MimeType> MimeTypeArray::named_item(FlyString const& name) const
 {
     // 1. For each MimeType mimeType of this's relevant global object's PDF viewer mime type objects: if mimeType's type is name, then return mimeType.
     auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
@@ -92,18 +89,17 @@ JS::GCPtr<MimeType> MimeTypeArray::named_item(String const& name) const
     return nullptr;
 }
 
-WebIDL::ExceptionOr<JS::Value> MimeTypeArray::item_value(size_t index) const
+Optional<JS::Value> MimeTypeArray::item_value(size_t index) const
 {
     auto return_value = item(index);
     if (!return_value)
-        return JS::js_null();
+        return {};
     return return_value.ptr();
 }
 
-WebIDL::ExceptionOr<JS::Value> MimeTypeArray::named_item_value(DeprecatedFlyString const& name) const
+JS::Value MimeTypeArray::named_item_value(FlyString const& name) const
 {
-    auto converted_name = TRY_OR_THROW_OOM(vm(), String::from_deprecated_string(name));
-    auto return_value = named_item(converted_name);
+    auto return_value = named_item(name);
     if (!return_value)
         return JS::js_null();
     return return_value.ptr();

@@ -5,11 +5,11 @@
  */
 
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/GetPassword.h>
 #include <LibIMAP/Client.h>
 #include <LibMain/Main.h>
+#include <unistd.h>
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
@@ -18,14 +18,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 1;
     }
 
-    DeprecatedString host;
-    int port;
+    ByteString host;
+    int port = 0;
     bool tls { false };
 
-    DeprecatedString username;
+    ByteString username;
     Core::SecretString password;
-
-    bool interactive_password;
+    bool interactive_password = false;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(interactive_password, "Prompt for password with getpass", "interactive", 'i');
@@ -38,26 +37,27 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (interactive_password) {
         password = TRY(Core::get_password());
     } else {
-        auto standard_input = Core::DeprecatedFile::standard_input();
-        password = Core::SecretString::take_ownership(standard_input->read_all());
+        auto standard_input = TRY(Core::File::standard_input());
+        // This might leave the clear password in unused memory, but this is only a test program anyway.
+        password = Core::SecretString::take_ownership(TRY(standard_input->read_until_eof()));
     }
 
     Core::EventLoop loop;
     auto client = TRY(tls ? IMAP::Client::connect_tls(host, port) : IMAP::Client::connect_plaintext(host, port));
-    client->connection_promise()->await();
+    TRY(client->connection_promise()->await());
 
-    auto response = client->login(username, password.view())->await().release_value();
+    auto response = TRY(client->login(username, password.view())->await());
     outln("[LOGIN] Login response: {}", response.response_text());
 
-    response = move(client->send_simple_command(IMAP::CommandType::Capability)->await().value().get<IMAP::SolidResponse>());
+    response = move(TRY(client->send_simple_command(IMAP::CommandType::Capability)->await()).get<IMAP::SolidResponse>());
     outln("[CAPABILITY] First capability: {}", response.data().capabilities().first());
-    bool idle_supported = !response.data().capabilities().find_if([](auto capability) { return capability.equals_ignoring_case("IDLE"sv); }).is_end();
+    bool idle_supported = !response.data().capabilities().find_if([](auto capability) { return capability.equals_ignoring_ascii_case("IDLE"sv); }).is_end();
 
-    response = client->list(""sv, "*"sv)->await().release_value();
+    response = TRY(client->list(""sv, "*"sv)->await());
     outln("[LIST] First mailbox: {}", response.data().list_items().first().name);
 
     auto mailbox = "Inbox"sv;
-    response = client->select(mailbox)->await().release_value();
+    response = TRY(client->select(mailbox)->await());
     outln("[SELECT] Select response: {}", response.response_text());
 
     auto message = Message {
@@ -71,7 +71,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         "So, \"Hello\"."
     };
     auto promise = client->append("INBOX"sv, move(message));
-    response = promise->await().release_value();
+    response = TRY(promise->await());
     outln("[APPEND] Response: {}", response.response_text());
 
     Vector<IMAP::SearchKey> keys;
@@ -79,14 +79,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         IMAP::SearchKey::From { "jdoe@machine.example" } });
     keys.append(IMAP::SearchKey {
         IMAP::SearchKey::Subject { "Saying Hello" } });
-    response = client->search({}, move(keys), false)->await().release_value();
+    response = TRY(client->search({}, move(keys), false)->await());
 
     Vector<unsigned> search_results = move(response.data().search_results());
     auto added_message = search_results.first();
     outln("[SEARCH] Number of results: {}", search_results.size());
 
-    response = client->status("INBOX"sv, { IMAP::StatusItemType::Recent, IMAP::StatusItemType::Messages })->await().release_value();
-    outln("[STATUS] Recent items: {}", response.data().status_item().get(IMAP::StatusItemType::Recent));
+    response = TRY(client->status("INBOX"sv, { IMAP::StatusItemType::Recent, IMAP::StatusItemType::Messages })->await());
+    if (response.data().status_items().size() > 0)
+        outln("[STATUS] Recent items: {}", response.data().status_items()[0].get(IMAP::StatusItemType::Recent));
 
     for (auto item : search_results) {
         // clang-format off
@@ -118,40 +119,39 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         };
         // clang-format on
 
-        auto fetch_response = client->fetch(fetch_command, false)->await().release_value();
+        auto fetch_response = TRY(client->fetch(fetch_command, false)->await());
         outln("[FETCH] Subject of search result: {}",
             fetch_response.data()
                 .fetch_data()
                 .first()
                 .get<IMAP::FetchResponseData>()
                 .body_data()
-                .find_if([](Tuple<IMAP::FetchCommand::DataItem, Optional<DeprecatedString>>& data) {
-                    const auto data_item = data.get<0>();
+                .find_if([](Tuple<IMAP::FetchCommand::DataItem, ByteString>& data) {
+                    auto const data_item = data.get<0>();
                     return data_item.section.has_value() && data_item.section->type == IMAP::FetchCommand::DataItem::SectionType::HeaderFields;
                 })
-                ->get<1>()
-                .value());
+                ->get<1>());
     }
 
     // FIXME: There is a discrepancy between IMAP::Sequence wanting signed ints
     //        and IMAP search results returning unsigned ones. Find which one is
     //        more correct and fix this.
-    response = client->store(IMAP::StoreMethod::Add, { static_cast<int>(added_message), static_cast<int>(added_message) }, false, { "\\Deleted" }, false)->await().release_value();
+    response = TRY(client->store(IMAP::StoreMethod::Add, { static_cast<int>(added_message), static_cast<int>(added_message) }, false, { "\\Deleted" }, false)->await());
     outln("[STORE] Store response: {}", response.response_text());
 
-    response = move(client->send_simple_command(IMAP::CommandType::Expunge)->await().release_value().get<IMAP::SolidResponse>());
+    response = move(TRY(client->send_simple_command(IMAP::CommandType::Expunge)->await()).get<IMAP::SolidResponse>());
     outln("[EXPUNGE] Number of expunged entries: {}", response.data().expunged().size());
 
     if (idle_supported) {
-        VERIFY(client->idle()->await().has_value());
+        VERIFY(!client->idle()->await().is_error());
         sleep(3);
-        response = client->finish_idle()->await().release_value();
+        response = TRY(client->finish_idle()->await());
         outln("[IDLE] Idle response: {}", response.response_text());
     } else {
         outln("[IDLE] Skipped. No IDLE support.");
     }
 
-    response = move(client->send_simple_command(IMAP::CommandType::Logout)->await().release_value().get<IMAP::SolidResponse>());
+    response = move(TRY(client->send_simple_command(IMAP::CommandType::Logout)->await()).get<IMAP::SolidResponse>());
     outln("[LOGOUT] Bye: {}", response.data().bye_message().value());
 
     client->close();

@@ -10,6 +10,8 @@
 #include <AK/Error.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
+#include <AK/Vector.h>
+#include <LibCore/Forward.h>
 #include <unistd.h>
 
 namespace IPC {
@@ -33,9 +35,20 @@ private:
     int m_fd;
 };
 
-struct MessageBuffer {
-    Vector<u8, 1024> data;
-    Vector<NonnullRefPtr<AutoCloseFileDescriptor>, 1> fds;
+class MessageBuffer {
+public:
+    MessageBuffer();
+
+    ErrorOr<void> extend_data_capacity(size_t capacity);
+    ErrorOr<void> append_data(u8 const* values, size_t count);
+
+    ErrorOr<void> append_file_descriptor(int fd);
+
+    ErrorOr<void> transfer_message(Core::LocalSocket& socket, bool block_event_loop = false);
+
+private:
+    Vector<u8, 1024> m_data;
+    Vector<NonnullRefPtr<AutoCloseFileDescriptor>, 1> m_fds;
 };
 
 enum class ErrorCode : u32 {

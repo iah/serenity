@@ -6,7 +6,7 @@
  */
 
 #include <AK/BuiltinWrappers.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Format.h>
 #include <AK/PrintfImplementation.h>
 #include <AK/ScopedValueRollback.h>
@@ -907,6 +907,23 @@ int fprintf(FILE* stream, char const* fmt, ...)
     return ret;
 }
 
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/vdprintf.html
+int vdprintf(int fd, char const* fmt, va_list ap)
+{
+    // FIXME: Implement buffering so that we don't issue one write syscall for every character.
+    return printf_internal([fd](auto, char ch) { write(fd, &ch, 1); }, nullptr, fmt, ap);
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/dprintf.html
+int dprintf(int fd, char const* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vdprintf(fd, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/vprintf.html
 int vprintf(char const* fmt, va_list ap)
 {
@@ -930,7 +947,7 @@ int vasprintf(char** strp, char const* fmt, va_list ap)
     builder.appendvf(fmt, ap);
     VERIFY(builder.length() <= NumericLimits<int>::max());
     int length = builder.length();
-    *strp = strdup(builder.to_deprecated_string().characters());
+    *strp = strdup(builder.to_byte_string().characters());
     return length;
 }
 
@@ -944,7 +961,7 @@ int asprintf(char** strp, char const* fmt, ...)
     va_end(ap);
     VERIFY(builder.length() <= NumericLimits<int>::max());
     int length = builder.length();
-    *strp = strdup(builder.to_deprecated_string().characters());
+    *strp = strdup(builder.to_byte_string().characters());
     return length;
 }
 

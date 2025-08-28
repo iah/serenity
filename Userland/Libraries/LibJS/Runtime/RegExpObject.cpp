@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2024, Andreas Kling <andreas@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,7 +17,9 @@
 
 namespace JS {
 
-Result<regex::RegexOptions<ECMAScriptFlags>, DeprecatedString> regex_flags_from_string(StringView flags)
+JS_DEFINE_ALLOCATOR(RegExpObject);
+
+Result<regex::RegexOptions<ECMAScriptFlags>, ByteString> regex_flags_from_string(StringView flags)
 {
     bool d = false, g = false, i = false, m = false, s = false, u = false, y = false, v = false;
     auto options = RegExpObject::default_flags;
@@ -25,42 +28,42 @@ Result<regex::RegexOptions<ECMAScriptFlags>, DeprecatedString> regex_flags_from_
         switch (ch) {
         case 'd':
             if (d)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             d = true;
             break;
         case 'g':
             if (g)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             g = true;
             options |= regex::ECMAScriptFlags::Global;
             break;
         case 'i':
             if (i)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             i = true;
             options |= regex::ECMAScriptFlags::Insensitive;
             break;
         case 'm':
             if (m)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             m = true;
             options |= regex::ECMAScriptFlags::Multiline;
             break;
         case 's':
             if (s)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             s = true;
             options |= regex::ECMAScriptFlags::SingleLine;
             break;
         case 'u':
             if (u)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             u = true;
             options |= regex::ECMAScriptFlags::Unicode;
             break;
         case 'y':
             if (y)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             y = true;
             // Now for the more interesting flag, 'sticky' actually unsets 'global', part of which is the default.
             options.reset_flag(regex::ECMAScriptFlags::Global);
@@ -72,22 +75,23 @@ Result<regex::RegexOptions<ECMAScriptFlags>, DeprecatedString> regex_flags_from_
             break;
         case 'v':
             if (v)
-                return DeprecatedString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
+                return ByteString::formatted(ErrorType::RegExpObjectRepeatedFlag.message(), ch);
             v = true;
             options |= regex::ECMAScriptFlags::UnicodeSets;
             break;
         default:
-            return DeprecatedString::formatted(ErrorType::RegExpObjectBadFlag.message(), ch);
+            return ByteString::formatted(ErrorType::RegExpObjectBadFlag.message(), ch);
         }
     }
 
     return options;
 }
 
-ErrorOr<DeprecatedString, ParseRegexPatternError> parse_regex_pattern(StringView pattern, bool unicode, bool unicode_sets)
+// 22.2.3.4 Static Semantics: ParsePattern ( patternText, u, v ), https://tc39.es/ecma262/#sec-parsepattern
+ErrorOr<ByteString, ParseRegexPatternError> parse_regex_pattern(StringView pattern, bool unicode, bool unicode_sets)
 {
     if (unicode && unicode_sets)
-        return ParseRegexPatternError { DeprecatedString::formatted(ErrorType::RegExpObjectIncompatibleFlags.message(), 'u', 'v') };
+        return ParseRegexPatternError { ByteString::formatted(ErrorType::RegExpObjectIncompatibleFlags.message(), 'u', 'v') };
 
     auto utf16_pattern_result = AK::utf8_to_utf16(pattern);
     if (utf16_pattern_result.is_error())
@@ -99,6 +103,7 @@ ErrorOr<DeprecatedString, ParseRegexPatternError> parse_regex_pattern(StringView
 
     // If the Unicode flag is set, append each code point to the pattern. Otherwise, append each
     // code unit. But unlike the spec, multi-byte code units must be escaped for LibRegex to parse.
+    auto previous_code_unit_was_backslash = false;
     for (size_t i = 0; i < utf16_pattern_view.length_in_code_units();) {
         if (unicode || unicode_sets) {
             auto code_point = code_point_at(utf16_pattern_view, i);
@@ -110,16 +115,29 @@ ErrorOr<DeprecatedString, ParseRegexPatternError> parse_regex_pattern(StringView
         u16 code_unit = utf16_pattern_view.code_unit_at(i);
         ++i;
 
-        if (code_unit > 0x7f)
-            builder.appendff("\\u{:04x}", code_unit);
-        else
+        if (code_unit > 0x7f) {
+            // Incorrectly escaping this code unit will result in a wildly different regex than intended
+            // as we're converting <c> to <\uhhhh>, which would turn into <\\uhhhh> if (incorrectly) escaped again,
+            // leading to a matcher for the literal string "\uhhhh" instead of the intended code unit <c>.
+            // As such, we're going to remove the (invalid) backslash and pretend it never existed.
+            if (!previous_code_unit_was_backslash)
+                builder.append('\\');
+            builder.appendff("u{:04x}", code_unit);
+        } else {
             builder.append_code_point(code_unit);
+        }
+
+        if (code_unit == '\\')
+            previous_code_unit_was_backslash = !previous_code_unit_was_backslash;
+        else
+            previous_code_unit_was_backslash = false;
     }
 
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
-ThrowCompletionOr<DeprecatedString> parse_regex_pattern(VM& vm, StringView pattern, bool unicode, bool unicode_sets)
+// 22.2.3.4 Static Semantics: ParsePattern ( patternText, u, v ), https://tc39.es/ecma262/#sec-parsepattern
+ThrowCompletionOr<ByteString> parse_regex_pattern(VM& vm, StringView pattern, bool unicode, bool unicode_sets)
 {
     auto result = parse_regex_pattern(pattern, unicode, unicode_sets);
     if (result.is_error())
@@ -130,12 +148,12 @@ ThrowCompletionOr<DeprecatedString> parse_regex_pattern(VM& vm, StringView patte
 
 NonnullGCPtr<RegExpObject> RegExpObject::create(Realm& realm)
 {
-    return realm.heap().allocate<RegExpObject>(realm, *realm.intrinsics().regexp_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<RegExpObject>(realm, realm.intrinsics().regexp_prototype());
 }
 
-NonnullGCPtr<RegExpObject> RegExpObject::create(Realm& realm, Regex<ECMA262> regex, DeprecatedString pattern, DeprecatedString flags)
+NonnullGCPtr<RegExpObject> RegExpObject::create(Realm& realm, Regex<ECMA262> regex, ByteString pattern, ByteString flags)
 {
-    return realm.heap().allocate<RegExpObject>(realm, move(regex), move(pattern), move(flags), *realm.intrinsics().regexp_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<RegExpObject>(realm, move(regex), move(pattern), move(flags), realm.intrinsics().regexp_prototype());
 }
 
 RegExpObject::RegExpObject(Object& prototype)
@@ -143,43 +161,58 @@ RegExpObject::RegExpObject(Object& prototype)
 {
 }
 
-RegExpObject::RegExpObject(Regex<ECMA262> regex, DeprecatedString pattern, DeprecatedString flags, Object& prototype)
+static RegExpObject::Flags to_flag_bits(StringView flags)
+{
+    RegExpObject::Flags flag_bits = static_cast<RegExpObject::Flags>(0);
+    for (auto ch : flags) {
+        switch (ch) {
+#define __JS_ENUMERATE(FlagName, flagName, flag_name, flag_char) \
+    case #flag_char[0]:                                          \
+        flag_bits |= RegExpObject::Flags::FlagName;              \
+        break;
+            JS_ENUMERATE_REGEXP_FLAGS
+#undef __JS_ENUMERATE
+        default:
+            break;
+        }
+    }
+    return flag_bits;
+}
+
+RegExpObject::RegExpObject(Regex<ECMA262> regex, ByteString pattern, ByteString flags, Object& prototype)
     : Object(ConstructWithPrototypeTag::Tag, prototype)
     , m_pattern(move(pattern))
     , m_flags(move(flags))
+    , m_flag_bits(to_flag_bits(m_flags))
     , m_regex(move(regex))
 {
     VERIFY(m_regex->parser_result.error == regex::Error::NoError);
 }
 
-ThrowCompletionOr<void> RegExpObject::initialize(Realm& realm)
+void RegExpObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
     define_direct_property(vm.names.lastIndex, Value(0), Attribute::Writable);
-
-    return {};
 }
 
-// 22.2.3.2.2 RegExpInitialize ( obj, pattern, flags ), https://tc39.es/ecma262/#sec-regexpinitialize
+// 22.2.3.3 RegExpInitialize ( obj, pattern, flags ), https://tc39.es/ecma262/#sec-regexpinitialize
 ThrowCompletionOr<NonnullGCPtr<RegExpObject>> RegExpObject::regexp_initialize(VM& vm, Value pattern_value, Value flags_value)
 {
-    // NOTE: This also contains changes adapted from https://arai-a.github.io/ecma262-compare/?pr=2418, which doesn't match the upstream spec anymore.
-
     // 1. If pattern is undefined, let P be the empty String.
     // 2. Else, let P be ? ToString(pattern).
     auto pattern = pattern_value.is_undefined()
-        ? DeprecatedString::empty()
-        : TRY(pattern_value.to_deprecated_string(vm));
+        ? ByteString::empty()
+        : TRY(pattern_value.to_byte_string(vm));
 
     // 3. If flags is undefined, let F be the empty String.
     // 4. Else, let F be ? ToString(flags).
     auto flags = flags_value.is_undefined()
-        ? DeprecatedString::empty()
-        : TRY(flags_value.to_deprecated_string(vm));
+        ? ByteString::empty()
+        : TRY(flags_value.to_byte_string(vm));
 
-    // 5. If F contains any code unit other than "d", "g", "i", "m", "s", "u", or "y" or if it contains the same code unit more than once, throw a SyntaxError exception.
+    // 5. If F contains any code unit other than "d", "g", "i", "m", "s", "u", "v", or "y", or if F contains any code unit more than once, throw a SyntaxError exception.
     // 6. If F contains "i", let i be true; else let i be false.
     // 7. If F contains "m", let m be true; else let m be false.
     // 8. If F contains "s", let s be true; else let s be false.
@@ -190,12 +223,12 @@ ThrowCompletionOr<NonnullGCPtr<RegExpObject>> RegExpObject::regexp_initialize(VM
         return vm.throw_completion<SyntaxError>(parsed_flags_or_error.release_error());
     auto parsed_flags = parsed_flags_or_error.release_value();
 
-    auto parsed_pattern = DeprecatedString::empty();
+    auto parsed_pattern = ByteString::empty();
     if (!pattern.is_empty()) {
         bool unicode = parsed_flags.has_flag_set(regex::ECMAScriptFlags::Unicode);
         bool unicode_sets = parsed_flags.has_flag_set(regex::ECMAScriptFlags::UnicodeSets);
 
-        // 11. If u is true, then
+        // 11. If u is true or v is true, then
         //     a. Let patternText be StringToCodePoints(P).
         // 12. Else,
         //     a. Let patternText be the result of interpreting each of P's 16-bit elements as a Unicode BMP code point. UTF-16 decoding is not applied to the elements.
@@ -215,6 +248,7 @@ ThrowCompletionOr<NonnullGCPtr<RegExpObject>> RegExpObject::regexp_initialize(VM
     m_pattern = move(pattern);
 
     // 17. Set obj.[[OriginalFlags]] to F.
+    m_flag_bits = to_flag_bits(flags);
     m_flags = move(flags);
 
     // 18. Let capturingGroupsCount be CountLeftCapturingParensWithin(parseResult).
@@ -230,8 +264,8 @@ ThrowCompletionOr<NonnullGCPtr<RegExpObject>> RegExpObject::regexp_initialize(VM
     return NonnullGCPtr { *this };
 }
 
-// 22.2.3.2.5 EscapeRegExpPattern ( P, F ), https://tc39.es/ecma262/#sec-escaperegexppattern
-DeprecatedString RegExpObject::escape_regexp_pattern() const
+// 22.2.6.13.1 EscapeRegExpPattern ( P, F ), https://tc39.es/ecma262/#sec-escaperegexppattern
+ByteString RegExpObject::escape_regexp_pattern() const
 {
     // 1. Let S be a String in the form of a Pattern[~UnicodeMode] (Pattern[+UnicodeMode] if F contains "u") equivalent
     //    to P interpreted as UTF-16 encoded Unicode code points (6.1.4), in which certain code points are escaped as
@@ -288,16 +322,22 @@ DeprecatedString RegExpObject::escape_regexp_pattern() const
         }
     }
 
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
-// 22.2.3.2.4 RegExpCreate ( P, F ), https://tc39.es/ecma262/#sec-regexpcreate
+void RegExpObject::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_realm);
+}
+
+// 22.2.3.1 RegExpCreate ( P, F ), https://tc39.es/ecma262/#sec-regexpcreate
 ThrowCompletionOr<NonnullGCPtr<RegExpObject>> regexp_create(VM& vm, Value pattern, Value flags)
 {
     auto& realm = *vm.current_realm();
 
     // 1. Let obj be ! RegExpAlloc(%RegExp%).
-    auto regexp_object = MUST(regexp_alloc(vm, *realm.intrinsics().regexp_constructor()));
+    auto regexp_object = MUST(regexp_alloc(vm, realm.intrinsics().regexp_constructor()));
 
     // 2. Return ? RegExpInitialize(obj, P, F).
     return TRY(regexp_object->regexp_initialize(vm, pattern, flags));
@@ -317,8 +357,7 @@ ThrowCompletionOr<NonnullGCPtr<RegExpObject>> regexp_alloc(VM& vm, FunctionObjec
     regexp_object->set_realm(this_realm);
 
     // 4. If SameValue(newTarget, thisRealm.[[Intrinsics]].[[%RegExp%]]) is true, then
-    auto* regexp_constructor = this_realm.intrinsics().regexp_constructor();
-    if (same_value(&new_target, regexp_constructor)) {
+    if (same_value(&new_target, this_realm.intrinsics().regexp_constructor())) {
         // i. Set the value of obj’s [[LegacyFeaturesEnabled]] internal slot to true.
         regexp_object->set_legacy_features_enabled(true);
     }

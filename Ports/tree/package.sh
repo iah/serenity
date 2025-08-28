@@ -1,8 +1,9 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='tree'
-version='2.0.4'
-files="https://github.com/Old-Man-Programmer/tree/archive/refs/tags/${version}.tar.gz tree-${version}.tar.gz 3ebeaf77a3b3829bcf665329e9d0f3624079c2c4cb4ef14cf6d7129a1a208b59"
-auth_type='sha256'
+version='2.1.3'
+files=(
+    "https://github.com/Old-Man-Programmer/tree/archive/refs/tags/${version}.tar.gz#3ffe2c8bb21194b088ad1e723f0cf340dd434453c5ff9af6a38e0d47e0c2723b"
+)
 
 build() {
     run make CC="${CC}" all

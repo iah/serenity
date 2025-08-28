@@ -13,7 +13,7 @@
 #include <LibVT/XtermColors.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #endif
 
 namespace VT {
@@ -37,8 +37,8 @@ struct Attribute {
     Color background_color { default_background_color };
 
 #ifndef KERNEL
-    DeprecatedString href;
-    DeprecatedString href_id;
+    ByteString href;
+    Optional<ByteString> href_id;
 #endif
 
     enum class Flags : u8 {
@@ -49,6 +49,7 @@ struct Attribute {
         Negative = 0x08,
         Blink = 0x10,
         Touched = 0x20,
+        Concealed = 0x40,
     };
     AK_ENUM_BITWISE_FRIEND_OPERATORS(Flags);
 

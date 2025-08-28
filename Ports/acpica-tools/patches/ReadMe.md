@@ -1,21 +1,16 @@
 # Patches for acpica-tools on SerenityOS
 
-## `0001-Stop-compiler-warnings-on-dangling-pointer.patch`
+## `0001-Add-serenity-definitions-for-LibC-includes.patch`
 
-Stop compiler warnings on dangling pointer
+Add serenity definitions for LibC includes
 
-Use static variable to prevent using a dangling pointer from a previous
-stack trace.
+We use the netbsd "acnetbsd.h" file here as a template.
 
-## `0002-Disable-sprintf-debug-message-with-formatting-issues.patch`
+## `0002-Ignore-unknown-warning-options.patch`
 
-Disable sprintf debug message with formatting issues
+Ignore unknown warning options
 
-
-## `0003-Fix-printf-bad-specifier-formatting.patch`
-
-Fix printf bad specifier formatting
-
-Fix sprintf specifier being written in a bad format leading to iASL to
-crash.
+`-Wlogical-op`, `-Wmissing-parameter-type`, and `-Wold-style-declaration`
+are unknown to Clang. While this isn't fatal by itself, it is very
+noisy.
 

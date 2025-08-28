@@ -12,15 +12,18 @@ $ strace [--pid pid] [--output output] [--exclude exclude] [--include include] [
 
 Trace all syscalls and their result.
 
-## Options:
+## Options
 
-* `-p pid`, `--pid pid`: Trace the given PID
-* `-o output`, `--output output`: Filename to write output to
-* `-e exclude`, `--exclude exclude`: Comma-delimited syscalls to exclude
-* `-i include`, `--include include`: Comma-delimited syscalls to include
+-   `-p pid`, `--pid pid`: Trace the given PID
+-   `-o output`, `--output output`: Filename to write output to
+-   `-e exclude`, `--exclude exclude`: Comma-delimited syscalls to exclude
+-   `-i include`, `--include include`: Comma-delimited syscalls to include
 
-## Arguments:
+## Arguments
 
-* `argument`: Arguments to exec
+-   `argument`: Arguments to exec
 
-<!-- Auto-generated through ArgsParser -->
+## See Also
+
+-   [`profile`(1)](help://man/1/profile)
+-   [`Profiler`(1)](help://man/1/Applications/Profiler)

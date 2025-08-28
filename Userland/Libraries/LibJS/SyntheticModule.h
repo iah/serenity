@@ -13,6 +13,7 @@ namespace JS {
 // 1.2 Synthetic Module Records, https://tc39.es/proposal-json-modules/#sec-synthetic-module-records
 class SyntheticModule final : public Module {
     JS_CELL(SyntheticModule, Module);
+    JS_DECLARE_ALLOCATOR(SyntheticModule);
 
 public:
     using EvaluationFunction = Function<ThrowCompletionOr<void>(SyntheticModule&)>;
@@ -25,6 +26,7 @@ public:
     virtual ThrowCompletionOr<Promise*> evaluate(VM& vm) override;
     virtual ThrowCompletionOr<Vector<DeprecatedFlyString>> get_exported_names(VM& vm, Vector<Module*> export_star_set) override;
     virtual ThrowCompletionOr<ResolvedBinding> resolve_export(VM& vm, DeprecatedFlyString const& export_name, Vector<ResolvedBinding> resolve_set) override;
+    virtual PromiseCapability& load_requested_modules(GCPtr<GraphLoadingState::HostDefined>) override;
 
 private:
     SyntheticModule(Vector<DeprecatedFlyString> export_names, EvaluationFunction evaluation_steps, Realm& realm, StringView filename);

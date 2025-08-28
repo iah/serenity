@@ -4,6 +4,10 @@
 [Exposed=Window]
 interface HTMLLabelElement : HTMLElement {
 
-    [Reflect=for] attribute DOMString htmlFor;
+    [HTMLConstructor] constructor();
+
+    readonly attribute HTMLFormElement? form;
+    [CEReactions, Reflect=for] attribute DOMString htmlFor;
+    readonly attribute HTMLElement? control;
 
 };

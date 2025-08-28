@@ -12,9 +12,10 @@ namespace JS {
 
 class ReflectObject final : public Object {
     JS_OBJECT(ReflectObject, Object);
+    JS_DECLARE_ALLOCATOR(ReflectObject);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ReflectObject() override = default;
 
 private:

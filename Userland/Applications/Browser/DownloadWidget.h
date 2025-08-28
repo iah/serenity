@@ -7,11 +7,11 @@
 
 #pragma once
 
-#include <AK/URL.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Progressbar.h>
 #include <LibGUI/Widget.h>
+#include <LibURL/URL.h>
 #include <LibWeb/Loader/ResourceLoader.h>
 
 namespace Browser {
@@ -23,13 +23,13 @@ public:
     virtual ~DownloadWidget() override = default;
 
 private:
-    explicit DownloadWidget(const URL&);
+    explicit DownloadWidget(const URL::URL&);
 
-    void did_progress(Optional<u32> total_size, u32 downloaded_size);
+    void did_progress(Optional<u64> total_size, u64 downloaded_size);
     void did_finish(bool success);
 
-    URL m_url;
-    DeprecatedString m_destination_path;
+    URL::URL m_url;
+    ByteString m_destination_path;
     RefPtr<Web::ResourceLoaderConnectorRequest> m_download;
     RefPtr<GUI::Progressbar> m_progressbar;
     RefPtr<GUI::Label> m_progress_label;

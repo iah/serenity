@@ -20,7 +20,7 @@ TEST_CASE(simple_enqueue)
 {
     auto queue = MUST(TestQueue::create());
     for (size_t i = 0; i < queue.size() - 1; ++i)
-        EXPECT(!queue.enqueue((int)i).is_error());
+        MUST(queue.enqueue((int)i));
 
     auto result = queue.enqueue(0);
     EXPECT(result.is_error());
@@ -34,16 +34,16 @@ TEST_CASE(simple_dequeue)
     for (int i = 0; i < test_count; ++i)
         (void)queue.enqueue(i);
     for (int i = 0; i < test_count; ++i) {
-        auto const element = queue.dequeue();
-        EXPECT(!element.is_error());
-        EXPECT_EQ(element.value(), i);
+        // TODO: This could be TRY_OR_FAIL(), if someone implements Formatter<SharedSingleProducerCircularQueue::QueueStatus>.
+        auto const element = MUST(queue.dequeue());
+        EXPECT_EQ(element, i);
     }
 }
 
 // There is one parallel consumer, but nobody is producing at the same time.
 TEST_CASE(simple_multithread)
 {
-    auto queue = MUST(TestQueue::create());
+    IGNORE_USE_IN_ESCAPING_LAMBDA auto queue = MUST(TestQueue::create());
     auto const test_count = 10;
 
     for (int i = 0; i < test_count; ++i)
@@ -73,11 +73,11 @@ TEST_CASE(simple_multithread)
 // There is one parallel consumer and one parallel producer.
 TEST_CASE(producer_consumer_multithread)
 {
-    auto queue = MUST(TestQueue::create());
+    IGNORE_USE_IN_ESCAPING_LAMBDA auto queue = MUST(TestQueue::create());
     // Ensure that we have the possibility of filling the queue up.
     auto const test_count = queue.size() * 4;
 
-    Atomic<bool> other_thread_running { false };
+    IGNORE_USE_IN_ESCAPING_LAMBDA Atomic<bool> other_thread_running { false };
 
     auto second_thread = Threading::Thread::construct([&queue, &other_thread_running]() {
         auto copied_queue = queue;

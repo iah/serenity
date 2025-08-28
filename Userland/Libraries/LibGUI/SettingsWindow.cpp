@@ -23,7 +23,7 @@ void SettingsWindow::set_modified(bool modified)
         m_apply_button->set_enabled(modified);
 }
 
-ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(DeprecatedString title, ShowDefaultsButton show_defaults_button)
+ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(ByteString title, ShowDefaultsButton show_defaults_button)
 {
     auto window = TRY(SettingsWindow::try_create());
 
@@ -32,38 +32,38 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(DeprecatedString t
     window->set_resizable(false);
     window->set_minimizable(false);
 
-    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
+    auto main_widget = window->set_main_widget<GUI::Widget>();
     main_widget->set_fill_with_background_color(true);
-    TRY(main_widget->try_set_layout<GUI::VerticalBoxLayout>(4, 6));
+    main_widget->set_layout<GUI::VerticalBoxLayout>(4, 6);
 
-    window->m_tab_widget = TRY(main_widget->try_add<GUI::TabWidget>());
+    window->m_tab_widget = main_widget->add<GUI::TabWidget>();
 
-    auto button_container = TRY(main_widget->try_add<GUI::Widget>());
-    button_container->set_preferred_size({ SpecialDimension::Grow, SpecialDimension::Fit });
-    TRY(button_container->try_set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, 6));
+    auto& button_container = main_widget->add<GUI::Widget>();
+    button_container.set_preferred_size({ SpecialDimension::Grow, SpecialDimension::Fit });
+    button_container.set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, 6);
 
     if (show_defaults_button == ShowDefaultsButton::Yes) {
-        window->m_reset_button = TRY(button_container->try_add<GUI::DialogButton>(TRY("Defaults"_string)));
+        window->m_reset_button = button_container.add<GUI::DialogButton>("Defaults"_string);
         window->m_reset_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
             window->reset_default_values();
         };
     }
 
-    TRY(button_container->add_spacer());
+    button_container.add_spacer();
 
-    window->m_ok_button = TRY(button_container->try_add<GUI::DialogButton>("OK"_short_string));
+    window->m_ok_button = button_container.add<GUI::DialogButton>("OK"_string);
     window->m_ok_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
         window->apply_settings();
         GUI::Application::the()->quit();
     };
 
-    window->m_cancel_button = TRY(button_container->try_add<GUI::DialogButton>("Cancel"_short_string));
+    window->m_cancel_button = button_container.add<GUI::DialogButton>("Cancel"_string);
     window->m_cancel_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
         window->cancel_settings();
         GUI::Application::the()->quit();
     };
 
-    window->m_apply_button = TRY(button_container->try_add<GUI::DialogButton>("Apply"_short_string));
+    window->m_apply_button = button_container.add<GUI::DialogButton>("Apply"_string);
     window->m_apply_button->set_enabled(false);
     window->m_apply_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
         window->apply_settings();
@@ -73,7 +73,7 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(DeprecatedString t
         if (!window->is_modified())
             return Window::CloseRequestDecision::Close;
 
-        auto result = MessageBox::show(window, "Apply these settings before closing?"sv, "Unsaved changes"sv, MessageBox::Type::Warning, MessageBox::InputType::YesNoCancel);
+        auto result = MessageBox::show(window, "Apply these settings before closing?"sv, "Unsaved Changes"sv, MessageBox::Type::Warning, MessageBox::InputType::YesNoCancel);
         switch (result) {
         case MessageBox::ExecResult::Yes:
             window->apply_settings();

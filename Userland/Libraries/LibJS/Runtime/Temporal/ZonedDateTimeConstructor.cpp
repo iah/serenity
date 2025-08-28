@@ -15,15 +15,17 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(ZonedDateTimeConstructor);
+
 // 6.1 The Temporal.ZonedDateTime Constructor, https://tc39.es/proposal-temporal/#sec-temporal-zoneddatetime-constructor
 ZonedDateTimeConstructor::ZonedDateTimeConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.ZonedDateTime.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.ZonedDateTime.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> ZonedDateTimeConstructor::initialize(Realm& realm)
+void ZonedDateTimeConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -35,8 +37,6 @@ ThrowCompletionOr<void> ZonedDateTimeConstructor::initialize(Realm& realm)
     define_native_function(realm, vm.names.compare, compare, 2, attr);
 
     define_direct_property(vm.names.length, Value(2), Attribute::Configurable);
-
-    return {};
 }
 
 // 6.1.1 Temporal.ZonedDateTime ( epochNanoseconds, timeZoneLike [ , calendarLike ] ), https://tc39.es/proposal-temporal/#sec-temporal.zoneddatetime
@@ -55,10 +55,10 @@ ThrowCompletionOr<NonnullGCPtr<Object>> ZonedDateTimeConstructor::construct(Func
     auto& vm = this->vm();
 
     // 2. Set epochNanoseconds to ? ToBigInt(epochNanoseconds).
-    auto* epoch_nanoseconds = TRY(vm.argument(0).to_bigint(vm));
+    auto epoch_nanoseconds = TRY(vm.argument(0).to_bigint(vm));
 
     // 3. If ! IsValidEpochNanoseconds(epochNanoseconds) is false, throw a RangeError exception.
-    if (!is_valid_epoch_nanoseconds(*epoch_nanoseconds))
+    if (!is_valid_epoch_nanoseconds(epoch_nanoseconds))
         return vm.throw_completion<RangeError>(ErrorType::TemporalInvalidEpochNanoseconds);
 
     // 4. Let timeZone be ? ToTemporalTimeZone(timeZoneLike).
@@ -68,7 +68,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> ZonedDateTimeConstructor::construct(Func
     auto* calendar = TRY(to_temporal_calendar_with_iso_default(vm, vm.argument(2)));
 
     // 6. Return ? CreateTemporalZonedDateTime(epochNanoseconds, timeZone, calendar, NewTarget).
-    return *TRY(create_temporal_zoned_date_time(vm, *epoch_nanoseconds, *time_zone, *calendar, &new_target));
+    return *TRY(create_temporal_zoned_date_time(vm, epoch_nanoseconds, *time_zone, *calendar, &new_target));
 }
 
 // 6.2.2 Temporal.ZonedDateTime.from ( item [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.zoneddatetime.from

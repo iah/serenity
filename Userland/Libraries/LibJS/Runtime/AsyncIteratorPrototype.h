@@ -12,9 +12,10 @@ namespace JS {
 
 class AsyncIteratorPrototype final : public Object {
     JS_OBJECT(AsyncIteratorPrototype, Object)
+    JS_DECLARE_ALLOCATOR(AsyncIteratorPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~AsyncIteratorPrototype() override = default;
 
 private:

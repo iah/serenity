@@ -19,8 +19,6 @@
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Palette.h>
 
-REGISTER_WIDGET(Hearts, Game);
-
 namespace Hearts {
 
 Game::Game()
@@ -28,7 +26,7 @@ Game::Game()
     m_delay_timer = Core::Timer::create_single_shot(0, [this] {
         dbgln_if(HEARTS_DEBUG, "Continuing game after delay...");
         advance_game();
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 
     constexpr int card_overlap = 20;
     constexpr int outer_border_size = 15;
@@ -78,7 +76,7 @@ Game::Game()
     m_players[3].name = "Lisa";
     m_players[3].taken_cards_target = { width, height / 2 - Card::height / 2 };
 
-    m_passing_button = add<GUI::Button>("Pass Left"_string.release_value_but_fixme_should_propagate_errors());
+    m_passing_button = add<GUI::Button>("Pass Left"_string);
     constexpr int button_width = 120;
     constexpr int button_height = 30;
     m_passing_button->set_relative_rect(width / 2 - button_width / 2, height - 3 * outer_border_size - Card::height - button_height, button_width, button_height);
@@ -91,7 +89,7 @@ Game::Game()
     };
 
     reset();
-};
+}
 
 void Game::reset()
 {
@@ -122,7 +120,7 @@ void Game::show_score_card(bool game_over)
     score_dialog->set_resizable(false);
     score_dialog->set_icon(window()->icon());
 
-    auto score_widget = score_dialog->set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto score_widget = score_dialog->set_main_widget<GUI::Widget>();
     score_widget->set_fill_with_background_color(true);
     score_widget->set_layout<GUI::HorizontalBoxLayout>(10, 15);
 
@@ -133,7 +131,7 @@ void Game::show_score_card(bool game_over)
     button_container.set_shrink_to_fit(true);
     button_container.set_layout<GUI::VerticalBoxLayout>();
 
-    auto& close_button = button_container.add<GUI::Button>("OK"_short_string);
+    auto& close_button = button_container.add<GUI::Button>("OK"_string);
     close_button.on_click = [&score_dialog](auto) {
         score_dialog->done(GUI::Dialog::ExecResult::OK);
     };
@@ -147,20 +145,20 @@ void Game::show_score_card(bool game_over)
     title_builder.append("Score Card"sv);
     if (game_over)
         title_builder.append(" - Game Over"sv);
-    score_dialog->set_title(title_builder.to_deprecated_string());
+    score_dialog->set_title(title_builder.to_byte_string());
 
     RefPtr<Core::Timer> close_timer;
     if (!m_players[0].is_human) {
         close_timer = Core::Timer::create_single_shot(2000, [&] {
             score_dialog->close();
-        }).release_value_but_fixme_should_propagate_errors();
+        });
         close_timer->start();
     }
 
     score_dialog->exec();
 }
 
-void Game::setup(DeprecatedString player_name, int hand_number)
+void Game::setup(ByteString player_name, int hand_number)
 {
     m_players[0].name = move(player_name);
 
@@ -178,13 +176,13 @@ void Game::setup(DeprecatedString player_name, int hand_number)
         m_human_can_play = true;
         switch (passing_direction()) {
         case PassingDirection::Left:
-            m_passing_button->set_text("Pass Left"_string.release_value_but_fixme_should_propagate_errors());
+            m_passing_button->set_text("Pass Left"_string);
             break;
         case PassingDirection::Across:
-            m_passing_button->set_text("Pass Across"_string.release_value_but_fixme_should_propagate_errors());
+            m_passing_button->set_text("Pass Across"_string);
             break;
         case PassingDirection::Right:
-            m_passing_button->set_text("Pass Right"_string.release_value_but_fixme_should_propagate_errors());
+            m_passing_button->set_text("Pass Right"_string);
             break;
         default:
             VERIFY_NOT_REACHED();
@@ -234,7 +232,7 @@ void Game::start_animation(Vector<NonnullRefPtr<Card>> cards, Gfx::IntPoint end,
     m_animation_delay_timer = Core::Timer::create_single_shot(initial_delay_ms, [&] {
         m_animation_playing = true;
         start_timer(10);
-    }).release_value_but_fixme_should_propagate_errors();
+    });
     m_animation_delay_timer->start();
 }
 
@@ -405,9 +403,9 @@ void Game::let_player_play_card()
     auto& player = current_player();
 
     if (&player == &m_players[0])
-        on_status_change("Select a card to play.");
+        on_status_change("Select a card to play."_string);
     else
-        on_status_change(DeprecatedString::formatted("Waiting for {} to play a card...", player));
+        on_status_change(String::formatted("Waiting for {} to play a card...", player).release_value_but_fixme_should_propagate_errors());
 
     if (player.is_human) {
         m_human_can_play = true;
@@ -455,7 +453,7 @@ void Game::advance_game()
 
     if (m_state == State::Play && game_ended()) {
         m_state = State::GameEnded;
-        on_status_change("Game ended.");
+        on_status_change("Game ended."_string);
         advance_game();
         return;
     }
@@ -598,7 +596,7 @@ void Game::play_card(Player& player, size_t card_index)
     card->set_upside_down(false);
     m_trick.append(*card);
 
-    const Gfx::IntPoint trick_card_positions[] = {
+    Gfx::IntPoint const trick_card_positions[] = {
         { width / 2 - Card::width / 2, height / 2 - 30 },
         { width / 2 - Card::width + 15, height / 2 - Card::height / 2 - 15 },
         { width / 2 - Card::width / 2 + 15, height / 2 - Card::height + 15 },
@@ -619,7 +617,7 @@ void Game::play_card(Player& player, size_t card_index)
         0);
 }
 
-bool Game::is_valid_play(Player& player, Card& card, DeprecatedString* explanation) const
+bool Game::is_valid_play(Player& player, Card& card, ByteString* explanation) const
 {
     // First card must be 2 of Clubs.
     if (m_trick_number == 0 && m_trick.is_empty()) {
@@ -692,14 +690,14 @@ void Game::card_clicked_during_passing(size_t, Card& card)
 
 void Game::card_clicked_during_play(size_t card_index, Card& card)
 {
-    DeprecatedString explanation;
+    ByteString explanation;
     if (!is_valid_play(m_players[0], card, &explanation)) {
         if (m_inverted_card)
             m_inverted_card->set_inverted(false);
         card.set_inverted(true);
         update(card.rect());
         m_inverted_card = card;
-        on_status_change(DeprecatedString::formatted("You can't play this card: {}", explanation));
+        on_status_change(String::formatted("You can't play this card: {}", explanation).release_value_but_fixme_should_propagate_errors());
         continue_game_after_delay();
         return;
     }
@@ -869,7 +867,7 @@ void Game::pass_cards()
     }
 
     m_state = State::PassingAccept;
-    m_passing_button->set_text("OK"_short_string);
+    m_passing_button->set_text("OK"_string);
     m_passing_button->set_enabled(true);
 }
 
@@ -892,7 +890,8 @@ void Game::paint_event(GUI::PaintEvent& event)
 
     for (auto& player : m_players) {
         auto& font = painter.font().bold_variant();
-        painter.draw_text(player.name_position, player.name, font, player.name_alignment, Color::Black, Gfx::TextElision::None);
+        Gfx::Color text_color = background_color.luminosity() > 80 ? Color::Black : Color::White;
+        painter.draw_text(player.name_position, player.name, font, player.name_alignment, text_color, Gfx::TextElision::None);
 
         if (!game_ended()) {
             for (auto& card : player.hand)

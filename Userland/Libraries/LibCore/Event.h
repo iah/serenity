@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/EnumBits.h>
 #include <AK/Function.h>
 #include <AK/Types.h>
 #include <AK/WeakPtr.h>
@@ -22,8 +22,7 @@ public:
         Invalid = 0,
         Quit,
         Timer,
-        NotifierRead,
-        NotifierWrite,
+        NotifierActivation,
         DeferredInvoke,
         ChildAdded,
         ChildRemoved,
@@ -50,6 +49,7 @@ private:
 
 class DeferredInvocationEvent : public Event {
     friend class EventLoop;
+    friend class ThreadEventQueue;
 
 public:
     DeferredInvocationEvent(NonnullRefPtr<DeferredInvocationContext> context, Function<void()> invokee)
@@ -66,63 +66,56 @@ private:
 
 class TimerEvent final : public Event {
 public:
-    explicit TimerEvent(int timer_id)
+    explicit TimerEvent()
         : Event(Event::Timer)
-        , m_timer_id(timer_id)
     {
     }
+
     ~TimerEvent() = default;
-
-    int timer_id() const { return m_timer_id; }
-
-private:
-    int m_timer_id;
 };
 
-class NotifierReadEvent final : public Event {
+enum class NotificationType {
+    None = 0,
+    Read = 1,
+    Write = 2,
+    HangUp = 4,
+    Error = 8,
+};
+
+AK_ENUM_BITWISE_OPERATORS(NotificationType);
+
+class NotifierActivationEvent final : public Event {
 public:
-    explicit NotifierReadEvent(int fd)
-        : Event(Event::NotifierRead)
+    explicit NotifierActivationEvent(int fd, NotificationType type)
+        : Event(Event::NotifierActivation)
         , m_fd(fd)
+        , m_type(type)
     {
     }
-    ~NotifierReadEvent() = default;
+    ~NotifierActivationEvent() = default;
 
     int fd() const { return m_fd; }
+    NotificationType type() const { return m_type; }
 
 private:
     int m_fd;
-};
-
-class NotifierWriteEvent final : public Event {
-public:
-    explicit NotifierWriteEvent(int fd)
-        : Event(Event::NotifierWrite)
-        , m_fd(fd)
-    {
-    }
-    ~NotifierWriteEvent() = default;
-
-    int fd() const { return m_fd; }
-
-private:
-    int m_fd;
+    NotificationType m_type;
 };
 
 class ChildEvent final : public Event {
 public:
-    ChildEvent(Type, Object& child, Object* insertion_before_child = nullptr);
+    ChildEvent(Type, EventReceiver& child, EventReceiver* insertion_before_child = nullptr);
     ~ChildEvent() = default;
 
-    Object* child();
-    Object const* child() const;
+    EventReceiver* child();
+    EventReceiver const* child() const;
 
-    Object* insertion_before_child();
-    Object const* insertion_before_child() const;
+    EventReceiver* insertion_before_child();
+    EventReceiver const* insertion_before_child() const;
 
 private:
-    WeakPtr<Object> m_child;
-    WeakPtr<Object> m_insertion_before_child;
+    WeakPtr<EventReceiver> m_child;
+    WeakPtr<EventReceiver> m_insertion_before_child;
 };
 
 class CustomEvent : public Event {

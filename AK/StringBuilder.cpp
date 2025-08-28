@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Liav A. <liavalb@hotmail.co.il>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,7 +15,7 @@
 #include <AK/Utf32View.h>
 
 #ifndef KERNEL
-#    include <AK/DeprecatedString.h>
+#    include <AK/ByteString.h>
 #    include <AK/FlyString.h>
 #    include <AK/Utf16View.h>
 #endif
@@ -23,6 +24,17 @@ namespace AK {
 
 inline ErrorOr<void> StringBuilder::will_append(size_t size)
 {
+    if (m_use_inline_capacity_only == UseInlineCapacityOnly::Yes) {
+        VERIFY(m_buffer.capacity() == StringBuilder::inline_capacity);
+        Checked<size_t> current_pointer = m_buffer.size();
+        current_pointer += size;
+        VERIFY(!current_pointer.has_overflow());
+        if (current_pointer <= StringBuilder::inline_capacity) {
+            return {};
+        }
+        return Error::from_errno(ENOMEM);
+    }
+
     Checked<size_t> needed_capacity = m_buffer.size();
     needed_capacity += size;
     VERIFY(!needed_capacity.has_overflow());
@@ -46,6 +58,27 @@ ErrorOr<StringBuilder> StringBuilder::create(size_t initial_capacity)
 StringBuilder::StringBuilder(size_t initial_capacity)
 {
     m_buffer.ensure_capacity(initial_capacity);
+}
+
+StringBuilder::StringBuilder(UseInlineCapacityOnly use_inline_capacity_only)
+    : m_use_inline_capacity_only(use_inline_capacity_only)
+{
+}
+
+size_t StringBuilder::length() const
+{
+    return m_buffer.size();
+}
+
+bool StringBuilder::is_empty() const
+{
+    return m_buffer.is_empty();
+}
+
+void StringBuilder::trim(size_t count)
+{
+    auto decrease_count = min(m_buffer.size(), count);
+    m_buffer.resize(m_buffer.size() - decrease_count);
 }
 
 ErrorOr<void> StringBuilder::try_append(StringView string)
@@ -105,18 +138,17 @@ void StringBuilder::append_repeated(char ch, size_t n)
     MUST(try_append_repeated(ch, n));
 }
 
-ByteBuffer StringBuilder::to_byte_buffer() const
+ErrorOr<ByteBuffer> StringBuilder::to_byte_buffer() const
 {
-    // FIXME: Handle OOM failure.
-    return ByteBuffer::copy(data(), length()).release_value_but_fixme_should_propagate_errors();
+    return ByteBuffer::copy(data(), length());
 }
 
 #ifndef KERNEL
-DeprecatedString StringBuilder::to_deprecated_string() const
+ByteString StringBuilder::to_byte_string() const
 {
     if (is_empty())
-        return DeprecatedString::empty();
-    return DeprecatedString((char const*)data(), length());
+        return ByteString::empty();
+    return ByteString((char const*)data(), length());
 }
 
 ErrorOr<String> StringBuilder::to_string() const
@@ -124,11 +156,31 @@ ErrorOr<String> StringBuilder::to_string() const
     return String::from_utf8(string_view());
 }
 
+String StringBuilder::to_string_without_validation() const
+{
+    return String::from_utf8_without_validation(string_view().bytes());
+}
+
+FlyString StringBuilder::to_fly_string_without_validation() const
+{
+    return FlyString::from_utf8_without_validation(string_view().bytes());
+}
+
 ErrorOr<FlyString> StringBuilder::to_fly_string() const
 {
     return FlyString::from_utf8(string_view());
 }
 #endif
+
+u8* StringBuilder::data()
+{
+    return m_buffer.data();
+}
+
+u8 const* StringBuilder::data() const
+{
+    return m_buffer.data();
+}
 
 StringView StringBuilder::string_view() const
 {
@@ -153,13 +205,47 @@ ErrorOr<void> StringBuilder::try_append_code_point(u32 code_point)
 
 void StringBuilder::append_code_point(u32 code_point)
 {
-    MUST(try_append_code_point(code_point));
+    if (code_point <= 0x7f) {
+        m_buffer.append(static_cast<char>(code_point));
+    } else if (code_point <= 0x07ff) {
+        (void)will_append(2);
+        m_buffer.append(static_cast<char>((((code_point >> 6) & 0x1f) | 0xc0)));
+        m_buffer.append(static_cast<char>((((code_point >> 0) & 0x3f) | 0x80)));
+    } else if (code_point <= 0xffff) {
+        (void)will_append(3);
+        m_buffer.append(static_cast<char>((((code_point >> 12) & 0x0f) | 0xe0)));
+        m_buffer.append(static_cast<char>((((code_point >> 6) & 0x3f) | 0x80)));
+        m_buffer.append(static_cast<char>((((code_point >> 0) & 0x3f) | 0x80)));
+    } else if (code_point <= 0x10ffff) {
+        (void)will_append(4);
+        m_buffer.append(static_cast<char>((((code_point >> 18) & 0x07) | 0xf0)));
+        m_buffer.append(static_cast<char>((((code_point >> 12) & 0x3f) | 0x80)));
+        m_buffer.append(static_cast<char>((((code_point >> 6) & 0x3f) | 0x80)));
+        m_buffer.append(static_cast<char>((((code_point >> 0) & 0x3f) | 0x80)));
+    } else {
+        (void)will_append(3);
+        m_buffer.append(0xef);
+        m_buffer.append(0xbf);
+        m_buffer.append(0xbd);
+    }
 }
 
 #ifndef KERNEL
 ErrorOr<void> StringBuilder::try_append(Utf16View const& utf16_view)
 {
+    // NOTE: This may under-allocate in the presence of surrogate pairs.
+    //       That's okay, appending will still grow the buffer as needed.
+    TRY(will_append(utf16_view.length_in_code_units()));
+
     for (size_t i = 0; i < utf16_view.length_in_code_units();) {
+        // OPTIMIZATION: Fast path for ASCII characters.
+        auto code_unit = utf16_view.data()[i];
+        if (code_unit <= 0x7f) {
+            append(static_cast<char>(code_unit));
+            ++i;
+            continue;
+        }
+
         auto code_point = utf16_view.code_point_at(i);
         TRY(try_append_code_point(code_point));
 

@@ -13,6 +13,7 @@
 #include "EditGuideDialog.h"
 #include "FilterGallery.h"
 #include "FilterParams.h"
+#include "ImageMasking.h"
 #include "LevelsDialog.h"
 #include "ResizeImageDialog.h"
 #include <AK/String.h>
@@ -20,6 +21,7 @@
 #include <LibConfig/Client.h>
 #include <LibCore/Debounce.h>
 #include <LibCore/MimeData.h>
+#include <LibDesktop/Launcher.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>
 #include <LibGUI/Icon.h>
@@ -60,9 +62,11 @@ MainWidget::MainWidget()
 
     m_toolbox->on_tool_selection = [&](auto* tool) {
         auto* editor = current_image_editor();
-        VERIFY(editor);
-        editor->set_active_tool(tool);
-        m_tool_properties_widget->set_active_tool(tool);
+        // Ignore tool selection changes if we don't have an editor yet, e.g. if PixelPaint is started with a path argument.
+        if (editor) {
+            editor->set_active_tool(tool);
+            m_tool_properties_widget->set_active_tool(tool);
+        }
     };
 
     m_tab_widget->on_middle_click = [&](auto& widget) {
@@ -128,7 +132,7 @@ void MainWidget::image_editor_did_update_undo_stack()
             builder.append(' ');
             builder.append(suffix.value());
         }
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     };
 
     auto& undo_stack = image_editor->undo_stack();
@@ -140,7 +144,7 @@ void MainWidget::image_editor_did_update_undo_stack()
 }
 
 // Note: Update these together! v
-static Vector<DeprecatedString> const s_suggested_zoom_levels { "25%", "50%", "100%", "200%", "300%", "400%", "800%", "1600%", "Fit to width", "Fit to height", "Fit entire image" };
+static Vector<ByteString> const s_suggested_zoom_levels { "25%", "50%", "100%", "200%", "300%", "400%", "800%", "1600%", "Fit to width", "Fit to height", "Fit entire image" };
 static constexpr int s_zoom_level_fit_width = 8;
 static constexpr int s_zoom_level_fit_height = 9;
 static constexpr int s_zoom_level_fit_image = 10;
@@ -148,7 +152,7 @@ static constexpr int s_zoom_level_fit_image = 10;
 
 ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 {
-    auto& file_menu = window.add_menu("&File");
+    auto file_menu = window.add_menu("&File"_string);
 
     m_new_image_action = GUI::Action::create(
         "&New Image...", { Mod_Ctrl, Key_N }, g_icon_bag.filetype_pixelpaint, [&](auto&) {
@@ -156,13 +160,13 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             if (dialog->exec() == GUI::Dialog::ExecResult::OK) {
                 auto image_result = PixelPaint::Image::create_with_size(dialog->image_size());
                 if (image_result.is_error()) {
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create image with size {}, error: {}", dialog->image_size(), image_result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create image with size {}, error: {}", dialog->image_size(), image_result.release_error())));
                     return;
                 }
                 auto image = image_result.release_value();
                 auto bg_layer_result = PixelPaint::Layer::create_with_size(*image, image->size(), "Background");
                 if (bg_layer_result.is_error()) {
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create layer with size {}, error: {}", image->size(), bg_layer_result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create layer with size {}, error: {}", image->size(), bg_layer_result.release_error())));
                     return;
                 }
                 auto bg_layer = bg_layer_result.release_value();
@@ -173,7 +177,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 
                 auto& editor = create_new_editor(*image);
                 auto image_title = dialog->image_name().trim_whitespace();
-                editor.set_title(image_title.is_empty() ? "Untitled" : image_title);
+                editor.set_title((image_title.is_empty() ? "Untitled"_string : String::from_byte_string(image_title)).release_value_but_fixme_should_propagate_errors());
                 editor.set_unmodified();
 
                 m_histogram_widget->set_image(image);
@@ -187,12 +191,14 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         "&New Image from Clipboard", { Mod_Ctrl | Mod_Shift, Key_V }, g_icon_bag.new_clipboard, [&](auto&) {
             auto result = create_image_from_clipboard();
             if (result.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create image from clipboard: {}", result.error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create image from clipboard: {}", result.release_error())));
             }
         });
 
     m_open_image_action = GUI::CommonActions::make_open_action([&](auto&) {
-        auto response = FileSystemAccessClient::Client::the().open_file(&window);
+        auto image_files = GUI::FileTypeFilter::image_files();
+        image_files.extensions->append("pp");
+        auto response = FileSystemAccessClient::Client::the().open_file(&window, { .allowed_file_types = Vector { image_files, GUI::FileTypeFilter::all_files() } });
         if (response.is_error())
             return;
         open_image(response.release_value());
@@ -210,59 +216,67 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         editor->save_project();
     });
 
-    file_menu.add_action(*m_new_image_action);
-    file_menu.add_action(*m_new_image_from_clipboard_action);
-    file_menu.add_action(*m_open_image_action);
-    file_menu.add_action(*m_save_image_action);
-    file_menu.add_action(*m_save_image_as_action);
+    file_menu->add_action(*m_new_image_action);
+    file_menu->add_action(*m_new_image_from_clipboard_action);
+    file_menu->add_action(*m_open_image_action);
+    file_menu->add_action(*m_save_image_action);
+    file_menu->add_action(*m_save_image_as_action);
 
-    m_export_submenu = file_menu.add_submenu("&Export");
+    m_export_submenu = file_menu->add_submenu("&Export"_string);
 
     m_export_submenu->add_action(
         GUI::Action::create(
-            "As &BMP", [&](auto&) {
+            "As &BMP...", [&](auto&) {
                 auto* editor = current_image_editor();
                 VERIFY(editor);
-                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title(), "bmp");
+                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title().to_byte_string(), "bmp");
                 if (response.is_error())
                     return;
                 auto preserve_alpha_channel = GUI::MessageBox::show(&window, "Do you wish to preserve transparency?"sv, "Preserve transparency?"sv, GUI::MessageBox::Type::Question, GUI::MessageBox::InputType::YesNo);
                 auto result = editor->image().export_bmp_to_file(response.value().release_stream(), preserve_alpha_channel == GUI::MessageBox::ExecResult::Yes);
                 if (result.is_error())
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Export to BMP failed: {}", result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Export to BMP failed: {}", result.release_error())));
             }));
 
     m_export_submenu->add_action(
         GUI::Action::create(
-            "As &PNG", [&](auto&) {
+            "As &PNG...", [&](auto&) {
                 auto* editor = current_image_editor();
                 VERIFY(editor);
                 // TODO: fix bmp on line below?
-                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title(), "png");
+                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title().to_byte_string(), "png");
                 if (response.is_error())
                     return;
                 auto preserve_alpha_channel = GUI::MessageBox::show(&window, "Do you wish to preserve transparency?"sv, "Preserve transparency?"sv, GUI::MessageBox::Type::Question, GUI::MessageBox::InputType::YesNo);
                 auto result = editor->image().export_png_to_file(response.value().release_stream(), preserve_alpha_channel == GUI::MessageBox::ExecResult::Yes);
                 if (result.is_error())
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Export to PNG failed: {}", result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Export to PNG failed: {}", result.release_error())));
             }));
 
     m_export_submenu->add_action(
         GUI::Action::create(
-            "As &QOI", [&](auto&) {
+            "As &QOI...", [&](auto&) {
                 auto* editor = current_image_editor();
                 VERIFY(editor);
-                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title(), "qoi");
+                auto response = FileSystemAccessClient::Client::the().save_file(&window, editor->title().to_byte_string(), "qoi");
                 if (response.is_error())
                     return;
                 auto result = editor->image().export_qoi_to_file(response.value().release_stream());
                 if (result.is_error())
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Export to QOI failed: {}", result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Export to QOI failed: {}", result.release_error())));
             }));
 
     m_export_submenu->set_icon(g_icon_bag.file_export);
 
-    file_menu.add_separator();
+    file_menu->add_separator();
+
+    file_menu->add_recent_files_list([&](auto& action) {
+        auto path = action.text();
+        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(&window, path);
+        if (response.is_error())
+            return;
+        open_image(response.release_value());
+    });
 
     m_close_image_action = GUI::Action::create("&Close Image", { Mod_Ctrl, Key_W }, g_icon_bag.close_image, [&](auto&) {
         auto* active_widget = m_tab_widget->active_widget();
@@ -270,14 +284,16 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         m_tab_widget->on_tab_close_click(*active_widget);
     });
 
-    file_menu.add_action(*m_close_image_action);
+    file_menu->add_action(*m_close_image_action);
 
-    file_menu.add_action(GUI::CommonActions::make_quit_action([this](auto&) {
-        if (request_close())
-            GUI::Application::the()->quit();
-    }));
+    file_menu->add_action(GUI::CommonActions::make_quit_action(
+        [this](auto&) {
+            if (request_close())
+                GUI::Application::the()->quit();
+        },
+        GUI::CommonActions::QuitAltShortcut::None));
 
-    m_edit_menu = window.add_menu("&Edit");
+    m_edit_menu = window.add_menu("&Edit"_string);
 
     m_cut_action = GUI::CommonActions::make_cut_action([&](auto&) {
         auto* editor = current_image_editor();
@@ -310,9 +326,9 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             return;
         }
         auto layer_rect = editor->active_layer()->relative_rect();
-        HashMap<DeprecatedString, DeprecatedString> layer_metadata;
-        layer_metadata.set("pixelpaint-layer-x", DeprecatedString::number(layer_rect.x()));
-        layer_metadata.set("pixelpaint-layer-y", DeprecatedString::number(layer_rect.y()));
+        HashMap<ByteString, ByteString> layer_metadata;
+        layer_metadata.set("pixelpaint-layer-x", ByteString::number(layer_rect.x()));
+        layer_metadata.set("pixelpaint-layer-y", ByteString::number(layer_rect.y()));
 
         GUI::Clipboard::the().set_bitmap(*bitmap, layer_metadata);
     });
@@ -335,7 +351,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         if (!editor) {
             auto result = create_image_from_clipboard();
             if (result.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create image from clipboard: {}", result.error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create image from clipboard: {}", result.release_error())));
             }
             return;
         }
@@ -347,7 +363,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 
         auto layer_result = PixelPaint::Layer::create_with_bitmap(editor->image(), *bitmap, "Pasted layer");
         if (layer_result.is_error()) {
-            GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Could not create bitmap when pasting: {}", layer_result.error()));
+            GUI::MessageBox::show_error(&window, MUST(String::formatted("Could not create bitmap when pasting: {}", layer_result.release_error())));
             return;
         }
         auto layer = layer_result.release_value();
@@ -355,8 +371,8 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         auto layer_x_position = data_and_type.metadata.get("pixelpaint-layer-x");
         auto layer_y_position = data_and_type.metadata.get("pixelpaint-layer-y");
         if (layer_x_position.has_value() && layer_y_position.has_value()) {
-            auto x = layer_x_position.value().to_int();
-            auto y = layer_y_position.value().to_int();
+            auto x = layer_x_position.value().to_number<int>();
+            auto y = layer_y_position.value().to_number<int>();
             if (x.has_value() && x.value()) {
                 auto pasted_layer_location = Gfx::IntPoint { x.value(), y.value() };
 
@@ -406,7 +422,8 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         VERIFY(editor);
         if (!editor->active_layer())
             return;
-        editor->image().selection().merge(editor->active_layer()->relative_rect(), PixelPaint::Selection::MergeMode::Set);
+        auto layer_rect = editor->active_layer()->relative_rect();
+        editor->image().selection().merge(layer_rect.intersected(editor->image().rect()), PixelPaint::Selection::MergeMode::Set);
         editor->did_complete_action("Select All"sv);
     }));
     m_edit_menu->add_action(GUI::Action::create(
@@ -441,31 +458,38 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             editor->set_secondary_color(Color::White);
         }));
     m_edit_menu->add_action(GUI::Action::create(
-        "&Load Color Palette", g_icon_bag.load_color_palette, [&](auto&) {
-            auto response = FileSystemAccessClient::Client::the().open_file(&window, "Load Color Palette");
+        "&Load Color Palette...", g_icon_bag.load_color_palette, [&](auto&) {
+            FileSystemAccessClient::OpenFileOptions options {
+                .window_title = "Load Color Palette"sv,
+                .allowed_file_types = Vector {
+                    { "Palette Files", { { "palette" } } },
+                    GUI::FileTypeFilter::all_files(),
+                },
+            };
+            auto response = FileSystemAccessClient::Client::the().open_file(&window, options);
             if (response.is_error())
                 return;
 
             auto result = PixelPaint::PaletteWidget::load_palette_file(response.release_value().release_stream());
             if (result.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Loading color palette failed: {}", result.error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Loading color palette failed: {}", result.release_error())));
                 return;
             }
 
             m_palette_widget->display_color_list(result.value());
         }));
     m_edit_menu->add_action(GUI::Action::create(
-        "Sa&ve Color Palette", g_icon_bag.save_color_palette, [&](auto&) {
+        "Sa&ve Color Palette...", g_icon_bag.save_color_palette, [&](auto&) {
             auto response = FileSystemAccessClient::Client::the().save_file(&window, "untitled", "palette");
             if (response.is_error())
                 return;
 
             auto result = PixelPaint::PaletteWidget::save_palette_file(m_palette_widget->colors(), response.release_value().release_stream());
             if (result.is_error())
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Writing color palette failed: {}", result.error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Writing color palette failed: {}", result.release_error())));
         }));
 
-    m_view_menu = window.add_menu("&View");
+    m_view_menu = window.add_menu("&View"_string);
 
     m_zoom_in_action = GUI::CommonActions::make_zoom_in_action(
         [&](auto&) {
@@ -488,7 +512,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         });
 
     m_add_guide_action = GUI::Action::create(
-        "&Add Guide", g_icon_bag.add_guide, [&](auto&) {
+        "&Add Guide...", g_icon_bag.add_guide, [&](auto&) {
             auto dialog = PixelPaint::EditGuideDialog::construct(&window);
             if (dialog->exec() != GUI::Dialog::ExecResult::OK)
                 return;
@@ -564,38 +588,41 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
     m_view_menu->add_separator();
 
     auto histogram_action = GUI::Action::create_checkable("&Histogram", [&](auto& action) {
-        Config::write_bool("PixelPaint"sv, "Scopes"sv, "ShowHistogram"sv, action.is_checked());
-        m_histogram_widget->parent_widget()->set_visible(action.is_checked());
+        m_histogram_widget->set_scope_visibility(action.is_checked());
     });
-    histogram_action->set_checked(Config::read_bool("PixelPaint"sv, "Scopes"sv, "ShowHistogram"sv, false));
-    m_histogram_widget->parent_widget()->set_visible(histogram_action->is_checked());
+    histogram_action->set_checked(m_histogram_widget->read_visibility_from_configuration());
+    m_histogram_widget->set_scope_visibility(histogram_action->is_checked());
 
     auto vectorscope_action = GUI::Action::create_checkable("&Vectorscope", [&](auto& action) {
-        Config::write_bool("PixelPaint"sv, "Scopes"sv, "ShowVectorscope"sv, action.is_checked());
-        m_vectorscope_widget->parent_widget()->set_visible(action.is_checked());
+        m_vectorscope_widget->set_scope_visibility(action.is_checked());
     });
-    vectorscope_action->set_checked(Config::read_bool("PixelPaint"sv, "Scopes"sv, "ShowVectorscope"sv, false));
-    m_vectorscope_widget->parent_widget()->set_visible(vectorscope_action->is_checked());
+    vectorscope_action->set_checked(m_vectorscope_widget->read_visibility_from_configuration());
+    m_vectorscope_widget->set_scope_visibility(vectorscope_action->is_checked());
 
-    auto& scopes_menu = m_view_menu->add_submenu("&Scopes");
-    scopes_menu.add_action(histogram_action);
-    scopes_menu.add_action(vectorscope_action);
+    auto scopes_menu = m_view_menu->add_submenu("&Scopes"_string);
+    scopes_menu->add_action(histogram_action);
+    scopes_menu->add_action(vectorscope_action);
 
-    m_tool_menu = window.add_menu("&Tool");
+    m_view_menu->add_separator();
+    m_view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window.set_fullscreen(!window.is_fullscreen());
+    }));
+
+    m_tool_menu = window.add_menu("&Tool"_string);
     m_toolbox->for_each_tool([&](auto& tool) {
         if (tool.action())
             m_tool_menu->add_action(*tool.action());
         return IterationDecision::Continue;
     });
 
-    m_image_menu = window.add_menu("&Image");
+    m_image_menu = window.add_menu("&Image"_string);
     m_image_menu->add_action(GUI::Action::create(
         "Flip Image &Vertically", g_icon_bag.edit_flip_vertical, [&](auto&) {
             auto* editor = current_image_editor();
             VERIFY(editor);
             auto image_flip_or_error = editor->image().flip(Gfx::Orientation::Vertical);
             if (image_flip_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip image: {}", image_flip_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip image: {}", image_flip_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Flip Image Vertically"sv);
@@ -606,7 +633,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             VERIFY(editor);
             auto image_flip_or_error = editor->image().flip(Gfx::Orientation::Horizontal);
             if (image_flip_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip image: {}", image_flip_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip image: {}", image_flip_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Flip Image Horizontally"sv);
@@ -619,7 +646,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             VERIFY(editor);
             auto image_rotate_or_error = editor->image().rotate(Gfx::RotationDirection::CounterClockwise);
             if (image_rotate_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate image: {}", image_rotate_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate image: {}", image_rotate_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Rotate Image Counterclockwise"sv);
@@ -631,7 +658,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             VERIFY(editor);
             auto image_rotate_or_error = editor->image().rotate(Gfx::RotationDirection::Clockwise);
             if (image_rotate_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate image: {}", image_rotate_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate image: {}", image_rotate_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Rotate Image Clockwise"sv);
@@ -645,28 +672,33 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             if (dialog->exec() == GUI::Dialog::ExecResult::OK) {
                 auto image_resize_or_error = editor->image().resize(dialog->desired_size(), dialog->scaling_mode());
                 if (image_resize_or_error.is_error()) {
-                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to resize image: {}", image_resize_or_error.error().string_literal())));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to resize image: {}", image_resize_or_error.release_error())));
                     return;
                 }
+                // FIXME: We should ensure the selection is within the bounds of the image here.
                 editor->did_complete_action("Resize Image"sv);
             }
         }));
-    m_image_menu->add_action(GUI::Action::create(
+    m_crop_image_to_selection_action = GUI::Action::create(
         "&Crop Image to Selection", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
             VERIFY(editor);
-            // FIXME: disable this action if there is no selection
             if (editor->image().selection().is_empty())
                 return;
             auto crop_rect = editor->image().rect().intersected(editor->image().selection().bounding_rect());
+            // FIXME: It is only possible to hit this condition, as transforming the image (crop, rotate etc.), does not update the selection.
+            //        We should ensure that image transformations also transform the selection, so that its relative size and position are maintained.
+            if (crop_rect.is_empty())
+                return;
             auto image_crop_or_error = editor->image().crop(crop_rect);
             if (image_crop_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop image: {}", image_crop_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop image: {}", image_crop_or_error.release_error())));
                 return;
             }
             editor->image().selection().clear();
             editor->did_complete_action("Crop Image to Selection"sv);
-        }));
+        });
+    m_image_menu->add_action(*m_crop_image_to_selection_action);
 
     m_image_menu->add_action(GUI::Action::create(
         "&Crop Image to Content", g_icon_bag.crop, [&](auto&) {
@@ -679,13 +711,13 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 
             auto image_crop_or_error = editor->image().crop(content_bounding_rect.value());
             if (image_crop_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop image: {}", image_crop_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop image: {}", image_crop_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Crop Image to Content"sv);
         }));
 
-    m_layer_menu = window.add_menu("&Layer");
+    m_layer_menu = window.add_menu("&Layer"_string);
 
     m_layer_menu->on_visibility_change = [this](bool visible) {
         if (!visible)
@@ -706,7 +738,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             if (dialog->exec() == GUI::Dialog::ExecResult::OK) {
                 auto layer_or_error = PixelPaint::Layer::create_with_size(editor->image(), dialog->layer_size(), dialog->layer_name());
                 if (layer_or_error.is_error()) {
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Unable to create layer with size {}", dialog->size()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Unable to create layer with size {}", dialog->size())));
                     return;
                 }
                 editor->image().add_layer(layer_or_error.release_value());
@@ -716,11 +748,33 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             }
         }));
 
+    m_layer_menu->add_action(GUI::Action::create(
+        "Duplicate Layer", { Mod_Ctrl | Mod_Shift, Key_D }, g_icon_bag.new_layer, [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            auto* active_layer = editor->active_layer();
+            if (!active_layer)
+                return;
+
+            auto layer_index = editor->image().index_of(*active_layer);
+            auto new_layer_name = editor->generate_unique_layer_name(active_layer->name());
+            auto duplicated_layer_or_error = active_layer->duplicate(new_layer_name);
+            if (duplicated_layer_or_error.is_error()) {
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Unable to create duplicate layer: {}", duplicated_layer_or_error.release_error())));
+                return;
+            }
+            auto duplicated_layer = duplicated_layer_or_error.release_value();
+            editor->image().insert_layer(duplicated_layer, layer_index + 1);
+            editor->image().select_layer(duplicated_layer);
+            editor->layers_did_change();
+            editor->did_complete_action("Duplicate Layer"sv);
+        }));
+
     m_layer_via_copy = GUI::Action::create(
         "Layer via Copy", { Mod_Ctrl | Mod_Shift, Key_C }, g_icon_bag.new_layer, [&](auto&) {
             auto add_layer_success = current_image_editor()->add_new_layer_from_selection();
             if (add_layer_success.is_error()) {
-                GUI::MessageBox::show_error(&window, add_layer_success.release_error().string_literal());
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("{}", add_layer_success.release_error())));
                 return;
             }
             current_image_editor()->did_complete_action("New Layer via Copy"sv);
@@ -732,7 +786,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         "Layer via Cut", { Mod_Ctrl | Mod_Shift, Key_X }, g_icon_bag.new_layer, [&](auto&) {
             auto add_layer_success = current_image_editor()->add_new_layer_from_selection();
             if (add_layer_success.is_error()) {
-                GUI::MessageBox::show_error(&window, add_layer_success.release_error().string_literal());
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("{}", add_layer_success.release_error())));
                 return;
             }
             current_image_editor()->active_layer()->erase_selection(current_image_editor()->image().selection());
@@ -760,27 +814,93 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         };
     };
 
+    auto mask_submenu = m_layer_menu->add_submenu("&Masks"_string);
+
     m_add_mask_action = GUI::Action::create(
         "Add M&ask", { Mod_Ctrl | Mod_Shift, Key_M }, g_icon_bag.add_mask, create_layer_mask_callback("Add Mask", [&](Layer* active_layer) {
             VERIFY(!active_layer->is_masked());
-            if (auto maybe_error = active_layer->create_mask(); maybe_error.is_error())
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create layer mask: {}", maybe_error.release_error()));
+            if (auto maybe_error = active_layer->create_mask(Layer::MaskType::BasicMask); maybe_error.is_error())
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create layer mask: {}", maybe_error.release_error())));
         }));
-    m_layer_menu->add_action(*m_add_mask_action);
+    mask_submenu->add_action(*m_add_mask_action);
+
+    m_add_editing_mask_action = GUI::Action::create(
+        "Add E&diting Mask", { Mod_Ctrl | Mod_Alt, Key_E }, g_icon_bag.add_mask, create_layer_mask_callback("Add Editing Mask", [&](Layer* active_layer) {
+            VERIFY(!active_layer->is_masked());
+            if (auto maybe_error = active_layer->create_mask(Layer::MaskType::EditingMask); maybe_error.is_error())
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create layer mask: {}", maybe_error.release_error())));
+        }));
+    mask_submenu->add_action(*m_add_editing_mask_action);
 
     m_delete_mask_action = GUI::Action::create(
         "Delete Mask", create_layer_mask_callback("Delete Mask", [&](Layer* active_layer) {
             VERIFY(active_layer->is_masked());
             active_layer->delete_mask();
         }));
-    m_layer_menu->add_action(*m_delete_mask_action);
+    mask_submenu->add_action(*m_delete_mask_action);
 
     m_apply_mask_action = GUI::Action::create(
         "Apply Mask", create_layer_mask_callback("Apply Mask", [&](Layer* active_layer) {
             VERIFY(active_layer->is_masked());
             active_layer->apply_mask();
         }));
-    m_layer_menu->add_action(*m_apply_mask_action);
+    mask_submenu->add_action(*m_apply_mask_action);
+
+    m_invert_mask_action = GUI::Action::create(
+        "Invert Mask", create_layer_mask_callback("Invert Mask", [&](Layer* active_layer) {
+            VERIFY(active_layer->is_masked());
+            active_layer->invert_mask();
+        }));
+    mask_submenu->add_action(*m_invert_mask_action);
+
+    m_clear_mask_action = GUI::Action::create(
+        "Clear Mask", create_layer_mask_callback("Clear Mask", [&](Layer* active_layer) {
+            VERIFY(active_layer->is_masked());
+            active_layer->clear_mask();
+        }));
+    mask_submenu->add_action(*m_clear_mask_action);
+
+    m_toggle_mask_visibility_action = GUI::Action::create_checkable(
+        "Show Mask", [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            if (!editor->active_layer())
+                return;
+
+            VERIFY(editor->active_layer()->is_masked());
+            editor->active_layer()->set_mask_visibility(m_toggle_mask_visibility_action->is_checked());
+            editor->update();
+        });
+
+    mask_submenu->add_action(*m_toggle_mask_visibility_action);
+
+    m_open_luminosity_masking_action = GUI::Action::create(
+        "Luminosity Masking", [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            if (!editor->active_layer())
+                return;
+            VERIFY(editor->active_layer()->mask_type() == Layer::MaskType::EditingMask);
+
+            PixelPaint::ImageMasking::construct(&window, editor, ImageMasking::MaskingType::Luminosity)->exec();
+            m_layer_list_widget->repaint();
+        });
+
+    mask_submenu->add_action(*m_open_luminosity_masking_action);
+
+    m_open_color_masking_action = GUI::Action::create(
+        "Color Masking", [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            if (!editor->active_layer())
+                return;
+            VERIFY(editor->active_layer()->mask_type() == Layer::MaskType::EditingMask);
+
+            PixelPaint::ImageMasking::construct(&window, editor, ImageMasking::MaskingType::Color)->exec();
+            m_layer_list_widget->repaint();
+        });
+
+    mask_submenu->add_action(*m_open_color_masking_action);
 
     m_layer_menu->add_separator();
 
@@ -858,7 +978,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             } else {
                 auto layer_result = PixelPaint::Layer::create_with_size(editor->image(), editor->image().size(), "Background");
                 if (layer_result.is_error()) {
-                    GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to create layer with size {}, error: {}", editor->image().size(), layer_result.error()));
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to create layer with size {}, error: {}", editor->image().size(), layer_result.release_error())));
                     return;
                 }
                 auto layer = layer_result.release_value();
@@ -877,7 +997,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             auto* editor = current_image_editor();
             VERIFY(editor);
             if (auto maybe_error = editor->image().flatten_all_layers(); maybe_error.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to flatten all layers: {}", maybe_error.release_error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flatten all layers: {}", maybe_error.release_error())));
                 return;
             }
             editor->did_complete_action("Flatten Image"sv);
@@ -888,7 +1008,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             auto* editor = current_image_editor();
             VERIFY(editor);
             if (auto maybe_error = editor->image().merge_visible_layers(); maybe_error.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to merge visible layers: {}", maybe_error.release_error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to merge visible layers: {}", maybe_error.release_error())));
                 return;
             }
             editor->did_complete_action("Merge Visible"sv);
@@ -903,7 +1023,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
 
             if (auto maybe_error = editor->image().merge_active_layer_up(*active_layer); maybe_error.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to merge active layer up: {}", maybe_error.release_error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to merge active layer up: {}", maybe_error.release_error())));
                 return;
             }
             editor->did_complete_action("Merge Active Layer Up"sv);
@@ -918,7 +1038,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
 
             if (auto maybe_error = editor->image().merge_active_layer_down(*active_layer); maybe_error.is_error()) {
-                GUI::MessageBox::show_error(&window, DeprecatedString::formatted("Failed to merge active layer down: {}", maybe_error.release_error()));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to merge active layer down: {}", maybe_error.release_error())));
                 return;
             }
             editor->did_complete_action("Merge Active Layer Down"sv);
@@ -934,7 +1054,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
             auto layer_flip_or_error = active_layer->flip(Gfx::Orientation::Vertical);
             if (layer_flip_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip layer: {}", layer_flip_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip layer: {}", layer_flip_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Flip Layer Vertically"sv);
@@ -948,7 +1068,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
             auto layer_flip_or_error = active_layer->flip(Gfx::Orientation::Horizontal);
             if (layer_flip_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip layer: {}", layer_flip_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to flip layer: {}", layer_flip_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Flip Layer Horizontally"sv);
@@ -964,7 +1084,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
             auto layer_rotate_or_error = active_layer->rotate(Gfx::RotationDirection::CounterClockwise);
             if (layer_rotate_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate layer: {}", layer_rotate_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate layer: {}", layer_rotate_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Rotate Layer Counterclockwise"sv);
@@ -979,18 +1099,17 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
             auto layer_rotate_or_error = active_layer->rotate(Gfx::RotationDirection::Clockwise);
             if (layer_rotate_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate layer: {}", layer_rotate_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to rotate layer: {}", layer_rotate_or_error.release_error())));
                 return;
             }
             editor->did_complete_action("Rotate Layer Clockwise"sv);
         }));
 
     m_layer_menu->add_separator();
-    m_layer_menu->add_action(GUI::Action::create(
+    m_crop_layer_to_selection_action = GUI::Action::create(
         "&Crop Layer to Selection", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
             VERIFY(editor);
-            // FIXME: disable this action if there is no selection
             auto active_layer = editor->active_layer();
             if (!active_layer || editor->image().selection().is_empty())
                 return;
@@ -998,13 +1117,14 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             auto crop_rect = intersection.translated(-active_layer->location());
             auto layer_crop_or_error = active_layer->crop(crop_rect);
             if (layer_crop_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop layer: {}", layer_crop_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop layer: {}", layer_crop_or_error.release_error())));
                 return;
             }
             active_layer->set_location(intersection.location());
             editor->image().selection().clear();
             editor->did_complete_action("Crop Layer to Selection"sv);
-        }));
+        });
+    m_layer_menu->add_action(*m_crop_layer_to_selection_action);
     m_layer_menu->add_action(GUI::Action::create(
         "&Crop Layer to Content", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
@@ -1017,14 +1137,14 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 return;
             auto layer_crop_or_error = active_layer->crop(content_bounding_rect.value());
             if (layer_crop_or_error.is_error()) {
-                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop layer: {}", layer_crop_or_error.error().string_literal())));
+                GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to crop layer: {}", layer_crop_or_error.release_error())));
                 return;
             }
             active_layer->set_location(content_bounding_rect->location());
             editor->did_complete_action("Crop Layer to Content"sv);
         }));
 
-    m_filter_menu = window.add_menu("&Filter");
+    m_filter_menu = window.add_menu("&Filter"_string);
 
     m_filter_menu->add_action(GUI::Action::create("Filter &Gallery", g_icon_bag.filter, [&](auto&) {
         auto* editor = current_image_editor();
@@ -1048,9 +1168,12 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         }
     }));
 
-    auto& help_menu = window.add_menu("&Help");
-    help_menu.add_action(GUI::CommonActions::make_command_palette_action(&window));
-    help_menu.add_action(GUI::CommonActions::make_about_action("Pixel Paint", GUI::Icon::default_icon("app-pixel-paint"sv), &window));
+    auto help_menu = window.add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(&window));
+    help_menu->add_action(GUI::CommonActions::make_help_action([](auto&) {
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Applications/PixelPaint.md"), "/bin/Help");
+    }));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Pixel Paint"_string, GUI::Icon::default_icon("app-pixel-paint"sv), &window));
 
     m_levels_dialog_action = GUI::Action::create(
         "Change &Levels...", { Mod_Ctrl, Key_L }, g_icon_bag.levels, [&](auto&) {
@@ -1078,8 +1201,8 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 
     m_zoom_combobox = toolbar.add<GUI::ComboBox>();
     m_zoom_combobox->set_max_width(75);
-    m_zoom_combobox->set_model(*GUI::ItemListModel<DeprecatedString>::create(s_suggested_zoom_levels));
-    m_zoom_combobox->on_change = [this](DeprecatedString const& value, GUI::ModelIndex const& index) {
+    m_zoom_combobox->set_model(*GUI::ItemListModel<ByteString>::create(s_suggested_zoom_levels));
+    m_zoom_combobox->on_change = [this](ByteString const& value, GUI::ModelIndex const& index) {
         auto* editor = current_image_editor();
         VERIFY(editor);
 
@@ -1097,7 +1220,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             }
         }
 
-        auto zoom_level_optional = value.view().trim("%"sv, TrimMode::Right).to_int();
+        auto zoom_level_optional = value.view().trim("%"sv, TrimMode::Right).to_number<int>();
         if (!zoom_level_optional.has_value()) {
             // Indicate that a parse-error occurred by resetting the text to the current state.
             editor->on_scale_change(editor->scale());
@@ -1146,34 +1269,46 @@ void MainWidget::set_mask_actions_for_layer(Layer* layer)
 {
     if (!layer) {
         m_add_mask_action->set_visible(true);
+        m_add_editing_mask_action->set_visible(true);
         m_delete_mask_action->set_visible(false);
         m_apply_mask_action->set_visible(false);
         m_add_mask_action->set_enabled(false);
+        m_add_editing_mask_action->set_enabled(false);
         return;
     }
 
     m_add_mask_action->set_enabled(true);
+    m_add_editing_mask_action->set_enabled(true);
 
     auto masked = layer->is_masked();
     m_add_mask_action->set_visible(!masked);
+    m_add_editing_mask_action->set_visible(!masked);
+    m_invert_mask_action->set_visible(masked);
+    m_clear_mask_action->set_visible(masked);
     m_delete_mask_action->set_visible(masked);
-    m_apply_mask_action->set_visible(masked);
+    m_apply_mask_action->set_visible(layer->mask_type() == Layer::MaskType::BasicMask);
+    m_toggle_mask_visibility_action->set_visible(layer->mask_type() == Layer::MaskType::EditingMask);
+    m_toggle_mask_visibility_action->set_checked(layer->mask_visibility());
+    m_open_luminosity_masking_action->set_visible(layer->mask_type() == Layer::MaskType::EditingMask);
+    m_open_color_masking_action->set_visible(layer->mask_type() == Layer::MaskType::EditingMask);
 }
 
 void MainWidget::open_image(FileSystemAccessClient::File file)
 {
-    auto try_load = m_loader.load_from_file(file.release_stream());
+    auto try_load = m_loader.load_from_file(file.filename(), file.release_stream());
     if (try_load.is_error()) {
-        GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Unable to open file: {}, {}", file.filename(), try_load.error()));
+        GUI::MessageBox::show_error(window(), MUST(String::formatted("Unable to open file: {}, {}", file.filename(), try_load.release_error())));
         return;
     }
 
     auto& image = *m_loader.release_image();
     auto& editor = create_new_editor(image);
     editor.set_loaded_from_image(m_loader.is_raw_image());
-    editor.set_path(file.filename().to_deprecated_string());
+    editor.set_path(file.filename());
     editor.set_unmodified();
     m_layer_list_widget->set_image(&image);
+    m_toolbox->ensure_tool_selection();
+    GUI::Application::the()->set_most_recently_open_file(file.filename());
 }
 
 ErrorOr<void> MainWidget::create_default_image()
@@ -1187,7 +1322,7 @@ ErrorOr<void> MainWidget::create_default_image()
     m_layer_list_widget->set_image(image);
 
     auto& editor = create_new_editor(*image);
-    editor.set_title("Untitled");
+    editor.set_title("Untitled"_string);
     editor.set_active_layer(bg_layer);
     editor.set_unmodified();
 
@@ -1206,12 +1341,19 @@ ErrorOr<void> MainWidget::create_image_from_clipboard()
     image->add_layer(*layer);
 
     auto& editor = create_new_editor(*image);
-    editor.set_title("Untitled");
+    editor.set_title("Untitled"_string);
 
     m_layer_list_widget->set_image(image);
     m_layer_list_widget->set_selected_layer(layer);
     set_mask_actions_for_layer(layer);
     return {};
+}
+
+void MainWidget::refresh_crop_to_selection_menu_actions()
+{
+    auto enabled = current_image_editor() && !current_image_editor()->image().selection().is_empty();
+    m_crop_image_to_selection_action->set_enabled(enabled);
+    m_crop_layer_to_selection_action->set_enabled(enabled);
 }
 
 bool MainWidget::request_close()
@@ -1235,7 +1377,7 @@ ImageEditor* MainWidget::current_image_editor()
 
 ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
 {
-    auto& image_editor = m_tab_widget->add_tab<PixelPaint::ImageEditor>("Untitled", image);
+    auto& image_editor = m_tab_widget->add_tab<PixelPaint::ImageEditor>("Untitled"_string, image);
 
     image_editor.on_active_layer_change = [&](auto* layer) {
         if (current_image_editor() != &image_editor)
@@ -1249,13 +1391,12 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
         m_tab_widget->set_tab_title(image_editor, title);
     };
 
-    image_editor.on_modified_change = Core::debounce([&](auto const modified) {
+    image_editor.on_modified_change = Core::debounce(100, [&](auto const modified) {
         m_tab_widget->set_tab_modified(image_editor, modified);
         update_window_modified();
         m_histogram_widget->image_changed();
         m_vectorscope_widget->image_changed();
-    },
-        100);
+    });
 
     image_editor.on_image_mouse_position_change = [&](auto const& mouse_position) {
         auto const& image_size = current_image_editor()->image().size();
@@ -1290,21 +1431,25 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
         m_show_rulers_action->set_checked(show_rulers);
     };
 
-    image_editor.on_scale_change = Core::debounce([this](float scale) {
-        m_zoom_combobox->set_text(DeprecatedString::formatted("{}%", roundf(scale * 100)));
+    image_editor.on_scale_change = Core::debounce(100, [this](float scale) {
+        m_zoom_combobox->set_text(ByteString::formatted("{}%", roundf(scale * 100)), GUI::AllowCallback::No);
         current_image_editor()->update_tool_cursor();
-    },
-        100);
+    });
 
     image_editor.on_primary_color_change = [&](Color color) {
         m_palette_widget->set_primary_color(color);
         if (image_editor.active_tool())
             image_editor.active_tool()->on_primary_color_change(color);
+        if (image_editor.active_layer()->mask_visibility())
+            image_editor.update();
     };
     image_editor.on_secondary_color_change = [&](Color color) {
         m_palette_widget->set_secondary_color(color);
         if (image_editor.active_tool())
             image_editor.active_tool()->on_secondary_color_change(color);
+    };
+    image_editor.on_file_saved = [](ByteString const& filename) {
+        GUI::Application::the()->set_most_recently_open_file(filename);
     };
 
     if (image->layer_count())
@@ -1315,7 +1460,7 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
             if (!value.is_object())
                 return;
             auto& json_object = value.as_object();
-            auto orientation_value = json_object.get_deprecated_string("orientation"sv);
+            auto orientation_value = json_object.get_byte_string("orientation"sv);
             if (!orientation_value.has_value())
                 return;
 
@@ -1332,7 +1477,7 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
             else
                 return;
 
-            image_editor.add_guide(PixelPaint::Guide::construct(orientation, offset_value->to_number<float>()));
+            image_editor.add_guide(PixelPaint::Guide::construct(orientation, offset_value->get_float_with_precision_loss().value_or(0)));
         });
     }
 
@@ -1347,8 +1492,7 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -1366,7 +1510,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
         if (url.scheme() != "file")
             continue;
 
-        auto response = FileSystemAccessClient::Client::the().request_file(window(), url.path(), Core::File::OpenMode::Read);
+        auto response = FileSystemAccessClient::Client::the().request_file(window(), URL::percent_decode(url.serialize_path()), Core::File::OpenMode::Read);
         if (response.is_error())
             return;
         open_image(response.release_value());
@@ -1375,17 +1519,18 @@ void MainWidget::drop_event(GUI::DropEvent& event)
 
 void MainWidget::update_window_modified()
 {
+    refresh_crop_to_selection_menu_actions();
     window()->set_modified(m_tab_widget->is_any_tab_modified());
 }
-void MainWidget::update_status_bar(DeprecatedString appended_text)
+void MainWidget::update_status_bar(ByteString appended_text)
 {
     StringBuilder builder = StringBuilder();
-    builder.append(m_last_image_editor_mouse_position.to_deprecated_string());
+    builder.append(m_last_image_editor_mouse_position.to_byte_string());
     if (!appended_text.is_empty()) {
         builder.append(" "sv);
         builder.append(appended_text);
     }
-    m_statusbar->set_override_text(builder.to_deprecated_string());
+    m_statusbar->set_override_text(builder.to_string().release_value_but_fixme_should_propagate_errors());
 }
 
 }

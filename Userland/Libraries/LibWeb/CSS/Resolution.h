@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2022-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -21,21 +21,35 @@ public:
 
     static Optional<Type> unit_from_name(StringView);
 
-    Resolution(int value, Type type);
-    Resolution(float value, Type type);
+    Resolution(double value, Type type);
+    static Resolution make_dots_per_pixel(double);
 
-    ErrorOr<String> to_string() const;
-    float to_dots_per_pixel() const;
+    String to_string() const;
+    double to_dots_per_pixel() const;
+
+    Type type() const { return m_type; }
+    double raw_value() const { return m_value; }
+    StringView unit_name() const;
 
     bool operator==(Resolution const& other) const
     {
         return m_type == other.m_type && m_value == other.m_value;
     }
 
-private:
-    StringView unit_name() const;
+    int operator<=>(Resolution const& other) const
+    {
+        auto this_dots_per_pixel = to_dots_per_pixel();
+        auto other_dots_per_pixel = other.to_dots_per_pixel();
 
+        if (this_dots_per_pixel < other_dots_per_pixel)
+            return -1;
+        if (this_dots_per_pixel > other_dots_per_pixel)
+            return 1;
+        return 0;
+    }
+
+private:
     Type m_type;
-    float m_value { 0 };
+    double m_value { 0 };
 };
 }

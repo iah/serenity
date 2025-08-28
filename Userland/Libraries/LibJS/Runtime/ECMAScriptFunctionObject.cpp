@@ -2,6 +2,7 @@
  * Copyright (c) 2020, Stephan Unverwerth <s.unverwerth@serenityos.org>
  * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Shannon Booth <shannon@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,15 +13,16 @@
 #include <LibJS/Bytecode/BasicBlock.h>
 #include <LibJS/Bytecode/Generator.h>
 #include <LibJS/Bytecode/Interpreter.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/AsyncFunctionDriverWrapper.h>
+#include <LibJS/Runtime/AsyncGenerator.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/FunctionEnvironment.h>
 #include <LibJS/Runtime/GeneratorObject.h>
+#include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/PromiseCapability.h>
@@ -29,7 +31,9 @@
 
 namespace JS {
 
-NonnullGCPtr<ECMAScriptFunctionObject> ECMAScriptFunctionObject::create(Realm& realm, DeprecatedFlyString name, DeprecatedString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> parameters, i32 m_function_length, Environment* parent_environment, PrivateEnvironment* private_environment, FunctionKind kind, bool is_strict, bool might_need_arguments_object, bool contains_direct_call_to_eval, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
+JS_DEFINE_ALLOCATOR(ECMAScriptFunctionObject);
+
+NonnullGCPtr<ECMAScriptFunctionObject> ECMAScriptFunctionObject::create(Realm& realm, DeprecatedFlyString name, ByteString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> parameters, i32 m_function_length, Vector<DeprecatedFlyString> local_variables_names, Environment* parent_environment, PrivateEnvironment* private_environment, FunctionKind kind, bool is_strict, FunctionParsingInsights parsing_insights, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
 {
     Object* prototype = nullptr;
     switch (kind) {
@@ -46,18 +50,19 @@ NonnullGCPtr<ECMAScriptFunctionObject> ECMAScriptFunctionObject::create(Realm& r
         prototype = realm.intrinsics().async_generator_function_prototype();
         break;
     }
-    return realm.heap().allocate<ECMAScriptFunctionObject>(realm, move(name), move(source_text), ecmascript_code, move(parameters), m_function_length, parent_environment, private_environment, *prototype, kind, is_strict, might_need_arguments_object, contains_direct_call_to_eval, is_arrow_function, move(class_field_initializer_name)).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<ECMAScriptFunctionObject>(realm, move(name), move(source_text), ecmascript_code, move(parameters), m_function_length, move(local_variables_names), parent_environment, private_environment, *prototype, kind, is_strict, parsing_insights, is_arrow_function, move(class_field_initializer_name));
 }
 
-NonnullGCPtr<ECMAScriptFunctionObject> ECMAScriptFunctionObject::create(Realm& realm, DeprecatedFlyString name, Object& prototype, DeprecatedString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> parameters, i32 m_function_length, Environment* parent_environment, PrivateEnvironment* private_environment, FunctionKind kind, bool is_strict, bool might_need_arguments_object, bool contains_direct_call_to_eval, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
+NonnullGCPtr<ECMAScriptFunctionObject> ECMAScriptFunctionObject::create(Realm& realm, DeprecatedFlyString name, Object& prototype, ByteString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> parameters, i32 m_function_length, Vector<DeprecatedFlyString> local_variables_names, Environment* parent_environment, PrivateEnvironment* private_environment, FunctionKind kind, bool is_strict, FunctionParsingInsights parsing_insights, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
 {
-    return realm.heap().allocate<ECMAScriptFunctionObject>(realm, move(name), move(source_text), ecmascript_code, move(parameters), m_function_length, parent_environment, private_environment, prototype, kind, is_strict, might_need_arguments_object, contains_direct_call_to_eval, is_arrow_function, move(class_field_initializer_name)).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<ECMAScriptFunctionObject>(realm, move(name), move(source_text), ecmascript_code, move(parameters), m_function_length, move(local_variables_names), parent_environment, private_environment, prototype, kind, is_strict, parsing_insights, is_arrow_function, move(class_field_initializer_name));
 }
 
-ECMAScriptFunctionObject::ECMAScriptFunctionObject(DeprecatedFlyString name, DeprecatedString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> formal_parameters, i32 function_length, Environment* parent_environment, PrivateEnvironment* private_environment, Object& prototype, FunctionKind kind, bool strict, bool might_need_arguments_object, bool contains_direct_call_to_eval, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
+ECMAScriptFunctionObject::ECMAScriptFunctionObject(DeprecatedFlyString name, ByteString source_text, Statement const& ecmascript_code, Vector<FunctionParameter> formal_parameters, i32 function_length, Vector<DeprecatedFlyString> local_variables_names, Environment* parent_environment, PrivateEnvironment* private_environment, Object& prototype, FunctionKind kind, bool strict, FunctionParsingInsights parsing_insights, bool is_arrow_function, Variant<PropertyKey, PrivateName, Empty> class_field_initializer_name)
     : FunctionObject(prototype)
     , m_name(move(name))
     , m_function_length(function_length)
+    , m_local_variables_names(move(local_variables_names))
     , m_environment(parent_environment)
     , m_private_environment(private_environment)
     , m_formal_parameters(move(formal_parameters))
@@ -66,8 +71,8 @@ ECMAScriptFunctionObject::ECMAScriptFunctionObject(DeprecatedFlyString name, Dep
     , m_source_text(move(source_text))
     , m_class_field_initializer_name(move(class_field_initializer_name))
     , m_strict(strict)
-    , m_might_need_arguments_object(might_need_arguments_object)
-    , m_contains_direct_call_to_eval(contains_direct_call_to_eval)
+    , m_might_need_arguments_object(parsing_insights.might_need_arguments_object)
+    , m_contains_direct_call_to_eval(parsing_insights.contains_direct_call_to_eval)
     , m_is_arrow_function(is_arrow_function)
     , m_kind(kind)
 {
@@ -92,40 +97,274 @@ ECMAScriptFunctionObject::ECMAScriptFunctionObject(DeprecatedFlyString name, Dep
             return false;
         if (parameter.default_value)
             return false;
-        if (!parameter.binding.template has<DeprecatedFlyString>())
+        if (!parameter.binding.template has<NonnullRefPtr<Identifier const>>())
             return false;
         return true;
     });
+
+    // NOTE: The following steps are from FunctionDeclarationInstantiation that could be executed once
+    //       and then reused in all subsequent function instantiations.
+
+    // 2. Let code be func.[[ECMAScriptCode]].
+    ScopeNode const* scope_body = nullptr;
+    if (is<ScopeNode>(*m_ecmascript_code))
+        scope_body = static_cast<ScopeNode const*>(m_ecmascript_code.ptr());
+
+    // 3. Let strict be func.[[Strict]].
+
+    // 4. Let formals be func.[[FormalParameters]].
+    auto const& formals = m_formal_parameters;
+
+    // 5. Let parameterNames be the BoundNames of formals.
+    // 6. If parameterNames has any duplicate entries, let hasDuplicates be true. Otherwise, let hasDuplicates be false.
+
+    size_t parameters_in_environment = 0;
+
+    // NOTE: This loop performs step 5, 6, and 8.
+    for (auto const& parameter : formals) {
+        if (parameter.default_value)
+            m_has_parameter_expressions = true;
+
+        parameter.binding.visit(
+            [&](Identifier const& identifier) {
+                if (m_parameter_names.set(identifier.string(), identifier.is_local() ? ParameterIsLocal::Yes : ParameterIsLocal::No) != AK::HashSetResult::InsertedNewEntry)
+                    m_has_duplicates = true;
+                else if (!identifier.is_local())
+                    ++parameters_in_environment;
+            },
+            [&](NonnullRefPtr<BindingPattern const> const& pattern) {
+                if (pattern->contains_expression())
+                    m_has_parameter_expressions = true;
+
+                // NOTE: Nothing in the callback throws an exception.
+                MUST(pattern->for_each_bound_identifier([&](auto& identifier) {
+                    if (m_parameter_names.set(identifier.string(), identifier.is_local() ? ParameterIsLocal::Yes : ParameterIsLocal::No) != AK::HashSetResult::InsertedNewEntry)
+                        m_has_duplicates = true;
+                    else if (!identifier.is_local())
+                        ++parameters_in_environment;
+                }));
+            });
+    }
+
+    // 15. Let argumentsObjectNeeded be true.
+    m_arguments_object_needed = m_might_need_arguments_object;
+
+    // 16. If func.[[ThisMode]] is lexical, then
+    if (this_mode() == ThisMode::Lexical) {
+        // a. NOTE: Arrow functions never have an arguments object.
+        // b. Set argumentsObjectNeeded to false.
+        m_arguments_object_needed = false;
+    }
+    // 17. Else if parameterNames contains "arguments", then
+    else if (m_parameter_names.contains(vm().names.arguments.as_string())) {
+        // a. Set argumentsObjectNeeded to false.
+        m_arguments_object_needed = false;
+    }
+
+    HashTable<DeprecatedFlyString> function_names;
+
+    // 18. Else if hasParameterExpressions is false, then
+    //     a. If functionNames contains "arguments" or lexicalNames contains "arguments", then
+    //         i. Set argumentsObjectNeeded to false.
+    // NOTE: The block below is a combination of step 14 and step 18.
+    if (scope_body) {
+        // NOTE: Nothing in the callback throws an exception.
+        MUST(scope_body->for_each_var_function_declaration_in_reverse_order([&](FunctionDeclaration const& function) {
+            if (function_names.set(function.name()) == AK::HashSetResult::InsertedNewEntry)
+                m_functions_to_initialize.append(function);
+        }));
+
+        auto const& arguments_name = vm().names.arguments.as_string();
+
+        if (!m_has_parameter_expressions && function_names.contains(arguments_name))
+            m_arguments_object_needed = false;
+
+        if (!m_has_parameter_expressions && m_arguments_object_needed) {
+            // NOTE: Nothing in the callback throws an exception.
+            MUST(scope_body->for_each_lexically_declared_identifier([&](auto const& identifier) {
+                if (identifier.string() == arguments_name)
+                    m_arguments_object_needed = false;
+            }));
+        }
+    } else {
+        m_arguments_object_needed = false;
+    }
+
+    size_t* environment_size = nullptr;
+
+    size_t parameter_environment_bindings_count = 0;
+    // 19. If strict is true or hasParameterExpressions is false, then
+    if (m_strict || !m_has_parameter_expressions) {
+        // a. NOTE: Only a single Environment Record is needed for the parameters, since calls to eval in strict mode code cannot create new bindings which are visible outside of the eval.
+        // b. Let env be the LexicalEnvironment of calleeContext
+        // NOTE: Here we are only interested in the size of the environment.
+        environment_size = &m_function_environment_bindings_count;
+    }
+    // 20. Else,
+    else {
+        // a. NOTE: A separate Environment Record is needed to ensure that bindings created by direct eval calls in the formal parameter list are outside the environment where parameters are declared.
+        // b. Let calleeEnv be the LexicalEnvironment of calleeContext.
+        // c. Let env be NewDeclarativeEnvironment(calleeEnv).
+        environment_size = &parameter_environment_bindings_count;
+    }
+
+    *environment_size += parameters_in_environment;
+
+    HashMap<DeprecatedFlyString, ParameterIsLocal> parameter_bindings;
+
+    auto arguments_object_needs_binding = m_arguments_object_needed && !m_local_variables_names.contains_slow(vm().names.arguments.as_string());
+
+    // 22. If argumentsObjectNeeded is true, then
+    if (m_arguments_object_needed) {
+        // f. Let parameterBindings be the list-concatenation of parameterNames and « "arguments" ».
+        parameter_bindings = m_parameter_names;
+        parameter_bindings.set(vm().names.arguments.as_string(), ParameterIsLocal::No);
+
+        if (arguments_object_needs_binding)
+            (*environment_size)++;
+    } else {
+        parameter_bindings = m_parameter_names;
+        // a. Let parameterBindings be parameterNames.
+    }
+
+    HashMap<DeprecatedFlyString, ParameterIsLocal> instantiated_var_names;
+
+    size_t* var_environment_size = nullptr;
+
+    // 27. If hasParameterExpressions is false, then
+    if (!m_has_parameter_expressions) {
+        // b. Let instantiatedVarNames be a copy of the List parameterBindings.
+        instantiated_var_names = parameter_bindings;
+
+        if (scope_body) {
+            // c. For each element n of varNames, do
+            MUST(scope_body->for_each_var_declared_identifier([&](auto const& id) {
+                // i. If instantiatedVarNames does not contain n, then
+                if (instantiated_var_names.set(id.string(), id.is_local() ? ParameterIsLocal::Yes : ParameterIsLocal::No) == AK::HashSetResult::InsertedNewEntry) {
+                    // 1. Append n to instantiatedVarNames.
+                    // Following steps will be executed in function_declaration_instantiation:
+                    // 2. Perform ! env.CreateMutableBinding(n, false).
+                    // 3. Perform ! env.InitializeBinding(n, undefined).
+                    m_var_names_to_initialize_binding.append({
+                        .identifier = id,
+                        .parameter_binding = parameter_bindings.contains(id.string()),
+                        .function_name = function_names.contains(id.string()),
+                    });
+
+                    if (!id.is_local())
+                        (*environment_size)++;
+                }
+            }));
+        }
+
+        // d. Let varEnv be env
+        var_environment_size = environment_size;
+    } else {
+        // a. NOTE: A separate Environment Record is needed to ensure that closures created by expressions in the formal parameter list do not have visibility of declarations in the function body.
+
+        // b. Let varEnv be NewDeclarativeEnvironment(env).
+        // NOTE: Here we are only interested in the size of the environment.
+        var_environment_size = &m_var_environment_bindings_count;
+
+        // 28. Else,
+        // NOTE: Steps a, b, c and d are executed in function_declaration_instantiation.
+        // e. For each element n of varNames, do
+        if (scope_body) {
+            MUST(scope_body->for_each_var_declared_identifier([&](auto const& id) {
+                // 1. Append n to instantiatedVarNames.
+                // Following steps will be executed in function_declaration_instantiation:
+                // 2. Perform ! env.CreateMutableBinding(n, false).
+                // 3. Perform ! env.InitializeBinding(n, undefined).
+                if (instantiated_var_names.set(id.string(), id.is_local() ? ParameterIsLocal::Yes : ParameterIsLocal::No) == AK::HashSetResult::InsertedNewEntry) {
+                    m_var_names_to_initialize_binding.append({
+                        .identifier = id,
+                        .parameter_binding = parameter_bindings.contains(id.string()),
+                        .function_name = function_names.contains(id.string()),
+                    });
+
+                    if (!id.is_local())
+                        (*var_environment_size)++;
+                }
+            }));
+        }
+    }
+
+    // 29. NOTE: Annex B.3.2.1 adds additional steps at this point.
+    // B.3.2.1 Changes to FunctionDeclarationInstantiation, https://tc39.es/ecma262/#sec-web-compat-functiondeclarationinstantiation
+    if (!m_strict && scope_body) {
+        MUST(scope_body->for_each_function_hoistable_with_annexB_extension([&](FunctionDeclaration& function_declaration) {
+            auto function_name = function_declaration.name();
+            if (parameter_bindings.contains(function_name))
+                return;
+
+            if (!instantiated_var_names.contains(function_name) && function_name != vm().names.arguments.as_string()) {
+                m_function_names_to_initialize_binding.append(function_name);
+                instantiated_var_names.set(function_name, ParameterIsLocal::No);
+                (*var_environment_size)++;
+            }
+
+            function_declaration.set_should_do_additional_annexB_steps();
+        }));
+    }
+
+    size_t* lex_environment_size = nullptr;
+
+    // 30. If strict is false, then
+    if (!m_strict) {
+        bool can_elide_declarative_environment = !m_contains_direct_call_to_eval && (!scope_body || !scope_body->has_non_local_lexical_declarations());
+        if (can_elide_declarative_environment) {
+            lex_environment_size = var_environment_size;
+        } else {
+            // a. Let lexEnv be NewDeclarativeEnvironment(varEnv).
+            lex_environment_size = &m_lex_environment_bindings_count;
+        }
+    } else {
+        // a. let lexEnv be varEnv.
+        // NOTE: Here we are only interested in the size of the environment.
+        lex_environment_size = var_environment_size;
+    }
+
+    if (scope_body) {
+        MUST(scope_body->for_each_lexically_declared_identifier([&](auto const& id) {
+            if (!id.is_local())
+                (*lex_environment_size)++;
+        }));
+    }
+
+    m_function_environment_needed = arguments_object_needs_binding || m_function_environment_bindings_count > 0 || m_var_environment_bindings_count > 0 || m_lex_environment_bindings_count > 0 || parsing_insights.uses_this_from_environment || m_contains_direct_call_to_eval;
+    m_uses_this = parsing_insights.uses_this;
 }
 
-ThrowCompletionOr<void> ECMAScriptFunctionObject::initialize(Realm& realm)
+void ECMAScriptFunctionObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     // Note: The ordering of these properties must be: length, name, prototype which is the order
     //       they are defined in the spec: https://tc39.es/ecma262/#sec-function-instances .
     //       This is observable through something like: https://tc39.es/ecma262/#sec-ordinaryownpropertykeys
     //       which must give the properties in chronological order which in this case is the order they
     //       are defined in the spec.
 
+    m_name_string = PrimitiveString::create(vm, m_name);
+
     MUST(define_property_or_throw(vm.names.length, { .value = Value(m_function_length), .writable = false, .enumerable = false, .configurable = true }));
-    MUST(define_property_or_throw(vm.names.name, { .value = PrimitiveString::create(vm, m_name.is_null() ? "" : m_name), .writable = false, .enumerable = false, .configurable = true }));
+    MUST(define_property_or_throw(vm.names.name, { .value = m_name_string, .writable = false, .enumerable = false, .configurable = true }));
 
     if (!m_is_arrow_function) {
         Object* prototype = nullptr;
         switch (m_kind) {
         case FunctionKind::Normal:
-            prototype = MUST_OR_THROW_OOM(vm.heap().allocate<Object>(realm, *realm.intrinsics().new_ordinary_function_prototype_object_shape()));
+            prototype = Object::create_prototype(realm, realm.intrinsics().object_prototype());
             MUST(prototype->define_property_or_throw(vm.names.constructor, { .value = this, .writable = true, .enumerable = false, .configurable = true }));
             break;
         case FunctionKind::Generator:
             // prototype is "g1.prototype" in figure-2 (https://tc39.es/ecma262/img/figure-2.png)
-            prototype = Object::create(realm, realm.intrinsics().generator_function_prototype_prototype());
+            prototype = Object::create_prototype(realm, realm.intrinsics().generator_function_prototype_prototype());
             break;
         case FunctionKind::Async:
             break;
         case FunctionKind::AsyncGenerator:
-            prototype = Object::create(realm, realm.intrinsics().async_generator_function_prototype_prototype());
+            prototype = Object::create_prototype(realm, realm.intrinsics().async_generator_function_prototype_prototype());
             break;
         }
         // 27.7.4 AsyncFunction Instances, https://tc39.es/ecma262/#sec-async-function-instances
@@ -133,31 +372,33 @@ ThrowCompletionOr<void> ECMAScriptFunctionObject::initialize(Realm& realm)
         if (m_kind != FunctionKind::Async)
             define_direct_property(vm.names.prototype, prototype, Attribute::Writable);
     }
-
-    return {};
 }
 
 // 10.2.1 [[Call]] ( thisArgument, argumentsList ), https://tc39.es/ecma262/#sec-ecmascript-function-objects-call-thisargument-argumentslist
-ThrowCompletionOr<Value> ECMAScriptFunctionObject::internal_call(Value this_argument, MarkedVector<Value> arguments_list)
+ThrowCompletionOr<Value> ECMAScriptFunctionObject::internal_call(Value this_argument, ReadonlySpan<Value> arguments_list)
 {
     auto& vm = this->vm();
 
     // 1. Let callerContext be the running execution context.
     // NOTE: No-op, kept by the VM in its execution context stack.
 
-    ExecutionContext callee_context(heap());
+    auto callee_context = ExecutionContext::create();
 
     // Non-standard
-    callee_context.arguments.extend(move(arguments_list));
-    if (auto* interpreter = vm.interpreter_if_exists())
-        callee_context.current_node = interpreter->current_node();
+    callee_context->arguments.ensure_capacity(max(arguments_list.size(), m_formal_parameters.size()));
+    callee_context->arguments.append(arguments_list.data(), arguments_list.size());
+    callee_context->passed_argument_count = arguments_list.size();
+    if (arguments_list.size() < m_formal_parameters.size()) {
+        for (size_t i = arguments_list.size(); i < m_formal_parameters.size(); ++i)
+            callee_context->arguments.append(js_undefined());
+    }
 
     // 2. Let calleeContext be PrepareForOrdinaryCall(F, undefined).
     // NOTE: We throw if the end of the native stack is reached, so unlike in the spec this _does_ need an exception check.
-    TRY(prepare_for_ordinary_call(callee_context, nullptr));
+    TRY(prepare_for_ordinary_call(*callee_context, nullptr));
 
     // 3. Assert: calleeContext is now the running execution context.
-    VERIFY(&vm.running_execution_context() == &callee_context);
+    VERIFY(&vm.running_execution_context() == callee_context);
 
     // 4. If F.[[IsClassConstructor]] is true, then
     if (m_is_class_constructor) {
@@ -173,7 +414,8 @@ ThrowCompletionOr<Value> ECMAScriptFunctionObject::internal_call(Value this_argu
     }
 
     // 5. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument).
-    ordinary_call_bind_this(callee_context, this_argument);
+    if (m_uses_this)
+        ordinary_call_bind_this(*callee_context, this_argument);
 
     // 6. Let result be Completion(OrdinaryCallEvaluateBody(F, argumentsList)).
     auto result = ordinary_call_evaluate_body();
@@ -196,7 +438,7 @@ ThrowCompletionOr<Value> ECMAScriptFunctionObject::internal_call(Value this_argu
 }
 
 // 10.2.2 [[Construct]] ( argumentsList, newTarget ), https://tc39.es/ecma262/#sec-ecmascript-function-objects-construct-argumentslist-newtarget
-ThrowCompletionOr<NonnullGCPtr<Object>> ECMAScriptFunctionObject::internal_construct(MarkedVector<Value> arguments_list, FunctionObject& new_target)
+ThrowCompletionOr<NonnullGCPtr<Object>> ECMAScriptFunctionObject::internal_construct(ReadonlySpan<Value> arguments_list, FunctionObject& new_target)
 {
     auto& vm = this->vm();
 
@@ -214,24 +456,29 @@ ThrowCompletionOr<NonnullGCPtr<Object>> ECMAScriptFunctionObject::internal_const
         this_argument = TRY(ordinary_create_from_constructor<Object>(vm, new_target, &Intrinsics::object_prototype, ConstructWithPrototypeTag::Tag));
     }
 
-    ExecutionContext callee_context(heap());
+    auto callee_context = ExecutionContext::create();
 
     // Non-standard
-    callee_context.arguments.extend(move(arguments_list));
-    if (auto* interpreter = vm.interpreter_if_exists())
-        callee_context.current_node = interpreter->current_node();
+    callee_context->arguments.ensure_capacity(max(arguments_list.size(), m_formal_parameters.size()));
+    callee_context->arguments.append(arguments_list.data(), arguments_list.size());
+    callee_context->passed_argument_count = arguments_list.size();
+    if (arguments_list.size() < m_formal_parameters.size()) {
+        for (size_t i = arguments_list.size(); i < m_formal_parameters.size(); ++i)
+            callee_context->arguments.append(js_undefined());
+    }
 
     // 4. Let calleeContext be PrepareForOrdinaryCall(F, newTarget).
     // NOTE: We throw if the end of the native stack is reached, so unlike in the spec this _does_ need an exception check.
-    TRY(prepare_for_ordinary_call(callee_context, &new_target));
+    TRY(prepare_for_ordinary_call(*callee_context, &new_target));
 
     // 5. Assert: calleeContext is now the running execution context.
-    VERIFY(&vm.running_execution_context() == &callee_context);
+    VERIFY(&vm.running_execution_context() == callee_context);
 
     // 6. If kind is base, then
     if (kind == ConstructorKind::Base) {
         // a. Perform OrdinaryCallBindThis(F, calleeContext, thisArgument).
-        ordinary_call_bind_this(callee_context, this_argument);
+        if (m_uses_this)
+            ordinary_call_bind_this(*callee_context, this_argument);
 
         // b. Let initializeResult be Completion(InitializeInstanceElements(thisArgument, F)).
         auto initialize_result = this_argument->initialize_instance_elements(*this);
@@ -247,7 +494,7 @@ ThrowCompletionOr<NonnullGCPtr<Object>> ECMAScriptFunctionObject::internal_const
     }
 
     // 7. Let constructorEnv be the LexicalEnvironment of calleeContext.
-    auto* constructor_env = callee_context.lexical_environment;
+    auto constructor_env = callee_context->lexical_environment;
 
     // 8. Let result be Completion(OrdinaryCallEvaluateBody(F, argumentsList)).
     auto result = ordinary_call_evaluate_body();
@@ -257,15 +504,6 @@ ThrowCompletionOr<NonnullGCPtr<Object>> ECMAScriptFunctionObject::internal_const
 
     // 10. If result.[[Type]] is return, then
     if (result.type() == Completion::Type::Return) {
-        // FIXME: This is leftover from untangling the call/construct mess - doesn't belong here in any way, but removing it breaks derived classes.
-        // Likely fixed by making ClassDefinitionEvaluation fully spec compliant.
-        if (kind == ConstructorKind::Derived && result.value()->is_object()) {
-            auto prototype = TRY(new_target.get(vm.names.prototype));
-            if (prototype.is_object())
-                TRY(result.value()->as_object().internal_set_prototype_of(&prototype.as_object()));
-        }
-        // EOF (End of FIXME)
-
         // a. If Type(result.[[Value]]) is Object, return result.[[Value]].
         if (result.value()->is_object())
             return result.value()->as_object();
@@ -301,16 +539,23 @@ void ECMAScriptFunctionObject::visit_edges(Visitor& visitor)
     visitor.visit(m_private_environment);
     visitor.visit(m_realm);
     visitor.visit(m_home_object);
+    visitor.visit(m_name_string);
+
+    visitor.visit(m_bytecode_executable);
 
     for (auto& field : m_fields) {
+        visitor.visit(field.initializer);
         if (auto* property_key_ptr = field.name.get_pointer<PropertyKey>(); property_key_ptr && property_key_ptr->is_symbol())
             visitor.visit(property_key_ptr->as_symbol());
     }
 
+    for (auto& private_element : m_private_methods)
+        visitor.visit(private_element.value);
+
     m_script_or_module.visit(
         [](Empty) {},
         [&](auto& script_or_module) {
-            visitor.visit(script_or_module.ptr());
+            visitor.visit(script_or_module);
         });
 }
 
@@ -321,284 +566,6 @@ void ECMAScriptFunctionObject::make_method(Object& home_object)
     m_home_object = &home_object;
 
     // 2. Return unused.
-}
-
-// 10.2.11 FunctionDeclarationInstantiation ( func, argumentsList ), https://tc39.es/ecma262/#sec-functiondeclarationinstantiation
-ThrowCompletionOr<void> ECMAScriptFunctionObject::function_declaration_instantiation(Interpreter* interpreter)
-{
-    auto& vm = this->vm();
-    auto& realm = *vm.current_realm();
-
-    auto& callee_context = vm.running_execution_context();
-
-    // Needed to extract declarations and functions
-    ScopeNode const* scope_body = nullptr;
-    if (is<ScopeNode>(*m_ecmascript_code))
-        scope_body = static_cast<ScopeNode const*>(m_ecmascript_code.ptr());
-
-    bool has_parameter_expressions = false;
-
-    // FIXME: Maybe compute has duplicates at parse time? (We need to anyway since it's an error in some cases)
-
-    bool has_duplicates = false;
-    HashTable<DeprecatedFlyString> parameter_names;
-    for (auto& parameter : m_formal_parameters) {
-        if (parameter.default_value)
-            has_parameter_expressions = true;
-
-        parameter.binding.visit(
-            [&](DeprecatedFlyString const& name) {
-                if (parameter_names.set(name) != AK::HashSetResult::InsertedNewEntry)
-                    has_duplicates = true;
-            },
-            [&](NonnullRefPtr<BindingPattern const> const& pattern) {
-                if (pattern->contains_expression())
-                    has_parameter_expressions = true;
-
-                // NOTE: Nothing in the callback throws an exception.
-                MUST(pattern->for_each_bound_name([&](auto& name) {
-                    if (parameter_names.set(name) != AK::HashSetResult::InsertedNewEntry)
-                        has_duplicates = true;
-                }));
-            });
-    }
-
-    auto arguments_object_needed = m_might_need_arguments_object;
-
-    if (this_mode() == ThisMode::Lexical)
-        arguments_object_needed = false;
-
-    if (parameter_names.contains(vm.names.arguments.as_string()))
-        arguments_object_needed = false;
-
-    HashTable<DeprecatedFlyString> function_names;
-    Vector<FunctionDeclaration const&> functions_to_initialize;
-
-    if (scope_body) {
-        // NOTE: Nothing in the callback throws an exception.
-        MUST(scope_body->for_each_var_function_declaration_in_reverse_order([&](FunctionDeclaration const& function) {
-            if (function_names.set(function.name()) == AK::HashSetResult::InsertedNewEntry)
-                functions_to_initialize.append(function);
-        }));
-
-        auto const& arguments_name = vm.names.arguments.as_string();
-
-        if (!has_parameter_expressions && function_names.contains(arguments_name))
-            arguments_object_needed = false;
-
-        if (!has_parameter_expressions && arguments_object_needed) {
-            // NOTE: Nothing in the callback throws an exception.
-            MUST(scope_body->for_each_lexically_declared_name([&](auto const& name) {
-                if (name == arguments_name)
-                    arguments_object_needed = false;
-            }));
-        }
-    } else {
-        arguments_object_needed = false;
-    }
-
-    GCPtr<Environment> environment;
-
-    if (is_strict_mode() || !has_parameter_expressions) {
-        environment = callee_context.lexical_environment;
-    } else {
-        environment = new_declarative_environment(*callee_context.lexical_environment);
-        VERIFY(callee_context.variable_environment == callee_context.lexical_environment);
-        callee_context.lexical_environment = environment;
-    }
-
-    for (auto const& parameter_name : parameter_names) {
-        if (MUST(environment->has_binding(parameter_name)))
-            continue;
-
-        MUST(environment->create_mutable_binding(vm, parameter_name, false));
-        if (has_duplicates)
-            MUST(environment->initialize_binding(vm, parameter_name, js_undefined(), Environment::InitializeBindingHint::Normal));
-    }
-
-    if (arguments_object_needed) {
-        Object* arguments_object;
-        if (is_strict_mode() || !has_simple_parameter_list())
-            arguments_object = create_unmapped_arguments_object(vm, vm.running_execution_context().arguments);
-        else
-            arguments_object = create_mapped_arguments_object(vm, *this, formal_parameters(), vm.running_execution_context().arguments, *environment);
-
-        if (is_strict_mode())
-            MUST(environment->create_immutable_binding(vm, vm.names.arguments.as_string(), false));
-        else
-            MUST(environment->create_mutable_binding(vm, vm.names.arguments.as_string(), false));
-
-        MUST(environment->initialize_binding(vm, vm.names.arguments.as_string(), arguments_object, Environment::InitializeBindingHint::Normal));
-        parameter_names.set(vm.names.arguments.as_string());
-    }
-
-    // We now treat parameterBindings as parameterNames.
-
-    // The spec makes an iterator here to do IteratorBindingInitialization but we just do it manually
-    auto& execution_context_arguments = vm.running_execution_context().arguments;
-
-    size_t default_parameter_index = 0;
-    for (size_t i = 0; i < m_formal_parameters.size(); ++i) {
-        auto& parameter = m_formal_parameters[i];
-        if (parameter.default_value)
-            ++default_parameter_index;
-
-        TRY(parameter.binding.visit(
-            [&](auto const& param) -> ThrowCompletionOr<void> {
-                Value argument_value;
-                if (parameter.is_rest) {
-                    auto array = MUST(Array::create(realm, 0));
-                    for (size_t rest_index = i; rest_index < execution_context_arguments.size(); ++rest_index)
-                        array->indexed_properties().append(execution_context_arguments[rest_index]);
-                    argument_value = array;
-                } else if (i < execution_context_arguments.size() && !execution_context_arguments[i].is_undefined()) {
-                    argument_value = execution_context_arguments[i];
-                } else if (parameter.default_value) {
-                    if (auto* bytecode_interpreter = Bytecode::Interpreter::current()) {
-                        auto value_and_frame = bytecode_interpreter->run_and_return_frame(*m_default_parameter_bytecode_executables[default_parameter_index - 1], nullptr);
-                        if (value_and_frame.value.is_error())
-                            return value_and_frame.value.release_error();
-                        // Resulting value is in the accumulator.
-                        argument_value = value_and_frame.frame->registers.at(0);
-                    } else if (interpreter) {
-                        argument_value = TRY(parameter.default_value->execute(*interpreter)).release_value();
-                    }
-                } else {
-                    argument_value = js_undefined();
-                }
-
-                Environment* used_environment = has_duplicates ? nullptr : environment;
-
-                if constexpr (IsSame<DeprecatedFlyString const&, decltype(param)>) {
-                    Reference reference = TRY(vm.resolve_binding(param, used_environment));
-                    // Here the difference from hasDuplicates is important
-                    if (has_duplicates)
-                        return reference.put_value(vm, argument_value);
-                    else
-                        return reference.initialize_referenced_binding(vm, argument_value);
-                }
-                if constexpr (IsSame<NonnullRefPtr<BindingPattern const> const&, decltype(param)>) {
-                    // Here the difference from hasDuplicates is important
-                    return vm.binding_initialization(param, argument_value, used_environment);
-                }
-            }));
-    }
-
-    GCPtr<Environment> var_environment;
-
-    HashTable<DeprecatedFlyString> instantiated_var_names;
-    if (scope_body)
-        instantiated_var_names.ensure_capacity(scope_body->var_declaration_count());
-
-    if (!has_parameter_expressions) {
-        if (scope_body) {
-            // NOTE: Due to the use of MUST with `create_mutable_binding` and `initialize_binding` below,
-            //       an exception should not result from `for_each_var_declared_name`.
-            MUST(scope_body->for_each_var_declared_name([&](auto const& name) {
-                if (!parameter_names.contains(name) && instantiated_var_names.set(name) == AK::HashSetResult::InsertedNewEntry) {
-                    MUST(environment->create_mutable_binding(vm, name, false));
-                    MUST(environment->initialize_binding(vm, name, js_undefined(), Environment::InitializeBindingHint::Normal));
-                }
-            }));
-        }
-        var_environment = environment;
-    } else {
-        var_environment = new_declarative_environment(*environment);
-        callee_context.variable_environment = var_environment;
-
-        if (scope_body) {
-            // NOTE: Due to the use of MUST with `create_mutable_binding`, `get_binding_value` and `initialize_binding` below,
-            //       an exception should not result from `for_each_var_declared_name`.
-            MUST(scope_body->for_each_var_declared_name([&](auto const& name) {
-                if (instantiated_var_names.set(name) != AK::HashSetResult::InsertedNewEntry)
-                    return;
-                MUST(var_environment->create_mutable_binding(vm, name, false));
-
-                Value initial_value;
-                if (!parameter_names.contains(name) || function_names.contains(name))
-                    initial_value = js_undefined();
-                else
-                    initial_value = MUST(environment->get_binding_value(vm, name, false));
-
-                MUST(var_environment->initialize_binding(vm, name, initial_value, Environment::InitializeBindingHint::Normal));
-            }));
-        }
-    }
-
-    // B.3.2.1 Changes to FunctionDeclarationInstantiation, https://tc39.es/ecma262/#sec-web-compat-functiondeclarationinstantiation
-    if (!m_strict && scope_body) {
-        // NOTE: Due to the use of MUST with `create_mutable_binding` and `initialize_binding` below,
-        //       an exception should not result from `for_each_function_hoistable_with_annexB_extension`.
-        MUST(scope_body->for_each_function_hoistable_with_annexB_extension([&](FunctionDeclaration& function_declaration) {
-            auto& function_name = function_declaration.name();
-            if (parameter_names.contains(function_name))
-                return;
-            // The spec says 'initializedBindings' here but that does not exist and it then adds it to 'instantiatedVarNames' so it probably means 'instantiatedVarNames'.
-            if (!instantiated_var_names.contains(function_name) && function_name != vm.names.arguments.as_string()) {
-                MUST(var_environment->create_mutable_binding(vm, function_name, false));
-                MUST(var_environment->initialize_binding(vm, function_name, js_undefined(), Environment::InitializeBindingHint::Normal));
-                instantiated_var_names.set(function_name);
-            }
-
-            function_declaration.set_should_do_additional_annexB_steps();
-        }));
-    }
-
-    GCPtr<Environment> lex_environment;
-
-    // 30. If strict is false, then
-    if (!is_strict_mode()) {
-        // Optimization: We avoid creating empty top-level declarative environments in non-strict mode, if both of these conditions are true:
-        //               1. there is no direct call to eval() within this function
-        //               2. there are no lexical declarations that would go into the environment
-        bool can_elide_declarative_environment = !m_contains_direct_call_to_eval && (!scope_body || !scope_body->has_lexical_declarations());
-        if (can_elide_declarative_environment) {
-            lex_environment = var_environment;
-        } else {
-            // a. Let lexEnv be NewDeclarativeEnvironment(varEnv).
-            // b. NOTE: Non-strict functions use a separate Environment Record for top-level lexical declarations so that a direct eval
-            //          can determine whether any var scoped declarations introduced by the eval code conflict with pre-existing top-level
-            //          lexically scoped declarations. This is not needed for strict functions because a strict direct eval always places
-            //          all declarations into a new Environment Record.
-            lex_environment = new_declarative_environment(*var_environment);
-        }
-    } else {
-        // 31. Else, let lexEnv be varEnv.
-        lex_environment = var_environment;
-    }
-
-    // 32. Set the LexicalEnvironment of calleeContext to lexEnv.
-    callee_context.lexical_environment = lex_environment;
-
-    if (!scope_body)
-        return {};
-
-    if (!Bytecode::Interpreter::current()) {
-        // NOTE: Due to the use of MUST in the callback, an exception should not result from `for_each_lexically_scoped_declaration`.
-        MUST(scope_body->for_each_lexically_scoped_declaration([&](Declaration const& declaration) {
-            // NOTE: Due to the use of MUST with `create_immutable_binding` and `create_mutable_binding` below,
-            //       an exception should not result from `for_each_bound_name`.
-            MUST(declaration.for_each_bound_name([&](auto const& name) {
-                if (declaration.is_constant_declaration())
-                    MUST(lex_environment->create_immutable_binding(vm, name, true));
-                else
-                    MUST(lex_environment->create_mutable_binding(vm, name, false));
-            }));
-        }));
-    }
-
-    auto* private_environment = callee_context.private_environment;
-    for (auto& declaration : functions_to_initialize) {
-        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), lex_environment, private_environment, declaration.kind(), declaration.is_strict_mode(), declaration.might_need_arguments_object(), declaration.contains_direct_call_to_eval());
-        MUST(var_environment->set_mutable_binding(vm, declaration.name(), function, false));
-    }
-
-    if (is<DeclarativeEnvironment>(*lex_environment))
-        static_cast<DeclarativeEnvironment*>(lex_environment.ptr())->shrink_to_fit();
-    if (is<DeclarativeEnvironment>(*var_environment))
-        static_cast<DeclarativeEnvironment*>(var_environment.ptr())->shrink_to_fit();
-
-    return {};
 }
 
 // 10.2.1.1 PrepareForOrdinaryCall ( F, newTarget ), https://tc39.es/ecma262/#sec-prepareforordinarycall
@@ -618,10 +585,10 @@ ThrowCompletionOr<void> ECMAScriptFunctionObject::prepare_for_ordinary_call(Exec
 
     // 3. Set the Function of calleeContext to F.
     callee_context.function = this;
-    callee_context.function_name = m_name;
+    callee_context.function_name = m_name_string;
 
     // 4. Let calleeRealm be F.[[Realm]].
-    auto* callee_realm = m_realm;
+    auto callee_realm = m_realm;
     // NOTE: This non-standard fallback is needed until we can guarantee that literally
     // every function has a realm - especially in LibWeb that's sometimes not the case
     // when a function is created while no JS is running, as we currently need to rely on
@@ -637,14 +604,20 @@ ThrowCompletionOr<void> ECMAScriptFunctionObject::prepare_for_ordinary_call(Exec
     // 6. Set the ScriptOrModule of calleeContext to F.[[ScriptOrModule]].
     callee_context.script_or_module = m_script_or_module;
 
-    // 7. Let localEnv be NewFunctionEnvironment(F, newTarget).
-    auto local_environment = new_function_environment(*this, new_target);
+    if (m_function_environment_needed) {
+        // 7. Let localEnv be NewFunctionEnvironment(F, newTarget).
+        auto local_environment = new_function_environment(*this, new_target);
+        local_environment->ensure_capacity(m_function_environment_bindings_count);
 
-    // 8. Set the LexicalEnvironment of calleeContext to localEnv.
-    callee_context.lexical_environment = local_environment;
+        // 8. Set the LexicalEnvironment of calleeContext to localEnv.
+        callee_context.lexical_environment = local_environment;
 
-    // 9. Set the VariableEnvironment of calleeContext to localEnv.
-    callee_context.variable_environment = local_environment;
+        // 9. Set the VariableEnvironment of calleeContext to localEnv.
+        callee_context.variable_environment = local_environment;
+    } else {
+        callee_context.lexical_environment = environment();
+        callee_context.variable_environment = environment();
+    }
 
     // 10. Set the PrivateEnvironment of calleeContext to F.[[PrivateEnvironment]].
     callee_context.private_environment = m_private_environment;
@@ -674,7 +647,7 @@ void ECMAScriptFunctionObject::ordinary_call_bind_this(ExecutionContext& callee_
         return;
 
     // 3. Let calleeRealm be F.[[Realm]].
-    auto* callee_realm = m_realm;
+    auto callee_realm = m_realm;
     // NOTE: This non-standard fallback is needed until we can guarantee that literally
     // every function has a realm - especially in LibWeb that's sometimes not the case
     // when a function is created while no JS is running, as we currently need to rely on
@@ -685,7 +658,7 @@ void ECMAScriptFunctionObject::ordinary_call_bind_this(ExecutionContext& callee_
     VERIFY(callee_realm);
 
     // 4. Let localEnv be the LexicalEnvironment of calleeContext.
-    auto* local_env = callee_context.lexical_environment;
+    auto local_env = callee_context.lexical_environment;
 
     Value this_value;
 
@@ -717,16 +690,17 @@ void ECMAScriptFunctionObject::ordinary_call_bind_this(ExecutionContext& callee_
     // 7. Assert: localEnv is a function Environment Record.
     // 8. Assert: The next step never returns an abrupt completion because localEnv.[[ThisBindingStatus]] is not initialized.
     // 9. Perform ! localEnv.BindThisValue(thisValue).
-    MUST(verify_cast<FunctionEnvironment>(local_env)->bind_this_value(vm, this_value));
+    callee_context.this_value = this_value;
+    if (m_function_environment_needed)
+        MUST(verify_cast<FunctionEnvironment>(*local_env).bind_this_value(vm, this_value));
 
     // 10. Return unused.
 }
 
 // 27.7.5.1 AsyncFunctionStart ( promiseCapability, asyncFunctionBody ), https://tc39.es/ecma262/#sec-async-functions-abstract-operations-async-function-start
-void ECMAScriptFunctionObject::async_function_start(PromiseCapability const& promise_capability)
+template<typename T>
+void async_function_start(VM& vm, PromiseCapability const& promise_capability, T const& async_function_body)
 {
-    auto& vm = this->vm();
-
     // 1. Let runningContext be the running execution context.
     auto& running_context = vm.running_execution_context();
 
@@ -736,14 +710,19 @@ void ECMAScriptFunctionObject::async_function_start(PromiseCapability const& pro
     // 3. NOTE: Copying the execution state is required for AsyncBlockStart to resume its execution. It is ill-defined to resume a currently executing context.
 
     // 4. Perform AsyncBlockStart(promiseCapability, asyncFunctionBody, asyncContext).
-    async_block_start(vm, m_ecmascript_code, promise_capability, async_context);
+    async_block_start(vm, async_function_body, promise_capability, *async_context);
 
     // 5. Return unused.
 }
 
 // 27.7.5.2 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext ), https://tc39.es/ecma262/#sec-asyncblockstart
-void async_block_start(VM& vm, NonnullRefPtr<Statement const> const& async_body, PromiseCapability const& promise_capability, ExecutionContext& async_context)
+// 12.7.1.1 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext ), https://tc39.es/proposal-explicit-resource-management/#sec-asyncblockstart
+// 1.2.1.1 AsyncBlockStart ( promiseCapability, asyncBody, asyncContext ), https://tc39.es/proposal-array-from-async/#sec-asyncblockstart
+template<typename T>
+void async_block_start(VM& vm, T const& async_body, PromiseCapability const& promise_capability, ExecutionContext& async_context)
 {
+    // NOTE: This function is a combination between two proposals, so does not exactly match spec steps of either.
+
     auto& realm = *vm.current_realm();
 
     // 1. Assert: promiseCapability is a PromiseCapability Record.
@@ -753,32 +732,54 @@ void async_block_start(VM& vm, NonnullRefPtr<Statement const> const& async_body,
 
     // 3. Set the code evaluation state of asyncContext such that when evaluation is resumed for that execution context the following steps will be performed:
     auto execution_steps = NativeFunction::create(realm, "", [&async_body, &promise_capability, &async_context](auto& vm) -> ThrowCompletionOr<Value> {
-        // a. Let result be the result of evaluating asyncBody.
-        auto result = async_body->execute(vm.interpreter());
+        Completion result;
 
-        // b. Assert: If we return here, the async function either threw an exception or performed an implicit or explicit return; all awaiting is done.
+        // a. If asyncBody is a Parse Node, then
+        if constexpr (!IsCallableWithArguments<T, Completion>) {
+            // a. Let result be the result of evaluating asyncBody.
+            // FIXME: Cache this executable somewhere.
+            auto maybe_executable = Bytecode::compile(vm, async_body, FunctionKind::Async, "AsyncBlockStart"sv);
+            if (maybe_executable.is_error())
+                result = maybe_executable.release_error();
+            else
+                result = vm.bytecode_interpreter().run_executable(*maybe_executable.value(), {}).value;
+        }
+        // b. Else,
+        else {
+            // i. Assert: asyncBody is an Abstract Closure with no parameters.
+            static_assert(IsCallableWithArguments<T, Completion>);
 
-        // c. Remove asyncContext from the execution context stack and restore the execution context that is at the top of the execution context stack as the running execution context.
+            // ii. Let result be asyncBody().
+            result = async_body();
+        }
+
+        // c. Assert: If we return here, the async function either threw an exception or performed an implicit or explicit return; all awaiting is done.
+
+        // d. Remove asyncContext from the execution context stack and restore the execution context that is at the top of the execution context stack as the running execution context.
         vm.pop_execution_context();
 
-        // d. Let env be asyncContext's LexicalEnvironment.
-        auto* env = async_context.lexical_environment;
-        VERIFY(is<DeclarativeEnvironment>(env));
+        // NOTE: This does not work for Array.fromAsync, likely due to conflicts between that proposal and Explicit Resource Management proposal.
+        if constexpr (!IsCallableWithArguments<T, Completion>) {
+            // e. Let env be asyncContext's LexicalEnvironment.
+            auto env = async_context.lexical_environment;
 
-        // e. Set result to DisposeResources(env, result).
-        result = dispose_resources(vm, static_cast<DeclarativeEnvironment*>(env), result);
+            // f. Set result to DisposeResources(env, result).
+            result = dispose_resources(vm, verify_cast<DeclarativeEnvironment>(env.ptr()), result);
+        } else {
+            (void)async_context;
+        }
 
-        // f. If result.[[Type]] is normal, then
+        // g. If result.[[Type]] is normal, then
         if (result.type() == Completion::Type::Normal) {
             // i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « undefined »).
             MUST(call(vm, *promise_capability.resolve(), js_undefined(), js_undefined()));
         }
-        // g. Else if result.[[Type]] is return, then
+        // h. Else if result.[[Type]] is return, then
         else if (result.type() == Completion::Type::Return) {
             // i. Perform ! Call(promiseCapability.[[Resolve]], undefined, « result.[[Value]] »).
             MUST(call(vm, *promise_capability.resolve(), js_undefined(), *result.value()));
         }
-        // h. Else,
+        // i. Else,
         else {
             // i. Assert: result.[[Type]] is throw.
             VERIFY(result.type() == Completion::Type::Throw);
@@ -786,7 +787,7 @@ void async_block_start(VM& vm, NonnullRefPtr<Statement const> const& async_body,
             // ii. Perform ! Call(promiseCapability.[[Reject]], undefined, « result.[[Value]] »).
             MUST(call(vm, *promise_capability.reject(), js_undefined(), *result.value()));
         }
-        // i. Return unused.
+        // j. Return unused.
         // NOTE: We don't support returning an empty/optional/unused value here.
         return js_undefined();
     });
@@ -808,6 +809,12 @@ void async_block_start(VM& vm, NonnullRefPtr<Statement const> const& async_body,
     // 8. Return unused.
 }
 
+template void async_block_start(VM&, NonnullRefPtr<Statement const> const& async_body, PromiseCapability const&, ExecutionContext&);
+template void async_function_start(VM&, PromiseCapability const&, NonnullRefPtr<Statement const> const& async_function_body);
+
+template void async_block_start(VM&, SafeFunction<Completion()> const& async_body, PromiseCapability const&, ExecutionContext&);
+template void async_function_start(VM&, PromiseCapability const&, SafeFunction<Completion()> const& async_function_body);
+
 // 10.2.1.4 OrdinaryCallEvaluateBody ( F, argumentsList ), https://tc39.es/ecma262/#sec-ordinarycallevaluatebody
 // 15.8.4 Runtime Semantics: EvaluateAsyncFunctionBody, https://tc39.es/ecma262/#sec-runtime-semantics-evaluatefunctionbody
 Completion ECMAScriptFunctionObject::ordinary_call_evaluate_body()
@@ -815,138 +822,52 @@ Completion ECMAScriptFunctionObject::ordinary_call_evaluate_body()
     auto& vm = this->vm();
     auto& realm = *vm.current_realm();
 
-    if (m_kind == FunctionKind::AsyncGenerator)
-        return vm.throw_completion<InternalError>(ErrorType::NotImplemented, "Async Generator function execution");
-
-    auto* bytecode_interpreter = Bytecode::Interpreter::current();
-
-    // The bytecode interpreter can execute generator functions while the AST interpreter cannot.
-    // This simply makes it create a new bytecode interpreter when one doesn't exist when executing a generator function.
-    // Doing so makes it automatically switch to the bytecode interpreter to execute any future code until it exits the generator. See below.
-    // This allows us to keep all of the existing functionality that works in AST while adding generator support on top of it.
-    // However, this does cause an awkward situation with features not supported in bytecode, where features that work outside of generators with AST
-    // suddenly stop working inside of generators.
-    // This is a stop gap until bytecode mode becomes the default.
-    OwnPtr<Bytecode::Interpreter> temp_bc_interpreter;
-    if (m_kind == FunctionKind::Generator && !bytecode_interpreter) {
-        temp_bc_interpreter = make<Bytecode::Interpreter>(realm);
-        bytecode_interpreter = temp_bc_interpreter.ptr();
+    if (!m_bytecode_executable) {
+        if (!m_ecmascript_code->bytecode_executable()) {
+            if (is_module_wrapper()) {
+                const_cast<Statement&>(*m_ecmascript_code).set_bytecode_executable(TRY(Bytecode::compile(vm, *m_ecmascript_code, m_kind, m_name)));
+            } else {
+                const_cast<Statement&>(*m_ecmascript_code).set_bytecode_executable(TRY(Bytecode::compile(vm, *this)));
+            }
+        }
+        m_bytecode_executable = m_ecmascript_code->bytecode_executable();
     }
 
-    if (bytecode_interpreter) {
-        if (!m_bytecode_executable) {
-            auto compile = [&](auto& node, auto kind, auto name) -> ThrowCompletionOr<NonnullOwnPtr<Bytecode::Executable>> {
-                auto executable_result = Bytecode::Generator::generate(node, kind);
-                if (executable_result.is_error())
-                    return vm.throw_completion<InternalError>(ErrorType::NotImplemented, TRY_OR_THROW_OOM(vm, executable_result.error().to_string()));
+    vm.running_execution_context().registers_and_constants_and_locals.resize(m_local_variables_names.size() + m_bytecode_executable->number_of_registers + m_bytecode_executable->constants.size());
 
-                auto bytecode_executable = executable_result.release_value();
-                bytecode_executable->name = name;
-                auto& passes = Bytecode::Interpreter::optimization_pipeline();
-                passes.perform(*bytecode_executable);
-                if constexpr (JS_BYTECODE_DEBUG) {
-                    dbgln("Optimisation passes took {}us", passes.elapsed());
-                    dbgln("Compiled Bytecode::Block for function '{}':", m_name);
-                }
-                if (Bytecode::g_dump_bytecode)
-                    bytecode_executable->dump();
+    auto result_and_frame = vm.bytecode_interpreter().run_executable(*m_bytecode_executable, {});
 
-                return bytecode_executable;
-            };
+    if (result_and_frame.value.is_error())
+        return result_and_frame.value.release_error();
 
-            m_bytecode_executable = TRY(compile(*m_ecmascript_code, m_kind, m_name));
+    auto result = result_and_frame.value.release_value();
 
-            size_t default_parameter_index = 0;
-            for (auto& parameter : m_formal_parameters) {
-                if (!parameter.default_value)
-                    continue;
-                auto executable = TRY(compile(*parameter.default_value, FunctionKind::Normal, DeprecatedString::formatted("default parameter #{} for {}", default_parameter_index, m_name)));
-                m_default_parameter_bytecode_executables.append(move(executable));
-            }
-        }
-        TRY(function_declaration_instantiation(nullptr));
-        auto result_and_frame = bytecode_interpreter->run_and_return_frame(*m_bytecode_executable, nullptr);
+    // NOTE: Running the bytecode should eventually return a completion.
+    // Until it does, we assume "return" and include the undefined fallback from the call site.
+    if (m_kind == FunctionKind::Normal)
+        return { Completion::Type::Return, result.value_or(js_undefined()) };
 
-        VERIFY(result_and_frame.frame != nullptr);
-        if (result_and_frame.value.is_error())
-            return result_and_frame.value.release_error();
-
-        auto result = result_and_frame.value.release_value();
-
-        // NOTE: Running the bytecode should eventually return a completion.
-        // Until it does, we assume "return" and include the undefined fallback from the call site.
-        if (m_kind == FunctionKind::Normal)
-            return { Completion::Type::Return, result.value_or(js_undefined()), {} };
-
-        auto generator_object = TRY(GeneratorObject::create(realm, result, this, vm.running_execution_context().copy(), move(*result_and_frame.frame)));
-
-        // NOTE: Async functions are entirely transformed to generator functions, and wrapped in a custom driver that returns a promise
-        //       See AwaitExpression::generate_bytecode() for the transformation.
-        if (m_kind == FunctionKind::Async)
-            return { Completion::Type::Return, TRY(AsyncFunctionDriverWrapper::create(realm, generator_object)), {} };
-
-        VERIFY(m_kind == FunctionKind::Generator);
-        return { Completion::Type::Return, generator_object, {} };
-    } else {
-        if (m_kind == FunctionKind::Generator)
-            return vm.throw_completion<InternalError>(ErrorType::NotImplemented, "Generator function execution in AST interpreter");
-        OwnPtr<Interpreter> local_interpreter;
-        Interpreter* ast_interpreter = vm.interpreter_if_exists();
-
-        if (!ast_interpreter) {
-            local_interpreter = Interpreter::create_with_existing_realm(realm);
-            ast_interpreter = local_interpreter.ptr();
-        }
-
-        VM::InterpreterExecutionScope scope(*ast_interpreter);
-
-        // FunctionBody : FunctionStatementList
-        if (m_kind == FunctionKind::Normal) {
-            // 1. Perform ? FunctionDeclarationInstantiation(functionObject, argumentsList).
-            TRY(function_declaration_instantiation(ast_interpreter));
-
-            // 2. Let result be result of evaluating FunctionStatementList.
-            auto result = m_ecmascript_code->execute(*ast_interpreter);
-
-            // 3. Let env be the running execution context's LexicalEnvironment.
-            auto* env = vm.running_execution_context().lexical_environment;
-            VERIFY(is<DeclarativeEnvironment>(env));
-
-            // 4. Return ? DisposeResources(env, result).
-            return dispose_resources(vm, static_cast<DeclarativeEnvironment*>(env), result);
-        }
-        // AsyncFunctionBody : FunctionBody
-        else if (m_kind == FunctionKind::Async) {
-            // 1. Let promiseCapability be ! NewPromiseCapability(%Promise%).
-            auto promise_capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
-
-            // 2. Let declResult be Completion(FunctionDeclarationInstantiation(functionObject, argumentsList)).
-            auto declaration_result = function_declaration_instantiation(ast_interpreter);
-
-            // 3. If declResult is an abrupt completion, then
-            if (declaration_result.is_throw_completion()) {
-                // a. Perform ! Call(promiseCapability.[[Reject]], undefined, « declResult.[[Value]] »).
-                MUST(call(vm, *promise_capability->reject(), js_undefined(), *declaration_result.throw_completion().value()));
-            }
-            // 4. Else,
-            else {
-                // a. Perform AsyncFunctionStart(promiseCapability, FunctionBody).
-                async_function_start(promise_capability);
-            }
-
-            // 5. Return Completion Record { [[Type]]: return, [[Value]]: promiseCapability.[[Promise]], [[Target]]: empty }.
-            return Completion { Completion::Type::Return, promise_capability->promise(), {} };
-        }
+    if (m_kind == FunctionKind::AsyncGenerator) {
+        auto async_generator_object = TRY(AsyncGenerator::create(realm, result, this, vm.running_execution_context().copy()));
+        return { Completion::Type::Return, async_generator_object };
     }
-    VERIFY_NOT_REACHED();
+
+    auto generator_object = TRY(GeneratorObject::create(realm, result, this, vm.running_execution_context().copy()));
+
+    // NOTE: Async functions are entirely transformed to generator functions, and wrapped in a custom driver that returns a promise
+    //       See AwaitExpression::generate_bytecode() for the transformation.
+    if (m_kind == FunctionKind::Async)
+        return { Completion::Type::Return, AsyncFunctionDriverWrapper::create(realm, generator_object) };
+
+    VERIFY(m_kind == FunctionKind::Generator);
+    return { Completion::Type::Return, generator_object };
 }
 
 void ECMAScriptFunctionObject::set_name(DeprecatedFlyString const& name)
 {
-    VERIFY(!name.is_null());
     auto& vm = this->vm();
     m_name = name;
-    MUST(define_property_or_throw(vm.names.name, { .value = PrimitiveString::create(vm, m_name), .writable = false, .enumerable = false, .configurable = true }));
+    m_name_string = PrimitiveString::create(vm, m_name);
+    MUST(define_property_or_throw(vm.names.name, { .value = m_name_string, .writable = false, .enumerable = false, .configurable = true }));
 }
-
 }

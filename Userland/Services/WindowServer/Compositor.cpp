@@ -17,6 +17,7 @@
 #include <AK/Debug.h>
 #include <AK/Memory.h>
 #include <AK/ScopeGuard.h>
+#include <AK/TemporaryChange.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibGfx/Font/Font.h>
@@ -32,7 +33,7 @@ Compositor& Compositor::the()
     return s_the;
 }
 
-static WallpaperMode mode_to_enum(DeprecatedString const& name)
+static WallpaperMode mode_to_enum(ByteString const& name)
 {
     if (name == "Tile")
         return WallpaperMode::Tile;
@@ -55,8 +56,7 @@ Compositor::Compositor()
         [this] {
             compose();
         },
-        this)
-                          .release_value_but_fixme_should_propagate_errors();
+        this);
     m_compose_timer->start();
 
     m_immediate_compose_timer = Core::Timer::create_single_shot(
@@ -64,8 +64,7 @@ Compositor::Compositor()
         [this] {
             compose();
         },
-        this)
-                                    .release_value_but_fixme_should_propagate_errors();
+        this);
     m_compose_timer->start();
 
     init_bitmaps();
@@ -117,12 +116,12 @@ void CompositorScreenData::init_bitmaps(Compositor& compositor, Screen& screen)
     if (m_screen_can_set_buffer)
         m_back_bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRx8888, size, screen.scale_factor(), screen.pitch(), screen.scanline(1, 0)).release_value_but_fixme_should_propagate_errors();
     else
-        m_back_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, size, screen.scale_factor()).release_value_but_fixme_should_propagate_errors();
+        m_back_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, size, screen.scale_factor(), screen.pitch()).release_value_but_fixme_should_propagate_errors();
     m_back_painter = make<Gfx::Painter>(*m_back_bitmap);
     m_back_painter->translate(-screen.rect().location());
 
     m_temp_bitmap = nullptr;
-    m_temp_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, size, screen.scale_factor()).release_value_but_fixme_should_propagate_errors();
+    m_temp_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, size, screen.scale_factor(), screen.pitch()).release_value_but_fixme_should_propagate_errors();
     m_temp_painter = make<Gfx::Painter>(*m_temp_bitmap);
     m_temp_painter->translate(-screen.rect().location());
 
@@ -309,12 +308,11 @@ void Compositor::compose()
         check_restore_cursor_back(cursor_screen, cursor_rect);
 
     auto paint_wallpaper = [&](Screen& screen, Gfx::Painter& painter, Gfx::IntRect const& rect, Gfx::IntRect const& screen_rect) {
+        // FIXME: If the wallpaper is opaque and covers the whole rect, no need to fill with color!
+        painter.fill_rect(rect, background_color);
         if (m_wallpaper) {
             if (m_wallpaper_mode == WallpaperMode::Center) {
                 Gfx::IntPoint offset { (screen.width() - m_wallpaper->width()) / 2, (screen.height() - m_wallpaper->height()) / 2 };
-
-                // FIXME: If the wallpaper is opaque and covers the whole rect, no need to fill with color!
-                painter.fill_rect(rect, background_color);
                 painter.blit_offset(rect.location(), *m_wallpaper, rect.translated(-screen_rect.location()), offset);
             } else if (m_wallpaper_mode == WallpaperMode::Tile) {
                 painter.draw_tiled_bitmap(rect, *m_wallpaper);
@@ -324,8 +322,6 @@ void Compositor::compose()
             } else {
                 VERIFY_NOT_REACHED();
             }
-        } else {
-            painter.fill_rect(rect, background_color);
         }
     };
 
@@ -375,9 +371,9 @@ void Compositor::compose()
         dbgln_if(COMPOSE_DEBUG, "  window {} frame rect: {}", window.title(), frame_rect);
 
         RefPtr<Gfx::Bitmap> backing_store = window.backing_store();
-        auto compose_window_rect = [&](Screen& screen, Gfx::Painter& painter, const Gfx::IntRect& rect) {
+        auto compose_window_rect = [&](Screen& screen, Gfx::Painter& painter, Gfx::IntRect const& rect) {
             if (!window.is_fullscreen()) {
-                rect.for_each_intersected(frame_rects, [&](const Gfx::IntRect& intersected_rect) {
+                rect.for_each_intersected(frame_rects, [&](Gfx::IntRect const& intersected_rect) {
                     Gfx::PainterStateSaver saver(painter);
                     painter.add_clip_rect(intersected_rect);
                     painter.translate(transition_offset);
@@ -391,11 +387,8 @@ void Compositor::compose()
             if (update_window_rect.is_empty())
                 return;
 
-            auto clear_window_rect = [&](const Gfx::IntRect& clear_rect) {
-                auto fill_color = wm.palette().window();
-                if (!window.is_opaque())
-                    fill_color.set_alpha(255 * window.opacity());
-                painter.fill_rect(clear_rect, fill_color);
+            auto clear_window_rect = [&](Gfx::IntRect const& clear_rect) {
+                painter.fill_rect(clear_rect, wm.palette().window());
             };
 
             if (!backing_store) {
@@ -446,20 +439,11 @@ void Compositor::compose()
                 auto dst = backing_rect.location().translated(dirty_rect_in_backing_coordinates.location());
 
                 if (window.client() && window.client()->is_unresponsive()) {
-                    if (window.is_opaque()) {
-                        painter.blit_filtered(dst, *backing_store, dirty_rect_in_backing_coordinates, [](Color src) {
-                            return src.to_grayscale().darkened(0.75f);
-                        });
-                    } else {
-                        u8 alpha = 255 * window.opacity();
-                        painter.blit_filtered(dst, *backing_store, dirty_rect_in_backing_coordinates, [&](Color src) {
-                            auto color = src.to_grayscale().darkened(0.75f);
-                            color.set_alpha(alpha);
-                            return color;
-                        });
-                    }
+                    painter.blit_filtered(dst, *backing_store, dirty_rect_in_backing_coordinates, [](Color src) {
+                        return src.to_grayscale().darkened(0.75f);
+                    });
                 } else {
-                    painter.blit(dst, *backing_store, dirty_rect_in_backing_coordinates, window.opacity());
+                    painter.blit(dst, *backing_store, dirty_rect_in_backing_coordinates);
                 }
             }
 
@@ -481,7 +465,7 @@ void Compositor::compose()
         // Render opaque portions directly to the back buffer
         auto& opaque_rects = window.opaque_rects();
         if (!opaque_rects.is_empty()) {
-            opaque_rects.for_each_intersected(dirty_rects, [&](const Gfx::IntRect& render_rect) {
+            opaque_rects.for_each_intersected(dirty_rects, [&](Gfx::IntRect const& render_rect) {
                 for (auto* screen : window.screens()) {
                     auto screen_render_rect = render_rect.intersected(screen->rect());
                     if (screen_render_rect.is_empty())
@@ -502,7 +486,7 @@ void Compositor::compose()
         // the wallpaper
         auto& transparency_wallpaper_rects = window.transparency_wallpaper_rects();
         if (!transparency_wallpaper_rects.is_empty()) {
-            transparency_wallpaper_rects.for_each_intersected(dirty_rects, [&](const Gfx::IntRect& render_rect) {
+            transparency_wallpaper_rects.for_each_intersected(dirty_rects, [&](Gfx::IntRect const& render_rect) {
                 for (auto* screen : window.screens()) {
                     auto screen_rect = screen->rect();
                     auto screen_render_rect = render_rect.intersected(screen_rect);
@@ -519,7 +503,7 @@ void Compositor::compose()
         }
         auto& transparency_rects = window.transparency_rects();
         if (!transparency_rects.is_empty()) {
-            transparency_rects.for_each_intersected(dirty_rects, [&](const Gfx::IntRect& render_rect) {
+            transparency_rects.for_each_intersected(dirty_rects, [&](Gfx::IntRect const& render_rect) {
                 for (auto* screen : window.screens()) {
                     auto screen_rect = screen->rect();
                     auto screen_render_rect = render_rect.intersected(screen_rect);
@@ -700,7 +684,7 @@ void Compositor::flush(Screen& screen)
         //       rects from the backing bitmap to the display framebuffer.
 
         Gfx::ARGB32* to_ptr;
-        const Gfx::ARGB32* from_ptr;
+        Gfx::ARGB32 const* from_ptr;
 
         if (screen_data.m_screen_can_set_buffer) {
             to_ptr = back_ptr;
@@ -712,7 +696,7 @@ void Compositor::flush(Screen& screen)
 
         for (int y = 0; y < scaled_rect.height(); ++y) {
             fast_u32_copy(to_ptr, from_ptr, scaled_rect.width());
-            from_ptr = (const Gfx::ARGB32*)((const u8*)from_ptr + pitch);
+            from_ptr = (Gfx::ARGB32 const*)((u8 const*)from_ptr + pitch);
             to_ptr = (Gfx::ARGB32*)((u8*)to_ptr + pitch);
         }
         if (device_can_flush_buffers) {
@@ -787,7 +771,7 @@ void Compositor::start_compose_async_timer()
     }
 }
 
-bool Compositor::set_background_color(DeprecatedString const& background_color)
+bool Compositor::set_background_color(ByteString const& background_color)
 {
     auto color = Color::from_string(background_color);
     if (!color.has_value())
@@ -806,7 +790,7 @@ bool Compositor::set_background_color(DeprecatedString const& background_color)
     return succeeded;
 }
 
-bool Compositor::set_wallpaper_mode(DeprecatedString const& mode)
+bool Compositor::set_wallpaper_mode(ByteString const& mode)
 {
     g_config->write_entry("Background", "Mode", mode);
     bool succeeded = !g_config->sync().is_error();
@@ -872,7 +856,7 @@ void Compositor::update_wallpaper_bitmap()
             auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, screen.size(), screen.scale_factor()).release_value_but_fixme_should_propagate_errors();
 
             Gfx::Painter painter(*bitmap);
-            painter.draw_scaled_bitmap(bitmap->rect(), *m_wallpaper, m_wallpaper->rect());
+            painter.draw_scaled_bitmap(bitmap->rect(), *m_wallpaper, m_wallpaper->rect(), 1.f, Gfx::ScalingMode::BilinearBlend);
 
             screen_data.m_wallpaper_bitmap = move(bitmap);
         }
@@ -999,19 +983,23 @@ void Compositor::add_overlay(Overlay& overlay)
     if (!did_insert)
         m_overlay_list.append(overlay);
 
-    overlay.clear_invalidated();
+    overlay.invalidate();
     overlay_rects_changed();
-    auto& rect = overlay.rect();
-    if (!rect.is_empty())
-        invalidate_screen(rect);
 }
 
 void Compositor::remove_overlay(Overlay& overlay)
 {
-    auto& current_render_rect = overlay.current_render_rect();
-    if (!current_render_rect.is_empty())
-        invalidate_screen(current_render_rect);
     m_overlay_list.remove(overlay);
+
+    auto last_rendered_rect = overlay.current_render_rect();
+    if (!last_rendered_rect.is_empty()) {
+        // We need to invalidate the entire area. While recomputing occlusions
+        // will detect areas no longer occupied by overlays, if there are other
+        // overlays intersecting with the overlay that was removed, then that
+        // area would not get re-rendered.
+        invalidate_screen(last_rendered_rect);
+    }
+
     overlay_rects_changed();
 }
 
@@ -1132,8 +1120,6 @@ void Compositor::overlay_rects_changed()
     m_overlay_rects_changed = true;
     m_invalidated_any = true;
     invalidate_occlusions();
-    for (auto& rect : m_overlay_rects.rects())
-        invalidate_screen(rect);
     start_compose_async_timer();
 }
 
@@ -1143,13 +1129,19 @@ void Compositor::recompute_overlay_rects()
     // regular window contents. This effectively just forces those areas to
     // be rendered as transparency areas, which allows us to render these
     // flicker-free.
+    swap(m_last_rendered_overlay_rects, m_overlay_rects);
     m_overlay_rects.clear_with_capacity();
     for (auto& overlay : m_overlay_list) {
         auto& render_rect = overlay.rect();
         m_overlay_rects.add(render_rect);
 
+        // Invalidate areas that are no longer in the rendered area because the overlay was moved.
+        auto previous_rects = overlay.current_render_rect().shatter(render_rect);
+        for (auto& rect : previous_rects)
+            invalidate_screen(rect);
+
         // Save the rectangle we are using for rendering from now on
-        overlay.did_recompute_occlusions();
+        bool needs_invalidation = overlay.apply_render_rect();
 
         // Cache which screens this overlay are rendered on
         overlay.m_screens.clear_with_capacity();
@@ -1159,8 +1151,15 @@ void Compositor::recompute_overlay_rects()
             return IterationDecision::Continue;
         });
 
-        invalidate_screen(render_rect);
+        if (needs_invalidation)
+            invalidate_screen(render_rect);
     }
+
+    // Invalidate rects that are not going to get rendered anymore, e.g.
+    // because overlays were removed or rectangles were changed
+    auto no_longer_rendered_rects = m_last_rendered_overlay_rects.shatter(m_overlay_rects);
+    for (auto& rect : no_longer_rendered_rects.rects())
+        invalidate_screen(rect);
 }
 
 void Compositor::recompute_occlusions()
@@ -1527,43 +1526,45 @@ void Compositor::recompute_occlusions()
 
 void Compositor::register_animation(Badge<Animation>, Animation& animation)
 {
+    VERIFY(!m_animations_running);
     bool was_empty = m_animations.is_empty();
     auto result = m_animations.set(&animation);
     VERIFY(result == AK::HashSetResult::InsertedNewEntry);
-    if (was_empty)
+    if (was_empty) {
+        m_invalidated_any = true;
         start_compose_async_timer();
-}
-
-void Compositor::animation_started(Badge<Animation>)
-{
-    m_invalidated_any = true;
-    start_compose_async_timer();
+    }
 }
 
 void Compositor::unregister_animation(Badge<Animation>, Animation& animation)
 {
+    VERIFY(!m_animations_running);
     bool was_removed = m_animations.remove(&animation);
     VERIFY(was_removed);
 }
 
 void Compositor::update_animations(Screen& screen, Gfx::DisjointIntRectSet& flush_rects)
 {
+    Vector<NonnullRefPtr<Animation>, 16> finished_animations;
+    ScopeGuard call_stop_handlers([&] {
+        for (auto& animation : finished_animations)
+            animation->call_stop_handler({});
+    });
+
+    TemporaryChange animations_running(m_animations_running, true);
     auto& painter = *screen.compositor_screen_data().m_back_painter;
     // Iterating over the animations using remove_all_matching we can iterate
     // and immediately remove finished animations without having to keep track
     // of them in a separate container.
     m_animations.remove_all_matching([&](auto* animation) {
-        if (!animation->update({}, painter, screen, flush_rects)) {
+        VERIFY(animation->is_running());
+        if (!animation->update(painter, screen, flush_rects)) {
             // Mark it as removed so that the Animation::on_stop handler doesn't
             // trigger the Animation object from being destroyed, causing it to
             // unregister while we still loop over them.
             animation->was_removed({});
 
-            // Temporarily bump the ref count so that if the Animation::on_stop
-            // handler clears its own reference, it doesn't immediately destroy
-            // itself while we're still in the Function<> call
-            NonnullRefPtr<Animation> protect_animation(*animation);
-            animation->stop();
+            finished_animations.append(*animation);
             return true;
         }
         return false;
@@ -1620,8 +1621,7 @@ void Compositor::start_window_stack_switch_overlay_timer()
         [this] {
             remove_window_stack_switch_overlays();
         },
-        this)
-                                       .release_value_but_fixme_should_propagate_errors();
+        this);
     m_stack_switch_overlay_timer->start();
 }
 

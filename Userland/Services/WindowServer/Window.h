@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, David Ganz <david.g.ganz@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,9 +8,10 @@
 #pragma once
 
 #include "HitTestResult.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/IntrusiveList.h>
 #include <AK/WeakPtr.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/DisjointRectSet.h>
 #include <LibGfx/Rect.h>
@@ -59,9 +61,11 @@ enum class WindowMenuAction {
     MinimizeOrUnminimize = 0,
     MaximizeOrRestore,
     ToggleMenubarVisibility,
+    ToggleWindowRollUp,
     Close,
     Move,
     ToggleAlwaysOnTop,
+    AddToQuickLaunch,
 };
 
 enum class WindowMenuDefaultAction {
@@ -80,7 +84,7 @@ enum class WindowMinimizedState : u32 {
     Hidden,
 };
 
-class Window final : public Core::Object {
+class Window final : public Core::EventReceiver {
     C_OBJECT(Window);
 
 public:
@@ -120,7 +124,7 @@ public:
 
     WindowTileType tile_type() const { return m_tile_type; }
     bool is_tiled() const { return m_tile_type != WindowTileType::None; }
-    void set_tiled(WindowTileType);
+    void set_tiled(WindowTileType, Optional<Screen const&> = {});
     WindowTileType tile_type_based_on_rect(Gfx::IntRect const&) const;
     void check_untile_due_to_resize(Gfx::IntRect const&);
     bool set_untiled();
@@ -148,13 +152,10 @@ public:
     bool is_internal() const { return m_client_id == -1; }
     i32 client_id() const { return m_client_id; }
 
-    DeprecatedString title() const { return m_title; }
-    void set_title(DeprecatedString const&);
+    ByteString title() const { return m_title; }
+    void set_title(ByteString const&);
 
-    DeprecatedString computed_title() const;
-
-    float opacity() const { return m_opacity; }
-    void set_opacity(float);
+    ByteString computed_title() const;
 
     void set_hit_testing_enabled(bool value)
     {
@@ -327,11 +328,7 @@ public:
 
     bool is_opaque() const
     {
-        if (opacity() < 1.0f)
-            return false;
-        if (has_alpha_channel())
-            return false;
-        return true;
+        return !has_alpha_channel();
     }
 
     Gfx::DisjointIntRectSet& opaque_rects() { return m_opaque_rects; }
@@ -376,9 +373,12 @@ public:
     void remove_all_stealing() { m_stealable_by_client_ids.clear(); }
     bool is_stealable_by_client(i32 client_id) const { return m_stealable_by_client_ids.contains_slow(client_id); }
 
+    void send_resize_event_to_client();
+    void send_move_event_to_client();
+
 private:
-    Window(ConnectionFromClient&, WindowType, WindowMode, int window_id, bool minimizable, bool closeable, bool frameless, bool resizable, bool fullscreen, Window* parent_window = nullptr);
-    Window(Core::Object&, WindowType);
+    Window(ConnectionFromClient&, WindowType, WindowMode, int window_id, int process_id, bool minimizable, bool closeable, bool frameless, bool resizable, bool fullscreen, Window* parent_window = nullptr);
+    Window(Core::EventReceiver&, WindowType);
 
     virtual void event(Core::Event&) override;
     void handle_mouse_event(MouseEvent const&);
@@ -386,7 +386,10 @@ private:
     void add_child_window(Window&);
     void ensure_window_menu();
     void update_window_menu_items();
-    ErrorOr<Optional<DeprecatedString>> compute_title_username(ConnectionFromClient* client);
+    void tile_type_changed(Optional<Screen const&> = {});
+    ErrorOr<Optional<ByteString>> compute_title_username(ConnectionFromClient* client);
+
+    void exit_roll_up_mode();
 
     ConnectionFromClient* m_client { nullptr };
 
@@ -395,9 +398,10 @@ private:
 
     Menubar m_menubar;
 
-    DeprecatedString m_title;
-    Optional<DeprecatedString> m_title_username;
+    ByteString m_title;
+    Optional<ByteString> m_title_username;
     Gfx::IntRect m_rect;
+    Gfx::IntRect m_saved_before_roll_up_rect;
     Gfx::IntRect m_saved_nonfullscreen_rect;
     Gfx::IntRect m_taskbar_rect;
     Vector<Screen*, default_screen_count> m_screens;
@@ -436,11 +440,11 @@ private:
     RefPtr<Gfx::Bitmap> m_backing_store;
     RefPtr<Gfx::Bitmap> m_last_backing_store;
     Gfx::IntSize m_backing_store_visible_size {};
+    Gfx::IntSize m_backup_backing_store_visible_size {};
     i32 m_backing_store_serial { -1 };
     i32 m_last_backing_store_serial { -1 };
     int m_window_id { -1 };
     i32 m_client_id { -1 };
-    float m_opacity { 1 };
     float m_alpha_hit_threshold { 0.0f };
     Gfx::IntSize m_size_increment;
     Gfx::IntSize m_base_size;
@@ -456,12 +460,17 @@ private:
     MenuItem* m_window_menu_maximize_item { nullptr };
     MenuItem* m_window_menu_move_item { nullptr };
     MenuItem* m_window_menu_close_item { nullptr };
+    MenuItem* m_window_menu_roll_up_item { nullptr };
     MenuItem* m_window_menu_always_on_top_item { nullptr };
     MenuItem* m_window_menu_menubar_visibility_item { nullptr };
+    MenuItem* m_window_menu_add_to_quick_launch_item { nullptr };
     Optional<int> m_progress;
     bool m_should_show_menubar { true };
+    bool m_should_show_window_content { true };
     WindowStack* m_window_stack { nullptr };
     RefPtr<Animation> m_animation;
+
+    Optional<pid_t> m_process_id {};
 
 public:
     using List = IntrusiveList<&Window::m_list_node>;

@@ -13,15 +13,17 @@ namespace JS::Temporal {
 
 class ZonedDateTimePrototype final : public PrototypeObject<ZonedDateTimePrototype, ZonedDateTime> {
     JS_PROTOTYPE_OBJECT(ZonedDateTimePrototype, ZonedDateTime, Temporal.ZonedDateTime);
+    JS_DECLARE_ALLOCATOR(ZonedDateTimePrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ZonedDateTimePrototype() override = default;
 
 private:
     explicit ZonedDateTimePrototype(Realm&);
 
     JS_DECLARE_NATIVE_FUNCTION(calendar_getter);
+    JS_DECLARE_NATIVE_FUNCTION(calendar_id_getter);
     JS_DECLARE_NATIVE_FUNCTION(time_zone_getter);
     JS_DECLARE_NATIVE_FUNCTION(year_getter);
     JS_DECLARE_NATIVE_FUNCTION(month_getter);

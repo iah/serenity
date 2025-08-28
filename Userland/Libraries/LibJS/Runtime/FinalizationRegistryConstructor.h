@@ -12,9 +12,10 @@ namespace JS {
 
 class FinalizationRegistryConstructor final : public NativeFunction {
     JS_OBJECT(FinalizationRegistryConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(FinalizationRegistryConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~FinalizationRegistryConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

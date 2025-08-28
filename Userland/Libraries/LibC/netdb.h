@@ -6,6 +6,12 @@
 
 #pragma once
 
+// Includes essentially mandated by POSIX:
+// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/netdb.h.html
+#include <inttypes.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
@@ -21,6 +27,7 @@ struct hostent {
 };
 
 struct hostent* gethostbyname(char const*);
+int gethostbyname_r(char const* __restrict name, struct hostent* __restrict ret, char* buffer, size_t buffer_size, struct hostent** __restrict result, int* __restrict h_errnop);
 struct hostent* gethostbyaddr(void const* addr, socklen_t len, int type);
 
 struct servent {
@@ -48,11 +55,7 @@ struct protoent* getprotobynumber(int proto);
 struct protoent* getprotoent(void);
 void setprotoent(int stay_open);
 
-#ifdef NO_TLS
-extern int h_errno;
-#else
 extern __thread int h_errno;
-#endif
 
 #define HOST_NOT_FOUND 101
 #define NO_DATA 102

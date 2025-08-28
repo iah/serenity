@@ -22,6 +22,7 @@ struct StaticRangeInit {
 
 class StaticRange final : public AbstractRange {
     WEB_PLATFORM_OBJECT(StaticRange, AbstractRange);
+    JS_DECLARE_ALLOCATOR(StaticRange);
 
 public:
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<StaticRange>> construct_impl(JS::Realm&, StaticRangeInit& init);
@@ -29,7 +30,7 @@ public:
     StaticRange(Node& start_container, u32 start_offset, Node& end_container, u32 end_offset);
     virtual ~StaticRange() override;
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

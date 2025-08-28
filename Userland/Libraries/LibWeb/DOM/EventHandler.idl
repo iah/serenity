@@ -1,3 +1,5 @@
+#import <DOM/Event.idl>
+
 [LegacyTreatNonObjectAsNull]
 callback EventHandlerNonNull = any (Event event);
 typedef EventHandlerNonNull? EventHandler;
@@ -10,6 +12,7 @@ typedef OnErrorEventHandlerNonNull? OnErrorEventHandler;
 callback OnBeforeUnloadEventHandlerNonNull = DOMString? (Event event);
 typedef OnBeforeUnloadEventHandlerNonNull? OnBeforeUnloadEventHandler;
 
+// https://html.spec.whatwg.org/#globaleventhandlers
 interface mixin GlobalEventHandlers {
     attribute EventHandler onabort;
     attribute EventHandler onauxclick;
@@ -38,6 +41,8 @@ interface mixin GlobalEventHandlers {
     attribute EventHandler onended;
     attribute OnErrorEventHandler onerror;
     attribute EventHandler onfocus;
+    attribute EventHandler onfocusin;
+    attribute EventHandler onfocusout;
     attribute EventHandler onformdata;
     attribute EventHandler oninput;
     attribute EventHandler oninvalid;
@@ -67,6 +72,7 @@ interface mixin GlobalEventHandlers {
     attribute EventHandler onseeked;
     attribute EventHandler onseeking;
     attribute EventHandler onselect;
+    attribute EventHandler onselectionchange;
     attribute EventHandler onslotchange;
     attribute EventHandler onstalled;
     attribute EventHandler onsubmit;
@@ -82,6 +88,7 @@ interface mixin GlobalEventHandlers {
     attribute EventHandler onwheel;
 };
 
+// https://html.spec.whatwg.org/#windoweventhandlers
 interface mixin WindowEventHandlers {
     attribute EventHandler onafterprint;
     attribute EventHandler onbeforeprint;

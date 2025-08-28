@@ -11,34 +11,40 @@
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
 #include <LibWeb/CSS/Parser/Token.h>
-#include <LibWeb/Forward.h>
+#include <LibWeb/CSS/Parser/Types.h>
 
 namespace Web::CSS::Parser {
 
-// https://www.w3.org/TR/css-syntax-3/#component-value
+// https://drafts.csswg.org/css-syntax/#component-value
 class ComponentValue {
 public:
     ComponentValue(Token);
-    explicit ComponentValue(NonnullRefPtr<Function>);
-    explicit ComponentValue(NonnullRefPtr<Block>);
+    explicit ComponentValue(Function&&);
+    explicit ComponentValue(SimpleBlock&&);
     ~ComponentValue();
 
-    bool is_block() const { return m_value.has<NonnullRefPtr<Block>>(); }
-    Block& block() const { return m_value.get<NonnullRefPtr<Block>>(); }
+    bool is_block() const { return m_value.has<SimpleBlock>(); }
+    SimpleBlock& block() { return m_value.get<SimpleBlock>(); }
+    SimpleBlock const& block() const { return m_value.get<SimpleBlock>(); }
 
-    bool is_function() const { return m_value.has<NonnullRefPtr<Function>>(); }
-    Function& function() const { return m_value.get<NonnullRefPtr<Function>>(); }
+    bool is_function() const { return m_value.has<Function>(); }
+    bool is_function(StringView name) const;
+    Function& function() { return m_value.get<Function>(); }
+    Function const& function() const { return m_value.get<Function>(); }
 
     bool is_token() const { return m_value.has<Token>(); }
     bool is(Token::Type type) const { return is_token() && token().is(type); }
+    bool is_delim(u32 delim) const { return is(Token::Type::Delim) && token().delim() == delim; }
+    bool is_ident(StringView ident) const;
     Token const& token() const { return m_value.get<Token>(); }
     operator Token() const { return m_value.get<Token>(); }
 
-    ErrorOr<String> to_string() const;
-    ErrorOr<String> to_debug_string() const;
+    String to_string() const;
+    String to_debug_string() const;
+    String original_source_text() const;
 
 private:
-    Variant<Token, NonnullRefPtr<Function>, NonnullRefPtr<Block>> m_value;
+    Variant<Token, Function, SimpleBlock> m_value;
 };
 }
 
@@ -46,6 +52,6 @@ template<>
 struct AK::Formatter<Web::CSS::Parser::ComponentValue> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, Web::CSS::Parser::ComponentValue const& component_value)
     {
-        return Formatter<StringView>::format(builder, TRY(component_value.to_string()));
+        return Formatter<StringView>::format(builder, component_value.to_string());
     }
 };

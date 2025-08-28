@@ -1,14 +1,18 @@
 /*
  * Copyright (c) 2021, János Tóth <toth-janos@outlook.com>
+ * Copyright (c) 2023, Karol Kosek <krkk@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
+#include <AK/NumberFormat.h>
 #include <AK/Optional.h>
 #include <AK/Vector.h>
+#include <LibCore/ElapsedTimer.h>
+#include <LibCore/System.h>
 #include <LibMain/Main.h>
-#include <ctype.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,6 +40,31 @@ enum Status {
     Noxfer
 };
 
+struct {
+    Status status = Default;
+    size_t total_bytes_copied = 0;
+    size_t total_blocks_in = 0, partial_blocks_in = 0;
+    size_t total_blocks_out = 0, partial_blocks_out = 0;
+    Core::ElapsedTimer timer { Core::TimerType::Precise };
+} statistics;
+
+static void closing_statistics()
+{
+    if (statistics.status == None)
+        return;
+    warnln("{}+{} blocks in", statistics.total_blocks_in, statistics.partial_blocks_in);
+    warnln("{}+{} blocks out", statistics.total_blocks_out, statistics.partial_blocks_out);
+    if (statistics.status != Noxfer) {
+        auto elapsed_time = statistics.timer.elapsed_time();
+        String copy_speed = "INF B/s"_string;
+        if (!elapsed_time.is_zero()) {
+            auto speed = statistics.total_bytes_copied * 1000 / elapsed_time.to_milliseconds();
+            copy_speed = human_readable_quantity(speed, AK::HumanReadableBasedOn::Base2, "B/s"sv);
+        }
+        warnln("{} bytes copied ({}), {} ms, {}", statistics.total_bytes_copied, human_readable_size(statistics.total_bytes_copied), elapsed_time.to_milliseconds(), copy_speed);
+    }
+}
+
 static StringView split_at_equals(StringView argument)
 {
     auto values = argument.split_view('=', SplitBehavior::KeepEmpty);
@@ -54,7 +83,7 @@ static int handle_io_file_arguments(int& fd, int flags, StringView argument)
         return -1;
     }
 
-    fd = open(value.to_deprecated_string().characters(), flags, 0666);
+    fd = open(value.to_byte_string().characters(), flags, 0666);
     if (fd == -1) {
         warnln("Unable to open: {}", value);
         return -1;
@@ -72,7 +101,7 @@ static int handle_size_arguments(size_t& numeric_value, StringView argument)
 
     unsigned suffix_multiplier = 1;
     auto suffix = value[value.length() - 1];
-    switch (tolower(suffix)) {
+    switch (to_ascii_lowercase(suffix)) {
     case 'k':
         suffix_multiplier = KiB;
         value = value.substring_view(0, value.length() - 1);
@@ -87,7 +116,7 @@ static int handle_size_arguments(size_t& numeric_value, StringView argument)
         break;
     }
 
-    Optional<unsigned> numeric_optional = value.to_uint();
+    Optional<unsigned> numeric_optional = value.to_number<unsigned>();
     if (!numeric_optional.has_value()) {
         warnln("Invalid size-value: {}", value);
         return -1;
@@ -134,11 +163,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     size_t count = 0;
     size_t skip = 0;
     size_t seek = 0;
-    Status status = Default;
 
-    size_t total_bytes_copied = 0;
-    size_t total_blocks_in = 0, partial_blocks_in = 0;
-    size_t total_blocks_out = 0, partial_blocks_out = 0;
     uint8_t* buffer = nullptr;
     ssize_t nread = 0, nwritten = 0;
 
@@ -173,7 +198,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 return 1;
             }
         } else if (argument.starts_with("status="sv)) {
-            if (handle_status_arguments(status, argument) < 0) {
+            if (handle_status_arguments(statistics.status, argument) < 0) {
                 return 1;
             }
         } else {
@@ -194,6 +219,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
     }
 
+    TRY(Core::System::signal(SIGINT, [](int status) {
+        closing_statistics();
+        exit(status);
+    }));
+
+    statistics.timer.start();
+
     while (1) {
         nread = read(input_fd, buffer, block_size);
         if (nread < 0) {
@@ -203,12 +235,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             break;
         } else {
             if ((size_t)nread != block_size) {
-                partial_blocks_in++;
+                statistics.partial_blocks_in++;
             } else {
-                total_blocks_in++;
+                statistics.total_blocks_in++;
             }
 
-            if (partial_blocks_in + total_blocks_in <= skip) {
+            if (statistics.partial_blocks_in + statistics.total_blocks_in <= skip) {
                 continue;
             }
 
@@ -220,25 +252,21 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 break;
             } else {
                 if ((size_t)nwritten < block_size) {
-                    partial_blocks_out++;
+                    statistics.partial_blocks_out++;
                 } else {
-                    total_blocks_out++;
+                    statistics.total_blocks_out++;
                 }
 
-                total_bytes_copied += nwritten;
+                statistics.total_bytes_copied += nwritten;
 
-                if (count > 0 && (partial_blocks_out + total_blocks_out) >= count) {
+                if (count > 0 && (statistics.partial_blocks_out + statistics.total_blocks_out) >= count) {
                     break;
                 }
             }
         }
     }
 
-    if (status == Default) {
-        warnln("{}+{} blocks in", total_blocks_in, partial_blocks_in);
-        warnln("{}+{} blocks out", total_blocks_out, partial_blocks_out);
-        warnln("{} bytes copied.", total_bytes_copied);
-    }
+    closing_statistics();
 
     free(buffer);
 

@@ -2,6 +2,7 @@
  * Copyright (c) 2020-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2021-2022, David Tuin <davidot@serenityos.org>
+ * Copyright (c) 2023, networkException <networkexception@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,14 +15,15 @@
 #include <AK/RefCounted.h>
 #include <AK/StackInfo.h>
 #include <AK/Variant.h>
+#include <LibJS/CyclicModule.h>
 #include <LibJS/Heap/Heap.h>
 #include <LibJS/Heap/MarkedVector.h>
+#include <LibJS/ModuleLoading.h>
 #include <LibJS/Runtime/CommonPropertyNames.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ErrorTypes.h>
 #include <LibJS/Runtime/ExecutionContext.h>
-#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/Promise.h>
 #include <LibJS/Runtime/Value.h>
 
@@ -30,57 +32,57 @@ namespace JS {
 class Identifier;
 struct BindingPattern;
 
+enum class HandledByHost {
+    Handled,
+    Unhandled,
+};
+
+enum class EvalMode {
+    Direct,
+    Indirect
+};
+
 class VM : public RefCounted<VM> {
 public:
     struct CustomData {
         virtual ~CustomData() = default;
 
-        virtual void spin_event_loop_until(Function<bool()> goal_condition) = 0;
+        virtual void spin_event_loop_until(JS::SafeFunction<bool()> goal_condition) = 0;
     };
 
-    static NonnullRefPtr<VM> create(OwnPtr<CustomData> = {});
-    ~VM() = default;
+    static ErrorOr<NonnullRefPtr<VM>> create(OwnPtr<CustomData> = {});
+    ~VM();
 
     Heap& heap() { return m_heap; }
     Heap const& heap() const { return m_heap; }
 
-    Interpreter& interpreter();
-    Interpreter* interpreter_if_exists();
-
-    void push_interpreter(Interpreter&);
-    void pop_interpreter(Interpreter&);
+    Bytecode::Interpreter& bytecode_interpreter();
 
     void dump_backtrace() const;
 
-    class InterpreterExecutionScope {
-    public:
-        InterpreterExecutionScope(Interpreter&);
-        ~InterpreterExecutionScope();
+    void gather_roots(HashMap<Cell*, HeapRoot>&);
 
-        Interpreter& interpreter() { return m_interpreter; }
-
-    private:
-        Interpreter& m_interpreter;
-    };
-
-    void gather_roots(HashTable<Cell*>&);
-
-#define __JS_ENUMERATE(SymbolName, snake_name)     \
-    Symbol* well_known_symbol_##snake_name() const \
-    {                                              \
-        return m_well_known_symbol_##snake_name;   \
+#define __JS_ENUMERATE(SymbolName, snake_name)                  \
+    NonnullGCPtr<Symbol> well_known_symbol_##snake_name() const \
+    {                                                           \
+        return *m_well_known_symbols.snake_name;                \
     }
     JS_ENUMERATE_WELL_KNOWN_SYMBOLS
 #undef __JS_ENUMERATE
 
-    HashMap<String, PrimitiveString*>& string_cache()
+    HashMap<String, GCPtr<PrimitiveString>>& string_cache()
     {
         return m_string_cache;
     }
 
-    HashMap<DeprecatedString, PrimitiveString*>& deprecated_string_cache()
+    HashMap<ByteString, GCPtr<PrimitiveString>>& byte_string_cache()
     {
-        return m_deprecated_string_cache;
+        return m_byte_string_cache;
+    }
+
+    HashMap<Utf16String, GCPtr<PrimitiveString>>& utf16_string_cache()
+    {
+        return m_utf16_string_cache;
     }
 
     PrimitiveString& empty_string() { return *m_empty_string; }
@@ -104,14 +106,12 @@ public:
 
     bool did_reach_stack_space_limit() const
     {
-        // Address sanitizer (ASAN) used to check for more space but
-        // currently we can't detect the stack size with it enabled.
+#if defined(AK_OS_MACOS) && defined(HAS_ADDRESS_SANITIZER)
+        // We hit stack limits sooner on macOS 14 arm64 with ASAN enabled.
+        return m_stack_info.size_free() < 96 * KiB;
+#else
         return m_stack_info.size_free() < 32 * KiB;
-    }
-
-    void push_execution_context(ExecutionContext& context)
-    {
-        m_execution_context_stack.append(&context);
+#endif
     }
 
     // TODO: Rename this function instead of providing a second argument, now that the global object is no longer passed in.
@@ -122,22 +122,26 @@ public:
         // Ensure we got some stack space left, so the next function call doesn't kill us.
         if (did_reach_stack_space_limit())
             return throw_completion<InternalError>(ErrorType::CallStackSizeExceeded);
-        m_execution_context_stack.append(&context);
+        push_execution_context(context);
         return {};
     }
 
-    void pop_execution_context()
-    {
-        m_execution_context_stack.take_last();
-        if (m_execution_context_stack.is_empty() && on_call_stack_emptied)
-            on_call_stack_emptied();
-    }
+    void push_execution_context(ExecutionContext&);
+    void pop_execution_context();
 
     // https://tc39.es/ecma262/#running-execution-context
     // At any point in time, there is at most one execution context per agent that is actually executing code.
     // This is known as the agent's running execution context.
-    ExecutionContext& running_execution_context() { return *m_execution_context_stack.last(); }
-    ExecutionContext const& running_execution_context() const { return *m_execution_context_stack.last(); }
+    ExecutionContext& running_execution_context()
+    {
+        VERIFY(!m_execution_context_stack.is_empty());
+        return *m_execution_context_stack.last();
+    }
+    ExecutionContext const& running_execution_context() const
+    {
+        VERIFY(!m_execution_context_stack.is_empty());
+        return *m_execution_context_stack.last();
+    }
 
     // https://tc39.es/ecma262/#execution-context-stack
     // The execution context stack is used to track execution contexts.
@@ -173,19 +177,17 @@ public:
     {
         if (m_execution_context_stack.is_empty())
             return {};
-        auto& arguments = running_execution_context().arguments;
-        return index < arguments.size() ? arguments[index] : js_undefined();
+        return running_execution_context().argument(index);
     }
 
     Value this_value() const
     {
-        VERIFY(!m_execution_context_stack.is_empty());
         return running_execution_context().this_value;
     }
 
     ThrowCompletionOr<Value> resolve_this_binding();
 
-    StackInfo const& stack_info() const { return m_stack_info; };
+    StackInfo const& stack_info() const { return m_stack_info; }
 
     HashMap<String, NonnullGCPtr<Symbol>> const& global_symbol_registry() const { return m_global_symbol_registry; }
     HashMap<String, NonnullGCPtr<Symbol>>& global_symbol_registry() { return m_global_symbol_registry; }
@@ -203,26 +205,41 @@ public:
         auto& realm = *current_realm();
         auto completion = T::create(realm, forward<Args>(args)...);
 
-        if constexpr (IsSame<decltype(completion), ThrowCompletionOr<NonnullGCPtr<T>>>)
-            return JS::throw_completion(MUST_OR_THROW_OOM(completion));
-        else
-            return JS::throw_completion(completion);
+        return JS::throw_completion(completion);
+    }
+
+    template<typename T>
+    Completion throw_completion(ErrorType type)
+    {
+        return throw_completion<T>(String::from_utf8_without_validation(type.message().bytes()));
     }
 
     template<typename T, typename... Args>
     Completion throw_completion(ErrorType type, Args&&... args)
     {
-        return throw_completion<T>(DeprecatedString::formatted(type.message(), forward<Args>(args)...));
+        return throw_completion<T>(MUST(String::formatted(type.message(), forward<Args>(args)...)));
     }
 
     Value get_new_target();
 
+    Object* get_import_meta();
+
     Object& get_global_object();
 
     CommonPropertyNames names;
+    struct {
+        GCPtr<PrimitiveString> number;
+        GCPtr<PrimitiveString> undefined;
+        GCPtr<PrimitiveString> object;
+        GCPtr<PrimitiveString> string;
+        GCPtr<PrimitiveString> symbol;
+        GCPtr<PrimitiveString> boolean;
+        GCPtr<PrimitiveString> bigint;
+        GCPtr<PrimitiveString> function;
+    } typeof_strings;
 
     void run_queued_promise_jobs();
-    void enqueue_promise_job(Function<ThrowCompletionOr<Value>()> job, Realm*);
+    void enqueue_promise_job(NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>> job, Realm*);
 
     void run_queued_finalization_registry_cleanup_jobs();
     void enqueue_finalization_registry_cleanup_job(FinalizationRegistry&);
@@ -232,59 +249,68 @@ public:
     Function<void()> on_call_stack_emptied;
     Function<void(Promise&)> on_promise_unhandled_rejection;
     Function<void(Promise&)> on_promise_rejection_handled;
+    Function<void(Object const&, PropertyKey const&)> on_unimplemented_property_access;
 
     CustomData* custom_data() { return m_custom_data; }
 
-    ThrowCompletionOr<void> destructuring_assignment_evaluation(NonnullRefPtr<BindingPattern const> const& target, Value value);
-    ThrowCompletionOr<void> binding_initialization(DeprecatedFlyString const& target, Value value, Environment* environment);
-    ThrowCompletionOr<void> binding_initialization(NonnullRefPtr<BindingPattern const> const& target, Value value, Environment* environment);
-
-    ThrowCompletionOr<Value> named_evaluation_if_anonymous_function(ASTNode const& expression, DeprecatedFlyString const& name);
-
     void save_execution_context_stack();
+    void clear_execution_context_stack();
     void restore_execution_context_stack();
 
     // Do not call this method unless you are sure this is the only and first module to be loaded in this vm.
-    ThrowCompletionOr<void> link_and_eval_module(Badge<Interpreter>, SourceTextModule& module);
+    ThrowCompletionOr<void> link_and_eval_module(Badge<Bytecode::Interpreter>, SourceTextModule& module);
 
     ScriptOrModule get_active_script_or_module() const;
 
-    Function<ThrowCompletionOr<NonnullGCPtr<Module>>(ScriptOrModule, ModuleRequest const&)> host_resolve_imported_module;
-    Function<ThrowCompletionOr<void>(ScriptOrModule, ModuleRequest, PromiseCapability const&)> host_import_module_dynamically;
-    Function<void(ScriptOrModule, ModuleRequest const&, PromiseCapability const&, Promise*)> host_finish_dynamic_import;
+    // NOTE: The host defined implementation described in the web spec https://html.spec.whatwg.org/multipage/webappapis.html#hostloadimportedmodule
+    //       currently references proposal-import-attributes.
+    //       Our implementation of this proposal is outdated however, as such we try to adapt the proposal and living standard
+    //       to match our implementation for now.
+    // 16.2.1.8 HostLoadImportedModule ( referrer, moduleRequest, hostDefined, payload ), https://tc39.es/proposal-import-attributes/#sec-HostLoadImportedModule
+    Function<void(ImportedModuleReferrer, ModuleRequest const&, GCPtr<GraphLoadingState::HostDefined>, ImportedModulePayload)> host_load_imported_module;
 
-    Function<HashMap<PropertyKey, Value>(SourceTextModule const&)> host_get_import_meta_properties;
+    Function<HashMap<PropertyKey, Value>(SourceTextModule&)> host_get_import_meta_properties;
     Function<void(Object*, SourceTextModule const&)> host_finalize_import_meta;
 
-    Function<Vector<DeprecatedString>()> host_get_supported_import_assertions;
+    Function<Vector<ByteString>()> host_get_supported_import_attributes;
 
-    void enable_default_host_import_module_dynamically_hook();
+    void set_dynamic_imports_allowed(bool value) { m_dynamic_imports_allowed = value; }
 
     Function<void(Promise&, Promise::RejectionOperation)> host_promise_rejection_tracker;
-    Function<ThrowCompletionOr<Value>(JobCallback&, Value, MarkedVector<Value>)> host_call_job_callback;
+    Function<ThrowCompletionOr<Value>(JobCallback&, Value, ReadonlySpan<Value>)> host_call_job_callback;
     Function<void(FinalizationRegistry&)> host_enqueue_finalization_registry_cleanup_job;
-    Function<void(Function<ThrowCompletionOr<Value>()>, Realm*)> host_enqueue_promise_job;
-    Function<JobCallback(FunctionObject&)> host_make_job_callback;
-    Function<ThrowCompletionOr<void>(Realm&)> host_ensure_can_compile_strings;
+    Function<void(NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>>, Realm*)> host_enqueue_promise_job;
+    Function<JS::NonnullGCPtr<JobCallback>(FunctionObject&)> host_make_job_callback;
+    Function<ThrowCompletionOr<void>(Realm&, ReadonlySpan<String>, StringView, EvalMode)> host_ensure_can_compile_strings;
     Function<ThrowCompletionOr<void>(Object&)> host_ensure_can_add_private_element;
+    Function<ThrowCompletionOr<HandledByHost>(ArrayBuffer&, size_t)> host_resize_array_buffer;
+    Function<void(StringView)> host_unrecognized_date_string;
+    Function<ThrowCompletionOr<void>(Realm&, NonnullOwnPtr<ExecutionContext>, ShadowRealm&)> host_initialize_shadow_realm;
+
+    Vector<StackTraceElement> stack_trace() const;
 
 private:
-    explicit VM(OwnPtr<CustomData>);
+    using ErrorMessages = AK::Array<String, to_underlying(ErrorMessage::__Count)>;
 
-    ThrowCompletionOr<void> property_binding_initialization(BindingPattern const& binding, Value value, Environment* environment);
-    ThrowCompletionOr<void> iterator_binding_initialization(BindingPattern const& binding, Iterator& iterator_record, Environment* environment);
+    struct WellKnownSymbols {
+#define __JS_ENUMERATE(SymbolName, snake_name) \
+    GCPtr<Symbol> snake_name;
+        JS_ENUMERATE_WELL_KNOWN_SYMBOLS
+#undef __JS_ENUMERATE
+    };
 
-    ThrowCompletionOr<NonnullGCPtr<Module>> resolve_imported_module(ScriptOrModule referencing_script_or_module, ModuleRequest const& module_request);
-    ThrowCompletionOr<void> link_and_eval_module(Module& module);
+    VM(OwnPtr<CustomData>, ErrorMessages);
 
-    ThrowCompletionOr<void> import_module_dynamically(ScriptOrModule referencing_script_or_module, ModuleRequest module_request, PromiseCapability const& promise_capability);
-    void finish_dynamic_import(ScriptOrModule referencing_script_or_module, ModuleRequest module_request, PromiseCapability const& promise_capability, Promise* inner_promise);
+    void load_imported_module(ImportedModuleReferrer, ModuleRequest const&, GCPtr<GraphLoadingState::HostDefined>, ImportedModulePayload);
+    ThrowCompletionOr<void> link_and_eval_module(CyclicModule&);
 
-    HashMap<String, PrimitiveString*> m_string_cache;
-    HashMap<DeprecatedString, PrimitiveString*> m_deprecated_string_cache;
+    void set_well_known_symbols(WellKnownSymbols well_known_symbols) { m_well_known_symbols = move(well_known_symbols); }
+
+    HashMap<String, GCPtr<PrimitiveString>> m_string_cache;
+    HashMap<ByteString, GCPtr<PrimitiveString>> m_byte_string_cache;
+    HashMap<Utf16String, GCPtr<PrimitiveString>> m_utf16_string_cache;
 
     Heap m_heap;
-    Vector<Interpreter*> m_interpreters;
 
     Vector<ExecutionContext*> m_execution_context_stack;
 
@@ -295,44 +321,47 @@ private:
     // GlobalSymbolRegistry, https://tc39.es/ecma262/#table-globalsymbolregistry-record-fields
     HashMap<String, NonnullGCPtr<Symbol>> m_global_symbol_registry;
 
-    Vector<Function<ThrowCompletionOr<Value>()>> m_promise_jobs;
+    Vector<NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>>> m_promise_jobs;
 
-    Vector<FinalizationRegistry*> m_finalization_registry_cleanup_jobs;
+    Vector<GCPtr<FinalizationRegistry>> m_finalization_registry_cleanup_jobs;
 
-    PrimitiveString* m_empty_string { nullptr };
-    PrimitiveString* m_single_ascii_character_strings[128] {};
-    AK::Array<String, to_underlying(ErrorMessage::__Count)> m_error_messages;
+    GCPtr<PrimitiveString> m_empty_string;
+    GCPtr<PrimitiveString> m_single_ascii_character_strings[128] {};
+    ErrorMessages m_error_messages;
 
     struct StoredModule {
-        ScriptOrModule referencing_script_or_module;
-        DeprecatedString filename;
-        DeprecatedString type;
+        ImportedModuleReferrer referrer;
+        ByteString filename;
+        ByteString type;
         Handle<Module> module;
         bool has_once_started_linking { false };
     };
 
-    StoredModule* get_stored_module(ScriptOrModule const& script_or_module, DeprecatedString const& filename, DeprecatedString const& type);
+    StoredModule* get_stored_module(ImportedModuleReferrer const& script_or_module, ByteString const& filename, ByteString const& type);
 
     Vector<StoredModule> m_loaded_modules;
 
-#define __JS_ENUMERATE(SymbolName, snake_name) \
-    Symbol* m_well_known_symbol_##snake_name { nullptr };
-    JS_ENUMERATE_WELL_KNOWN_SYMBOLS
-#undef __JS_ENUMERATE
+    WellKnownSymbols m_well_known_symbols;
 
     u32 m_execution_generation { 0 };
 
     OwnPtr<CustomData> m_custom_data;
+
+    OwnPtr<Bytecode::Interpreter> m_bytecode_interpreter;
+
+    bool m_dynamic_imports_allowed { false };
 };
 
-ALWAYS_INLINE Heap& Cell::heap() const
+template<typename GlobalObjectType, typename... Args>
+[[nodiscard]] static NonnullOwnPtr<ExecutionContext> create_simple_execution_context(VM& vm, Args&&... args)
 {
-    return HeapBlock::from_cell(this)->heap();
-}
-
-ALWAYS_INLINE VM& Cell::vm() const
-{
-    return heap().vm();
+    auto root_execution_context = MUST(Realm::initialize_host_defined_realm(
+        vm,
+        [&](Realm& realm_) -> GlobalObject* {
+            return vm.heap().allocate_without_realm<GlobalObjectType>(realm_, forward<Args>(args)...);
+        },
+        nullptr));
+    return root_execution_context;
 }
 
 }

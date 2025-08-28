@@ -7,6 +7,8 @@
 #include <AK/Format.h>
 #include <Kernel/Arch/aarch64/RPi/Framebuffer.h>
 #include <Kernel/Arch/aarch64/RPi/FramebufferMailboxMessages.h>
+#include <Kernel/Boot/BootInfo.h>
+#include <Kernel/Sections.h>
 
 namespace Kernel::RPi {
 
@@ -19,7 +21,7 @@ Framebuffer::Framebuffer()
     m_depth = 32;
     m_initialized = false;
 
-    struct __attribute__((aligned(16))) {
+    struct {
         Mailbox::MessageHeader header;
         FramebufferSetPhysicalSizeMboxMessage set_physical_size;
         FramebufferSetVirtualSizeMboxMessage set_virtual_size;
@@ -27,7 +29,7 @@ Framebuffer::Framebuffer()
         FramebufferSetDepthMboxMessage set_depth;
         FramebufferSetPixelOrderMboxMessage set_pixel_order;
         FramebufferAllocateBufferMboxMessage allocate_buffer;
-        FramebufferGetPithMboxMessage get_pitch;
+        FramebufferGetPitchMboxMessage get_pitch;
         Mailbox::MessageTail tail;
     } message_queue;
 
@@ -42,7 +44,7 @@ Framebuffer::Framebuffer()
     // message_queue.set_virtual_offset.y = 0;
 
     message_queue.set_depth.depth_bits = 32;
-    message_queue.set_pixel_order.pixel_order = FramebufferSetPixelOrderMboxMessage::PixelOrder::RGB;
+    message_queue.set_pixel_order.pixel_order = FramebufferSetPixelOrderMboxMessage::PixelOrder::BGR;
     message_queue.allocate_buffer.alignment = 4096;
 
     if (!Mailbox::the().send_queue(&message_queue, sizeof(message_queue))) {
@@ -111,4 +113,19 @@ Framebuffer& Framebuffer::the()
     static Framebuffer instance;
     return instance;
 }
+
+void Framebuffer::initialize()
+{
+    auto& framebuffer = the();
+    if (framebuffer.initialized()) {
+        g_boot_info.boot_framebuffer.paddr = PhysicalAddress((PhysicalPtr)framebuffer.gpu_buffer());
+        g_boot_info.boot_framebuffer.width = framebuffer.width();
+        g_boot_info.boot_framebuffer.height = framebuffer.height();
+        g_boot_info.boot_framebuffer.pitch = framebuffer.pitch();
+
+        VERIFY(framebuffer.pixel_order() == PixelOrder::BGR);
+        g_boot_info.boot_framebuffer.type = BootFramebufferType::BGRx8888;
+    }
+}
+
 }

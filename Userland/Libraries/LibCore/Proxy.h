@@ -9,8 +9,8 @@
 #include <AK/Error.h>
 #include <AK/IPv4Address.h>
 #include <AK/Types.h>
-#include <AK/URL.h>
 #include <LibIPC/Forward.h>
+#include <LibURL/URL.h>
 
 namespace Core {
 // FIXME: Username/password support.
@@ -25,7 +25,7 @@ struct ProxyData {
 
     bool operator==(ProxyData const& other) const = default;
 
-    static ErrorOr<ProxyData> parse_url(URL const& url)
+    static ErrorOr<ProxyData> parse_url(URL::URL const& url)
     {
         if (!url.is_valid())
             return Error::from_string_literal("Invalid proxy URL");
@@ -36,10 +36,9 @@ struct ProxyData {
 
         proxy_data.type = ProxyData::Type::SOCKS5;
 
-        auto host_ipv4 = IPv4Address::from_string(url.host());
-        if (!host_ipv4.has_value())
+        if (!url.host().has<URL::IPv4Address>())
             return Error::from_string_literal("Invalid proxy host, must be an IPv4 address");
-        proxy_data.host_ipv4 = host_ipv4->to_u32();
+        proxy_data.host_ipv4 = url.host().get<URL::IPv4Address>();
 
         auto port = url.port();
         if (!port.has_value())

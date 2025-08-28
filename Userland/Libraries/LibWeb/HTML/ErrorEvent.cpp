@@ -4,14 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/ErrorEventPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/ErrorEvent.h>
 
 namespace Web::HTML {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<ErrorEvent>> ErrorEvent::create(JS::Realm& realm, FlyString const& event_name, ErrorEventInit const& event_init)
+JS_DEFINE_ALLOCATOR(ErrorEvent);
+
+JS::NonnullGCPtr<ErrorEvent> ErrorEvent::create(JS::Realm& realm, FlyString const& event_name, ErrorEventInit const& event_init)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<ErrorEvent>(realm, realm, event_name, event_init));
+    return realm.heap().allocate<ErrorEvent>(realm, realm, event_name, event_init);
 }
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<ErrorEvent>> ErrorEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, ErrorEventInit const& event_init)
@@ -20,7 +23,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<ErrorEvent>> ErrorEvent::construct_impl(JS:
 }
 
 ErrorEvent::ErrorEvent(JS::Realm& realm, FlyString const& event_name, ErrorEventInit const& event_init)
-    : DOM::Event(realm, event_name.to_deprecated_fly_string())
+    : DOM::Event(realm, event_name)
     , m_message(event_init.message)
     , m_filename(event_init.filename)
     , m_lineno(event_init.lineno)
@@ -31,12 +34,10 @@ ErrorEvent::ErrorEvent(JS::Realm& realm, FlyString const& event_name, ErrorEvent
 
 ErrorEvent::~ErrorEvent() = default;
 
-JS::ThrowCompletionOr<void> ErrorEvent::initialize(JS::Realm& realm)
+void ErrorEvent::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::ErrorEventPrototype>(realm, "ErrorEvent"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(ErrorEvent);
 }
 
 void ErrorEvent::visit_edges(Cell::Visitor& visitor)

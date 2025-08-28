@@ -47,8 +47,8 @@ public:
     void for_each_memory_region_info(Func func) const;
 
     struct LibraryInfo {
-        DeprecatedString name;
-        DeprecatedString path;
+        ByteString name;
+        ByteString path;
         FlatPtr base_address { 0 };
     };
 
@@ -64,26 +64,26 @@ public:
     Optional<MemoryRegionInfo> region_containing(FlatPtr address) const;
 
     struct LibraryData {
-        DeprecatedString name;
+        ByteString name;
         FlatPtr base_address { 0 };
-        NonnullRefPtr<Core::MappedFile> file;
+        NonnullOwnPtr<Core::MappedFile> file;
         ELF::Image lib_elf;
     };
     LibraryData const* library_containing(FlatPtr address) const;
 
-    DeprecatedString resolve_object_path(StringView object_name) const;
+    ByteString resolve_object_path(StringView object_name) const;
 
     int process_pid() const;
     u8 process_termination_signal() const;
-    DeprecatedString process_executable_path() const;
-    Vector<DeprecatedString> process_arguments() const;
-    Vector<DeprecatedString> process_environment() const;
-    HashMap<DeprecatedString, DeprecatedString> metadata() const;
+    ByteString process_executable_path() const;
+    Vector<ByteString> process_arguments() const;
+    Vector<ByteString> process_environment() const;
+    HashMap<ByteString, ByteString> metadata() const;
 
 private:
     explicit Reader(ReadonlyBytes);
     explicit Reader(ByteBuffer);
-    explicit Reader(NonnullRefPtr<Core::MappedFile>);
+    explicit Reader(NonnullOwnPtr<Core::MappedFile>);
 
     static Optional<ByteBuffer> decompress_coredump(ReadonlyBytes);
 
@@ -105,10 +105,10 @@ private:
     // Private as we don't need anyone poking around in this JsonObject
     // manually - we know very well what should be included and expose that
     // as getters with the appropriate (non-JsonValue) types.
-    const JsonObject process_info() const;
+    JsonObject const process_info() const;
 
     // For uncompressed coredumps, we keep the MappedFile
-    RefPtr<Core::MappedFile> m_mapped_file;
+    OwnPtr<Core::MappedFile> m_mapped_file;
 
     // For compressed coredumps, we decompress them into a ByteBuffer
     ByteBuffer m_coredump_buffer;

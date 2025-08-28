@@ -14,20 +14,20 @@
 
 namespace Web::Bindings {
 
+JS_DEFINE_ALLOCATOR(ImageConstructor);
+
 ImageConstructor::ImageConstructor(JS::Realm& realm)
-    : NativeFunction(*realm.intrinsics().function_prototype())
+    : NativeFunction(realm.intrinsics().function_prototype())
 {
 }
 
-JS::ThrowCompletionOr<void> ImageConstructor::initialize(JS::Realm& realm)
+void ImageConstructor::initialize(JS::Realm& realm)
 {
     auto& vm = this->vm();
+    Base::initialize(realm);
 
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
-    define_direct_property(vm.names.prototype, &ensure_web_prototype<Bindings::HTMLImageElementPrototype>(realm, "HTMLImageElement"), 0);
+    define_direct_property(vm.names.prototype, &ensure_web_prototype<Bindings::HTMLImageElementPrototype>(realm, "HTMLImageElement"_fly_string), 0);
     define_direct_property(vm.names.length, JS::Value(0), JS::Attribute::Configurable);
-
-    return {};
 }
 
 JS::ThrowCompletionOr<JS::Value> ImageConstructor::call()
@@ -50,13 +50,13 @@ JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Object>> ImageConstructor::construct(
     // 3. If width is given, then set an attribute value for img using "width" and width.
     if (vm.argument_count() > 0) {
         u32 width = TRY(vm.argument(0).to_u32(vm));
-        MUST(image_element->set_attribute(HTML::AttributeNames::width, DeprecatedString::formatted("{}", width)));
+        MUST(image_element->set_attribute(HTML::AttributeNames::width, MUST(String::formatted("{}", width))));
     }
 
     // 4. If height is given, then set an attribute value for img using "height" and height.
     if (vm.argument_count() > 1) {
         u32 height = TRY(vm.argument(1).to_u32(vm));
-        MUST(image_element->set_attribute(HTML::AttributeNames::height, DeprecatedString::formatted("{}", height)));
+        MUST(image_element->set_attribute(HTML::AttributeNames::height, MUST(String::formatted("{}", height))));
     }
 
     // 5. Return img.

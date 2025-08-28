@@ -6,8 +6,9 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/OwnPtr.h>
+#include <AK/String.h>
 #include <LibMarkdown/Block.h>
 #include <LibMarkdown/ContainerBlock.h>
 
@@ -19,9 +20,9 @@ public:
         : m_container(move(container))
     {
     }
-    DeprecatedString render_to_html(StringView extra_head_contents = ""sv) const;
-    DeprecatedString render_to_inline_html() const;
-    DeprecatedString render_for_terminal(size_t view_width = 0) const;
+    ByteString render_to_html(StringView extra_head_contents = ""sv) const;
+    ByteString render_to_inline_html() const;
+    ErrorOr<String> render_for_terminal(size_t view_width = 0) const;
 
     /*
      * Walk recursively through the document tree. Returning `RecursionDecision::Recurse` from

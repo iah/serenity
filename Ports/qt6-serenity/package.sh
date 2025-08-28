@@ -4,7 +4,9 @@ version=git
 depends=("qt6-qtbase")
 workdir=QSerenityPlatform-master
 useconfigure=true
-files="https://github.com/SerenityPorts/QSerenityPlatform/archive/master.zip QSerenityPlatform-git.zip"
+files=(
+    "https://github.com/SerenityPorts/QSerenityPlatform/archive/master.zip#522cbb41e814a3d6553d3761380f9ce08e341fd5a8137ef8cfa9fe555317c6c0"
+)
 configopts=(
     "-GNinja"
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"

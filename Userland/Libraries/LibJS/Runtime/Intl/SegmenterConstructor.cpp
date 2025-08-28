@@ -15,15 +15,17 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(SegmenterConstructor);
+
 // 18.1 The Intl.Segmenter Constructor, https://tc39.es/ecma402/#sec-intl-segmenter-constructor
 SegmenterConstructor::SegmenterConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.Segmenter.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.Segmenter.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> SegmenterConstructor::initialize(Realm& realm)
+void SegmenterConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -33,8 +35,6 @@ ThrowCompletionOr<void> SegmenterConstructor::initialize(Realm& realm)
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.supportedLocalesOf, supported_locales_of, 1, attr);
-
-    return {};
 }
 
 // 18.1.1 Intl.Segmenter ( [ locales [ , options ] ] ), https://tc39.es/ecma402/#sec-intl.segmenter
@@ -71,21 +71,22 @@ ThrowCompletionOr<NonnullGCPtr<Object>> SegmenterConstructor::construct(Function
     // 8. Set opt.[[localeMatcher]] to matcher.
     opt.locale_matcher = matcher;
 
-    // 9. Let localeData be %Segmenter%.[[LocaleData]].
+    // 9. Let r be ResolveLocale(%Intl.Segmenter%.[[AvailableLocales]], requestedLocales, opt, %Intl.Segmenter%.[[RelevantExtensionKeys]], %Intl.Segmenter%.[[LocaleData]]).
+    auto result = resolve_locale(requested_locales, opt, {});
 
-    // 10. Let r be ResolveLocale(%Segmenter%.[[AvailableLocales]], requestedLocales, opt, %Segmenter%.[[RelevantExtensionKeys]], localeData).
-    auto result = TRY(resolve_locale(vm, requested_locales, opt, {}));
-
-    // 11. Set segmenter.[[Locale]] to r.[[locale]].
+    // 10. Set segmenter.[[Locale]] to r.[[locale]].
     segmenter->set_locale(move(result.locale));
 
-    // 12. Let granularity be ? GetOption(options, "granularity", string, « "grapheme", "word", "sentence" », "grapheme").
+    // 11. Let granularity be ? GetOption(options, "granularity", string, « "grapheme", "word", "sentence" », "grapheme").
     auto granularity = TRY(get_option(vm, *options, vm.names.granularity, OptionType::String, { "grapheme"sv, "word"sv, "sentence"sv }, "grapheme"sv));
 
-    // 13. Set segmenter.[[SegmenterGranularity]] to granularity.
-    segmenter->set_segmenter_granularity(TRY(granularity.as_string().utf8_string_view()));
+    // 12. Set segmenter.[[SegmenterGranularity]] to granularity.
+    segmenter->set_segmenter_granularity(granularity.as_string().utf8_string_view());
 
-    // 14. Return segmenter.
+    auto locale_segmenter = ::Locale::Segmenter::create(segmenter->locale(), segmenter->segmenter_granularity());
+    segmenter->set_segmenter(move(locale_segmenter));
+
+    // 13. Return segmenter.
     return segmenter;
 }
 

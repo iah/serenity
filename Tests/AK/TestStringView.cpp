@@ -6,7 +6,7 @@
 
 #include <LibTest/TestCase.h>
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Vector.h>
 
 TEST_CASE(construct_empty)
@@ -29,8 +29,8 @@ TEST_CASE(view_literal)
 
 TEST_CASE(compare_views)
 {
-    DeprecatedString foo1 = "foo";
-    DeprecatedString foo2 = "foo";
+    ByteString foo1 = "foo";
+    ByteString foo2 = "foo";
     auto view1 = foo1.view();
     auto view2 = foo2.view();
 
@@ -38,12 +38,19 @@ TEST_CASE(compare_views)
     EXPECT_EQ(view1, foo1);
     EXPECT_EQ(view1, foo2);
     EXPECT_EQ(view1, "foo");
+
+    ByteString empty = "";
+    auto empty_view = view1.substring_view(0, 0);
+    StringView default_view = {};
+    EXPECT_EQ(empty.view(), ""sv);
+    EXPECT_EQ(empty_view, ""sv);
+    EXPECT_EQ(default_view, ""sv);
 }
 
 TEST_CASE(string_view_literal_operator)
 {
     StringView literal_view = "foo"sv;
-    DeprecatedString test_string = "foo";
+    ByteString test_string = "foo";
 
     EXPECT_EQ(literal_view.length(), test_string.length());
     EXPECT_EQ(literal_view, test_string);
@@ -51,7 +58,7 @@ TEST_CASE(string_view_literal_operator)
 
 TEST_CASE(starts_with)
 {
-    DeprecatedString test_string = "ABCDEF";
+    ByteString test_string = "ABCDEF";
     StringView test_string_view = test_string.view();
     EXPECT(test_string_view.starts_with('A'));
     EXPECT(!test_string_view.starts_with('B'));
@@ -64,7 +71,7 @@ TEST_CASE(starts_with)
 
 TEST_CASE(ends_with)
 {
-    DeprecatedString test_string = "ABCDEF";
+    ByteString test_string = "ABCDEF";
     StringView test_string_view = test_string.view();
     EXPECT(test_string_view.ends_with("DEF"sv));
     EXPECT(test_string_view.ends_with('F'));
@@ -78,23 +85,23 @@ TEST_CASE(ends_with)
 
 TEST_CASE(lines)
 {
-    DeprecatedString test_string = "a\rb\nc\r\nd";
+    ByteString test_string = "a\rb\nc\r\nd";
     StringView test_string_view = test_string.view();
     Vector<StringView> test_string_vector = test_string_view.lines();
     EXPECT_EQ(test_string_vector.size(), 4u);
-    EXPECT(test_string_vector.at(0) == DeprecatedString("a"));
-    EXPECT(test_string_vector.at(1) == DeprecatedString("b"));
-    EXPECT(test_string_vector.at(2) == DeprecatedString("c"));
-    EXPECT(test_string_vector.at(3) == DeprecatedString("d"));
+    EXPECT(test_string_vector.at(0) == ByteString("a"));
+    EXPECT(test_string_vector.at(1) == ByteString("b"));
+    EXPECT(test_string_vector.at(2) == ByteString("c"));
+    EXPECT(test_string_vector.at(3) == ByteString("d"));
 
     test_string = "```\nHello there\r\nHello there\n```";
     test_string_view = test_string.view();
     test_string_vector = test_string_view.lines();
     EXPECT_EQ(test_string_vector.size(), 4u);
-    EXPECT(test_string_vector.at(0) == DeprecatedString("```"));
-    EXPECT(test_string_vector.at(1) == DeprecatedString("Hello there"));
-    EXPECT(test_string_vector.at(2) == DeprecatedString("Hello there"));
-    EXPECT(test_string_vector.at(3) == DeprecatedString("```"));
+    EXPECT(test_string_vector.at(0) == ByteString("```"));
+    EXPECT(test_string_vector.at(1) == ByteString("Hello there"));
+    EXPECT(test_string_vector.at(2) == ByteString("Hello there"));
+    EXPECT(test_string_vector.at(3) == ByteString("```"));
 
     test_string = "\n\n\n";
     test_string_view = test_string.view();
@@ -103,6 +110,24 @@ TEST_CASE(lines)
     EXPECT_EQ(test_string_vector.at(0).is_empty(), true);
     EXPECT_EQ(test_string_vector.at(1).is_empty(), true);
     EXPECT_EQ(test_string_vector.at(2).is_empty(), true);
+}
+
+TEST_CASE(count_lines)
+{
+    EXPECT_EQ(""sv.count_lines(), 1u);
+    EXPECT_EQ("foo"sv.count_lines(), 1u);
+
+    EXPECT_EQ("foo\nbar"sv.count_lines(), 2u);
+    EXPECT_EQ("foo\rbar"sv.count_lines(), 2u);
+    EXPECT_EQ("foo\rbar"sv.count_lines(StringView::ConsiderCarriageReturn::No), 1u);
+    EXPECT_EQ("foo\r\nbar"sv.count_lines(), 2u);
+    EXPECT_EQ("foo\r\nbar"sv.count_lines(StringView::ConsiderCarriageReturn::No), 2u);
+
+    EXPECT_EQ("foo\nbar\nbax"sv.count_lines(), 3u);
+    EXPECT_EQ("foo\rbar\rbaz"sv.count_lines(), 3u);
+    EXPECT_EQ("foo\rbar\rbaz"sv.count_lines(StringView::ConsiderCarriageReturn::No), 1u);
+    EXPECT_EQ("foo\r\nbar\r\nbaz"sv.count_lines(), 3u);
+    EXPECT_EQ("foo\r\nbar\r\nbaz"sv.count_lines(StringView::ConsiderCarriageReturn::No), 3u);
 }
 
 TEST_CASE(find)
@@ -161,8 +186,6 @@ TEST_CASE(split_view)
     Function<bool(char)> predicate = [](char ch) { return ch == 'x' || ch == '_'; };
     EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
     EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
 
     test_string_view = "a,,,b"sv;
     EXPECT_EQ(test_string_view.split_view(","sv, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, ""sv, "b"sv }));
@@ -196,7 +219,7 @@ TEST_CASE(case_insensitive_hash)
     auto string3 = "aBcDeF"sv;
     auto string4 = "foo"sv;
 
-    EXPECT_EQ(CaseInsensitiveStringViewTraits::hash(string1), CaseInsensitiveStringViewTraits::hash(string2));
-    EXPECT_EQ(CaseInsensitiveStringViewTraits::hash(string1), CaseInsensitiveStringViewTraits::hash(string3));
-    EXPECT_NE(CaseInsensitiveStringViewTraits::hash(string1), CaseInsensitiveStringViewTraits::hash(string4));
+    EXPECT_EQ(CaseInsensitiveASCIIStringViewTraits::hash(string1), CaseInsensitiveASCIIStringViewTraits::hash(string2));
+    EXPECT_EQ(CaseInsensitiveASCIIStringViewTraits::hash(string1), CaseInsensitiveASCIIStringViewTraits::hash(string3));
+    EXPECT_NE(CaseInsensitiveASCIIStringViewTraits::hash(string1), CaseInsensitiveASCIIStringViewTraits::hash(string4));
 }

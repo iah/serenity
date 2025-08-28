@@ -10,26 +10,27 @@
 
 #include <AK/ByteBuffer.h>
 #include <AK/RefCounted.h>
-#include <AK/URL.h>
 #include <AK/Weakable.h>
+#include <LibURL/URL.h>
 #include <LibWeb/DOM/EventTarget.h>
+#include <LibWeb/DOMURL/URLSearchParams.h>
 #include <LibWeb/Fetch/BodyInit.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Headers.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Statuses.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/MimeSniff/MimeType.h>
-#include <LibWeb/URL/URLSearchParams.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/XHR/XMLHttpRequestEventTarget.h>
 
 namespace Web::XHR {
 
 // https://fetch.spec.whatwg.org/#typedefdef-xmlhttprequestbodyinit
-using DocumentOrXMLHttpRequestBodyInit = Variant<JS::Handle<Web::DOM::Document>, JS::Handle<Web::FileAPI::Blob>, JS::Handle<JS::Object>, JS::Handle<Web::URL::URLSearchParams>, AK::String>;
+using DocumentOrXMLHttpRequestBodyInit = Variant<JS::Handle<Web::DOM::Document>, JS::Handle<Web::FileAPI::Blob>, JS::Handle<WebIDL::BufferSource>, JS::Handle<XHR::FormData>, JS::Handle<Web::DOMURL::URLSearchParams>, AK::String>;
 
 class XMLHttpRequest final : public XMLHttpRequestEventTarget {
     WEB_PLATFORM_OBJECT(XMLHttpRequest, XMLHttpRequestEventTarget);
+    JS_DECLARE_ALLOCATOR(XMLHttpRequest);
 
 public:
     enum class State : u16 {
@@ -44,12 +45,14 @@ public:
 
     virtual ~XMLHttpRequest() override;
 
-    State ready_state() const { return m_state; };
+    State ready_state() const { return m_state; }
     Fetch::Infrastructure::Status status() const;
     WebIDL::ExceptionOr<String> status_text() const;
     WebIDL::ExceptionOr<String> response_text() const;
+    WebIDL::ExceptionOr<JS::GCPtr<DOM::Document>> response_xml();
     WebIDL::ExceptionOr<JS::Value> response();
     Bindings::XMLHttpRequestResponseType response_type() const { return m_response_type; }
+    String response_url();
 
     WebIDL::ExceptionOr<void> open(String const& method, String const& url);
     WebIDL::ExceptionOr<void> open(String const& method, String const& url, bool async, Optional<String> const& username = Optional<String> {}, Optional<String> const& password = Optional<String> {});
@@ -77,19 +80,20 @@ public:
     JS::NonnullGCPtr<XMLHttpRequestUpload> upload() const;
 
 private:
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
     virtual bool must_survive_garbage_collection() const override;
 
-    ErrorOr<MimeSniff::MimeType> get_response_mime_type() const;
-    ErrorOr<Optional<StringView>> get_final_encoding() const;
-    ErrorOr<MimeSniff::MimeType> get_final_mime_type() const;
+    [[nodiscard]] MimeSniff::MimeType get_response_mime_type() const;
+    [[nodiscard]] Optional<StringView> get_final_encoding() const;
+    [[nodiscard]] MimeSniff::MimeType get_final_mime_type() const;
 
     String get_text_response() const;
+    void set_document_response();
 
     WebIDL::ExceptionOr<void> handle_response_end_of_body();
     WebIDL::ExceptionOr<void> handle_errors();
-    JS::ThrowCompletionOr<void> request_error_steps(DeprecatedFlyString const& event_name, JS::GCPtr<WebIDL::DOMException> exception = nullptr);
+    JS::ThrowCompletionOr<void> request_error_steps(FlyString const& event_name, JS::GCPtr<WebIDL::DOMException> exception = nullptr);
 
     XMLHttpRequest(JS::Realm&, XMLHttpRequestUpload&, Fetch::Infrastructure::HeaderList&, Fetch::Infrastructure::Response&, Fetch::Infrastructure::FetchController&);
 
@@ -121,12 +125,12 @@ private:
     // https://xhr.spec.whatwg.org/#request-method
     // request method
     //     A method.
-    DeprecatedString m_request_method;
+    ByteString m_request_method;
 
     // https://xhr.spec.whatwg.org/#request-url
     // request URL
     //     A URL.
-    AK::URL m_request_url;
+    URL::URL m_request_url;
 
     // https://xhr.spec.whatwg.org/#author-request-headers
     // author request headers
@@ -136,7 +140,7 @@ private:
     // https://xhr.spec.whatwg.org/#request-body
     // request body
     //     Initially null.
-    Optional<Fetch::Infrastructure::Body> m_request_body;
+    JS::GCPtr<Fetch::Infrastructure::Body> m_request_body;
 
     // https://xhr.spec.whatwg.org/#synchronous-flag
     // synchronous flag
@@ -181,7 +185,7 @@ private:
     // response object
     //     An object, failure, or null, initially null.
     //     NOTE: This needs to be a JS::Value as the JSON response might not actually be an object.
-    Variant<JS::Value, Failure, Empty> m_response_object;
+    Variant<JS::NonnullGCPtr<JS::Object>, Failure, Empty> m_response_object;
 
     // https://xhr.spec.whatwg.org/#xmlhttprequest-fetch-controller
     // fetch controller

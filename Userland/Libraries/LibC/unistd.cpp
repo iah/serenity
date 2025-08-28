@@ -4,12 +4,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/ScopeGuard.h>
 #include <AK/ScopedValueRollback.h>
 #include <AK/Vector.h>
 #include <Kernel/API/Unveil.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibFileSystem/FileSystem.h>
 #include <alloca.h>
 #include <assert.h>
 #include <bits/pthread_cancel.h>
@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -188,13 +189,13 @@ int execvpe(char const* filename, char* const argv[], char* const envp[])
 
     ScopedValueRollback errno_rollback(errno);
 
-    // TODO: Make this use the PATH search implementation from Core::DeprecatedFile.
-    DeprecatedString path = getenv("PATH");
+    // TODO: Make this use the PATH search implementation from LibFileSystem.
+    ByteString path = getenv("PATH");
     if (path.is_empty())
         path = DEFAULT_PATH;
     auto parts = path.split(':');
     for (auto& part : parts) {
-        auto candidate = DeprecatedString::formatted("{}/{}", part, filename);
+        auto candidate = ByteString::formatted("{}/{}", part, filename);
         int rc = execve(candidate.characters(), argv, envp);
         if (rc < 0 && errno != ENOENT) {
             errno_rollback.set_override_rollback_value(errno);
@@ -391,7 +392,7 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset)
 {
     __pthread_maybe_cancel();
 
-    int rc = syscall(SC_pread, fd, buf, count, &offset);
+    int rc = syscall(SC_pread, fd, buf, count, offset);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
@@ -431,6 +432,7 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
 
     struct dirent* entry = nullptr;
     char* name_path = nullptr;
+    auto const directory_name_length = strlen(directory_name);
 
     // FIXME: Use LibCore DirIterator here instead
     while ((entry = readdir(dirstream)) != nullptr) {
@@ -439,7 +441,7 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
             && strcmp(entry->d_name, "stdout")
             && strcmp(entry->d_name, "stderr")) {
 
-            size_t name_length = strlen(directory_name) + strlen(entry->d_name) + 1;
+            size_t name_length = directory_name_length + strlen(entry->d_name) + 1;
 
             if (name_length > size) {
                 errno = ERANGE;
@@ -447,9 +449,12 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
             }
 
             name_path = (char*)malloc(name_length);
+            // FIXME: ttyname_r() is not allowed to return ENOMEM, find better way to store name_path,
+            //        perhaps a static storage.
+            VERIFY(name_path);
             memset(name_path, 0, name_length);
-            memcpy(name_path, directory_name, strlen(directory_name));
-            memcpy(&name_path[strlen(directory_name)], entry->d_name, strlen(entry->d_name));
+            memcpy(name_path, directory_name, directory_name_length);
+            memcpy(&name_path[directory_name_length], entry->d_name, strlen(entry->d_name));
             struct stat st;
             if (lstat(name_path, &st) < 0) {
                 free(name_path);
@@ -824,11 +829,17 @@ int faccessat(int dirfd, char const* pathname, int mode, int flags)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknod.html
 int mknod(char const* pathname, mode_t mode, dev_t dev)
 {
+    return mknodat(AT_FDCWD, pathname, mode, dev);
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknodat.html
+int mknodat(int dirfd, char const* pathname, mode_t mode, dev_t dev)
+{
     if (!pathname) {
         errno = EFAULT;
         return -1;
     }
-    Syscall::SC_mknod_params params { { pathname, strlen(pathname) }, mode, dev };
+    Syscall::SC_mknod_params params { { pathname, strlen(pathname) }, mode, dev, dirfd };
     int rc = syscall(SC_mknod, &params);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
@@ -880,23 +891,23 @@ void sync()
     syscall(SC_sync);
 }
 
-static DeprecatedString getlogin_buffer;
+static Optional<ByteString> getlogin_buffer {};
 
 char* getlogin()
 {
-    if (getlogin_buffer.is_null()) {
+    if (!getlogin_buffer.has_value()) {
         if (auto* passwd = getpwuid(getuid())) {
-            getlogin_buffer = DeprecatedString(passwd->pw_name);
+            getlogin_buffer = ByteString(passwd->pw_name);
         }
         endpwent();
     }
-    return const_cast<char*>(getlogin_buffer.characters());
+    return const_cast<char*>(getlogin_buffer->characters());
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/ftruncate.html
 int ftruncate(int fd, off_t length)
 {
-    int rc = syscall(SC_ftruncate, fd, &length);
+    int rc = syscall(SC_ftruncate, fd, length);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
@@ -924,12 +935,6 @@ int gettid()
     return cached_tid;
 }
 
-int sysbeep(int tone)
-{
-    int rc = syscall(SC_beep, tone);
-    __RETURN_WITH_ERRNO(rc, rc, -1);
-}
-
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/fsync.html
 int fsync(int fd)
 {
@@ -939,26 +944,74 @@ int fsync(int fd)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-int mount(int source_fd, char const* target, char const* fs_type, int flags)
+int fsopen(char const* fs_type, int flags)
 {
-    if (!target || !fs_type) {
+    if (!fs_type) {
         errno = EFAULT;
         return -1;
     }
 
-    Syscall::SC_mount_params params {
-        { target, strlen(target) },
+    Syscall::SC_fsopen_params params {
         { fs_type, strlen(fs_type) },
-        source_fd,
-        flags
+        flags,
     };
-    int rc = syscall(SC_mount, &params);
+    int rc = syscall(SC_fsopen, &params);
     __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int fsmount(int vfs_context_id, int mount_fd, int source_fd, char const* target)
+{
+    if (!target) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    Syscall::SC_fsmount_params params {
+        vfs_context_id,
+        mount_fd,
+        { target, strlen(target) },
+        source_fd,
+    };
+    int rc = syscall(SC_fsmount, &params);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int bindmount(int vfs_context_id, int source_fd, char const* target, int flags)
+{
+    if (!target) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    Syscall::SC_bindmount_params params {
+        vfs_context_id,
+        { target, strlen(target) },
+        source_fd,
+        flags,
+    };
+    int rc = syscall(SC_bindmount, &params);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int mount(int source_fd, char const* target, char const* fs_type, int flags)
+{
+    if (flags & MS_BIND)
+        return bindmount(-1, source_fd, target, flags);
+
+    int mount_fd = fsopen(fs_type, flags);
+    if (mount_fd < 0)
+        return -1;
+
+    return fsmount(-1, mount_fd, source_fd, target);
 }
 
 int umount(char const* mountpoint)
 {
-    int rc = syscall(SC_umount, mountpoint, strlen(mountpoint));
+    Syscall::SC_umount_params params {
+        -1,
+        { mountpoint, strlen(mountpoint) },
+    };
+    int rc = syscall(SC_umount, &params);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
@@ -969,13 +1022,13 @@ void dump_backtrace()
 
 int get_process_name(char* buffer, int buffer_size)
 {
-    int rc = syscall(SC_get_process_name, buffer, buffer_size);
+    int rc = syscall(SC_prctl, PR_GET_PROCESS_NAME, buffer, buffer_size, nullptr);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
 int set_process_name(char const* name, size_t name_length)
 {
-    int rc = syscall(SC_set_process_name, name, name_length);
+    int rc = syscall(SC_prctl, PR_SET_PROCESS_NAME, name, name_length, nullptr);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 

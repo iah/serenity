@@ -7,13 +7,11 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/ByteString.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
-#include <AK/ScopeGuard.h>
 #include <LibSQL/Forward.h>
 #include <LibSQL/Heap.h>
-#include <string.h>
 
 namespace SQL {
 
@@ -26,13 +24,9 @@ public:
     {
     }
 
-    void get_block(u32 pointer)
+    void read_storage(Block::Index block_index)
     {
-        VERIFY(m_heap.ptr() != nullptr);
-        auto buffer_or_error = m_heap->read_block(pointer);
-        if (buffer_or_error.is_error())
-            VERIFY_NOT_REACHED();
-        m_buffer = buffer_or_error.value();
+        m_buffer = m_heap->read_storage(block_index).release_value_but_fixme_should_propagate_errors();
         m_current_offset = 0;
     }
 
@@ -48,16 +42,16 @@ public:
     }
 
     template<typename T, typename... Args>
-    T deserialize_block(u32 pointer, Args&&... args)
+    T deserialize_block(Block::Index block_index, Args&&... args)
     {
-        get_block(pointer);
+        read_storage(block_index);
         return deserialize<T>(forward<Args>(args)...);
     }
 
     template<typename T>
-    void deserialize_block_to(u32 pointer, T& t)
+    void deserialize_block_to(Block::Index block_index, T& t)
     {
-        get_block(pointer);
+        read_storage(block_index);
         return deserialize_to<T>(t);
     }
 
@@ -70,7 +64,7 @@ public:
             t.deserialize(*this);
     }
 
-    void deserialize_to(DeprecatedString& text);
+    void deserialize_to(ByteString& text);
 
     template<typename T, typename... Args>
     NonnullOwnPtr<T> make_and_deserialize(Args&&... args)
@@ -105,35 +99,32 @@ public:
             t.serialize(*this);
     }
 
-    void serialize(DeprecatedString const&);
+    void serialize(ByteString const&);
 
     template<typename T>
     bool serialize_and_write(T const& t)
     {
-        VERIFY(m_heap.ptr() != nullptr);
+        VERIFY(!m_heap.is_null());
         reset();
         serialize<T>(t);
-        m_heap->add_to_wal(t.pointer(), m_buffer);
+        m_heap->write_storage(t.block_index(), m_buffer).release_value_but_fixme_should_propagate_errors();
         return true;
     }
 
     [[nodiscard]] size_t offset() const { return m_current_offset; }
-    u32 new_record_pointer()
+    u32 request_new_block_index()
     {
-        VERIFY(m_heap.ptr() != nullptr);
-        return m_heap->new_record_pointer();
+        return m_heap->request_new_block_index();
     }
 
     bool has_block(u32 pointer) const
     {
-        VERIFY(m_heap.ptr() != nullptr);
-        return pointer < m_heap->size();
+        return m_heap->has_block(pointer);
     }
 
     Heap& heap()
     {
-        VERIFY(m_heap.ptr() != nullptr);
-        return *(m_heap.ptr());
+        return *m_heap;
     }
 
 private:
@@ -154,22 +145,22 @@ private:
         return buffer_ptr;
     }
 
-    static void dump(u8 const* ptr, size_t sz, DeprecatedString const& prefix)
+    static void dump(u8 const* ptr, size_t sz, ByteString const& prefix)
     {
         StringBuilder builder;
         builder.appendff("{0} {1:04x} | ", prefix, sz);
-        Vector<DeprecatedString> bytes;
-        for (auto ix = 0u; ix < sz; ++ix) {
-            bytes.append(DeprecatedString::formatted("{0:02x}", *(ptr + ix)));
-        }
+        Vector<ByteString> bytes;
+        for (auto ix = 0u; ix < sz; ++ix)
+            bytes.append(ByteString::formatted("{0:02x}", *(ptr + ix)));
         StringBuilder bytes_builder;
         bytes_builder.join(' ', bytes);
-        builder.append(bytes_builder.to_deprecated_string());
-        dbgln(builder.to_deprecated_string());
+        builder.append(bytes_builder.to_byte_string());
+        dbgln(builder.to_byte_string());
     }
 
     ByteBuffer m_buffer {};
     size_t m_current_offset { 0 };
+    // FIXME: make this a NonnullRefPtr<Heap> so we can get rid of the null checks
     RefPtr<Heap> m_heap { nullptr };
 };
 

@@ -66,35 +66,40 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio thread recvfd sendfd rpath cpath wpath unix proc exec"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio thread recvfd sendfd rpath cpath wpath proc exec"));
 
     auto app_icon = GUI::Icon::default_icon("app-screensaver"sv);
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title("Screensaver");
     window->resize(360, 240);
 
-    auto file_menu = TRY(window->try_add_menu("&File"));
+    auto file_menu = window->add_menu("&File"_string);
     file_menu->add_action(GUI::CommonActions::make_quit_action([&](auto&) {
         app->quit();
     }));
 
-    auto help_menu = TRY(window->try_add_menu("&Help"));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_command_palette_action(window)));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Screensaver", app_icon, window)));
+    auto view_menu = window->add_menu("&View"_string);
+    view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window->set_fullscreen(!window->is_fullscreen());
+    }));
 
-    auto main_widget = TRY(window->set_main_widget<GUI::Widget>());
+    auto help_menu = window->add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_command_palette_action(window));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Screensaver"_string, app_icon, window));
+
+    auto main_widget = window->set_main_widget<GUI::Widget>();
     main_widget->set_fill_with_background_color(true);
     main_widget->set_layout<GUI::VerticalBoxLayout>();
 
-    auto icon_view = TRY(main_widget->try_add<GUI::IconView>());
-    icon_view->set_should_hide_unnecessary_scrollbars(true);
+    auto& icon_view = main_widget->add<GUI::IconView>();
+    icon_view.set_should_hide_unnecessary_scrollbars(true);
     auto model = adopt_ref(*new ScreensaverAppsModel);
-    icon_view->set_model(*model);
+    icon_view.set_model(*model);
 
-    icon_view->on_activation = [&](GUI::ModelIndex const& index) {
+    icon_view.on_activation = [&](GUI::ModelIndex const& index) {
         auto executable = model->data(index, GUI::ModelRole::Custom).as_string();
         GUI::Process::spawn_or_show_error(window, executable);
     };

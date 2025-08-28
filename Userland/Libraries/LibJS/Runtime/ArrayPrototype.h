@@ -13,9 +13,10 @@ namespace JS {
 
 class ArrayPrototype final : public Array {
     JS_OBJECT(ArrayPrototype, Array);
+    JS_DECLARE_ALLOCATOR(ArrayPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~ArrayPrototype() override = default;
 
 private:

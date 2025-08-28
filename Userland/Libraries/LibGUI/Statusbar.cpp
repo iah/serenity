@@ -79,44 +79,44 @@ void Statusbar::update_segment(size_t index)
         }
     }
 
-    if (segment->override_text().is_null()) {
-        for (size_t i = 1; i < m_segments.size(); i++) {
-            if (!text(i).is_empty())
-                m_segments[i]->set_visible(true);
-        }
-        segment->set_text(String::from_utf8(segment->restored_text()).release_value_but_fixme_should_propagate_errors());
-        segment->set_frame_shape(Gfx::FrameShape::Panel);
-        if (segment->mode() != Segment::Mode::Proportional)
-            segment->set_fixed_width(segment->restored_width());
-    } else {
+    if (segment->override_text().has_value()) {
         for (size_t i = 1; i < m_segments.size(); i++) {
             if (!m_segments[i]->is_clickable())
                 m_segments[i]->set_visible(false);
         }
-        segment->set_text(String::from_utf8(segment->override_text()).release_value_but_fixme_should_propagate_errors());
-        segment->set_frame_shape(Gfx::FrameShape::NoFrame);
+        segment->set_text(*segment->override_text());
+        segment->set_frame_style(Gfx::FrameStyle::NoFrame);
         if (segment->mode() != Segment::Mode::Proportional)
             segment->set_fixed_width(SpecialDimension::Grow);
+    } else {
+        for (size_t i = 1; i < m_segments.size(); i++) {
+            if (!text(i).is_empty())
+                m_segments[i]->set_visible(true);
+        }
+        segment->set_text(segment->restored_text());
+        segment->set_frame_style(Gfx::FrameStyle::SunkenPanel);
+        if (segment->mode() != Segment::Mode::Proportional)
+            segment->set_fixed_width(segment->restored_width());
     }
 }
 
-DeprecatedString Statusbar::text(size_t index) const
+String Statusbar::text(size_t index) const
 {
-    return m_segments[index]->text().to_deprecated_string();
+    return m_segments[index]->text();
 }
 
-void Statusbar::set_text(DeprecatedString text)
+void Statusbar::set_text(String text)
 {
     set_text(0, move(text));
 }
 
-void Statusbar::set_text(size_t index, DeprecatedString text)
+void Statusbar::set_text(size_t index, String text)
 {
     m_segments[index]->m_restored_text = move(text);
     update_segment(index);
 }
 
-void Statusbar::set_override_text(DeprecatedString override_text)
+void Statusbar::set_override_text(Optional<String> override_text)
 {
     m_segments[0]->m_override_text = move(override_text);
     update_segment(0);
@@ -151,7 +151,8 @@ void Statusbar::Segment::paint_event(PaintEvent& event)
     Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
-    Gfx::StylePainter::current().paint_frame(painter, rect(), palette(), m_shape, Gfx::FrameShadow::Sunken, m_thickness, spans_entire_window_horizontally());
+    bool skip_vertical_lines = window()->is_maximized() && spans_entire_window_horizontally();
+    Gfx::StylePainter::current().paint_frame(painter, rect(), palette(), m_style, skip_vertical_lines);
 
     if (is_clickable())
         Button::paint_event(event);

@@ -31,6 +31,8 @@ HeaderView::HeaderView(AbstractTableView& table_view, Gfx::Orientation orientati
     }
 }
 
+HeaderView::~HeaderView() = default;
+
 void HeaderView::set_section_size(int section, int size)
 {
     auto& data = section_data(section);
@@ -81,8 +83,8 @@ HeaderView::VisibleSectionRange HeaderView::visible_section_range() const
     auto section_count = this->section_count();
     auto is_horizontal = m_orientation == Orientation::Horizontal;
     auto rect = m_table_view.visible_content_rect();
-    auto start = is_horizontal ? rect.top_left().x() : rect.top_left().y();
-    auto end = is_horizontal ? (rect.top_left().x() + m_table_view.content_width()) : rect.bottom_left().y();
+    auto start = is_horizontal ? rect.left() : rect.top();
+    auto end = is_horizontal ? (rect.left() + m_table_view.content_width()) : rect.bottom() - 1;
     auto offset = 0;
     VisibleSectionRange range;
     for (; range.end < section_count; ++range.end) {
@@ -113,7 +115,7 @@ Gfx::IntRect HeaderView::section_resize_grabbable_rect(int section) const
     if (m_orientation == Gfx::Orientation::Vertical)
         return {};
     auto rect = section_rect(section);
-    return { rect.right() - 1, rect.top(), 4, rect.height() };
+    return { rect.right() - 2, rect.top(), 4, rect.height() };
 }
 
 int HeaderView::section_count() const
@@ -250,8 +252,8 @@ void HeaderView::mouseup_event(MouseEvent& event)
 
 void HeaderView::paint_horizontal(Painter& painter)
 {
-    painter.draw_line({ 0, 0 }, { rect().right(), 0 }, palette().threed_highlight());
-    painter.draw_line({ 0, rect().bottom() }, { rect().right(), rect().bottom() }, palette().threed_shadow1());
+    painter.draw_line({ 0, 0 }, { rect().right() - 1, 0 }, palette().threed_highlight());
+    painter.draw_line({ 0, rect().bottom() - 1 }, { rect().right() - 1, rect().bottom() - 1 }, palette().threed_shadow1());
     auto range = visible_section_range();
     int x_offset = range.start_offset;
     for (int section = range.start; section < range.end; ++section) {
@@ -265,14 +267,14 @@ void HeaderView::paint_horizontal(Painter& painter)
         bool hovered = section == m_hovered_section && model()->is_column_sortable(section);
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, pressed, hovered);
 
-        auto text = model()->column_name(section);
+        auto text = model()->column_name(section).release_value_but_fixme_should_propagate_errors();
         auto text_rect = cell_rect.shrunken(m_table_view.horizontal_padding() * 2, 0);
         if (pressed)
             text_rect.translate_by(1, 1);
         painter.draw_text(text_rect, text, font(), section_data.alignment, palette().button_text());
 
         if (is_key_column && (m_table_view.sort_order() != SortOrder::None)) {
-            Gfx::IntPoint offset { text_rect.x() + static_cast<int>(ceilf(font().width(text))) + sorting_arrow_offset, sorting_arrow_offset };
+            Gfx::IntPoint offset { text_rect.x() + font().width_rounded_up(text) + sorting_arrow_offset, sorting_arrow_offset };
             auto coordinates = m_table_view.sort_order() == SortOrder::Ascending
                 ? ascending_arrow_coordinates.span()
                 : descending_arrow_coordinates.span();
@@ -283,7 +285,7 @@ void HeaderView::paint_horizontal(Painter& painter)
         x_offset += section_width + m_table_view.horizontal_padding() * 2;
     }
 
-    if (x_offset < rect().right()) {
+    if (x_offset < rect().right() - 1) {
         Gfx::IntRect cell_rect(x_offset, 0, width() - x_offset, height());
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, false, false);
     }
@@ -291,8 +293,8 @@ void HeaderView::paint_horizontal(Painter& painter)
 
 void HeaderView::paint_vertical(Painter& painter)
 {
-    painter.draw_line(rect().top_left(), rect().bottom_left(), palette().threed_highlight());
-    painter.draw_line(rect().top_right(), rect().bottom_right(), palette().threed_shadow1());
+    painter.draw_line(rect().top_left(), rect().bottom_left().moved_up(1), palette().threed_highlight());
+    painter.draw_line(rect().top_right().moved_left(1), rect().bottom_right().translated(-1), palette().threed_shadow1());
     auto range = visible_section_range();
     int y_offset = range.start_offset;
     for (int section = range.start; section < range.end; ++section) {
@@ -304,7 +306,7 @@ void HeaderView::paint_vertical(Painter& painter)
         bool pressed = section == m_pressed_section && m_pressed_section_is_pressed;
         bool hovered = false;
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, pressed, hovered);
-        DeprecatedString text = DeprecatedString::number(section);
+        ByteString text = ByteString::number(section);
         auto text_rect = cell_rect.shrunken(m_table_view.horizontal_padding() * 2, 0);
         if (pressed)
             text_rect.translate_by(1, 1);
@@ -312,7 +314,7 @@ void HeaderView::paint_vertical(Painter& painter)
         y_offset += section_size;
     }
 
-    if (y_offset < rect().bottom()) {
+    if (y_offset < rect().bottom() - 1) {
         Gfx::IntRect cell_rect(0, y_offset, width(), height() - y_offset);
         Gfx::StylePainter::paint_button(painter, cell_rect, palette(), Gfx::ButtonStyle::Normal, false, false);
     }
@@ -342,6 +344,16 @@ void HeaderView::set_section_visible(int section, bool visible)
     update();
 }
 
+void HeaderView::set_section_selectable(int section, bool selectable)
+{
+    auto& data = section_data(section);
+    if (data.selectable == selectable)
+        return;
+    data.selectable = selectable;
+    if (m_context_menu)
+        m_context_menu = nullptr;
+}
+
 Menu& HeaderView::ensure_context_menu()
 {
     // FIXME: This menu needs to be rebuilt if the model is swapped out,
@@ -358,7 +370,9 @@ Menu& HeaderView::ensure_context_menu()
         int section_count = this->section_count();
         for (int section = 0; section < section_count; ++section) {
             auto& column_data = this->section_data(section);
-            auto name = model()->column_name(section);
+            if (!column_data.selectable)
+                continue;
+            auto name = model()->column_name(section).release_value_but_fixme_should_propagate_errors().to_byte_string();
             column_data.visibility_action = Action::create_checkable(name, [this, section](auto& action) {
                 set_section_visible(section, action.is_checked());
             });

@@ -76,7 +76,7 @@ void Canvas::draw(Gfx::Painter& painter)
 {
     auto active_window_icon = Gfx::Bitmap::load_from_file("/res/icons/16x16/window.png"sv).release_value_but_fixme_should_propagate_errors();
 
-    Gfx::WindowTheme::current().paint_normal_frame(painter, Gfx::WindowTheme::WindowState::Active, Gfx::WindowTheme::WindowMode::Other, { 4, 18, WIDTH - 8, HEIGHT - 29 }, "Well hello friends 🐞"sv, *active_window_icon, palette(), { WIDTH - 20, 6, 16, 16 }, 0, false);
+    palette().window_theme().paint_normal_frame(painter, Gfx::WindowTheme::WindowState::Active, Gfx::WindowTheme::WindowMode::Other, { 4, 18, WIDTH - 8, HEIGHT - 29 }, "Well hello friends 🐞"sv, *active_window_icon, palette(), { WIDTH - 20, 6, 16, 16 }, 0, false);
 
     painter.fill_rect({ 4, 25, WIDTH - 8, HEIGHT - 30 }, palette().color(Gfx::ColorRole::Background));
     painter.draw_rect({ 20, 34, WIDTH - 40, HEIGHT - 45 }, palette().color(Gfx::ColorRole::Selection), true);
@@ -105,23 +105,28 @@ void Canvas::draw(Gfx::Painter& painter)
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::pledge("stdio recvfd sendfd rpath"));
     TRY(Core::System::unveil("/res", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_title("LibGfx Scale Demo");
     window->set_resizable(false);
     window->resize(WIDTH * 2, HEIGHT * 3);
 
-    auto file_menu = TRY(window->try_add_menu("&File"));
-    TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); })));
+    auto file_menu = window->add_menu("&File"_string);
+    file_menu->add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
+
+    auto view_menu = window->add_menu("&View"_string);
+    view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
+        window->set_fullscreen(!window->is_fullscreen());
+    }));
 
     auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-libgfx-demo"sv));
     window->set_icon(app_icon.bitmap_for_size(16));
-    (void)TRY(window->set_main_widget<Canvas>());
+    (void)window->set_main_widget<Canvas>();
     window->show();
 
     return app->exec();

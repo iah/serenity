@@ -18,10 +18,10 @@
 #include <AK/Utf32View.h>
 #include <AK/Utf8View.h>
 #include <LibCore/ConfigFile.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Event.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Notifier.h>
+#include <LibUnicode/Segmentation.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -30,10 +30,6 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <unistd.h>
-
-namespace {
-constexpr u32 ctrl(char c) { return c & 0x3f; }
-}
 
 namespace Line {
 
@@ -54,16 +50,16 @@ Configuration Configuration::from_config(StringView libname)
 
     configuration.set(flags);
 
-    if (refresh.equals_ignoring_case("lazy"sv))
+    if (refresh.equals_ignoring_ascii_case("lazy"sv))
         configuration.set(Configuration::Lazy);
-    else if (refresh.equals_ignoring_case("eager"sv))
+    else if (refresh.equals_ignoring_ascii_case("eager"sv))
         configuration.set(Configuration::Eager);
 
-    if (operation.equals_ignoring_case("full"sv))
+    if (operation.equals_ignoring_ascii_case("full"sv))
         configuration.set(Configuration::OperationMode::Full);
-    else if (operation.equals_ignoring_case("noescapesequences"sv))
+    else if (operation.equals_ignoring_ascii_case("noescapesequences"sv))
         configuration.set(Configuration::OperationMode::NoEscapeSequences);
-    else if (operation.equals_ignoring_case("noninteractive"sv))
+    else if (operation.equals_ignoring_ascii_case("noninteractive"sv))
         configuration.set(Configuration::OperationMode::NonInteractive);
     else
         configuration.set(Configuration::OperationMode::Unset);
@@ -89,19 +85,19 @@ Configuration Configuration::from_config(StringView libname)
                 escape = false;
             } else {
                 if (key_lexer.next_is("alt+")) {
-                    alt = key_lexer.consume_specific("alt+");
+                    alt = key_lexer.consume_specific("alt+"sv);
                     continue;
                 }
                 if (key_lexer.next_is("^[")) {
-                    alt = key_lexer.consume_specific("^[");
+                    alt = key_lexer.consume_specific("^["sv);
                     continue;
                 }
                 if (key_lexer.next_is("^")) {
-                    has_ctrl = key_lexer.consume_specific("^");
+                    has_ctrl = key_lexer.consume_specific("^"sv);
                     continue;
                 }
                 if (key_lexer.next_is("ctrl+")) {
-                    has_ctrl = key_lexer.consume_specific("ctrl+");
+                    has_ctrl = key_lexer.consume_specific("ctrl+"sv);
                     continue;
                 }
                 if (key_lexer.next_is("\\")) {
@@ -156,6 +152,8 @@ void Editor::set_default_keybinds()
     register_key_input_callback(ctrl('K'), EDITOR_INTERNAL_FUNCTION(erase_to_end));
     register_key_input_callback(ctrl('L'), EDITOR_INTERNAL_FUNCTION(clear_screen));
     register_key_input_callback(ctrl('R'), EDITOR_INTERNAL_FUNCTION(enter_search));
+    register_key_input_callback(ctrl(']'), EDITOR_INTERNAL_FUNCTION(search_character_forwards));
+    register_key_input_callback(Key { ctrl(']'), Key::Alt }, EDITOR_INTERNAL_FUNCTION(search_character_backwards));
     register_key_input_callback(ctrl('T'), EDITOR_INTERNAL_FUNCTION(transpose_characters));
     register_key_input_callback('\n', EDITOR_INTERNAL_FUNCTION(finish));
 
@@ -164,11 +162,15 @@ void Editor::set_default_keybinds()
 
     // ^[.: alt-.: insert last arg of previous command (similar to `!$`)
     register_key_input_callback(Key { '.', Key::Alt }, EDITOR_INTERNAL_FUNCTION(insert_last_words));
+    register_key_input_callback(ctrl('Y'), EDITOR_INTERNAL_FUNCTION(insert_last_erased));
     register_key_input_callback(Key { 'b', Key::Alt }, EDITOR_INTERNAL_FUNCTION(cursor_left_word));
     register_key_input_callback(Key { 'f', Key::Alt }, EDITOR_INTERNAL_FUNCTION(cursor_right_word));
+    register_key_input_callback(Key { ctrl('B'), Key::Alt }, EDITOR_INTERNAL_FUNCTION(cursor_left_nonspace_word));
+    register_key_input_callback(Key { ctrl('F'), Key::Alt }, EDITOR_INTERNAL_FUNCTION(cursor_right_nonspace_word));
     // ^[^H: alt-backspace: backward delete word
     register_key_input_callback(Key { '\b', Key::Alt }, EDITOR_INTERNAL_FUNCTION(erase_alnum_word_backwards));
     register_key_input_callback(Key { 'd', Key::Alt }, EDITOR_INTERNAL_FUNCTION(erase_alnum_word_forwards));
+    register_key_input_callback(Key { '\\', Key::Alt }, EDITOR_INTERNAL_FUNCTION(erase_spaces));
     register_key_input_callback(Key { 'c', Key::Alt }, EDITOR_INTERNAL_FUNCTION(capitalize_word));
     register_key_input_callback(Key { 'l', Key::Alt }, EDITOR_INTERNAL_FUNCTION(lowercase_word));
     register_key_input_callback(Key { 'u', Key::Alt }, EDITOR_INTERNAL_FUNCTION(uppercase_word));
@@ -230,11 +232,11 @@ void Editor::get_terminal_size()
     m_num_lines = ws.ws_row;
 }
 
-void Editor::add_to_history(DeprecatedString const& line)
+void Editor::add_to_history(ByteString const& line)
 {
     if (line.is_empty())
         return;
-    DeprecatedString histcontrol = getenv("HISTCONTROL");
+    ByteString histcontrol = getenv("HISTCONTROL");
     auto ignoredups = histcontrol == "ignoredups" || histcontrol == "ignoreboth";
     auto ignorespace = histcontrol == "ignorespace" || histcontrol == "ignoreboth";
     if (ignoredups && !m_history.is_empty() && line == m_history.last().entry)
@@ -249,24 +251,39 @@ void Editor::add_to_history(DeprecatedString const& line)
     m_history_dirty = true;
 }
 
-bool Editor::load_history(DeprecatedString const& path)
+ErrorOr<Vector<Editor::HistoryEntry>> Editor::try_load_history(StringView path)
 {
-    auto history_file = Core::DeprecatedFile::construct(path);
-    if (!history_file->open(Core::OpenMode::ReadOnly))
-        return false;
-    auto data = history_file->read_all();
-    auto hist = StringView { data.data(), data.size() };
+    auto history_file_or_error = Core::File::open(path, Core::File::OpenMode::Read);
+
+    // We ignore "No such file or directory" errors, as that is just equivalent to an empty history.
+    if (history_file_or_error.is_error() && history_file_or_error.error().is_errno() && history_file_or_error.error().code() == ENOENT)
+        return Vector<Editor::HistoryEntry> {};
+
+    auto history_file = history_file_or_error.release_value();
+    auto data = TRY(history_file->read_until_eof());
+    auto hist = StringView { data };
+    Vector<HistoryEntry> history;
     for (auto& str : hist.split_view("\n\n"sv)) {
         auto it = str.find("::"sv).value_or(0);
-        auto time = str.substring_view(0, it).to_int<time_t>().value_or(0);
+        auto time = str.substring_view(0, it).to_number<time_t>().value_or(0);
         auto string = str.substring_view(it == 0 ? it : it + 2);
-        m_history.append({ string, time });
+        history.append({ string, time });
     }
-    return true;
+    return history;
 }
 
-template<typename It0, typename It1, typename OutputT, typename MapperT, typename LessThan>
-static void merge(It0&& begin0, It0 const& end0, It1&& begin1, It1 const& end1, OutputT& output, MapperT left_mapper, LessThan less_than)
+bool Editor::load_history(ByteString const& path)
+{
+    auto history_or_error = try_load_history(path);
+    if (history_or_error.is_error())
+        return false;
+    auto maybe_error = m_history.try_extend(history_or_error.release_value());
+    auto okay = !maybe_error.is_error();
+    return okay;
+}
+
+template<typename It0, typename It1, typename OutputT, typename LessThan>
+static void merge(It0&& begin0, It0 const& end0, It1&& begin1, It1 const& end1, OutputT& output, LessThan less_than)
 {
     for (;;) {
         if (begin0 == end0 && begin1 == end1)
@@ -280,7 +297,7 @@ static void merge(It0&& begin0, It0 const& end0, It1&& begin1, It1 const& end1, 
             continue;
         }
 
-        auto&& left = left_mapper(*begin0);
+        auto&& left = *begin0;
         if (left.entry.is_whitespace()) {
             ++begin0;
             continue;
@@ -307,32 +324,34 @@ static void merge(It0&& begin0, It0 const& end0, It1&& begin1, It1 const& end1, 
     }
 }
 
-bool Editor::save_history(DeprecatedString const& path)
+bool Editor::save_history(ByteString const& path)
 {
+    // Note: Use a dummy entry to simplify merging.
     Vector<HistoryEntry> final_history { { "", 0 } };
     {
-        auto file_or_error = Core::DeprecatedFile::open(path, Core::OpenMode::ReadWrite, 0600);
-        if (file_or_error.is_error())
+        auto history_or_error = try_load_history(path);
+        if (history_or_error.is_error())
             return false;
-        auto file = file_or_error.release_value();
+        Vector<HistoryEntry> old_history = history_or_error.release_value();
         merge(
-            file->line_begin(), file->line_end(), m_history.begin(), m_history.end(), final_history,
-            [](StringView str) {
-                auto it = str.find("::"sv).value_or(0);
-                auto time = str.substring_view(0, it).to_int<time_t>().value_or(0);
-                auto string = str.substring_view(it == 0 ? it : it + 2);
-                return HistoryEntry { string, time };
-            },
+            old_history.begin(), old_history.end(),
+            m_history.begin(), m_history.end(),
+            final_history,
             [](HistoryEntry const& left, HistoryEntry const& right) { return left.timestamp < right.timestamp; });
     }
 
-    auto file_or_error = Core::DeprecatedFile::open(path, Core::OpenMode::WriteOnly, 0600);
+    auto file_or_error = Core::File::open(path, Core::File::OpenMode::Write, 0600);
     if (file_or_error.is_error())
         return false;
     auto file = file_or_error.release_value();
-    final_history.take_first();
-    for (auto const& entry : final_history)
-        file->write(DeprecatedString::formatted("{}::{}\n\n", entry.timestamp, entry.entry));
+    // Skip the dummy entry:
+    for (auto iter = final_history.begin() + 1; iter != final_history.end(); ++iter) {
+        auto const& entry = *iter;
+        auto buffer = ByteString::formatted("{}::{}\n\n", entry.timestamp, entry.entry);
+        auto maybe_error = file->write_until_depleted(buffer.bytes());
+        if (maybe_error.is_error())
+            return false;
+    }
 
     m_history_dirty = false;
     return true;
@@ -356,7 +375,7 @@ void Editor::insert(Utf32View const& string)
         insert(string.code_points()[i]);
 }
 
-void Editor::insert(DeprecatedString const& string)
+void Editor::insert(ByteString const& string)
 {
     for (auto ch : Utf8View { string })
         insert(ch);
@@ -364,15 +383,21 @@ void Editor::insert(DeprecatedString const& string)
 
 void Editor::insert(StringView string_view)
 {
-    for (auto ch : Utf8View { string_view })
+    auto view = Utf8View { string_view };
+    insert(view);
+}
+
+void Editor::insert(Utf8View& view)
+{
+    for (auto ch : view)
         insert(ch);
 }
 
-void Editor::insert(const u32 cp)
+void Editor::insert(u32 const cp)
 {
     StringBuilder builder;
     builder.append(Utf32View(&cp, 1));
-    auto str = builder.to_deprecated_string();
+    auto str = builder.to_byte_string();
     if (m_pending_chars.try_append(str.characters(), str.length()).is_error())
         return;
 
@@ -402,7 +427,7 @@ void Editor::register_key_input_callback(KeyBinding const& binding)
         return register_key_input_callback(binding.keys, move(internal_function));
     }
 
-    return register_key_input_callback(binding.keys, [binding = DeprecatedString(binding.binding)](auto& editor) {
+    return register_key_input_callback(binding.keys, [binding = ByteString(binding.binding)](auto& editor) {
         editor.insert(binding);
         return false;
     });
@@ -544,7 +569,7 @@ void Editor::initialize()
             m_configuration.set(Configuration::NonInteractive);
         } else {
             auto* term = getenv("TERM");
-            if (term != NULL && StringView { term, strlen(term) }.starts_with("xterm"sv))
+            if ((term != NULL) && StringView { term, strlen(term) }.starts_with("xterm"sv))
                 m_configuration.set(Configuration::Full);
             else
                 m_configuration.set(Configuration::NoEscapeSequences);
@@ -566,11 +591,11 @@ void Editor::initialize()
 
     if (m_configuration.m_signal_mode == Configuration::WithSignalHandlers) {
         m_signal_handlers.append(Core::EventLoop::register_signal(SIGINT, [this](int) {
-            interrupted().release_value_but_fixme_should_propagate_errors();
+            Core::EventLoop::current().deferred_invoke([this] { interrupted().release_value_but_fixme_should_propagate_errors(); });
         }));
 
         m_signal_handlers.append(Core::EventLoop::register_signal(SIGWINCH, [this](int) {
-            resized().release_value_but_fixme_should_propagate_errors();
+            Core::EventLoop::current().deferred_invoke([this] { resized().release_value_but_fixme_should_propagate_errors(); });
         }));
     }
 
@@ -604,9 +629,11 @@ ErrorOr<void> Editor::interrupted()
     {
         auto stderr_stream = TRY(Core::File::standard_error());
         TRY(reposition_cursor(*stderr_stream, true));
-        if (TRY(m_suggestion_display->cleanup()))
+        if (TRY(m_suggestion_display->cleanup())) {
             TRY(reposition_cursor(*stderr_stream, true));
-        TRY(stderr_stream->write_entire_buffer("\n"sv.bytes()));
+            TRY(cleanup_suggestions());
+        }
+        TRY(stderr_stream->write_until_depleted("\r"sv.bytes()));
     }
     m_buffer.clear();
     m_chars_touched_in_the_middle = buffer().size();
@@ -622,12 +649,38 @@ ErrorOr<void> Editor::resized()
 {
     m_was_resized = true;
     m_previous_num_columns = m_num_columns;
+    auto old_origin_row = m_origin_row;
+    auto old_origin_column = m_origin_column;
+
     get_terminal_size();
 
     if (!m_has_origin_reset_scheduled) {
         // Reset the origin, but make sure it doesn't blow up if we can't read it
         if (set_origin(false)) {
+            // The origin we have right now actually points to where the cursor should be (in the middle of the buffer somewhere)
+            // Find the "true" origin.
+            auto current_buffer_metrics = actual_rendered_string_metrics(buffer_view(), m_current_masks);
+            auto lines = m_cached_prompt_metrics.lines_with_addition(current_buffer_metrics, m_num_columns);
+            auto offset = m_cached_prompt_metrics.offset_with_addition(current_buffer_metrics, m_num_columns);
+            if (lines > m_origin_row)
+                m_origin_row = 1;
+            else
+                m_origin_row -= lines - 1; // the prompt and the origin share a line.
+
+            if (offset > m_origin_column)
+                m_origin_column = 1;
+            else
+                m_origin_column -= offset;
+
+            set_origin(m_origin_row, m_origin_column);
+
             TRY(handle_resize_event(false));
+            if (old_origin_column != m_origin_column || old_origin_row != m_origin_row) {
+                m_expected_origin_changed = true;
+                deferred_invoke([this] {
+                    (void)refresh_display();
+                });
+            }
         } else {
             deferred_invoke([this] { handle_resize_event(true).release_value_but_fixme_should_propagate_errors(); });
             m_has_origin_reset_scheduled = true;
@@ -639,6 +692,9 @@ ErrorOr<void> Editor::resized()
 
 ErrorOr<void> Editor::handle_resize_event(bool reset_origin)
 {
+    if (!m_initialized || !m_is_editing)
+        return {};
+
     m_has_origin_reset_scheduled = false;
     if (reset_origin && !set_origin(false)) {
         m_has_origin_reset_scheduled = true;
@@ -667,7 +723,7 @@ ErrorOr<void> Editor::really_quit_event_loop()
     {
         auto stderr_stream = TRY(Core::File::standard_error());
         TRY(reposition_cursor(*stderr_stream, true));
-        TRY(stderr_stream->write_entire_buffer("\n"sv.bytes()));
+        TRY(stderr_stream->write_until_depleted("\n"sv.bytes()));
     }
     auto string = line();
     m_buffer.clear();
@@ -684,7 +740,7 @@ ErrorOr<void> Editor::really_quit_event_loop()
     return {};
 }
 
-auto Editor::get_line(DeprecatedString const& prompt) -> Result<DeprecatedString, Editor::Error>
+auto Editor::get_line(ByteString const& prompt) -> Result<ByteString, Editor::Error>
 {
     initialize();
     m_is_editing = true;
@@ -708,7 +764,7 @@ auto Editor::get_line(DeprecatedString const& prompt) -> Result<DeprecatedString
         }
         restore();
         if (line) {
-            DeprecatedString result { line, (size_t)line_length, Chomp };
+            ByteString result { line, (size_t)line_length, Chomp };
             free(line);
             return result;
         }
@@ -734,7 +790,7 @@ auto Editor::get_line(DeprecatedString const& prompt) -> Result<DeprecatedString
         auto stderr_stream = Core::File::standard_error().release_value_but_fixme_should_propagate_errors();
         auto prompt_lines = max(current_prompt_metrics().line_metrics.size(), 1ul) - 1;
         for (size_t i = 0; i < prompt_lines; ++i)
-            stderr_stream->write_entire_buffer("\n"sv.bytes()).release_value_but_fixme_should_propagate_errors();
+            stderr_stream->write_until_depleted("\n"sv.bytes()).release_value_but_fixme_should_propagate_errors();
 
         VT::move_relative(-static_cast<int>(prompt_lines), 0, *stderr_stream).release_value_but_fixme_should_propagate_errors();
     }
@@ -743,13 +799,17 @@ auto Editor::get_line(DeprecatedString const& prompt) -> Result<DeprecatedString
 
     m_history_cursor = m_history.size();
 
-    refresh_display().release_value_but_fixme_should_propagate_errors();
+    if (auto refresh_result = refresh_display(); refresh_result.is_error())
+        m_input_error = Error::ReadFailure;
 
     Core::EventLoop loop;
 
-    m_notifier = Core::Notifier::construct(STDIN_FILENO, Core::Notifier::Read);
+    m_notifier = Core::Notifier::construct(STDIN_FILENO, Core::Notifier::Type::Read);
 
-    m_notifier->on_ready_to_read = [&] {
+    if (m_input_error.has_value())
+        loop.quit(Exit);
+
+    m_notifier->on_activation = [&] {
         if (try_update_once().is_error())
             loop.quit(Exit);
     };
@@ -764,25 +824,7 @@ auto Editor::get_line(DeprecatedString const& prompt) -> Result<DeprecatedString
     if (loop.exec() == Retry)
         return get_line(prompt);
 
-    return m_input_error.has_value() ? Result<DeprecatedString, Editor::Error> { m_input_error.value() } : Result<DeprecatedString, Editor::Error> { m_returned_line };
-}
-
-void Editor::save_to(JsonObject& object)
-{
-    Core::Object::save_to(object);
-    object.set("is_searching", m_is_searching);
-    object.set("is_editing", m_is_editing);
-    object.set("cursor_offset", m_cursor);
-    object.set("needs_refresh", m_refresh_needed);
-    object.set("unprocessed_characters", m_incomplete_data.size());
-    object.set("history_size", m_history.size());
-    object.set("current_prompt", m_new_prompt);
-    object.set("was_interrupted", m_was_interrupted);
-    JsonObject display_area;
-    display_area.set("top_left_row", m_origin_row);
-    display_area.set("top_left_column", m_origin_column);
-    display_area.set("line_count", num_lines());
-    object.set("used_display_area", move(display_area));
+    return m_input_error.has_value() ? Result<ByteString, Editor::Error> { m_input_error.value() } : Result<ByteString, Editor::Error> { m_returned_line };
 }
 
 ErrorOr<void> Editor::try_update_once()
@@ -806,6 +848,9 @@ ErrorOr<void> Editor::try_update_once()
 
 void Editor::handle_interrupt_event()
 {
+    if (!m_initialized || !m_is_editing)
+        return;
+
     m_was_interrupted = false;
     m_previous_interrupt_was_handled_as_interrupt = false;
 
@@ -815,7 +860,7 @@ void Editor::handle_interrupt_event()
 
     m_previous_interrupt_was_handled_as_interrupt = true;
 
-    fprintf(stderr, "^C");
+    fprintf(stderr, "^C\n");
     fflush(stderr);
 
     if (on_interrupt_handled)
@@ -824,6 +869,7 @@ void Editor::handle_interrupt_event()
     m_buffer.clear();
     m_chars_touched_in_the_middle = buffer().size();
     m_cursor = 0;
+    set_origin(false);
 
     finish();
 }
@@ -837,7 +883,7 @@ ErrorOr<void> Editor::handle_read_event()
 
     auto prohibit_scope = prohibit_input();
 
-    char keybuf[16];
+    char keybuf[1024];
     ssize_t nread = 0;
 
     if (!m_incomplete_data.size())
@@ -938,8 +984,8 @@ ErrorOr<void> Editor::handle_read_event()
         case InputState::CSIExpectFinal: {
             m_state = m_previous_free_state;
             auto is_in_paste = m_state == InputState::Paste;
-            for (auto& parameter : DeprecatedString::copy(csi_parameter_bytes).split(';')) {
-                if (auto value = parameter.to_uint(); value.has_value())
+            for (auto& parameter : ByteString::copy(csi_parameter_bytes).split(';')) {
+                if (auto value = parameter.to_number<unsigned>(); value.has_value())
                     csi_parameters.append(value.value());
                 else
                     csi_parameters.append(0);
@@ -1230,10 +1276,11 @@ ErrorOr<void> Editor::handle_read_event()
         insert(code_point);
     }
 
-    if (consumed_code_points == m_incomplete_data.size()) {
+    if (consumed_code_points == valid_bytes) {
         m_incomplete_data.clear();
     } else {
-        for (size_t i = 0; i < consumed_code_points; ++i)
+        auto bytes_to_drop = input_view.byte_offset_of(consumed_code_points + 1);
+        for (size_t i = 0; i < bytes_to_drop; ++i)
             m_incomplete_data.take_first();
     }
 
@@ -1333,7 +1380,7 @@ ErrorOr<void> Editor::cleanup()
     m_extra_forward_lines = 0;
     TRY(reposition_cursor(*stderr_stream));
     return {};
-};
+}
 
 ErrorOr<void> Editor::refresh_display()
 {
@@ -1345,8 +1392,7 @@ ErrorOr<void> Editor::refresh_display()
             if (output_stream.used_buffer_size() == 0)
                 return;
 
-            auto buffer = ByteBuffer::create_uninitialized(output_stream.used_buffer_size()).release_value_but_fixme_should_propagate_errors();
-            output_stream.read_entire_buffer(buffer).release_value_but_fixme_should_propagate_errors();
+            auto buffer = output_stream.read_until_eof().release_value_but_fixme_should_propagate_errors();
             fwrite(buffer.data(), sizeof(char), buffer.size(), stderr);
         }
     };
@@ -1355,8 +1401,9 @@ ErrorOr<void> Editor::refresh_display()
     // Someone changed the window size, figure it out
     // and react to it, we might need to redraw.
     if (m_was_resized) {
-        if (m_previous_num_columns != m_num_columns) {
+        if (m_expected_origin_changed || m_previous_num_columns != m_num_columns) {
             // We need to cleanup and redo everything.
+            m_expected_origin_changed = false;
             m_cached_prompt_valid = false;
             m_refresh_needed = true;
             swap(m_previous_num_columns, m_num_columns);
@@ -1375,13 +1422,13 @@ ErrorOr<void> Editor::refresh_display()
     if (m_origin_row + current_num_lines > m_num_lines) {
         if (current_num_lines > m_num_lines) {
             for (size_t i = 0; i < m_num_lines; ++i)
-                TRY(output_stream.write_entire_buffer("\n"sv.bytes()));
+                TRY(output_stream.write_until_depleted("\n"sv.bytes()));
             m_origin_row = 0;
         } else {
             auto old_origin_row = m_origin_row;
             m_origin_row = m_num_lines - current_num_lines + 1;
             for (size_t i = 0; i < old_origin_row - m_origin_row; ++i)
-                TRY(output_stream.write_entire_buffer("\n"sv.bytes()));
+                TRY(output_stream.write_until_depleted("\n"sv.bytes()));
         }
     }
     // Do not call hook on pure cursor movement.
@@ -1400,7 +1447,7 @@ ErrorOr<void> Editor::refresh_display()
         if (!m_refresh_needed && m_cursor == m_buffer.size()) {
             // Just write the characters out and continue,
             // no need to refresh the entire line.
-            TRY(output_stream.write_entire_buffer(m_pending_chars));
+            TRY(output_stream.write_until_depleted(m_pending_chars));
             m_pending_chars.clear();
             m_drawn_cursor = m_cursor;
             m_drawn_end_of_line_offset = m_buffer.size();
@@ -1411,11 +1458,11 @@ ErrorOr<void> Editor::refresh_display()
     }
 
     auto apply_styles = [&, empty_styles = HashMap<u32, Style> {}](size_t i) -> ErrorOr<void> {
-        auto ends = m_current_spans.m_spans_ending.get(i).value_or(empty_styles);
-        auto starts = m_current_spans.m_spans_starting.get(i).value_or(empty_styles);
+        auto& ends = m_current_spans.m_spans_ending.get(i).value_or<>(empty_styles);
+        auto& starts = m_current_spans.m_spans_starting.get(i).value_or<>(empty_styles);
 
-        auto anchored_ends = m_current_spans.m_anchored_spans_ending.get(i).value_or(empty_styles);
-        auto anchored_starts = m_current_spans.m_anchored_spans_starting.get(i).value_or(empty_styles);
+        auto& anchored_ends = m_current_spans.m_anchored_spans_ending.get(i).value_or<>(empty_styles);
+        auto& anchored_starts = m_current_spans.m_anchored_spans_starting.get(i).value_or<>(empty_styles);
 
         if (ends.size() || anchored_ends.size()) {
             Style style;
@@ -1481,12 +1528,12 @@ ErrorOr<void> Editor::refresh_display()
                 builder.append(Utf32View { &c, 1 });
 
             if (should_print_masked)
-                TRY(output_stream.write_entire_buffer("\033[7m"sv.bytes()));
+                TRY(output_stream.write_until_depleted("\033[7m"sv.bytes()));
 
-            TRY(output_stream.write_entire_buffer(builder.string_view().bytes()));
+            TRY(output_stream.write_until_depleted(builder.string_view().bytes()));
 
             if (should_print_masked)
-                TRY(output_stream.write_entire_buffer("\033[27m"sv.bytes()));
+                TRY(output_stream.write_until_depleted("\033[27m"sv.bytes()));
 
             return {};
         };
@@ -1525,14 +1572,14 @@ ErrorOr<void> Editor::refresh_display()
             dbgln("Drawn Spans:");
             for (auto& sentry : m_drawn_spans.m_spans_starting) {
                 for (auto& entry : sentry.value) {
-                    dbgln("{}-{}: {}", sentry.key, entry.key, entry.value.to_deprecated_string());
+                    dbgln("{}-{}: {}", sentry.key, entry.key, entry.value.to_byte_string());
                 }
             }
             dbgln("==========================================================================");
             dbgln("Current Spans:");
             for (auto& sentry : m_current_spans.m_spans_starting) {
                 for (auto& entry : sentry.value) {
-                    dbgln("{}-{}: {}", sentry.key, entry.key, entry.value.to_deprecated_string());
+                    dbgln("{}-{}: {}", sentry.key, entry.key, entry.value.to_byte_string());
                 }
             }
         }
@@ -1544,7 +1591,7 @@ ErrorOr<void> Editor::refresh_display()
     }
     TRY(VT::move_absolute(m_origin_row, m_origin_column, output_stream));
 
-    TRY(output_stream.write_entire_buffer(m_new_prompt.bytes()));
+    TRY(output_stream.write_until_depleted(m_new_prompt.bytes()));
 
     TRY(VT::clear_to_end_of_line(output_stream));
     StringBuilder builder;
@@ -1606,7 +1653,7 @@ ErrorOr<void> Editor::reposition_cursor(Stream& stream, bool to_end)
 
 ErrorOr<void> VT::move_absolute(u32 row, u32 col, Stream& stream)
 {
-    return stream.write_entire_buffer(DeprecatedString::formatted("\033[{};{}H", row, col).bytes());
+    return stream.write_until_depleted(ByteString::formatted("\033[{};{}H", row, col));
 }
 
 ErrorOr<void> VT::move_relative(int row, int col, Stream& stream)
@@ -1623,9 +1670,9 @@ ErrorOr<void> VT::move_relative(int row, int col, Stream& stream)
         col = -col;
 
     if (row > 0)
-        TRY(stream.write_entire_buffer(DeprecatedString::formatted("\033[{}{}", row, x_op).bytes()));
+        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", row, x_op)));
     if (col > 0)
-        TRY(stream.write_entire_buffer(DeprecatedString::formatted("\033[{}{}", col, y_op).bytes()));
+        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", col, y_op)));
 
     return {};
 }
@@ -1655,36 +1702,36 @@ Style Editor::find_applicable_style(size_t offset) const
     return style;
 }
 
-DeprecatedString Style::Background::to_vt_escape() const
+ByteString Style::Background::to_vt_escape() const
 {
     if (is_default())
         return "";
 
     if (m_is_rgb) {
-        return DeprecatedString::formatted("\e[48;2;{};{};{}m", m_rgb_color[0], m_rgb_color[1], m_rgb_color[2]);
+        return ByteString::formatted("\e[48;2;{};{};{}m", m_rgb_color[0], m_rgb_color[1], m_rgb_color[2]);
     } else {
-        return DeprecatedString::formatted("\e[{}m", (u8)m_xterm_color + 40);
+        return ByteString::formatted("\e[{}m", (u8)m_xterm_color + 40);
     }
 }
 
-DeprecatedString Style::Foreground::to_vt_escape() const
+ByteString Style::Foreground::to_vt_escape() const
 {
     if (is_default())
         return "";
 
     if (m_is_rgb) {
-        return DeprecatedString::formatted("\e[38;2;{};{};{}m", m_rgb_color[0], m_rgb_color[1], m_rgb_color[2]);
+        return ByteString::formatted("\e[38;2;{};{};{}m", m_rgb_color[0], m_rgb_color[1], m_rgb_color[2]);
     } else {
-        return DeprecatedString::formatted("\e[{}m", (u8)m_xterm_color + 30);
+        return ByteString::formatted("\e[{}m", (u8)m_xterm_color + 30);
     }
 }
 
-DeprecatedString Style::Hyperlink::to_vt_escape(bool starting) const
+ByteString Style::Hyperlink::to_vt_escape(bool starting) const
 {
     if (is_empty())
         return "";
 
-    return DeprecatedString::formatted("\e]8;;{}\e\\", starting ? m_link : DeprecatedString::empty());
+    return ByteString::formatted("\e]8;;{}\e\\", starting ? m_link : ByteString::empty());
 }
 
 void Style::unify_with(Style const& other, bool prefer_other)
@@ -1709,9 +1756,11 @@ void Style::unify_with(Style const& other, bool prefer_other)
     // Unify links.
     if (prefer_other || m_hyperlink.is_empty())
         m_hyperlink = other.hyperlink();
+
+    m_is_empty &= other.m_is_empty;
 }
 
-DeprecatedString Style::to_deprecated_string() const
+ByteString Style::to_byte_string() const
 {
     StringBuilder builder;
     builder.append("Style { "sv);
@@ -1758,22 +1807,21 @@ DeprecatedString Style::to_deprecated_string() const
 
     builder.append('}');
 
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 ErrorOr<void> VT::apply_style(Style const& style, Stream& stream, bool is_starting)
 {
     if (is_starting) {
-        TRY(stream.write_entire_buffer(DeprecatedString::formatted("\033[{};{};{}m{}{}{}",
+        TRY(stream.write_until_depleted(ByteString::formatted("\033[{};{};{}m{}{}{}",
             style.bold() ? 1 : 22,
             style.underline() ? 4 : 24,
             style.italic() ? 3 : 23,
             style.background().to_vt_escape(),
             style.foreground().to_vt_escape(),
-            style.hyperlink().to_vt_escape(true))
-                                           .bytes()));
+            style.hyperlink().to_vt_escape(true))));
     } else {
-        TRY(stream.write_entire_buffer(style.hyperlink().to_vt_escape(false).bytes()));
+        TRY(stream.write_until_depleted(style.hyperlink().to_vt_escape(false)));
     }
 
     return {};
@@ -1782,16 +1830,16 @@ ErrorOr<void> VT::apply_style(Style const& style, Stream& stream, bool is_starti
 ErrorOr<void> VT::clear_lines(size_t count_above, size_t count_below, Stream& stream)
 {
     if (count_below + count_above == 0) {
-        TRY(stream.write_entire_buffer("\033[2K"sv.bytes()));
+        TRY(stream.write_until_depleted("\033[2K"sv));
     } else {
         // Go down count_below lines.
         if (count_below > 0)
-            TRY(stream.write_entire_buffer(DeprecatedString::formatted("\033[{}B", count_below).bytes()));
+            TRY(stream.write_until_depleted(ByteString::formatted("\033[{}B", count_below)));
         // Then clear lines going upwards.
         for (size_t i = count_below + count_above; i > 0; --i) {
-            TRY(stream.write_entire_buffer("\033[2K"sv.bytes()));
+            TRY(stream.write_until_depleted("\033[2K"sv));
             if (i != 1)
-                TRY(stream.write_entire_buffer("\033[A"sv.bytes()));
+                TRY(stream.write_until_depleted("\033[A"sv));
         }
     }
 
@@ -1800,17 +1848,17 @@ ErrorOr<void> VT::clear_lines(size_t count_above, size_t count_below, Stream& st
 
 ErrorOr<void> VT::save_cursor(Stream& stream)
 {
-    return stream.write_entire_buffer("\033[s"sv.bytes());
+    return stream.write_until_depleted("\033[s"sv);
 }
 
 ErrorOr<void> VT::restore_cursor(Stream& stream)
 {
-    return stream.write_entire_buffer("\033[u"sv.bytes());
+    return stream.write_until_depleted("\033[u"sv);
 }
 
 ErrorOr<void> VT::clear_to_end_of_line(Stream& stream)
 {
-    return stream.write_entire_buffer("\033[K"sv.bytes());
+    return stream.write_until_depleted("\033[K"sv);
 }
 
 enum VTState {
@@ -1857,66 +1905,53 @@ static MaskedSelectionDecision resolve_masked_selection(Optional<Style::Mask>& m
 
 StringMetrics Editor::actual_rendered_string_metrics(StringView string, RedBlackTree<u32, Optional<Style::Mask>> const& masks, Optional<size_t> maximum_line_width)
 {
-    StringMetrics metrics;
-    StringMetrics::LineMetrics current_line;
-    VTState state { Free };
-    Utf8View view { string };
-    size_t last_return {};
-    auto it = view.begin();
-    Optional<Style::Mask> mask;
-    size_t i = 0;
-    auto mask_it = masks.begin();
+    Vector<u32> utf32_buffer;
+    utf32_buffer.ensure_capacity(string.length());
+    for (auto c : Utf8View { string })
+        utf32_buffer.append(c);
 
-    for (; it != view.end(); ++it) {
-        if (!mask_it.is_end() && mask_it.key() <= i)
-            mask = *mask_it;
-        auto c = *it;
-        auto it_copy = it;
-        ++it_copy;
-
-        if (resolve_masked_selection(mask, i, mask_it, view, state, metrics, current_line) == MaskedSelectionDecision::Skip)
-            continue;
-
-        auto next_c = it_copy == view.end() ? 0 : *it_copy;
-        state = actual_rendered_string_length_step(metrics, view.iterator_offset(it), current_line, c, next_c, state, mask, maximum_line_width, last_return);
-        if (!mask_it.is_end() && mask_it.key() <= i) {
-            auto mask_it_peek = mask_it;
-            ++mask_it_peek;
-            if (!mask_it_peek.is_end() && mask_it_peek.key() > i)
-                mask_it = mask_it_peek;
-        }
-        ++i;
-    }
-
-    metrics.line_metrics.append(current_line);
-
-    for (auto& line : metrics.line_metrics)
-        metrics.max_line_length = max(line.total_length(), metrics.max_line_length);
-
-    return metrics;
+    return actual_rendered_string_metrics(Utf32View { utf32_buffer.data(), utf32_buffer.size() }, masks, maximum_line_width);
 }
 
-StringMetrics Editor::actual_rendered_string_metrics(Utf32View const& view, RedBlackTree<u32, Optional<Style::Mask>> const& masks)
+StringMetrics Editor::actual_rendered_string_metrics(Utf32View const& view, RedBlackTree<u32, Optional<Style::Mask>> const& masks, Optional<size_t> maximum_line_width)
 {
     StringMetrics metrics;
     StringMetrics::LineMetrics current_line;
     VTState state { Free };
     Optional<Style::Mask> mask;
+    size_t last_return { 0 };
 
     auto mask_it = masks.begin();
 
-    for (size_t i = 0; i < view.length(); ++i) {
+    Vector<size_t> grapheme_breaks;
+    Unicode::for_each_grapheme_segmentation_boundary(view, [&](size_t offset) -> IterationDecision {
+        if (offset >= view.length())
+            return IterationDecision::Break;
+
+        grapheme_breaks.append(offset);
+        return IterationDecision::Continue;
+    });
+
+    // In case Unicode data isn't available, default to using code points as grapheme boundaries.
+    if (grapheme_breaks.is_empty()) {
+        for (size_t i = 0; i < view.length(); ++i)
+            grapheme_breaks.append(i);
+    }
+
+    for (size_t break_index = 0; break_index < grapheme_breaks.size(); ++break_index) {
+        auto i = grapheme_breaks[break_index];
         auto c = view[i];
         if (!mask_it.is_end() && mask_it.key() <= i)
             mask = *mask_it;
 
         if (resolve_masked_selection(mask, i, mask_it, view, state, metrics, current_line) == MaskedSelectionDecision::Skip) {
             --i;
+            binary_search(grapheme_breaks, i, &break_index);
             continue;
         }
 
-        auto next_c = i + 1 < view.length() ? view.code_points()[i + 1] : 0;
-        state = actual_rendered_string_length_step(metrics, i, current_line, c, next_c, state, mask);
+        auto next_c = break_index + 1 < grapheme_breaks.size() ? view.code_points()[grapheme_breaks[break_index + 1]] : 0;
+        state = actual_rendered_string_length_step(metrics, i, current_line, c, next_c, state, mask, maximum_line_width, last_return);
         if (!mask_it.is_end() && mask_it.key() <= i) {
             auto mask_it_peek = mask_it;
             ++mask_it_peek;
@@ -1929,6 +1964,8 @@ StringMetrics Editor::actual_rendered_string_metrics(Utf32View const& view, RedB
 
     for (auto& line : metrics.line_metrics)
         metrics.max_line_length = max(line.total_length(), metrics.max_line_length);
+
+    metrics.grapheme_breaks = move(grapheme_breaks);
 
     return metrics;
 }
@@ -2075,7 +2112,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
     if (m_input_error.has_value())
         return m_input_error.value();
 
-    fputs("\033[6n", stderr);
+    fputs("\033[6n\n", stderr);
     fflush(stderr);
 
     // Parse the DSR response
@@ -2124,14 +2161,17 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             m_incomplete_data.append(c);
+            state = Free;
             continue;
         case SawBracket:
             if (is_ascii_digit(c)) {
                 state = InFirstCoordinate;
+                coordinate_buffer.clear_with_capacity();
                 coordinate_buffer.append(c);
                 continue;
             }
             m_incomplete_data.append(c);
+            state = Free;
             continue;
         case InFirstCoordinate:
             if (is_ascii_digit(c)) {
@@ -2139,7 +2179,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             if (c == ';') {
-                auto maybe_row = StringView { coordinate_buffer.data(), coordinate_buffer.size() }.to_uint();
+                auto maybe_row = StringView { coordinate_buffer.data(), coordinate_buffer.size() }.to_number<unsigned>();
                 if (!maybe_row.has_value())
                     has_error = true;
                 row = maybe_row.value_or(1u);
@@ -2148,6 +2188,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             m_incomplete_data.append(c);
+            state = Free;
             continue;
         case SawSemicolon:
             if (is_ascii_digit(c)) {
@@ -2156,6 +2197,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             m_incomplete_data.append(c);
+            state = Free;
             continue;
         case InSecondCoordinate:
             if (is_ascii_digit(c)) {
@@ -2163,7 +2205,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             if (c == 'R') {
-                auto maybe_column = StringView { coordinate_buffer.data(), coordinate_buffer.size() }.to_uint();
+                auto maybe_column = StringView { coordinate_buffer.data(), coordinate_buffer.size() }.to_number<unsigned>();
                 if (!maybe_column.has_value())
                     has_error = true;
                 col = maybe_column.value_or(1u);
@@ -2172,6 +2214,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
                 continue;
             }
             m_incomplete_data.append(c);
+            state = Free;
             continue;
         case SawR:
             m_incomplete_data.append(c);
@@ -2186,11 +2229,11 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
     return Vector<size_t, 2> { row, col };
 }
 
-DeprecatedString Editor::line(size_t up_to_index) const
+ByteString Editor::line(size_t up_to_index) const
 {
     StringBuilder builder;
     builder.append(Utf32View { m_buffer.data(), min(m_buffer.size(), up_to_index) });
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 void Editor::remove_at_index(size_t index)
@@ -2312,11 +2355,11 @@ bool Editor::Spans::contains_up_to_offset(Spans const& other, size_t offset) con
                     if constexpr (LINE_EDITOR_DEBUG) {
                         dbgln("Compare for {}-{} failed, no entry", entry.key, left_entry.key);
                         for (auto& x : entry.value)
-                            dbgln("Have: {}-{} = {}", entry.key, x.key, x.value.to_deprecated_string());
+                            dbgln("Have: {}-{} = {}", entry.key, x.key, x.value.to_byte_string());
                     }
                     return false;
                 } else if (value_it->value != left_entry.value) {
-                    dbgln_if(LINE_EDITOR_DEBUG, "Compare for {}-{} failed, different values: {} != {}", entry.key, left_entry.key, value_it->value.to_deprecated_string(), left_entry.value.to_deprecated_string());
+                    dbgln_if(LINE_EDITOR_DEBUG, "Compare for {}-{} failed, different values: {} != {}", entry.key, left_entry.key, value_it->value.to_byte_string(), left_entry.value.to_byte_string());
                     return false;
                 }
             }

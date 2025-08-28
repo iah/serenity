@@ -12,6 +12,7 @@ namespace Web::DOM {
 
 class ParentNode : public Node {
     WEB_PLATFORM_OBJECT(ParentNode, Node);
+    JS_DECLARE_ALLOCATOR(ParentNode);
 
 public:
     template<typename F>
@@ -28,12 +29,14 @@ public:
 
     JS::NonnullGCPtr<HTMLCollection> children();
 
-    JS::NonnullGCPtr<HTMLCollection> get_elements_by_tag_name(DeprecatedFlyString const&);
-    JS::NonnullGCPtr<HTMLCollection> get_elements_by_tag_name_ns(DeprecatedFlyString const&, DeprecatedFlyString const&);
+    JS::NonnullGCPtr<HTMLCollection> get_elements_by_tag_name(FlyString const&);
+    JS::NonnullGCPtr<HTMLCollection> get_elements_by_tag_name_ns(Optional<FlyString>, FlyString const&);
 
-    WebIDL::ExceptionOr<void> prepend(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes);
-    WebIDL::ExceptionOr<void> append(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes);
-    WebIDL::ExceptionOr<void> replace_children(Vector<Variant<JS::Handle<Node>, DeprecatedString>> const& nodes);
+    WebIDL::ExceptionOr<void> prepend(Vector<Variant<JS::Handle<Node>, String>> const& nodes);
+    WebIDL::ExceptionOr<void> append(Vector<Variant<JS::Handle<Node>, String>> const& nodes);
+    WebIDL::ExceptionOr<void> replace_children(Vector<Variant<JS::Handle<Node>, String>> const& nodes);
+
+    JS::NonnullGCPtr<HTMLCollection> get_elements_by_class_name(StringView);
 
 protected:
     ParentNode(JS::Realm& realm, Document& document, NodeType type)
@@ -55,18 +58,32 @@ private:
 template<>
 inline bool Node::fast_is<ParentNode>() const { return is_parent_node(); }
 
+template<typename U>
+inline U* Node::shadow_including_first_ancestor_of_type()
+{
+    for (auto* ancestor = parent_or_shadow_host(); ancestor; ancestor = ancestor->parent_or_shadow_host()) {
+        if (is<U>(*ancestor))
+            return &verify_cast<U>(*ancestor);
+    }
+    return nullptr;
+}
+
 template<typename Callback>
 inline void ParentNode::for_each_child(Callback callback) const
 {
-    for (auto* node = first_child(); node; node = node->next_sibling())
-        callback(*node);
+    for (auto* node = first_child(); node; node = node->next_sibling()) {
+        if (callback(*node) == IterationDecision::Break)
+            return;
+    }
 }
 
 template<typename Callback>
 inline void ParentNode::for_each_child(Callback callback)
 {
-    for (auto* node = first_child(); node; node = node->next_sibling())
-        callback(*node);
+    for (auto* node = first_child(); node; node = node->next_sibling()) {
+        if (callback(*node) == IterationDecision::Break)
+            return;
+    }
 }
 
 }

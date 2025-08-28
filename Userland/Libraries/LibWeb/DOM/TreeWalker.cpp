@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/TreeWalkerPrototype.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NodeFilter.h>
 #include <LibWeb/DOM/TreeWalker.h>
@@ -12,6 +13,8 @@
 #include <LibWeb/WebIDL/DOMException.h>
 
 namespace Web::DOM {
+
+JS_DEFINE_ALLOCATOR(TreeWalker);
 
 TreeWalker::TreeWalker(Node& root)
     : PlatformObject(root.realm())
@@ -22,29 +25,27 @@ TreeWalker::TreeWalker(Node& root)
 
 TreeWalker::~TreeWalker() = default;
 
-JS::ThrowCompletionOr<void> TreeWalker::initialize(JS::Realm& realm)
+void TreeWalker::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::TreeWalkerPrototype>(realm, "TreeWalker"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(TreeWalker);
 }
 
 void TreeWalker::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_filter.ptr());
-    visitor.visit(m_root.ptr());
-    visitor.visit(m_current.ptr());
+    visitor.visit(m_filter);
+    visitor.visit(m_root);
+    visitor.visit(m_current);
 }
 
 // https://dom.spec.whatwg.org/#dom-document-createtreewalker
-WebIDL::ExceptionOr<JS::NonnullGCPtr<TreeWalker>> TreeWalker::create(Node& root, unsigned what_to_show, JS::GCPtr<NodeFilter> filter)
+JS::NonnullGCPtr<TreeWalker> TreeWalker::create(Node& root, unsigned what_to_show, JS::GCPtr<NodeFilter> filter)
 {
     // 1. Let walker be a new TreeWalker object.
     // 2. Set walker’s root and walker’s current to root.
     auto& realm = root.realm();
-    auto walker = MUST_OR_THROW_OOM(realm.heap().allocate<TreeWalker>(realm, root));
+    auto walker = realm.heap().allocate<TreeWalker>(realm, root);
 
     // 3. Set walker’s whatToShow to whatToShow.
     walker->m_what_to_show = what_to_show;
@@ -221,6 +222,13 @@ JS::ThrowCompletionOr<JS::GCPtr<Node>> TreeWalker::next_node()
 
             // 4. Set temporary to temporary’s parent.
             temporary = temporary->parent();
+
+            // NON-STANDARD: If temporary is null, then return null.
+            //               This prevents us from infinite looping if the current node is not connected.
+            //               Spec bug: https://github.com/whatwg/dom/issues/1102
+            if (temporary == nullptr) {
+                return nullptr;
+            }
         }
 
         // 5. Set result to the result of filtering node within this.
@@ -239,7 +247,7 @@ JS::ThrowCompletionOr<NodeFilter::Result> TreeWalker::filter(Node& node)
 {
     // 1. If traverser’s active flag is set, then throw an "InvalidStateError" DOMException.
     if (m_active)
-        return throw_completion(WebIDL::InvalidStateError::create(realm(), "NodeIterator is already active"));
+        return throw_completion(WebIDL::InvalidStateError::create(realm(), "NodeIterator is already active"_string));
 
     // 2. Let n be node’s nodeType attribute value − 1.
     auto n = node.node_type() - 1;
@@ -257,7 +265,7 @@ JS::ThrowCompletionOr<NodeFilter::Result> TreeWalker::filter(Node& node)
 
     // 6. Let result be the return value of call a user object’s operation with traverser’s filter, "acceptNode", and « node ».
     //    If this throws an exception, then unset traverser’s active flag and rethrow the exception.
-    auto result = WebIDL::call_user_object_operation(m_filter->callback(), "acceptNode", {}, &node);
+    auto result = WebIDL::call_user_object_operation(m_filter->callback(), "acceptNode"_string, {}, &node);
     if (result.is_abrupt()) {
         m_active = false;
         return result;

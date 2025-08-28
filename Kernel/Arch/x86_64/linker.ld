@@ -1,5 +1,3 @@
-#include <AK/Platform.h>
-
 ENTRY(init)
 
 #define PF_X 0x1
@@ -8,13 +6,13 @@ ENTRY(init)
 
 PHDRS
 {
-  elf_headers PT_LOAD FILEHDR PHDRS FLAGS(PF_R) ;
-  text PT_LOAD FLAGS(PF_R | PF_X) ;
-  data PT_LOAD FLAGS(PF_R | PF_W) ;
-  bss PT_LOAD FLAGS(PF_R | PF_W) ;
-  dynamic_segment PT_LOAD FLAGS(PF_R | PF_W) ;
-  dynamic PT_DYNAMIC FLAGS(PF_R | PF_W) ;
-  ksyms PT_LOAD FLAGS(PF_R) ;
+    elf_headers PT_LOAD FILEHDR PHDRS FLAGS(PF_R) ;
+    text PT_LOAD FLAGS(PF_R | PF_X) ;
+    data PT_LOAD FLAGS(PF_R | PF_W) ;
+    bss PT_LOAD FLAGS(PF_R | PF_W) ;
+    dynamic_segment PT_LOAD FLAGS(PF_R | PF_W) ;
+    dynamic PT_DYNAMIC FLAGS(PF_R | PF_W) ;
+    ksyms PT_LOAD FLAGS(PF_R | PF_W) ;
 }
 
 SECTIONS
@@ -40,6 +38,13 @@ SECTIONS
         *(.text*)
     } :text
 
+    .driver_init ALIGN(4K) : AT (ADDR(.driver_init))
+    {
+        driver_init_table_start = .;
+        *(.driver_init)
+        driver_init_table_end = .;
+    } :text
+
     .unmap_after_init ALIGN(4K) : AT (ADDR(.unmap_after_init))
     {
         start_of_unmap_after_init = .;
@@ -51,11 +56,6 @@ SECTIONS
 
     .rodata ALIGN(4K) : AT (ADDR(.rodata))
     {
-        start_heap_ctors = .;
-        *libkernel_heap.a:*(.ctors)
-        *libkernel_heap.a:*(.init_array)
-        end_heap_ctors = .;
-
         start_ctors = .;
         *(.ctors)
         *(.init_array)

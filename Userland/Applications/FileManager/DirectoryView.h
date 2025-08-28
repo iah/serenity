@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <AK/URL.h>
 #include <AK/Vector.h>
 #include <LibConfig/Listener.h>
 #include <LibDesktop/Launcher.h>
@@ -16,12 +15,13 @@
 #include <LibGUI/IconView.h>
 #include <LibGUI/StackWidget.h>
 #include <LibGUI/TableView.h>
+#include <LibURL/URL.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 
 namespace FileManager {
 
-void spawn_terminal(DeprecatedString const& directory);
+void spawn_terminal(GUI::Window* window, StringView directory);
 
 class LauncherHandler : public RefCounted<LauncherHandler> {
 public:
@@ -51,20 +51,20 @@ public:
 
     virtual ~DirectoryView() override;
 
-    bool open(DeprecatedString const& path);
-    DeprecatedString path() const { return model().root_path(); }
+    bool open(ByteString const& path);
+    ByteString path() const { return model().root_path(); }
     void open_parent_directory();
     void open_previous_directory();
     void open_next_directory();
     int path_history_size() const { return m_path_history.size(); }
     int path_history_position() const { return m_path_history_position; }
     static RefPtr<LauncherHandler> get_default_launch_handler(Vector<NonnullRefPtr<LauncherHandler>> const& handlers);
-    static Vector<NonnullRefPtr<LauncherHandler>> get_launch_handlers(URL const& url);
-    static Vector<NonnullRefPtr<LauncherHandler>> get_launch_handlers(DeprecatedString const& path);
+    static Vector<NonnullRefPtr<LauncherHandler>> get_launch_handlers(URL::URL const& url);
+    static Vector<NonnullRefPtr<LauncherHandler>> get_launch_handlers(ByteString const& path);
 
     void refresh();
 
-    void launch(URL const&, LauncherHandler const&) const;
+    void launch(URL::URL const&, LauncherHandler const&) const;
 
     Function<void(StringView path, bool can_read_in_path, bool can_write_in_path)> on_path_change;
     Function<void(GUI::AbstractView&)> on_selection_change;
@@ -82,7 +82,7 @@ public:
     void set_view_mode(ViewMode);
     ViewMode view_mode() const { return m_view_mode; }
 
-    void set_view_mode_from_string(DeprecatedString const&);
+    void set_view_mode_from_string(ByteString const&);
 
     GUI::AbstractView& current_view()
     {
@@ -120,7 +120,7 @@ public:
 
     bool is_desktop() const { return m_mode == Mode::Desktop; }
 
-    Vector<DeprecatedString> selected_file_paths() const;
+    Vector<ByteString> selected_file_paths() const;
 
     GUI::Action& mkdir_action() { return *m_mkdir_action; }
     GUI::Action& touch_action() { return *m_touch_action; }
@@ -133,7 +133,7 @@ public:
     GUI::Action& view_as_columns_action() { return *m_view_as_columns_action; }
 
     // ^Config::Listener
-    virtual void config_string_did_change(DeprecatedString const& domain, DeprecatedString const& group, DeprecatedString const& key, DeprecatedString const& value) override;
+    virtual void config_string_did_change(StringView domain, StringView group, StringView key, StringView value) override;
 
 private:
     explicit DirectoryView(Mode);
@@ -166,8 +166,8 @@ private:
     NonnullRefPtr<GUI::FileSystemModel> m_model;
     NonnullRefPtr<GUI::SortingProxyModel> m_sorting_model;
     size_t m_path_history_position { 0 };
-    Vector<DeprecatedString> m_path_history;
-    void add_path_to_history(DeprecatedString);
+    Vector<ByteString> m_path_history;
+    void add_path_to_history(ByteString);
 
     RefPtr<GUI::Label> m_error_label;
 

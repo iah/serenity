@@ -15,7 +15,6 @@ set(SOURCES
     BTree.cpp
     BTreeIterator.cpp
     Database.cpp
-    HashIndex.cpp
     Heap.cpp
     Index.cpp
     Key.cpp
@@ -41,4 +40,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_lib(LibSQL sql)
-target_link_libraries(LibSQL PRIVATE LibCore LibIPC LibSyntax LibRegex)
+target_link_libraries(LibSQL PRIVATE LibCore LibFileSystem LibIPC LibSyntax LibRegex)

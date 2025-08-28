@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/CharacterTypes.h>
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
@@ -21,7 +22,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static char const* object_program_header_type_to_string(ElfW(Word) type)
+static char const* object_program_header_type_to_string(Elf_Word type)
 {
     switch (type) {
     case PT_NULL:
@@ -65,7 +66,7 @@ static char const* object_program_header_type_to_string(ElfW(Word) type)
     }
 }
 
-static char const* object_section_header_type_to_string(ElfW(Word) type)
+static char const* object_section_header_type_to_string(Elf_Word type)
 {
     switch (type) {
     case SHT_NULL:
@@ -137,7 +138,7 @@ static char const* object_section_header_type_to_string(ElfW(Word) type)
     }
 }
 
-static char const* object_symbol_type_to_string(ElfW(Word) type)
+static char const* object_symbol_type_to_string(Elf_Word type)
 {
     switch (type) {
     case STT_NOTYPE:
@@ -163,7 +164,7 @@ static char const* object_symbol_type_to_string(ElfW(Word) type)
     }
 }
 
-static char const* object_symbol_binding_to_string(ElfW(Word) type)
+static char const* object_symbol_binding_to_string(Elf_Word type)
 {
     switch (type) {
     case STB_LOCAL:
@@ -183,33 +184,33 @@ static char const* object_symbol_binding_to_string(ElfW(Word) type)
     }
 }
 
-static char const* object_relocation_type_to_string(ElfW(Word) type)
+static char const* object_relocation_type_to_string(Elf_Half machine, Elf_Word type)
 {
-    switch (type) {
-#if ARCH(X86_64)
-    case R_X86_64_NONE:
-        return "R_X86_64_NONE";
-    case R_X86_64_64:
-        return "R_X86_64";
-    case R_X86_64_GLOB_DAT:
-        return "R_x86_64_GLOB_DAT";
-    case R_X86_64_JUMP_SLOT:
-        return "R_X86_64_JUMP_SLOT";
-    case R_X86_64_RELATIVE:
-        return "R_X86_64_RELATIVE";
-    case R_X86_64_TPOFF64:
-        return "R_X86_64_TPOFF64";
-#endif
-    default:
-        return "(?)";
+#define ENUMERATE_RELOCATION(name) \
+    case name:                     \
+        return #name;
+    if (machine == EM_X86_64) {
+        switch (type) {
+            __ENUMERATE_X86_64_DYNAMIC_RELOCS(ENUMERATE_RELOCATION)
+        }
+    } else if (machine == EM_AARCH64) {
+        switch (type) {
+            __ENUMERATE_AARCH64_DYNAMIC_RELOCS(ENUMERATE_RELOCATION)
+        }
+    } else if (machine == EM_RISCV) {
+        switch (type) {
+            __ENUMERATE_RISCV_DYNAMIC_RELOCS(ENUMERATE_RELOCATION)
+        }
     }
+#undef ENUMERATE_RELOCATION
+    return "(?)";
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    TRY(Core::System::pledge("stdio rpath"));
+    TRY(Core::System::pledge("stdio rpath map_fixed"));
 
-    DeprecatedString path {};
+    ByteString path {};
     static bool display_all = false;
     static bool display_elf_header = false;
     static bool display_program_headers = false;
@@ -282,15 +283,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return -1;
     }
 
-    StringBuilder interpreter_path_builder;
-    auto result_or_error = ELF::validate_program_headers(*(const ElfW(Ehdr)*)elf_image_data.data(), elf_image_data.size(), elf_image_data, &interpreter_path_builder);
-    if (result_or_error.is_error() || !result_or_error.value()) {
+    Optional<Elf_Phdr> interpreter_path_program_header {};
+    if (!ELF::validate_program_headers(*bit_cast<Elf_Ehdr const*>(elf_image_data.data()), elf_image_data.size(), elf_image_data, interpreter_path_program_header)) {
         warnln("Invalid ELF headers");
         return -1;
     }
+
+    StringBuilder interpreter_path_builder;
+    if (interpreter_path_program_header.has_value())
+        TRY(interpreter_path_builder.try_append({ elf_image_data.offset(interpreter_path_program_header.value().p_offset), static_cast<size_t>(interpreter_path_program_header.value().p_filesz) - 1 }));
     auto interpreter_path = interpreter_path_builder.string_view();
 
-    auto& header = *reinterpret_cast<const ElfW(Ehdr)*>(elf_image_data.data());
+    auto& header = *reinterpret_cast<Elf_Ehdr const*>(elf_image_data.data());
 
     RefPtr<ELF::DynamicObject> object = nullptr;
 
@@ -338,7 +342,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         out("  Magic:                             ");
         for (char i : StringView { header.e_ident, sizeof(header.e_ident) }) {
-            if (isprint(i)) {
+            if (is_ascii_printable(i)) {
                 out("{:c} ", i);
             } else {
                 out("{:02x} ", i);
@@ -435,17 +439,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 found_dynamic_section = true;
 
                 if (section.entry_count()) {
-                    outln("Dynamic section '{}' at offset {:#08x} contains {} entries.", section.name().to_deprecated_string(), section.offset(), section.entry_count());
+                    outln("Dynamic section '{}' at offset {:#08x} contains {} entries.", section.name().to_byte_string(), section.offset(), section.entry_count());
                 } else {
-                    outln("Dynamic section '{}' at offset {:#08x} contains zero entries.", section.name().to_deprecated_string(), section.offset());
+                    outln("Dynamic section '{}' at offset {:#08x} contains zero entries.", section.name().to_byte_string(), section.offset());
                 }
 
                 return IterationDecision::Break;
             });
 
-            Vector<DeprecatedString> libraries;
+            Vector<ByteString> libraries;
             object->for_each_needed_library([&libraries](StringView entry) {
-                libraries.append(DeprecatedString::formatted("{}", entry));
+                libraries.append(ByteString::formatted("{}", entry));
             });
 
             auto library_index = 0;
@@ -482,9 +486,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             } else {
                 outln("Relocation section '{}' at offset {:#08x} contains {} entries:", object->relocation_section().name(), object->relocation_section().offset(), object->relocation_section().entry_count());
                 outln("  Offset{}      Type                Sym Value{}   Sym Name", addr_padding, addr_padding);
-                object->relocation_section().for_each_relocation([](const ELF::DynamicObject::Relocation& reloc) {
+                object->relocation_section().for_each_relocation([&](const ELF::DynamicObject::Relocation& reloc) {
                     out("  {:p} ", reloc.offset());
-                    out(" {:18} ", object_relocation_type_to_string(reloc.type()));
+                    out(" {:18} ", object_relocation_type_to_string(header.e_machine, reloc.type()));
                     out(" {:p} ", reloc.symbol().value());
                     out(" {}", reloc.symbol().name());
                     outln();
@@ -497,9 +501,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             } else {
                 outln("Relocation section '{}' at offset {:#08x} contains {} entries:", object->plt_relocation_section().name(), object->plt_relocation_section().offset(), object->plt_relocation_section().entry_count());
                 outln("  Offset{}      Type                Sym Value{}   Sym Name", addr_padding, addr_padding);
-                object->plt_relocation_section().for_each_relocation([](const ELF::DynamicObject::Relocation& reloc) {
+                object->plt_relocation_section().for_each_relocation([&](const ELF::DynamicObject::Relocation& reloc) {
                     out("  {:p} ", reloc.offset());
-                    out(" {:18} ", object_relocation_type_to_string(reloc.type()));
+                    out(" {:18} ", object_relocation_type_to_string(header.e_machine, reloc.type()));
                     out(" {:p} ", reloc.symbol().value());
                     out(" {}", reloc.symbol().name());
                     outln();
@@ -568,7 +572,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             });
 
             if (object->symbol_count()) {
-                // FIXME: Add support for init/fini/start/main sections
                 outln("   Num: Value{}      Size{}       Type     Bind     Name", addr_padding, addr_padding);
                 object->for_each_symbol([](const ELF::DynamicObject::Symbol& sym) {
                     out("  {:>4}: ", sym.index());

@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static Optional<pid_t> determine_pid_to_profile(StringView pid_argument, bool all_processes);
+
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
@@ -36,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(Core::ArgsParser::Option {
         Core::ArgsParser::OptionArgumentMode::Required,
         "Enable tracking specific event type", nullptr, 't', "event_type",
-        [&](DeprecatedString event_type) {
+        [&](ByteString event_type) {
             seen_event_type_arg = true;
             if (event_type == "sample")
                 event_mask |= PERF_EVENT_SAMPLE;
@@ -50,8 +52,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 event_mask |= PERF_EVENT_PAGE_FAULT;
             else if (event_type == "syscall")
                 event_mask |= PERF_EVENT_SYSCALL;
-            else if (event_type == "read")
-                event_mask |= PERF_EVENT_READ;
+            else if (event_type == "filesystem")
+                event_mask |= PERF_EVENT_FILESYSTEM;
             else {
                 warnln("Unknown event type '{}' specified.", event_type);
                 exit(1);
@@ -63,7 +65,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto print_types = [] {
         outln();
-        outln("Event type can be one of: sample, context_switch, page_fault, syscall, read, kmalloc and kfree.");
+        outln("Event type can be one of: sample, context_switch, page_fault, syscall, filesystem, kmalloc and kfree.");
     };
 
     if (!args_parser.parse(arguments, Core::ArgsParser::FailureBehavior::PrintUsage)) {
@@ -82,13 +84,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (!pid_argument.is_empty() || all_processes) {
         if (!(enable ^ disable ^ wait ^ free)) {
-            warnln("-p <PID> requires -e xor -d xor -w xor -f.");
+            warnln("-a and -p <PID> requires -e xor -d xor -w xor -f.");
             return 1;
         }
 
-        // FIXME: Handle error case.
-        pid_t pid = all_processes ? -1 : pid_argument.to_int().release_value();
+        auto pid_opt = determine_pid_to_profile(pid_argument, all_processes);
+        if (!pid_opt.has_value()) {
+            warnln("-p <PID> requires an integer value.");
+            return 1;
+        }
 
+        pid_t pid = pid_opt.value();
         if (wait || enable) {
             TRY(Core::System::profiling_enable(pid, event_mask));
 
@@ -115,4 +121,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::exec(command[0], command, Core::System::SearchInPath::Yes));
 
     return 0;
+}
+
+static Optional<pid_t> determine_pid_to_profile(StringView pid_argument, bool all_processes)
+{
+    if (all_processes) {
+        return { -1 };
+    }
+
+    // pid_argument is guaranteed to have a value
+    return pid_argument.to_number<pid_t>();
 }

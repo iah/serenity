@@ -71,6 +71,11 @@ public:
         VERIFY(code_points || length == 0);
     }
 
+    Utf32View(ReadonlySpan<u32> code_points)
+        : Utf32View(code_points.data(), code_points.size())
+    {
+    }
+
     Utf32CodePointIterator begin() const
     {
         return { begin_ptr(), m_length };
@@ -108,6 +113,13 @@ public:
         VERIFY((offset + length) <= m_length);
         return Utf32View(m_code_points + offset, length);
     }
+
+    Utf32View substring_view(size_t offset) const
+    {
+        return substring_view(offset, length() - offset);
+    }
+
+    bool operator==(Utf32View const& other) const;
 
 private:
     u32 const* begin_ptr() const

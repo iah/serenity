@@ -37,6 +37,14 @@ public:
         ++m_size;
     }
 
+    ErrorOr<T> try_dequeue()
+    {
+        if (is_empty())
+            return Error::from_errno(ENOENT);
+
+        return dequeue();
+    }
+
     T dequeue()
     {
         VERIFY(!is_empty());
@@ -60,6 +68,12 @@ public:
     {
         VERIFY(!is_empty());
         return m_segments.first()->data[m_index_into_first];
+    }
+
+    T& tail()
+    {
+        VERIFY(!is_empty());
+        return m_segments.last()->data.last();
     }
 
     void clear()

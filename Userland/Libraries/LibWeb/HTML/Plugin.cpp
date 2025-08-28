@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/PluginPrototype.h>
 #include <LibWeb/HTML/Plugin.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Window.h>
@@ -12,20 +13,25 @@
 
 namespace Web::HTML {
 
+JS_DEFINE_ALLOCATOR(Plugin);
+
 Plugin::Plugin(JS::Realm& realm, String name)
-    : Bindings::LegacyPlatformObject(realm)
+    : Bindings::PlatformObject(realm)
     , m_name(move(name))
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+        .supports_named_properties = true,
+        .has_legacy_unenumerable_named_properties_interface_extended_attribute = true,
+    };
 }
 
 Plugin::~Plugin() = default;
 
-JS::ThrowCompletionOr<void> Plugin::initialize(JS::Realm& realm)
+void Plugin::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::PluginPrototype>(realm, "Plugin"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(Plugin);
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-plugin-name
@@ -36,45 +42,36 @@ String const& Plugin::name() const
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-plugin-description
-JS::ThrowCompletionOr<String> Plugin::description() const
+String Plugin::description() const
 {
     // The Plugin interface's description getter steps are to return "Portable Document Format".
-    static String description_string = TRY_OR_THROW_OOM(vm(), "Portable Document Format"_string);
+    static String description_string = "Portable Document Format"_string;
     return description_string;
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-plugin-filename
-JS::ThrowCompletionOr<String> Plugin::filename() const
+String Plugin::filename() const
 {
     // The Plugin interface's filename getter steps are to return "internal-pdf-viewer".
-    static String filename_string = TRY_OR_THROW_OOM(vm(), "internal-pdf-viewer"_string);
+    static String filename_string = "internal-pdf-viewer"_string;
     return filename_string;
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:support-named-properties-3
-Vector<DeprecatedString> Plugin::supported_property_names() const
+Vector<FlyString> Plugin::supported_property_names() const
 {
     // The Plugin interface supports named properties. If the user agent's PDF viewer supported is true, then they are the PDF viewer mime types. Otherwise, they are the empty list.
     auto const& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    VERIFY(window.page());
-    if (!window.page()->pdf_viewer_supported())
+    if (!window.page().pdf_viewer_supported())
         return {};
 
     // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-mime-types
-    static Vector<DeprecatedString> mime_types = {
-        "application/pdf"sv,
-        "text/pdf"sv,
+    static Vector<FlyString> const mime_types = {
+        "application/pdf"_fly_string,
+        "text/pdf"_fly_string,
     };
 
     return mime_types;
-}
-
-// https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewing-support:supports-indexed-properties-3
-bool Plugin::is_supported_property_index(u32 index) const
-{
-    // The Plugin interface supports indexed properties. The supported property indices are the indices of this's relevant global object's PDF viewer mime type objects.
-    auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
-    return index < window.pdf_viewer_mime_type_objects().size();
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-plugin-length
@@ -100,7 +97,7 @@ JS::GCPtr<MimeType> Plugin::item(u32 index) const
     return nullptr;
 }
 
-JS::GCPtr<MimeType> Plugin::named_item(String const& name) const
+JS::GCPtr<MimeType> Plugin::named_item(FlyString const& name) const
 {
     // 1. For each MimeType mimeType of this's relevant global object's PDF viewer mime type objects: if mimeType's type is name, then return mimeType.
     auto& window = verify_cast<HTML::Window>(HTML::relevant_global_object(*this));
@@ -115,18 +112,17 @@ JS::GCPtr<MimeType> Plugin::named_item(String const& name) const
     return nullptr;
 }
 
-WebIDL::ExceptionOr<JS::Value> Plugin::item_value(size_t index) const
+Optional<JS::Value> Plugin::item_value(size_t index) const
 {
     auto return_value = item(index);
     if (!return_value)
-        return JS::js_null();
+        return {};
     return return_value.ptr();
 }
 
-WebIDL::ExceptionOr<JS::Value> Plugin::named_item_value(DeprecatedFlyString const& name) const
+JS::Value Plugin::named_item_value(FlyString const& name) const
 {
-    auto converted_name = TRY_OR_THROW_OOM(vm(), String::from_deprecated_string(name));
-    auto return_value = named_item(converted_name);
+    auto return_value = named_item(name);
     if (!return_value)
         return JS::js_null();
     return return_value.ptr();

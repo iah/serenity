@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Singleton.h>
 #include <Kernel/Arch/aarch64/ASM_wrapper.h>
 #include <Kernel/Arch/aarch64/RPi/GPIO.h>
 #include <Kernel/Arch/aarch64/RPi/MMIO.h>
@@ -37,15 +38,27 @@ struct GPIOControlRegisters {
     u32 test;
 };
 
+static Singleton<GPIO> s_the;
+
 GPIO::GPIO()
-    : m_registers(MMIO::the().peripheral<GPIOControlRegisters>(0x20'0000))
+    : m_registers(MMIO::the().peripheral<GPIOControlRegisters>(0x20'0000).release_value_but_fixme_should_propagate_errors())
 {
+}
+
+void GPIO::initialize()
+{
+    s_the.ensure_instance();
+}
+
+bool GPIO::is_initialized()
+{
+    return s_the.is_initialized();
 }
 
 GPIO& GPIO::the()
 {
-    static GPIO instance;
-    return instance;
+    VERIFY(is_initialized());
+    return s_the;
 }
 
 void GPIO::set_pin_function(unsigned pin_number, PinFunction function)
@@ -92,6 +105,21 @@ void GPIO::internal_enable_pins(u32 enable[2], PullUpDownState state)
 
     // bcm2711-peripherals.pdf documents GPIO_PUP_PDN_CNTRL_REG[4] registers that store 2 bits state per register, similar to function_select.
     // I don't know if the RPi3 has that already, so this uses the old BCM2835 approach for now.
+}
+
+void GPIO::set_pin_high_detect_enable(unsigned pin_number, bool enable)
+{
+    if (enable) {
+        if (pin_number < 32)
+            m_registers->high_detect_enable.bits[0] = m_registers->high_detect_enable.bits[0] | (1 << pin_number);
+        else
+            m_registers->high_detect_enable.bits[1] = m_registers->high_detect_enable.bits[1] | (1 << (pin_number - 32));
+    } else {
+        if (pin_number < 32)
+            m_registers->high_detect_enable.bits[0] = m_registers->high_detect_enable.bits[0] & ~(1 << pin_number);
+        else
+            m_registers->high_detect_enable.bits[1] = m_registers->high_detect_enable.bits[1] & ~(1 << (pin_number - 32));
+    }
 }
 
 }

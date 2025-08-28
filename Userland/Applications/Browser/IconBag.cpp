@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
 #include <Applications/Browser/IconBag.h>
 
 namespace Browser {
@@ -12,10 +11,13 @@ ErrorOr<IconBag> IconBag::try_create()
 {
     IconBag icon_bag;
 
+    icon_bag.default_favicon = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-browser.png"sv));
     icon_bag.filetype_html = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-html.png"sv));
     icon_bag.filetype_text = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-text.png"sv));
     icon_bag.filetype_javascript = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-javascript.png"sv));
+    icon_bag.filetype_audio = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-sound.png"sv));
     icon_bag.filetype_image = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-image.png"sv));
+    icon_bag.filetype_video = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-video.png"sv));
     icon_bag.bookmark_contour = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/bookmark-contour.png"sv));
     icon_bag.bookmark_filled = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/bookmark-filled.png"sv));
     icon_bag.inspector_object = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/inspector-object.png"sv));
@@ -43,6 +45,12 @@ ErrorOr<IconBag> IconBag::try_create()
     icon_bag.download = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/download.png"sv));
     icon_bag.copy = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/edit-copy.png"sv));
     icon_bag.rename = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/rename.png"sv));
+    icon_bag.play = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/play.png"sv));
+    icon_bag.pause = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/pause.png"sv));
+    icon_bag.mute = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/audio-volume-muted.png"sv));
+    icon_bag.unmute = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/audio-volume-high.png"sv));
+    icon_bag.search = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/find.png"sv));
+    icon_bag.task_manager = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-system-monitor.png"sv));
 
     return icon_bag;
 }

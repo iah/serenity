@@ -14,12 +14,13 @@ namespace JS::Intl {
 
 class DateTimeFormatFunction final : public NativeFunction {
     JS_OBJECT(DateTimeFormatFunction, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DateTimeFormatFunction);
 
 public:
     static NonnullGCPtr<DateTimeFormatFunction> create(Realm&, DateTimeFormat&);
 
     virtual ~DateTimeFormatFunction() override = default;
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
 
     virtual ThrowCompletionOr<Value> call() override;
 
@@ -28,7 +29,7 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    DateTimeFormat& m_date_time_format; // [[DateTimeFormat]]
+    NonnullGCPtr<DateTimeFormat> m_date_time_format; // [[DateTimeFormat]]
 };
 
 }

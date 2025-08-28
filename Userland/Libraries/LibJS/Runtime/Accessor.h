@@ -15,6 +15,7 @@ namespace JS {
 
 class Accessor final : public Cell {
     JS_CELL(Accessor, Cell);
+    JS_DECLARE_ALLOCATOR(Accessor);
 
 public:
     static NonnullGCPtr<Accessor> create(VM& vm, FunctionObject* getter, FunctionObject* setter)
@@ -30,6 +31,7 @@ public:
 
     void visit_edges(Cell::Visitor& visitor) override
     {
+        Base::visit_edges(visitor);
         visitor.visit(m_getter);
         visitor.visit(m_setter);
     }
@@ -41,8 +43,8 @@ private:
     {
     }
 
-    FunctionObject* m_getter { nullptr };
-    FunctionObject* m_setter { nullptr };
+    GCPtr<FunctionObject> m_getter;
+    GCPtr<FunctionObject> m_setter;
 };
 
 }

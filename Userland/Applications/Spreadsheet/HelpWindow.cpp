@@ -38,7 +38,7 @@ public:
         return {};
     }
 
-    DeprecatedString key(const GUI::ModelIndex& index) const { return m_keys[index.row()]; }
+    ByteString key(const GUI::ModelIndex& index) const { return m_keys[index.row()]; }
 
     void set_from(JsonObject const& object)
     {
@@ -55,7 +55,7 @@ private:
     {
     }
 
-    Vector<DeprecatedString> m_keys;
+    Vector<ByteString> m_keys;
 };
 
 RefPtr<HelpWindow> HelpWindow::s_the { nullptr };
@@ -66,8 +66,9 @@ HelpWindow::HelpWindow(GUI::Window* parent)
     resize(530, 365);
     set_title("Spreadsheet Functions Help");
     set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-help.png"sv).release_value_but_fixme_should_propagate_errors());
+    set_window_mode(GUI::WindowMode::Modeless);
 
-    auto widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto widget = set_main_widget<GUI::Widget>();
     widget->set_layout<GUI::VerticalBoxLayout>();
     widget->set_fill_with_background_color(true);
 
@@ -81,52 +82,55 @@ HelpWindow::HelpWindow(GUI::Window* parent)
     m_listview->set_model(HelpListModel::create());
 
     m_webview = splitter.add<WebView::OutOfProcessWebView>();
-    m_webview->on_link_click = [this](auto& url, auto&, auto&&) {
+    m_webview->use_native_user_style_sheet();
+    m_webview->handle_custom_scheme = [this](auto& url) {
         VERIFY(url.scheme() == "spreadsheet");
-        if (url.host() == "example") {
-            auto entry = LexicalPath::basename(url.path());
+        if (url.host().template has<String>() && url.host().template get<String>() == "example"sv) {
+            auto example_path = URL::percent_decode(url.serialize_path());
+            auto entry = LexicalPath::basename(example_path);
             auto doc_option = m_docs.get_object(entry);
             if (!doc_option.has_value()) {
-                GUI::MessageBox::show_error(this, DeprecatedString::formatted("No documentation entry found for '{}'", url.path()));
-                return;
+                GUI::MessageBox::show_error(this, ByteString::formatted("No documentation entry found for '{}'", example_path));
+                return true;
             }
             auto& doc = doc_option.value();
-            const auto& name = url.fragment();
+            auto name = url.fragment().value_or(String {});
 
             auto maybe_example_data = doc.get_object("example_data"sv);
             if (!maybe_example_data.has_value()) {
-                GUI::MessageBox::show_error(this, DeprecatedString::formatted("No example data found for '{}'", url.path()));
-                return;
+                GUI::MessageBox::show_error(this, ByteString::formatted("No example data found for '{}'", example_path));
+                return true;
             }
             auto& example_data = maybe_example_data.value();
 
             if (!example_data.has_object(name)) {
-                GUI::MessageBox::show_error(this, DeprecatedString::formatted("Example '{}' not found for '{}'", name, url.path()));
-                return;
+                GUI::MessageBox::show_error(this, ByteString::formatted("Example '{}' not found for '{}'", name, example_path));
+                return true;
             }
             auto& value = example_data.get_object(name).value();
 
             auto window = GUI::Window::construct(this);
             window->resize(size());
             window->set_icon(icon());
-            window->set_title(DeprecatedString::formatted("Spreadsheet Help - Example {} for {}", name, entry));
+            window->set_title(ByteString::formatted("Spreadsheet Help - Example {} for {}", name, entry));
             window->on_close = [window = window.ptr()] { window->remove_from_parent(); };
 
-            auto widget = window->set_main_widget<SpreadsheetWidget>(window, Vector<NonnullRefPtr<Sheet>> {}, false).release_value_but_fixme_should_propagate_errors();
+            auto widget = window->set_main_widget<SpreadsheetWidget>(window, Vector<NonnullRefPtr<Sheet>> {}, false);
             auto sheet = Sheet::from_json(value, widget->workbook());
             if (!sheet) {
-                GUI::MessageBox::show_error(this, DeprecatedString::formatted("Corrupted example '{}' in '{}'", name, url.path()));
-                return;
+                GUI::MessageBox::show_error(this, ByteString::formatted("Corrupted example '{}' in '{}'", name, example_path));
+                return true;
             }
 
             widget->add_sheet(sheet.release_nonnull());
             window->show();
-        } else if (url.host() == "doc") {
-            auto entry = LexicalPath::basename(url.path());
-            m_webview->load(URL::create_with_data("text/html", render(entry)));
+        } else if (url.host() == "doc"_string) {
+            auto entry = LexicalPath::basename(URL::percent_decode(url.serialize_path()));
+            m_webview->load(URL::create_with_data("text/html"sv, render(entry)));
         } else {
-            dbgln("Invalid spreadsheet action domain '{}'", url.host());
+            dbgln("Invalid spreadsheet action domain '{}'", url.serialized_host().release_value_but_fixme_should_propagate_errors());
         }
+        return true;
     };
 
     m_listview->on_activation = [this](auto& index) {
@@ -134,21 +138,21 @@ HelpWindow::HelpWindow(GUI::Window* parent)
             return;
 
         auto key = static_cast<HelpListModel*>(m_listview->model())->key(index);
-        m_webview->load(URL::create_with_data("text/html", render(key)));
+        m_webview->load(URL::create_with_data("text/html"sv, render(key)));
     };
 }
 
-DeprecatedString HelpWindow::render(StringView key)
+ByteString HelpWindow::render(StringView key)
 {
     VERIFY(m_docs.has_object(key));
     auto& doc = m_docs.get_object(key).value();
 
-    auto name = doc.get_deprecated_string("name"sv).value_or({});
+    auto name = doc.get_byte_string("name"sv).value_or({});
     auto argc = doc.get_u32("argc"sv).value_or(0);
     VERIFY(doc.has_array("argnames"sv));
     auto& argnames = doc.get_array("argnames"sv).value();
 
-    auto docstring = doc.get_deprecated_string("doc"sv).value_or({});
+    auto docstring = doc.get_byte_string("doc"sv).value_or({});
 
     StringBuilder markdown_builder;
 
@@ -163,7 +167,7 @@ DeprecatedString HelpWindow::render(StringView key)
         markdown_builder.append("No required arguments.\n"sv);
 
     for (size_t i = 0; i < argc; ++i)
-        markdown_builder.appendff("- `{}`\n", argnames.at(i).to_deprecated_string());
+        markdown_builder.appendff("- `{}`\n", argnames.at(i).as_string());
 
     if (argc > 0)
         markdown_builder.append("\n"sv);
@@ -172,7 +176,7 @@ DeprecatedString HelpWindow::render(StringView key)
         auto opt_count = argnames.size() - argc;
         markdown_builder.appendff("{} optional argument(s):\n", opt_count);
         for (size_t i = argc; i < (size_t)argnames.size(); ++i)
-            markdown_builder.appendff("- `{}`\n", argnames.at(i).to_deprecated_string());
+            markdown_builder.appendff("- `{}`\n", argnames.at(i).as_string());
         markdown_builder.append("\n"sv);
     }
 
@@ -185,8 +189,8 @@ DeprecatedString HelpWindow::render(StringView key)
         VERIFY(examples.has_value());
         markdown_builder.append("# EXAMPLES\n"sv);
         examples->for_each_member([&](auto& text, auto& description_value) {
-            dbgln("```js\n{}\n```\n\n- {}\n", text, description_value.to_deprecated_string());
-            markdown_builder.appendff("```js\n{}\n```\n\n- {}\n", text, description_value.to_deprecated_string());
+            dbgln("```js\n{}\n```\n\n- {}\n", text, description_value.as_string());
+            markdown_builder.appendff("```js\n{}\n```\n\n- {}\n", text, description_value.as_string());
         });
     }
 

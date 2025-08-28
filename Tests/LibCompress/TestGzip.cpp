@@ -18,7 +18,7 @@ TEST_CASE(gzip_decompress_simple)
         0x00, 0xc2, 0x1d, 0x22, 0x15, 0x0f, 0x00, 0x00, 0x00
     };
 
-    const u8 uncompressed[] = "word1 abc word2";
+    u8 const uncompressed[] = "word1 abc word2";
 
     auto const decompressed = Compress::GzipDecompressor::decompress_all(compressed);
     EXPECT(decompressed.value().bytes() == (ReadonlyBytes { uncompressed, sizeof(uncompressed) - 1 }));
@@ -34,7 +34,7 @@ TEST_CASE(gzip_decompress_multiple_members)
         0x06, 0x00, 0x00, 0x00
     };
 
-    const u8 uncompressed[] = "abcabcabcabc";
+    u8 const uncompressed[] = "abcabcabcabc";
 
     auto const decompressed = Compress::GzipDecompressor::decompress_all(compressed);
     EXPECT(decompressed.value().bytes() == (ReadonlyBytes { uncompressed, sizeof(uncompressed) - 1 }));
@@ -88,10 +88,20 @@ TEST_CASE(gzip_decompress_repeat_around_buffer)
 TEST_CASE(gzip_round_trip)
 {
     auto original = ByteBuffer::create_uninitialized(1024).release_value();
-    fill_with_random(original.data(), 1024);
-    auto compressed = Compress::GzipCompressor::compress_all(original);
-    EXPECT(!compressed.is_error());
-    auto uncompressed = Compress::GzipDecompressor::decompress_all(compressed.value());
-    EXPECT(!uncompressed.is_error());
-    EXPECT(uncompressed.value() == original);
+    fill_with_random(original);
+    auto compressed = TRY_OR_FAIL(Compress::GzipCompressor::compress_all(original));
+    auto uncompressed = TRY_OR_FAIL(Compress::GzipDecompressor::decompress_all(compressed));
+    EXPECT(uncompressed == original);
+}
+
+TEST_CASE(gzip_truncated_uncompressed_block)
+{
+    Array<u8, 38> const compressed {
+        0x1F, 0x8B, 0x08, 0x13, 0x5D, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x85, 0x1C,
+        0x1C, 0xFF, 0xDB, 0xFB, 0xFF, 0xDB
+    };
+
+    auto const decompressed_or_error = Compress::GzipDecompressor::decompress_all(compressed);
+    EXPECT(decompressed_or_error.is_error());
 }

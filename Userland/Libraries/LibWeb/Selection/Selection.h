@@ -13,9 +13,10 @@ namespace Web::Selection {
 
 class Selection final : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(Selection, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(Selection);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Selection>> create(JS::NonnullGCPtr<JS::Realm>, JS::NonnullGCPtr<DOM::Document>);
+    [[nodiscard]] static JS::NonnullGCPtr<Selection> create(JS::NonnullGCPtr<JS::Realm>, JS::NonnullGCPtr<DOM::Document>);
 
     virtual ~Selection() override;
 
@@ -31,7 +32,8 @@ public:
     unsigned focus_offset() const;
     bool is_collapsed() const;
     unsigned range_count() const;
-    DeprecatedString type() const;
+    String type() const;
+    String direction() const;
     WebIDL::ExceptionOr<JS::GCPtr<DOM::Range>> get_range_at(unsigned index);
     void add_range(JS::NonnullGCPtr<DOM::Range>);
     WebIDL::ExceptionOr<void> remove_range(JS::NonnullGCPtr<DOM::Range>);
@@ -48,7 +50,7 @@ public:
     delete_from_document();
     bool contains_node(JS::NonnullGCPtr<DOM::Node>, bool allow_partial_containment) const;
 
-    DeprecatedString to_deprecated_string() const;
+    String to_string() const;
 
     // Non-standard convenience accessor for the selection's range.
     JS::GCPtr<DOM::Range> range() const;
@@ -61,7 +63,7 @@ private:
 
     [[nodiscard]] bool is_empty() const;
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     void set_range(JS::GCPtr<DOM::Range>);

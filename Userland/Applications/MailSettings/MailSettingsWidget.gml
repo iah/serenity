@@ -1,11 +1,11 @@
-@GUI::Frame {
+@MailSettings::MailSettingsWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         margins: [8]
     }
 
     @GUI::GroupBox {
-        title: "Server Settings"
+        title: "Server settings"
         fixed_height: 170
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -17,10 +17,10 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/graphics/mail-server-settings.png"
+                bitmap: "/res/graphics/mail-server-settings.png"
             }
 
             @GUI::Label {
@@ -39,7 +39,7 @@
             }
 
             @GUI::Label {
-                text: "Server Address:"
+                text: "Server address:"
                 fixed_width: 80
                 name: "server_label"
                 text_alignment: "CenterLeft"
@@ -60,7 +60,7 @@
             }
 
             @GUI::Label {
-                text: "Server Port:"
+                text: "Server port:"
                 fixed_width: 80
                 name: "port_label"
                 text_alignment: "CenterLeft"
@@ -88,7 +88,7 @@
     }
 
     @GUI::GroupBox {
-        title: "User Settings"
+        title: "User settings"
         fixed_height: 110
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -100,10 +100,10 @@
                 spacing: 16
             }
 
-            @GUI::Label {
+            @GUI::ImageWidget {
                 fixed_width: 32
                 fixed_height: 32
-                icon: "/res/graphics/mail-user-settings.png"
+                bitmap: "/res/graphics/mail-user-settings.png"
             }
 
             @GUI::Label {
@@ -123,7 +123,7 @@
 
             @GUI::Label {
                 autosize: true
-                text: "Email Address:"
+                text: "Email address:"
                 fixed_width: 80
                 text_alignment: "CenterLeft"
             }

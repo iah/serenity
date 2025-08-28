@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/String.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/Environment.h>
 #include <LibCore/MappedFile.h>
 #include <LibCore/System.h>
 #include <LibELF/Image.h>
@@ -13,19 +14,15 @@
 
 static ErrorOr<bool> is_dynamically_linked_executable(StringView filename)
 {
-    auto maybe_executable = Core::DeprecatedFile::resolve_executable_from_environment(filename);
-
-    if (!maybe_executable.has_value())
-        return ENOENT;
-
-    auto file = TRY(Core::MappedFile::map(maybe_executable.release_value()));
+    auto executable = TRY(Core::System::resolve_executable_from_environment(filename));
+    auto file = TRY(Core::MappedFile::map(executable));
     ELF::Image elf_image(file->bytes());
     return elf_image.is_dynamic();
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
-    DeprecatedString promises;
+    ByteString promises;
     Vector<StringView> command;
     bool add_promises_for_dynamic_linker;
 
@@ -37,9 +34,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (add_promises_for_dynamic_linker && TRY(is_dynamically_linked_executable(command[0]))) {
         auto constexpr loader_promises = "stdio rpath prot_exec"sv;
-        MUST(Core::System::setenv("_LOADER_PLEDGE_PROMISES"sv, loader_promises, true));
-        MUST(Core::System::setenv("_LOADER_MAIN_PROGRAM_PLEDGE_PROMISES"sv, promises, true));
-        promises = DeprecatedString::formatted("{} {}", promises, loader_promises);
+        MUST(Core::Environment::set("_LOADER_PLEDGE_PROMISES"sv, loader_promises, Core::Environment::Overwrite::Yes));
+        MUST(Core::Environment::set("_LOADER_MAIN_PROGRAM_PLEDGE_PROMISES"sv, promises, Core::Environment::Overwrite::Yes));
+        promises = ByteString::formatted("{} {}", promises, loader_promises);
     }
 
     TRY(Core::System::pledge(StringView(), promises));

@@ -19,10 +19,10 @@ class Statusbar : public Widget {
 public:
     virtual ~Statusbar() override = default;
 
-    DeprecatedString text(size_t index = 0) const;
-    void set_text(DeprecatedString);
-    void set_text(size_t index, DeprecatedString);
-    void set_override_text(DeprecatedString);
+    String text(size_t index = 0) const;
+    void set_text(String);
+    void set_text(size_t index, String);
+    void set_override_text(Optional<String>);
 
     class Segment final : public Button {
         C_OBJECT(Segment)
@@ -48,22 +48,22 @@ public:
     private:
         Segment();
 
-        void set_frame_shape(Gfx::FrameShape shape) { m_shape = shape; }
+        void set_frame_style(Gfx::FrameStyle style) { m_style = style; }
         void set_restored_width(int width) { m_restored_width = width; }
         int restored_width() const { return m_restored_width; }
-        DeprecatedString const& override_text() const { return m_override_text; }
-        DeprecatedString const& restored_text() const { return m_restored_text; }
+        Optional<String> const& override_text() const { return m_override_text; }
+        String const& restored_text() const { return m_restored_text; }
 
-        DeprecatedString m_override_text;
-        DeprecatedString m_restored_text;
+        Optional<String> m_override_text;
+        String m_restored_text;
         bool m_clickable { false };
         int m_restored_width { 0 };
-        int m_thickness { 1 };
         Mode m_mode { Mode::Proportional };
-        Gfx::FrameShape m_shape { Gfx::FrameShape::Panel };
+        Gfx::FrameStyle m_style { Gfx::FrameStyle::SunkenPanel };
     };
 
     Segment& segment(size_t index) { return m_segments.at(index); }
+    void set_segment_count(size_t);
 
 protected:
     explicit Statusbar(int segment_count = 1);
@@ -71,7 +71,6 @@ protected:
     virtual void resize_event(ResizeEvent&) override;
 
 private:
-    void set_segment_count(size_t);
     size_t segment_count() const { return m_segments.size(); }
     void update_segment(size_t);
     NonnullRefPtr<Segment> create_segment();

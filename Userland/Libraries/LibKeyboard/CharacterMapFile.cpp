@@ -7,11 +7,11 @@
 #include "CharacterMapFile.h"
 #include <AK/ByteBuffer.h>
 #include <AK/Utf8View.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/File.h>
 
 namespace Keyboard {
 
-ErrorOr<CharacterMapData> CharacterMapFile::load_from_file(DeprecatedString const& filename)
+ErrorOr<CharacterMapData> CharacterMapFile::load_from_file(ByteString const& filename)
 {
     auto path = filename;
     if (!path.ends_with(".json"sv)) {
@@ -19,11 +19,11 @@ ErrorOr<CharacterMapData> CharacterMapFile::load_from_file(DeprecatedString cons
         full_path.append("/res/keymaps/"sv);
         full_path.append(filename);
         full_path.append(".json"sv);
-        path = full_path.to_deprecated_string();
+        path = full_path.to_byte_string();
     }
 
-    auto file = TRY(Core::DeprecatedFile::open(path, Core::OpenMode::ReadOnly));
-    auto file_contents = file->read_all();
+    auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
+    auto file_contents = TRY(file->read_until_eof());
     auto json_result = TRY(JsonValue::from_string(file_contents));
     auto const& json = json_result.as_object();
 
@@ -55,7 +55,7 @@ ErrorOr<CharacterMapData> CharacterMapFile::load_from_file(DeprecatedString cons
     return character_map;
 }
 
-Vector<u32> CharacterMapFile::read_map(JsonObject const& json, DeprecatedString const& name)
+Vector<u32> CharacterMapFile::read_map(JsonObject const& json, ByteString const& name)
 {
     if (!json.has(name))
         return {};

@@ -21,21 +21,13 @@ public:
         Aborted = 2,
         Yes = 3,
         No = 4,
+        Reveal = 5,
     };
+
     enum class ScreenPosition {
-        CenterWithinParent = 0,
-
-        Center = 1,
-        CenterLeft = 2,
-        CenterRight = 3,
-
-        TopLeft = 4,
-        TopCenter = 5,
-        TopRight = 6,
-
-        BottomLeft = 7,
-        BottomCenter = 8,
-        BottomRight = 9,
+        DoNotPosition,
+        CenterWithinParent,
+        Center,
     };
 
     virtual ~Dialog() override = default;
@@ -44,6 +36,9 @@ public:
 
     ExecResult result() const { return m_result; }
     void done(ExecResult);
+
+    ScreenPosition screen_position() const { return m_screen_position; }
+    void set_screen_position(ScreenPosition position) { m_screen_position = position; }
 
     virtual void event(Core::Event&) override;
 
@@ -63,5 +58,5 @@ private:
 }
 
 template<>
-struct AK::Formatter<GUI::Dialog> : Formatter<Core::Object> {
+struct AK::Formatter<GUI::Dialog> : Formatter<Core::EventReceiver> {
 };

@@ -14,8 +14,8 @@
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeMetadata.h>
 #include <Kernel/Forward.h>
-#include <Kernel/KBuffer.h>
-#include <Kernel/VirtualAddress.h>
+#include <Kernel/Library/KBuffer.h>
+#include <Kernel/Memory/VirtualAddress.h>
 
 namespace Kernel {
 
@@ -58,8 +58,6 @@ public:
 
     ErrorOr<size_t> get_dir_entries(UserOrKernelBuffer& buffer, size_t);
 
-    ErrorOr<NonnullOwnPtr<KBuffer>> read_entire_file();
-
     ErrorOr<NonnullOwnPtr<KString>> original_absolute_path() const;
     ErrorOr<NonnullOwnPtr<KString>> pseudo_path() const;
 
@@ -75,12 +73,16 @@ public:
     Device* device();
 
     bool is_tty() const;
-    const TTY* tty() const;
+    TTY const* tty() const;
     TTY* tty();
 
     bool is_inode_watcher() const;
     InodeWatcher const* inode_watcher() const;
     InodeWatcher* inode_watcher();
+
+    bool is_mount_file() const;
+    MountFile const* mount_file() const;
+    MountFile* mount_file();
 
     bool is_master_pty() const;
     MasterPTY const* master_pty() const;
@@ -93,7 +95,7 @@ public:
     RefPtr<Custody> custody();
     RefPtr<Custody const> custody() const;
 
-    ErrorOr<NonnullLockRefPtr<Memory::VMObject>> vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool shared);
+    ErrorOr<File::VMObjectAndMemoryType> vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool shared);
 
     bool is_blocking() const;
     void set_blocking(bool b);
@@ -114,8 +116,9 @@ public:
 
     OwnPtr<OpenFileDescriptionData>& data();
 
-    void set_original_inode(Badge<VirtualFileSystem>, NonnullLockRefPtr<Inode>&& inode) { m_inode = move(inode); }
-    void set_original_custody(Badge<VirtualFileSystem>, Custody& custody);
+    // NOTE: These methods are (and should be only) called from Kernel/FileSystem/VirtualFileSystem.cpp
+    void set_original_inode(NonnullRefPtr<Inode> inode) { m_inode = move(inode); }
+    void set_original_custody(Custody& custody);
 
     ErrorOr<void> truncate(u64);
     ErrorOr<void> sync();
@@ -130,7 +133,6 @@ public:
     ErrorOr<void> get_flock(Userspace<flock*>) const;
 
 private:
-    friend class VirtualFileSystem;
     explicit OpenFileDescription(File&);
 
     ErrorOr<void> attach();
@@ -140,8 +142,8 @@ private:
         blocker_set().unblock_all_blockers_whose_conditions_are_met();
     }
 
-    LockRefPtr<Inode> m_inode;
-    NonnullLockRefPtr<File> m_file;
+    RefPtr<Inode> m_inode;
+    NonnullRefPtr<File> const m_file;
 
     struct State {
         OwnPtr<OpenFileDescriptionData> data;

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
- * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,7 +11,7 @@
 #include <AK/Optional.h>
 #include <AK/Utf16View.h>
 #include <LibJS/Bytecode/Interpreter.h>
-#include <LibJS/Interpreter.h>
+#include <LibJS/ModuleLoading.h>
 #include <LibJS/Parser.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Accessor.h>
@@ -24,14 +24,19 @@
 #include <LibJS/Runtime/ErrorTypes.h>
 #include <LibJS/Runtime/FunctionEnvironment.h>
 #include <LibJS/Runtime/FunctionObject.h>
+#include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/ObjectEnvironment.h>
+#include <LibJS/Runtime/PromiseCapability.h>
+#include <LibJS/Runtime/PromiseConstructor.h>
 #include <LibJS/Runtime/PropertyDescriptor.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/ProxyObject.h>
 #include <LibJS/Runtime/Reference.h>
+#include <LibJS/Runtime/StringPrototype.h>
 #include <LibJS/Runtime/SuppressedError.h>
+#include <LibJS/Runtime/ValueInlines.h>
 
 namespace JS {
 
@@ -39,56 +44,54 @@ namespace JS {
 ThrowCompletionOr<Value> require_object_coercible(VM& vm, Value value)
 {
     if (value.is_nullish())
-        return vm.throw_completion<TypeError>(ErrorType::NotObjectCoercible, TRY_OR_THROW_OOM(vm, value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotObjectCoercible, value.to_string_without_side_effects());
     return value;
 }
 
 // 7.3.14 Call ( F, V [ , argumentsList ] ), https://tc39.es/ecma262/#sec-call
-ThrowCompletionOr<Value> call_impl(VM& vm, Value function, Value this_value, Optional<MarkedVector<Value>> arguments_list)
+ThrowCompletionOr<Value> call_impl(VM& vm, Value function, Value this_value, ReadonlySpan<Value> arguments_list)
 {
     // 1. If argumentsList is not present, set argumentsList to a new empty List.
-    if (!arguments_list.has_value())
-        arguments_list = MarkedVector<Value> { vm.heap() };
 
     // 2. If IsCallable(F) is false, throw a TypeError exception.
     if (!function.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, function.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, function.to_string_without_side_effects());
 
     // 3. Return ? F.[[Call]](V, argumentsList).
-    return function.as_function().internal_call(this_value, move(*arguments_list));
+    return function.as_function().internal_call(this_value, arguments_list);
 }
 
-ThrowCompletionOr<Value> call_impl(VM& vm, FunctionObject& function, Value this_value, Optional<MarkedVector<Value>> arguments_list)
+ThrowCompletionOr<Value> call_impl(VM&, FunctionObject& function, Value this_value, ReadonlySpan<Value> arguments_list)
 {
     // 1. If argumentsList is not present, set argumentsList to a new empty List.
-    if (!arguments_list.has_value())
-        arguments_list = MarkedVector<Value> { vm.heap() };
 
     // 2. If IsCallable(F) is false, throw a TypeError exception.
     // Note: Called with a FunctionObject ref
 
     // 3. Return ? F.[[Call]](V, argumentsList).
-    return function.internal_call(this_value, move(*arguments_list));
+    return function.internal_call(this_value, arguments_list);
 }
 
 // 7.3.15 Construct ( F [ , argumentsList [ , newTarget ] ] ), https://tc39.es/ecma262/#sec-construct
-ThrowCompletionOr<NonnullGCPtr<Object>> construct_impl(VM& vm, FunctionObject& function, Optional<MarkedVector<Value>> arguments_list, FunctionObject* new_target)
+ThrowCompletionOr<NonnullGCPtr<Object>> construct_impl(VM&, FunctionObject& function, ReadonlySpan<Value> arguments_list, FunctionObject* new_target)
 {
     // 1. If newTarget is not present, set newTarget to F.
     if (!new_target)
         new_target = &function;
 
     // 2. If argumentsList is not present, set argumentsList to a new empty List.
-    if (!arguments_list.has_value())
-        arguments_list = MarkedVector<Value> { vm.heap() };
 
     // 3. Return ? F.[[Construct]](argumentsList, newTarget).
-    return function.internal_construct(move(*arguments_list), *new_target);
+    return function.internal_construct(arguments_list, *new_target);
 }
 
 // 7.3.19 LengthOfArrayLike ( obj ), https://tc39.es/ecma262/#sec-lengthofarraylike
 ThrowCompletionOr<size_t> length_of_array_like(VM& vm, Object const& object)
 {
+    // OPTIMIZATION: For Array objects with a magical "length" property, it should always reflect the size of indexed property storage.
+    if (object.has_magical_length_property())
+        return object.indexed_properties().array_like_size();
+
     // 1. Return ℝ(? ToLength(? Get(obj, "length"))).
     return TRY(object.get(vm.names.length)).to_length(vm);
 }
@@ -100,7 +103,7 @@ ThrowCompletionOr<MarkedVector<Value>> create_list_from_array_like(VM& vm, Value
 
     // 2. If Type(obj) is not Object, throw a TypeError exception.
     if (!value.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, value.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, value.to_string_without_side_effects());
 
     auto& array_like = value.as_object();
 
@@ -144,10 +147,10 @@ ThrowCompletionOr<FunctionObject*> species_constructor(VM& vm, Object const& obj
 
     // 3. If Type(C) is not Object, throw a TypeError exception.
     if (!constructor.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, TRY_OR_THROW_OOM(vm, constructor.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, constructor.to_string_without_side_effects());
 
     // 4. Let S be ? Get(C, @@species).
-    auto species = TRY(constructor.as_object().get(*vm.well_known_symbol_species()));
+    auto species = TRY(constructor.as_object().get(vm.well_known_symbol_species()));
 
     // 5. If S is either undefined or null, return defaultConstructor.
     if (species.is_nullish())
@@ -158,7 +161,7 @@ ThrowCompletionOr<FunctionObject*> species_constructor(VM& vm, Object const& obj
         return &species.as_function();
 
     // 7. Throw a TypeError exception.
-    return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, TRY_OR_THROW_OOM(vm, species.to_string_without_side_effects()));
+    return vm.throw_completion<TypeError>(ErrorType::NotAConstructor, species.to_string_without_side_effects());
 }
 
 // 7.3.25 GetFunctionRealm ( obj ), https://tc39.es/ecma262/#sec-getfunctionrealm
@@ -345,8 +348,8 @@ bool validate_and_apply_property_descriptor(Object* object, PropertyKey const& p
             // i. For each field of Desc, set the corresponding attribute of the property named P of object O to the value of the field.
             Value value;
             if (descriptor.is_accessor_descriptor() || (current->is_accessor_descriptor() && !descriptor.is_data_descriptor())) {
-                auto* getter = descriptor.get.value_or(current->get.value_or(nullptr));
-                auto* setter = descriptor.set.value_or(current->set.value_or(nullptr));
+                auto getter = descriptor.get.value_or(current->get.value_or(nullptr));
+                auto setter = descriptor.set.value_or(current->set.value_or(nullptr));
                 value = Accessor::create(object->vm(), getter, setter);
             } else {
                 value = descriptor.value.value_or(current->value.value_or({}));
@@ -364,7 +367,7 @@ bool validate_and_apply_property_descriptor(Object* object, PropertyKey const& p
 }
 
 // 10.1.14 GetPrototypeFromConstructor ( constructor, intrinsicDefaultProto ), https://tc39.es/ecma262/#sec-getprototypefromconstructor
-ThrowCompletionOr<Object*> get_prototype_from_constructor(VM& vm, FunctionObject const& constructor, Object* (Intrinsics::*intrinsic_default_prototype)())
+ThrowCompletionOr<Object*> get_prototype_from_constructor(VM& vm, FunctionObject const& constructor, NonnullGCPtr<Object> (Intrinsics::*intrinsic_default_prototype)())
 {
     // 1. Assert: intrinsicDefaultProto is this specification's name of an intrinsic object. The corresponding object must be an intrinsic that is intended to be used as the [[Prototype]] value of an object.
 
@@ -499,25 +502,6 @@ Object* get_super_constructor(VM& vm)
     return super_constructor;
 }
 
-// 13.3.7.3 MakeSuperPropertyReference ( actualThis, propertyKey, strict ), https://tc39.es/ecma262/#sec-makesuperpropertyreference
-ThrowCompletionOr<Reference> make_super_property_reference(VM& vm, Value actual_this, PropertyKey const& property_key, bool strict)
-{
-    // 1. Let env be GetThisEnvironment().
-    auto& env = verify_cast<FunctionEnvironment>(*get_this_environment(vm));
-
-    // 2. Assert: env.HasSuperBinding() is true.
-    VERIFY(env.has_super_binding());
-
-    // 3. Let baseValue be ? env.GetSuperBase().
-    auto base_value = TRY(env.get_super_base());
-
-    // 4. Let bv be ? RequireObjectCoercible(baseValue).
-    auto bv = TRY(require_object_coercible(vm, base_value));
-
-    // 5. Return the Reference Record { [[Base]]: bv, [[ReferencedName]]: propertyKey, [[Strict]]: strict, [[ThisValue]]: actualThis }.
-    return Reference { bv, property_key, actual_this, strict };
-}
-
 // 19.2.1.1 PerformEval ( x, strictCaller, direct ), https://tc39.es/ecma262/#sec-performeval
 ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller, EvalMode direct)
 {
@@ -527,13 +511,14 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     // 2. If Type(x) is not String, return x.
     if (!x.is_string())
         return x;
+    auto& code_string = x.as_string();
 
     // 3. Let evalRealm be the current Realm Record.
     auto& eval_realm = *vm.running_execution_context().realm;
 
     // 4. NOTE: In the case of a direct eval, evalRealm is the realm of both the caller of eval and of the eval function itself.
-    // 5. Perform ? HostEnsureCanCompileStrings(evalRealm).
-    TRY(vm.host_ensure_can_compile_strings(eval_realm));
+    // 5. Perform ? HostEnsureCanCompileStrings(evalRealm, « », x, direct).
+    TRY(vm.host_ensure_can_compile_strings(eval_realm, {}, code_string.utf8_string_view(), direct));
 
     // 6. Let inFunction be false.
     bool in_function = false;
@@ -587,8 +572,6 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     //     f. If inMethod is false, and body Contains SuperProperty, throw a SyntaxError exception.
     //     g. If inDerivedConstructor is false, and body Contains SuperCall, throw a SyntaxError exception.
     //     h. If inClassFieldInitializer is true, and ContainsArguments of body is true, throw a SyntaxError exception.
-    auto& code_string = x.as_string();
-
     Parser::EvalInitialState initial_state {
         .in_eval_function_context = in_function,
         .allow_super_property_lookup = in_method,
@@ -596,13 +579,13 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
         .in_class_field_initializer = in_class_field_initializer,
     };
 
-    Parser parser { Lexer { TRY(code_string.deprecated_string()) }, Program::Type::Script, move(initial_state) };
+    Parser parser { Lexer { code_string.byte_string() }, Program::Type::Script, move(initial_state) };
     auto program = parser.parse_program(strict_caller == CallerMode::Strict);
 
     //     b. If script is a List of errors, throw a SyntaxError exception.
     if (parser.has_errors()) {
         auto& error = parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     bool strict_eval = false;
@@ -660,31 +643,31 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     // FIXME: We don't have this concept yet.
 
     // 20. Let evalContext be a new ECMAScript code execution context.
-    ExecutionContext eval_context(vm.heap());
+    auto eval_context = ExecutionContext::create();
 
     // 21. Set evalContext's Function to null.
     // NOTE: This was done in the construction of eval_context.
 
     // 22. Set evalContext's Realm to evalRealm.
-    eval_context.realm = &eval_realm;
+    eval_context->realm = &eval_realm;
 
     // 23. Set evalContext's ScriptOrModule to runningContext's ScriptOrModule.
-    eval_context.script_or_module = running_context.script_or_module;
+    eval_context->script_or_module = running_context.script_or_module;
 
     // 24. Set evalContext's VariableEnvironment to varEnv.
-    eval_context.variable_environment = variable_environment;
+    eval_context->variable_environment = variable_environment;
 
     // 25. Set evalContext's LexicalEnvironment to lexEnv.
-    eval_context.lexical_environment = lexical_environment;
+    eval_context->lexical_environment = lexical_environment;
 
     // 26. Set evalContext's PrivateEnvironment to privateEnv.
-    eval_context.private_environment = private_environment;
+    eval_context->private_environment = private_environment;
 
     // NOTE: This isn't in the spec, but we require it.
-    eval_context.is_strict_mode = strict_eval;
+    eval_context->is_strict_mode = strict_eval;
 
     // 27. Push evalContext onto the execution context stack; evalContext is now the running execution context.
-    TRY(vm.push_execution_context(eval_context, {}));
+    TRY(vm.push_execution_context(*eval_context, {}));
 
     // NOTE: We use a ScopeGuard to automatically pop the execution context when any of the `TRY`s below return a throw completion.
     ScopeGuard pop_guard = [&] {
@@ -701,26 +684,21 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
 
     // 29. If result.[[Type]] is normal, then
     //     a. Set result to the result of evaluating body.
-    if (auto* bytecode_interpreter = Bytecode::Interpreter::current()) {
-        auto executable_result = Bytecode::Generator::generate(program);
-        if (executable_result.is_error())
-            return vm.throw_completion<InternalError>(ErrorType::NotImplemented, TRY_OR_THROW_OOM(vm, executable_result.error().to_string()));
+    auto executable_result = Bytecode::Generator::generate_from_ast_node(vm, program, {});
+    if (executable_result.is_error())
+        return vm.throw_completion<InternalError>(ErrorType::NotImplemented, TRY_OR_THROW_OOM(vm, executable_result.error().to_string()));
 
-        auto executable = executable_result.release_value();
-        executable->name = "eval"sv;
-        if (Bytecode::g_dump_bytecode)
-            executable->dump();
-        auto result_or_error = bytecode_interpreter->run_and_return_frame(*executable, nullptr);
-        if (result_or_error.value.is_error())
-            return result_or_error.value.release_error();
+    auto executable = executable_result.release_value();
+    executable->name = "eval"sv;
+    if (Bytecode::g_dump_bytecode)
+        executable->dump();
+    auto result_or_error = vm.bytecode_interpreter().run_executable(*executable, {});
+    if (result_or_error.value.is_error())
+        return result_or_error.value.release_error();
 
-        auto& result = result_or_error.frame->registers[0];
-        if (!result.is_empty())
-            eval_result = result;
-    } else {
-        auto& ast_interpreter = vm.interpreter();
-        eval_result = TRY(program->execute(ast_interpreter));
-    }
+    auto& result = result_or_error.return_register_value;
+    if (!result.is_empty())
+        eval_result = result;
 
     // 30. If result.[[Type]] is normal and result.[[Value]] is empty, then
     //     a. Set result to NormalCompletion(undefined).
@@ -744,10 +722,10 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
         // a. If varEnv is a global Environment Record, then
         if (global_var_environment) {
             // i. For each element name of varNames, do
-            TRY(program.for_each_var_declared_name([&](auto const& name) -> ThrowCompletionOr<void> {
+            TRY(program.for_each_var_declared_identifier([&](auto const& identifier) -> ThrowCompletionOr<void> {
                 // 1. If varEnv.HasLexicalDeclaration(name) is true, throw a SyntaxError exception.
-                if (global_var_environment->has_lexical_declaration(name))
-                    return vm.throw_completion<SyntaxError>(ErrorType::TopLevelVariableAlreadyDeclared, name);
+                if (global_var_environment->has_lexical_declaration(identifier.string()))
+                    return vm.throw_completion<SyntaxError>(ErrorType::TopLevelVariableAlreadyDeclared, identifier.string());
 
                 // 2. NOTE: eval will not create a global var declaration that would be shadowed by a global lexical declaration.
                 return {};
@@ -764,7 +742,8 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
             if (!is<ObjectEnvironment>(*this_environment)) {
                 // 1. NOTE: The environment of with statements cannot contain any lexical declaration so it doesn't need to be checked for var/let hoisting conflicts.
                 // 2. For each element name of varNames, do
-                TRY(program.for_each_var_declared_name([&](auto const& name) -> ThrowCompletionOr<void> {
+                TRY(program.for_each_var_declared_identifier([&](auto const& identifier) -> ThrowCompletionOr<void> {
+                    auto const& name = identifier.string();
                     // a. If ! thisEnv.HasBinding(name) is true, then
                     if (MUST(this_environment->has_binding(name))) {
                         // i. Throw a SyntaxError exception.
@@ -843,7 +822,7 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
         // b. For each FunctionDeclaration f that is directly contained in the StatementList of a Block, CaseClause, or DefaultClause Contained within body, do
         TRY(program.for_each_function_hoistable_with_annexB_extension([&](FunctionDeclaration& function_declaration) -> ThrowCompletionOr<void> {
             // i. Let F be StringValue of the BindingIdentifier of f.
-            auto& function_name = function_declaration.name();
+            auto function_name = function_declaration.name();
 
             // ii. If replacing the FunctionDeclaration f with a VariableStatement that has F as a BindingIdentifier would not produce any Early Errors for body, then
             // Note: This is checked during parsing and for_each_function_hoistable_with_annexB_extension so it always passes here.
@@ -937,7 +916,9 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
         // Note: This is handled by for_each_var_scoped_variable_declaration.
 
         // i. For each String vn of the BoundNames of d, do
-        return declaration.for_each_bound_name([&](auto const& name) -> ThrowCompletionOr<void> {
+        return declaration.for_each_bound_identifier([&](auto const& identifier) -> ThrowCompletionOr<void> {
+            auto const& name = identifier.string();
+
             // 1. If vn is not an element of declaredFunctionNames, then
             if (!declared_function_names.contains(name)) {
                 // a. If varEnv is a global Environment Record, then
@@ -966,7 +947,9 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
         // a. NOTE: Lexically declared names are only instantiated here but not initialized.
 
         // b. For each element dn of the BoundNames of d, do
-        return declaration.for_each_bound_name([&](auto const& name) -> ThrowCompletionOr<void> {
+        return declaration.for_each_bound_identifier([&](auto const& identifier) -> ThrowCompletionOr<void> {
+            auto const& name = identifier.string();
+
             // i. If IsConstantDeclaration of d is true, then
             if (declaration.is_constant_declaration()) {
                 // 1. Perform ? lexEnv.CreateImmutableBinding(dn, true).
@@ -988,7 +971,8 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
     for (auto& declaration : functions_to_initialize.in_reverse()) {
         // a. Let fn be the sole element of the BoundNames of f.
         // b. Let fo be InstantiateFunctionObject of f with arguments lexEnv and privateEnv.
-        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), lexical_environment, private_environment, declaration.kind(), declaration.is_strict_mode(), declaration.might_need_arguments_object());
+        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), declaration.local_variables_names(), lexical_environment, private_environment, declaration.kind(), declaration.is_strict_mode(),
+            declaration.parsing_insights());
 
         // c. If varEnv is a global Environment Record, then
         if (global_var_environment) {
@@ -1047,7 +1031,7 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
 }
 
 // 10.4.4.6 CreateUnmappedArgumentsObject ( argumentsList ), https://tc39.es/ecma262/#sec-createunmappedargumentsobject
-Object* create_unmapped_arguments_object(VM& vm, Span<Value> arguments)
+Object* create_unmapped_arguments_object(VM& vm, ReadonlySpan<Value> arguments)
 {
     auto& realm = *vm.current_realm();
 
@@ -1075,11 +1059,11 @@ Object* create_unmapped_arguments_object(VM& vm, Span<Value> arguments)
     }
 
     // 7. Perform ! DefinePropertyOrThrow(obj, @@iterator, PropertyDescriptor { [[Value]]: %Array.prototype.values%, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true }).
-    auto* array_prototype_values = realm.intrinsics().array_prototype_values_function();
-    MUST(object->define_property_or_throw(*vm.well_known_symbol_iterator(), { .value = array_prototype_values, .writable = true, .enumerable = false, .configurable = true }));
+    auto array_prototype_values = realm.intrinsics().array_prototype_values_function();
+    MUST(object->define_property_or_throw(vm.well_known_symbol_iterator(), { .value = array_prototype_values, .writable = true, .enumerable = false, .configurable = true }));
 
     // 8. Perform ! DefinePropertyOrThrow(obj, "callee", PropertyDescriptor { [[Get]]: %ThrowTypeError%, [[Set]]: %ThrowTypeError%, [[Enumerable]]: false, [[Configurable]]: false }).
-    auto* throw_type_error = realm.intrinsics().throw_type_error_function();
+    auto throw_type_error = realm.intrinsics().throw_type_error_function();
     MUST(object->define_property_or_throw(vm.names.callee, { .get = throw_type_error, .set = throw_type_error, .enumerable = false, .configurable = false }));
 
     // 9. Return obj.
@@ -1087,7 +1071,7 @@ Object* create_unmapped_arguments_object(VM& vm, Span<Value> arguments)
 }
 
 // 10.4.4.7 CreateMappedArgumentsObject ( func, formals, argumentsList, env ), https://tc39.es/ecma262/#sec-createmappedargumentsobject
-Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<FunctionParameter> const& formals, Span<Value> arguments, Environment& environment)
+Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<FunctionParameter> const& formals, ReadonlySpan<Value> arguments, Environment& environment)
 {
     auto& realm = *vm.current_realm();
 
@@ -1104,7 +1088,7 @@ Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<
     // 7. Set obj.[[Set]] as specified in 10.4.4.4.
     // 8. Set obj.[[Delete]] as specified in 10.4.4.5.
     // 9. Set obj.[[Prototype]] to %Object.prototype%.
-    auto object = vm.heap().allocate<ArgumentsObject>(realm, realm, environment).release_allocated_value_but_fixme_should_propagate_errors();
+    auto object = vm.heap().allocate<ArgumentsObject>(realm, realm, environment);
 
     // 14. Let index be 0.
     // 15. Repeat, while index < len,
@@ -1129,7 +1113,7 @@ Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<
     VERIFY(formals.size() <= NumericLimits<i32>::max());
     for (i32 index = static_cast<i32>(formals.size()) - 1; index >= 0; --index) {
         // a. Let name be parameterNames[index].
-        auto const& name = formals[index].binding.get<DeprecatedFlyString>();
+        auto const& name = formals[index].binding.get<NonnullRefPtr<Identifier const>>()->string();
 
         // b. If name is not an element of mappedNames, then
         if (mapped_names.contains(name))
@@ -1158,8 +1142,8 @@ Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<
     }
 
     // 20. Perform ! DefinePropertyOrThrow(obj, @@iterator, PropertyDescriptor { [[Value]]: %Array.prototype.values%, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true }).
-    auto* array_prototype_values = realm.intrinsics().array_prototype_values_function();
-    MUST(object->define_property_or_throw(*vm.well_known_symbol_iterator(), { .value = array_prototype_values, .writable = true, .enumerable = false, .configurable = true }));
+    auto array_prototype_values = realm.intrinsics().array_prototype_values_function();
+    MUST(object->define_property_or_throw(vm.well_known_symbol_iterator(), { .value = array_prototype_values, .writable = true, .enumerable = false, .configurable = true }));
 
     // 21. Perform ! DefinePropertyOrThrow(obj, "callee", PropertyDescriptor { [[Value]]: func, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true }).
     MUST(object->define_property_or_throw(vm.names.callee, { .value = &function, .writable = true, .enumerable = false, .configurable = true }));
@@ -1169,7 +1153,7 @@ Object* create_mapped_arguments_object(VM& vm, FunctionObject& function, Vector<
 }
 
 // 7.1.21 CanonicalNumericIndexString ( argument ), https://tc39.es/ecma262/#sec-canonicalnumericindexstring
-ThrowCompletionOr<CanonicalIndex> canonical_numeric_index_string(VM& vm, PropertyKey const& property_key, CanonicalIndexMode mode)
+CanonicalIndex canonical_numeric_index_string(PropertyKey const& property_key, CanonicalIndexMode mode)
 {
     // NOTE: If the property name is a number type (An implementation-defined optimized
     // property key type), it can be treated as a string property that has already been
@@ -1216,104 +1200,209 @@ ThrowCompletionOr<CanonicalIndex> canonical_numeric_index_string(VM& vm, Propert
         return CanonicalIndex(CanonicalIndex::Type::Undefined, 0);
 
     // 2. Let n be ! ToNumber(argument).
-    auto maybe_double = argument.to_double(AK::TrimWhitespace::No);
+    auto maybe_double = argument.to_number<double>(AK::TrimWhitespace::No);
     if (!maybe_double.has_value())
         return CanonicalIndex(CanonicalIndex::Type::Undefined, 0);
 
     // FIXME: We return 0 instead of n but it might not observable?
     // 3. If SameValue(! ToString(n), argument) is true, return n.
-    if (TRY_OR_THROW_OOM(vm, number_to_string(*maybe_double)) == argument.view())
+    if (number_to_string(*maybe_double) == argument.view())
         return CanonicalIndex(CanonicalIndex::Type::Numeric, 0);
 
     // 4. Return undefined.
     return CanonicalIndex(CanonicalIndex::Type::Undefined, 0);
 }
 
-// 22.1.3.18.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate ), https://tc39.es/ecma262/#sec-getsubstitution
+// 22.1.3.19.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacementTemplate ), https://tc39.es/ecma262/#sec-getsubstitution
 ThrowCompletionOr<String> get_substitution(VM& vm, Utf16View const& matched, Utf16View const& str, size_t position, Span<Value> captures, Value named_captures, Value replacement_template)
 {
-    auto replace_string = TRY(replacement_template.to_utf16_string(vm));
-    auto replace_view = replace_string.view();
+    // 1. Let stringLength be the length of str.
+    auto string_length = str.length_in_code_units();
 
+    // 2. Assert: position ≤ stringLength.
+    VERIFY(position <= string_length);
+
+    // 3. Let result be the empty String.
     Utf16Data result;
 
-    for (size_t i = 0; i < replace_view.length_in_code_units(); ++i) {
-        u16 curr = replace_view.code_unit_at(i);
+    // 4. Let templateRemainder be replacementTemplate.
+    auto replace_template_string = TRY(replacement_template.to_utf16_string(vm));
+    auto template_remainder = replace_template_string.view();
 
-        if ((curr != '$') || (i + 1 >= replace_view.length_in_code_units())) {
-            TRY_OR_THROW_OOM(vm, result.try_append(curr));
-            continue;
+    // 5. Repeat, while templateRemainder is not the empty String,
+    while (!template_remainder.is_empty()) {
+        // a. NOTE: The following steps isolate ref (a prefix of templateRemainder), determine refReplacement (its replacement), and then append that replacement to result.
+
+        Utf16View ref;
+        Utf16View ref_replacement;
+        Optional<Utf16String> capture_string;
+
+        // b. If templateRemainder starts with "$$", then
+        if (template_remainder.starts_with(u"$$")) {
+            // i. Let ref be "$$".
+            ref = u"$$";
+
+            // ii. Let refReplacement be "$".
+            ref_replacement = u"$";
         }
+        // c. Else if templateRemainder starts with "$`", then
+        else if (template_remainder.starts_with(u"$`")) {
+            // i. Let ref be "$`".
+            ref = u"$`";
 
-        u16 next = replace_view.code_unit_at(i + 1);
+            // ii. Let refReplacement be the substring of str from 0 to position.
+            ref_replacement = str.substring_view(0, position);
+        }
+        // d. Else if templateRemainder starts with "$&", then
+        else if (template_remainder.starts_with(u"$&")) {
+            // i. Let ref be "$&".
+            ref = u"$&";
 
-        if (next == '$') {
-            TRY_OR_THROW_OOM(vm, result.try_append('$'));
-            ++i;
-        } else if (next == '&') {
-            TRY_OR_THROW_OOM(vm, result.try_append(matched.data(), matched.length_in_code_units()));
-            ++i;
-        } else if (next == '`') {
-            auto substring = str.substring_view(0, position);
-            TRY_OR_THROW_OOM(vm, result.try_append(substring.data(), substring.length_in_code_units()));
-            ++i;
-        } else if (next == '\'') {
-            auto tail_pos = position + matched.length_in_code_units();
-            if (tail_pos < str.length_in_code_units()) {
-                auto substring = str.substring_view(tail_pos);
-                TRY_OR_THROW_OOM(vm, result.try_append(substring.data(), substring.length_in_code_units()));
+            // ii. Let refReplacement be matched.
+            ref_replacement = matched;
+        }
+        // e. Else if templateRemainder starts with "$'" (0x0024 (DOLLAR SIGN) followed by 0x0027 (APOSTROPHE)), then
+        else if (template_remainder.starts_with(u"$'")) {
+            // i. Let ref be "$'".
+            ref = u"$'";
+
+            // ii. Let matchLength be the length of matched.
+            auto match_length = matched.length_in_code_units();
+
+            // iii. Let tailPos be position + matchLength.
+            auto tail_pos = position + match_length;
+
+            // iv. Let refReplacement be the substring of str from min(tailPos, stringLength).
+            ref_replacement = str.substring_view(min(tail_pos, string_length));
+
+            // v. NOTE: tailPos can exceed stringLength only if this abstract operation was invoked by a call to the intrinsic @@replace method of %RegExp.prototype% on an object whose "exec" property is not the intrinsic %RegExp.prototype.exec%.
+        }
+        // f. Else if templateRemainder starts with "$" followed by 1 or more decimal digits, then
+        else if (template_remainder.starts_with(u"$") && template_remainder.length_in_code_units() > 1 && is_ascii_digit(template_remainder.code_unit_at(1))) {
+            // i. If templateRemainder starts with "$" followed by 2 or more decimal digits, let digitCount be 2. Otherwise, let digitCount be 1.
+            size_t digit_count = 1;
+
+            if (template_remainder.length_in_code_units() > 2 && is_ascii_digit(template_remainder.code_point_at(2)))
+                digit_count = 2;
+
+            // ii. Let digits be the substring of templateRemainder from 1 to 1 + digitCount.
+            auto digits = template_remainder.substring_view(1, digit_count);
+
+            // iii. Let index be ℝ(StringToNumber(digits)).
+            auto utf8_digits = MUST(digits.to_utf8());
+            auto index = static_cast<size_t>(string_to_number(utf8_digits));
+
+            // iv. Assert: 0 ≤ index ≤ 99.
+            VERIFY(index <= 99);
+
+            // v. Let captureLen be the number of elements in captures.
+            auto capture_length = captures.size();
+
+            // vi. If index > captureLen and digitCount = 2, then
+            if (index > capture_length && digit_count == 2) {
+                // 1. NOTE: When a two-digit replacement pattern specifies an index exceeding the count of capturing groups, it is treated as a one-digit replacement pattern followed by a literal digit.
+
+                // 2. Set digitCount to 1.
+                digit_count = 1;
+
+                // 3. Set digits to the substring of digits from 0 to 1.
+                digits = digits.substring_view(0, 1);
+
+                // 4. Set index to ℝ(StringToNumber(digits)).
+                utf8_digits = MUST(digits.to_utf8());
+                index = static_cast<size_t>(string_to_number(utf8_digits));
             }
-            ++i;
-        } else if (is_ascii_digit(next)) {
-            bool is_two_digits = (i + 2 < replace_view.length_in_code_units()) && is_ascii_digit(replace_view.code_unit_at(i + 2));
 
-            auto capture_position_string = TRY_OR_THROW_OOM(vm, replace_view.substring_view(i + 1, is_two_digits ? 2 : 1).to_utf8());
-            auto capture_position = capture_position_string.to_number<u32>();
+            // vii. Let ref be the substring of templateRemainder from 0 to 1 + digitCount.
+            ref = template_remainder.substring_view(0, 1 + digit_count);
 
-            if (capture_position.has_value() && (*capture_position > 0) && (*capture_position <= captures.size())) {
-                auto& value = captures[*capture_position - 1];
+            // viii. If 1 ≤ index ≤ captureLen, then
+            if (1 <= index && index <= capture_length) {
+                // 1. Let capture be captures[index - 1].
+                auto capture = captures[index - 1];
 
-                if (!value.is_undefined()) {
-                    auto value_string = TRY(value.to_utf16_string(vm));
-                    TRY_OR_THROW_OOM(vm, result.try_append(value_string.view().data(), value_string.length_in_code_units()));
+                // 2. If capture is undefined, then
+                if (capture.is_undefined()) {
+                    // a. Let refReplacement be the empty String.
+                    ref_replacement = {};
                 }
-
-                i += is_two_digits ? 2 : 1;
-            } else {
-                TRY_OR_THROW_OOM(vm, result.try_append(curr));
-            }
-        } else if (next == '<') {
-            auto start_position = i + 2;
-            Optional<size_t> end_position;
-
-            for (size_t j = start_position; j < replace_view.length_in_code_units(); ++j) {
-                if (replace_view.code_unit_at(j) == '>') {
-                    end_position = j;
-                    break;
+                // 3. Else,
+                else {
+                    // a. Let refReplacement be capture.
+                    capture_string = TRY(capture.to_utf16_string(vm));
+                    ref_replacement = capture_string->view();
                 }
             }
+            // ix. Else,
+            else {
+                // 1. Let refReplacement be ref.
+                ref_replacement = ref;
+            }
+        }
+        // g. Else if templateRemainder starts with "$<", then
+        else if (template_remainder.starts_with(u"$<")) {
+            // i. Let gtPos be StringIndexOf(templateRemainder, ">", 0).
+            // NOTE: We can actually start at index 2 because we know the string starts with "$<".
+            auto greater_than_position = string_index_of(template_remainder, u">", 2);
 
-            if (named_captures.is_undefined() || !end_position.has_value()) {
-                TRY_OR_THROW_OOM(vm, result.try_append(curr));
-            } else {
-                auto group_name_view = replace_view.substring_view(start_position, *end_position - start_position);
-                auto group_name = TRY_OR_THROW_OOM(vm, group_name_view.to_deprecated_string(Utf16View::AllowInvalidCodeUnits::Yes));
+            // ii. If gtPos = -1 or namedCaptures is undefined, then
+            if (!greater_than_position.has_value() || named_captures.is_undefined()) {
+                // 1. Let ref be "$<".
+                ref = u"$<";
 
+                // 2. Let refReplacement be ref.
+                ref_replacement = ref;
+            }
+            // iii. Else,
+            else {
+                // 1. Let ref be the substring of templateRemainder from 0 to gtPos + 1.
+                ref = template_remainder.substring_view(0, *greater_than_position + 1);
+
+                // 2. Let groupName be the substring of templateRemainder from 2 to gtPos.
+                auto group_name_view = template_remainder.substring_view(2, *greater_than_position - 2);
+                auto group_name = MUST(group_name_view.to_byte_string(Utf16View::AllowInvalidCodeUnits::Yes));
+
+                // 3. Assert: namedCaptures is an Object.
+                VERIFY(named_captures.is_object());
+
+                // 4. Let capture be ? Get(namedCaptures, groupName).
                 auto capture = TRY(named_captures.as_object().get(group_name));
 
-                if (!capture.is_undefined()) {
-                    auto capture_string = TRY(capture.to_utf16_string(vm));
-                    TRY_OR_THROW_OOM(vm, result.try_append(capture_string.view().data(), capture_string.length_in_code_units()));
+                // 5. If capture is undefined, then
+                if (capture.is_undefined()) {
+                    // a. Let refReplacement be the empty String.
+                    ref_replacement = {};
                 }
-
-                i = *end_position;
+                // 6. Else,
+                else {
+                    // a. Let refReplacement be ? ToString(capture).
+                    capture_string = TRY(capture.to_utf16_string(vm));
+                    ref_replacement = capture_string->view();
+                }
             }
-        } else {
-            TRY_OR_THROW_OOM(vm, result.try_append(curr));
         }
+        // h. Else,
+        else {
+            // i. Let ref be the substring of templateRemainder from 0 to 1.
+            ref = template_remainder.substring_view(0, 1);
+
+            // ii. Let refReplacement be ref.
+            ref_replacement = ref;
+        }
+
+        // i. Let refLength be the length of ref.
+        auto ref_length = ref.length_in_code_units();
+
+        // k. Set result to the string-concatenation of result and refReplacement.
+        result.append(ref_replacement.data(), ref_replacement.length_in_code_points());
+
+        // j. Set templateRemainder to the substring of templateRemainder from refLength.
+        // NOTE: We do this step last because refReplacement may point to templateRemainder.
+        template_remainder = template_remainder.substring_view(ref_length);
     }
 
-    return TRY_OR_THROW_OOM(vm, Utf16View { result }.to_utf8());
+    // 6. Return result.
+    return MUST(Utf16View { result }.to_utf8(Utf16View::AllowInvalidCodeUnits::Yes));
 }
 
 // 2.1.2 AddDisposableResource ( disposable, V, hint [ , method ] ), https://tc39.es/proposal-explicit-resource-management/#sec-adddisposableresource-disposable-v-hint-disposemethod
@@ -1332,7 +1421,7 @@ ThrowCompletionOr<void> add_disposable_resource(VM& vm, Vector<DisposableResourc
 
         // b. If Type(V) is not Object, throw a TypeError exception.
         if (!value.is_object())
-            return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, value.to_string_without_side_effects()));
+            return vm.throw_completion<TypeError>(ErrorType::NotAnObject, value.to_string_without_side_effects());
 
         // c. Let resource be ? CreateDisposableResource(V, hint).
         resource = TRY(create_disposable_resource(vm, value, hint));
@@ -1348,7 +1437,7 @@ ThrowCompletionOr<void> add_disposable_resource(VM& vm, Vector<DisposableResourc
         else {
             // i. If Type(V) is not Object, throw a TypeError exception.
             if (!value.is_object())
-                return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, value.to_string_without_side_effects()));
+                return vm.throw_completion<TypeError>(ErrorType::NotAnObject, value.to_string_without_side_effects());
 
             // ii. Let resource be ? CreateDisposableResource(V, hint, method).
             resource = TRY(create_disposable_resource(vm, value, hint, method));
@@ -1377,7 +1466,7 @@ ThrowCompletionOr<DisposableResource> create_disposable_resource(VM& vm, Value v
 
         // c. If method is undefined, throw a TypeError exception.
         if (!method)
-            return vm.throw_completion<TypeError>(ErrorType::NoDisposeMethod, TRY_OR_THROW_OOM(vm, value.to_string_without_side_effects()));
+            return vm.throw_completion<TypeError>(ErrorType::NoDisposeMethod, value.to_string_without_side_effects());
     }
     // 2. Else,
     // a. If IsCallable(method) is false, throw a TypeError exception.
@@ -1401,7 +1490,7 @@ ThrowCompletionOr<GCPtr<FunctionObject>> get_dispose_method(VM& vm, Value value,
 
     // 2. Else,
     // a. Let method be ? GetMethod(V, @@dispose).
-    return GCPtr<FunctionObject> { TRY(value.get_method(vm, *vm.well_known_symbol_dispose())) };
+    return TRY(value.get_method(vm, vm.well_known_symbol_dispose()));
 }
 
 // 2.1.5 Dispose ( V, hint, method ), https://tc39.es/proposal-explicit-resource-management/#sec-dispose
@@ -1470,6 +1559,142 @@ Completion dispose_resources(VM& vm, GCPtr<DeclarativeEnvironment> disposable, C
 
     // 2. Return completion.
     return completion;
+}
+
+// https://tc39.es/proposal-import-attributes/#sec-AllImportAttributesSupported
+static bool all_import_attributes_supported(VM& vm, Vector<ImportAttribute> const& attributes)
+{
+    // 1. Let supported be HostGetSupportedImportAttributes().
+    auto supported = vm.host_get_supported_import_attributes();
+
+    // 2. For each ImportAttribute Record attribute of attributes, do
+    for (auto const& attribute : attributes) {
+        // a. If supported does not contain attribute.[[Key]], return false.
+        if (!supported.contains_slow(attribute.key))
+            return false;
+    }
+
+    // 3. Return true.
+    return true;
+}
+
+ThrowCompletionOr<Value> perform_import_call(VM& vm, Value specifier, Value options_value)
+{
+    auto& realm = *vm.current_realm();
+
+    // 13.3.10.2 EvaluateImportCall ( specifierExpression [ , optionsExpression ] ), https://tc39.es/proposal-import-attributes/#sec-evaluate-import-call
+    // 1. Let referrer be GetActiveScriptOrModule().
+    auto referrer = [&]() -> ImportedModuleReferrer {
+        auto active_script_or_module = vm.get_active_script_or_module();
+
+        // 2. If referrer is null, set referrer to the current Realm Record.
+        if (active_script_or_module.has<Empty>())
+            return NonnullGCPtr<Realm> { realm };
+
+        if (active_script_or_module.has<NonnullGCPtr<Script>>())
+            return active_script_or_module.get<NonnullGCPtr<Script>>();
+
+        return NonnullGCPtr<CyclicModule> { verify_cast<CyclicModule>(*active_script_or_module.get<NonnullGCPtr<Module>>()) };
+    }();
+
+    // 7. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+    auto promise_capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
+
+    // 8. Let specifierString be Completion(ToString(specifier)).
+    // 9. IfAbruptRejectPromise(specifierString, promiseCapability).
+    auto specifier_string = TRY_OR_REJECT_WITH_VALUE(vm, promise_capability, specifier.to_byte_string(vm));
+
+    // 10. Let attributes be a new empty List.
+    Vector<ImportAttribute> attributes;
+
+    // 11. If options is not undefined, then
+    if (!options_value.is_undefined()) {
+        // a. If Type(options) is not Object,
+        if (!options_value.is_object()) {
+            auto error = TypeError::create(realm, TRY_OR_THROW_OOM(vm, String::formatted(ErrorType::NotAnObject.message(), "ImportOptions")));
+            // i. Perform ! Call(promiseCapability.[[Reject]], undefined, « a newly created TypeError object »).
+            MUST(call(vm, *promise_capability->reject(), js_undefined(), error));
+
+            // ii. Return promiseCapability.[[Promise]].
+            return Value { promise_capability->promise() };
+        }
+
+        // b. Let attributesObj be Completion(Get(options, "with")).
+        // c. IfAbruptRejectPromise(attributesObj, promiseCapability).
+        auto attributes_obj = TRY_OR_REJECT_WITH_VALUE(vm, promise_capability, options_value.get(vm, vm.names.with));
+
+        // d. Normative Optional, Deprecated
+        // 11. If the host supports the deprecated assert keyword for import attributes and attributesObj is undefined, then
+        if (attributes_obj.is_undefined()) {
+            // i. Set attributesObj to Completion(Get(options, "assert")).
+            // ii. IfAbruptRejectPromise(attributesObj, promiseCapability).
+            attributes_obj = TRY_OR_REJECT_WITH_VALUE(vm, promise_capability, options_value.get(vm, vm.names.assert));
+        }
+
+        // e. If attributesObj is not undefined,
+        if (!attributes_obj.is_undefined()) {
+            // i. If Type(attributesObj) is not Object,
+            if (!attributes_obj.is_object()) {
+                auto error = TypeError::create(realm, TRY_OR_THROW_OOM(vm, String::formatted(ErrorType::NotAnObject.message(), "ImportOptionsAssertions")));
+                // 1. Perform ! Call(promiseCapability.[[Reject]], undefined, « a newly created TypeError object »).
+                MUST(call(vm, *promise_capability->reject(), js_undefined(), error));
+
+                // 2. Return promiseCapability.[[Promise]].
+                return Value { promise_capability->promise() };
+            }
+
+            // ii. Let entries be Completion(EnumerableOwnProperties(attributesObj, key+value)).
+            // iii. IfAbruptRejectPromise(entries, promiseCapability).
+            auto entries = TRY_OR_REJECT_WITH_VALUE(vm, promise_capability, attributes_obj.as_object().enumerable_own_property_names(Object::PropertyKind::KeyAndValue));
+
+            // iv. For each entry of entries, do
+            for (auto const& entry : entries) {
+                // 1. Let key be ! Get(entry, "0").
+                auto key = MUST(entry.get(vm, PropertyKey(0)));
+
+                // 2. Let value be ! Get(entry, "1").
+                auto value = MUST(entry.get(vm, PropertyKey(1)));
+
+                // 3. If Type(value) is not String, then
+                if (!value.is_string()) {
+                    auto error = TypeError::create(realm, TRY_OR_THROW_OOM(vm, String::formatted(ErrorType::NotAString.message(), "Import Assertion option value")));
+                    // a. Perform ! Call(promiseCapability.[[Reject]], undefined, « a newly created TypeError object »).
+                    MUST(call(vm, *promise_capability->reject(), js_undefined(), error));
+
+                    // b. Return promiseCapability.[[Promise]].
+                    return Value { promise_capability->promise() };
+                }
+
+                // 4. Append the ImportAttribute Record { [[Key]]: key, [[Value]]: value } to attributes.
+                attributes.empend(key.as_string().byte_string(), value.as_string().byte_string());
+            }
+        }
+
+        // f. If AllImportAttributesSupported(attributes) is false, then
+        if (!all_import_attributes_supported(vm, attributes)) {
+            auto error = TypeError::create(realm, TRY_OR_THROW_OOM(vm, String::formatted(ErrorType::NotAnObject.message(), "ImportOptionsAssertions")));
+            // i. Perform ! Call(promiseCapability.[[Reject]], undefined, « a newly created TypeError object »).
+            MUST(call(vm, *promise_capability->reject(), js_undefined(), error));
+
+            // ii. Return promiseCapability.[[Promise]].
+            return Value { promise_capability->promise() };
+        }
+
+        // g. Sort attributes according to the lexicographic order of their [[Key]] fields,
+        //    treating the value of each such field as a sequence of UTF-16 code unit values.
+        //    NOTE: This sorting is observable only in that hosts are prohibited from
+        //    distinguishing among attributes by the order they occur in.
+        // NOTE: This is done when constructing the ModuleRequest.
+    }
+
+    // 12. Let moduleRequest be a new ModuleRequest Record { [[Specifier]]: specifierString, [[Attributes]]: attributes }.
+    ModuleRequest request { specifier_string, attributes };
+
+    // 13. Perform HostLoadImportedModule(referrer, moduleRequest, empty, promiseCapability).
+    vm.host_load_imported_module(referrer, move(request), nullptr, promise_capability);
+
+    // 13. Return promiseCapability.[[Promise]].
+    return Value { promise_capability->promise() };
 }
 
 }

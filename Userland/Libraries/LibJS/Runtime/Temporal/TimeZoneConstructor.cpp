@@ -11,15 +11,17 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(TimeZoneConstructor);
+
 // 11.2 The Temporal.TimeZone Constructor, https://tc39.es/proposal-temporal/#sec-temporal-timezone-constructor
 TimeZoneConstructor::TimeZoneConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.TimeZone.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.TimeZone.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> TimeZoneConstructor::initialize(Realm& realm)
+void TimeZoneConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -30,8 +32,6 @@ ThrowCompletionOr<void> TimeZoneConstructor::initialize(Realm& realm)
     define_native_function(realm, vm.names.from, from, 1, attr);
 
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
-
-    return {};
 }
 
 // 11.2.1 Temporal.TimeZone ( identifier ), https://tc39.es/proposal-temporal/#sec-temporal.timezone

@@ -5,13 +5,16 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/ProgressEventPrototype.h>
 #include <LibWeb/XHR/ProgressEvent.h>
 
 namespace Web::XHR {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<ProgressEvent>> ProgressEvent::create(JS::Realm& realm, FlyString const& event_name, ProgressEventInit const& event_init)
+JS_DEFINE_ALLOCATOR(ProgressEvent);
+
+JS::NonnullGCPtr<ProgressEvent> ProgressEvent::create(JS::Realm& realm, FlyString const& event_name, ProgressEventInit const& event_init)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<ProgressEvent>(realm, realm, event_name, event_init));
+    return realm.heap().allocate<ProgressEvent>(realm, realm, event_name, event_init);
 }
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<ProgressEvent>> ProgressEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, ProgressEventInit const& event_init)
@@ -20,7 +23,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<ProgressEvent>> ProgressEvent::construct_im
 }
 
 ProgressEvent::ProgressEvent(JS::Realm& realm, FlyString const& event_name, ProgressEventInit const& event_init)
-    : Event(realm, event_name.to_deprecated_fly_string(), event_init)
+    : Event(realm, event_name, event_init)
     , m_length_computable(event_init.length_computable)
     , m_loaded(event_init.loaded)
     , m_total(event_init.total)
@@ -29,12 +32,10 @@ ProgressEvent::ProgressEvent(JS::Realm& realm, FlyString const& event_name, Prog
 
 ProgressEvent::~ProgressEvent() = default;
 
-JS::ThrowCompletionOr<void> ProgressEvent::initialize(JS::Realm& realm)
+void ProgressEvent::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::ProgressEventPrototype>(realm, "ProgressEvent"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(ProgressEvent);
 }
 
 }

@@ -26,6 +26,7 @@ public:
     virtual void mousemove_event(GUI::MouseEvent&) override;
     virtual void mouseup_event(GUI::MouseEvent&) override;
     virtual void mousedown_event(GUI::MouseEvent&) override;
+    virtual void keydown_event(GUI::KeyEvent&) override;
     virtual void context_menu_event(GUI::ContextMenuEvent&) override;
 
     void set_toggling_cells(bool toggling)
@@ -36,8 +37,8 @@ public:
     }
 
     void toggle_cell(size_t row, size_t column);
-    void clear_cells() { m_board->clear(); }
-    void randomize_cells() { m_board->randomize(); }
+    void clear_cells();
+    void randomize_cells();
 
     int get_cell_size() const;
     Gfx::IntSize get_board_offset() const;
@@ -64,6 +65,7 @@ public:
     int running_timer_interval() const { return m_running_timer_interval; }
     void set_running_timer_interval(int interval);
 
+    Function<void(u64)> on_tick;
     Function<void()> on_running_state_change;
     Function<void()> on_stall;
     Function<void()> on_pattern_selection_state_change;
@@ -73,6 +75,7 @@ private:
     BoardWidget(size_t rows, size_t columns);
     void setup_patterns();
     void place_pattern(size_t row, size_t column);
+    void clear_selected_pattern();
 
     bool m_toggling_cells { false };
     Board::RowAndColumn m_last_cell_toggled {};
@@ -83,9 +86,12 @@ private:
     NonnullOwnPtr<Board> m_board;
 
     bool m_running { false };
+    bool m_dragging_enabled { true };
 
     int m_running_timer_interval { 500 };
     int m_running_pattern_preview_timer_interval { 100 };
+
+    u64 m_ticks { 0 };
 
     RefPtr<GUI::Menu> m_context_menu;
 

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Noncopyable.h>
 #include <AK/OwnPtr.h>
 #include <AK/RecursionDecision.h>
@@ -23,6 +23,7 @@ public:
     public:
         virtual void render_to_html(StringBuilder& builder) const = 0;
         virtual void render_for_terminal(StringBuilder& builder) const = 0;
+        virtual void render_for_raw_print(StringBuilder& builder) const = 0;
         virtual size_t terminal_length() const = 0;
         virtual RecursionDecision walk(Visitor&) const = 0;
 
@@ -42,6 +43,7 @@ public:
 
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
@@ -57,6 +59,7 @@ public:
 
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
@@ -65,13 +68,14 @@ public:
     public:
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
 
     class TextNode : public Node {
     public:
-        DeprecatedString text;
+        ByteString text;
         bool collapsible;
 
         TextNode(StringView text)
@@ -88,6 +92,7 @@ public:
 
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
@@ -96,11 +101,11 @@ public:
     public:
         bool is_image;
         NonnullOwnPtr<Node> text;
-        DeprecatedString href;
+        ByteString href;
         Optional<int> image_width;
         Optional<int> image_height;
 
-        LinkNode(bool is_image, NonnullOwnPtr<Node> text, DeprecatedString href, Optional<int> image_width, Optional<int> image_height)
+        LinkNode(bool is_image, NonnullOwnPtr<Node> text, ByteString href, Optional<int> image_width, Optional<int> image_height)
             : is_image(is_image)
             , text(move(text))
             , href(move(href))
@@ -115,6 +120,7 @@ public:
         }
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
@@ -125,6 +131,7 @@ public:
 
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
@@ -140,21 +147,23 @@ public:
 
         virtual void render_to_html(StringBuilder& builder) const override;
         virtual void render_for_terminal(StringBuilder& builder) const override;
+        virtual void render_for_raw_print(StringBuilder& builder) const override;
         virtual size_t terminal_length() const override;
         virtual RecursionDecision walk(Visitor&) const override;
     };
 
     size_t terminal_length() const;
 
-    DeprecatedString render_to_html() const;
-    DeprecatedString render_for_terminal() const;
+    ByteString render_to_html() const;
+    ByteString render_for_terminal() const;
+    ByteString render_for_raw_print() const;
     RecursionDecision walk(Visitor&) const;
 
     static Text parse(StringView);
 
 private:
     struct Token {
-        DeprecatedString data;
+        ByteString data;
         // Flanking basically means that a delimiter run has a non-whitespace,
         // non-punctuation character on the corresponding side. For a more exact
         // definition, see the CommonMark spec.

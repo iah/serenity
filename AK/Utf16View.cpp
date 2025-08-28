@@ -63,6 +63,13 @@ ErrorOr<void> code_point_to_utf16(Utf16Data& string, u32 code_point)
     return {};
 }
 
+size_t utf16_code_unit_length_from_utf8(StringView string)
+{
+    // FIXME: This is inefficient!
+    auto utf16_data = MUST(AK::utf8_to_utf16(string));
+    return Utf16View { utf16_data }.length_in_code_units();
+}
+
 bool Utf16View::is_high_surrogate(u16 code_unit)
 {
     return (code_unit >= high_surrogate_min) && (code_unit <= high_surrogate_max);
@@ -81,9 +88,9 @@ u32 Utf16View::decode_surrogate_pair(u16 high_surrogate, u16 low_surrogate)
     return ((high_surrogate - high_surrogate_min) << 10) + (low_surrogate - low_surrogate_min) + first_supplementary_plane_code_point;
 }
 
-ErrorOr<DeprecatedString> Utf16View::to_deprecated_string(AllowInvalidCodeUnits allow_invalid_code_units) const
+ErrorOr<ByteString> Utf16View::to_byte_string(AllowInvalidCodeUnits allow_invalid_code_units) const
 {
-    return TRY(to_utf8(allow_invalid_code_units)).to_deprecated_string();
+    return TRY(to_utf8(allow_invalid_code_units)).to_byte_string();
 }
 
 ErrorOr<String> Utf16View::to_utf8(AllowInvalidCodeUnits allow_invalid_code_units) const
@@ -105,10 +112,11 @@ ErrorOr<String> Utf16View::to_utf8(AllowInvalidCodeUnits allow_invalid_code_unit
 
             TRY(builder.try_append_code_point(static_cast<u32>(*ptr)));
         }
-    } else {
-        for (auto code_point : *this)
-            TRY(builder.try_append_code_point(code_point));
+        return builder.to_string_without_validation();
     }
+
+    for (auto code_point : *this)
+        TRY(builder.try_append_code_point(code_point));
 
     return builder.to_string();
 }
@@ -211,6 +219,25 @@ Utf16View Utf16View::unicode_substring_view(size_t code_point_offset, size_t cod
     }
 
     VERIFY_NOT_REACHED();
+}
+
+bool Utf16View::starts_with(Utf16View const& needle) const
+{
+    if (needle.is_empty())
+        return true;
+    if (is_empty())
+        return false;
+    if (needle.length_in_code_units() > length_in_code_units())
+        return false;
+    if (begin_ptr() == needle.begin_ptr())
+        return true;
+
+    for (auto this_it = begin(), needle_it = needle.begin(); needle_it != needle.end(); ++needle_it, ++this_it) {
+        if (*this_it != *needle_it)
+            return false;
+    }
+
+    return true;
 }
 
 bool Utf16View::validate(size_t& valid_code_units) const

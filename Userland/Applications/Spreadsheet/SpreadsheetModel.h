@@ -23,7 +23,7 @@ public:
 
     virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_sheet->row_count(); }
     virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_sheet->column_count(); }
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
     virtual RefPtr<Core::MimeData> mime_data(const GUI::ModelSelection&) const override;
     virtual bool is_editable(const GUI::ModelIndex&) const override;
@@ -34,7 +34,7 @@ public:
 
     void update();
 
-    Function<void(Cell&, DeprecatedString&)> on_cell_data_change;
+    Function<void(Cell&, ByteString&)> on_cell_data_change;
     Function<void(Vector<CellChange>)> on_cells_data_change;
 
 private:
@@ -48,8 +48,19 @@ private:
 
 class CellsUndoCommand : public GUI::Command {
 public:
-    CellsUndoCommand(Cell&, DeprecatedString const&);
+    CellsUndoCommand(Cell&, ByteString const&);
     CellsUndoCommand(Vector<CellChange>);
+
+    virtual void undo() override;
+    virtual void redo() override;
+
+private:
+    Vector<CellChange> m_cell_changes;
+};
+
+class CellsUndoMetadataCommand : public GUI::Command {
+public:
+    CellsUndoMetadataCommand(Vector<CellChange>);
 
     virtual void undo() override;
     virtual void redo() override;

@@ -14,9 +14,9 @@ set(SOURCES
     Playlist.cpp
     PlaylistWidget.cpp
     SampleWidget.cpp
-    SoundPlayerWidgetAdvancedView.cpp
+    SoundPlayerWidget.cpp
     main.cpp
 )
 
 serenity_app(SoundPlayer ICON app-sound-player)
-target_link_libraries(SoundPlayer PRIVATE LibAudio LibCore LibDSP LibGfx LibGUI LibIPC LibMain LibThreading LibImageDecoderClient)
+target_link_libraries(SoundPlayer PRIVATE LibAudio LibConfig LibCore LibFileSystem LibDSP LibGfx LibGUI LibIPC LibMain LibThreading LibImageDecoderClient LibURL)

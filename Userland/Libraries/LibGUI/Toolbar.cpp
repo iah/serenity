@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/EventLoop.h>
 #include <LibGUI/Action.h>
@@ -54,7 +54,7 @@ private:
         if (action.icon())
             set_icon(action.icon());
         else
-            set_text(String::from_deprecated_string(action.text()).release_value_but_fixme_should_propagate_errors());
+            set_text(String::from_byte_string(action.text()).release_value_but_fixme_should_propagate_errors());
         set_button_style(Gfx::ButtonStyle::Coolbar);
     }
 
@@ -68,16 +68,16 @@ private:
             Button::set_text(move(text));
     }
 
-    DeprecatedString tooltip(Action const& action) const
+    String tooltip(Action const& action) const
     {
         StringBuilder builder;
         builder.append(action.tooltip());
         if (action.shortcut().is_valid()) {
             builder.append(" ("sv);
-            builder.append(action.shortcut().to_deprecated_string());
+            builder.append(action.shortcut().to_byte_string());
             builder.append(')');
         }
-        return builder.to_deprecated_string();
+        return MUST(builder.to_string());
     }
 
     virtual void enter_event(Core::Event& event) override
@@ -97,44 +97,25 @@ private:
     }
 };
 
-ErrorOr<NonnullRefPtr<GUI::Button>> Toolbar::try_add_action(Action& action)
+Button& Toolbar::add_action(Action& action)
 {
-    auto item = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Item));
+    auto item = make<Item>();
     item->type = Item::Type::Action;
     item->action = action;
 
-    // NOTE: Grow the m_items capacity before potentially adding a child widget.
-    //       This avoids having to untangle the child widget in case of allocation failure.
-    TRY(m_items.try_ensure_capacity(m_items.size() + 1));
-
-    item->widget = TRY(try_add<ToolbarButton>(action));
+    item->widget = add<ToolbarButton>(action);
     item->widget->set_fixed_size(m_button_size, m_button_size);
 
-    m_items.unchecked_append(move(item));
+    m_items.append(move(item));
     return *static_cast<Button*>(m_items.last()->widget.ptr());
-}
-
-GUI::Button& Toolbar::add_action(Action& action)
-{
-    auto button = MUST(try_add_action(action));
-    return *button;
-}
-
-ErrorOr<void> Toolbar::try_add_separator()
-{
-    // NOTE: Grow the m_items capacity before potentially adding a child widget.
-    TRY(m_items.try_ensure_capacity(m_items.size() + 1));
-
-    auto item = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Item));
-    item->type = Item::Type::Separator;
-    item->widget = TRY(try_add<SeparatorWidget>(m_orientation == Gfx::Orientation::Horizontal ? Gfx::Orientation::Vertical : Gfx::Orientation::Horizontal));
-    m_items.unchecked_append(move(item));
-    return {};
 }
 
 void Toolbar::add_separator()
 {
-    MUST(try_add_separator());
+    auto item = make<Item>();
+    item->type = Item::Type::Separator;
+    item->widget = add<SeparatorWidget>(m_orientation == Gfx::Orientation::Horizontal ? Gfx::Orientation::Vertical : Gfx::Orientation::Horizontal);
+    m_items.append(move(item));
 }
 
 void Toolbar::paint_event(PaintEvent& event)
@@ -169,14 +150,14 @@ Optional<UISize> Toolbar::calculated_min_size() const
 ErrorOr<void> Toolbar::create_overflow_objects()
 {
     m_overflow_action = Action::create("Overflow Menu", { Mod_Ctrl | Mod_Shift, Key_O }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/overflow-menu.png"sv)), [&](auto&) {
-        m_overflow_menu->popup(m_overflow_button->screen_relative_rect().bottom_left(), {}, m_overflow_button->rect());
+        m_overflow_menu->popup(m_overflow_button->screen_relative_rect().bottom_left().moved_up(1), {}, m_overflow_button->rect());
     });
-    m_overflow_action->set_status_tip("Show hidden toolbar actions");
+    m_overflow_action->set_status_tip("Show hidden toolbar actions"_string);
     m_overflow_action->set_enabled(false);
 
-    TRY(add_spacer());
+    add_spacer();
 
-    m_overflow_button = TRY(try_add_action(*m_overflow_action));
+    m_overflow_button = add_action(*m_overflow_action);
     m_overflow_button->set_visible(false);
 
     return {};
@@ -184,7 +165,7 @@ ErrorOr<void> Toolbar::create_overflow_objects()
 
 ErrorOr<void> Toolbar::update_overflow_menu()
 {
-    if (!m_collapsible)
+    if (!m_collapsible || m_items.is_empty())
         return {};
 
     Optional<size_t> marginal_index {};
@@ -240,7 +221,7 @@ ErrorOr<void> Toolbar::update_overflow_menu()
     m_overflow_action->set_enabled(true);
     m_overflow_button->set_visible(true);
 
-    m_overflow_menu = TRY(Menu::try_create());
+    m_overflow_menu = Menu::construct();
     m_overflow_button->set_menu(m_overflow_menu);
 
     for (size_t i = marginal_index.value(); i < m_items.size(); ++i) {
@@ -255,10 +236,10 @@ ErrorOr<void> Toolbar::update_overflow_menu()
             item->widget->set_visible(false);
             peek_item = m_items[i + 1];
             if (item->action)
-                TRY(m_overflow_menu->try_add_action(*item->action));
+                m_overflow_menu->add_action(*item->action);
         }
         if (item->action && peek_item->type == Item::Type::Separator)
-            TRY(m_overflow_menu->try_add_separator());
+            m_overflow_menu->add_separator();
     }
 
     return {};

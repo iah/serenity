@@ -4,10 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLDListElementPrototype.h>
 #include <LibWeb/HTML/HTMLDListElement.h>
 #include <LibWeb/HTML/Window.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLDListElement);
 
 HTMLDListElement::HTMLDListElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -16,12 +19,10 @@ HTMLDListElement::HTMLDListElement(DOM::Document& document, DOM::QualifiedName q
 
 HTMLDListElement::~HTMLDListElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLDListElement::initialize(JS::Realm& realm)
+void HTMLDListElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLDListElementPrototype>(realm, "HTMLDListElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLDListElement);
 }
 
 }

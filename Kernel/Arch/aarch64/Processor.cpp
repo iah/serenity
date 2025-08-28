@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2022, Timon Kruiper <timonkruiper@gmail.com>
+ * Copyright (c) 2023, Idan Horowitz <idan.horowitz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,75 +8,42 @@
 #include <AK/Format.h>
 #include <AK/Vector.h>
 
+#include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Arch/aarch64/ASM_wrapper.h>
 #include <Kernel/Arch/aarch64/CPU.h>
 #include <Kernel/Arch/aarch64/CPUID.h>
-#include <Kernel/InterruptDisabler.h>
-#include <Kernel/Process.h>
-#include <Kernel/Random.h>
-#include <Kernel/Scheduler.h>
-#include <Kernel/Thread.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
+#include <Kernel/Security/Random.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/Thread.h>
 #include <Kernel/Time/TimeManagement.h>
 
 namespace Kernel {
 
-extern "C" void thread_context_first_enter(void);
-extern "C" void exit_kernel_thread(void);
+extern "C" u8 vector_table_el1[];
+
 extern "C" void context_first_init(Thread* from_thread, Thread* to_thread) __attribute__((used));
 extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread) __attribute__((used));
 
 Processor* g_current_processor;
-READONLY_AFTER_INIT FPUState Processor::s_clean_fpu_state;
 
-static void store_fpu_state(FPUState* fpu_state)
+template<typename T>
+void ProcessorBase<T>::store_fpu_state(FPUState& fpu_state)
 {
-    asm volatile(
-        "mov x0, %[fpu_state]\n"
-        "stp q0, q1, [x0, #(0 * 16)]\n"
-        "stp q2, q3, [x0, #(2 * 16)]\n"
-        "stp q4, q5, [x0, #(4 * 16)]\n"
-        "stp q6, q7, [x0, #(6 * 16)]\n"
-        "stp q8, q9, [x0, #(8 * 16)]\n"
-        "stp q10, q11, [x0, #(10 * 16)]\n"
-        "stp q12, q13, [x0, #(12 * 16)]\n"
-        "stp q14, q15, [x0, #(14 * 16)]\n"
-        "stp q16, q17, [x0, #(16 * 16)]\n"
-        "stp q18, q19, [x0, #(18 * 16)]\n"
-        "stp q20, q21, [x0, #(20 * 16)]\n"
-        "stp q22, q23, [x0, #(22 * 16)]\n"
-        "stp q24, q25, [x0, #(24 * 16)]\n"
-        "stp q26, q27, [x0, #(26 * 16)]\n"
-        "stp q28, q29, [x0, #(28 * 16)]\n"
-        "stp q30, q31, [x0, #(30 * 16)]\n"
-        "\n" ::[fpu_state] "r"(fpu_state));
+    ::store_fpu_state(&fpu_state);
 }
 
-static void load_fpu_state(FPUState* fpu_state)
+template<typename T>
+void ProcessorBase<T>::load_fpu_state(FPUState const& fpu_state)
 {
-    asm volatile(
-        "mov x0, %[fpu_state]\n"
-        "ldp q0, q1, [x0, #(0 * 16)]\n"
-        "ldp q2, q3, [x0, #(2 * 16)]\n"
-        "ldp q4, q5, [x0, #(4 * 16)]\n"
-        "ldp q6, q7, [x0, #(6 * 16)]\n"
-        "ldp q8, q9, [x0, #(8 * 16)]\n"
-        "ldp q10, q11, [x0, #(10 * 16)]\n"
-        "ldp q12, q13, [x0, #(12 * 16)]\n"
-        "ldp q14, q15, [x0, #(14 * 16)]\n"
-        "ldp q16, q17, [x0, #(16 * 16)]\n"
-        "ldp q18, q19, [x0, #(18 * 16)]\n"
-        "ldp q20, q21, [x0, #(20 * 16)]\n"
-        "ldp q22, q23, [x0, #(22 * 16)]\n"
-        "ldp q24, q25, [x0, #(24 * 16)]\n"
-        "ldp q26, q27, [x0, #(26 * 16)]\n"
-        "ldp q28, q29, [x0, #(28 * 16)]\n"
-        "ldp q30, q31, [x0, #(30 * 16)]\n"
-        "\n" ::[fpu_state] "r"(fpu_state));
+    ::load_fpu_state(&fpu_state);
 }
 
-void Processor::install(u32 cpu)
+template<typename T>
+void ProcessorBase<T>::early_initialize(u32 cpu)
 {
     VERIFY(g_current_processor == nullptr);
     m_cpu = cpu;
@@ -83,42 +51,71 @@ void Processor::install(u32 cpu)
     m_physical_address_bit_width = detect_physical_address_bit_width();
     m_virtual_address_bit_width = detect_virtual_address_bit_width();
 
-    g_current_processor = this;
+    g_current_processor = static_cast<Processor*>(this);
 }
 
-void Processor::initialize()
+template<typename T>
+void ProcessorBase<T>::initialize(u32)
 {
+    m_deferred_call_pool.init();
+
+    // FIXME: Actually set the correct count when we support SMP on AArch64.
+    g_total_processors.store(1, AK::MemoryOrder::memory_order_release);
+
     dmesgln("CPU[{}]: Supports {}", m_cpu, build_cpu_feature_names(m_features));
     dmesgln("CPU[{}]: Physical address bit width: {}", m_cpu, m_physical_address_bit_width);
     dmesgln("CPU[{}]: Virtual address bit width: {}", m_cpu, m_virtual_address_bit_width);
     if (!has_feature(CPUFeature::RNG))
         dmesgln("CPU[{}]: {} not detected, randomness will be poor", m_cpu, cpu_feature_to_description(CPUFeature::RNG));
 
-    store_fpu_state(&s_clean_fpu_state);
+    store_fpu_state(s_clean_fpu_state);
+
+    Aarch64::Asm::load_el1_vector_table(+vector_table_el1);
+
+    initialize_interrupts();
 }
 
-[[noreturn]] void Processor::halt()
+template<typename T>
+[[noreturn]] void ProcessorBase<T>::halt()
 {
     disable_interrupts();
     for (;;)
         asm volatile("wfi");
 }
 
-void Processor::flush_tlb_local(VirtualAddress, size_t)
+template<typename T>
+void ProcessorBase<T>::flush_tlb_local(VirtualAddress, size_t)
 {
     // FIXME: Figure out how to flush a single page
     asm volatile("dsb ishst");
-    asm volatile("tlbi vmalle1is");
+    asm volatile("tlbi vmalle1");
     asm volatile("dsb ish");
     asm volatile("isb");
 }
 
-void Processor::flush_tlb(Memory::PageDirectory const*, VirtualAddress vaddr, size_t page_count)
+template<typename T>
+void ProcessorBase<T>::flush_entire_tlb_local()
+{
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
+    asm volatile("isb");
+}
+
+template<typename T>
+void ProcessorBase<T>::flush_tlb(Memory::PageDirectory const*, VirtualAddress vaddr, size_t page_count)
 {
     flush_tlb_local(vaddr, page_count);
 }
 
-u32 Processor::clear_critical()
+template<typename T>
+void ProcessorBase<T>::flush_instruction_cache(VirtualAddress vaddr, size_t byte_count)
+{
+    __builtin___clear_cache(reinterpret_cast<char*>(vaddr.as_ptr()), reinterpret_cast<char*>(vaddr.offset(byte_count).as_ptr()));
+}
+
+template<typename T>
+u32 ProcessorBase<T>::clear_critical()
 {
     InterruptDisabler disabler;
     auto prev_critical = in_critical();
@@ -129,18 +126,20 @@ u32 Processor::clear_critical()
     return prev_critical;
 }
 
-u32 Processor::smp_wake_n_idle_processors(u32 wake_count)
+template<typename T>
+u32 ProcessorBase<T>::smp_wake_n_idle_processors(u32 wake_count)
 {
     (void)wake_count;
     // FIXME: Actually wake up other cores when SMP is supported for aarch64.
     return 0;
 }
 
-void Processor::initialize_context_switching(Thread& initial_thread)
+template<typename T>
+void ProcessorBase<T>::initialize_context_switching(Thread& initial_thread)
 {
     VERIFY(initial_thread.process().is_kernel_process());
 
-    m_scheduler_initialized = true;
+    m_scheduler_initialized.set();
 
     // FIXME: Figure out if we need to call {pre_,post_,}init_finished once aarch64 supports SMP
     Processor::set_current_in_scheduler(true);
@@ -150,7 +149,7 @@ void Processor::initialize_context_switching(Thread& initial_thread)
     asm volatile(
         "mov sp, %[new_sp] \n"
 
-        "sub sp, sp, 24 \n"
+        "sub sp, sp, 32 \n"
         "str %[from_to_thread], [sp, #0] \n"
         "str %[from_to_thread], [sp, #8] \n"
         "br %[new_ip] \n"
@@ -163,7 +162,8 @@ void Processor::initialize_context_switching(Thread& initial_thread)
     VERIFY_NOT_REACHED();
 }
 
-void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
+template<typename T>
+void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
     VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
@@ -173,9 +173,8 @@ void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
     // m_in_critical is restored in enter_thread_context
     from_thread->save_critical(m_in_critical);
 
-    // clang-format off
     asm volatile(
-        "sub sp, sp, #248 \n"
+        "sub sp, sp, #256 \n"
         "stp x0, x1,     [sp, #(0 * 0)] \n"
         "stp x2, x3,     [sp, #(2 * 8)] \n"
         "stp x4, x5,     [sp, #(4 * 8)] \n"
@@ -194,13 +193,15 @@ void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
         "str x30,        [sp, #(30 * 8)] \n"
         "mov x0, sp \n"
         "str x0, %[from_sp] \n"
-        "ldr x0, =1f \n"
+        "str fp, %[from_fp] \n"
+        "adrp x0, 1f \n"
+        "add x0, x0, :lo12:1f \n"
         "str x0, %[from_ip] \n"
 
         "ldr x0, %[to_sp] \n"
         "mov sp, x0 \n"
 
-        "sub sp, sp, 24 \n"
+        "sub sp, sp, 32 \n"
         "ldr x0, %[from_thread] \n"
         "ldr x1, %[to_thread] \n"
         "ldr x2, %[to_ip] \n"
@@ -213,7 +214,7 @@ void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
         "br x0 \n"
 
         "1: \n"
-        "add sp, sp, 24 \n"
+        "add sp, sp, 32 \n"
 
         "ldp x0, x1,     [sp, #(0 * 0)] \n"
         "ldp x2, x3,     [sp, #(2 * 8)] \n"
@@ -232,16 +233,17 @@ void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
         "ldp x28, x29,   [sp, #(28 * 8)] \n"
         "ldr x30,        [sp, #(30 * 8)] \n"
 
-        "sub sp, sp, 24 \n"
+        "sub sp, sp, 32 \n"
         "ldr x0, [sp, #0] \n"
         "ldr x1, [sp, #8] \n"
         "str x0, %[from_thread] \n"
         "str x1, %[to_thread] \n"
 
-        "add sp, sp, #272 \n"
+        "add sp, sp, #288 \n"
         :
         [from_ip] "=m"(from_thread->regs().elr_el1),
         [from_sp] "=m"(from_thread->regs().sp_el0),
+        [from_fp] "=m"(from_thread->regs().x[29]),
         "=m"(from_thread),
         "=m"(to_thread)
 
@@ -250,19 +252,41 @@ void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
         [from_thread] "m"(from_thread),
         [to_thread] "m"(to_thread)
         : "memory", "x0", "x1", "x2");
-    // clang-format on
 
     dbgln_if(CONTEXT_SWITCH_DEBUG, "switch_context <-- from {} {} to {} {}", VirtualAddress(from_thread), *from_thread, VirtualAddress(to_thread), *to_thread);
 }
 
-void Processor::assume_context(Thread& thread, FlatPtr flags)
+extern "C" FlatPtr do_init_context(Thread* thread, u32 new_interrupts_state)
 {
-    (void)thread;
-    (void)flags;
-    TODO_AARCH64();
+    VERIFY_INTERRUPTS_DISABLED();
+
+    Aarch64::SPSR_EL1 spsr_el1 = {};
+    memcpy(&spsr_el1, (u8 const*)&thread->regs().spsr_el1, sizeof(u64));
+    spsr_el1.I = (new_interrupts_state == to_underlying(InterruptsState::Disabled));
+    memcpy((void*)&thread->regs().spsr_el1, &spsr_el1, sizeof(u64));
+
+    return Processor::current().init_context(*thread, true);
 }
 
-FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
+// FIXME: Share this code with other architectures.
+template<typename T>
+void ProcessorBase<T>::assume_context(Thread& thread, InterruptsState new_interrupts_state)
+{
+    dbgln_if(CONTEXT_SWITCH_DEBUG, "Assume context for thread {} {}", VirtualAddress(&thread), thread);
+
+    VERIFY_INTERRUPTS_DISABLED();
+    Scheduler::prepare_after_exec();
+    // in_critical() should be 2 here. The critical section in Process::exec
+    // and then the scheduler lock
+    VERIFY(Processor::in_critical() == 2);
+
+    do_assume_context(&thread, to_underlying(new_interrupts_state));
+
+    VERIFY_NOT_REACHED();
+}
+
+template<typename T>
+FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
 {
     VERIFY(g_scheduler_lock.is_locked());
     if (leave_crit) {
@@ -287,10 +311,16 @@ FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
     RegisterState& eretframe = *reinterpret_cast<RegisterState*>(stack_top);
     memcpy(eretframe.x, thread_regs.x, sizeof(thread_regs.x));
 
-    // x30 is the Link Register for the aarch64 ABI, so this will return to exit_kernel_thread when main thread function returns.
-    eretframe.x[30] = FlatPtr(&exit_kernel_thread);
+    // We don't overwrite the link register if it's not 0, since that means this thread's register state was already initialized with
+    // an existing link register value (e.g. it was fork()'ed), so we assume exit_kernel_thread is already saved as previous LR on the
+    // stack somewhere.
+    if (eretframe.x[30] == 0x0) {
+        // x30 is the Link Register for the aarch64 ABI, so this will return to exit_kernel_thread when main thread function returns.
+        eretframe.x[30] = FlatPtr(&exit_kernel_thread);
+    }
     eretframe.elr_el1 = thread_regs.elr_el1;
     eretframe.sp_el0 = thread_regs.sp_el0;
+    eretframe.tpidr_el0 = thread_regs.tpidr_el0;
     eretframe.spsr_el1 = thread_regs.spsr_el1;
 
     // Push a TrapFrame onto the stack
@@ -316,28 +346,9 @@ FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
     return stack_top;
 }
 
-void Processor::enter_trap(TrapFrame& trap, bool raise_irq)
-{
-    VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(&Processor::current() == this);
-    // FIXME: Figure out if we need prev_irq_level, see duplicated code in Kernel/Arch/x86/common/Processor.cpp
-    if (raise_irq)
-        m_in_irq++;
-    auto* current_thread = Processor::current_thread();
-    if (current_thread) {
-        auto& current_trap = current_thread->current_trap();
-        trap.next_trap = current_trap;
-        current_trap = &trap;
-        auto new_previous_mode = trap.regs->previous_mode();
-        if (current_thread->set_previous_mode(new_previous_mode)) {
-            current_thread->update_time_scheduled(TimeManagement::scheduler_current_time(), new_previous_mode == ExecutionMode::Kernel, false);
-        }
-    } else {
-        trap.next_trap = nullptr;
-    }
-}
-
-void Processor::exit_trap(TrapFrame& trap)
+// FIXME: Figure out if we can fully share this code with x86.
+template<typename T>
+void ProcessorBase<T>::exit_trap(TrapFrame& trap)
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(&Processor::current() == this);
@@ -351,6 +362,10 @@ void Processor::exit_trap(TrapFrame& trap)
 
     // FIXME: Figure out if we need prev_irq_level, see duplicated code in Kernel/Arch/x86/common/Processor.cpp
     m_in_irq = 0;
+
+    // Process the deferred call queue. Among other things, this ensures
+    // that any pending thread unblocks happen before we enter the scheduler.
+    m_deferred_call_pool.execute_pending();
 
     auto* current_thread = Processor::current_thread();
     if (current_thread) {
@@ -380,62 +395,39 @@ void Processor::exit_trap(TrapFrame& trap)
         check_invoke_scheduler();
 }
 
-ErrorOr<Vector<FlatPtr, 32>> Processor::capture_stack_trace(Thread& thread, size_t max_frames)
-{
-    (void)thread;
-    (void)max_frames;
-    TODO_AARCH64();
-    return Vector<FlatPtr, 32> {};
-}
-
-void Processor::check_invoke_scheduler()
-{
-    VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(!m_in_irq);
-    VERIFY(!m_in_critical);
-    VERIFY(&Processor::current() == this);
-    if (m_invoke_scheduler_async && m_scheduler_initialized) {
-        m_invoke_scheduler_async = false;
-        Scheduler::invoke_async();
-    }
-}
-
 NAKED void thread_context_first_enter(void)
 {
     asm(
         "ldr x0, [sp, #0] \n"
         "ldr x1, [sp, #8] \n"
-        "add sp, sp, 24 \n"
+        "add sp, sp, 32 \n"
         "bl context_first_init \n"
         "b restore_context_and_eret \n");
 }
 
-void exit_kernel_thread(void)
+NAKED void do_assume_context(Thread*, u32)
 {
-    Thread::current()->exit();
+    // clang-format off
+    asm(
+        "mov x19, x0 \n" // save thread ptr
+        // We're going to call Processor::init_context, so just make sure
+        // we have enough stack space so we don't stomp over it
+        "sub sp, sp, #" __STRINGIFY(8 + REGISTER_STATE_SIZE + TRAP_FRAME_SIZE + 8) " \n"
+        "bl do_init_context \n"
+        "mov sp, x0 \n"  // move stack pointer to what Processor::init_context set up for us
+        "mov x0, x19 \n" // to_thread
+        "mov x1, x19 \n" // from_thread
+        "sub sp, sp, 32 \n"
+        "stp x19, x19, [sp] \n"                           // to_thread, from_thread (for thread_context_first_enter)
+        "adrp lr, thread_context_first_enter \n"          // should be same as regs.elr_el1
+        "add lr, lr, :lo12:thread_context_first_enter \n" // should be same as regs.elr_el1
+        "b enter_thread_context \n");
+    // clang-format on
 }
 
-extern "C" void context_first_init([[maybe_unused]] Thread* from_thread, [[maybe_unused]] Thread* to_thread)
+extern "C" void context_first_init(Thread* from_thread, Thread* to_thread)
 {
-    VERIFY(!are_interrupts_enabled());
-
-    dbgln_if(CONTEXT_SWITCH_DEBUG, "switch_context <-- from {} {} to {} {} (context_first_init)", VirtualAddress(from_thread), *from_thread, VirtualAddress(to_thread), *to_thread);
-
-    VERIFY(to_thread == Thread::current());
-
-    Scheduler::enter_current(*from_thread);
-
-    auto in_critical = to_thread->saved_critical();
-    VERIFY(in_critical > 0);
-    Processor::restore_critical(in_critical);
-
-    // Since we got here and don't have Scheduler::context_switch in the
-    // call stack (because this is the first time we switched into this
-    // context), we need to notify the scheduler so that it can release
-    // the scheduler lock. We don't want to enable interrupts at this point
-    // as we're still in the middle of a context switch. Doing so could
-    // trigger a context switch within a context switch, leading to a crash.
-    Scheduler::leave_on_first_switch(InterruptsState::Disabled);
+    do_context_first_init(from_thread, to_thread);
 }
 
 extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
@@ -445,32 +437,52 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
 
     Processor::set_current_thread(*to_thread);
 
-    store_fpu_state(&from_thread->fpu_state());
+    Processor::store_fpu_state(from_thread->fpu_state());
 
     auto& from_regs = from_thread->regs();
     auto& to_regs = to_thread->regs();
-    if (from_regs.ttbr0_el1 != to_regs.ttbr0_el1)
+    if (from_regs.ttbr0_el1 != to_regs.ttbr0_el1) {
         Aarch64::Asm::set_ttbr0_el1(to_regs.ttbr0_el1);
+        Processor::flush_entire_tlb_local();
+    }
 
     to_thread->set_cpu(Processor::current().id());
-
-    Processor::set_thread_specific_data(to_thread->thread_specific_data());
 
     auto in_critical = to_thread->saved_critical();
     VERIFY(in_critical > 0);
     Processor::restore_critical(in_critical);
 
-    load_fpu_state(&to_thread->fpu_state());
+    Processor::load_fpu_state(to_thread->fpu_state());
+
+    if (from_thread->process().is_traced())
+        read_debug_registers_into(from_thread->debug_register_state());
+
+    if (to_thread->process().is_traced()) {
+        write_debug_registers_from(to_thread->debug_register_state());
+    } else {
+        clear_debug_registers();
+    }
 }
 
-StringView Processor::platform_string()
+template<typename T>
+StringView ProcessorBase<T>::platform_string()
 {
     return "aarch64"sv;
 }
 
-void Processor::set_thread_specific_data(VirtualAddress thread_specific_data)
+template<typename T>
+void ProcessorBase<T>::wait_for_interrupt() const
 {
-    Aarch64::Asm::set_tpidr_el0(thread_specific_data.get());
+    asm("wfi");
+}
+
+template<typename T>
+Processor& ProcessorBase<T>::by_id(u32 id)
+{
+    (void)id;
+    TODO_AARCH64();
 }
 
 }
+
+#include <Kernel/Arch/ProcessorFunctions.include>

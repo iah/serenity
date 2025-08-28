@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,13 +18,21 @@ class WebContentConnection
     : public IPC::ConnectionFromClient<WebDriverClientEndpoint, WebDriverServerEndpoint> {
     C_OBJECT_ABSTRACT(WebContentConnection)
 public:
-    WebContentConnection(NonnullOwnPtr<Core::LocalSocket> socket, NonnullRefPtr<Client> client, unsigned session_id);
+    WebContentConnection(NonnullOwnPtr<Core::LocalSocket> socket);
 
-    virtual void die() override;
+    Function<void()> on_close;
+    Function<void(Web::WebDriver::Response)> on_navigation_complete;
+    Function<void(Web::WebDriver::Response)> on_script_executed;
+    Function<void(Web::WebDriver::Response)> on_actions_performed;
+    Function<void(Web::WebDriver::Response)> on_dialog_closed;
 
 private:
-    NonnullRefPtr<Client> m_client;
-    unsigned m_session_id { 0 };
+    virtual void die() override;
+
+    virtual void navigation_complete(Web::WebDriver::Response const&) override;
+    virtual void script_executed(Web::WebDriver::Response const&) override;
+    virtual void actions_performed(Web::WebDriver::Response const&) override;
+    virtual void dialog_closed(Web::WebDriver::Response const&) override;
 };
 
 }

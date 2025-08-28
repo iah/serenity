@@ -12,6 +12,7 @@ namespace Web::HTML {
 
 class HTMLQuoteElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLQuoteElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLQuoteElement);
 
 public:
     virtual ~HTMLQuoteElement() override;
@@ -21,7 +22,7 @@ public:
 private:
     HTMLQuoteElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 };
 
 }

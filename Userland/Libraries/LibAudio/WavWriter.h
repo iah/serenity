@@ -6,52 +6,40 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Noncopyable.h>
 #include <AK/RefPtr.h>
 #include <AK/StringView.h>
+#include <LibAudio/Encoder.h>
 #include <LibAudio/Sample.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibAudio/SampleFormats.h>
+#include <LibCore/File.h>
 #include <LibCore/Forward.h>
 
 namespace Audio {
 
-class WavWriter {
+class WavWriter : public Encoder {
     AK_MAKE_NONCOPYABLE(WavWriter);
     AK_MAKE_NONMOVABLE(WavWriter);
 
 public:
-    WavWriter(StringView path, int sample_rate = 44100, u16 num_channels = 2, u16 bits_per_sample = 16);
-    WavWriter(int sample_rate = 44100, u16 num_channels = 2, u16 bits_per_sample = 16);
+    static ErrorOr<NonnullOwnPtr<WavWriter>> create_from_file(StringView path, u32 sample_rate = 44100, u16 num_channels = 2, PcmSampleFormat sample_format = PcmSampleFormat::Int16);
+    WavWriter(u32 sample_rate = 44100, u16 num_channels = 2, PcmSampleFormat sample_format = PcmSampleFormat::Int16);
     ~WavWriter();
 
-    bool has_error() const { return !m_error_string.is_null(); }
-    char const* error_string() const { return m_error_string.characters(); }
+    virtual ErrorOr<void> write_samples(ReadonlySpan<Sample> samples) override;
+    virtual ErrorOr<void> finalize() override;
 
-    void write_samples(Span<Sample> samples);
-    void finalize(); // You can finalize manually or let the destructor do it.
-
-    u32 sample_rate() const { return m_sample_rate; }
-    u16 num_channels() const { return m_num_channels; }
-    u16 bits_per_sample() const { return m_bits_per_sample; }
-    RefPtr<Core::DeprecatedFile> file() const { return m_file; }
-
-    void set_file(StringView path);
-    void set_num_channels(int num_channels) { m_num_channels = num_channels; }
-    void set_sample_rate(int sample_rate) { m_sample_rate = sample_rate; }
-    void set_bits_per_sample(int bits_per_sample) { m_bits_per_sample = bits_per_sample; }
-
-    void clear_error() { m_error_string = DeprecatedString(); }
+    ErrorOr<void> set_file(StringView path);
 
 private:
-    void write_header();
-    RefPtr<Core::DeprecatedFile> m_file;
-    DeprecatedString m_error_string;
+    ErrorOr<void> write_header();
+    OwnPtr<Core::OutputBufferedFile> m_file;
     bool m_finalized { false };
 
     u32 m_sample_rate;
     u16 m_num_channels;
-    u16 m_bits_per_sample;
+    PcmSampleFormat m_sample_format;
     u32 m_data_sz { 0 };
 };
 

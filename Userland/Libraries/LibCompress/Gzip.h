@@ -42,23 +42,24 @@ struct Flags {
 
 class GzipDecompressor final : public Stream {
 public:
-    GzipDecompressor(NonnullOwnPtr<Stream>);
+    GzipDecompressor(MaybeOwned<Stream>);
     ~GzipDecompressor();
 
-    virtual ErrorOr<Bytes> read(Bytes) override;
-    virtual ErrorOr<size_t> write(ReadonlyBytes) override;
+    virtual ErrorOr<Bytes> read_some(Bytes) override;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) override;
     virtual bool is_eof() const override;
     virtual bool is_open() const override { return true; }
     virtual void close() override {};
 
     static ErrorOr<ByteBuffer> decompress_all(ReadonlyBytes);
-    static Optional<DeprecatedString> describe_header(ReadonlyBytes);
+
+    static ErrorOr<Optional<String>> describe_header(ReadonlyBytes);
     static bool is_likely_compressed(ReadonlyBytes bytes);
 
 private:
     class Member {
     public:
-        static ErrorOr<NonnullOwnPtr<Member>> construct(BlockHeader header, Stream&);
+        static ErrorOr<NonnullOwnPtr<Member>> construct(BlockHeader header, LittleEndianInputBitStream&);
 
         BlockHeader m_header;
         NonnullOwnPtr<DeflateDecompressor> m_stream;
@@ -72,7 +73,7 @@ private:
     Member const& current_member() const { return *m_current_member; }
     Member& current_member() { return *m_current_member; }
 
-    NonnullOwnPtr<Stream> m_input_stream;
+    NonnullOwnPtr<LittleEndianInputBitStream> m_input_stream;
     u8 m_partial_header[sizeof(BlockHeader)];
     size_t m_partial_header_offset { 0 };
     OwnPtr<Member> m_current_member {};
@@ -84,8 +85,8 @@ class GzipCompressor final : public Stream {
 public:
     GzipCompressor(MaybeOwned<Stream>);
 
-    virtual ErrorOr<Bytes> read(Bytes) override;
-    virtual ErrorOr<size_t> write(ReadonlyBytes) override;
+    virtual ErrorOr<Bytes> read_some(Bytes) override;
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes) override;
     virtual bool is_eof() const override;
     virtual bool is_open() const override;
     virtual void close() override;

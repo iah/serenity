@@ -13,9 +13,10 @@ namespace JS {
 
 class DatePrototype final : public PrototypeObject<DatePrototype, Date> {
     JS_PROTOTYPE_OBJECT(DatePrototype, Date, Date);
+    JS_DECLARE_ALLOCATOR(DatePrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DatePrototype() override = default;
 
 private:
@@ -73,9 +74,9 @@ private:
 };
 
 ThrowCompletionOr<double> this_time_value(VM&, Value value);
-DeprecatedString time_string(double time);
-DeprecatedString date_string(double time);
-DeprecatedString time_zone_string(double time);
-DeprecatedString to_date_string(double time);
+ByteString time_string(double time);
+ByteString date_string(double time);
+ByteString time_zone_string(double time);
+ByteString to_date_string(double time);
 
 }

@@ -10,46 +10,25 @@
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibWeb/DOM/AbortSignal.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/EventDispatcher.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/DOM/Slottable.h>
+#include <LibWeb/DOM/Text.h>
+#include <LibWeb/DOM/Utils.h>
 #include <LibWeb/HTML/EventNames.h>
+#include <LibWeb/HTML/HTMLSlotElement.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::DOM {
-
-// FIXME: This shouldn't be here, as retargeting is not only used by the event dispatcher.
-//        When moving this function, it needs to be generalized. https://dom.spec.whatwg.org/#retarget
-static EventTarget* retarget(EventTarget* left, EventTarget* right)
-{
-    // To retarget an object A against an object B, repeat these steps until they return an object:
-    for (;;) {
-        // 1. If one of the following is true then return A.
-        // - A is not a node
-        if (!is<Node>(left))
-            return left;
-
-        // - A’s root is not a shadow root
-        auto* left_node = verify_cast<Node>(left);
-        auto& left_root = left_node->root();
-        if (!is<ShadowRoot>(left_root))
-            return left;
-
-        // - B is a node and A’s root is a shadow-including inclusive ancestor of B
-        if (is<Node>(right) && left_root.is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*right)))
-            return left;
-
-        // 2. Set A to A’s root’s host.
-        auto& left_shadow_root = verify_cast<ShadowRoot>(left_root);
-        left = left_shadow_root.host();
-    }
-}
 
 // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEventListener>>& listeners, Event::Phase phase, bool invocation_target_in_shadow_tree)
@@ -83,7 +62,7 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEvent
 
         // 6. Let global be listener callback’s associated Realm’s global object.
         auto& callback = listener->callback->callback();
-        auto& realm = callback.callback.shape().realm();
+        auto& realm = callback.callback->shape().realm();
         auto& global = realm.global_object();
 
         // 7. Let currentEvent be undefined.
@@ -105,32 +84,36 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEvent
         if (listener->passive)
             event.set_in_passive_listener(true);
 
-        // 10. Call a user object’s operation with listener’s callback, "handleEvent", « event », and event’s currentTarget attribute value. If this throws an exception, then:
+        // FIXME: 10. If global is a Window object, then record timing info for event listener given event and listener.
+
+        // 11. Call a user object’s operation with listener’s callback, "handleEvent", « event », and event’s currentTarget attribute value.
         // FIXME: These should be wrapped for us in call_user_object_operation, but it currently doesn't do that.
         auto* this_value = event.current_target().ptr();
         auto* wrapped_event = &event;
-        auto result = WebIDL::call_user_object_operation(callback, "handleEvent", this_value, wrapped_event);
+        auto result = WebIDL::call_user_object_operation(callback, "handleEvent"_string, this_value, wrapped_event);
 
         // If this throws an exception, then:
         if (result.is_error()) {
-            // 1. Report the exception.
-            HTML::report_exception(result, realm);
+            // 1. Report exception for listener’s callback’s corresponding JavaScript object’s associated realm’s global object.
+            auto* window_or_worker = dynamic_cast<HTML::WindowOrWorkerGlobalScopeMixin*>(&global);
+            VERIFY(window_or_worker);
+            window_or_worker->report_an_exception(*result.release_error().value());
 
             // FIXME: 2. Set legacyOutputDidListenersThrowFlag if given. (Only used by IndexedDB currently)
         }
 
-        // 11. Unset event’s in passive listener flag.
+        // 12. Unset event’s in passive listener flag.
         event.set_in_passive_listener(false);
 
-        // 12. If global is a Window object, then set global’s current event to currentEvent.
+        // 13. If global is a Window object, then set global’s current event to currentEvent.
         if (is<HTML::Window>(global)) {
             auto& window = verify_cast<HTML::Window>(global);
             window.set_current_event(current_event);
         }
 
-        // 13. If event’s stop immediate propagation flag is set, then return found.
+        // 14. If event’s stop immediate propagation flag is set, then break.
         if (event.should_stop_immediate_propagation())
-            return found;
+            break;
     }
 
     // 3. Return found.
@@ -180,14 +163,14 @@ void EventDispatcher::invoke(Event::PathEntry& struct_, Event& event, Event::Pha
 
         // 2. If event’s type attribute value is a match for any of the strings in the first column in the following table,
         //    set event’s type attribute value to the string in the second column on the same row as the matching string, and return otherwise.
-        if (event.type() == "animationend")
-            event.set_type("webkitAnimationEnd"sv);
-        else if (event.type() == "animationiteration")
-            event.set_type("webkitAnimationIteration"sv);
-        else if (event.type() == "animationstart")
-            event.set_type("webkitAnimationStart"sv);
-        else if (event.type() == "transitionend")
-            event.set_type("webkitTransitionEnd"sv);
+        if (event.type() == HTML::EventNames::animationend)
+            event.set_type(HTML::EventNames::webkitAnimationEnd);
+        else if (event.type() == HTML::EventNames::animationiteration)
+            event.set_type(HTML::EventNames::webkitAnimationIteration);
+        else if (event.type() == HTML::EventNames::animationstart)
+            event.set_type(HTML::EventNames::webkitAnimationStart);
+        else if (event.type() == HTML::EventNames::transitionend)
+            event.set_type(HTML::EventNames::webkitTransitionEnd);
         else
             return;
 
@@ -238,10 +221,14 @@ bool EventDispatcher::dispatch(JS::NonnullGCPtr<EventTarget> target, Event& even
         bool is_activation_event = is<UIEvents::MouseEvent>(event) && event.type() == HTML::EventNames::click;
 
         // 5. If isActivationEvent is true and target has activation behavior, then set activationTarget to target.
-        if (is_activation_event && target->activation_behavior)
+        if (is_activation_event && target->has_activation_behavior())
             activation_target = target;
 
-        // FIXME: 6. Let slottable be target, if target is a slottable and is assigned, and null otherwise.
+        // 6. Let slottable be target, if target is a slottable and is assigned, and null otherwise.
+        JS::GCPtr<EventTarget> slottable;
+
+        if (is<Node>(*target) && is_an_assigned_slottable(static_cast<Node&>(*target)))
+            slottable = target;
 
         // 7. Let slot-in-closed-tree be false
         bool slot_in_closed_tree = false;
@@ -251,11 +238,24 @@ bool EventDispatcher::dispatch(JS::NonnullGCPtr<EventTarget> target, Event& even
 
         // 9. While parent is non-null:
         while (parent) {
-            // FIXME: 1. If slottable is non-null:
-            //     1. Assert: parent is a slot.
-            //     2. Set slottable to null.
-            //     3. If parent’s root is a shadow root whose mode is "closed", then set slot-in-closed-tree to true.
-            // FIXME: 2. If parent is a slottable and is assigned, then set slottable to parent.
+            // 1. If slottable is non-null:
+            if (slottable != nullptr) {
+                // 1. Assert: parent is a slot.
+                VERIFY(is<HTML::HTMLSlotElement>(parent));
+
+                // 2. Set slottable to null.
+                slottable = nullptr;
+
+                // 3. If parent’s root is a shadow root whose mode is "closed", then set slot-in-closed-tree to true.
+                auto& parent_root = static_cast<Node&>(*parent).root();
+
+                if (parent_root.is_shadow_root() && static_cast<ShadowRoot&>(parent_root).mode() == Bindings::ShadowRootMode::Closed)
+                    slot_in_closed_tree = true;
+            }
+
+            // 2. If parent is a slottable and is assigned, then set slottable to parent.
+            if (is<Node>(*parent) && is_an_assigned_slottable(static_cast<Node&>(*parent)))
+                slottable = parent;
 
             // 3. Let relatedTarget be the result of retargeting event’s relatedTarget against parent.
             related_target = retarget(event.related_target(), parent);
@@ -272,7 +272,7 @@ bool EventDispatcher::dispatch(JS::NonnullGCPtr<EventTarget> target, Event& even
             if (is<HTML::Window>(parent)
                 || (is<Node>(parent) && verify_cast<Node>(*target).root().is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*parent)))) {
                 // 1. If isActivationEvent is true, event’s bubbles attribute is true, activationTarget is null, and parent has activation behavior, then set activationTarget to parent.
-                if (is_activation_event && event.bubbles() && !activation_target && parent->activation_behavior)
+                if (is_activation_event && event.bubbles() && !activation_target && parent->has_activation_behavior())
                     activation_target = parent;
 
                 // 2. Append to an event path with event, parent, null, relatedTarget, touchTargets, and slot-in-closed-tree.
@@ -288,7 +288,7 @@ bool EventDispatcher::dispatch(JS::NonnullGCPtr<EventTarget> target, Event& even
                 target = *parent;
 
                 // 1. If isActivationEvent is true, activationTarget is null, and target has activation behavior, then set activationTarget to target.
-                if (is_activation_event && !activation_target && target->activation_behavior)
+                if (is_activation_event && !activation_target && target->has_activation_behavior())
                     activation_target = target;
 
                 // 2. Append to an event path with event, parent, target, relatedTarget, touchTargets, and slot-in-closed-tree.

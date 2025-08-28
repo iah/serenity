@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,40 +7,41 @@
 #pragma once
 
 #include <AK/Function.h>
-#include <LibCore/Object.h>
+#include <LibCore/Event.h>
+#include <LibCore/EventReceiver.h>
 
 namespace Core {
 
-class Notifier : public Object {
-    C_OBJECT(Notifier)
+class Notifier final : public EventReceiver {
+    C_OBJECT(Notifier);
+
 public:
-    enum Event {
-        None = 0,
-        Read = 1,
-        Write = 2,
-        Exceptional = 4,
-    };
+    using Type = NotificationType;
 
     virtual ~Notifier() override;
 
     void set_enabled(bool);
 
-    Function<void()> on_ready_to_read;
-    Function<void()> on_ready_to_write;
+    Function<void()> on_activation;
 
     void close();
 
     int fd() const { return m_fd; }
-    unsigned event_mask() const { return m_event_mask; }
-    void set_event_mask(unsigned event_mask) { m_event_mask = event_mask; }
+    Type type() const { return m_type; }
+    void set_type(Type type);
 
     void event(Core::Event&) override;
 
+    void set_owner_thread(pthread_t owner_thread) { m_owner_thread = owner_thread; }
+    pthread_t owner_thread() const { return m_owner_thread; }
+
 private:
-    Notifier(int fd, unsigned event_mask, Object* parent = nullptr);
+    Notifier(int fd, Type type, EventReceiver* parent = nullptr);
 
     int m_fd { -1 };
-    unsigned m_event_mask { 0 };
+    bool m_is_enabled { false };
+    pthread_t m_owner_thread { 0 };
+    Type m_type { Type::None };
 };
 
 }

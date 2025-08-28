@@ -40,7 +40,7 @@ void GitFilesView::mousedown_event(GUI::MouseEvent& event)
         return;
     }
 
-    if (event.x() < action_icon_rect(0).x() || event.x() > action_icon_rect(0).top_right().x()) {
+    if (event.x() < action_icon_rect(0).x() || event.x() >= action_icon_rect(0).right()) {
         ListView::mousedown_event(event);
         return;
     }
@@ -54,7 +54,7 @@ void GitFilesView::mousedown_event(GUI::MouseEvent& event)
     auto data = model()->index(item_index, model_column()).data();
 
     VERIFY(data.is_string());
-    m_action_callback(data.to_deprecated_string());
+    m_action_callback(data.to_byte_string());
 }
 
 };

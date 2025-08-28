@@ -4,17 +4,21 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/Heap/Heap.h>
+#include <LibJS/Runtime/Error.h>
 #include <LibWeb/DOM/IDLEventListener.h>
 
 namespace Web::DOM {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<IDLEventListener>> IDLEventListener::create(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::CallbackType> callback)
+JS_DEFINE_ALLOCATOR(IDLEventListener);
+
+JS::NonnullGCPtr<IDLEventListener> IDLEventListener::create(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::CallbackType> callback)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<IDLEventListener>(realm, realm, move(callback)));
+    return realm.heap().allocate<IDLEventListener>(realm, realm, move(callback));
 }
 
 IDLEventListener::IDLEventListener(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::CallbackType> callback)
-    : JS::Object(ConstructWithPrototypeTag::Tag, *realm.intrinsics().object_prototype())
+    : JS::Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
     , m_callback(move(callback))
 {
 }
@@ -22,7 +26,7 @@ IDLEventListener::IDLEventListener(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::Ca
 void IDLEventListener::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_callback.ptr());
+    visitor.visit(m_callback);
 }
 
 }

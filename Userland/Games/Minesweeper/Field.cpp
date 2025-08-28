@@ -15,6 +15,7 @@
 #include <LibConfig/Client.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Button.h>
+#include <LibGUI/ImageWidget.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Palette.h>
@@ -46,8 +47,8 @@ private:
     }
 };
 
-class SquareLabel final : public GUI::Label {
-    C_OBJECT(SquareLabel);
+class SquareImage final : public GUI::ImageWidget {
+    C_OBJECT(SquareImage);
 
 public:
     Function<void()> on_chord_click;
@@ -68,7 +69,7 @@ public:
                 }
             });
         }
-        GUI::Label::mousedown_event(event);
+        GUI::ImageWidget::mousedown_event(event);
     }
 
     virtual void mousemove_event(GUI::MouseEvent& event) override
@@ -80,7 +81,7 @@ public:
                 m_square.field->set_chord_preview(m_square, false);
             }
         }
-        GUI::Label::mousemove_event(event);
+        GUI::ImageWidget::mousemove_event(event);
     }
 
     virtual void mouseup_event(GUI::MouseEvent& event) override
@@ -95,11 +96,11 @@ public:
             }
         }
         m_square.field->set_chord_preview(m_square, m_chord);
-        GUI::Label::mouseup_event(event);
+        GUI::ImageWidget::mouseup_event(event);
     }
 
 private:
-    explicit SquareLabel(Square& square)
+    explicit SquareImage(Square& square)
         : m_square(square)
     {
     }
@@ -108,28 +109,27 @@ private:
     bool m_chord { false };
 };
 
-ErrorOr<NonnullRefPtr<Field>> Field::create(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button, Function<void(Gfx::IntSize)> on_size_changed)
+ErrorOr<NonnullRefPtr<Field>> Field::create(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button)
 {
-    auto field = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Field(flag_label, time_label, face_button, move(on_size_changed))));
-    field->m_mine_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/mine.png"sv));
-    field->m_flag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/flag.png"sv));
-    field->m_badflag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/badflag.png"sv));
-    field->m_consider_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/consider.png"sv));
-    field->m_default_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-default.png"sv));
-    field->m_good_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-good.png"sv));
-    field->m_bad_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/icons/minesweeper/face-bad.png"sv));
+    auto field = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Field(flag_label, time_label, face_button)));
+    field->m_mine_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/mine.png"sv));
+    field->m_flag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/flag.png"sv));
+    field->m_badflag_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/badflag.png"sv));
+    field->m_consider_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/consider.png"sv));
+    field->m_default_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/face-default.png"sv));
+    field->m_good_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/face-good.png"sv));
+    field->m_bad_face_bitmap = TRY(Gfx::Bitmap::load_from_file("/res/graphics/minesweeper/face-bad.png"sv));
     for (int i = 0; i < 8; ++i)
-        field->m_number_bitmap[i] = TRY(Gfx::Bitmap::load_from_file(DeprecatedString::formatted("/res/icons/minesweeper/{}.png", i + 1)));
+        field->m_number_bitmap[i] = TRY(Gfx::Bitmap::load_from_file(ByteString::formatted("/res/graphics/minesweeper/{}.png", i + 1)));
     field->initialize();
     return field;
 }
 
-Field::Field(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button, Function<void(Gfx::IntSize)> on_size_changed)
+Field::Field(GUI::Label& flag_label, GUI::Label& time_label, GUI::Button& face_button)
     : m_mine_palette(GUI::Application::the()->palette().impl().clone())
     , m_face_button(face_button)
     , m_flag_label(flag_label)
     , m_time_label(time_label)
-    , m_on_size_changed(move(on_size_changed))
 {
 }
 
@@ -140,8 +140,7 @@ void Field::initialize()
             ++m_time_elapsed;
             m_time_label.set_text(human_readable_digital_time(m_time_elapsed));
         },
-        this)
-                  .release_value_but_fixme_should_propagate_errors();
+        this);
 
     // Square with mine will be filled with background color later, i.e. red
     m_mine_palette.set_color(Gfx::ColorRole::Base, Color::from_rgb(0xff4040));
@@ -214,9 +213,9 @@ void Field::reset()
     m_first_click = true;
     set_updates_enabled(false);
     m_time_elapsed = 0;
-    m_time_label.set_text("00:00");
+    m_time_label.set_text("00:00"_string);
     m_flags_left = m_mine_count;
-    m_flag_label.set_text(DeprecatedString::number(m_flags_left));
+    m_flag_label.set_text(String::number(m_flags_left));
     m_timer->stop();
     set_greedy_for_hits(false);
     set_face(Face::Default);
@@ -226,7 +225,7 @@ void Field::reset()
     for (int i = rows() * columns(); i < static_cast<int>(m_squares.size()); ++i) {
         auto& square = m_squares[i];
         square->button->set_visible(false);
-        square->label->set_visible(false);
+        square->image->set_visible(false);
     }
 
     size_t i = 0;
@@ -243,15 +242,15 @@ void Field::reset()
             square.has_flag = false;
             square.is_considering = false;
             square.is_swept = false;
-            if (!square.label) {
-                square.label = add<SquareLabel>(square);
-                square.label->set_palette(m_mine_palette);
-                square.label->set_background_role(Gfx::ColorRole::Base);
+            if (!square.image) {
+                square.image = add<SquareImage>(square);
+                square.image->set_palette(m_mine_palette);
+                square.image->set_background_role(Gfx::ColorRole::Base);
             }
-            square.label->set_fill_with_background_color(false);
-            square.label->set_relative_rect(rect);
-            square.label->set_visible(false);
-            square.label->set_icon(nullptr);
+            square.image->set_fill_with_background_color(false);
+            square.image->set_relative_rect(rect);
+            square.image->set_visible(false);
+            square.image->set_bitmap(nullptr);
             if (!square.button) {
                 square.button = add<SquareButton>();
                 square.button->on_click = [this, &square](auto) {
@@ -263,7 +262,7 @@ void Field::reset()
                 square.button->on_middle_click = [this, &square] {
                     on_square_middle_clicked(square);
                 };
-                square.label->on_chord_click = [this, &square] {
+                square.image->on_chord_click = [this, &square] {
                     on_square_chorded(square);
                 };
             }
@@ -326,9 +325,9 @@ void Field::generate_field(size_t start_row, size_t start_column)
             });
             square.number = number;
             if (square.has_mine) {
-                square.label->set_icon(m_mine_bitmap);
+                square.image->set_bitmap(m_mine_bitmap);
             } else if (square.number) {
-                square.label->set_icon(m_number_bitmap[square.number - 1]);
+                square.image->set_bitmap(m_number_bitmap[square.number - 1]);
             }
         }
     }
@@ -363,14 +362,14 @@ void Field::paint_event(GUI::PaintEvent& event)
     auto inner_rect = frame_inner_rect();
     painter.add_clip_rect(inner_rect);
 
-    for (int y = inner_rect.top() - 1; y <= inner_rect.bottom(); y += square_size()) {
+    for (int y = inner_rect.top() - 1; y < inner_rect.bottom(); y += square_size()) {
         Gfx::IntPoint a { inner_rect.left(), y };
-        Gfx::IntPoint b { inner_rect.right(), y };
+        Gfx::IntPoint b { inner_rect.right() - 1, y };
         painter.draw_line(a, b, palette().threed_shadow1());
     }
-    for (int x = frame_inner_rect().left() - 1; x <= frame_inner_rect().right(); x += square_size()) {
+    for (int x = frame_inner_rect().left() - 1; x < frame_inner_rect().right(); x += square_size()) {
         Gfx::IntPoint a { x, inner_rect.top() };
-        Gfx::IntPoint b { x, inner_rect.bottom() };
+        Gfx::IntPoint b { x, inner_rect.bottom() - 1 };
         painter.draw_line(a, b, palette().threed_shadow1());
     }
 }
@@ -396,9 +395,9 @@ void Field::on_square_clicked_impl(Square& square, bool should_flood_fill)
     update();
     square.is_swept = true;
     square.button->set_visible(false);
-    square.label->set_visible(true);
+    square.image->set_visible(true);
     if (square.has_mine) {
-        square.label->set_fill_with_background_color(true);
+        square.image->set_fill_with_background_color(true);
         game_over();
         return;
     }
@@ -462,7 +461,7 @@ void Field::set_flag(Square& square, bool flag)
     }
     square.has_flag = flag;
 
-    m_flag_label.set_text(DeprecatedString::number(m_flags_left));
+    m_flag_label.set_text(String::number(m_flags_left));
     square.button->set_icon(square.has_flag ? m_flag_bitmap : nullptr);
     square.button->update();
 }
@@ -474,7 +473,7 @@ void Field::on_square_middle_clicked(Square& square)
     if (square.has_flag) {
         ++m_flags_left;
         square.has_flag = false;
-        m_flag_label.set_text(DeprecatedString::number(m_flags_left));
+        m_flag_label.set_text(String::number(m_flags_left));
     }
     square.is_considering = !square.is_considering;
     square.button->set_icon(square.is_considering ? m_consider_bitmap : nullptr);
@@ -508,12 +507,12 @@ void Field::reveal_mines()
             auto& square = this->square(r, c);
             if (square.has_mine && !square.has_flag) {
                 square.button->set_visible(false);
-                square.label->set_visible(true);
+                square.image->set_visible(true);
             }
             if (!square.has_mine && square.has_flag) {
                 square.button->set_icon(*m_badflag_bitmap);
                 square.button->set_visible(true);
-                square.label->set_visible(false);
+                square.image->set_visible(false);
             }
         }
     }
@@ -568,9 +567,6 @@ void Field::set_field_size(Difficulty difficulty, size_t rows, size_t columns, s
     m_mine_count = mine_count;
     set_fixed_size(frame_thickness() * 2 + m_columns * square_size(), frame_thickness() * 2 + m_rows * square_size());
     reset();
-    deferred_invoke([this] {
-        m_on_size_changed(Gfx::IntSize(min_size()));
-    });
 }
 
 void Field::set_single_chording(bool enabled)

@@ -12,9 +12,10 @@ namespace JS {
 
 class NumberConstructor final : public NativeFunction {
     JS_OBJECT(NumberConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(NumberConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~NumberConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

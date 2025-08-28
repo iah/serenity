@@ -1,13 +1,14 @@
 #import <Geometry/DOMMatrix.idl>
+#import <Geometry/DOMPoint.idl>
 
 // https://drafts.fxtf.org/geometry/#dommatrixreadonly
-[Exposed=(Window,Worker), Serializable, UseNewAKString]
+[Exposed=(Window,Worker), Serializable]
 interface DOMMatrixReadOnly {
     constructor(optional (DOMString or sequence<unrestricted double>) init);
 
-    // FIXME: [NewObject] static DOMMatrixReadOnly fromMatrix(optional DOMMatrixInit other = {});
-    // FIXME: [NewObject] static DOMMatrixReadOnly fromFloat32Array(Float32Array array32);
-    // FIXME: [NewObject] static DOMMatrixReadOnly fromFloat64Array(Float64Array array64);
+    [NewObject] static DOMMatrixReadOnly fromMatrix(optional DOMMatrixInit other = {});
+    [NewObject] static DOMMatrixReadOnly fromFloat32Array(Float32Array array32);
+    [NewObject] static DOMMatrixReadOnly fromFloat64Array(Float64Array array64);
 
     // These attributes are simple aliases for certain elements of the 4x4 matrix
     readonly attribute unrestricted double a;
@@ -38,26 +39,26 @@ interface DOMMatrixReadOnly {
     readonly attribute boolean isIdentity;
 
     // Immutable transform methods
-    // FIXME: [NewObject] DOMMatrix translate(optional unrestricted double tx = 0, optional unrestricted double ty = 0, optional unrestricted double tz = 0);
-    // FIXME: [NewObject] DOMMatrix scale(optional unrestricted double scaleX = 1, optional unrestricted double scaleY, optional unrestricted double scaleZ = 1, optional unrestricted double originX = 0, optional unrestricted double originY = 0, optional unrestricted double originZ = 0);
-    // FIXME: [NewObject] DOMMatrix scaleNonUniform(optional unrestricted double scaleX = 1, optional unrestricted double scaleY = 1);
-    // FIXME: [NewObject] DOMMatrix scale3d(optional unrestricted double scale = 1, optional unrestricted double originX = 0, optional unrestricted double originY = 0, optional unrestricted double originZ = 0);
-    // FIXME: [NewObject] DOMMatrix rotate(optional unrestricted double rotX = 0, optional unrestricted double rotY, optional unrestricted double rotZ);
-    // FIXME: [NewObject] DOMMatrix rotateFromVector(optional unrestricted double x = 0, optional unrestricted double y = 0);
-    // FIXME: [NewObject] DOMMatrix rotateAxisAngle(optional unrestricted double x = 0, optional unrestricted double y = 0, optional unrestricted double z = 0, optional unrestricted double angle = 0);
-    // FIXME: [NewObject] DOMMatrix skewX(optional unrestricted double sx = 0);
-    // FIXME: [NewObject] DOMMatrix skewY(optional unrestricted double sy = 0);
-    // FIXME: [NewObject] DOMMatrix multiply(optional DOMMatrixInit other = {});
-    // FIXME: [NewObject] DOMMatrix flipX();
-    // FIXME: [NewObject] DOMMatrix flipY();
+    [NewObject] DOMMatrix translate(optional unrestricted double tx = 0, optional unrestricted double ty = 0, optional unrestricted double tz = 0);
+    [NewObject] DOMMatrix scale(optional unrestricted double scaleX = 1, optional unrestricted double scaleY, optional unrestricted double scaleZ = 1, optional unrestricted double originX = 0, optional unrestricted double originY = 0, optional unrestricted double originZ = 0);
+    [NewObject] DOMMatrix scaleNonUniform(optional unrestricted double scaleX = 1, optional unrestricted double scaleY = 1);
+    [NewObject] DOMMatrix scale3d(optional unrestricted double scale = 1, optional unrestricted double originX = 0, optional unrestricted double originY = 0, optional unrestricted double originZ = 0);
+    [NewObject] DOMMatrix rotate(optional unrestricted double rotX = 0, optional unrestricted double rotY, optional unrestricted double rotZ);
+    [NewObject] DOMMatrix rotateFromVector(optional unrestricted double x = 0, optional unrestricted double y = 0);
+    [NewObject] DOMMatrix rotateAxisAngle(optional unrestricted double x = 0, optional unrestricted double y = 0, optional unrestricted double z = 0, optional unrestricted double angle = 0);
+    [NewObject] DOMMatrix skewX(optional unrestricted double sx = 0);
+    [NewObject] DOMMatrix skewY(optional unrestricted double sy = 0);
+    [NewObject] DOMMatrix multiply(optional DOMMatrixInit other = {});
+    [NewObject] DOMMatrix flipX();
+    [NewObject] DOMMatrix flipY();
     [NewObject] DOMMatrix inverse();
 
-    // FIXME: [NewObject] DOMPoint transformPoint(optional DOMPointInit point = {});
-    // FIXME: [NewObject] Float32Array toFloat32Array();
-    // FIXME: [NewObject] Float64Array toFloat64Array();
+    [NewObject] DOMPoint transformPoint(optional DOMPointInit point = {});
+    [NewObject] Float32Array toFloat32Array();
+    [NewObject] Float64Array toFloat64Array();
 
     [Exposed=Window] stringifier;
-    // FIXME: [Default] object toJSON();
+    [Default] object toJSON();
 };
 
 dictionary DOMMatrix2DInit {

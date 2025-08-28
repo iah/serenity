@@ -63,7 +63,7 @@ ModelIndex Model::index(int row, int column, ModelIndex const&) const
     return create_index(row, column);
 }
 
-bool Model::accepts_drag(ModelIndex const&, Vector<DeprecatedString> const&) const
+bool Model::accepts_drag(ModelIndex const&, Core::MimeData const&) const
 {
     return false;
 }
@@ -109,12 +109,12 @@ RefPtr<Core::MimeData> Model::mime_data(ModelSelection const& selection) const
         auto text_data = index.data();
         if (!first)
             text_builder.append(", "sv);
-        text_builder.append(text_data.to_deprecated_string());
+        text_builder.append(text_data.to_byte_string());
 
         if (!first)
             data_builder.append('\n');
         auto data = index.data(ModelRole::MimeData);
-        data_builder.append(data.to_deprecated_string());
+        data_builder.append(data.to_byte_string());
 
         first = false;
 
@@ -125,10 +125,10 @@ RefPtr<Core::MimeData> Model::mime_data(ModelSelection const& selection) const
         }
     });
 
-    mime_data->set_data(drag_data_type(), data_builder.to_byte_buffer());
-    mime_data->set_text(text_builder.to_deprecated_string());
+    mime_data->set_data(MUST(String::from_utf8(drag_data_type())), data_builder.to_byte_buffer().release_value_but_fixme_should_propagate_errors());
+    mime_data->set_text(text_builder.to_byte_string());
     if (bitmap)
-        mime_data->set_data("image/x-raw-bitmap", bitmap->serialize_to_byte_buffer().release_value_but_fixme_should_propagate_errors());
+        mime_data->set_data("image/x-raw-bitmap"_string, bitmap->serialize_to_byte_buffer().release_value_but_fixme_should_propagate_errors());
 
     return mime_data;
 }
@@ -437,13 +437,13 @@ void Model::handle_move(Operation const& operation)
     auto replace_handle = [&](ModelIndex const& current_index, int new_dimension, bool relative) {
         int new_row = is_row
             ? (relative
-                    ? current_index.row() + new_dimension
-                    : new_dimension)
+                      ? current_index.row() + new_dimension
+                      : new_dimension)
             : current_index.row();
         int new_column = !is_row
             ? (relative
-                    ? current_index.column() + new_dimension
-                    : new_dimension)
+                      ? current_index.column() + new_dimension
+                      : new_dimension)
             : current_index.column();
         auto new_index = index(new_row, new_column, operation.target_parent);
 

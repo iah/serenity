@@ -67,7 +67,7 @@ public:
     virtual void on_secondary_color_change(Color) { }
     virtual void on_tool_activation() { }
     virtual void on_tool_deactivation() { }
-    virtual ErrorOr<GUI::Widget*> get_properties_widget() { return nullptr; }
+    virtual NonnullRefPtr<GUI::Widget> get_properties_widget() { return GUI::Widget::construct(); }
     virtual Variant<Gfx::StandardCursor, NonnullRefPtr<Gfx::Bitmap const>> cursor() { return Gfx::StandardCursor::None; }
     virtual Gfx::IntPoint point_position_to_preferred_cell(Gfx::FloatPoint position) const { return position.to_type<int>(); }
 
@@ -83,7 +83,7 @@ public:
     virtual StringView tool_name() const = 0;
 
     // We only set the override_alt_key flag to true since the override is false by default. If false is desired do not call method.
-    virtual bool is_overriding_alt() { return false; };
+    virtual bool is_overriding_alt() { return false; }
 
 protected:
     Tool() = default;
@@ -101,6 +101,10 @@ protected:
 
     GUI::AbstractSlider* m_primary_slider { nullptr };
     GUI::AbstractSlider* m_secondary_slider { nullptr };
+
+    template<Gfx::StorageFormat>
+    void set_pixel_with_possible_mask(int x, int y, Gfx::Color color, Gfx::Bitmap& bitmap);
+    void set_pixel_with_possible_mask(int x, int y, Gfx::Color color, Gfx::Bitmap& bitmap);
 };
 
 }

@@ -12,9 +12,10 @@ namespace JS::Intl {
 
 class Intl final : public Object {
     JS_OBJECT(Intl, Object);
+    JS_DECLARE_ALLOCATOR(Intl);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~Intl() override = default;
 
 private:

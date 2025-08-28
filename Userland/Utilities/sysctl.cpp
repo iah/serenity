@@ -12,9 +12,9 @@
 
 static bool s_set_variable = false;
 
-static DeprecatedString get_variable(StringView name)
+static Optional<ByteString> get_variable(StringView name)
 {
-    auto path = DeprecatedString::formatted("/sys/kernel/variables/{}", name);
+    auto path = ByteString::formatted("/sys/kernel/conf/{}", name);
     auto file = Core::File::open(path, Core::File::OpenMode::Read);
     if (file.is_error()) {
         warnln("Failed to open {}: {}", path, file.error());
@@ -25,34 +25,34 @@ static DeprecatedString get_variable(StringView name)
         warnln("Failed to read {}: {}", path, buffer.error());
         return {};
     }
-    return { (char const*)buffer.value().data(), buffer.value().size(), Chomp };
+    return ByteString { (char const*)buffer.value().data(), buffer.value().size(), Chomp };
 }
 
 static bool read_variable(StringView name)
 {
     auto value = get_variable(name);
-    if (value.is_null())
+    if (!value.has_value())
         return false;
-    outln("{} = {}", name, value);
+    outln("{} = {}", name, *value);
     return true;
 }
 
 static bool write_variable(StringView name, StringView value)
 {
     auto old_value = get_variable(name);
-    if (old_value.is_null())
+    if (!old_value.has_value())
         return false;
-    auto path = DeprecatedString::formatted("/sys/kernel/variables/{}", name);
+    auto path = ByteString::formatted("/sys/kernel/conf/{}", name);
     auto file = Core::File::open(path, Core::File::OpenMode::Write);
     if (file.is_error()) {
         warnln("Failed to open {}: {}", path, file.error());
         return false;
     }
-    if (auto result = file.value()->write(value.bytes()); result.is_error()) {
+    if (auto result = file.value()->write_until_depleted(value.bytes()); result.is_error()) {
         warnln("Failed to write {}: {}", path, result.error());
         return false;
     }
-    outln("{}: {} -> {}", name, old_value, value);
+    outln("{}: {} -> {}", name, *old_value, value);
     return true;
 }
 
@@ -80,7 +80,7 @@ static int handle_variables(Vector<StringView> const& variables)
 
 static int handle_show_all()
 {
-    Core::DirIterator di("/sys/kernel/variables", Core::DirIterator::SkipDots);
+    Core::DirIterator di("/sys/kernel/conf", Core::DirIterator::SkipDots);
     if (di.has_error()) {
         outln("DirIterator: {}", di.error());
         return 1;

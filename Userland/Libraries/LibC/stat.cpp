@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <bits/utimens.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -80,6 +81,12 @@ int mkfifo(char const* pathname, mode_t mode)
     return mknod(pathname, mode | S_IFIFO, 0);
 }
 
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/mkfifoat.html
+int mkfifoat(int dirfd, char const* pathname, mode_t mode)
+{
+    return mknodat(dirfd, pathname, mode | S_IFIFO, 0);
+}
+
 static int do_stat(int dirfd, char const* path, struct stat* statbuf, bool follow_symlinks)
 {
     if (!path) {
@@ -119,6 +126,6 @@ int fstatat(int fd, char const* path, struct stat* statbuf, int flags)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/futimens.html
 int futimens(int fd, struct timespec const times[2])
 {
-    return utimensat(fd, "", times, 0);
+    return __utimens(fd, nullptr, times, 0);
 }
 }

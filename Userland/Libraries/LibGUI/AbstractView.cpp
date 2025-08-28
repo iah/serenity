@@ -7,7 +7,7 @@
 #include <AK/Debug.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
-#include <LibCore/Object.h>
+#include <LibCore/EventReceiver.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/AbstractView.h>
 #include <LibGUI/DragOperation.h>
@@ -89,9 +89,11 @@ void AbstractView::model_did_update(unsigned int flags)
             m_drop_candidate_index = {};
         selection().remove_all_matching([this](auto& index) { return !model()->is_within_range(index); });
 
-        auto index = find_next_search_match(m_highlighted_search.view());
-        if (index.is_valid())
-            highlight_search(index);
+        if (m_highlighted_search.has_value()) {
+            auto index = find_next_search_match(m_highlighted_search->view());
+            if (index.is_valid())
+                highlight_search(index);
+        }
     }
     m_selection_start_index = {};
 }
@@ -291,8 +293,10 @@ void AbstractView::mousemove_event(MouseEvent& event)
     if (!model())
         return AbstractScrollableWidget::mousemove_event(event);
 
-    auto hovered_index = index_at_event_position(event.position());
-    set_hovered_index(hovered_index);
+    if (widget_inner_rect().contains(event.position())) {
+        auto hovered_index = index_at_event_position(event.position());
+        set_hovered_index(hovered_index);
+    }
 
     auto data_type = m_model->drag_data_type();
     if (data_type.is_null())
@@ -590,11 +594,11 @@ void AbstractView::keydown_event(KeyEvent& event)
 
     if (is_searchable()) {
         if (event.key() == KeyCode::Key_Backspace) {
-            if (!m_highlighted_search.is_null()) {
+            if (m_highlighted_search.has_value()) {
                 // if (event.modifiers() == Mod_Ctrl) {
                 //  TODO: delete last word
                 // }
-                Utf8View view(m_highlighted_search);
+                Utf8View view(*m_highlighted_search);
                 size_t n_code_points = view.length();
                 if (n_code_points > 1) {
                     n_code_points--;
@@ -607,7 +611,7 @@ void AbstractView::keydown_event(KeyEvent& event)
                     }
                     auto index = find_next_search_match(sb.string_view());
                     if (index.is_valid()) {
-                        m_highlighted_search = sb.to_deprecated_string();
+                        m_highlighted_search = sb.to_byte_string();
                         highlight_search(index);
                         start_highlighted_search_timer();
                     }
@@ -619,7 +623,7 @@ void AbstractView::keydown_event(KeyEvent& event)
                 return;
             }
         } else if (event.key() == KeyCode::Key_Escape) {
-            if (!m_highlighted_search.is_null()) {
+            if (m_highlighted_search.has_value()) {
                 stop_highlighted_search_timer();
 
                 event.accept();
@@ -627,12 +631,13 @@ void AbstractView::keydown_event(KeyEvent& event)
             }
         } else if (event.key() != KeyCode::Key_Tab && !event.ctrl() && !event.alt() && event.code_point() != 0) {
             StringBuilder sb;
-            sb.append(m_highlighted_search);
+            if (m_highlighted_search.has_value())
+                sb.append(*m_highlighted_search);
             sb.append_code_point(event.code_point());
 
             auto index = find_next_search_match(sb.string_view());
             if (index.is_valid()) {
-                m_highlighted_search = sb.to_deprecated_string();
+                m_highlighted_search = sb.to_byte_string();
                 highlight_search(index);
                 start_highlighted_search_timer();
                 set_cursor(index, SelectionUpdate::None, true);
@@ -648,7 +653,7 @@ void AbstractView::keydown_event(KeyEvent& event)
 
 void AbstractView::stop_highlighted_search_timer()
 {
-    m_highlighted_search = nullptr;
+    m_highlighted_search.clear();
     if (m_highlighted_search_timer)
         m_highlighted_search_timer->stop();
     if (m_highlighted_search_index.is_valid()) {
@@ -713,35 +718,40 @@ void AbstractView::draw_item_text(Gfx::Painter& painter, ModelIndex const& index
         return;
 
     Color text_color;
-    if (is_selected)
+    if (!is_enabled())
+        text_color = palette().color(Gfx::ColorRole::DisabledText);
+    else if (is_selected)
         text_color = is_focused() ? palette().selection_text() : palette().inactive_selection_text();
     else
         text_color = index.data(ModelRole::ForegroundColor).to_color(palette().color(foreground_role()));
+
     if (index == m_highlighted_search_index) {
-        Utf8View searching_text(m_highlighted_search);
-        auto searching_length = searching_text.length();
-        if (searching_length > search_highlighting_offset)
-            searching_length -= search_highlighting_offset;
-        else if (search_highlighting_offset > 0)
-            searching_length = 0;
+        auto const byte_offset = search_highlighting_offset < m_highlighted_search.value_or("").length() ? 0 : item_text.length();
+        auto const byte_length = min(item_text.length() - byte_offset, m_highlighted_search.value_or("").length() - search_highlighting_offset);
+        Utf8View const searching_text(item_text.substring_view(byte_offset, byte_length));
 
         // Highlight the text background first
-        auto background_searching_length = searching_length;
-        painter.draw_text([&](Gfx::FloatRect const& rect, Utf8CodePointIterator&) {
-            if (background_searching_length > 0) {
-                background_searching_length--;
-                painter.fill_rect(rect.to_type<int>().inflated(0, 2), palette().highlight_searching());
-            }
-        },
-            text_rect, item_text, font, alignment, elision);
+        auto highlight_rect = text_rect.shrunken(0, text_rect.height() - font.pixel_size_rounded_up() - 2);
+        highlight_rect.set_width((int)font.width(searching_text));
+
+        // If the text is center aligned the highlight rect needs to be shifted to the right so that the two line up
+        if (alignment == Gfx::TextAlignment::Center)
+            highlight_rect.translate_by((text_rect.width() - (int)font.width(item_text)) / 2, 0);
+
+        painter.fill_rect(highlight_rect, palette().highlight_searching());
 
         // Then draw the text
-        auto text_searching_length = searching_length;
-        auto highlight_text_color = palette().highlight_searching_text();
-        searching_length = searching_text.length();
+        auto searching_text_it = searching_text.begin();
+        while (searching_text_it != searching_text.end() && is_ascii_space(*searching_text_it))
+            ++searching_text_it;
+
+        auto const highlight_text_color = palette().highlight_searching_text();
         painter.draw_text([&](auto const& rect, Utf8CodePointIterator& it) {
-            if (text_searching_length > 0) {
-                text_searching_length--;
+            if (searching_text_it != searching_text.end()) {
+                do {
+                    ++searching_text_it;
+                } while (searching_text_it != searching_text.end() && is_ascii_space(*searching_text_it));
+
                 painter.draw_glyph_or_emoji(rect.location(), it, font, highlight_text_color);
             } else {
                 painter.draw_glyph_or_emoji(rect.location(), it, font, text_color);
@@ -781,7 +791,7 @@ void AbstractView::drag_enter_event(DragEvent& event)
     //       We might be able to reduce event traffic by communicating the set of drag-accepting
     //       rects in this widget to the windowing system somehow.
     event.accept();
-    dbgln_if(DRAG_DEBUG, "accepting drag of {}", event.mime_types().first());
+    dbgln_if(DRAG_DEBUG, "accepting drag of {}", event.mime_data().formats());
 }
 
 void AbstractView::drag_move_event(DragEvent& event)
@@ -791,7 +801,7 @@ void AbstractView::drag_move_event(DragEvent& event)
 
     auto index = index_at_event_position(event.position());
     ModelIndex new_drop_candidate_index;
-    bool acceptable = model()->accepts_drag(index, event.mime_types());
+    bool acceptable = model()->accepts_drag(index, event.mime_data());
 
     if (acceptable && index.is_valid())
         new_drop_candidate_index = index;

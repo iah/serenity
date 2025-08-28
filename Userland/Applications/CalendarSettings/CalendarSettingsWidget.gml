@@ -1,4 +1,4 @@
-@GUI::Frame {
+@CalendarSettings::CalendarSettingsWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         margins: [8]
@@ -6,7 +6,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Preferred First Day of Week"
+        title: "Preferred first day of week"
         fixed_height: 72
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -15,7 +15,7 @@
 
         @GUI::Label {
             text: "Determines which day a week starts with in the calendar view."
-            word_wrap: true
+            text_wrapping: "Wrap"
             text_alignment: "CenterLeft"
         }
 
@@ -37,7 +37,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Preferred Weekend Configuration"
+        title: "Preferred weekend configuration"
         fixed_height: 72
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -46,7 +46,7 @@
 
         @GUI::Label {
             text: "Determines the start and length of the weekend."
-            word_wrap: true
+            text_wrapping: "Wrap"
             text_alignment: "CenterLeft"
         }
 
@@ -94,7 +94,7 @@
     }
 
     @GUI::GroupBox {
-        title: "Default View"
+        title: "Default view"
         fixed_height: 72
         layout: @GUI::VerticalBoxLayout {
             margins: [6]
@@ -103,7 +103,7 @@
 
         @GUI::Label {
             text: "Show the month or the year view when Calendar is started."
-            word_wrap: true
+            text_wrapping: "Wrap"
             text_alignment: "CenterLeft"
         }
 

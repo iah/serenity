@@ -86,7 +86,7 @@ describe("special left hand sides", () => {
         expect(b.a).toBe("2");
     });
 
-    test("call function is allowed in parsing but fails in runtime", () => {
+    test.xfail("call function is allowed in parsing but fails in runtime", () => {
         function f() {
             expect().fail();
         }

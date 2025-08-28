@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "Resources.h"
 #include "UndoSelection.h"
 #include <LibGUI/ActionGroup.h>
 #include <LibGUI/FilteringProxyModel.h>
@@ -17,49 +18,33 @@
 
 namespace FontEditor {
 
+extern Resources g_resources;
+
 class GlyphEditorWidget;
 
 class MainWidget final : public GUI::Widget {
     C_OBJECT(MainWidget)
 public:
-    static ErrorOr<NonnullRefPtr<MainWidget>> try_create()
-    {
-        NonnullRefPtr<MainWidget> font_editor = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) MainWidget()));
-        TRY(font_editor->create_actions());
-        TRY(font_editor->create_models());
-        TRY(font_editor->create_toolbars());
-        TRY(font_editor->create_undo_stack());
-        return font_editor;
-    }
+    static ErrorOr<NonnullRefPtr<MainWidget>> try_create();
 
     virtual ~MainWidget() override = default;
 
-    ErrorOr<void> initialize(DeprecatedString const& path, RefPtr<Gfx::BitmapFont>&&);
+    void show_error(Error, StringView action, StringView filename = {});
+    void reset();
+
+    ErrorOr<void> initialize(StringView path, RefPtr<Gfx::BitmapFont>&&);
     ErrorOr<void> initialize_menubar(GUI::Window&);
 
-    ErrorOr<void> open_file(DeprecatedString const&);
-    ErrorOr<void> save_file(DeprecatedString const&);
+    ErrorOr<void> open_file(StringView, NonnullOwnPtr<Core::File>);
+    ErrorOr<void> save_file(StringView, NonnullOwnPtr<Core::File>);
     bool request_close();
-    void update_title();
 
-    DeprecatedString const& path() { return m_path; }
-    Gfx::BitmapFont const& edited_font() { return *m_edited_font; }
-
-    bool is_showing_font_metadata() { return m_font_metadata; }
-    void set_show_font_metadata(bool);
-
-    bool is_showing_unicode_blocks() { return m_unicode_blocks; }
-    void set_show_unicode_blocks(bool);
-
-    void set_show_toolbar(bool);
-    void set_show_statusbar(bool);
-
-    void set_highlight_modifications(bool);
-    void set_show_system_emoji(bool);
+    String const& path() { return m_path; }
 
 private:
-    MainWidget();
+    MainWidget() = default;
 
+    ErrorOr<void> create_widgets();
     ErrorOr<void> create_actions();
     ErrorOr<void> create_models();
     ErrorOr<void> create_toolbars();
@@ -71,22 +56,25 @@ private:
 
     void undo();
     void redo();
+    void restore_state();
     void did_modify_font();
+
+    void update_action_text();
     void update_statusbar();
     void update_preview();
+    void update_title();
+
     void set_scale_and_save(i32);
+    void set_actions_enabled(bool);
+    void set_widgets_enabled(bool);
 
     ErrorOr<void> copy_selected_glyphs();
     ErrorOr<void> cut_selected_glyphs();
     void paste_glyphs();
     void delete_selected_glyphs();
 
-    void push_undo();
-    void reset_selection_and_push_undo();
-
-    void show_error(Error, StringView action, StringView basename = {});
-
-    RefPtr<Gfx::BitmapFont> m_edited_font;
+    void push_undo(StringView action_text);
+    void reset_selection();
 
     RefPtr<GUI::GlyphMapWidget> m_glyph_map_widget;
     RefPtr<GlyphEditorWidget> m_glyph_editor_widget;
@@ -138,6 +126,7 @@ private:
     RefPtr<GUI::Statusbar> m_statusbar;
     RefPtr<GUI::ToolbarContainer> m_toolbar_container;
     RefPtr<GUI::Widget> m_unicode_block_container;
+    RefPtr<GUI::Widget> m_width_control_container;
     RefPtr<GUI::ComboBox> m_weight_combobox;
     RefPtr<GUI::ComboBox> m_slope_combobox;
     RefPtr<GUI::SpinBox> m_spacing_spinbox;
@@ -160,13 +149,13 @@ private:
     RefPtr<GUI::TextBox> m_preview_textbox;
     RefPtr<GUI::Window> m_font_preview_window;
 
-    DeprecatedString m_path;
-    Vector<DeprecatedString> m_font_weight_list;
-    Vector<DeprecatedString> m_font_slope_list;
-    Vector<DeprecatedString> m_unicode_block_list;
-    bool m_font_metadata { true };
-    bool m_unicode_blocks { true };
+    String m_path;
+    RefPtr<Gfx::BitmapFont> m_font;
+    Vector<String> m_font_weight_list;
+    Vector<String> m_font_slope_list;
+    Vector<String> m_unicode_block_list;
     Unicode::CodePointRange m_range { 0x0000, 0x10FFFF };
+    bool m_initialized { false };
 };
 
 }

@@ -106,7 +106,7 @@ auto IconView::get_item_data(int item_index) const -> ItemData&
         return item_data;
 
     item_data.index = model()->index(item_index, model_column());
-    item_data.text = item_data.index.data().to_deprecated_string();
+    item_data.text = item_data.index.data().to_byte_string();
     get_item_rects(item_index, item_data, font_for_index(item_data.index));
     item_data.valid = true;
     return item_data;
@@ -428,10 +428,10 @@ void IconView::get_item_rects(int item_index, ItemData& item_data, Gfx::Font con
     item_data.icon_offset_y = -font.pixel_size_rounded_up() - 6;
     item_data.icon_rect.translate_by(0, item_data.icon_offset_y);
 
-    int unwrapped_text_width = static_cast<int>(ceilf(font.width(item_data.text)));
+    int unwrapped_text_width = font.width_rounded_up(item_data.text);
     int available_width = item_rect.width() - 6;
 
-    item_data.text_rect = { 0, item_data.icon_rect.bottom() + 6 + 1, 0, font.pixel_size_rounded_up() };
+    item_data.text_rect = { 0, item_data.icon_rect.bottom() + 6, 0, font.pixel_size_rounded_up() };
     item_data.wrapped_text_lines.clear();
 
     if ((unwrapped_text_width > available_width) && (item_data.selected || m_hovered_index == item_data.index || cursor_index() == item_data.index || m_always_wrap_item_labels)) {
@@ -537,7 +537,7 @@ void IconView::paint_event(PaintEvent& event)
 
         auto font = font_for_index(item_data.index);
 
-        const auto& text_rect = item_data.text_rect;
+        auto const& text_rect = item_data.text_rect;
 
         if (m_edit_index != item_data.index)
             painter.fill_rect(text_rect, background_color);
@@ -550,7 +550,7 @@ void IconView::paint_event(PaintEvent& event)
         if (!item_data.wrapped_text_lines.is_empty()) {
             // Item text would not fit in the item text rect, let's break it up into lines..
 
-            const auto& lines = item_data.wrapped_text_lines;
+            auto const& lines = item_data.wrapped_text_lines;
             size_t number_of_text_lines = min((size_t)text_rect.height() / font->pixel_size_rounded_up(), lines.size());
             size_t previous_line_lengths = 0;
             for (size_t line_index = 0; line_index < number_of_text_lines; ++line_index) {
@@ -789,7 +789,7 @@ inline IterationDecision IconView::for_each_item_intersecting_rect(Gfx::IntRect 
     int begin_row, begin_column;
     column_row_from_content_position(rect.top_left(), begin_row, begin_column);
     int end_row, end_column;
-    column_row_from_content_position(rect.bottom_right(), end_row, end_column);
+    column_row_from_content_position(rect.bottom_right().translated(-1), end_row, end_column);
 
     int items_per_flow_axis_step;
     int item_index;

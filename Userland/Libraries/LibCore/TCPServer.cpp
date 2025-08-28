@@ -14,7 +14,7 @@
 
 namespace Core {
 
-ErrorOr<NonnullRefPtr<TCPServer>> TCPServer::try_create(Object* parent)
+ErrorOr<NonnullRefPtr<TCPServer>> TCPServer::try_create(EventReceiver* parent)
 {
 #ifdef SOCK_NONBLOCK
     int fd = TRY(Core::System::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
@@ -28,8 +28,8 @@ ErrorOr<NonnullRefPtr<TCPServer>> TCPServer::try_create(Object* parent)
     return adopt_nonnull_ref_or_enomem(new (nothrow) TCPServer(fd, parent));
 }
 
-TCPServer::TCPServer(int fd, Object* parent)
-    : Object(parent)
+TCPServer::TCPServer(int fd, EventReceiver* parent)
+    : EventReceiver(parent)
     , m_fd(fd)
 {
     VERIFY(m_fd >= 0);
@@ -57,8 +57,8 @@ ErrorOr<void> TCPServer::listen(IPv4Address const& address, u16 port, AllowAddre
     TRY(Core::System::listen(m_fd, 5));
     m_listening = true;
 
-    m_notifier = Notifier::construct(m_fd, Notifier::Event::Read, this);
-    m_notifier->on_ready_to_read = [this] {
+    m_notifier = Notifier::construct(m_fd, Notifier::Type::Read, this);
+    m_notifier->on_activation = [this] {
         if (on_ready_to_accept)
             on_ready_to_accept();
     };
@@ -80,7 +80,7 @@ ErrorOr<NonnullOwnPtr<TCPSocket>> TCPServer::accept()
     VERIFY(m_listening);
     sockaddr_in in;
     socklen_t in_size = sizeof(in);
-#ifndef AK_OS_MACOS
+#if !defined(AK_OS_MACOS) && !defined(AK_OS_IOS) && !defined(AK_OS_HAIKU)
     int accepted_fd = TRY(Core::System::accept4(m_fd, (sockaddr*)&in, &in_size, SOCK_NONBLOCK | SOCK_CLOEXEC));
 #else
     int accepted_fd = TRY(Core::System::accept(m_fd, (sockaddr*)&in, &in_size));
@@ -88,7 +88,7 @@ ErrorOr<NonnullOwnPtr<TCPSocket>> TCPServer::accept()
 
     auto socket = TRY(TCPSocket::adopt_fd(accepted_fd));
 
-#ifdef AK_OS_MACOS
+#if defined(AK_OS_MACOS) || defined(AK_OS_IOS) || defined(AK_OS_HAIKU)
     // FIXME: Ideally, we should let the caller decide whether it wants the
     //        socket to be nonblocking or not, but there are currently places
     //        which depend on this.

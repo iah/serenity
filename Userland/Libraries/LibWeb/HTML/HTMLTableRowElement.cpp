@@ -4,16 +4,27 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTableRowElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/CSS/Parser/Parser.h>
+#include <LibWeb/CSS/Parser/ParsingContext.h>
+#include <LibWeb/CSS/StyleProperties.h>
+#include <LibWeb/CSS/StyleValues/CSSColorValue.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
+#include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
+#include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/HTMLCollection.h>
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableElement.h>
 #include <LibWeb/HTML/HTMLTableRowElement.h>
 #include <LibWeb/HTML/HTMLTableSectionElement.h>
+#include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Namespace.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLTableRowElement);
 
 HTMLTableRowElement::HTMLTableRowElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -22,12 +33,32 @@ HTMLTableRowElement::HTMLTableRowElement(DOM::Document& document, DOM::Qualified
 
 HTMLTableRowElement::~HTMLTableRowElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLTableRowElement::initialize(JS::Realm& realm)
+void HTMLTableRowElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLTableRowElementPrototype>(realm, "HTMLTableRowElement"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLTableRowElement);
+}
 
-    return {};
+void HTMLTableRowElement::apply_presentational_hints(CSS::StyleProperties& style) const
+{
+    Base::apply_presentational_hints(style);
+    for_each_attribute([&](auto& name, auto& value) {
+        if (name == HTML::AttributeNames::bgcolor) {
+            // https://html.spec.whatwg.org/multipage/rendering.html#tables-2:rules-for-parsing-a-legacy-colour-value
+            auto color = parse_legacy_color_value(value);
+            if (color.has_value())
+                style.set_property(CSS::PropertyID::BackgroundColor, CSS::CSSColorValue::create_from_color(color.value()));
+        } else if (name == HTML::AttributeNames::background) {
+            if (auto parsed_value = document().parse_url(value); parsed_value.is_valid())
+                style.set_property(CSS::PropertyID::BackgroundImage, CSS::ImageStyleValue::create(parsed_value));
+        } else if (name == HTML::AttributeNames::height) {
+            if (auto parsed_value = parse_dimension_value(value))
+                style.set_property(CSS::PropertyID::Height, *parsed_value);
+        } else if (name == HTML::AttributeNames::valign) {
+            if (auto parsed_value = parse_css_value(CSS::Parser::ParsingContext { document() }, value, CSS::PropertyID::VerticalAlign))
+                style.set_property(CSS::PropertyID::VerticalAlign, parsed_value.release_nonnull());
+        }
+    });
 }
 
 void HTMLTableRowElement::visit_edges(Cell::Visitor& visitor)
@@ -42,10 +73,9 @@ JS::NonnullGCPtr<DOM::HTMLCollection> HTMLTableRowElement::cells() const
     // The cells attribute must return an HTMLCollection rooted at this tr element,
     // whose filter matches only td and th elements that are children of the tr element.
     if (!m_cells) {
-        m_cells = DOM::HTMLCollection::create(const_cast<HTMLTableRowElement&>(*this), [this](Element const& element) {
-            return element.parent() == this
-                && is<HTMLTableCellElement>(element);
-        }).release_value_but_fixme_should_propagate_errors();
+        m_cells = DOM::HTMLCollection::create(const_cast<HTMLTableRowElement&>(*this), DOM::HTMLCollection::Scope::Children, [](Element const& element) {
+            return is<HTMLTableCellElement>(element);
+        });
     }
     return *m_cells;
 }
@@ -109,7 +139,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<HTMLTableCellElement>> HTMLTableRowElement:
 
     // 1. If index is less than −1 or greater than the number of elements in the cells collection, then throw an "IndexSizeError" DOMException.
     if (index < -1 || index > cells_collection_size)
-        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than the number of cells");
+        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than the number of cells"_string);
 
     // 2. Let table cell be the result of creating an element given this tr element's node document, td, and the HTML namespace.
     auto& table_cell = static_cast<HTMLTableCellElement&>(*TRY(DOM::create_element(document(), HTML::TagNames::td, Namespace::HTML)));
@@ -134,7 +164,7 @@ WebIDL::ExceptionOr<void> HTMLTableRowElement::delete_cell(i32 index)
 
     // 1. If index is less than −1 or greater than or equal to the number of elements in the cells collection, then throw an "IndexSizeError" DOMException.
     if (index < -1 || index >= cells_collection_size)
-        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than or equal to the number of cells");
+        return WebIDL::IndexSizeError::create(realm(), "Index is negative or greater than or equal to the number of cells"_string);
 
     // 2. If index is −1, then remove the last element in the cells collection from its parent, or do nothing if the cells collection is empty.
     if (index == -1) {

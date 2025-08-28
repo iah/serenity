@@ -1,0 +1,266 @@
+%PDF-1.7
+%µ¶
+
+1 0 obj
+<</Type/Catalog/Pages 2 0 R>>
+endobj
+
+2 0 obj
+<</Type/Pages/Kids[3 0 R]/Count 1>>
+endobj
+
+3 0 obj
+<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 400]/Contents 4 0 R/Resources<</ExtGState<</GS1<</ca .6>>>>/Font<</F1 5 0 R>>/Shading<</Sh1 6 0 R>>>>>>
+endobj
+
+4 0 obj
+<</Length 2803>>
+stream
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Hat at top left (circle intersected with rect)
+q
+110 430 m
+165 430 210 385 210 330 c
+210 274 165 230 110 230 c
+ 54 230  10 274  10 330 c
+ 10 385  54 430 110 430 c
+h
+W n
+
+% Rotating a rect in a local graphics state doesn't work,
+% since the transform is be applied at path paint
+% time, not at path construction time.
+% So instead of using `re` in a rotated frame, manually rotate
+% the rect and use `m` and `l`.
+% q
+% 0.9 0.1 -0.1 0.9 0 0 cm
+% 0 340 400 50 re
+% Q
+
+-70 310 m 290 350 l 285 395 l -75 355 l h
+
+W n
+
+/Sh1 sh
+Q
+
+% Nested transparent (round)rects on top of the hat:
+q
+/GS1 gs
+0 1 0 rg
+
+% `140 310 50 50 re` as roundrect:
+150 310 m
+180 310 l
+190 310 190 310 190 320 c
+190 350 l
+190 360 190 360 180 360 c
+150 360 l
+140 360 140 360 140 350 c
+140 320 l
+140 310 140 310 150 310 c
+h
+W
+f
+
+  q
+  1 0 0 rg
+  120 300 40 50 re
+  W f
+
+  0 0 1 rg
+  150 330 40 10 re
+  f
+  Q
+
+0 0 1 rg
+150 315 40 10 re
+f
+
+Q
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Test pattern at top right
+
+q
+/DeviceRGB CS
+0.5 0 0.5 rg
+
+% Reference line.
+220 380 70 10 re
+f
+
+% Use both W and W*, last one wins. Test both orders.
+
+% W W*
+q
+220 370 40 10 re
+250 370 40 10 re
+W W* f
+0 1 1 rg
+210 370 90 5 re
+f
+Q
+
+% W* W
+q
+220 360 40 10 re
+250 360 40 10 re
+W* W f
+0 1 1 rg
+210 360 90 5 re
+f
+Q
+
+% Check if "add clip at path" stored in graphics state? (`q W Q`)
+% It shouldn't be.
+q
+220 350 70 10 re
+q W Q
+f
+0 0.5 0.5 rg
+210 350 90 5 re
+f
+Q
+
+% Is clip created at path paint time, or sooner?
+
+% 1. Add transform after % W but before f:
+q
+220 350 70 10 re
+W
+1 0 0 1 0 -10 cm
+f
+0 1 1 rg
+210 350 90 5 re
+f
+Q
+
+% 2. Push context before drawing path and pop after:
+q
+240 330 30 10 re
+W
+q f Q
+0 1 1 rg
+220 330 70 5 re
+f
+Q
+
+Q
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Star in middle
+
+% Left: clip applied first, path drawn second.
+% Path is clipped by clip.
+q
+0.6 0 0 0.6 -5 90 cm
+150 370 m 57 101 l 288 279 l 12 279 l 243 101 l h
+W* n
+
+150 370 m 57 101 l 288 279 l 12 279 l 243 101 l h
+/DeviceRGB CS
+0 1 1 RG
+0.5 0 0.5 rg
+1 J
+[8 12] 0 d
+4 w
+B
+
+% 2nd path is clipped too.
+0 0.5 0.5 rg
+0 260 400 30 re
+f
+
+% Text is clipped.
+BT
+  /F1 24 Tf
+  130 317 Td
+  (Hey) Tj
+ET
+
+% Image is clipped.
+q
+50 0 0 50 75 133 cm
+BI
+/BPC 8
+/CS /G
+/F /AHx
+/W 2
+/H 2
+ID
+0055AA00 >
+EI
+Q
+
+Q
+
+% Right: clip applied when path is drawn. Doesn't affect path.
+% Path is not clipped by clip.
+q
+0.6 0 0 0.6 120 50 cm
+150 370 m 57 101 l 288 279 l 12 279 l 243 101 l h
+W*
+
+/DeviceRGB CS
+0 1 1 RG
+0.5 0 0.5 rg
+1 J
+[8 12] 0 d
+4 w
+B
+
+% 2nd path is clipped.
+0 0.5 0.5 rg
+0 260 400 30 re
+f
+
+Q
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Text at bottom
+q
+BT
+  /F1 100 Tf
+  50 25 Td
+  7 Tr
+  (Clip) Tj
+ET
+
+% FIXME: Remove this rect clip once LibPDF cna handle `7 Tr`.
+50 2 200 100 re W n
+
+/Sh1 sh
+Q
+
+endstream
+endobj
+
+5 0 obj
+<</Type/Font/Subtype/Type1/Name/F1/BaseFont/Helvetica-Bold>>
+endobj
+
+6 0 obj
+<</ShadingType 2/ColorSpace/DeviceRGB/Coords[50 50 350 350]/Function 7 0 R/Extend[true true]>>
+endobj
+
+7 0 obj
+<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>
+endobj
+
+xref
+0 8
+0000000000 65536 f 
+0000000016 00000 n 
+0000000062 00000 n 
+0000000114 00000 n 
+0000000277 00000 n 
+0000003131 00000 n 
+0000003208 00000 n 
+0000003319 00000 n 
+
+trailer
+<</Size 8/Root 1 0 R>>
+startxref
+3391
+%%EOF

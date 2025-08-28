@@ -3,7 +3,7 @@ serenity_component(
     TARGETS PartitionEditor
 )
 
-compile_gml(PartitionEditorWindow.gml PartitionEditorWindowGML.h partition_editor_window_gml)
+stringify_gml(PartitionEditorWindow.gml PartitionEditorWindowGML.h partition_editor_window_gml)
 
 set(SOURCES
     main.cpp
@@ -15,4 +15,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_app(PartitionEditor ICON app-partition-editor)
-target_link_libraries(PartitionEditor PRIVATE LibCore LibGfx LibMain LibGUI LibPartition)
+target_link_libraries(PartitionEditor PRIVATE LibCore LibFileSystem LibGfx LibMain LibGUI LibPartition)

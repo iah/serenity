@@ -12,9 +12,10 @@ namespace JS {
 
 class AsyncFunctionConstructor final : public NativeFunction {
     JS_OBJECT(AsyncFunctionConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(AsyncFunctionConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~AsyncFunctionConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

@@ -8,8 +8,8 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Concepts.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Error.h>
 #include <AK/HashMap.h>
 #include <AK/JsonArray.h>
@@ -20,7 +20,10 @@ namespace AK {
 
 class JsonObject {
     template<typename Callback>
-    using CallbackErrorType = decltype(declval<Callback>()(declval<DeprecatedString const&>(), declval<JsonValue const&>()).release_error());
+    using CallbackErrorType = decltype(declval<Callback>()(declval<ByteString const&>(), declval<JsonValue const&>()))::ErrorType;
+
+    static_assert(SameAs<CallbackErrorType<ErrorOr<void> (*)(ByteString const&, JsonValue const&)>, Error>);
+    static_assert(SameAs<ErrorOr<void, CallbackErrorType<ErrorOr<void> (*)(ByteString const&, JsonValue const&)>>, ErrorOr<void>>);
 
 public:
     JsonObject();
@@ -51,9 +54,6 @@ public:
     [[nodiscard]] bool has_number(StringView key) const;
     [[nodiscard]] bool has_array(StringView key) const;
     [[nodiscard]] bool has_object(StringView key) const;
-#ifndef KERNEL
-    [[nodiscard]] bool has_double(StringView key) const;
-#endif
 
     Optional<JsonValue const&> get(StringView key) const;
 
@@ -78,18 +78,18 @@ public:
     Optional<bool> get_bool(StringView key) const;
 
 #if !defined(KERNEL)
-    Optional<DeprecatedString> get_deprecated_string(StringView key) const;
+    Optional<ByteString> get_byte_string(StringView key) const;
 #endif
 
     Optional<JsonObject const&> get_object(StringView key) const;
     Optional<JsonArray const&> get_array(StringView key) const;
 
 #if !defined(KERNEL)
-    Optional<double> get_double(StringView key) const;
-    Optional<float> get_float(StringView key) const;
+    Optional<double> get_double_with_precision_loss(StringView key) const;
+    Optional<float> get_float_with_precision_loss(StringView key) const;
 #endif
 
-    void set(DeprecatedString const& key, JsonValue value);
+    void set(ByteString const& key, JsonValue value);
 
     template<typename Callback>
     void for_each_member(Callback callback) const
@@ -98,7 +98,7 @@ public:
             callback(member.key, member.value);
     }
 
-    template<FallibleFunction<DeprecatedString const&, JsonValue const&> Callback>
+    template<FallibleFunction<ByteString const&, JsonValue const&> Callback>
     ErrorOr<void, CallbackErrorType<Callback>> try_for_each_member(Callback&& callback) const
     {
         for (auto const& member : m_members)
@@ -114,10 +114,10 @@ public:
     template<typename Builder>
     void serialize(Builder&) const;
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const;
+    [[nodiscard]] ByteString to_byte_string() const;
 
 private:
-    OrderedHashMap<DeprecatedString, JsonValue> m_members;
+    OrderedHashMap<ByteString, JsonValue> m_members;
 };
 
 template<typename Builder>
@@ -135,50 +135,24 @@ inline typename Builder::OutputType JsonObject::serialized() const
 {
     Builder builder;
     serialize(builder);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 template<typename Builder>
 inline void JsonValue::serialize(Builder& builder) const
 {
-    switch (m_type) {
-    case Type::String: {
-        builder.append('\"');
-        builder.append_escaped_for_json({ m_value.as_string->characters(), m_value.as_string->length() });
-        builder.append('\"');
-    } break;
-    case Type::Array:
-        m_value.as_array->serialize(builder);
-        break;
-    case Type::Object:
-        m_value.as_object->serialize(builder);
-        break;
-    case Type::Bool:
-        builder.append(m_value.as_bool ? "true"sv : "false"sv);
-        break;
-#if !defined(KERNEL)
-    case Type::Double:
-        builder.appendff("{}", m_value.as_double);
-        break;
-#endif
-    case Type::Int32:
-        builder.appendff("{}", as_i32());
-        break;
-    case Type::Int64:
-        builder.appendff("{}", as_i64());
-        break;
-    case Type::UnsignedInt32:
-        builder.appendff("{}", as_u32());
-        break;
-    case Type::UnsignedInt64:
-        builder.appendff("{}", as_u64());
-        break;
-    case Type::Null:
-        builder.append("null"sv);
-        break;
-    default:
-        VERIFY_NOT_REACHED();
-    }
+    m_value.visit(
+        [&](Empty const&) { builder.append("null"sv); },
+        [&](bool const& value) { builder.append(value ? "true"sv : "false"sv); },
+        [&](Arithmetic auto const& value) { builder.appendff("{}", value); },
+        [&](ByteString const& value) {
+            builder.append('\"');
+            builder.append_escaped_for_json(value.bytes());
+            builder.append('\"');
+        },
+        [&](auto const& array_or_object) {
+            array_or_object->serialize(builder);
+        });
 }
 
 template<typename Builder>
@@ -186,7 +160,7 @@ inline typename Builder::OutputType JsonValue::serialized() const
 {
     Builder builder;
     serialize(builder);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 }

@@ -1,4 +1,4 @@
-@GUI::Widget {
+@TerminalSettings::ViewWidget {
     fill_with_background_color: true
     layout: @GUI::VerticalBoxLayout {
         margins: [10]
@@ -27,9 +27,7 @@
 
             @GUI::Label {
                 background_role: "Base"
-                shape: "Container"
-                shadow: "Sunken"
-                thickness: 2
+                frame_style: "SunkenContainer"
                 fill_with_background_color: true
                 name: "terminal_font_label"
             }
@@ -113,7 +111,6 @@
                 name: "history_size_spinbox"
                 min: 0
                 max: 40960
-                orientation: "Horizontal"
                 preferred_width: 100
             }
 

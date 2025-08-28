@@ -11,13 +11,13 @@
 #include <LibGUI/Window.h>
 #include <errno_codes.h>
 
-Presentation::Presentation(Gfx::IntSize normative_size, HashMap<DeprecatedString, DeprecatedString> metadata)
+Presentation::Presentation(Gfx::IntSize normative_size, HashMap<ByteString, ByteString> metadata)
     : m_normative_size(normative_size)
     , m_metadata(move(metadata))
 {
 }
 
-NonnullOwnPtr<Presentation> Presentation::construct(Gfx::IntSize normative_size, HashMap<DeprecatedString, DeprecatedString> metadata)
+NonnullOwnPtr<Presentation> Presentation::construct(Gfx::IntSize normative_size, HashMap<ByteString, ByteString> metadata)
 {
     return NonnullOwnPtr<Presentation>(NonnullOwnPtr<Presentation>::Adopt, *new Presentation(normative_size, move(metadata)));
 }
@@ -41,14 +41,20 @@ StringView Presentation::author() const
     return "Unknown Author"sv;
 }
 
-bool Presentation::has_a_next_frame() const
+bool Presentation::has_next_frame() const
 {
-    return m_current_slide < u32(m_slides.size() > 1 ? m_slides.size() - 1 : 0);
+    if (m_slides.is_empty())
+        return false;
+    if (m_current_slide.value() < m_slides.size() - 1)
+        return true;
+    return m_current_frame_in_slide < m_slides[m_current_slide.value()].frame_count() - 1;
 }
 
-bool Presentation::has_a_previous_frame() const
+bool Presentation::has_previous_frame() const
 {
-    return m_current_slide > 0u;
+    if (m_current_slide > 0u)
+        return true;
+    return m_current_frame_in_slide > 0u;
 }
 
 void Presentation::next_frame()
@@ -65,7 +71,7 @@ void Presentation::previous_frame()
     m_current_frame_in_slide.sub(1);
     if (m_current_frame_in_slide.has_overflow()) {
         m_current_slide.saturating_sub(1);
-        m_current_frame_in_slide = m_current_slide == 0u ? 0 : current_slide().frame_count() - 1;
+        m_current_frame_in_slide = current_slide().frame_count() - 1;
     }
 }
 
@@ -108,24 +114,27 @@ ErrorOr<NonnullOwnPtr<Presentation>> Presentation::load_from_file(StringView fil
     auto presentation = Presentation::construct(size, metadata);
 
     auto const& slides = maybe_slides.value();
+    unsigned i = 0;
     for (auto const& maybe_slide : slides.values()) {
         if (!maybe_slide.is_object())
             return Error::from_string_view("Slides must be objects"sv);
         auto const& slide_object = maybe_slide.as_object();
 
-        auto slide = TRY(Slide::parse_slide(slide_object));
+        auto slide = TRY(Slide::parse_slide(slide_object, i));
         presentation->append_slide(move(slide));
+        i++;
     }
 
     return presentation;
 }
 
-HashMap<DeprecatedString, DeprecatedString> Presentation::parse_metadata(JsonObject const& metadata_object)
+HashMap<ByteString, ByteString> Presentation::parse_metadata(JsonObject const& metadata_object)
 {
-    HashMap<DeprecatedString, DeprecatedString> metadata;
+    HashMap<ByteString, ByteString> metadata;
 
     metadata_object.for_each_member([&](auto const& key, auto const& value) {
-        metadata.set(key, value.to_deprecated_string());
+        // FIXME: Do not serialize values here just to convert them back to proper types later.
+        metadata.set(key, value.deprecated_to_byte_string());
     });
 
     return metadata;
@@ -134,18 +143,18 @@ HashMap<DeprecatedString, DeprecatedString> Presentation::parse_metadata(JsonObj
 ErrorOr<Gfx::IntSize> Presentation::parse_presentation_size(JsonObject const& metadata_object)
 {
     auto const& maybe_width = metadata_object.get("width"sv);
-    auto const& maybe_aspect = metadata_object.get_deprecated_string("aspect"sv);
+    auto const& maybe_aspect = metadata_object.get_byte_string("aspect"sv);
 
     if (!maybe_width.has_value() || !maybe_width->is_number() || !maybe_aspect.has_value())
         return Error::from_string_view("Width or aspect in incorrect format"sv);
 
     // We intentionally discard floating-point data here. If you need more resolution, just use a larger width.
-    auto const width = maybe_width->to_int();
+    auto const width = maybe_width->get_number_with_precision_loss<int>().value();
     auto const aspect_parts = maybe_aspect->split_view(':');
     if (aspect_parts.size() != 2)
         return Error::from_string_view("Aspect specification must have the exact format `width:height`"sv);
-    auto aspect_width = aspect_parts[0].to_int<int>();
-    auto aspect_height = aspect_parts[1].to_int<int>();
+    auto aspect_width = aspect_parts[0].to_number<int>();
+    auto aspect_height = aspect_parts[1].to_number<int>();
     if (!aspect_width.has_value() || !aspect_height.has_value() || aspect_width.value() == 0 || aspect_height.value() == 0)
         return Error::from_string_view("Aspect width and height must be non-zero integers"sv);
 
@@ -156,16 +165,15 @@ ErrorOr<Gfx::IntSize> Presentation::parse_presentation_size(JsonObject const& me
     };
 }
 
-ErrorOr<DeprecatedString> Presentation::render()
+ErrorOr<ByteString> Presentation::render()
 {
     HTMLElement main_element;
     main_element.tag_name = "main"sv;
     for (size_t i = 0; i < m_slides.size(); ++i) {
         HTMLElement slide_div;
         slide_div.tag_name = "div"sv;
-        TRY(slide_div.style.try_set("display"sv, "none"sv));
-        TRY(slide_div.attributes.try_set("id"sv, DeprecatedString::formatted("slide{}", i)));
-        TRY(slide_div.attributes.try_set("class"sv, "slide"));
+        TRY(slide_div.attributes.try_set("id"sv, ByteString::formatted("slide{}", i)));
+        TRY(slide_div.attributes.try_set("class"sv, "slide hidden"sv));
         auto& slide = m_slides[i];
         TRY(slide_div.children.try_append(TRY(slide.render(*this))));
         main_element.children.append(move(slide_div));
@@ -180,21 +188,33 @@ ErrorOr<DeprecatedString> Presentation::render()
         top: 0;
         width: 100%;
         height: 100%;
+        overflow: hidden;
+    }
+    .hidden {
+        display: none;
     }
 </style><script>
     function goto(slideIndex, frameIndex) {
-        // FIXME: Honor the frameIndex.
-        let slide;
-        for (slide of document.getElementsByClassName("slide")) {
-            slide.style.display = "none";
+        for (const slide of document.getElementsByClassName("slide")) {
+          slide.classList.add("hidden");
         }
-        if (slide = document.getElementById(`slide${slideIndex}`))
-            slide.style.display = "block";
+        for (const frame of document.getElementsByClassName("frame")) {
+          frame.classList.add("hidden");
+        }
+
+        const slide = document.getElementById(`slide${slideIndex}`);
+        if (slide) slide.classList.remove("hidden");
+
+        for (let i = 0; i <= frameIndex; i++) {
+          for (const frame of document.getElementsByClassName(`slide${slideIndex}-frame${i}`)) {
+            if (frame) frame.classList.remove("hidden");
+          }
+        }
     }
     window.onload = function() { goto(0, 0) }
-</script><body>
+</script></head><body>
 )"sv));
     TRY(main_element.serialize(builder));
     TRY(builder.try_append("</body></html>"sv));
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }

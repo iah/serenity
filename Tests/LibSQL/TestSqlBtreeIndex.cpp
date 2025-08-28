@@ -131,10 +131,10 @@ NonnullRefPtr<SQL::BTree> setup_btree(SQL::Serializer& serializer)
 
     auto root_pointer = serializer.heap().user_value(0);
     if (!root_pointer) {
-        root_pointer = serializer.heap().new_record_pointer();
+        root_pointer = serializer.heap().request_new_block_index();
         serializer.heap().set_user_value(0, root_pointer);
     }
-    auto btree = SQL::BTree::construct(serializer, tuple_descriptor, true, root_pointer);
+    auto btree = MUST(SQL::BTree::create(serializer, tuple_descriptor, true, root_pointer));
     btree->on_new_root = [&]() {
         serializer.heap().set_user_value(0, btree->root());
     };
@@ -145,15 +145,15 @@ void insert_and_get_to_and_from_btree(int num_keys)
 {
     ScopeGuard guard([]() { unlink("/tmp/test.db"); });
     {
-        auto heap = SQL::Heap::construct("/tmp/test.db");
-        EXPECT(!heap->open().is_error());
+        auto heap = MUST(SQL::Heap::create("/tmp/test.db"));
+        TRY_OR_FAIL(heap->open());
         SQL::Serializer serializer(heap);
         auto btree = setup_btree(serializer);
 
         for (auto ix = 0; ix < num_keys; ix++) {
             SQL::Key k(btree->descriptor());
             k[0] = keys[ix];
-            k.set_pointer(pointers[ix]);
+            k.set_block_index(pointers[ix]);
             btree->insert(k);
         }
 #ifdef LIST_TREE
@@ -162,8 +162,8 @@ void insert_and_get_to_and_from_btree(int num_keys)
     }
 
     {
-        auto heap = SQL::Heap::construct("/tmp/test.db");
-        EXPECT(!heap->open().is_error());
+        auto heap = MUST(SQL::Heap::create("/tmp/test.db"));
+        TRY_OR_FAIL(heap->open());
         SQL::Serializer serializer(heap);
         auto btree = setup_btree(serializer);
 
@@ -181,15 +181,15 @@ void insert_into_and_scan_btree(int num_keys)
 {
     ScopeGuard guard([]() { unlink("/tmp/test.db"); });
     {
-        auto heap = SQL::Heap::construct("/tmp/test.db");
-        EXPECT(!heap->open().is_error());
+        auto heap = MUST(SQL::Heap::create("/tmp/test.db"));
+        TRY_OR_FAIL(heap->open());
         SQL::Serializer serializer(heap);
         auto btree = setup_btree(serializer);
 
         for (auto ix = 0; ix < num_keys; ix++) {
             SQL::Key k(btree->descriptor());
             k[0] = keys[ix];
-            k.set_pointer(pointers[ix]);
+            k.set_block_index(pointers[ix]);
             btree->insert(k);
         }
 
@@ -199,8 +199,8 @@ void insert_into_and_scan_btree(int num_keys)
     }
 
     {
-        auto heap = SQL::Heap::construct("/tmp/test.db");
-        EXPECT(!heap->open().is_error());
+        auto heap = MUST(SQL::Heap::create("/tmp/test.db"));
+        TRY_OR_FAIL(heap->open());
         SQL::Serializer serializer(heap);
         auto btree = setup_btree(serializer);
 
@@ -208,13 +208,12 @@ void insert_into_and_scan_btree(int num_keys)
         SQL::Tuple prev;
         for (auto iter = btree->begin(); !iter.is_end(); iter++, count++) {
             auto key = (*iter);
-            if (prev.size()) {
+            if (prev.size())
                 EXPECT(prev < key);
-            }
             auto key_value = key[0].to_int<i32>();
             for (auto ix = 0; ix < num_keys; ix++) {
                 if (keys[ix] == key_value) {
-                    EXPECT_EQ(key.pointer(), pointers[ix]);
+                    EXPECT_EQ(key.block_index(), pointers[ix]);
                     break;
                 }
             }

@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/GenericLexer.h>
 #include <AK/HashMap.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
@@ -16,7 +17,7 @@ namespace XML {
 
 struct Attribute {
     Name name;
-    DeprecatedString value;
+    ByteString value;
 };
 
 struct Node {
@@ -24,17 +25,27 @@ struct Node {
         StringBuilder builder;
     };
     struct Comment {
-        DeprecatedString text;
+        ByteString text;
     };
     struct Element {
         Name name;
-        HashMap<Name, DeprecatedString> attributes;
+        HashMap<Name, ByteString> attributes;
         Vector<NonnullOwnPtr<Node>> children;
     };
 
     bool operator==(Node const&) const;
 
+    LineTrackingLexer::Position offset;
     Variant<Text, Comment, Element> content;
     Node* parent { nullptr };
+
+    bool is_text() const { return content.has<Text>(); }
+    Text const& as_text() const { return content.get<Text>(); }
+
+    bool is_comment() const { return content.has<Comment>(); }
+    Comment const& as_comment() const { return content.get<Comment>(); }
+
+    bool is_element() const { return content.has<Element>(); }
+    Element const& as_element() const { return content.get<Element>(); }
 };
 }

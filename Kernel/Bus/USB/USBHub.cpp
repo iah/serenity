@@ -10,34 +10,47 @@
 #include <Kernel/Bus/USB/USBHub.h>
 #include <Kernel/Bus/USB/USBRequest.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Bus/USB/BusDirectory.h>
-#include <Kernel/IOWindow.h>
-#include <Kernel/StdLib.h>
+#include <Kernel/Library/IOWindow.h>
+#include <Kernel/Library/StdLib.h>
 
 namespace Kernel::USB {
 
 ErrorOr<NonnullLockRefPtr<Hub>> Hub::try_create_root_hub(NonnullLockRefPtr<USBController> controller, DeviceSpeed device_speed)
 {
     // NOTE: Enumeration does not happen here, as the controller must know what the device address is at all times during enumeration to intercept requests.
-    auto pipe = TRY(ControlPipe::create(controller, 0, 8, 0));
-    auto hub = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Hub(controller, device_speed, move(pipe))));
+    auto hub = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Hub(controller, device_speed)));
+    hub->set_default_pipe(TRY(ControlPipe::create(move(controller), hub, 0, 8)));
+    return hub;
+}
+
+ErrorOr<NonnullLockRefPtr<Hub>> Hub::try_create_root_hub(NonnullLockRefPtr<USBController> controller, DeviceSpeed device_speed, u8 address, USBDeviceDescriptor const& descriptor)
+{
+    // NOTE: Enumeration does not happen here, as the controller must know what the device address is at all times during enumeration to intercept requests.
+    auto hub = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Hub(controller, device_speed, address, descriptor)));
+    hub->set_default_pipe(TRY(ControlPipe::create(controller, hub, 0, 8)));
     return hub;
 }
 
 ErrorOr<NonnullLockRefPtr<Hub>> Hub::try_create_from_device(Device const& device)
 {
-    auto pipe = TRY(ControlPipe::create(device.controller(), 0, device.device_descriptor().max_packet_size, device.address()));
-    auto hub = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Hub(device, move(pipe))));
+    auto hub = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Hub(device)));
+    hub->set_default_pipe(TRY(ControlPipe::create(device.controller(), hub, 0, device.device_descriptor().max_packet_size)));
     TRY(hub->enumerate_and_power_on_hub());
     return hub;
 }
 
-Hub::Hub(NonnullLockRefPtr<USBController> controller, DeviceSpeed device_speed, NonnullOwnPtr<ControlPipe> default_pipe)
-    : Device(move(controller), 1 /* Port 1 */, device_speed, move(default_pipe))
+Hub::Hub(NonnullLockRefPtr<USBController> controller, DeviceSpeed device_speed)
+    : Device(move(controller), nullptr, 1 /* Port 1 */, device_speed)
 {
 }
 
-Hub::Hub(Device const& device, NonnullOwnPtr<ControlPipe> default_pipe)
-    : Device(device, move(default_pipe))
+Hub::Hub(NonnullLockRefPtr<USBController> controller, DeviceSpeed device_speed, u8 address, USBDeviceDescriptor const& descriptor)
+    : Device(move(controller), nullptr, 1 /* Port 1 */, device_speed, address, descriptor)
+{
+}
+
+Hub::Hub(Device const& device)
+    : Device(device)
 {
 }
 
@@ -46,7 +59,10 @@ ErrorOr<void> Hub::enumerate_and_power_on_hub()
     // USBDevice::enumerate_device must be called before this.
     VERIFY(m_address > 0);
 
-    m_sysfs_device_info_node = TRY(SysFSUSBDeviceInformation::create(*this));
+    TRY(m_sysfs_device_info_node.with([&](auto& node) -> ErrorOr<void> {
+        node = TRY(SysFSUSBDeviceInformation::create(*this));
+        return {};
+    }));
 
     if (m_device_descriptor.device_class != USB_CLASS_HUB) {
         dbgln("USB Hub: Trying to enumerate and power on a device that says it isn't a hub.");
@@ -54,6 +70,16 @@ ErrorOr<void> Hub::enumerate_and_power_on_hub()
     }
 
     dbgln_if(USB_DEBUG, "USB Hub: Enumerating and powering on for address {}", m_address);
+
+    // Before the hub can be used, it must first be configured via a SET_CONFIGURATION request.
+    // We don't need to set the configuration for the root hub (which has a null m_hub) as we would just ignore that request during root hub emulation anyway.
+    if (m_hub != nullptr) {
+        if (m_configurations.size() < 1)
+            return EINVAL;
+
+        // FIXME: Which configuration should we choose if there is more than one?
+        TRY(set_configuration(m_configurations[0]));
+    }
 
     USBHubDescriptor descriptor {};
 
@@ -67,9 +93,9 @@ ErrorOr<void> Hub::enumerate_and_power_on_hub()
     }
 
     if constexpr (USB_DEBUG) {
-        dbgln("USB Hub Descriptor for {:04x}:{:04x}", m_vendor_id, m_product_id);
+        dbgln("USB Hub Descriptor for {:04x}:{:04x}", m_device_descriptor.vendor_id, m_device_descriptor.product_id);
         dbgln("Number of Downstream Ports: {}", descriptor.number_of_downstream_ports);
-        dbgln("Hub Characteristics: 0x{:04x}", descriptor.hub_characteristics);
+        dbgln("Hub Characteristics: {:#04x}", static_cast<u16>(descriptor.hub_characteristics.raw));
         dbgln("Power On to Power Good Time: {} ms ({} * 2ms)", descriptor.power_on_to_power_good_time * 2, descriptor.power_on_to_power_good_time);
         dbgln("Hub Controller Current: {} mA", descriptor.hub_controller_current);
     }
@@ -133,13 +159,17 @@ ErrorOr<void> Hub::set_port_feature(u8 port, HubFeatureSelector feature_selector
 
 void Hub::remove_children_from_sysfs()
 {
-    for (auto& child : m_children)
-        SysFSUSBBusDirectory::the().unplug({}, child.sysfs_device_info_node({}));
+    for (auto& child : m_children) {
+        child.sysfs_device_info_node({}).with([](auto& node) {
+            SysFSUSBBusDirectory::the().unplug({}, *node);
+        });
+    }
 }
 
 void Hub::check_for_port_updates()
 {
-    for (u8 port_number = 1; port_number < m_hub_descriptor.number_of_downstream_ports + 1; ++port_number) {
+    for (u8 port_index = 0; port_index < m_hub_descriptor.number_of_downstream_ports; ++port_index) {
+        u8 port_number = port_index + 1;
         dbgln_if(USB_DEBUG, "USB Hub: Checking for port updates on port {}...", port_number);
 
         HubStatus port_status {};
@@ -236,10 +266,20 @@ void Hub::check_for_port_updates()
                     return;
                 }
 
-                // FIXME: Check for high speed.
-                auto speed = port_status.status & PORT_STATUS_LOW_SPEED_DEVICE_ATTACHED ? USB::Device::DeviceSpeed::LowSpeed : USB::Device::DeviceSpeed::FullSpeed;
+                USB::Device::DeviceSpeed speed;
+                if (port_status.status & PORT_STATUS_PORT_POWER) {
+                    if (port_status.status & PORT_STATUS_LOW_SPEED_DEVICE_ATTACHED)
+                        speed = Device::DeviceSpeed::LowSpeed;
+                    else if (port_status.status & PORT_STATUS_HIGH_SPEED_DEVICE_ATTACHED)
+                        speed = Device::DeviceSpeed::HighSpeed;
+                    else
+                        speed = Device::DeviceSpeed::FullSpeed;
+                } else {
+                    // SuperSpeed (USB3) uses a different bit for port power (and the old bit is Reserved-Zero)
+                    speed = Device::DeviceSpeed::SuperSpeed;
+                }
 
-                auto device_or_error = USB::Device::try_create(m_controller, port_number, speed);
+                auto device_or_error = USB::Device::try_create(m_controller, *this, port_number, speed);
                 if (device_or_error.is_error()) {
                     dbgln("USB Hub: Failed to create device for port {}: {}", port_number, device_or_error.error());
                     return;
@@ -260,10 +300,14 @@ void Hub::check_for_port_updates()
 
                     auto hub = hub_or_error.release_value();
                     m_children.append(hub);
-                    SysFSUSBBusDirectory::the().plug({}, hub->sysfs_device_info_node({}));
+                    hub->sysfs_device_info_node({}).with([](auto& node) {
+                        SysFSUSBBusDirectory::the().plug({}, *node);
+                    });
                 } else {
                     m_children.append(device);
-                    SysFSUSBBusDirectory::the().plug({}, device->sysfs_device_info_node({}));
+                    device->sysfs_device_info_node({}).with([](auto& node) {
+                        SysFSUSBBusDirectory::the().plug({}, *node);
+                    });
                 }
 
             } else {
@@ -278,11 +322,16 @@ void Hub::check_for_port_updates()
                 }
 
                 if (device_to_remove) {
-                    SysFSUSBBusDirectory::the().unplug({}, device_to_remove->sysfs_device_info_node({}));
+                    device_to_remove->sysfs_device_info_node({}).with([](auto& node) {
+                        SysFSUSBBusDirectory::the().unplug({}, *node);
+                    });
                     if (device_to_remove->device_descriptor().device_class == USB_CLASS_HUB) {
                         auto* hub_child = static_cast<Hub*>(device_to_remove.ptr());
                         hub_child->remove_children_from_sysfs();
                     }
+
+                    device_to_remove->detach();
+
                     m_children.remove(*device_to_remove);
                 } else {
                     dbgln_if(USB_DEBUG, "USB Hub: No child set up on port {}, ignoring detachment.", port_number);

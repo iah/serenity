@@ -4,11 +4,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/Painter.h>
 #include <LibWeb/Layout/CanvasBox.h>
 #include <LibWeb/Painting/CanvasPaintable.h>
 
 namespace Web::Layout {
+
+JS_DEFINE_ALLOCATOR(CanvasBox);
 
 CanvasBox::CanvasBox(DOM::Document& document, HTML::HTMLCanvasElement& element, NonnullRefPtr<CSS::StyleProperties> style)
     : ReplacedBox(document, element, move(style))
@@ -19,8 +20,8 @@ CanvasBox::~CanvasBox() = default;
 
 void CanvasBox::prepare_for_replaced_layout()
 {
-    set_intrinsic_width(dom_node().width());
-    set_intrinsic_height(dom_node().height());
+    set_natural_width(dom_node().width());
+    set_natural_height(dom_node().height());
 }
 
 JS::GCPtr<Painting::Paintable> CanvasBox::create_paintable() const

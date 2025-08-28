@@ -1,14 +1,15 @@
 /*
- * Copyright (c) 2022, Jakub Berkop <jakub.berkop@gmail.com>
+ * Copyright (c) 2022-2023, Jakub Berkop <jakub.berkop@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Function.h>
 #include <AK/LexicalPath.h>
+#include <AK/Time.h>
 #include <LibGUI/Model.h>
 
 namespace Profiler {
@@ -17,40 +18,50 @@ class Profile;
 
 class FileEventNode : public RefCounted<FileEventNode> {
 public:
-    static NonnullRefPtr<FileEventNode> create(DeprecatedString const& path, FileEventNode* parent = nullptr)
+    static NonnullRefPtr<FileEventNode> create(ByteString const& path, FileEventNode* parent = nullptr)
     {
         return adopt_ref(*new FileEventNode(path, parent));
     }
 
-    FileEventNode& find_or_create_node(DeprecatedString const&);
+    FileEventNode& find_or_create_node(ByteString const&);
 
     Vector<NonnullRefPtr<FileEventNode>>& children() { return m_children; }
     Vector<NonnullRefPtr<FileEventNode>> const& children() const { return m_children; }
 
-    FileEventNode* parent() { return m_parent; };
+    FileEventNode* parent() { return m_parent; }
 
-    FileEventNode& create_recursively(DeprecatedString);
+    FileEventNode& create_recursively(ByteString);
 
     void for_each_parent_node(Function<void(FileEventNode&)> callback);
 
-    DeprecatedString const& path() const { return m_path; }
+    ByteString const& path() const { return m_path; }
 
-    void increment_count() { m_count++; }
-    u64 count() const { return m_count; }
+    u64 total_count() const;
+    Duration total_duration() const;
 
-    void add_to_duration(u64 duration) { duration += duration; }
-    u64 duration() const { return m_duration; }
+    struct FileEventType {
+        u64 count = 0;
+        Duration duration = {};
+    };
+
+    FileEventType& open() { return m_open; }
+    FileEventType& close() { return m_close; }
+    FileEventType& readv() { return m_readv; }
+    FileEventType& read() { return m_read; }
+    FileEventType& pread() { return m_pread; }
 
 private:
-    FileEventNode(DeprecatedString const& path, FileEventNode* parent = nullptr)
+    FileEventNode(ByteString const& path, FileEventNode* parent = nullptr)
         : m_path(path)
-        , m_count(0)
-        , m_duration(0)
         , m_parent(parent) {};
 
-    DeprecatedString m_path;
-    u64 m_count;
-    u64 m_duration;
+    ByteString m_path;
+
+    FileEventType m_open;
+    FileEventType m_close;
+    FileEventType m_readv;
+    FileEventType m_read;
+    FileEventType m_pread;
 
     Vector<NonnullRefPtr<FileEventNode>> m_children;
     FileEventNode* m_parent = nullptr;
@@ -65,8 +76,18 @@ public:
 
     enum Column {
         Path,
-        Count,
-        Duration,
+        TotalCount,
+        TotalDuration,
+        OpenCount,
+        OpenDuration,
+        CloseCount,
+        CloseDuration,
+        ReadvCount,
+        ReadvDuration,
+        ReadCount,
+        ReadDuration,
+        PreadCount,
+        PreadDuration,
         __Count
     };
 
@@ -74,7 +95,7 @@ public:
 
     virtual int row_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override;
     virtual int column_count(GUI::ModelIndex const& = GUI::ModelIndex()) const override;
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual GUI::Variant data(GUI::ModelIndex const&, GUI::ModelRole) const override;
     virtual GUI::ModelIndex index(int row, int column, GUI::ModelIndex const& parent = GUI::ModelIndex()) const override;
     virtual GUI::ModelIndex parent_index(GUI::ModelIndex const&) const override;

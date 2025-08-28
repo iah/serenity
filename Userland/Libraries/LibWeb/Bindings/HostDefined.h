@@ -14,22 +14,28 @@
 namespace Web::Bindings {
 
 struct HostDefined : public JS::Realm::HostDefined {
-    HostDefined(JS::GCPtr<HTML::EnvironmentSettingsObject> eso, JS::NonnullGCPtr<Intrinsics> intrinsics)
+    HostDefined(JS::NonnullGCPtr<HTML::EnvironmentSettingsObject> eso, JS::NonnullGCPtr<Intrinsics> intrinsics, JS::NonnullGCPtr<Page> page)
         : environment_settings_object(eso)
         , intrinsics(intrinsics)
+        , page(page)
     {
     }
     virtual ~HostDefined() override = default;
     virtual void visit_edges(JS::Cell::Visitor& visitor) override;
 
-    // NOTE: Only the root execution environment in the main thread VM ever sets this to nullptr
-    JS::GCPtr<HTML::EnvironmentSettingsObject> environment_settings_object;
+    JS::NonnullGCPtr<HTML::EnvironmentSettingsObject> environment_settings_object;
     JS::NonnullGCPtr<Intrinsics> intrinsics;
+    JS::NonnullGCPtr<Page> page;
 };
 
 [[nodiscard]] inline HTML::EnvironmentSettingsObject& host_defined_environment_settings_object(JS::Realm& realm)
 {
     return *verify_cast<HostDefined>(realm.host_defined())->environment_settings_object;
+}
+
+[[nodiscard]] inline Page& host_defined_page(JS::Realm& realm)
+{
+    return *verify_cast<HostDefined>(realm.host_defined())->page;
 }
 
 }

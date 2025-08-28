@@ -13,8 +13,8 @@
 #include <AK/Vector.h>
 
 #ifndef KERNEL
+#    include <AK/ByteString.h>
 #    include <AK/DeprecatedFlyString.h>
-#    include <AK/DeprecatedString.h>
 #    include <AK/FlyString.h>
 #    include <AK/String.h>
 #endif
@@ -34,7 +34,7 @@ StringView::StringView(FlyString const& string)
 {
 }
 
-StringView::StringView(DeprecatedString const& string)
+StringView::StringView(ByteString const& string)
     : m_characters(string.characters())
     , m_length(string.length())
 {
@@ -68,44 +68,74 @@ Vector<StringView> StringView::split_view(StringView separator, SplitBehavior sp
     return parts;
 }
 
-Vector<StringView> StringView::lines(bool consider_cr) const
+template<typename Callback>
+static void for_each_line(StringView string, Callback&& callback)
+{
+    char const* characters = string.characters_without_null_termination();
+
+    size_t substart = 0;
+    bool last_ch_was_cr = false;
+
+    for (size_t i = 0; i < string.length(); ++i) {
+        char ch = characters[i];
+        bool split_view = false;
+
+        switch (ch) {
+        case '\n':
+            if (last_ch_was_cr)
+                substart = i + 1;
+            else
+                split_view = true;
+
+            last_ch_was_cr = false;
+            break;
+
+        case '\r':
+            split_view = true;
+            last_ch_was_cr = true;
+            break;
+
+        default:
+            last_ch_was_cr = false;
+            break;
+        }
+
+        if (split_view) {
+            callback(string.substring_view(substart, i - substart));
+            substart = i + 1;
+        }
+    }
+
+    if (size_t taillen = string.length() - substart; taillen != 0)
+        callback(string.substring_view(substart, taillen));
+}
+
+Vector<StringView> StringView::lines(ConsiderCarriageReturn consider_carriage_return) const
 {
     if (is_empty())
         return {};
 
-    if (!consider_cr)
+    if (consider_carriage_return == ConsiderCarriageReturn::No)
         return split_view('\n', SplitBehavior::KeepEmpty);
 
-    Vector<StringView> v;
-    size_t substart = 0;
-    bool last_ch_was_cr = false;
-    bool split_view = false;
-    for (size_t i = 0; i < length(); ++i) {
-        char ch = characters_without_null_termination()[i];
-        if (ch == '\n') {
-            split_view = true;
-            if (last_ch_was_cr) {
-                substart = i + 1;
-                split_view = false;
-            }
-        }
-        if (ch == '\r') {
-            split_view = true;
-            last_ch_was_cr = true;
-        } else {
-            last_ch_was_cr = false;
-        }
-        if (split_view) {
-            size_t sublen = i - substart;
-            v.append(substring_view(substart, sublen));
-            substart = i + 1;
-        }
-        split_view = false;
-    }
-    size_t taillen = length() - substart;
-    if (taillen != 0)
-        v.append(substring_view(substart, taillen));
-    return v;
+    Vector<StringView> lines;
+    for_each_line(*this, [&](auto line) { lines.append(line); });
+
+    return lines;
+}
+
+size_t StringView::count_lines(ConsiderCarriageReturn consider_carriage_return) const
+{
+    if (is_empty())
+        return 1;
+
+    if (consider_carriage_return == ConsiderCarriageReturn::No)
+        return count('\n') + 1;
+
+    size_t lines = 0;
+    for_each_line(*this, [&](auto) { ++lines; });
+
+    return lines;
 }
 
 bool StringView::starts_with(char ch) const
@@ -167,26 +197,28 @@ bool StringView::contains(u32 needle) const
 
 bool StringView::contains(StringView needle, CaseSensitivity case_sensitivity) const
 {
+    if (needle.length() == 1)
+        return contains(needle.characters_without_null_termination()[0]);
     return StringUtils::contains(*this, needle, case_sensitivity);
 }
 
-bool StringView::equals_ignoring_case(StringView other) const
+bool StringView::equals_ignoring_ascii_case(StringView other) const
 {
-    return StringUtils::equals_ignoring_case(*this, other);
+    return StringUtils::equals_ignoring_ascii_case(*this, other);
 }
 
 #ifndef KERNEL
-DeprecatedString StringView::to_lowercase_string() const
+ByteString StringView::to_lowercase_string() const
 {
-    return StringImpl::create_lowercased(characters_without_null_termination(), length());
+    return StringImpl::create_lowercased(characters_without_null_termination(), length()).release_nonnull();
 }
 
-DeprecatedString StringView::to_uppercase_string() const
+ByteString StringView::to_uppercase_string() const
 {
-    return StringImpl::create_uppercased(characters_without_null_termination(), length());
+    return StringImpl::create_uppercased(characters_without_null_termination(), length()).release_nonnull();
 }
 
-DeprecatedString StringView::to_titlecase_string() const
+ByteString StringView::to_titlecase_string() const
 {
     return StringUtils::to_titlecase(*this);
 }
@@ -222,49 +254,16 @@ bool StringView::copy_characters_to_buffer(char* buffer, size_t buffer_size) con
     return characters_to_copy == m_length;
 }
 
-template<typename T>
-Optional<T> StringView::to_int() const
-{
-    return StringUtils::convert_to_int<T>(*this);
-}
-
-template Optional<i8> StringView::to_int() const;
-template Optional<i16> StringView::to_int() const;
-template Optional<i32> StringView::to_int() const;
-template Optional<long> StringView::to_int() const;
-template Optional<long long> StringView::to_int() const;
-
-template<typename T>
-Optional<T> StringView::to_uint() const
-{
-    return StringUtils::convert_to_uint<T>(*this);
-}
-
-template Optional<u8> StringView::to_uint() const;
-template Optional<u16> StringView::to_uint() const;
-template Optional<u32> StringView::to_uint() const;
-template Optional<unsigned long> StringView::to_uint() const;
-template Optional<unsigned long long> StringView::to_uint() const;
-
 #ifndef KERNEL
-Optional<double> StringView::to_double(TrimWhitespace trim_whitespace) const
-{
-    return StringUtils::convert_to_floating_point<double>(*this, trim_whitespace);
-}
 
-Optional<float> StringView::to_float(TrimWhitespace trim_whitespace) const
-{
-    return StringUtils::convert_to_floating_point<float>(*this, trim_whitespace);
-}
-
-bool StringView::operator==(DeprecatedString const& string) const
+bool StringView::operator==(ByteString const& string) const
 {
     return *this == string.view();
 }
 
-DeprecatedString StringView::to_deprecated_string() const { return DeprecatedString { *this }; }
+ByteString StringView::to_byte_string() const { return ByteString { *this }; }
 
-DeprecatedString StringView::replace(StringView needle, StringView replacement, ReplaceMode replace_mode) const
+ByteString StringView::replace(StringView needle, StringView replacement, ReplaceMode replace_mode) const
 {
     return StringUtils::replace(*this, needle, replacement, replace_mode);
 }

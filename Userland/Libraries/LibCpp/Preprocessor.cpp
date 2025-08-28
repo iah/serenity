@@ -12,7 +12,7 @@
 #include <ctype.h>
 
 namespace Cpp {
-Preprocessor::Preprocessor(DeprecatedString const& filename, StringView program)
+Preprocessor::Preprocessor(ByteString const& filename, StringView program)
     : m_filename(filename)
     , m_program(program)
 {
@@ -102,7 +102,7 @@ void Preprocessor::handle_preprocessor_statement(StringView line)
     consume_whitespace(lexer);
     auto keyword = lexer.consume_until(' ');
     lexer.ignore();
-    if (keyword.is_empty() || keyword.is_null() || keyword.is_whitespace())
+    if (keyword.is_empty() || keyword.is_whitespace())
         return;
 
     handle_preprocessor_keyword(keyword, lexer);
@@ -230,6 +230,10 @@ void Preprocessor::handle_preprocessor_keyword(StringView keyword, GenericLexer&
         line_lexer.consume_all();
         return;
     }
+    if (keyword == "error") {
+        line_lexer.consume_all();
+        return;
+    }
 
     if (!m_options.ignore_unsupported_keywords) {
         dbgln("Unsupported preprocessor keyword: {}", keyword);
@@ -239,7 +243,7 @@ void Preprocessor::handle_preprocessor_keyword(StringView keyword, GenericLexer&
 
 size_t Preprocessor::do_substitution(Vector<Token> const& tokens, size_t token_index, Definition const& defined_value)
 {
-    if (defined_value.value.is_null())
+    if (defined_value.value.is_empty())
         return token_index;
 
     Substitution sub;
@@ -365,7 +369,7 @@ Optional<Preprocessor::Definition> Preprocessor::create_definition(StringView li
     return definition;
 }
 
-DeprecatedString Preprocessor::remove_escaped_newlines(StringView value)
+ByteString Preprocessor::remove_escaped_newlines(StringView value)
 {
     static constexpr auto escaped_newline = "\\\n"sv;
     AK::StringBuilder processed_value;
@@ -374,10 +378,10 @@ DeprecatedString Preprocessor::remove_escaped_newlines(StringView value)
         processed_value.append(lexer.consume_until(escaped_newline));
         lexer.ignore(escaped_newline.length());
     }
-    return processed_value.to_deprecated_string();
+    return processed_value.to_byte_string();
 }
 
-DeprecatedString Preprocessor::evaluate_macro_call(MacroCall const& macro_call, Definition const& definition)
+ByteString Preprocessor::evaluate_macro_call(MacroCall const& macro_call, Definition const& definition)
 {
     if (macro_call.arguments.size() != definition.parameters.size()) {
         dbgln("mismatch in # of arguments for macro call: {}", macro_call.name.text());
@@ -404,7 +408,7 @@ DeprecatedString Preprocessor::evaluate_macro_call(MacroCall const& macro_call, 
         }
     });
 
-    return processed_value.to_deprecated_string();
+    return processed_value.to_byte_string();
 }
 
 };

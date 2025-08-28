@@ -4,14 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "Shell.h"
 #include <AK/LexicalPath.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Event.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
+#include <LibShell/Shell.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -57,9 +57,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
         editor = Line::Editor::construct(move(configuration));
-        editor->initialize();
 
-        shell = Shell::Shell::construct(*editor, attempt_interactive, posix_mode || LexicalPath::basename(arguments.strings[0]) == "sh"sv);
+        shell = Shell::Shell::construct(*editor, attempt_interactive, posix_mode);
         s_shell = shell.ptr();
 
         s_shell->setup_signals();
@@ -69,9 +68,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         sigaddset(&blocked, SIGTTOU);
         sigaddset(&blocked, SIGTTIN);
         pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
-
-        shell->termios = editor->termios();
-        shell->default_termios = editor->default_termios();
 
         editor->on_display_refresh = [&](auto& editor) {
             editor.strip_styles();
@@ -85,7 +81,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
             (void)shell->highlight(editor);
         };
-        editor->on_tab_complete = [&](const Line::Editor&) {
+        editor->on_tab_complete = [&](Line::Editor const&) {
             return shell->complete();
         };
         editor->on_paste = [&](Utf32View data, Line::Editor& editor) {
@@ -113,7 +109,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
 
             if (should_escape) {
-                DeprecatedString escaped_string;
+                ByteString escaped_string;
                 Optional<char> trivia {};
                 bool starting_trivia_already_provided = false;
                 auto escape_mode = Shell::Shell::EscapeMode::Bareword;
@@ -170,28 +166,31 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     StringView format;
     bool should_format_live = false;
     bool keep_open = false;
-    bool posix_mode = false;
+    bool posix_mode = (LexicalPath::basename(arguments.strings[0]) == "sh"sv);
 
     Core::ArgsParser parser;
     parser.add_option(command_to_run, "String to read commands from", "command-string", 'c', "command-string");
-    parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc", 0);
+    parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc");
     parser.add_option(format, "Format the given file into stdout and exit", "format", 0, "file");
     parser.add_option(should_format_live, "Enable live formatting", "live-formatting", 'f');
-    parser.add_option(keep_open, "Keep the shell open after running the specified command or file", "keep-open", 0);
-    parser.add_option(posix_mode, "Behave like a POSIX-compatible shell", "posix", 0);
+    parser.add_option(keep_open, "Keep the shell open after running the specified command or file", "keep-open");
+    parser.add_option(posix_mode, "Behave like a POSIX-compatible shell", "posix");
     parser.add_positional_argument(file_to_read_from, "File to read commands from", "file", Core::ArgsParser::Required::No);
     parser.add_positional_argument(script_args, "Extra arguments to pass to the script (via $* and co)", "argument", Core::ArgsParser::Required::No);
 
     parser.set_stop_on_first_non_option(true);
     parser.parse(arguments);
 
+    if (!file_to_read_from.is_null())
+        skip_rc_files = true;
+
     if (!format.is_empty()) {
-        auto file = TRY(Core::DeprecatedFile::open(format, Core::OpenMode::ReadOnly));
+        auto file = TRY(Core::File::open(format, Core::File::OpenMode::Read));
 
         initialize(posix_mode);
 
         ssize_t cursor = -1;
-        puts(shell->format(file->read_all(), cursor).characters());
+        puts(shell->format(TRY(file->read_until_eof()), cursor).characters());
         return 0;
     }
 
@@ -224,17 +223,26 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     if (!skip_rc_files) {
         auto run_rc_file = [&](auto& name) {
-            DeprecatedString file_path = name;
+            ByteString file_path = name;
             if (file_path.starts_with('~'))
                 file_path = shell->expand_tilde(file_path);
-            if (Core::DeprecatedFile::exists(file_path)) {
+            if (FileSystem::exists(file_path)) {
                 shell->run_file(file_path, false);
             }
         };
-        run_rc_file(Shell::Shell::global_init_file_path);
-        run_rc_file(Shell::Shell::local_init_file_path);
+        if (posix_mode) {
+            run_rc_file(Shell::Shell::global_posix_init_file_path);
+            run_rc_file(Shell::Shell::local_posix_init_file_path);
+        } else {
+            run_rc_file(Shell::Shell::global_init_file_path);
+            run_rc_file(Shell::Shell::local_init_file_path);
+        }
         shell->cache_path();
     }
+
+    editor->initialize();
+    shell->termios = editor->termios();
+    shell->default_termios = editor->default_termios();
 
     Vector<String> args_to_pass;
     TRY(args_to_pass.try_ensure_capacity(script_args.size()));

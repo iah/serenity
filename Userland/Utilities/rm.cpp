@@ -7,8 +7,8 @@
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -27,7 +27,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(recursive, "Delete directories recursively", "recursive", 'r');
     args_parser.add_option(force, "Ignore nonexistent files", "force", 'f');
     args_parser.add_option(verbose, "Verbose", "verbose", 'v');
-    args_parser.add_option(no_preserve_root, "Do not consider '/' specially", "no-preserve-root", 0);
+    args_parser.add_option(no_preserve_root, "Do not consider '/' specially", "no-preserve-root");
     args_parser.add_positional_argument(paths, "Path(s) to remove", "path", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
@@ -43,7 +43,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             continue;
         }
 
-        auto result = Core::DeprecatedFile::remove(path, recursive ? Core::DeprecatedFile::RecursionMode::Allowed : Core::DeprecatedFile::RecursionMode::Disallowed);
+        auto result = FileSystem::remove(path, recursive ? FileSystem::RecursionMode::Allowed : FileSystem::RecursionMode::Disallowed);
 
         if (result.is_error()) {
             auto error = result.release_error();

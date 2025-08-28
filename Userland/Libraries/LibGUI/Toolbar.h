@@ -18,9 +18,6 @@ class Toolbar : public Widget {
 public:
     virtual ~Toolbar() override = default;
 
-    ErrorOr<NonnullRefPtr<GUI::Button>> try_add_action(GUI::Action&);
-    ErrorOr<void> try_add_separator();
-
     GUI::Button& add_action(GUI::Action&);
     void add_separator();
 
@@ -56,7 +53,7 @@ private:
     RefPtr<Menu> m_overflow_menu;
     RefPtr<Action> m_overflow_action;
     RefPtr<Button> m_overflow_button;
-    const Gfx::Orientation m_orientation;
+    Gfx::Orientation const m_orientation;
     int m_button_size { 24 };
     bool m_collapsible { false };
     bool m_grouped { false };

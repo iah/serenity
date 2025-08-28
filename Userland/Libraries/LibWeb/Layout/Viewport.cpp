@@ -9,8 +9,11 @@
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/StackingContext.h>
+#include <LibWeb/Painting/ViewportPaintable.h>
 
 namespace Web::Layout {
+
+JS_DEFINE_ALLOCATOR(Viewport);
 
 Viewport::Viewport(DOM::Document& document, NonnullRefPtr<CSS::StyleProperties> style)
     : BlockContainer(document, &document, move(style))
@@ -19,111 +22,72 @@ Viewport::Viewport(DOM::Document& document, NonnullRefPtr<CSS::StyleProperties> 
 
 Viewport::~Viewport() = default;
 
-JS::GCPtr<Selection::Selection> Viewport::selection() const
+JS::GCPtr<Painting::Paintable> Viewport::create_paintable() const
 {
-    return const_cast<DOM::Document&>(document()).get_selection();
+    return Painting::ViewportPaintable::create(*this);
 }
 
-void Viewport::build_stacking_context_tree_if_needed()
+void Viewport::visit_edges(Visitor& visitor)
 {
-    if (paint_box()->stacking_context())
-        return;
-    build_stacking_context_tree();
-}
-
-void Viewport::build_stacking_context_tree()
-{
-    const_cast<Painting::PaintableWithLines*>(paint_box())->set_stacking_context(make<Painting::StackingContext>(*this, nullptr));
-
-    for_each_in_subtree_of_type<Box>([&](Box& box) {
-        if (!box.paint_box())
-            return IterationDecision::Continue;
-        const_cast<Painting::PaintableBox*>(box.paint_box())->invalidate_stacking_context();
-        if (!box.establishes_stacking_context()) {
-            VERIFY(!box.paint_box()->stacking_context());
-            return IterationDecision::Continue;
-        }
-        auto* parent_context = const_cast<Painting::PaintableBox*>(box.paint_box())->enclosing_stacking_context();
-        VERIFY(parent_context);
-        const_cast<Painting::PaintableBox*>(box.paint_box())->set_stacking_context(make<Painting::StackingContext>(box, parent_context));
-        return IterationDecision::Continue;
-    });
-
-    const_cast<Painting::PaintableWithLines*>(paint_box())->stacking_context()->sort();
-}
-
-void Viewport::paint_all_phases(PaintContext& context)
-{
-    build_stacking_context_tree_if_needed();
-    context.painter().fill_rect(context.enclosing_device_rect(paint_box()->absolute_rect()).to_type<int>(), document().background_color(context.palette()));
-    context.painter().translate(-context.device_viewport_rect().location().to_type<int>());
-    paint_box()->stacking_context()->paint(context);
-}
-
-void Viewport::recompute_selection_states()
-{
-    // 1. Start by resetting the selection state of all layout nodes to None.
-    for_each_in_inclusive_subtree([&](auto& layout_node) {
-        layout_node.set_selection_state(SelectionState::None);
-        return IterationDecision::Continue;
-    });
-
-    // 2. If there is no active Selection or selected Range, return.
-    auto selection = document().get_selection();
-    if (!selection)
-        return;
-    auto range = selection->range();
-    if (!range)
+    Base::visit_edges(visitor);
+    if (!m_text_blocks.has_value())
         return;
 
-    auto* start_container = range->start_container();
-    auto* end_container = range->end_container();
+    for (auto& text_block : *m_text_blocks) {
+        for (auto& text_position : text_block.positions)
+            visitor.visit(text_position.dom_node);
+    }
+}
 
-    // 3. If the selection starts and ends in the same node:
-    if (start_container == end_container) {
-        // 1. If the selection starts and ends at the same offset, return.
-        if (range->start_offset() == range->end_offset()) {
-            // NOTE: A zero-length selection should not be visible.
-            return;
-        }
+Vector<Viewport::TextBlock> const& Viewport::text_blocks()
+{
+    if (!m_text_blocks.has_value())
+        update_text_blocks();
 
-        // 2. If it's a text node, mark it as StartAndEnd and return.
-        if (is<DOM::Text>(*start_container)) {
-            if (auto* layout_node = start_container->layout_node()) {
-                layout_node->set_selection_state(SelectionState::StartAndEnd);
+    return *m_text_blocks;
+}
+
+void Viewport::update_text_blocks()
+{
+    StringBuilder builder;
+    size_t current_start_position = 0;
+    Vector<TextPosition> text_positions;
+    Vector<TextBlock> text_blocks;
+    for_each_in_inclusive_subtree([&](auto const& layout_node) {
+        if (layout_node.display().is_none() || !layout_node.paintable() || !layout_node.paintable()->is_visible())
+            return TraversalDecision::Continue;
+
+        if (layout_node.is_box() || layout_node.is_generated()) {
+            if (!builder.is_empty()) {
+                text_blocks.append({ builder.to_string_without_validation(), text_positions });
+                current_start_position = 0;
+                text_positions.clear_with_capacity();
+                builder.clear();
             }
-            return;
+            return TraversalDecision::Continue;
         }
-    }
 
-    if (start_container == end_container && is<DOM::Text>(*start_container)) {
-        if (auto* layout_node = start_container->layout_node()) {
-            layout_node->set_selection_state(SelectionState::StartAndEnd);
+        if (layout_node.is_text_node()) {
+            auto const& text_node = verify_cast<Layout::TextNode>(layout_node);
+            auto& dom_node = const_cast<DOM::Text&>(text_node.dom_node());
+            if (text_positions.is_empty()) {
+                text_positions.empend(dom_node);
+            } else {
+                text_positions.empend(dom_node, current_start_position);
+            }
+
+            auto const& current_node_text = text_node.text_for_rendering();
+            current_start_position += current_node_text.bytes_as_string_view().length();
+            builder.append(move(current_node_text));
         }
-        return;
-    }
 
-    // 4. Mark the selection start node as Start (if text) or Full (if anything else).
-    if (auto* layout_node = start_container->layout_node()) {
-        if (is<DOM::Text>(*start_container))
-            layout_node->set_selection_state(SelectionState::Start);
-        else
-            layout_node->set_selection_state(SelectionState::Full);
-    }
+        return TraversalDecision::Continue;
+    });
 
-    // 5. Mark the selection end node as End (if text) or Full (if anything else).
-    if (auto* layout_node = end_container->layout_node()) {
-        if (is<DOM::Text>(*end_container))
-            layout_node->set_selection_state(SelectionState::End);
-        else
-            layout_node->set_selection_state(SelectionState::Full);
-    }
+    if (!builder.is_empty())
+        text_blocks.append({ builder.to_string_without_validation(), text_positions });
 
-    // 6. Mark the nodes between start node and end node (in tree order) as Full.
-    for (auto* node = start_container->next_in_pre_order(); node && node != end_container; node = node->next_in_pre_order()) {
-        if (auto* layout_node = node->layout_node())
-            layout_node->set_selection_state(SelectionState::Full);
-    }
+    m_text_blocks = move(text_blocks);
 }
 
 }

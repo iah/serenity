@@ -8,6 +8,8 @@
 
 namespace Web::Painting {
 
+JS_DEFINE_ALLOCATOR(CanvasPaintable);
+
 JS::NonnullGCPtr<CanvasPaintable> CanvasPaintable::create(Layout::CanvasBox const& layout_box)
 {
     return layout_box.heap().allocate_without_realm<CanvasPaintable>(layout_box);
@@ -25,23 +27,20 @@ Layout::CanvasBox const& CanvasPaintable::layout_box() const
 
 void CanvasPaintable::paint(PaintContext& context, PaintPhase phase) const
 {
-    if (!layout_box().is_visible())
+    if (!is_visible())
         return;
 
     PaintableBox::paint(context, phase);
 
     if (phase == PaintPhase::Foreground) {
         auto canvas_rect = context.rounded_device_rect(absolute_rect());
-        ScopedCornerRadiusClip corner_clip { context, context.painter(), canvas_rect, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
-
-        // FIXME: This should be done at a different level.
-        if (is_out_of_view(context))
-            return;
+        ScopedCornerRadiusClip corner_clip { context, canvas_rect, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
 
         if (layout_box().dom_node().bitmap()) {
             // FIXME: Remove this const_cast.
             const_cast<HTML::HTMLCanvasElement&>(layout_box().dom_node()).present();
-            context.painter().draw_scaled_bitmap(canvas_rect.to_type<int>(), *layout_box().dom_node().bitmap(), layout_box().dom_node().bitmap()->rect(), 1.0f, to_gfx_scaling_mode(computed_values().image_rendering()));
+            auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(), layout_box().dom_node().bitmap()->rect(), canvas_rect.to_type<int>());
+            context.display_list_recorder().draw_scaled_bitmap(canvas_rect.to_type<int>(), *layout_box().dom_node().bitmap(), layout_box().dom_node().bitmap()->rect(), scaling_mode);
         }
     }
 }

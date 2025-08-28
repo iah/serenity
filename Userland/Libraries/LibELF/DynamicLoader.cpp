@@ -2,14 +2,17 @@
  * Copyright (c) 2019-2020, Andrew Kaster <akaster@serenityos.org>
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2022, Daniel Bertalan <dani@danielbertalan.dev>
+ * Copyright (c) 2022-2023, Daniel Bertalan <dani@danielbertalan.dev>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <AK/Optional.h>
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
+#include <LibELF/Arch/GenericDynamicRelocationType.h>
+#include <LibELF/Arch/tls.h>
 #include <LibELF/DynamicLinker.h>
 #include <LibELF/DynamicLoader.h>
 #include <LibELF/Hashes.h>
@@ -34,9 +37,16 @@ static void* mmap_with_name(void* addr, size_t length, int prot, int flags, int 
 #    define MAP_RANDOMIZED 0
 #endif
 
+#if ARCH(AARCH64)
+#    define HAS_TLSDESC_SUPPORT
+extern "C" {
+void* __tlsdesc_static(void*);
+}
+#endif
+
 namespace ELF {
 
-Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> DynamicLoader::try_create(int fd, DeprecatedString filepath)
+Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> DynamicLoader::try_create(int fd, ByteString filepath)
 {
     VERIFY(filepath.starts_with('/'));
 
@@ -47,10 +57,10 @@ Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> DynamicLoader::try_create(i
 
     VERIFY(stat.st_size >= 0);
     auto size = static_cast<size_t>(stat.st_size);
-    if (size < sizeof(ElfW(Ehdr)))
-        return DlErrorMessage { DeprecatedString::formatted("File {} has invalid ELF header", filepath) };
+    if (size < sizeof(Elf_Ehdr))
+        return DlErrorMessage { ByteString::formatted("File {} has invalid ELF header", filepath) };
 
-    DeprecatedString file_mmap_name = DeprecatedString::formatted("ELF_DYN: {}", filepath);
+    ByteString file_mmap_name = ByteString::formatted("ELF_DYN: {}", filepath);
     auto* data = mmap_with_name(nullptr, size, PROT_READ, MAP_SHARED, fd, 0, file_mmap_name.characters());
     if (data == MAP_FAILED) {
         return DlErrorMessage { "DynamicLoader::try_create mmap" };
@@ -62,7 +72,7 @@ Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> DynamicLoader::try_create(i
     return loader;
 }
 
-DynamicLoader::DynamicLoader(int fd, DeprecatedString filepath, void* data, size_t size)
+DynamicLoader::DynamicLoader(int fd, ByteString filepath, void* data, size_t size)
     : m_filepath(move(filepath))
     , m_file_size(size)
     , m_image_fd(fd)
@@ -88,23 +98,6 @@ DynamicLoader::~DynamicLoader()
     }
 }
 
-DynamicObject const& DynamicLoader::dynamic_object() const
-{
-    if (!m_cached_dynamic_object) {
-        VirtualAddress dynamic_section_address;
-
-        image().for_each_program_header([&dynamic_section_address](auto program_header) {
-            if (program_header.type() == PT_DYNAMIC) {
-                dynamic_section_address = VirtualAddress(program_header.raw_data());
-            }
-        });
-        VERIFY(!dynamic_section_address.is_null());
-
-        m_cached_dynamic_object = ELF::DynamicObject::create(m_filepath, VirtualAddress(image().base_address()), dynamic_section_address);
-    }
-    return *m_cached_dynamic_object;
-}
-
 void DynamicLoader::find_tls_size_and_alignment()
 {
     image().for_each_program_header([this](auto program_header) {
@@ -124,13 +117,11 @@ bool DynamicLoader::validate()
     if (!image().is_valid())
         return false;
 
-    auto* elf_header = (ElfW(Ehdr)*)m_file_data;
+    auto* elf_header = (Elf_Ehdr*)m_file_data;
     if (!validate_elf_header(*elf_header, m_file_size))
         return false;
-    auto result_or_error = validate_program_headers(*elf_header, m_file_size, { m_file_data, m_file_size });
-    if (result_or_error.is_error() || !result_or_error.value())
-        return false;
-    return true;
+    [[maybe_unused]] Optional<Elf_Phdr> interpreter_path_program_header {};
+    return validate_program_headers(*elf_header, m_file_size, { m_file_data, m_file_size }, interpreter_path_program_header);
 }
 
 RefPtr<DynamicObject> DynamicLoader::map()
@@ -199,49 +190,99 @@ bool DynamicLoader::load_stage_2(unsigned flags)
 
 void DynamicLoader::do_main_relocations()
 {
-    auto do_single_relocation = [&](const ELF::DynamicObject::Relocation& relocation) {
-        switch (do_relocation(relocation, ShouldInitializeWeak::No)) {
+    do_relr_relocations();
+
+    Optional<DynamicLoader::CachedLookupResult> cached_result;
+    m_dynamic_object->relocation_section().for_each_relocation([&](DynamicObject::Relocation const& relocation) {
+        switch (do_direct_relocation(relocation, cached_result, ShouldCallIfuncResolver::No)) {
         case RelocationResult::Failed:
             dbgln("Loader.so: {} unresolved symbol '{}'", m_filepath, relocation.symbol().name());
             VERIFY_NOT_REACHED();
-        case RelocationResult::ResolveLater:
-            m_unresolved_relocations.append(relocation);
+        case RelocationResult::CallIfuncResolver:
+            m_direct_ifunc_relocations.append(relocation);
             break;
         case RelocationResult::Success:
             break;
         }
+    });
+
+    // If the object is position-independent, the pointer to the PLT trampoline needs to be relocated.
+    auto fixup_trampoline_pointer = [&](DynamicObject::Relocation const& relocation) {
+        VERIFY(static_cast<GenericDynamicRelocationType>(relocation.type()) == GenericDynamicRelocationType::JUMP_SLOT);
+        if (image().is_dynamic())
+            *((FlatPtr*)relocation.address().as_ptr()) += m_dynamic_object->base_address().get();
     };
 
-    do_relr_relocations();
-    m_dynamic_object->relocation_section().for_each_relocation(do_single_relocation);
-    m_dynamic_object->plt_relocation_section().for_each_relocation(do_single_relocation);
+    m_dynamic_object->plt_relocation_section().for_each_relocation([&](DynamicObject::Relocation const& relocation) {
+        if (static_cast<GenericDynamicRelocationType>(relocation.type()) == GenericDynamicRelocationType::IRELATIVE) {
+            m_direct_ifunc_relocations.append(relocation);
+            return;
+        }
+        if (static_cast<GenericDynamicRelocationType>(relocation.type()) == GenericDynamicRelocationType::TLSDESC) {
+            // GNU ld for some reason puts TLSDESC relocations into .rela.plt
+            // https://sourceware.org/bugzilla/show_bug.cgi?id=28387
+            auto result = do_direct_relocation(relocation, cached_result, ShouldCallIfuncResolver::No);
+            VERIFY(result == RelocationResult::Success);
+            return;
+        }
+
+        // FIXME: Or LD_BIND_NOW is set?
+        if (m_dynamic_object->must_bind_now()) {
+            switch (do_plt_relocation(relocation, ShouldCallIfuncResolver::No)) {
+            case RelocationResult::Failed:
+                dbgln("Loader.so: {} unresolved symbol '{}'", m_filepath, relocation.symbol().name());
+                VERIFY_NOT_REACHED();
+            case RelocationResult::CallIfuncResolver:
+                m_plt_ifunc_relocations.append(relocation);
+                // Set up lazy binding, in case an IFUNC resolver calls another IFUNC that hasn't been resolved yet.
+                fixup_trampoline_pointer(relocation);
+                break;
+            case RelocationResult::Success:
+                break;
+            }
+        } else {
+            fixup_trampoline_pointer(relocation);
+        }
+    });
 }
 
 Result<NonnullRefPtr<DynamicObject>, DlErrorMessage> DynamicLoader::load_stage_3(unsigned flags)
 {
-    do_lazy_relocations();
     if (flags & RTLD_LAZY) {
         if (m_dynamic_object->has_plt())
             setup_plt_trampoline();
+    }
+
+    // IFUNC resolvers can only be called after the PLT has been populated,
+    // as they may call arbitrary functions via the PLT.
+    for (auto const& relocation : m_plt_ifunc_relocations) {
+        auto result = do_plt_relocation(relocation, ShouldCallIfuncResolver::Yes);
+        VERIFY(result == RelocationResult::Success);
+    }
+
+    Optional<DynamicLoader::CachedLookupResult> cached_result;
+    for (auto const& relocation : m_direct_ifunc_relocations) {
+        auto result = do_direct_relocation(relocation, cached_result, ShouldCallIfuncResolver::Yes);
+        VERIFY(result == RelocationResult::Success);
     }
 
     if (m_dynamic_object->has_text_relocations()) {
         // If we don't have textrels, .text has already been made executable by this point in load_stage_2.
         for (auto& text_segment : m_text_segments) {
             if (mprotect(text_segment.address().as_ptr(), text_segment.size(), PROT_READ | PROT_EXEC) < 0) {
-                return DlErrorMessage { DeprecatedString::formatted("mprotect .text: PROT_READ | PROT_EXEC: {}", strerror(errno)) };
+                return DlErrorMessage { ByteString::formatted("mprotect .text: PROT_READ | PROT_EXEC: {}", strerror(errno)) };
             }
         }
     }
 
     if (m_relro_segment_size) {
         if (mprotect(m_relro_segment_address.as_ptr(), m_relro_segment_size, PROT_READ) < 0) {
-            return DlErrorMessage { DeprecatedString::formatted("mprotect .relro: PROT_READ: {}", strerror(errno)) };
+            return DlErrorMessage { ByteString::formatted("mprotect .relro: PROT_READ: {}", strerror(errno)) };
         }
 
 #ifdef AK_OS_SERENITY
-        if (set_mmap_name(m_relro_segment_address.as_ptr(), m_relro_segment_size, DeprecatedString::formatted("{}: .relro", m_filepath).characters()) < 0) {
-            return DlErrorMessage { DeprecatedString::formatted("set_mmap_name .relro: {}", strerror(errno)) };
+        if (set_mmap_name(m_relro_segment_address.as_ptr(), m_relro_segment_size, ByteString::formatted("{}: .relro", m_filepath).characters()) < 0) {
+            return DlErrorMessage { ByteString::formatted("set_mmap_name .relro: {}", strerror(errno)) };
         }
 #endif
     }
@@ -256,16 +297,6 @@ void DynamicLoader::load_stage_4()
     call_object_init_functions();
 
     m_fully_initialized = true;
-}
-
-void DynamicLoader::do_lazy_relocations()
-{
-    for (auto const& relocation : m_unresolved_relocations) {
-        if (auto res = do_relocation(relocation, ShouldInitializeWeak::Yes); res != RelocationResult::Success) {
-            dbgln("Loader.so: {} unresolved symbol '{}'", m_filepath, relocation.symbol().name());
-            VERIFY_NOT_REACHED();
-        }
-    }
 }
 
 void DynamicLoader::load_program_headers()
@@ -323,7 +354,7 @@ void DynamicLoader::load_program_headers()
     }
 
     // Now that we can't accidentally block our requested space, re-map our ELF image.
-    DeprecatedString file_mmap_name = DeprecatedString::formatted("ELF_DYN: {}", m_filepath);
+    ByteString file_mmap_name = ByteString::formatted("ELF_DYN: {}", m_filepath);
     auto* data = mmap_with_name(nullptr, m_file_size, PROT_READ, MAP_SHARED, m_image_fd, 0, file_mmap_name.characters());
     if (data == MAP_FAILED) {
         perror("mmap new mapping");
@@ -337,17 +368,10 @@ void DynamicLoader::load_program_headers()
 
     m_base_address = VirtualAddress { reservation };
 
-    // Then we unmap the reservation.
-    if (munmap(reservation, total_mapping_size) < 0) {
-        perror("munmap reservation");
-        VERIFY_NOT_REACHED();
-    }
-
     // Most binaries have four loadable regions, three of which are mapped
     // (symbol tables/relocation information, executable instructions, read-only data)
     // and one of which is copied (modifiable data).
     // These are allocated in-line to cut down on the malloc calls.
-    Vector<ProgramHeaderRegion, 4> load_regions;
     Vector<ProgramHeaderRegion, 3> map_regions;
     Vector<ProgramHeaderRegion, 1> copy_regions;
     Optional<ProgramHeaderRegion> relro_region;
@@ -362,7 +386,6 @@ void DynamicLoader::load_program_headers()
         } else if (region.is_load()) {
             if (region.size_in_memory() == 0)
                 return;
-            load_regions.append(region);
             if (region.is_writable()) {
                 copy_regions.append(region);
             } else {
@@ -382,9 +405,25 @@ void DynamicLoader::load_program_headers()
         return a.desired_load_address().as_ptr() < b.desired_load_address().as_ptr();
     };
 
-    quick_sort(load_regions, compare_load_address);
     quick_sort(map_regions, compare_load_address);
     quick_sort(copy_regions, compare_load_address);
+
+    // Pre-allocate any malloc memory needed before unmapping the reservation.
+    // We don't want any future malloc to accidentally mmap a reserved address!
+    ByteString text_segment_name = ByteString::formatted("{}: .text", m_filepath);
+    ByteString rodata_segment_name = ByteString::formatted("{}: .rodata", m_filepath);
+    ByteString data_segment_name = ByteString::formatted("{}: .data", m_filepath);
+
+    m_text_segments.ensure_capacity(map_regions.size());
+
+    // Finally, we unmap the reservation.
+    if (munmap(reservation, total_mapping_size) < 0) {
+        perror("munmap reservation");
+        VERIFY_NOT_REACHED();
+    }
+
+    // WARNING: Allocating after this point has the possibility of malloc stealing our reserved
+    // virtual memory addresses. Be careful not to malloc below!
 
     // Process regions in order: .text, .data, .tls
     for (auto& region : map_regions) {
@@ -392,30 +431,26 @@ void DynamicLoader::load_program_headers()
         FlatPtr ph_base = region.desired_load_address().page_base().get();
         FlatPtr ph_end = ph_base + round_up_to_power_of_two(region.size_in_memory() + region.desired_load_address().get() - ph_base, PAGE_SIZE);
 
-        StringBuilder builder;
-        builder.append(m_filepath);
-        if (region.is_executable())
-            builder.append(": .text"sv);
-        else
-            builder.append(": .rodata"sv);
+        char const* const segment_name = region.is_executable() ? text_segment_name.characters() : rodata_segment_name.characters();
 
         // Now we can map the text segment at the reserved address.
         auto* segment_base = (u8*)mmap_with_name(
             (u8*)reservation + ph_base - ph_load_base,
             ph_desired_base - ph_base + region.size_in_image(),
             PROT_READ,
-            MAP_FILE | MAP_SHARED | MAP_FIXED,
+            MAP_SHARED | MAP_FIXED,
             m_image_fd,
             VirtualAddress { region.offset() }.page_base().get(),
-            builder.to_deprecated_string().characters());
+            segment_name);
 
         if (segment_base == MAP_FAILED) {
             perror("mmap non-writable");
             VERIFY_NOT_REACHED();
         }
 
+        // NOTE: Capacity ensured above the line of no malloc above
         if (region.is_executable())
-            m_text_segments.append({ VirtualAddress { segment_base }, ph_end - ph_base });
+            m_text_segments.unchecked_append({ VirtualAddress { segment_base }, ph_end - ph_base });
     }
 
     VERIFY(requested_load_address == nullptr || requested_load_address == reservation);
@@ -445,7 +480,7 @@ void DynamicLoader::load_program_headers()
             MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED,
             0,
             0,
-            DeprecatedString::formatted("{}: .data", m_filepath).characters());
+            data_segment_name.characters());
 
         if (MAP_FAILED == data_segment) {
             perror("mmap writable");
@@ -464,7 +499,9 @@ void DynamicLoader::load_program_headers()
     }
 }
 
-DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicObject::Relocation& relocation, ShouldInitializeWeak should_initialize_weak)
+DynamicLoader::RelocationResult DynamicLoader::do_direct_relocation(DynamicObject::Relocation const& relocation,
+    Optional<DynamicLoader::CachedLookupResult>& cached_result,
+    ShouldCallIfuncResolver should_call_ifunc_resolver)
 {
     FlatPtr* patch_ptr = nullptr;
     if (is_dynamic())
@@ -476,41 +513,69 @@ DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicO
         return VirtualAddress { reinterpret_cast<DynamicObject::IfuncResolver>(address.get())() };
     };
 
-    switch (relocation.type()) {
+    auto lookup_symbol = [&](DynamicObject::Symbol const& symbol) {
+        // The static linker sorts relocations by the referenced symbol. Especially when vtables
+        // in large inheritance hierarchies are involved, there might be tens of references to
+        // the same symbol. We can avoid redundant lookups by keeping track of the previous result.
+        if (!cached_result.has_value() || !cached_result.value().symbol.definitely_equals(symbol))
+            cached_result = DynamicLoader::CachedLookupResult { symbol, DynamicLoader::lookup_symbol(symbol) };
+        return cached_result.value().result;
+    };
 
-    case R_X86_64_NONE:
+    struct ResolvedTLSSymbol {
+        DynamicObject const& dynamic_object;
+        FlatPtr value;
+    };
+
+    auto resolve_tls_symbol = [&](DynamicObject::Relocation const& relocation) -> Optional<ResolvedTLSSymbol> {
+        if (relocation.symbol_index() == 0)
+            return ResolvedTLSSymbol { relocation.dynamic_object(), 0 };
+
+        auto res = lookup_symbol(relocation.symbol());
+        if (!res.has_value())
+            return {};
+        VERIFY(relocation.symbol().type() != STT_GNU_IFUNC);
+        VERIFY(res.value().dynamic_object != nullptr);
+        return ResolvedTLSSymbol { *res.value().dynamic_object, res.value().value };
+    };
+
+    using enum GenericDynamicRelocationType;
+    switch (static_cast<GenericDynamicRelocationType>(relocation.type())) {
+
+    case NONE:
         // Apparently most loaders will just skip these?
         // Seems if the 'link editor' generates one something is funky with your code
         break;
-    case R_AARCH64_ABS64:
-    case R_X86_64_64: {
+    case ABSOLUTE: {
         auto symbol = relocation.symbol();
         auto res = lookup_symbol(symbol);
+        VirtualAddress symbol_address;
         if (!res.has_value()) {
-            if (symbol.bind() == STB_WEAK)
-                return RelocationResult::ResolveLater;
-            dbgln("ERROR: symbol not found: {}.", symbol.name());
-            return RelocationResult::Failed;
+            if (symbol.bind() != STB_WEAK) {
+                dbgln("ERROR: symbol not found: {}.", symbol.name());
+                return RelocationResult::Failed;
+            }
+            symbol_address = VirtualAddress { (FlatPtr)0 };
+        } else {
+            if (res.value().type == STT_GNU_IFUNC && should_call_ifunc_resolver == ShouldCallIfuncResolver::No)
+                return RelocationResult::CallIfuncResolver;
+            symbol_address = res.value().address;
         }
-        auto symbol_address = res.value().address;
         if (relocation.addend_used())
             *patch_ptr = symbol_address.get() + relocation.addend();
         else
             *patch_ptr += symbol_address.get();
-        if (res.value().type == STT_GNU_IFUNC)
+        if (res.has_value() && res.value().type == STT_GNU_IFUNC)
             *patch_ptr = call_ifunc_resolver(VirtualAddress { *patch_ptr }).get();
         break;
     }
-    case R_AARCH64_GLOB_DAT:
-    case R_X86_64_GLOB_DAT: {
+#if !ARCH(RISCV64)
+    case GLOB_DAT: {
         auto symbol = relocation.symbol();
         auto res = lookup_symbol(symbol);
         VirtualAddress symbol_location;
         if (!res.has_value()) {
-            if (symbol.bind() == STB_WEAK) {
-                if (should_initialize_weak == ShouldInitializeWeak::No)
-                    return RelocationResult::ResolveLater;
-            } else {
+            if (symbol.bind() != STB_WEAK) {
                 // Symbol not found
                 return RelocationResult::Failed;
             }
@@ -519,6 +584,8 @@ DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicO
         } else {
             symbol_location = res.value().address;
             if (res.value().type == STT_GNU_IFUNC) {
+                if (should_call_ifunc_resolver == ShouldCallIfuncResolver::No)
+                    return RelocationResult::CallIfuncResolver;
                 if (res.value().dynamic_object != nullptr && res.value().dynamic_object->has_text_relocations()) {
                     dbgln("\033[31mError:\033[0m Refusing to call IFUNC resolver defined in an object with text relocations.");
                     return RelocationResult::Failed;
@@ -530,8 +597,8 @@ DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicO
         *patch_ptr = symbol_location.get();
         break;
     }
-    case R_AARCH64_RELATIVE:
-    case R_X86_64_RELATIVE: {
+#endif
+    case RELATIVE: {
         if (!image().is_dynamic())
             break;
         // FIXME: According to the spec, R_386_relative ones must be done first.
@@ -543,48 +610,61 @@ DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicO
             *patch_ptr += m_dynamic_object->base_address().get();
         break;
     }
-    case R_AARCH64_TLS_TPREL64:
-    case R_X86_64_TPOFF64: {
-        auto symbol = relocation.symbol();
-        FlatPtr symbol_value;
-        DynamicObject const* dynamic_object_of_symbol;
-        if (relocation.symbol_index() != 0) {
-            auto res = lookup_symbol(symbol);
-            if (!res.has_value())
-                break;
-            VERIFY(symbol.type() != STT_GNU_IFUNC);
-            symbol_value = res.value().value;
-            dynamic_object_of_symbol = res.value().dynamic_object;
-        } else {
-            symbol_value = 0;
-            dynamic_object_of_symbol = &relocation.dynamic_object();
+    case TLS_TPREL: {
+        auto maybe_resolution = resolve_tls_symbol(relocation);
+        if (!maybe_resolution.has_value())
+            break;
+        auto [dynamic_object_of_symbol, symbol_value] = maybe_resolution.value();
+
+        size_t addend = relocation.addend_used() ? relocation.addend() : *patch_ptr;
+        *patch_ptr = addend + dynamic_object_of_symbol.tls_offset().value() + symbol_value + TLS_TP_STATIC_TLS_BLOCK_OFFSET;
+
+        if constexpr (TLS_VARIANT == 1) {
+            // Until offset TLS_TP_STATIC_TLS_BLOCK_OFFSET there's the thread's ThreadControlBlock, we don't want to collide with it.
+            VERIFY(static_cast<ssize_t>(*patch_ptr) >= static_cast<ssize_t>(TLS_TP_STATIC_TLS_BLOCK_OFFSET));
+        } else if constexpr (TLS_VARIANT == 2) {
+            // At offset 0 there's the thread's ThreadControlBlock, we don't want to collide with it.
+            VERIFY(static_cast<ssize_t>(*patch_ptr) < 0);
         }
-        VERIFY(dynamic_object_of_symbol);
+
+        break;
+    }
+    case TLS_DTPMOD: {
+        auto maybe_resolution = resolve_tls_symbol(relocation);
+        if (!maybe_resolution.has_value())
+            break;
+
+        // We repurpose the module index to store the TLS block's TP offset. This is fine
+        // because we currently only support a single static TLS block.
+        *patch_ptr = maybe_resolution->dynamic_object.tls_offset().value();
+        break;
+    }
+    case TLS_DTPREL: {
+        auto maybe_resolution = resolve_tls_symbol(relocation);
+        if (!maybe_resolution.has_value())
+            break;
+
+        size_t addend = relocation.addend_used() ? relocation.addend() : *patch_ptr;
+        *patch_ptr = addend + maybe_resolution->value - TLS_DTV_OFFSET + TLS_TP_STATIC_TLS_BLOCK_OFFSET;
+        break;
+    }
+#ifdef HAS_TLSDESC_SUPPORT
+    case TLSDESC: {
+        auto maybe_resolution = resolve_tls_symbol(relocation);
+        if (!maybe_resolution.has_value())
+            break;
+        auto [dynamic_object_of_symbol, symbol_value] = maybe_resolution.value();
+
         size_t addend = relocation.addend_used() ? relocation.addend() : *patch_ptr;
 
-        *patch_ptr = addend + dynamic_object_of_symbol->tls_offset().value() + symbol_value;
-
-        // At offset 0 there's the thread's ThreadSpecificData structure, we don't want to collide with it.
-        VERIFY(static_cast<ssize_t>(*patch_ptr) < 0);
-
+        patch_ptr[0] = (FlatPtr)__tlsdesc_static;
+        patch_ptr[1] = addend + dynamic_object_of_symbol.tls_offset().value() + symbol_value;
         break;
     }
-    case R_AARCH64_JUMP_SLOT:
-    case R_X86_64_JUMP_SLOT: {
-        // FIXME: Or BIND_NOW flag passed in?
-        if (m_dynamic_object->must_bind_now()) {
-            // Eagerly BIND_NOW the PLT entries, doing all the symbol looking goodness
-            // The patch method returns the address for the LAZY fixup path, but we don't need it here
-            m_dynamic_object->patch_plt_entry(relocation.offset_in_section());
-        } else {
-            auto relocation_address = (FlatPtr*)relocation.address().as_ptr();
-
-            if (image().is_dynamic())
-                *relocation_address += m_dynamic_object->base_address().get();
-        }
-        break;
-    }
-    case R_X86_64_IRELATIVE: {
+#endif
+    case IRELATIVE: {
+        if (should_call_ifunc_resolver == ShouldCallIfuncResolver::No)
+            return RelocationResult::CallIfuncResolver;
         VirtualAddress resolver;
         if (relocation.addend_used())
             resolver = m_dynamic_object->base_address().offset(relocation.addend());
@@ -599,11 +679,50 @@ DynamicLoader::RelocationResult DynamicLoader::do_relocation(const ELF::DynamicO
         *patch_ptr = call_ifunc_resolver(resolver).get();
         break;
     }
+    case JUMP_SLOT:
+        VERIFY_NOT_REACHED(); // PLT relocations are handled by do_plt_relocation.
     default:
         // Raise the alarm! Someone needs to implement this relocation type
         dbgln("Found a new exciting relocation type {}", relocation.type());
         VERIFY_NOT_REACHED();
     }
+    return RelocationResult::Success;
+}
+
+DynamicLoader::RelocationResult DynamicLoader::do_plt_relocation(DynamicObject::Relocation const& relocation, ShouldCallIfuncResolver should_call_ifunc_resolver)
+{
+    VERIFY(static_cast<GenericDynamicRelocationType>(relocation.type()) == GenericDynamicRelocationType::JUMP_SLOT);
+    auto symbol = relocation.symbol();
+    auto* relocation_address = (FlatPtr*)relocation.address().as_ptr();
+
+    VirtualAddress symbol_location {};
+    if (auto result = lookup_symbol(symbol); result.has_value()) {
+        auto address = result.value().address;
+
+        if (result.value().type == STT_GNU_IFUNC) {
+            if (should_call_ifunc_resolver == ShouldCallIfuncResolver::No)
+                return RelocationResult::CallIfuncResolver;
+// FIXME: IFUNC resolvers do not actually return an ElfAddr aka an int,
+//        But a pointer to a function. UBSan doesn't like us lying about that.
+//        This seems to only be detected on Clang
+//        To temporarily disable UBsan an IIFE is needed, as sanitizers aren't diagnostics...
+#ifdef AK_COMPILER_CLANG
+            [&] [[clang::no_sanitize("undefined")]] {
+                symbol_location = VirtualAddress { reinterpret_cast<DynamicObject::IfuncResolver>(address.get())() };
+            }();
+#else
+            symbol_location = VirtualAddress { reinterpret_cast<DynamicObject::IfuncResolver>(address.get())() };
+#endif
+        } else {
+            symbol_location = address;
+        }
+    } else if (symbol.bind() != STB_WEAK) {
+        return RelocationResult::Failed;
+    }
+
+    dbgln_if(DYNAMIC_LOAD_DEBUG, "DynamicLoader: Jump slot relocation: putting {} ({}) into PLT at {}", symbol.name(), symbol_location, (void*)relocation_address);
+    *relocation_address = symbol_location.get();
+
     return RelocationResult::Success;
 }
 
@@ -615,7 +734,7 @@ void DynamicLoader::do_relr_relocations()
     });
 }
 
-void DynamicLoader::copy_initial_tls_data_into(ByteBuffer& buffer) const
+void DynamicLoader::copy_initial_tls_data_into(Bytes buffer) const
 {
     image().for_each_program_header([this, &buffer](ELF::Image::ProgramHeader program_header) {
         if (program_header.type() != PT_TLS)
@@ -625,14 +744,21 @@ void DynamicLoader::copy_initial_tls_data_into(ByteBuffer& buffer) const
         // only included in the "size in memory" metric, and is expected to not be touched or read from, as
         // it is not present in the image and zeroed out in-memory. We will still check that the buffer has
         // space for both the initialized and the uninitialized data.
-        // Note: The m_tls_offset here is (of course) negative.
         // TODO: Is the initialized data always in the beginning of the TLS segment, or should we walk the
         // sections to figure that out?
-        size_t tls_start_in_buffer = buffer.size() + m_tls_offset;
+
         VERIFY(program_header.size_in_image() <= program_header.size_in_memory());
         VERIFY(program_header.size_in_memory() <= m_tls_size_of_current_object);
-        VERIFY(tls_start_in_buffer + program_header.size_in_memory() <= buffer.size());
-        memcpy(buffer.data() + tls_start_in_buffer, static_cast<const u8*>(m_file_data) + program_header.offset(), program_header.size_in_image());
+
+        if constexpr (TLS_VARIANT == 1) {
+            size_t tls_start_in_buffer = m_tls_offset;
+            VERIFY(tls_start_in_buffer + program_header.size_in_memory() <= buffer.size());
+            memcpy(buffer.data() + tls_start_in_buffer, static_cast<u8 const*>(m_file_data) + program_header.offset(), program_header.size_in_image());
+        } else if constexpr (TLS_VARIANT == 2) {
+            size_t tls_start_in_buffer = buffer.size() + m_tls_offset;
+            VERIFY(tls_start_in_buffer + program_header.size_in_memory() <= buffer.size());
+            memcpy(buffer.data() + tls_start_in_buffer, static_cast<u8 const*>(m_file_data) + program_header.offset(), program_header.size_in_image());
+        }
 
         return IterationDecision::Break;
     });
@@ -648,16 +774,28 @@ void DynamicLoader::setup_plt_trampoline()
     VirtualAddress got_address = m_dynamic_object->plt_got_base_address();
 
     auto* got_ptr = (FlatPtr*)got_address.as_ptr();
+
+#if ARCH(AARCH64) || ARCH(X86_64)
     got_ptr[1] = (FlatPtr)m_dynamic_object.ptr();
     got_ptr[2] = (FlatPtr)&_plt_trampoline;
+#elif ARCH(RISCV64)
+    got_ptr[0] = (FlatPtr)&_plt_trampoline;
+    got_ptr[1] = (FlatPtr)m_dynamic_object.ptr();
+#else
+#    error Unknown architecture
+#endif
 }
 
 // Called from our ASM routine _plt_trampoline.
-// Tell the compiler that it might be called from other places:
-extern "C" FlatPtr _fixup_plt_entry(DynamicObject* object, u32 relocation_offset);
 extern "C" FlatPtr _fixup_plt_entry(DynamicObject* object, u32 relocation_offset)
 {
-    return object->patch_plt_entry(relocation_offset).get();
+    auto const& relocation = object->plt_relocation_section().relocation_at_offset(relocation_offset);
+    auto result = DynamicLoader::do_plt_relocation(relocation, ShouldCallIfuncResolver::Yes);
+    if (result != DynamicLoader::RelocationResult::Success) {
+        dbgln("Loader.so: {} unresolved symbol '{}'", object->filepath(), relocation.symbol().name());
+        VERIFY_NOT_REACHED();
+    }
+    return *reinterpret_cast<FlatPtr*>(relocation.address().as_ptr());
 }
 
 void DynamicLoader::call_object_init_functions()
@@ -665,7 +803,7 @@ void DynamicLoader::call_object_init_functions()
     typedef void (*InitFunc)();
 
     if (m_dynamic_object->has_init_section()) {
-        auto init_function = (InitFunc)(m_dynamic_object->init_section().address().as_ptr());
+        auto init_function = m_dynamic_object->init_section_function();
         (init_function)();
     }
 
@@ -693,4 +831,23 @@ Optional<DynamicObject::SymbolLookupResult> DynamicLoader::lookup_symbol(const E
     return DynamicObject::SymbolLookupResult { symbol.value(), symbol.size(), symbol.address(), symbol.bind(), symbol.type(), &symbol.object() };
 }
 
-} // end namespace ELF
+void DynamicLoader::compute_topological_order(Vector<NonnullRefPtr<DynamicLoader>>& topological_order)
+{
+    VERIFY(m_topological_ordering_state == TopologicalOrderingState::NotVisited);
+    m_topological_ordering_state = TopologicalOrderingState::Visiting;
+
+    Vector<NonnullRefPtr<DynamicLoader>> actual_dependencies;
+    for (auto const& dependency : m_true_dependencies) {
+        auto state = dependency->m_topological_ordering_state;
+        if (state == TopologicalOrderingState::NotVisited)
+            dependency->compute_topological_order(topological_order);
+        if (state == TopologicalOrderingState::Visited)
+            actual_dependencies.append(dependency);
+    }
+    m_true_dependencies = actual_dependencies;
+
+    m_topological_ordering_state = TopologicalOrderingState::Visited;
+    topological_order.append(*this);
+}
+
+}

@@ -10,8 +10,7 @@
 #include <AK/Span.h>
 #include <LibCrypto/Cipher/Cipher.h>
 
-namespace Crypto {
-namespace Cipher {
+namespace Crypto::Cipher {
 
 template<typename T>
 class Mode {
@@ -25,7 +24,7 @@ public:
 
     T const& cipher() const { return m_cipher; }
 
-    ErrorOr<ByteBuffer> create_aligned_buffer(size_t input_size) const
+    static ErrorOr<ByteBuffer> create_aligned_buffer(size_t input_size)
     {
         size_t remainder = (input_size + T::block_size()) % T::block_size();
         if (remainder == 0)
@@ -35,7 +34,7 @@ public:
     }
 
 #ifndef KERNEL
-    virtual DeprecatedString class_name() const = 0;
+    virtual ByteString class_name() const = 0;
 #endif
 
     T& cipher()
@@ -49,9 +48,12 @@ protected:
         auto size = data.size();
         switch (m_cipher.padding_mode()) {
         case PaddingMode::CMS: {
+            // rfc5652 Cryptographic Message Syntax (CMS):
+            //     the input shall be padded at the trailing end with k-(lth mod k) octets
+            //     all having value k-(lth mod k), where lth is the length of the input.
             auto maybe_padding_length = data[size - 1];
-            if (maybe_padding_length >= T::block_size()) {
-                // cannot be padding (the entire block cannot be padding)
+            if (maybe_padding_length > T::block_size()) {
+                // Invalid padding length (too long)
                 return;
             }
             for (auto i = size - maybe_padding_length; i < size; ++i) {
@@ -98,6 +100,4 @@ protected:
 private:
     T m_cipher;
 };
-}
-
 }

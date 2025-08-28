@@ -1,12 +1,13 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Checked.h>
 #include <AK/Function.h>
+#include <AK/StringBuilder.h>
 #include <AK/Utf16View.h>
 #include <LibJS/Heap/Heap.h>
 #include <LibJS/Runtime/AbstractOperations.h>
@@ -23,15 +24,17 @@
 #include <LibJS/Runtime/StringIterator.h>
 #include <LibJS/Runtime/StringObject.h>
 #include <LibJS/Runtime/StringPrototype.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
 #include <LibJS/Runtime/Utf16String.h>
 #include <LibJS/Runtime/Value.h>
+#include <LibJS/Runtime/ValueInlines.h>
 #include <LibLocale/Locale.h>
 #include <LibUnicode/CharacterTypes.h>
 #include <LibUnicode/Normalize.h>
 #include <string.h>
 
 namespace JS {
+
+JS_DEFINE_ALLOCATOR(StringPrototype);
 
 static ThrowCompletionOr<String> utf8_string_from(VM& vm)
 {
@@ -61,23 +64,33 @@ static Optional<size_t> split_match(Utf16View const& haystack, size_t start, Utf
 }
 
 // 6.1.4.1 StringIndexOf ( string, searchValue, fromIndex ), https://tc39.es/ecma262/#sec-stringindexof
-static Optional<size_t> string_index_of(Utf16View const& string, Utf16View const& search_value, size_t from_index)
+Optional<size_t> string_index_of(Utf16View const& string, Utf16View const& search_value, size_t from_index)
 {
+    // 1. Let len be the length of string.
     size_t string_length = string.length_in_code_units();
+
+    // 3. Let searchLen be the length of searchValue.
     size_t search_length = search_value.length_in_code_units();
 
+    // 2. If searchValue is the empty String and fromIndex ≤ len, return fromIndex.
     if ((search_length == 0) && (from_index <= string_length))
         return from_index;
 
+    // OPTIMIZATION: If the needle is longer than the haystack, don't bother searching :^)
     if (search_length > string_length)
         return {};
 
+    // 4. For each integer i such that fromIndex ≤ i ≤ len - searchLen, in ascending order, do
     for (size_t i = from_index; i <= string_length - search_length; ++i) {
+        // a. Let candidate be the substring of string from i to i + searchLen.
         auto candidate = string.substring_view(i, search_length);
+
+        // b. If candidate is searchValue, return i.
         if (candidate == search_value)
             return i;
     }
 
+    // 5. Return -1.
     return {};
 }
 
@@ -149,14 +162,14 @@ CodePoint code_point_at(Utf16View const& string, size_t position)
 }
 
 StringPrototype::StringPrototype(Realm& realm)
-    : StringObject(*PrimitiveString::create(realm.vm(), String {}), *realm.intrinsics().object_prototype())
+    : StringObject(*PrimitiveString::create(realm.vm(), String {}), realm.intrinsics().object_prototype())
 {
 }
 
-ThrowCompletionOr<void> StringPrototype::initialize(Realm& realm)
+void StringPrototype::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(StringObject::initialize(realm));
+    Base::initialize(realm);
     u8 attr = Attribute::Writable | Attribute::Configurable;
 
     // 22.1.3 Properties of the String Prototype Object, https://tc39.es/ecma262/#sec-properties-of-the-string-prototype-object
@@ -194,7 +207,7 @@ ThrowCompletionOr<void> StringPrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.trimEnd, trim_end, 0, attr);
     define_native_function(realm, vm.names.trimStart, trim_start, 0, attr);
     define_native_function(realm, vm.names.valueOf, value_of, 0, attr);
-    define_native_function(realm, *vm.well_known_symbol_iterator(), symbol_iterator, 0, attr);
+    define_native_function(realm, vm.well_known_symbol_iterator(), symbol_iterator, 0, attr);
 
     // B.2.2 Additional Properties of the String.prototype Object, https://tc39.es/ecma262/#sec-additional-properties-of-the-string.prototype-object
     define_native_function(realm, vm.names.substr, substr, 2, attr);
@@ -213,17 +226,24 @@ ThrowCompletionOr<void> StringPrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.sup, sup, 0, attr);
     define_direct_property(vm.names.trimLeft, get_without_side_effects(vm.names.trimStart), attr);
     define_direct_property(vm.names.trimRight, get_without_side_effects(vm.names.trimEnd), attr);
-
-    return {};
 }
 
 // thisStringValue ( value ), https://tc39.es/ecma262/#thisstringvalue
-static ThrowCompletionOr<PrimitiveString*> this_string_value(VM& vm, Value value)
+static ThrowCompletionOr<NonnullGCPtr<PrimitiveString>> this_string_value(VM& vm, Value value)
 {
+    // 1. If value is a String, return value.
     if (value.is_string())
-        return &value.as_string();
-    if (value.is_object() && is<StringObject>(value.as_object()))
-        return &static_cast<StringObject&>(value.as_object()).primitive_string();
+        return value.as_string();
+
+    // 2. If value is an Object and value has a [[StringData]] internal slot, then
+    if (value.is_object() && is<StringObject>(value.as_object())) {
+        // a. Let s be value.[[StringData]].
+        // b. Assert: s is a String.
+        // c. Return s.
+        return static_cast<StringObject&>(value.as_object()).primitive_string();
+    }
+
+    // 3. Throw a TypeError exception.
     return vm.throw_completion<TypeError>(ErrorType::NotAnObjectOfType, "String");
 }
 
@@ -257,40 +277,66 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::at)
         return js_undefined();
 
     // 7. Return ? Get(O, ! ToString(𝔽(k))).
-    return PrimitiveString::create(vm, TRY(Utf16String::create(vm, string.substring_view(index.value(), 1))));
+    return PrimitiveString::create(vm, Utf16String::create(string.substring_view(index.value(), 1)));
 }
 
 // 22.1.3.2 String.prototype.charAt ( pos ), https://tc39.es/ecma262/#sec-string.prototype.charat
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::char_at)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
+
+    // 3. Let position be ? ToIntegerOrInfinity(pos).
     auto position = TRY(vm.argument(0).to_integer_or_infinity(vm));
+
+    // 4. Let size be the length of S.
+    // 5. If position < 0 or position ≥ size, return the empty String.
     if (position < 0 || position >= string.length_in_code_units())
         return PrimitiveString::create(vm, String {});
 
-    return PrimitiveString::create(vm, TRY(Utf16String::create(vm, string.substring_view(position, 1))));
+    // 6. Return the substring of S from position to position + 1.
+    return PrimitiveString::create(vm, Utf16String::create(string.substring_view(position, 1)));
 }
 
 // 22.1.3.3 String.prototype.charCodeAt ( pos ), https://tc39.es/ecma262/#sec-string.prototype.charcodeat
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::char_code_at)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
+
+    // 3. Let position be ? ToIntegerOrInfinity(pos).
     auto position = TRY(vm.argument(0).to_integer_or_infinity(vm));
+
+    // 4. Let size be the length of S.
+    // 5. If position < 0 or position ≥ size, return NaN.
     if (position < 0 || position >= string.length_in_code_units())
         return js_nan();
 
+    // 6. Return the Number value for the numeric value of the code unit at index position within the String S.
     return Value(string.code_unit_at(position));
 }
 
 // 22.1.3.4 String.prototype.codePointAt ( pos ), https://tc39.es/ecma262/#sec-string.prototype.codepointat
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::code_point_at)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
+
+    // 3. Let position be ? ToIntegerOrInfinity(pos).
     auto position = TRY(vm.argument(0).to_integer_or_infinity(vm));
+
+    // 4. Let size be the length of S.
+    // 5. If position < 0 or position ≥ size, return undefined.
     if (position < 0 || position >= string.length_in_code_units())
         return js_undefined();
 
+    // 6. Let cp be CodePointAt(S, position).
     auto code_point = JS::code_point_at(string.view(), position);
+
+    // 7. Return 𝔽(cp.[[CodePoint]]).
     return Value(code_point.code_point);
 }
 
@@ -301,15 +347,15 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::concat)
     auto object = TRY(require_object_coercible(vm, vm.this_value()));
 
     // 2. Let S be ? ToString(O).
-    auto* string = TRY(object.to_primitive_string(vm));
+    auto string = TRY(object.to_primitive_string(vm));
 
     // 3. Let R be S.
-    auto* result = string;
+    auto result = string;
 
     // 4. For each element next of args, do
     for (size_t i = 0; i < vm.argument_count(); ++i) {
         // a. Let nextString be ? ToString(next).
-        auto* next_string = TRY(vm.argument(i).to_primitive_string(vm));
+        auto next_string = TRY(vm.argument(i).to_primitive_string(vm));
 
         // b. Set R to the string-concatenation of R and nextString.
         result = PrimitiveString::create(vm, *result, *next_string);
@@ -322,78 +368,126 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::concat)
 // 22.1.3.7 String.prototype.endsWith ( searchString [ , endPosition ] ), https://tc39.es/ecma262/#sec-string.prototype.endswith
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::ends_with)
 {
+    auto search_string_value = vm.argument(0);
+    auto end_position = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
-    auto search_string_value = vm.argument(0);
+    // Let isRegExp be ? IsRegExp(searchString).
+    bool is_regexp = TRY(search_string_value.is_regexp(vm));
 
-    bool search_is_regexp = TRY(search_string_value.is_regexp(vm));
-    if (search_is_regexp)
+    // 4. If isRegExp is true, throw a TypeError exception.
+    if (is_regexp)
         return vm.throw_completion<TypeError>(ErrorType::IsNotA, "searchString", "string, but a regular expression");
 
+    // 5. Let searchStr be ? ToString(searchString).
     auto search_string = TRY(search_string_value.to_utf16_string(vm));
-    auto string_length = string.length_in_code_units();
-    auto search_length = search_string.length_in_code_units();
 
+    // 6. Let len be the length of S.
+    auto string_length = string.length_in_code_units();
+
+    // 7. If endPosition is undefined, let pos be len; else let pos be ? ToIntegerOrInfinity(endPosition).
     size_t end = string_length;
-    if (!vm.argument(1).is_undefined()) {
-        auto position = TRY(vm.argument(1).to_integer_or_infinity(vm));
+    if (!end_position.is_undefined()) {
+        auto position = TRY(end_position.to_integer_or_infinity(vm));
+
+        // 8. Let end be the result of clamping pos between 0 and len.
         end = clamp(position, static_cast<double>(0), static_cast<double>(string_length));
     }
 
+    // 9. Let searchLength be the length of searchStr.
+    auto search_length = search_string.length_in_code_units();
+
+    // 10. If searchLength = 0, return true.
     if (search_length == 0)
         return Value(true);
+
+    // 12. If start < 0, return false.
     if (search_length > end)
         return Value(false);
 
+    // 11. Let start be end - searchLength.
     size_t start = end - search_length;
 
+    // 13. Let substring be the substring of S from start to end.
     auto substring_view = string.substring_view(start, end - start);
+
+    // 14. If substring is searchStr, return true.
+    // 15. Return false.
     return Value(substring_view == search_string.view());
 }
 
 // 22.1.3.8 String.prototype.includes ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.includes
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::includes)
 {
+    auto search_string_value = vm.argument(0);
+    auto position = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
-    auto search_string_value = vm.argument(0);
+    // 3. Let isRegExp be ? IsRegExp(searchString).
+    bool is_regexp = TRY(search_string_value.is_regexp(vm));
 
-    bool search_is_regexp = TRY(search_string_value.is_regexp(vm));
-    if (search_is_regexp)
+    // 4. If isRegExp is true, throw a TypeError exception.
+    if (is_regexp)
         return vm.throw_completion<TypeError>(ErrorType::IsNotA, "searchString", "string, but a regular expression");
 
+    // 5. Let searchStr be ? ToString(searchString).
     auto search_string = TRY(search_string_value.to_utf16_string(vm));
 
     size_t start = 0;
-    if (!vm.argument(1).is_undefined()) {
-        auto position = TRY(vm.argument(1).to_integer_or_infinity(vm));
-        start = clamp(position, static_cast<double>(0), static_cast<double>(string.length_in_code_units()));
+    if (!position.is_undefined()) {
+        // 6. Let pos be ? ToIntegerOrInfinity(position).
+        // 7. Assert: If position is undefined, then pos is 0.
+        auto pos = TRY(position.to_integer_or_infinity(vm));
+
+        // 8. Let len be the length of S.
+        // 9. Let start be the result of clamping pos between 0 and len.
+        start = clamp(pos, static_cast<double>(0), static_cast<double>(string.length_in_code_units()));
     }
 
+    // 10. Let index be StringIndexOf(S, searchStr, start).
     auto index = string_index_of(string.view(), search_string.view(), start);
+
+    // 11. If index ≠ -1, return true.
+    // 12. Return false.
     return Value(index.has_value());
 }
 
 // 22.1.3.9 String.prototype.indexOf ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.indexof
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::index_of)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
+    // 3. Let searchStr be ? ToString(searchString).
     auto search_string = TRY(vm.argument(0).to_utf16_string(vm));
+
     auto utf16_string_view = string.view();
     auto utf16_search_view = search_string.view();
 
     size_t start = 0;
     if (vm.argument_count() > 1) {
+        // 4. Let pos be ? ToIntegerOrInfinity(position).
+        // 5. Assert: If position is undefined, then pos is 0.
         auto position = TRY(vm.argument(1).to_integer_or_infinity(vm));
+
+        // 6. Let len be the length of S.
+        // 7. Let start be the result of clamping pos between 0 and len.
         start = clamp(position, static_cast<double>(0), static_cast<double>(utf16_string_view.length_in_code_units()));
     }
 
+    // 8. Return 𝔽(StringIndexOf(S, searchStr, start)).
     auto index = string_index_of(utf16_string_view, utf16_search_view, start);
     return index.has_value() ? Value(*index) : Value(-1);
 }
 
-// 22.1.3.10 String.prototype.isWellFormed ( ), https://tc39.es/proposal-is-usv-string/#sec-string.prototype.iswellformed
+// 22.1.3.10 String.prototype.isWellFormed ( ), https://tc39.es/ecma262/#sec-string.prototype.iswellformed
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::is_well_formed)
 {
     // 1. Let O be ? RequireObjectCoercible(this value).
@@ -404,24 +498,39 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::is_well_formed)
     return is_string_well_formed_unicode(string.view());
 }
 
-// 22.1.3.10 String.prototype.lastIndexOf ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.lastindexof
+// 22.1.3.11 String.prototype.lastIndexOf ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.lastindexof
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::last_index_of)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
+    // 3. Let searchStr be ? ToString(searchString).
     auto search_string = TRY(vm.argument(0).to_utf16_string(vm));
+
+    // 4. Let numPos be ? ToNumber(position).
+    // 5. Assert: If position is undefined, then numPos is NaN.
+    auto position = TRY(vm.argument(1).to_number(vm));
+
+    // 6. If numPos is NaN, let pos be +∞; otherwise, let pos be ! ToIntegerOrInfinity(numPos).
+    double pos = position.is_nan() ? static_cast<double>(INFINITY) : MUST(position.to_integer_or_infinity(vm));
+
+    // 7. Let len be the length of S.
     auto string_length = string.length_in_code_units();
+
+    // 8. Let searchLen be the length of searchStr.
     auto search_length = search_string.length_in_code_units();
 
-    auto position = TRY(vm.argument(1).to_number(vm));
-    double pos = position.is_nan() ? static_cast<double>(INFINITY) : TRY(position.to_integer_or_infinity(vm));
-
+    // 9. Let start be the result of clamping pos between 0 and len - searchLen.
     size_t start = clamp(pos, static_cast<double>(0), static_cast<double>(string_length));
     Optional<size_t> last_index;
 
+    // 10. If searchStr is the empty String, return 𝔽(start).
+    // 11. For each integer i such that 0 ≤ i ≤ start, in descending order, do
     for (size_t k = 0; (k <= start) && (k + search_length <= string_length); ++k) {
         bool is_match = true;
 
+        // a. Let candidate be the substring of S from i to i + searchLen.
         for (size_t j = 0; j < search_length; ++j) {
             if (string.code_unit_at(k + j) != search_string.code_unit_at(j)) {
                 is_match = false;
@@ -429,14 +538,16 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::last_index_of)
             }
         }
 
+        // b. If candidate is searchStr, return 𝔽(i).
         if (is_match)
             last_index = k;
     }
 
+    // 12. Return -1𝔽.
     return last_index.has_value() ? Value(*last_index) : Value(-1);
 }
 
-// 22.1.3.11 String.prototype.localeCompare ( that [ , reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.localecompare
+// 22.1.3.12 String.prototype.localeCompare ( that [ , reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.localecompare
 // 19.1.1 String.prototype.localeCompare ( that [ , locales [ , options ] ] ), https://tc39.es/ecma402/#sup-String.prototype.localeCompare
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::locale_compare)
 {
@@ -452,53 +563,89 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::locale_compare)
     auto that_value = TRY(vm.argument(0).to_string(vm));
 
     // 4. Let collator be ? Construct(%Collator%, « locales, options »).
-    auto collator = TRY(construct(vm, *realm.intrinsics().intl_collator_constructor(), vm.argument(1), vm.argument(2)));
+    auto collator = TRY(construct(vm, realm.intrinsics().intl_collator_constructor(), vm.argument(1), vm.argument(2)));
 
     // 5. Return CompareStrings(collator, S, thatValue).
     return Intl::compare_strings(static_cast<Intl::Collator&>(*collator), string.code_points(), that_value.code_points());
 }
 
-// 22.1.3.12 String.prototype.match ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.match
+// 22.1.3.13 String.prototype.match ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.match
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::match)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
     auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If regexp is neither undefined nor null, then
     auto regexp = vm.argument(0);
     if (!regexp.is_nullish()) {
-        if (auto* matcher = TRY(regexp.get_method(vm, *vm.well_known_symbol_match())))
+        // a. Let matcher be ? GetMethod(regexp, @@match).
+        auto matcher = TRY(regexp.get_method(vm, vm.well_known_symbol_match()));
+
+        // b. If matcher is not undefined, then
+        if (matcher) {
+            // i. Return ? Call(matcher, regexp, « O »).
             return TRY(call(vm, *matcher, regexp, this_object));
+        }
     }
 
+    // 3. Let S be ? ToString(O).
     auto string = TRY(this_object.to_utf16_string(vm));
 
+    // 4. Let rx be ? RegExpCreate(regexp, undefined).
     auto rx = TRY(regexp_create(vm, regexp, js_undefined()));
-    return TRY(Value(rx).invoke(vm, *vm.well_known_symbol_match(), PrimitiveString::create(vm, move(string))));
+
+    // 5. Return ? Invoke(rx, @@match, « S »).
+    return TRY(Value(rx).invoke(vm, vm.well_known_symbol_match(), PrimitiveString::create(vm, move(string))));
 }
 
-// 22.1.3.13 String.prototype.matchAll ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.matchall
+// 22.1.3.14 String.prototype.matchAll ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.matchall
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::match_all)
 {
-    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
     auto regexp = vm.argument(0);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If regexp is neither undefined nor null, then
     if (!regexp.is_nullish()) {
+        // a. Let isRegExp be ? IsRegExp(regexp).
         auto is_regexp = TRY(regexp.is_regexp(vm));
+
+        // b. If isRegExp is true, then
         if (is_regexp) {
+            // i. Let flags be ? Get(regexp, "flags").
             auto flags = TRY(regexp.as_object().get("flags"));
+
+            // ii. Perform ? RequireObjectCoercible(flags).
             auto flags_object = TRY(require_object_coercible(vm, flags));
+
+            // iii. If ? ToString(flags) does not contain "g", throw a TypeError exception.
             auto flags_string = TRY(flags_object.to_string(vm));
             if (!flags_string.contains('g'))
                 return vm.throw_completion<TypeError>(ErrorType::StringNonGlobalRegExp);
         }
-        if (auto* matcher = TRY(regexp.get_method(vm, *vm.well_known_symbol_match_all())))
+
+        // c. Let matcher be ? GetMethod(regexp, @@matchAll).
+        auto matcher = TRY(regexp.get_method(vm, vm.well_known_symbol_match_all()));
+
+        // d. If matcher is not undefined, then
+        if (matcher) {
+            // i. Return ? Call(matcher, regexp, « O »).
             return TRY(call(vm, *matcher, regexp, this_object));
+        }
     }
 
+    // 3. Let S be ? ToString(O).
     auto string = TRY(this_object.to_utf16_string(vm));
 
-    auto rx = TRY(regexp_create(vm, regexp, PrimitiveString::create(vm, "g"_short_string)));
-    return TRY(Value(rx).invoke(vm, *vm.well_known_symbol_match_all(), PrimitiveString::create(vm, move(string))));
+    // 4. Let rx be ? RegExpCreate(regexp, "g").
+    auto rx = TRY(regexp_create(vm, regexp, PrimitiveString::create(vm, "g"_string)));
+
+    // 5. Return ? Invoke(rx, @@matchAll, « S »).
+    return TRY(Value(rx).invoke(vm, vm.well_known_symbol_match_all(), PrimitiveString::create(vm, move(string))));
 }
 
-// 22.1.3.14 String.prototype.normalize ( [ form ] ), https://tc39.es/ecma262/#sec-string.prototype.normalize
+// 22.1.3.15 String.prototype.normalize ( [ form ] ), https://tc39.es/ecma262/#sec-string.prototype.normalize
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::normalize)
 {
     // 1. Let O be ? RequireObjectCoercible(this value).
@@ -509,7 +656,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::normalize)
 
     // 3. If form is undefined, let f be "NFC".
     if (auto form_value = vm.argument(0); form_value.is_undefined()) {
-        form = "NFC"_short_string;
+        form = "NFC"_string;
     }
     // 4. Else, let f be ? ToString(form).
     else {
@@ -522,7 +669,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::normalize)
 
     // 6. Let ns be the String value that is the result of normalizing S into the normalization form named by f as specified in https://unicode.org/reports/tr15/.
     auto unicode_form = Unicode::normalization_form_from_string(form);
-    auto ns = TRY_OR_THROW_OOM(vm, Unicode::normalize(string, unicode_form));
+    auto ns = Unicode::normalize(string, unicode_form);
 
     // 7. Return ns.
     return PrimitiveString::create(vm, move(ns));
@@ -533,337 +680,543 @@ enum class PadPlacement {
     End,
 };
 
-// 22.1.3.16.1 StringPad ( O, maxLength, fillString, placement ), https://tc39.es/ecma262/#sec-stringpad
-static ThrowCompletionOr<Value> pad_string(VM& vm, Utf16String string, PadPlacement placement)
+// 22.1.3.17.1 StringPad ( O, maxLength, fillString, placement ), https://tc39.es/ecma262/#sec-stringpad
+static ThrowCompletionOr<Value> pad_string(VM& vm, Utf16String string, Value max_length, Value fill_string, PadPlacement placement)
 {
+    // 1. Let S be ? ToString(O).
+
+    // 2. Let intMaxLength be ℝ(? ToLength(maxLength)).
+    auto int_max_length = TRY(max_length.to_length(vm));
+
+    // 3. Let stringLength be the length of S.
     auto string_length = string.length_in_code_units();
 
-    auto max_length = TRY(vm.argument(0).to_length(vm));
-    if (max_length <= string_length)
+    // 4. If intMaxLength ≤ stringLength, return S.
+    if (int_max_length <= string_length)
         return PrimitiveString::create(vm, move(string));
 
-    auto fill_string = TRY(Utf16String::create(vm, Utf16Data { 0x20 }));
-    if (!vm.argument(1).is_undefined()) {
-        fill_string = TRY(vm.argument(1).to_utf16_string(vm));
-        if (fill_string.is_empty())
+    // 5. If fillString is undefined, let filler be the String value consisting solely of the code unit 0x0020 (SPACE).
+    auto filler = Utf16String::create(Utf16Data { 0x20 });
+    if (!fill_string.is_undefined()) {
+        // 6. Else, let filler be ? ToString(fillString).
+        filler = TRY(fill_string.to_utf16_string(vm));
+
+        // 7. If filler is the empty String, return S.
+        if (filler.is_empty())
             return PrimitiveString::create(vm, move(string));
     }
 
-    auto fill_code_units = fill_string.length_in_code_units();
-    auto fill_length = max_length - string_length;
+    // 8. Let fillLen be intMaxLength - stringLength.
+    auto fill_length = int_max_length - string_length;
 
-    ThrowableStringBuilder filler_builder(vm);
+    StringBuilder truncated_string_filler_builder;
+    auto fill_code_units = filler.length_in_code_units();
     for (size_t i = 0; i < fill_length / fill_code_units; ++i)
-        TRY(filler_builder.append(fill_string.view()));
+        truncated_string_filler_builder.append(filler.view());
 
-    TRY(filler_builder.append(fill_string.substring_view(0, fill_length % fill_code_units)));
-    auto filler = TRY(filler_builder.to_string());
+    // 9. Let truncatedStringFiller be the String value consisting of repeated concatenations of filler truncated to length fillLen.
+    truncated_string_filler_builder.append(filler.substring_view(0, fill_length % fill_code_units));
+    auto truncated_string_filler = MUST(truncated_string_filler_builder.to_string());
 
+    // 10. If placement is start, return the string-concatenation of truncatedStringFiller and S.
+    // 11. Else, return the string-concatenation of S and truncatedStringFiller.
     auto formatted = placement == PadPlacement::Start
-        ? TRY_OR_THROW_OOM(vm, String::formatted("{}{}", filler, string.view()))
-        : TRY_OR_THROW_OOM(vm, String::formatted("{}{}", string.view(), filler));
+        ? MUST(String::formatted("{}{}", truncated_string_filler, string.view()))
+        : MUST(String::formatted("{}{}", string.view(), truncated_string_filler));
     return PrimitiveString::create(vm, move(formatted));
 }
 
-// 22.1.3.15 String.prototype.padEnd ( maxLength [ , fillString ] ), https://tc39.es/ecma262/#sec-string.prototype.padend
+// 22.1.3.16 String.prototype.padEnd ( maxLength [ , fillString ] ), https://tc39.es/ecma262/#sec-string.prototype.padend
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::pad_end)
 {
+    auto max_length = vm.argument(0);
+    auto fill_string = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
     auto string = TRY(utf16_string_from(vm));
-    return pad_string(vm, move(string), PadPlacement::End);
+
+    // 2. Return ? StringPad(O, maxLength, fillString, end).
+    return pad_string(vm, move(string), max_length, fill_string, PadPlacement::End);
 }
 
-// 22.1.3.16 String.prototype.padStart ( maxLength [ , fillString ] ), https://tc39.es/ecma262/#sec-string.prototype.padstart
+// 22.1.3.17 String.prototype.padStart ( maxLength [ , fillString ] ), https://tc39.es/ecma262/#sec-string.prototype.padstart
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::pad_start)
 {
+    auto max_length = vm.argument(0);
+    auto fill_string = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
     auto string = TRY(utf16_string_from(vm));
-    return pad_string(vm, move(string), PadPlacement::Start);
+
+    // 2. Return ? StringPad(O, maxLength, fillString, start).
+    return pad_string(vm, move(string), max_length, fill_string, PadPlacement::Start);
 }
 
-// 22.1.3.17 String.prototype.repeat ( count ), https://tc39.es/ecma262/#sec-string.prototype.repeat
+// 22.1.3.18 String.prototype.repeat ( count ), https://tc39.es/ecma262/#sec-string.prototype.repeat
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::repeat)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf8_string_from(vm));
 
+    // 3. Let n be ? ToIntegerOrInfinity(count).
     auto n = TRY(vm.argument(0).to_integer_or_infinity(vm));
 
+    // 4. If n < 0 or n = +∞, throw a RangeError exception.
     if (n < 0)
         return vm.throw_completion<RangeError>(ErrorType::StringRepeatCountMustBe, "positive");
-
     if (Value(n).is_positive_infinity())
         return vm.throw_completion<RangeError>(ErrorType::StringRepeatCountMustBe, "finite");
 
+    // 5. If n = 0, return the empty String.
     if (n == 0)
         return PrimitiveString::create(vm, String {});
 
-    // NOTE: This is an optimization, it is not required by the specification but it produces equivalent behavior
+    // OPTIMIZATION: If the string is empty, the result will be empty as well.
     if (string.is_empty())
         return PrimitiveString::create(vm, String {});
 
-    ThrowableStringBuilder builder(vm);
-    for (size_t i = 0; i < n; ++i)
-        TRY(builder.append(string));
-    return PrimitiveString::create(vm, TRY(builder.to_string()));
+    auto repeated = String::repeated(string, n);
+    if (repeated.is_error())
+        return vm.throw_completion<RangeError>(ErrorType::StringRepeatCountMustNotOverflow);
+
+    // 6. Return the String value that is made from n copies of S appended together.
+    return PrimitiveString::create(vm, repeated.release_value());
 }
 
-// 22.1.3.18 String.prototype.replace ( searchValue, replaceValue ), https://tc39.es/ecma262/#sec-string.prototype.replace
+// 22.1.3.19 String.prototype.replace ( searchValue, replaceValue ), https://tc39.es/ecma262/#sec-string.prototype.replace
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::replace)
 {
-    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
     auto search_value = vm.argument(0);
     auto replace_value = vm.argument(1);
 
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If searchValue is neither undefined nor null, then
     if (!search_value.is_nullish()) {
-        if (auto* replacer = TRY(search_value.get_method(vm, *vm.well_known_symbol_replace())))
+        // a. Let replacer be ? GetMethod(searchValue, @@replace).
+        auto replacer = TRY(search_value.get_method(vm, vm.well_known_symbol_replace()));
+
+        // b. If replacer is not undefined, then
+        if (replacer) {
+            // i. Return ? Call(replacer, searchValue, « O, replaceValue »).
             return TRY(call(vm, *replacer, search_value, this_object, replace_value));
+        }
     }
 
+    // 3. Let string be ? ToString(O).
     auto string = TRY(this_object.to_utf16_string(vm));
+
+    // 4. Let searchString be ? ToString(searchValue).
     auto search_string = TRY(search_value.to_utf16_string(vm));
 
+    // 5. Let functionalReplace be IsCallable(replaceValue).
+    // 6. If functionalReplace is false, then
     if (!replace_value.is_function()) {
+        // a. Set replaceValue to ? ToString(replaceValue).
         auto replace_string = TRY(replace_value.to_utf16_string(vm));
         replace_value = PrimitiveString::create(vm, move(replace_string));
     }
 
-    Optional<size_t> position = string_index_of(string.view(), search_string.view(), 0);
+    // 7. Let searchLength be the length of searchString.
+    auto search_length = search_string.length_in_code_units();
+
+    // 8. Let position be StringIndexOf(string, searchString, 0).
+    auto position = string_index_of(string.view(), search_string.view(), 0);
+
+    // 9. If position = -1, return string.
     if (!position.has_value())
         return PrimitiveString::create(vm, move(string));
 
-    auto preserved = string.substring_view(0, position.value());
+    // 10. Let preceding be the substring of string from 0 to position.
+    auto preceding = string.substring_view(0, *position);
     String replacement;
 
+    // 11. Let following be the substring of string from position + searchLength.
+    auto following = string.substring_view(*position + search_length);
+
+    // 12. If functionalReplace is true, then
     if (replace_value.is_function()) {
-        auto result = TRY(call(vm, replace_value.as_function(), js_undefined(), PrimitiveString::create(vm, search_string), Value(position.value()), PrimitiveString::create(vm, string)));
+        // a. Let replacement be ? ToString(? Call(replaceValue, undefined, « searchString, 𝔽(position), string »)).
+        auto result = TRY(call(vm, replace_value.as_function(), js_undefined(), PrimitiveString::create(vm, search_string), Value(*position), PrimitiveString::create(vm, string)));
         replacement = TRY(result.to_string(vm));
-    } else {
-        replacement = TRY(get_substitution(vm, search_string.view(), string.view(), *position, {}, js_undefined(), replace_value));
+    }
+    // 13. Else,
+    else {
+        // a. Assert: replaceValue is a String.
+        VERIFY(replace_value.is_string());
+
+        // b. Let captures be a new empty List.
+        Span<Value> captures;
+
+        // c. Let replacement be ! GetSubstitution(searchString, string, position, captures, undefined, replaceValue).
+        replacement = TRY(get_substitution(vm, search_string.view(), string.view(), *position, captures, js_undefined(), replace_value));
     }
 
-    ThrowableStringBuilder builder(vm);
-    TRY(builder.append(preserved));
-    TRY(builder.append(replacement));
-    TRY(builder.append(string.substring_view(*position + search_string.length_in_code_units())));
+    // 14. Return the string-concatenation of preceding, replacement, and following.
+    StringBuilder builder;
+    builder.append(preceding);
+    builder.append(replacement);
+    builder.append(following);
 
-    return PrimitiveString::create(vm, TRY(builder.to_string()));
+    return PrimitiveString::create(vm, MUST(builder.to_string()));
 }
 
-// 22.1.3.19 String.prototype.replaceAll ( searchValue, replaceValue ), https://tc39.es/ecma262/#sec-string.prototype.replaceall
+// 22.1.3.20 String.prototype.replaceAll ( searchValue, replaceValue ), https://tc39.es/ecma262/#sec-string.prototype.replaceall
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::replace_all)
 {
-    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
     auto search_value = vm.argument(0);
     auto replace_value = vm.argument(1);
 
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If searchValue is neither undefined nor null, then
     if (!search_value.is_nullish()) {
+        // a. Let isRegExp be ? IsRegExp(searchValue).
         bool is_regexp = TRY(search_value.is_regexp(vm));
 
+        // b. If isRegExp is true, then
         if (is_regexp) {
+            // i. Let flags be ? Get(searchValue, "flags").
             auto flags = TRY(search_value.as_object().get(vm.names.flags));
+
+            // ii. Perform ? RequireObjectCoercible(flags).
             auto flags_object = TRY(require_object_coercible(vm, flags));
-            auto flags_string = TRY(flags_object.to_string(vm));
-            if (!flags_string.contains('g'))
+
+            // iii. If ? ToString(flags) does not contain "g", throw a TypeError exception.
+            if (!TRY(flags_object.to_string(vm)).contains('g'))
                 return vm.throw_completion<TypeError>(ErrorType::StringNonGlobalRegExp);
         }
 
-        auto* replacer = TRY(search_value.get_method(vm, *vm.well_known_symbol_replace()));
-        if (replacer)
+        // c. Let replacer be ? GetMethod(searchValue, @@replace).
+        auto replacer = TRY(search_value.get_method(vm, vm.well_known_symbol_replace()));
+
+        // d. If replacer is not undefined, then
+        if (replacer) {
+            // i. Return ? Call(replacer, searchValue, « O, replaceValue »).
             return TRY(call(vm, *replacer, search_value, this_object, replace_value));
+        }
     }
 
+    // 3. Let string be ? ToString(O).
     auto string = TRY(this_object.to_utf16_string(vm));
+
+    // 4. Let searchString be ? ToString(searchValue).
     auto search_string = TRY(search_value.to_utf16_string(vm));
 
+    // 5. Let functionalReplace be IsCallable(replaceValue).
+    // 6. If functionalReplace is false, then
     if (!replace_value.is_function()) {
+        // a. Set replaceValue to ? ToString(replaceValue).
         auto replace_string = TRY(replace_value.to_utf16_string(vm));
         replace_value = PrimitiveString::create(vm, move(replace_string));
     }
 
-    auto string_length = string.length_in_code_units();
+    // 7. Let searchLength be the length of searchString.
     auto search_length = search_string.length_in_code_units();
 
-    Vector<size_t> match_positions;
+    // 8. Let advanceBy be max(1, searchLength).
     size_t advance_by = max(1u, search_length);
+
+    // 9. Let matchPositions be a new empty List.
+    Vector<size_t> match_positions;
+
+    // 10. Let position be StringIndexOf(string, searchString, 0).
     auto position = string_index_of(string.view(), search_string.view(), 0);
 
+    // 11. Repeat, while position ≠ -1,
     while (position.has_value()) {
-        TRY_OR_THROW_OOM(vm, match_positions.try_append(*position));
+        // a. Append position to matchPositions.
+        match_positions.append(*position);
+
+        // b. Set position to StringIndexOf(string, searchString, position + advanceBy).
         position = string_index_of(string.view(), search_string.view(), *position + advance_by);
     }
 
+    // 12. Let endOfLastMatch be 0.
     size_t end_of_last_match = 0;
-    ThrowableStringBuilder result(vm);
 
+    // 13. Let result be the empty String.
+    StringBuilder result;
+
+    // 14. For each element p of matchPositions, do
     for (auto position : match_positions) {
+        // a. Let preserved be the substring of string from endOfLastMatch to p.
         auto preserved = string.substring_view(end_of_last_match, position - end_of_last_match);
         String replacement;
 
+        // b. If functionalReplace is true, then
         if (replace_value.is_function()) {
-            auto result = TRY(call(vm, replace_value.as_function(), js_undefined(), PrimitiveString::create(vm, search_string), Value(position), PrimitiveString::create(vm, string)));
-            replacement = TRY(result.to_string(vm));
-        } else {
+            // i. Let replacement be ? ToString(? Call(replaceValue, undefined, « searchString, 𝔽(p), string »)).
+            replacement = TRY(TRY(call(vm, replace_value.as_function(), js_undefined(), PrimitiveString::create(vm, search_string), Value(position), PrimitiveString::create(vm, string))).to_string(vm));
+        }
+        // c. Else,
+        else {
+            // i. Assert: replaceValue is a String.
+            // ii. Let captures be a new empty List.
+            // iii. Let replacement be ! GetSubstitution(searchString, string, p, captures, undefined, replaceValue).
             replacement = TRY(get_substitution(vm, search_string.view(), string.view(), position, {}, js_undefined(), replace_value));
         }
 
-        TRY(result.append(preserved));
-        TRY(result.append(replacement));
+        // d. Set result to the string-concatenation of result, preserved, and replacement.
+        result.append(preserved);
+        result.append(replacement);
 
+        // e. Set endOfLastMatch to p + searchLength.
         end_of_last_match = position + search_length;
     }
 
-    if (end_of_last_match < string_length)
-        TRY(result.append(string.substring_view(end_of_last_match)));
+    auto string_length = string.length_in_code_units();
 
-    return PrimitiveString::create(vm, TRY(result.to_string()));
-}
-
-// 22.1.3.20 String.prototype.search ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.search
-JS_DEFINE_NATIVE_FUNCTION(StringPrototype::search)
-{
-    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
-    auto regexp = vm.argument(0);
-    if (!regexp.is_nullish()) {
-        if (auto* searcher = TRY(regexp.get_method(vm, *vm.well_known_symbol_search())))
-            return TRY(call(vm, *searcher, regexp, this_object));
+    // 15. If endOfLastMatch < the length of string, then
+    if (end_of_last_match < string_length) {
+        // a. Set result to the string-concatenation of result and the substring of string from endOfLastMatch.
+        result.append(string.substring_view(end_of_last_match));
     }
 
-    auto string = TRY(this_object.to_utf16_string(vm));
-
-    auto rx = TRY(regexp_create(vm, regexp, js_undefined()));
-    return TRY(Value(rx).invoke(vm, *vm.well_known_symbol_search(), PrimitiveString::create(vm, move(string))));
+    // 16. Return result.
+    return PrimitiveString::create(vm, MUST(result.to_string()));
 }
 
-// 22.1.3.21 String.prototype.slice ( start, end ), https://tc39.es/ecma262/#sec-string.prototype.slice
+// 22.1.3.21 String.prototype.search ( regexp ), https://tc39.es/ecma262/#sec-string.prototype.search
+JS_DEFINE_NATIVE_FUNCTION(StringPrototype::search)
+{
+    auto regexp = vm.argument(0);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If regexp is neither undefined nor null, then
+    if (!regexp.is_nullish()) {
+        // a. Let searcher be ? GetMethod(regexp, @@search).
+        auto searcher = TRY(regexp.get_method(vm, vm.well_known_symbol_search()));
+
+        // b. If searcher is not undefined, then
+        if (searcher) {
+            // i. Return ? Call(searcher, regexp, « O »).
+            return TRY(call(vm, *searcher, regexp, this_object));
+        }
+    }
+
+    // 3. Let string be ? ToString(O).
+    auto string = TRY(this_object.to_utf16_string(vm));
+
+    // 4. Let rx be ? RegExpCreate(regexp, undefined).
+    auto rx = TRY(regexp_create(vm, regexp, js_undefined()));
+
+    // 5. Return ? Invoke(rx, @@search, « string »).
+    return TRY(Value(rx).invoke(vm, vm.well_known_symbol_search(), PrimitiveString::create(vm, move(string))));
+}
+
+// 22.1.3.22 String.prototype.slice ( start, end ), https://tc39.es/ecma262/#sec-string.prototype.slice
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::slice)
 {
+    auto start = vm.argument(0);
+    auto end = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
+
+    // 3. Let len be the length of S.
     auto string_length = static_cast<double>(string.length_in_code_units());
 
-    auto int_start = TRY(vm.argument(0).to_integer_or_infinity(vm));
+    // 4. Let intStart be ? ToIntegerOrInfinity(start).
+    auto int_start = TRY(start.to_integer_or_infinity(vm));
+
+    // 5. If intStart = -∞, let from be 0.
     if (Value(int_start).is_negative_infinity())
         int_start = 0;
+    // 6. Else if intStart < 0, let from be max(len + intStart, 0).
     else if (int_start < 0)
         int_start = max(string_length + int_start, 0);
+    // 7. Else, let from be min(intStart, len).
     else
         int_start = min(int_start, string_length);
 
+    // 8. If end is undefined, let intEnd be len; else let intEnd be ? ToIntegerOrInfinity(end).
     auto int_end = string_length;
-    if (!vm.argument(1).is_undefined()) {
-        int_end = TRY(vm.argument(1).to_integer_or_infinity(vm));
+    if (!end.is_undefined()) {
+        int_end = TRY(end.to_integer_or_infinity(vm));
+        // 9. If intEnd = -∞, let to be 0.
         if (Value(int_end).is_negative_infinity())
             int_end = 0;
+        // 10. Else if intEnd < 0, let to be max(len + intEnd, 0).
         else if (int_end < 0)
             int_end = max(string_length + int_end, 0);
+        // 11. Else, let to be min(intEnd, len).
         else
             int_end = min(int_end, string_length);
     }
 
+    // 12. If from ≥ to, return the empty String.
     if (int_start >= int_end)
         return PrimitiveString::create(vm, String {});
 
-    return PrimitiveString::create(vm, TRY(Utf16String::create(vm, string.substring_view(int_start, int_end - int_start))));
+    // 13. Return the substring of S from from to to.
+    return PrimitiveString::create(vm, Utf16String::create(string.substring_view(int_start, int_end - int_start)));
 }
 
-// 22.1.3.22 String.prototype.split ( separator, limit ), https://tc39.es/ecma262/#sec-string.prototype.split
+// 22.1.3.23 String.prototype.split ( separator, limit ), https://tc39.es/ecma262/#sec-string.prototype.split
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::split)
 {
     auto& realm = *vm.current_realm();
-
-    auto object = TRY(require_object_coercible(vm, vm.this_value()));
-
     auto separator_argument = vm.argument(0);
     auto limit_argument = vm.argument(1);
 
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    auto object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. If separator is neither undefined nor null, then
     if (!separator_argument.is_nullish()) {
-        auto splitter = TRY(separator_argument.get_method(vm, *vm.well_known_symbol_split()));
-        if (splitter)
+        // a. Let splitter be ? GetMethod(separator, @@split).
+        auto splitter = TRY(separator_argument.get_method(vm, vm.well_known_symbol_split()));
+        // b. If splitter is not undefined, then
+        if (splitter) {
+            // i. Return ? Call(splitter, separator, « O, limit »).
             return TRY(call(vm, *splitter, separator_argument, object, limit_argument));
+        }
     }
 
+    // 3. Let S be ? ToString(O).
     auto string = TRY(object.to_utf16_string(vm));
 
+    // 11. Let substrings be a new empty List.
     auto array = MUST(Array::create(realm, 0));
     size_t array_length = 0;
 
+    // 4. If limit is undefined, let lim be 232 - 1; else let lim be ℝ(? ToUint32(limit)).
     auto limit = NumericLimits<u32>::max();
     if (!limit_argument.is_undefined())
         limit = TRY(limit_argument.to_u32(vm));
 
+    // 5. Let R be ? ToString(separator).
     auto separator = TRY(separator_argument.to_utf16_string(vm));
 
-    if (limit == 0)
+    // 6. If lim = 0, then
+    if (limit == 0) {
+        // a. Return CreateArrayFromList(« »).
         return array;
+    }
 
     auto string_length = string.length_in_code_units();
-    auto separator_length = separator.length_in_code_units();
 
+    // 7. If separator is undefined, then
     if (separator_argument.is_undefined()) {
+        // a. Return CreateArrayFromList(« S »).
         MUST(array->create_data_property_or_throw(0, PrimitiveString::create(vm, move(string))));
         return array;
     }
 
+    // 8. Let separatorLength be the length of R.
+    auto separator_length = separator.length_in_code_units();
+
+    // 10. If S is the empty String, return CreateArrayFromList(« S »).
     if (string_length == 0) {
         if (separator_length > 0)
             MUST(array->create_data_property_or_throw(0, PrimitiveString::create(vm, move(string))));
         return array;
     }
 
-    size_t start = 0;      // 'p' in the spec.
-    auto position = start; // 'q' in the spec.
+    // 12. Let i be 0.
+    size_t start = 0;
+
+    // 13. Let j be StringIndexOf(S, R, 0).
+    auto position = start;
+
+    // 14. Repeat, while j ≠ -1,
     while (position != string_length) {
-        auto match = split_match(string.view(), position, separator.view()); // 'e' in the spec.
+        // a. Let T be the substring of S from i to j.
+        auto match = split_match(string.view(), position, separator.view());
         if (!match.has_value() || match.value() == start) {
             ++position;
             continue;
         }
-
         auto segment = string.substring_view(start, position - start);
-        MUST(array->create_data_property_or_throw(array_length, PrimitiveString::create(vm, TRY(Utf16String::create(vm, segment)))));
+
+        // b. Append T to substrings.
+        MUST(array->create_data_property_or_throw(array_length, PrimitiveString::create(vm, Utf16String::create(segment))));
         ++array_length;
+
+        // c. If the number of elements in substrings is lim, return CreateArrayFromList(substrings).
         if (array_length == limit)
             return array;
+
+        // d. Set i to j + separatorLength.
         start = match.value();
+
+        // e. Set j to StringIndexOf(S, R, i).
         position = start;
     }
 
+    // 15. Let T be the substring of S from i.
     auto rest = string.substring_view(start);
-    MUST(array->create_data_property_or_throw(array_length, PrimitiveString::create(vm, TRY(Utf16String::create(vm, rest)))));
 
+    // 16. Append T to substrings.
+    MUST(array->create_data_property_or_throw(array_length, PrimitiveString::create(vm, Utf16String::create(rest))));
+
+    // 17. Return CreateArrayFromList(substrings).
     return array;
 }
 
-// 22.1.3.23 String.prototype.startsWith ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.startswith
+// 22.1.3.24 String.prototype.startsWith ( searchString [ , position ] ), https://tc39.es/ecma262/#sec-string.prototype.startswith
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::starts_with)
 {
+    auto search_string_value = vm.argument(0);
+    auto position = vm.argument(1);
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
-    auto search_string_value = vm.argument(0);
+    // 3. Let isRegExp be ? IsRegExp(searchString).
+    bool is_regexp = TRY(search_string_value.is_regexp(vm));
 
-    bool search_is_regexp = TRY(search_string_value.is_regexp(vm));
-    if (search_is_regexp)
+    // 4. If isRegExp is true, throw a TypeError exception.
+    if (is_regexp)
         return vm.throw_completion<TypeError>(ErrorType::IsNotA, "searchString", "string, but a regular expression");
 
+    // 5. Let searchStr be ? ToString(searchString).
     auto search_string = TRY(search_string_value.to_utf16_string(vm));
+
+    // 6. Let len be the length of S.
     auto string_length = string.length_in_code_units();
-    auto search_length = search_string.length_in_code_units();
 
     size_t start = 0;
-    if (!vm.argument(1).is_undefined()) {
-        auto position = TRY(vm.argument(1).to_integer_or_infinity(vm));
-        start = clamp(position, static_cast<double>(0), static_cast<double>(string_length));
+
+    // 7. If position is undefined, let pos be 0; else let pos be ? ToIntegerOrInfinity(position).
+    if (!position.is_undefined()) {
+        auto pos = TRY(position.to_integer_or_infinity(vm));
+
+        // 8. Let start be the result of clamping pos between 0 and len.
+        start = clamp(pos, static_cast<double>(0), static_cast<double>(string_length));
     }
 
+    // 9. Let searchLength be the length of searchStr.
+    auto search_length = search_string.length_in_code_units();
+
+    // 10. If searchLength = 0, return true.
     if (search_length == 0)
         return Value(true);
 
+    // 11. Let end be start + searchLength.
     size_t end = start + search_length;
+
+    // 12. If end > len, return false.
     if (end > string_length)
         return Value(false);
 
+    // 13. Let substring be the substring of S from start to end.
     auto substring_view = string.substring_view(start, end - start);
+
+    // 14. If substring is searchStr, return true.
+    // 15. Return false.
     return Value(substring_view == search_string.view());
 }
 
-// 22.1.3.24 String.prototype.substring ( start, end ), https://tc39.es/ecma262/#sec-string.prototype.substring
+// 22.1.3.25 String.prototype.substring ( start, end ), https://tc39.es/ecma262/#sec-string.prototype.substring
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::substring)
 {
     // 1. Let O be ? RequireObjectCoercible(this value).
@@ -875,6 +1228,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::substring)
 
     // 4. Let intStart be ? ToIntegerOrInfinity(start).
     auto start = TRY(vm.argument(0).to_integer_or_infinity(vm));
+
     // 5. If end is undefined, let intEnd be len; else let intEnd be ? ToIntegerOrInfinity(end).
     auto end = string_length;
     if (!vm.argument(1).is_undefined())
@@ -882,16 +1236,18 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::substring)
 
     // 6. Let finalStart be the result of clamping intStart between 0 and len.
     size_t final_start = clamp(start, static_cast<double>(0), string_length);
+
     // 7. Let finalEnd be the result of clamping intEnd between 0 and len.
     size_t final_end = clamp(end, static_cast<double>(0), string_length);
 
     // 8. Let from be min(finalStart, finalEnd).
     size_t from = min(final_start, final_end);
+
     // 9. Let to be max(finalStart, finalEnd).
     size_t to = max(final_start, final_end);
 
     // 10. Return the substring of S from from to to.
-    return PrimitiveString::create(vm, TRY(Utf16String::create(vm, string.substring_view(from, to - from))));
+    return PrimitiveString::create(vm, Utf16String::create(string.substring_view(from, to - from)));
 }
 
 enum class TargetCase {
@@ -910,18 +1266,18 @@ static ThrowCompletionOr<String> transform_case(VM& vm, String const& string, Va
     // 2. If requestedLocales is not an empty List, then
     if (!requested_locales.is_empty()) {
         // a. Let requestedLocale be requestedLocales[0].
-        requested_locale = TRY_OR_THROW_OOM(vm, Locale::parse_unicode_locale_id(requested_locales[0]));
+        requested_locale = Locale::parse_unicode_locale_id(requested_locales[0]);
     }
     // 3. Else,
     else {
         // a. Let requestedLocale be ! DefaultLocale().
-        requested_locale = TRY_OR_THROW_OOM(vm, Locale::parse_unicode_locale_id(Locale::default_locale()));
+        requested_locale = Locale::parse_unicode_locale_id(Locale::default_locale());
     }
     VERIFY(requested_locale.has_value());
 
     // 4. Let noExtensionsLocale be the String value that is requestedLocale with any Unicode locale extension sequences (6.2.1) removed.
     requested_locale->remove_extension_type<Locale::LocaleExtension>();
-    auto no_extensions_locale = TRY_OR_THROW_OOM(vm, requested_locale->to_string());
+    auto no_extensions_locale = requested_locale->to_string();
 
     // 5. Let availableLocales be a List with language tags that includes the languages for which the Unicode Character Database contains language sensitive case mappings. Implementations may add additional language tags if they support case mapping for additional locales.
     // 6. Let locale be ! BestAvailableLocale(availableLocales, noExtensionsLocale).
@@ -939,13 +1295,13 @@ static ThrowCompletionOr<String> transform_case(VM& vm, String const& string, Va
     // 9. If targetCase is lower, then
     case TargetCase::Lower:
         // a. Let newCodePoints be a List whose elements are the result of a lowercase transformation of codePoints according to an implementation-derived algorithm using locale or the Unicode Default Case Conversion algorithm.
-        new_code_points = TRY_OR_THROW_OOM(vm, string.to_lowercase(*locale));
+        new_code_points = MUST(string.to_lowercase(*locale));
         break;
     // 10. Else,
     case TargetCase::Upper:
         // a. Assert: targetCase is upper.
         // b. Let newCodePoints be a List whose elements are the result of an uppercase transformation of codePoints according to an implementation-derived algorithm using locale or the Unicode Default Case Conversion algorithm.
-        new_code_points = TRY_OR_THROW_OOM(vm, string.to_uppercase(*locale));
+        new_code_points = MUST(string.to_uppercase(*locale));
         break;
     default:
         VERIFY_NOT_REACHED();
@@ -955,7 +1311,7 @@ static ThrowCompletionOr<String> transform_case(VM& vm, String const& string, Va
     return new_code_points;
 }
 
-// 22.1.3.25 String.prototype.toLocaleLowerCase ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase
+// 22.1.3.26 String.prototype.toLocaleLowerCase ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase
 // 19.1.2 String.prototype.toLocaleLowerCase ( [ locales ] ), https://tc39.es/ecma402/#sup-string.prototype.tolocalelowercase
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_locale_lowercase)
 {
@@ -969,7 +1325,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_locale_lowercase)
     return PrimitiveString::create(vm, TRY(transform_case(vm, string, locales, TargetCase::Lower)));
 }
 
-// 22.1.3.26 String.prototype.toLocaleUpperCase ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.tolocaleuppercase
+// 22.1.3.27 String.prototype.toLocaleUpperCase ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-string.prototype.tolocaleuppercase
 // 19.1.3 String.prototype.toLocaleUpperCase ( [ locales ] ), https://tc39.es/ecma402/#sup-string.prototype.tolocaleuppercase
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_locale_uppercase)
 {
@@ -983,35 +1339,53 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_locale_uppercase)
     return PrimitiveString::create(vm, TRY(transform_case(vm, string, locales, TargetCase::Upper)));
 }
 
-// 22.1.3.27 String.prototype.toLowerCase ( ), https://tc39.es/ecma262/#sec-string.prototype.tolowercase
+// 22.1.3.28 String.prototype.toLowerCase ( ), https://tc39.es/ecma262/#sec-string.prototype.tolowercase
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_lowercase)
 {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    // 3. Let sText be StringToCodePoints(S).
     auto string = TRY(utf8_string_from(vm));
-    auto lowercase = TRY_OR_THROW_OOM(vm, string.to_lowercase());
+
+    // 4. Let lowerText be the result of toLowercase(sText), according to the Unicode Default Case Conversion algorithm.
+    auto lowercase = MUST(string.to_lowercase());
+
+    // 5. Let L be CodePointsToString(lowerText).
+    // 6. Return L.
     return PrimitiveString::create(vm, move(lowercase));
 }
 
-// 22.1.3.28 String.prototype.toString ( ), https://tc39.es/ecma262/#sec-string.prototype.tostring
+// 22.1.3.29 String.prototype.toString ( ), https://tc39.es/ecma262/#sec-string.prototype.tostring
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_string)
 {
+    // 1. Return ? thisStringValue(this value).
     return TRY(this_string_value(vm, vm.this_value()));
 }
 
-// 22.1.3.29 String.prototype.toUpperCase ( ), https://tc39.es/ecma262/#sec-string.prototype.touppercase
+// 22.1.3.30 String.prototype.toUpperCase ( ), https://tc39.es/ecma262/#sec-string.prototype.touppercase
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_uppercase)
 {
+    // This method interprets a String value as a sequence of UTF-16 encoded code points, as described in 6.1.4.
+    // It behaves in exactly the same way as String.prototype.toLowerCase, except that the String is mapped using the toUppercase algorithm of the Unicode Default Case Conversion.
     auto string = TRY(utf8_string_from(vm));
-    auto uppercase = TRY_OR_THROW_OOM(vm, string.to_uppercase());
+    auto uppercase = MUST(string.to_uppercase());
     return PrimitiveString::create(vm, move(uppercase));
 }
 
-// 22.1.3.11 String.prototype.toWellFormed ( ), https://tc39.es/proposal-is-usv-string/#sec-string.prototype.towellformed
+// 22.1.3.31 String.prototype.toWellFormed ( ), https://tc39.es/ecma262/#sec-string.prototype.towellformed
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
 {
     // 1. Let O be ? RequireObjectCoercible(this value).
     // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
+    // NOTE: Rest of steps in to_well_formed below
+    return PrimitiveString::create(vm, to_well_formed_string(string));
+}
+
+// https://tc39.es/ecma262/#sec-string.prototype.towellformed
+String to_well_formed_string(Utf16String const& string)
+{
     // 3. Let strLen be the length of S.
     auto length = string.length_in_code_units();
 
@@ -1019,7 +1393,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
     size_t k = 0;
 
     // 5. Let result be the empty String.
-    ThrowableStringBuilder result(vm);
+    StringBuilder result;
 
     // 6. Repeat, while k < strLen,
     while (k < length) {
@@ -1029,12 +1403,12 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
         // b. If cp.[[IsUnpairedSurrogate]] is true, then
         if (code_point.is_unpaired_surrogate) {
             // i. Set result to the string-concatenation of result and 0xFFFD (REPLACEMENT CHARACTER).
-            TRY(result.append_code_point(0xfffd));
+            result.append_code_point(0xfffd);
         }
         // c. Else,
         else {
             // i. Set result to the string-concatenation of result and UTF16EncodeCodePoint(cp.[[CodePoint]]).
-            TRY(result.append_code_point(code_point.code_point));
+            result.append_code_point(code_point.code_point);
         }
 
         // d. Set k to k + cp.[[CodeUnitCount]].
@@ -1042,9 +1416,10 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
     }
 
     // 7. Return result.
-    return PrimitiveString::create(vm, TRY(result.to_string()));
+    return MUST(result.to_string());
 }
 
+// 22.1.3.32.1 TrimString ( string, where ), https://tc39.es/ecma262/#sec-trimstring
 ThrowCompletionOr<String> trim_string(VM& vm, Value input_value, TrimMode where)
 {
     // 1. Let str be ? RequireObjectCoercible(string).
@@ -1061,40 +1436,53 @@ ThrowCompletionOr<String> trim_string(VM& vm, Value input_value, TrimMode where)
     auto trimmed_string = Utf8View(string).trim(whitespace_characters, where).as_string();
 
     // 6. Return T.
-    return TRY_OR_THROW_OOM(vm, String::from_utf8(trimmed_string));
+    return MUST(String::from_utf8(trimmed_string));
 }
 
-// 22.1.3.30 String.prototype.trim ( ), https://tc39.es/ecma262/#sec-string.prototype.trim
+// 22.1.3.32 String.prototype.trim ( ), https://tc39.es/ecma262/#sec-string.prototype.trim
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::trim)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? TrimString(S, start+end).
     return PrimitiveString::create(vm, TRY(trim_string(vm, vm.this_value(), TrimMode::Both)));
 }
 
-// 22.1.3.31 String.prototype.trimEnd ( ), https://tc39.es/ecma262/#sec-string.prototype.trimend
+// 22.1.3.33 String.prototype.trimEnd ( ), https://tc39.es/ecma262/#sec-string.prototype.trimend
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::trim_end)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? TrimString(S, end).
     return PrimitiveString::create(vm, TRY(trim_string(vm, vm.this_value(), TrimMode::Right)));
 }
 
-// 22.1.3.32 String.prototype.trimStart ( ), https://tc39.es/ecma262/#sec-string.prototype.trimstart
+// 22.1.3.34 String.prototype.trimStart ( ), https://tc39.es/ecma262/#sec-string.prototype.trimstart
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::trim_start)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? TrimString(S, start).
     return PrimitiveString::create(vm, TRY(trim_string(vm, vm.this_value(), TrimMode::Left)));
 }
 
-// 22.1.3.33 String.prototype.valueOf ( ), https://tc39.es/ecma262/#sec-string.prototype.valueof
+// 22.1.3.35 String.prototype.valueOf ( ), https://tc39.es/ecma262/#sec-string.prototype.valueof
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::value_of)
 {
     return TRY(this_string_value(vm, vm.this_value()));
 }
 
-// 22.1.3.34 String.prototype [ @@iterator ] ( ), https://tc39.es/ecma262/#sec-string.prototype-@@iterator
+// 22.1.3.36 String.prototype [ @@iterator ] ( ), https://tc39.es/ecma262/#sec-string.prototype-@@iterator
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::symbol_iterator)
 {
     auto& realm = *vm.current_realm();
 
+    // 1. Let O be ? RequireObjectCoercible(this value).
     auto this_object = TRY(require_object_coercible(vm, vm.this_value()));
+
+    // 2. Let s be ? ToString(O).
     auto string = TRY(this_object.to_string(vm));
+
+    // 3. Let closure be a new Abstract Closure with no parameters that captures s and performs the following steps when called:
+    //     ...
+    // 4. Return CreateIteratorFromClosure(closure, "%StringIteratorPrototype%", %StringIteratorPrototype%).
     return StringIterator::create(realm, string);
 }
 
@@ -1135,108 +1523,170 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::substr)
         return PrimitiveString::create(vm, String {});
 
     // 11. Return the substring of S from intStart to intEnd.
-    return PrimitiveString::create(vm, TRY(Utf16String::create(vm, string.substring_view(int_start, int_end - int_start))));
+    return PrimitiveString::create(vm, Utf16String::create(string.substring_view(int_start, int_end - int_start)));
 }
 
 // B.2.2.2.1 CreateHTML ( string, tag, attribute, value ), https://tc39.es/ecma262/#sec-createhtml
 static ThrowCompletionOr<Value> create_html(VM& vm, Value string, StringView tag, StringView attribute, Value value)
 {
+    // 1. Let str be ? RequireObjectCoercible(string).
     TRY(require_object_coercible(vm, string));
+
+    // 2. Let S be ? ToString(str).
     auto str = TRY(string.to_string(vm));
-    ThrowableStringBuilder builder(vm);
-    TRY(builder.append('<'));
-    TRY(builder.append(tag));
+
+    // 3. Let p1 be the string-concatenation of "<" and tag.
+    StringBuilder builder;
+    builder.append('<');
+    builder.append(tag);
+
+    // 4. If attribute is not the empty String, then
     if (!attribute.is_empty()) {
+        // a. Let V be ? ToString(value).
         auto value_string = TRY(value.to_string(vm));
-        TRY(builder.append(' '));
-        TRY(builder.append(attribute));
-        TRY(builder.append("=\""sv));
-        TRY(builder.append(TRY_OR_THROW_OOM(vm, value_string.replace("\""sv, "&quot;"sv, ReplaceMode::All))));
-        TRY(builder.append('"'));
+
+        // b. Let escapedV be the String value that is the same as V except that each occurrence of the code unit 0x0022 (QUOTATION MARK) in V has been replaced with the six code unit sequence "&quot;".
+        auto escaped_value_string = MUST(value_string.replace("\""sv, "&quot;"sv, ReplaceMode::All));
+
+        // c. Set p1 to the string-concatenation of:
+        // - p1
+        // - the code unit 0x0020 (SPACE)
+        builder.append(' ');
+        // - attribute
+        builder.append(attribute);
+        // - the code unit 0x003D (EQUALS SIGN)
+        // - the code unit 0x0022 (QUOTATION MARK)
+        builder.append("=\""sv);
+        // - escapedV
+        builder.append(escaped_value_string);
+        // - the code unit 0x0022 (QUOTATION MARK)
+        builder.append('"');
     }
-    TRY(builder.append('>'));
-    TRY(builder.append(str));
-    TRY(builder.append("</"sv));
-    TRY(builder.append(tag));
-    TRY(builder.append('>'));
-    return PrimitiveString::create(vm, TRY(builder.to_string()));
+
+    // 5. Let p2 be the string-concatenation of p1 and ">".
+    builder.append('>');
+
+    // 6. Let p3 be the string-concatenation of p2 and S.
+    builder.append(str);
+
+    // 7. Let p4 be the string-concatenation of p3, "</", tag, and ">".
+    builder.append("</"sv);
+    builder.append(tag);
+    builder.append('>');
+
+    // 8. Return p4.
+    return PrimitiveString::create(vm, MUST(builder.to_string()));
 }
 
 // B.2.2.2 String.prototype.anchor ( name ), https://tc39.es/ecma262/#sec-string.prototype.anchor
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::anchor)
 {
-    return create_html(vm, vm.this_value(), "a"sv, "name"sv, vm.argument(0));
+    auto name = vm.argument(0);
+
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "a", "name", name).
+    return create_html(vm, vm.this_value(), "a"sv, "name"sv, name);
 }
 
 // B.2.2.3 String.prototype.big ( ), https://tc39.es/ecma262/#sec-string.prototype.big
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::big)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "big", "", "").
     return create_html(vm, vm.this_value(), "big"sv, {}, Value());
 }
 
 // B.2.2.4 String.prototype.blink ( ), https://tc39.es/ecma262/#sec-string.prototype.blink
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::blink)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "blink", "", "").
     return create_html(vm, vm.this_value(), "blink"sv, {}, Value());
 }
 
 // B.2.2.5 String.prototype.bold ( ), https://tc39.es/ecma262/#sec-string.prototype.bold
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::bold)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "b", "", "").
     return create_html(vm, vm.this_value(), "b"sv, {}, Value());
 }
 
 // B.2.2.6 String.prototype.fixed ( ), https://tc39.es/ecma262/#sec-string.prototype.fixed
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::fixed)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "tt", "", "").
     return create_html(vm, vm.this_value(), "tt"sv, {}, Value());
 }
 
 // B.2.2.7 String.prototype.fontcolor ( color ), https://tc39.es/ecma262/#sec-string.prototype.fontcolor
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::fontcolor)
 {
-    return create_html(vm, vm.this_value(), "font"sv, "color"sv, vm.argument(0));
+    auto color = vm.argument(0);
+
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "font", "color", color).
+    return create_html(vm, vm.this_value(), "font"sv, "color"sv, color);
 }
 
 // B.2.2.8 String.prototype.fontsize ( size ), https://tc39.es/ecma262/#sec-string.prototype.fontsize
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::fontsize)
 {
-    return create_html(vm, vm.this_value(), "font"sv, "size"sv, vm.argument(0));
+    auto size = vm.argument(0);
+
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "font", "size", size).
+    return create_html(vm, vm.this_value(), "font"sv, "size"sv, size);
 }
 
 // B.2.2.9 String.prototype.italics ( ), https://tc39.es/ecma262/#sec-string.prototype.italics
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::italics)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "i", "", "").
     return create_html(vm, vm.this_value(), "i"sv, {}, Value());
 }
 
 // B.2.2.10 String.prototype.link ( url ), https://tc39.es/ecma262/#sec-string.prototype.link
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::link)
 {
-    return create_html(vm, vm.this_value(), "a"sv, "href"sv, vm.argument(0));
+    auto url = vm.argument(0);
+
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "a", "href", url).
+    return create_html(vm, vm.this_value(), "a"sv, "href"sv, url);
 }
 
 // B.2.2.11 String.prototype.small ( ), https://tc39.es/ecma262/#sec-string.prototype.small
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::small)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "small", "", "").
     return create_html(vm, vm.this_value(), "small"sv, {}, Value());
 }
 
 // B.2.2.12 String.prototype.strike ( ), https://tc39.es/ecma262/#sec-string.prototype.strike
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::strike)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "strike", "", "").
     return create_html(vm, vm.this_value(), "strike"sv, {}, Value());
 }
 
 // B.2.2.13 String.prototype.sub ( ), https://tc39.es/ecma262/#sec-string.prototype.sub
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::sub)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "sub", "", "").
     return create_html(vm, vm.this_value(), "sub"sv, {}, Value());
 }
 
 // B.2.2.14 String.prototype.sup ( ), https://tc39.es/ecma262/#sec-string.prototype.sup
 JS_DEFINE_NATIVE_FUNCTION(StringPrototype::sup)
 {
+    // 1. Let S be the this value.
+    // 2. Return ? CreateHTML(S, "sup", "", "").
     return create_html(vm, vm.this_value(), "sup"sv, {}, Value());
 }
 

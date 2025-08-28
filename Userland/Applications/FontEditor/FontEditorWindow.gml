@@ -23,15 +23,19 @@
 
             @FontEditor::GlyphEditorWidget {
                 name: "glyph_editor_widget"
+                visible: false
             }
 
             @GUI::Widget {
+                name: "width_control_container"
                 preferred_height: "shrink"
+                visible: false
                 layout: @GUI::VerticalBoxLayout {}
 
                 @GUI::SpinBox {
                     name: "glyph_editor_width_spinbox"
                     preferred_width: "fit"
+                    min: 0
                 }
 
                 @GUI::CheckBox {

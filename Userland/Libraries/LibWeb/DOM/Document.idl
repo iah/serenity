@@ -1,7 +1,11 @@
+#import <Animations/DocumentTimeline.idl>
+#import <CSS/FontFaceSet.idl>
 #import <CSS/StyleSheetList.idl>
+#import <DOM/CDATASection.idl>
 #import <DOM/Comment.idl>
 #import <DOM/DOMImplementation.idl>
 #import <DOM/DocumentFragment.idl>
+#import <DOM/DocumentOrShadowRoot.idl>
 #import <DOM/DocumentType.idl>
 #import <DOM/Element.idl>
 #import <DOM/Event.idl>
@@ -16,6 +20,7 @@
 #import <DOM/Range.idl>
 #import <DOM/Text.idl>
 #import <DOM/TreeWalker.idl>
+#import <HTML/HTMLAllCollection.idl>
 #import <HTML/HTMLElement.idl>
 #import <HTML/HTMLHeadElement.idl>
 #import <HTML/HTMLScriptElement.idl>
@@ -23,7 +28,8 @@
 #import <Selection/Selection.idl>
 
 // https://dom.spec.whatwg.org/#document
-[Exposed=Window]
+// https://html.spec.whatwg.org/multipage/dom.html#the-document-object
+[Exposed=Window, LegacyOverrideBuiltins]
 interface Document : Node {
     constructor();
 
@@ -42,7 +48,7 @@ interface Document : Node {
     readonly attribute DOMString inputEncoding;
     readonly attribute DOMString contentType;
 
-    readonly attribute Window? defaultView;
+    readonly attribute WindowProxy? defaultView;
 
     [CEReactions] Document open(optional DOMString unused1, optional DOMString unused2);
     WindowProxy? open(USVString url, DOMString name, DOMString features);
@@ -50,16 +56,26 @@ interface Document : Node {
     [CEReactions] undefined write(DOMString... text);
     [CEReactions] undefined writeln(DOMString... text);
 
+    // FIXME: static Document parseHTMLUnsafe((TrustedHTML or DOMString) html);
+    static Document parseHTMLUnsafe(DOMString html);
+
     attribute DOMString cookie;
+
+    // https://html.spec.whatwg.org/#Document-partial
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString fgColor;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString linkColor;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString vlinkColor;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString alinkColor;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString bgColor;
 
     readonly attribute USVString referrer;
 
     readonly attribute Element? activeElement;
 
     Element? getElementById(DOMString id);
-    HTMLCollection getElementsByName(DOMString name);
-    HTMLCollection getElementsByTagName(DOMString tagName);
-    HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
+    NodeList getElementsByName([FlyString] DOMString name);
+    HTMLCollection getElementsByTagName([FlyString] DOMString tagName);
+    HTMLCollection getElementsByTagNameNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
     HTMLCollection getElementsByClassName(DOMString className);
 
     [SameObject] readonly attribute HTMLCollection applets;
@@ -71,15 +87,22 @@ interface Document : Node {
     [SameObject] readonly attribute HTMLCollection forms;
     [SameObject] readonly attribute HTMLCollection scripts;
 
-    // FIXME: Should return an HTMLAllCollection
-    readonly attribute HTMLCollection all;
+    readonly attribute HTMLAllCollection all;
 
-    Element createElement(DOMString tagName);
-    Element createElementNS(DOMString? namespace, DOMString qualifiedName);
+    undefined clear();
+    undefined captureEvents();
+    undefined releaseEvents();
+
+    [CEReactions, NewObject] Element createElement(DOMString tagName, optional (DOMString or ElementCreationOptions) options = {});
+    [CEReactions, NewObject] Element createElementNS([FlyString] DOMString? namespace, DOMString qualifiedName, optional (DOMString or ElementCreationOptions) options = {});
     DocumentFragment createDocumentFragment();
     Text createTextNode(DOMString data);
+    [NewObject] CDATASection createCDATASection(DOMString data);
     Comment createComment(DOMString data);
     [NewObject] ProcessingInstruction createProcessingInstruction(DOMString target, DOMString data);
+
+    [NewObject] Attr createAttribute(DOMString localName);
+    [NewObject] Attr createAttributeNS([FlyString] DOMString? namespace, DOMString qualifiedName);
 
     Range createRange();
     Event createEvent(DOMString interface);
@@ -87,29 +110,55 @@ interface Document : Node {
     [CEReactions, NewObject] Node importNode(Node node, optional boolean deep = false);
     [CEReactions, ImplementedAs=adopt_node_binding] Node adoptNode(Node node);
 
-    [ImplementedAs=style_sheets_for_bindings] readonly attribute StyleSheetList styleSheets;
-
     readonly attribute DOMString compatMode;
     readonly attribute DocumentType? doctype;
 
     readonly attribute Element? documentElement;
-    attribute HTMLElement? body;
+    [CEReactions] attribute DOMString dir;
+    [CEReactions] attribute HTMLElement? body;
     readonly attribute HTMLHeadElement? head;
     readonly attribute HTMLScriptElement? currentScript;
 
+    readonly attribute DOMString lastModified;
     readonly attribute DOMString readyState;
 
-    attribute DOMString title;
+    [CEReactions] attribute DOMString title;
 
-    boolean queryCommandSupported(DOMString commandId);
-    readonly boolean hidden;
-    readonly DOMString visibilityState;
+    readonly attribute boolean hidden;
+    readonly attribute DOMString visibilityState;
 
     [NewObject] NodeIterator createNodeIterator(Node root, optional unsigned long whatToShow = 0xFFFFFFFF, optional NodeFilter? filter = null);
     [NewObject] TreeWalker createTreeWalker(Node root, optional unsigned long whatToShow = 0xFFFFFFFF, optional NodeFilter? filter = null);
 
     Selection? getSelection();
+
+    [CEReactions] attribute DOMString designMode;
+
+    // https://www.w3.org/TR/web-animations-1/#extensions-to-the-document-interface
+    readonly attribute DocumentTimeline timeline;
+
+    // https://drafts.csswg.org/cssom-view/#extensions-to-the-document-interface
+    Element? elementFromPoint(double x, double y);
+    sequence<Element> elementsFromPoint(double x, double y);
+    readonly attribute Element? scrollingElement;
+
+    // https://w3c.github.io/editing/docs/execCommand/
+    [CEReactions] boolean execCommand(DOMString commandId, optional boolean showUI = false, optional DOMString value = "");
+    boolean queryCommandEnabled(DOMString commandId);
+    boolean queryCommandIndeterm(DOMString commandId);
+    boolean queryCommandState(DOMString commandId);
+    boolean queryCommandSupported(DOMString commandId);
+    DOMString queryCommandValue(DOMString commandId);
+
+    // special event handler IDL attributes that only apply to Document objects
+    [LegacyLenientThis] attribute EventHandler onreadystatechange;
+    attribute EventHandler onvisibilitychange;
 };
 
+dictionary ElementCreationOptions {
+    DOMString is;
+};
 Document includes ParentNode;
 Document includes GlobalEventHandlers;
+Document includes DocumentOrShadowRoot;
+Document includes FontFaceSource;

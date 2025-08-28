@@ -6,9 +6,11 @@
 
 #pragma once
 
-#include <AK/AtomicRefCounted.h>
-#include <Kernel/Devices/HID/KeyboardDevice.h>
-#include <Kernel/Devices/HID/MouseDevice.h>
+#include <AK/Types.h>
+#include <Kernel/Bus/SerialIO/Controller.h>
+#include <Kernel/Bus/SerialIO/Device.h>
+#include <Kernel/Bus/SerialIO/PS2Definitions.h>
+#include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Locking/Spinlock.h>
 
 namespace Kernel {
@@ -65,89 +67,80 @@ enum I8042Response : u8 {
     Resend = 0xFE,
 };
 
-class I8042Controller;
-class I8042Device {
-public:
-    virtual ~I8042Device() = default;
-
-    virtual void irq_handle_byte_read(u8 byte) = 0;
-
-protected:
-    explicit I8042Device(I8042Controller const& ps2_controller)
-        : m_i8042_controller(ps2_controller)
-    {
-    }
-
-    NonnullLockRefPtr<I8042Controller> m_i8042_controller;
-};
-
 class PS2KeyboardDevice;
 class PS2MouseDevice;
-class HIDManagement;
-class I8042Controller final : public AtomicRefCounted<I8042Controller> {
+
+class I8042Controller;
+class I8042ControllerIRQHandler final
+    : public IRQHandler {
+public:
+    static ErrorOr<NonnullOwnPtr<I8042ControllerIRQHandler>> try_create(I8042Controller const&, u8 irq_number);
+
+private:
+    I8042ControllerIRQHandler(I8042Controller const& controller, u8 irq_number);
+
+    // ^IRQHandler
+    virtual bool handle_irq() override;
+    virtual StringView purpose() const override { return "I8042ControllerIRQHandler"sv; }
+
+    NonnullRefPtr<I8042Controller> const m_controller;
+};
+
+class InputManagement;
+class I8042Controller final : public SerialIOController {
     friend class PS2KeyboardDevice;
     friend class PS2MouseDevice;
 
 public:
-    static NonnullLockRefPtr<I8042Controller> initialize();
+    static ErrorOr<NonnullRefPtr<I8042Controller>> create();
 
-    ErrorOr<void> detect_devices();
+    enum class EnableKeyboardFirstPortTranslation {
+        Yes,
+        No
+    };
+    ErrorOr<void> detect_devices(EnableKeyboardFirstPortTranslation);
 
-    ErrorOr<void> reset_device(HIDDevice::Type device)
+    virtual ErrorOr<void> send_command(PortIndex, DeviceCommand command) override;
+    virtual ErrorOr<void> send_command(PortIndex, DeviceCommand command, u8 data) override;
+
+    virtual ErrorOr<void> reset_device(PortIndex port_index) override
     {
         SpinlockLocker lock(m_lock);
-        return do_reset_device(device);
+        return do_reset_device(port_index);
     }
-
-    ErrorOr<u8> send_command(HIDDevice::Type device, u8 command)
+    virtual ErrorOr<u8> read_from_device(PortIndex port_index) override
     {
         SpinlockLocker lock(m_lock);
-        return do_send_command(device, command);
+        return do_read_from_device(port_index);
     }
-    ErrorOr<u8> send_command(HIDDevice::Type device, u8 command, u8 data)
-    {
-        SpinlockLocker lock(m_lock);
-        return do_send_command(device, command, data);
-    }
-
-    ErrorOr<u8> read_from_device(HIDDevice::Type device)
-    {
-        SpinlockLocker lock(m_lock);
-        return do_read_from_device(device);
-    }
-
-    ErrorOr<void> wait_then_write(u8 port, u8 data)
-    {
-        SpinlockLocker lock(m_lock);
-        return do_wait_then_write(port, data);
-    }
-
-    ErrorOr<u8> wait_then_read(u8 port)
-    {
-        SpinlockLocker lock(m_lock);
-        return do_wait_then_read(port);
-    }
-
-    ErrorOr<void> prepare_for_output();
-    ErrorOr<void> prepare_for_input(HIDDevice::Type);
-
-    bool irq_process_input_buffer(HIDDevice::Type);
-
-    LockRefPtr<MouseDevice> mouse() const;
-    LockRefPtr<KeyboardDevice> keyboard() const;
+    virtual ErrorOr<void> prepare_for_input(PortIndex) override;
 
     // Note: This function exists only for the initialization process of the controller
-    bool check_existence_via_probing(Badge<HIDManagement>);
+    bool check_existence_via_probing(Badge<InputManagement>);
+
+    bool handle_irq(Badge<I8042ControllerIRQHandler>, u8 irq_number);
 
 private:
     I8042Controller();
-    ErrorOr<void> do_reset_device(HIDDevice::Type);
-    ErrorOr<u8> do_send_command(HIDDevice::Type type, u8 data);
-    ErrorOr<u8> do_send_command(HIDDevice::Type device, u8 command, u8 data);
-    ErrorOr<u8> do_write_to_device(HIDDevice::Type device, u8 data);
-    ErrorOr<u8> do_read_from_device(HIDDevice::Type device);
+
+    bool irq_process_input_buffer(PortIndex);
+
+    ErrorOr<void> prepare_for_any_output();
+
+    ErrorOr<void> prepare_for_any_input();
+
+    ErrorOr<void> do_reset_device(PortIndex);
+    ErrorOr<void> do_send_command(PortIndex port_index, u8 data);
+    ErrorOr<void> do_send_command(PortIndex port_index, u8 command, u8 data);
+    ErrorOr<void> do_write_to_device(PortIndex port_index, u8 data);
+    ErrorOr<u8> do_read_from_device(PortIndex port_index);
     ErrorOr<void> do_wait_then_write(u8 port, u8 data);
-    ErrorOr<u8> do_wait_then_read(u8 port);
+
+    // NOTE: The meaning of "any input" here is that this is not attached
+    // to any PS2 port, but rather we accept any serial input, which is vital
+    // when reading values before initializing any actual PS2 device!
+    ErrorOr<u8> do_wait_then_read_any_input(u8 port);
+
     ErrorOr<void> drain_output_buffer();
 
     // Note: These functions exist only for the initialization process of the controller
@@ -158,8 +151,37 @@ private:
     bool m_first_port_available { false };
     bool m_second_port_available { false };
     bool m_is_dual_channel { false };
-    LockRefPtr<MouseDevice> m_mouse_device;
-    LockRefPtr<KeyboardDevice> m_keyboard_device;
+
+    enum I8042PortIndex {
+        FirstPort = 0,
+        SecondPort = 1,
+    };
+
+    // NOTE: Each i8042 controller can have at most 2 ports - a regular (traditional
+    // ATKBD) port and AUX port (for mouse devices mostly).
+    // However, the specification for i8042 controller, as well as decent hardware
+    // implementations and software drivers actually allow a user to still operate
+    // a keyboard and mouse even if they were connected in reverse (i.e. keyboard
+    // was connected to AUX port, and mouse was connected to the traditional ATKBD port).
+    //
+    // Please note, that if the keyboard and mouse devices are connected in reverse, then ATKBD translation mode
+    // cannot be sanely enabled due to obvious peripheral devices' protocol differences, and will result
+    // in misproper data being sent back.
+    struct PS2Port {
+        OwnPtr<SerialIODevice> device;
+        // NOTE: This value is being used as 1:1 map between the I8042 port being handled, to
+        // the either the MouseDevice or KeyboardDevice being attached.
+        Optional<PS2DeviceType> device_type;
+    };
+
+    // NOTE: Each i8042 controller can have at most 2 devices - a mouse and keyboard,
+    // mouse and a mouse, or keyboard and a keyboard.
+    // NOTE: This is usually used as the ATKBD port.
+    PS2Port m_first_ps2_port;
+    // NOTE: This is usually used as the AUX port.
+    PS2Port m_second_ps2_port;
+
+    Array<OwnPtr<I8042ControllerIRQHandler>, 2> m_irq_handlers;
 };
 
 }

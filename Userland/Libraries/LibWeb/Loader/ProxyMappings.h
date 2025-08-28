@@ -7,9 +7,9 @@
 #pragma once
 
 #include <AK/HashMap.h>
-#include <AK/URL.h>
 #include <AK/Vector.h>
 #include <LibCore/Proxy.h>
+#include <LibURL/URL.h>
 
 namespace Web {
 
@@ -17,15 +17,15 @@ class ProxyMappings {
 public:
     static ProxyMappings& the();
 
-    Core::ProxyData proxy_for_url(AK::URL const&) const;
-    void set_mappings(Vector<DeprecatedString> proxies, OrderedHashMap<DeprecatedString, size_t> mappings);
+    Core::ProxyData proxy_for_url(URL::URL const&) const;
+    void set_mappings(Vector<ByteString> proxies, OrderedHashMap<ByteString, size_t> mappings);
 
 private:
     ProxyMappings() = default;
     ~ProxyMappings() = default;
 
-    Vector<DeprecatedString> m_proxies;
-    OrderedHashMap<DeprecatedString, size_t> m_mappings;
+    Vector<ByteString> m_proxies;
+    OrderedHashMap<ByteString, size_t> m_mappings;
 };
 
 }

@@ -11,9 +11,11 @@
 
 namespace Web::CSS {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<CSSSupportsRule>> CSSSupportsRule::create(JS::Realm& realm, NonnullRefPtr<Supports>&& supports, CSSRuleList& rules)
+JS_DEFINE_ALLOCATOR(CSSSupportsRule);
+
+JS::NonnullGCPtr<CSSSupportsRule> CSSSupportsRule::create(JS::Realm& realm, NonnullRefPtr<Supports>&& supports, CSSRuleList& rules)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<CSSSupportsRule>(realm, realm, move(supports), rules));
+    return realm.heap().allocate<CSSSupportsRule>(realm, realm, move(supports), rules);
 }
 
 CSSSupportsRule::CSSSupportsRule(JS::Realm& realm, NonnullRefPtr<Supports>&& supports, CSSRuleList& rules)
@@ -22,27 +24,19 @@ CSSSupportsRule::CSSSupportsRule(JS::Realm& realm, NonnullRefPtr<Supports>&& sup
 {
 }
 
-JS::ThrowCompletionOr<void> CSSSupportsRule::initialize(JS::Realm& realm)
+void CSSSupportsRule::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::CSSSupportsRulePrototype>(realm, "CSSSupportsRule"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(CSSSupportsRule);
 }
 
-DeprecatedString CSSSupportsRule::condition_text() const
+String CSSSupportsRule::condition_text() const
 {
-    return m_supports->to_string().release_value_but_fixme_should_propagate_errors().to_deprecated_string();
-}
-
-void CSSSupportsRule::set_condition_text(DeprecatedString text)
-{
-    if (auto new_supports = parse_css_supports(Parser::ParsingContext { realm() }, text))
-        m_supports = new_supports.release_nonnull();
+    return m_supports->to_string();
 }
 
 // https://www.w3.org/TR/cssom-1/#serialize-a-css-rule
-DeprecatedString CSSSupportsRule::serialized() const
+String CSSSupportsRule::serialized() const
 {
     // Note: The spec doesn't cover this yet, so I'm roughly following the spec for the @media rule.
     // It should be pretty close!
@@ -61,7 +55,7 @@ DeprecatedString CSSSupportsRule::serialized() const
     }
     builder.append("\n}"sv);
 
-    return builder.to_deprecated_string();
+    return MUST(builder.to_string());
 }
 
 }

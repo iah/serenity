@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2023, Jakub Berkop <jakub.berkop@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -28,25 +29,25 @@ int SamplesModel::column_count(GUI::ModelIndex const&) const
     return Column::__Count;
 }
 
-DeprecatedString SamplesModel::column_name(int column) const
+ErrorOr<String> SamplesModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleIndex:
-        return "#";
+        return "#"_string;
     case Column::Timestamp:
-        return "Timestamp";
+        return "Timestamp"_string;
     case Column::ProcessID:
-        return "PID";
+        return "PID"_string;
     case Column::ThreadID:
-        return "TID";
+        return "TID"_string;
     case Column::ExecutableName:
-        return "Executable";
+        return "Executable"_string;
     case Column::LostSamples:
-        return "Lost Samples";
+        return "Lost Samples"_string;
     case Column::InnermostStackFrame:
-        return "Innermost Frame";
+        return "Innermost Frame"_string;
     case Column::Path:
-        return "Path";
+        return "Path"_string;
     default:
         VERIFY_NOT_REACHED();
     }
@@ -90,9 +91,24 @@ GUI::Variant SamplesModel::data(GUI::ModelIndex const& index, GUI::ModelRole rol
         }
 
         if (index.column() == Column::Path) {
-            if (!event.data.has<Profile::Event::ReadData>())
-                return "";
-            return event.data.get<Profile::Event::ReadData>().path;
+            if (event.data.has<Profile::Event::FilesystemEventData>()) {
+                return event.data.get<Profile::Event::FilesystemEventData>().data.visit(
+                    [&](Profile::Event::OpenEventData const& data) {
+                        return data.path;
+                    },
+                    [&](Profile::Event::CloseEventData const& data) {
+                        return data.path;
+                    },
+                    [&](Profile::Event::ReadvEventData const& data) {
+                        return data.path;
+                    },
+                    [&](Profile::Event::ReadEventData const& data) {
+                        return data.path;
+                    },
+                    [&](Profile::Event::PreadEventData const& data) {
+                        return data.path;
+                    });
+            }
         }
 
         return {};

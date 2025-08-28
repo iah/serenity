@@ -31,12 +31,12 @@ public:
     void set_current_unmodified();
     bool is_current_modified() const;
 
-    Optional<Time> last_unmodified_timestamp() const { return m_last_unmodified_timestamp; }
+    Optional<MonotonicTime> last_unmodified_timestamp() const { return m_last_unmodified_timestamp; }
 
     void clear();
 
-    Optional<DeprecatedString> undo_action_text() const;
-    Optional<DeprecatedString> redo_action_text() const;
+    Optional<ByteString> undo_action_text() const;
+    Optional<ByteString> redo_action_text() const;
 
     Function<void()> on_state_change;
 
@@ -44,7 +44,7 @@ private:
     Vector<NonnullOwnPtr<Command>> m_stack;
     size_t m_stack_index { 0 };
     Optional<size_t> m_clean_index;
-    Optional<Time> m_last_unmodified_timestamp;
+    Optional<MonotonicTime> m_last_unmodified_timestamp;
 };
 
 }

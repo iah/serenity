@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -34,30 +34,60 @@ struct TransitionKey {
     }
 };
 
-class Shape final
-    : public Cell
-    , public Weakable<Shape> {
-    JS_CELL(Shape, Cell);
+class PrototypeChainValidity final : public Cell {
+    JS_CELL(PrototypeChainValidity, Cell);
+    JS_DECLARE_ALLOCATOR(PrototypeChainValidity);
 
 public:
-    virtual ~Shape() override = default;
+    [[nodiscard]] bool is_valid() const { return m_valid; }
+    void set_valid(bool valid) { m_valid = valid; }
 
-    enum class TransitionType {
+private:
+    bool m_valid { true };
+    size_t padding { 0 };
+};
+
+class Shape final : public Cell {
+    JS_CELL(Shape, Cell);
+    JS_DECLARE_ALLOCATOR(Shape);
+
+public:
+    virtual ~Shape() override;
+
+    enum class TransitionType : u8 {
         Invalid,
         Put,
         Configure,
         Prototype,
+        Delete,
+        CacheableDictionary,
+        UncacheableDictionary,
     };
 
-    Shape* create_put_transition(StringOrSymbol const&, PropertyAttributes attributes);
-    Shape* create_configure_transition(StringOrSymbol const&, PropertyAttributes attributes);
-    Shape* create_prototype_transition(Object* new_prototype);
+    [[nodiscard]] NonnullGCPtr<Shape> create_put_transition(StringOrSymbol const&, PropertyAttributes attributes);
+    [[nodiscard]] NonnullGCPtr<Shape> create_configure_transition(StringOrSymbol const&, PropertyAttributes attributes);
+    [[nodiscard]] NonnullGCPtr<Shape> create_prototype_transition(Object* new_prototype);
+    [[nodiscard]] NonnullGCPtr<Shape> create_delete_transition(StringOrSymbol const&);
+    [[nodiscard]] NonnullGCPtr<Shape> create_cacheable_dictionary_transition();
+    [[nodiscard]] NonnullGCPtr<Shape> create_uncacheable_dictionary_transition();
+    [[nodiscard]] NonnullGCPtr<Shape> clone_for_prototype();
+    [[nodiscard]] static NonnullGCPtr<Shape> create_for_prototype(NonnullGCPtr<Realm>, GCPtr<Object> prototype);
 
     void add_property_without_transition(StringOrSymbol const&, PropertyAttributes);
     void add_property_without_transition(PropertyKey const&, PropertyAttributes);
 
-    bool is_unique() const { return m_unique; }
-    Shape* create_unique_clone() const;
+    void remove_property_without_transition(StringOrSymbol const&, u32 offset);
+    void set_property_attributes_without_transition(StringOrSymbol const&, PropertyAttributes);
+
+    [[nodiscard]] bool is_cacheable() const { return m_cacheable; }
+    [[nodiscard]] bool is_dictionary() const { return m_dictionary; }
+    [[nodiscard]] bool is_cacheable_dictionary() const { return m_dictionary && m_cacheable; }
+    [[nodiscard]] bool is_uncacheable_dictionary() const { return m_dictionary && !m_cacheable; }
+
+    [[nodiscard]] bool is_prototype_shape() const { return m_is_prototype_shape; }
+    void set_prototype_shape();
+
+    GCPtr<PrototypeChainValidity> prototype_chain_validity() const { return m_prototype_chain_validity; }
 
     Realm& realm() const { return m_realm; }
 
@@ -65,7 +95,7 @@ public:
     Object const* prototype() const { return m_prototype; }
 
     Optional<PropertyMetadata> lookup(StringOrSymbol const&) const;
-    HashMap<StringOrSymbol, PropertyMetadata> const& property_table() const;
+    OrderedHashMap<StringOrSymbol, PropertyMetadata> const& property_table() const;
     u32 property_count() const { return m_property_count; }
 
     struct Property {
@@ -73,46 +103,52 @@ public:
         PropertyMetadata value;
     };
 
-    Vector<Property> property_table_ordered() const;
-
-    void set_prototype_without_transition(Object* new_prototype) { m_prototype = new_prototype; }
-
-    void remove_property_from_unique_shape(StringOrSymbol const&, size_t offset);
-    void add_property_to_unique_shape(StringOrSymbol const&, PropertyAttributes attributes);
-    void reconfigure_property_in_unique_shape(StringOrSymbol const& property_key, PropertyAttributes attributes);
+    void set_prototype_without_transition(Object* new_prototype);
 
 private:
     explicit Shape(Realm&);
     Shape(Shape& previous_shape, StringOrSymbol const& property_key, PropertyAttributes attributes, TransitionType);
+    Shape(Shape& previous_shape, StringOrSymbol const& property_key, TransitionType);
     Shape(Shape& previous_shape, Object* new_prototype);
+
+    void invalidate_prototype_if_needed_for_new_prototype(NonnullGCPtr<Shape> new_prototype_shape);
+    void invalidate_all_prototype_chains_leading_to_this();
 
     virtual void visit_edges(Visitor&) override;
 
-    Shape* get_or_prune_cached_forward_transition(TransitionKey const&);
-    Shape* get_or_prune_cached_prototype_transition(Object* prototype);
+    [[nodiscard]] GCPtr<Shape> get_or_prune_cached_forward_transition(TransitionKey const&);
+    [[nodiscard]] GCPtr<Shape> get_or_prune_cached_prototype_transition(Object* prototype);
+    [[nodiscard]] GCPtr<Shape> get_or_prune_cached_delete_transition(StringOrSymbol const&);
 
     void ensure_property_table() const;
 
-    Realm& m_realm;
+    NonnullGCPtr<Realm> m_realm;
 
-    mutable OwnPtr<HashMap<StringOrSymbol, PropertyMetadata>> m_property_table;
+    mutable OwnPtr<OrderedHashMap<StringOrSymbol, PropertyMetadata>> m_property_table;
 
     OwnPtr<HashMap<TransitionKey, WeakPtr<Shape>>> m_forward_transitions;
-    OwnPtr<HashMap<Object*, WeakPtr<Shape>>> m_prototype_transitions;
-    Shape* m_previous { nullptr };
+    OwnPtr<HashMap<GCPtr<Object>, WeakPtr<Shape>>> m_prototype_transitions;
+    OwnPtr<HashMap<StringOrSymbol, WeakPtr<Shape>>> m_delete_transitions;
+    GCPtr<Shape> m_previous;
     StringOrSymbol m_property_key;
-    Object* m_prototype { nullptr };
+    GCPtr<Object> m_prototype;
+
+    GCPtr<PrototypeChainValidity> m_prototype_chain_validity;
+
     u32 m_property_count { 0 };
 
     PropertyAttributes m_attributes { 0 };
-    TransitionType m_transition_type : 6 { TransitionType::Invalid };
-    bool m_unique : 1 { false };
+    TransitionType m_transition_type { TransitionType::Invalid };
+
+    bool m_dictionary : 1 { false };
+    bool m_cacheable : 1 { true };
+    bool m_is_prototype_shape : 1 { false };
 };
 
 }
 
 template<>
-struct AK::Traits<JS::TransitionKey> : public GenericTraits<JS::TransitionKey> {
+struct AK::Traits<JS::TransitionKey> : public DefaultTraits<JS::TransitionKey> {
     static unsigned hash(const JS::TransitionKey& key)
     {
         return pair_int_hash(key.attributes.bits(), Traits<JS::StringOrSymbol>::hash(key.property_key));

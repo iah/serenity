@@ -12,6 +12,8 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(Script);
+
 // 16.1.5 ParseScript ( sourceText, realm, hostDefined ), https://tc39.es/ecma262/#sec-parse-script
 Result<NonnullGCPtr<Script>, Vector<ParserError>> Script::parse(StringView source_text, Realm& realm, StringView filename, HostDefined* host_defined, size_t line_number_offset)
 {
@@ -45,6 +47,8 @@ void Script::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_realm);
     if (m_host_defined)
         m_host_defined->visit_host_defined_self(visitor);
+    for (auto const& loaded_module : m_loaded_modules)
+        visitor.visit(loaded_module.module);
 }
 
 }

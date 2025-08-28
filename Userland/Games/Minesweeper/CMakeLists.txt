@@ -4,19 +4,16 @@ serenity_component(
     TARGETS Minesweeper
 )
 
-compile_gml(MinesweeperCustomGameWindow.gml MinesweeperCustomGameWindowGML.h minesweeper_custom_game_window_gml)
-compile_gml(MinesweeperWindow.gml MinesweeperWindowGML.h minesweeper_window_gml)
+compile_gml(MainWidget.gml MainWidgetGML.cpp)
+compile_gml(CustomGameWidget.gml CustomGameWidgetGML.cpp)
 
 set(SOURCES
     CustomGameDialog.cpp
+    CustomGameWidgetGML.cpp
     Field.cpp
     main.cpp
-)
-
-set(GENERATED_SOURCES
-    MinesweeperCustomGameWindowGML.h
-    MinesweeperWindowGML.h
+    MainWidgetGML.cpp
 )
 
 serenity_app(Minesweeper ICON app-minesweeper)
-target_link_libraries(Minesweeper PRIVATE LibCore LibGfx LibGUI LibConfig LibMain LibDesktop)
+target_link_libraries(Minesweeper PRIVATE LibCore LibGfx LibGUI LibConfig LibMain LibDesktop LibURL)

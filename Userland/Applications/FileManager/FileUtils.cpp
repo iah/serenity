@@ -8,9 +8,9 @@
 #include "FileUtils.h"
 #include "FileOperationProgressWidget.h"
 #include <AK/LexicalPath.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/MimeData.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/MessageBox.h>
 #include <unistd.h>
@@ -19,19 +19,19 @@ namespace FileManager {
 
 HashTable<NonnullRefPtr<GUI::Window>> file_operation_windows;
 
-void delete_paths(Vector<DeprecatedString> const& paths, bool should_confirm, GUI::Window* parent_window)
+void delete_paths(Vector<ByteString> const& paths, bool should_confirm, GUI::Window* parent_window)
 {
-    DeprecatedString message;
+    ByteString message;
     if (paths.size() == 1) {
-        message = DeprecatedString::formatted("Are you sure you want to delete {}?", LexicalPath::basename(paths[0]));
+        message = ByteString::formatted("Are you sure you want to delete \"{}\"?", LexicalPath::basename(paths[0]));
     } else {
-        message = DeprecatedString::formatted("Are you sure you want to delete {} files?", paths.size());
+        message = ByteString::formatted("Are you sure you want to delete {} files?", paths.size());
     }
 
     if (should_confirm) {
         auto result = GUI::MessageBox::show(parent_window,
             message,
-            "Confirm deletion"sv,
+            "Confirm Deletion"sv,
             GUI::MessageBox::Type::Warning,
             GUI::MessageBox::InputType::OKCancel);
         if (result == GUI::MessageBox::ExecResult::Cancel)
@@ -42,7 +42,7 @@ void delete_paths(Vector<DeprecatedString> const& paths, bool should_confirm, GU
         _exit(1);
 }
 
-ErrorOr<void> run_file_operation(FileOperation operation, Vector<DeprecatedString> const& sources, DeprecatedString const& destination, GUI::Window* parent_window)
+ErrorOr<void> run_file_operation(FileOperation operation, Vector<ByteString> const& sources, ByteString const& destination, GUI::Window* parent_window)
 {
     auto pipe_fds = TRY(Core::System::pipe2(0));
 
@@ -81,7 +81,7 @@ ErrorOr<void> run_file_operation(FileOperation operation, Vector<DeprecatedStrin
         TRY(Core::System::close(pipe_fds[1]));
     }
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     TRY(file_operation_windows.try_set(window));
 
     switch (operation) {
@@ -99,9 +99,9 @@ ErrorOr<void> run_file_operation(FileOperation operation, Vector<DeprecatedStrin
     }
 
     auto pipe_input_file = TRY(Core::File::adopt_fd(pipe_fds[0], Core::File::OpenMode::Read));
-    auto buffered_pipe = TRY(Core::BufferedFile::create(move(pipe_input_file)));
+    auto buffered_pipe = TRY(Core::InputBufferedFile::create(move(pipe_input_file)));
 
-    (void)TRY(window->set_main_widget<FileOperationProgressWidget>(operation, move(buffered_pipe), pipe_fds[0]));
+    (void)window->set_main_widget<FileOperationProgressWidget>(operation, move(buffered_pipe), pipe_fds[0]);
     window->resize(320, 190);
     if (parent_window)
         window->center_within(*parent_window);
@@ -110,7 +110,7 @@ ErrorOr<void> run_file_operation(FileOperation operation, Vector<DeprecatedStrin
     return {};
 }
 
-ErrorOr<bool> handle_drop(GUI::DropEvent const& event, DeprecatedString const& destination, GUI::Window* window)
+ErrorOr<bool> handle_drop(GUI::DropEvent const& event, ByteString const& destination, GUI::Window* window)
 {
     bool has_accepted_drop = false;
 
@@ -124,18 +124,19 @@ ErrorOr<bool> handle_drop(GUI::DropEvent const& event, DeprecatedString const& d
 
     auto const target = LexicalPath::canonicalized_path(destination);
 
-    if (!Core::DeprecatedFile::is_directory(target))
+    if (!FileSystem::is_directory(target))
         return has_accepted_drop;
 
-    Vector<DeprecatedString> paths_to_copy;
+    Vector<ByteString> paths_to_copy;
     for (auto& url_to_copy : urls) {
-        if (!url_to_copy.is_valid() || url_to_copy.path() == target)
+        auto file_path = URL::percent_decode(url_to_copy.serialize_path());
+        if (!url_to_copy.is_valid() || file_path == target)
             continue;
-        auto new_path = DeprecatedString::formatted("{}/{}", target, LexicalPath::basename(url_to_copy.path()));
-        if (url_to_copy.path() == new_path)
+        auto new_path = ByteString::formatted("{}/{}", target, LexicalPath::basename(file_path));
+        if (file_path == new_path)
             continue;
 
-        paths_to_copy.append(url_to_copy.path());
+        paths_to_copy.append(file_path);
         has_accepted_drop = true;
     }
 

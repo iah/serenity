@@ -7,12 +7,27 @@
 #include <AK/Utf8View.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/Layout/LayoutState.h>
-#include <LibWeb/Layout/LineBoxFragment.h>
-#include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <ctype.h>
 
 namespace Web::Layout {
+
+LineBoxFragment::LineBoxFragment(Node const& layout_node, int start, int length, CSSPixelPoint offset, CSSPixelSize size, CSSPixels border_box_top, CSS::Direction direction, RefPtr<Gfx::GlyphRun> glyph_run)
+    : m_layout_node(layout_node)
+    , m_start(start)
+    , m_length(length)
+    , m_offset(offset)
+    , m_size(size)
+    , m_border_box_top(border_box_top)
+    , m_direction(direction)
+    , m_glyph_run(move(glyph_run))
+{
+    if (m_glyph_run) {
+        m_current_insert_direction = resolve_glyph_run_direction(m_glyph_run->text_type());
+        if (m_direction == CSS::Direction::Rtl)
+            m_insert_position = m_size.width().to_float();
+    }
+}
 
 bool LineBoxFragment::ends_in_whitespace() const
 {
@@ -31,122 +46,121 @@ StringView LineBoxFragment::text() const
 {
     if (!is<TextNode>(layout_node()))
         return {};
-    return verify_cast<TextNode>(layout_node()).text_for_rendering().substring_view(m_start, m_length);
+    return verify_cast<TextNode>(layout_node()).text_for_rendering().bytes_as_string_view().substring_view(m_start, m_length);
 }
 
 CSSPixelRect const LineBoxFragment::absolute_rect() const
 {
     CSSPixelRect rect { {}, size() };
-    rect.set_location(m_layout_node.containing_block()->paint_box()->absolute_position());
+    rect.set_location(m_layout_node->containing_block()->paintable_box()->absolute_position());
     rect.translate_by(offset());
     return rect;
 }
 
-int LineBoxFragment::text_index_at(CSSPixels x) const
+bool LineBoxFragment::is_atomic_inline() const
 {
-    if (!is<TextNode>(layout_node()))
-        return 0;
-    auto& layout_text = verify_cast<TextNode>(layout_node());
-    auto& font = layout_text.font();
-    Utf8View view(text());
-
-    CSSPixels relative_x = x - absolute_x();
-    float glyph_spacing = font.glyph_spacing();
-
-    if (relative_x < 0)
-        return 0;
-
-    CSSPixels width_so_far = 0;
-    for (auto it = view.begin(); it != view.end(); ++it) {
-        auto previous_it = it;
-        CSSPixels glyph_width = font.glyph_or_emoji_width(it);
-
-        if ((width_so_far + (glyph_width + glyph_spacing) / 2) > relative_x)
-            return m_start + view.byte_offset_of(previous_it);
-
-        width_so_far += glyph_width + glyph_spacing;
-    }
-
-    return m_start + m_length;
+    return layout_node().is_replaced_box() || (layout_node().display().is_inline_outside() && !layout_node().display().is_flow_inside());
 }
 
-CSSPixelRect LineBoxFragment::selection_rect(Gfx::Font const& font) const
+CSS::Direction LineBoxFragment::resolve_glyph_run_direction(Gfx::GlyphRun::TextType text_type) const
 {
-    if (layout_node().selection_state() == Node::SelectionState::None)
-        return {};
-
-    if (layout_node().selection_state() == Node::SelectionState::Full)
-        return absolute_rect();
-
-    if (!is<TextNode>(layout_node()))
-        return {};
-
-    auto selection = layout_node().root().selection();
-    if (!selection)
-        return {};
-    auto range = selection->range();
-    if (!range)
-        return {};
-
-    // FIXME: m_start and m_length should be unsigned and then we won't need these casts.
-    auto const start_index = static_cast<unsigned>(m_start);
-    auto const end_index = static_cast<unsigned>(m_start) + static_cast<unsigned>(m_length);
-    auto text = this->text();
-
-    if (layout_node().selection_state() == Node::SelectionState::StartAndEnd) {
-        // we are in the start/end node (both the same)
-        if (start_index > range->end_offset())
-            return {};
-        if (end_index < range->start_offset())
-            return {};
-
-        if (range->start_offset() == range->end_offset())
-            return {};
-
-        auto selection_start_in_this_fragment = max(0, range->start_offset() - m_start);
-        auto selection_end_in_this_fragment = min(m_length, range->end_offset() - m_start);
-        auto pixel_distance_to_first_selected_character = font.width(text.substring_view(0, selection_start_in_this_fragment));
-        auto pixel_width_of_selection = font.width(text.substring_view(selection_start_in_this_fragment, selection_end_in_this_fragment - selection_start_in_this_fragment)) + 1;
-
-        auto rect = absolute_rect();
-        rect.set_x(rect.x() + pixel_distance_to_first_selected_character);
-        rect.set_width(pixel_width_of_selection);
-
-        return rect;
+    switch (text_type) {
+    case Gfx::GlyphRun::TextType::Common:
+    case Gfx::GlyphRun::TextType::ContextDependent:
+    case Gfx::GlyphRun::TextType::EndPadding:
+        return m_direction;
+    case Gfx::GlyphRun::TextType::Ltr:
+        return CSS::Direction::Ltr;
+    case Gfx::GlyphRun::TextType::Rtl:
+        return CSS::Direction::Rtl;
+    default:
+        VERIFY_NOT_REACHED();
     }
-    if (layout_node().selection_state() == Node::SelectionState::Start) {
-        // we are in the start node
-        if (end_index < range->start_offset())
-            return {};
+}
 
-        auto selection_start_in_this_fragment = max(0, range->start_offset() - m_start);
-        auto selection_end_in_this_fragment = m_length;
-        auto pixel_distance_to_first_selected_character = font.width(text.substring_view(0, selection_start_in_this_fragment));
-        auto pixel_width_of_selection = font.width(text.substring_view(selection_start_in_this_fragment, selection_end_in_this_fragment - selection_start_in_this_fragment)) + 1;
-
-        auto rect = absolute_rect();
-        rect.set_x(rect.x() + pixel_distance_to_first_selected_character);
-        rect.set_width(pixel_width_of_selection);
-
-        return rect;
+void LineBoxFragment::append_glyph_run(RefPtr<Gfx::GlyphRun> const& glyph_run, CSSPixels run_width)
+{
+    switch (m_direction) {
+    case CSS::Direction::Ltr:
+        append_glyph_run_ltr(glyph_run, run_width);
+        break;
+    case CSS::Direction::Rtl:
+        append_glyph_run_rtl(glyph_run, run_width);
+        break;
     }
-    if (layout_node().selection_state() == Node::SelectionState::End) {
-        // we are in the end node
-        if (start_index > range->end_offset())
-            return {};
+}
 
-        auto selection_start_in_this_fragment = 0;
-        auto selection_end_in_this_fragment = min(range->end_offset() - m_start, m_length);
-        auto pixel_distance_to_first_selected_character = font.width(text.substring_view(0, selection_start_in_this_fragment));
-        auto pixel_width_of_selection = font.width(text.substring_view(selection_start_in_this_fragment, selection_end_in_this_fragment - selection_start_in_this_fragment)) + 1;
+void LineBoxFragment::append_glyph_run_ltr(RefPtr<Gfx::GlyphRun> const& glyph_run, CSSPixels run_width)
+{
+    auto run_direction = resolve_glyph_run_direction(glyph_run->text_type());
 
-        auto rect = absolute_rect();
-        rect.set_x(rect.x() + pixel_distance_to_first_selected_character);
-        rect.set_width(pixel_width_of_selection);
-
-        return rect;
+    if (m_current_insert_direction != run_direction) {
+        if (run_direction == CSS::Direction::Rtl)
+            m_insert_position = width().to_float();
+        m_current_insert_direction = run_direction;
     }
-    return {};
+
+    switch (run_direction) {
+    case CSS::Direction::Ltr:
+        for (auto& glyph : glyph_run->glyphs()) {
+            glyph.visit([&](auto& glyph) { glyph.position.translate_by(width().to_float(), 0); });
+            m_glyph_run->append(glyph);
+        }
+        break;
+    case CSS::Direction::Rtl:
+        for (auto& glyph : m_glyph_run->glyphs()) {
+            glyph.visit([&](auto& glyph) {
+                if (glyph.position.x() >= m_insert_position)
+                    glyph.position.translate_by(run_width.to_float(), 0);
+            });
+        }
+        for (auto& glyph : glyph_run->glyphs()) {
+            glyph.visit([&](auto& glyph) { glyph.position.translate_by(m_insert_position, 0); });
+            m_glyph_run->append(glyph);
+        }
+        break;
+    }
+
+    m_size.set_width(width() + run_width);
+}
+
+void LineBoxFragment::append_glyph_run_rtl(RefPtr<Gfx::GlyphRun> const& glyph_run, CSSPixels run_width)
+{
+    auto run_direction = resolve_glyph_run_direction(glyph_run->text_type());
+
+    if (m_current_insert_direction != run_direction) {
+        if (run_direction == CSS::Direction::Ltr)
+            m_insert_position = 0;
+        m_current_insert_direction = run_direction;
+    }
+
+    switch (run_direction) {
+    case CSS::Direction::Ltr:
+        for (auto& glyph : m_glyph_run->glyphs()) {
+            glyph.visit([&](auto& glyph) {
+                if (glyph.position.x() >= m_insert_position)
+                    glyph.position.translate_by(run_width.to_float(), 0);
+            });
+        }
+        for (auto& glyph : glyph_run->glyphs()) {
+            glyph.visit([&](auto& glyph) { glyph.position.translate_by(m_insert_position, 0); });
+            m_glyph_run->append(glyph);
+        }
+        break;
+    case CSS::Direction::Rtl:
+        if (glyph_run->text_type() != Gfx::GlyphRun::TextType::EndPadding) {
+            for (auto& glyph : m_glyph_run->glyphs()) {
+                glyph.visit([&](auto& glyph) { glyph.position.translate_by(run_width.to_float(), 0); });
+            }
+        }
+        for (auto& glyph : glyph_run->glyphs()) {
+            m_glyph_run->append(glyph);
+        }
+        break;
+    }
+
+    m_size.set_width(width() + run_width);
+    m_insert_position += run_width.to_float();
 }
 
 }

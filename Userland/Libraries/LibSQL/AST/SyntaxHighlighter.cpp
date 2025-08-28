@@ -12,25 +12,25 @@
 
 namespace SQL::AST {
 
-static Syntax::TextStyle style_for_token_type(Gfx::Palette const& palette, TokenType type)
+static Gfx::TextAttributes style_for_token_type(Gfx::Palette const& palette, TokenType type)
 {
     switch (Token::category(type)) {
     case TokenCategory::Keyword:
-        return { palette.syntax_keyword(), true };
+        return { palette.syntax_keyword(), {}, true };
     case TokenCategory::Identifier:
-        return { palette.syntax_identifier(), false };
+        return { palette.syntax_identifier() };
     case TokenCategory::Number:
-        return { palette.syntax_number(), false };
+        return { palette.syntax_number() };
     case TokenCategory::Blob:
     case TokenCategory::String:
-        return { palette.syntax_string(), false };
+        return { palette.syntax_string() };
     case TokenCategory::Operator:
-        return { palette.syntax_operator(), false };
+        return { palette.syntax_operator() };
     case TokenCategory::Punctuation:
-        return { palette.syntax_punctuation(), false };
+        return { palette.syntax_punctuation() };
     case TokenCategory::Invalid:
     default:
-        return { palette.base_text(), false };
+        return { palette.base_text() };
     }
 }
 
@@ -46,17 +46,15 @@ void SyntaxHighlighter::rehighlight(Palette const& palette)
 
     Lexer lexer(text);
 
-    Vector<GUI::TextDocumentSpan> spans;
+    Vector<Syntax::TextDocumentSpan> spans;
 
     auto append_token = [&](Token const& token) {
         if (token.value().is_empty())
             return;
-        GUI::TextDocumentSpan span;
+        Syntax::TextDocumentSpan span;
         span.range.set_start({ token.start_position().line - 1, token.start_position().column - 1 });
         span.range.set_end({ token.end_position().line - 1, token.end_position().column - 1 });
-        auto style = style_for_token_type(palette, token.type());
-        span.attributes.color = style.color;
-        span.attributes.bold = style.bold;
+        span.attributes = style_for_token_type(palette, token.type());
         span.data = static_cast<u64>(token.type());
         spans.append(span);
 

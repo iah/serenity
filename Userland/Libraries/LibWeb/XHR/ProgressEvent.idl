@@ -1,7 +1,7 @@
 #import <DOM/Event.idl>
 
 // https://xhr.spec.whatwg.org/#interface-progressevent
-[Exposed=(Window,Worker), UseNewAKString]
+[Exposed=(Window,Worker)]
 interface ProgressEvent : Event {
     constructor(DOMString type, optional ProgressEventInit eventInitDict = {});
 
@@ -12,6 +12,6 @@ interface ProgressEvent : Event {
 
 dictionary ProgressEventInit : EventInit {
     boolean lengthComputable = false;
-    unsigned long loaded = 0;
-    unsigned long total = 0;
+    unsigned long long loaded = 0;
+    unsigned long long total = 0;
 };

@@ -44,6 +44,7 @@ public:
     void open_image(FileSystemAccessClient::File);
     ErrorOr<void> create_default_image();
 
+    void refresh_crop_to_selection_menu_actions();
     bool request_close();
 
 private:
@@ -62,7 +63,7 @@ private:
     virtual void drop_event(GUI::DropEvent&) override;
 
     void update_window_modified();
-    void update_status_bar(DeprecatedString appended_text = DeprecatedString::empty());
+    void update_status_bar(ByteString appended_text = ByteString::empty());
 
     ProjectLoader m_loader;
 
@@ -114,6 +115,14 @@ private:
     RefPtr<GUI::Action> m_add_mask_action;
     RefPtr<GUI::Action> m_delete_mask_action;
     RefPtr<GUI::Action> m_apply_mask_action;
+    RefPtr<GUI::Action> m_add_editing_mask_action;
+    RefPtr<GUI::Action> m_invert_mask_action;
+    RefPtr<GUI::Action> m_clear_mask_action;
+    RefPtr<GUI::Action> m_toggle_mask_visibility_action;
+    RefPtr<GUI::Action> m_open_luminosity_masking_action;
+    RefPtr<GUI::Action> m_open_color_masking_action;
+    RefPtr<GUI::Action> m_crop_image_to_selection_action;
+    RefPtr<GUI::Action> m_crop_layer_to_selection_action;
 
     Gfx::IntPoint m_last_image_editor_mouse_position;
 };

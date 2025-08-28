@@ -21,7 +21,7 @@ public:
 
 private:
     // FIXME: The helper_pipe_fd parameter is only needed because we can't get the fd from a Core::Stream.
-    FileOperationProgressWidget(FileOperation, NonnullOwnPtr<Core::BufferedFile> helper_pipe, int helper_pipe_fd);
+    FileOperationProgressWidget(FileOperation, NonnullOwnPtr<Core::InputBufferedFile> helper_pipe, int helper_pipe_fd);
 
     void did_finish();
     void did_error(StringView message);
@@ -29,11 +29,11 @@ private:
 
     void close_pipe();
 
-    DeprecatedString estimate_time(off_t bytes_done, off_t total_byte_count);
+    ByteString estimate_time(off_t bytes_done, off_t total_byte_count);
     Core::ElapsedTimer m_elapsed_timer;
 
     FileOperation m_operation;
     RefPtr<Core::Notifier> m_notifier;
-    OwnPtr<Core::BufferedFile> m_helper_pipe;
+    OwnPtr<Core::InputBufferedFile> m_helper_pipe;
 };
 }

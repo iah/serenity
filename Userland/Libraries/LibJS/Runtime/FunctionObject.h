@@ -20,12 +20,11 @@ class FunctionObject : public Object {
 
 public:
     virtual ~FunctionObject() = default;
-    virtual ThrowCompletionOr<void> initialize(Realm&) override { return {}; }
 
     // Table 7: Additional Essential Internal Methods of Function Objects, https://tc39.es/ecma262/#table-additional-essential-internal-methods-of-function-objects
 
-    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, MarkedVector<Value> arguments_list) = 0;
-    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct([[maybe_unused]] MarkedVector<Value> arguments_list, [[maybe_unused]] FunctionObject& new_target) { VERIFY_NOT_REACHED(); }
+    virtual ThrowCompletionOr<Value> internal_call(Value this_argument, ReadonlySpan<Value> arguments_list) = 0;
+    virtual ThrowCompletionOr<NonnullGCPtr<Object>> internal_construct([[maybe_unused]] ReadonlySpan<Value> arguments_list, [[maybe_unused]] FunctionObject& new_target) { VERIFY_NOT_REACHED(); }
 
     virtual DeprecatedFlyString const& name() const = 0;
 
@@ -39,9 +38,13 @@ public:
     // [[Realm]]
     virtual Realm* realm() const { return nullptr; }
 
+    virtual Vector<DeprecatedFlyString> const& local_variables_names() const { VERIFY_NOT_REACHED(); }
+
+    virtual Vector<FunctionParameter> const& formal_parameters() const { VERIFY_NOT_REACHED(); }
+
 protected:
-    explicit FunctionObject(Realm&, Object* prototype);
-    explicit FunctionObject(Object& prototype);
+    explicit FunctionObject(Realm&, Object* prototype, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
+    explicit FunctionObject(Object& prototype, MayInterfereWithIndexedPropertyAccess = MayInterfereWithIndexedPropertyAccess::No);
 
 private:
     virtual bool is_function() const override { return true; }

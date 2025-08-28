@@ -4,8 +4,8 @@
  */
 
 html {
-    font-family: sans-serif;
-    color: -libweb-palette-base-text;
+    font-family: serif;
+    color: CanvasText;
 }
 
 body {
@@ -26,65 +26,125 @@ label {
 }
 
 /* FIXME: This is a temporary hack until we can render a native-looking frame for these. */
-input, textarea {
-    border: 1px solid -libweb-palette-threed-shadow1;
-    min-width: 80px;
+input:not([type=submit], input[type=button], input[type=image], input[type=reset], input[type=color], input[type=checkbox], input[type=file], input[type=radio], input[type=range]), textarea {
+    border: 1px solid ButtonBorder;
     min-height: 16px;
-    width: 120px;
     cursor: text;
     overflow: hidden;
+
+    background-color: Field;
+    color: FieldText;
 }
 
 textarea {
     padding: 2px;
     display: inline-block;
-    overflow: scroll;
+    overflow: auto;
+    font-family: monospace;
 }
 
-input[type=submit], input[type=button], input[type=reset], input[type=checkbox], input[type=radio] {
-    border: none;
-    min-width: unset;
-    min-height: unset;
-    width: unset;
-    cursor: unset;
+input::placeholder, textarea::placeholder {
+    color: GrayText;
+    line-height: initial;
 }
 
-input::placeholder {
-    color: rgb(117, 117, 117);
-}
-
-button, input[type=submit], input[type=button], input[type=reset] {
+button, input[type=submit], input[type=button], input[type=reset], select {
     padding: 1px 4px;
-    background-color: -libweb-palette-button;
-    border: 1px solid -libweb-palette-threed-shadow1;
-    color: -libweb-palette-button-text;
+    background-color: ButtonFace;
+    border: 1px solid ButtonBorder;
+    color: ButtonText;
+    cursor: default;
 }
 
-button:hover, input[type=submit]:hover, input[type=button]:hover, input[type=reset]:hover {
-    background-color: -libweb-palette-hover-highlight;
+button:disabled, input[type=submit]:disabled, input[type=button]:disabled, input[type=reset]:disabled, select:disabled {
+    /* FIXME: There isn't a <system-color> keyword for this, so this is a slightly lightened
+     *        version of our light ButtonFace color. Once we support `color-scheme: dark`
+     *        we'll need to use a different color for that.
+     */
+    background-color: #e5e0d7;
+    color: GrayText;
 }
 
-input[type=checkbox] {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    margin: 2px;
-    border: 1px solid -libweb-palette-threed-shadow1;
+input[type=image] {
+    cursor: pointer;
 }
 
-input[type=checkbox]:checked {
-    /*
-    This roughly resembles ClassicStylePainter's paint_check_box() while uncoupling the styling from LibGfx, similar to
-    <button> above. This is a simple checkmark that still looks ok at 2x scale.
-    Eventually we should respect the `accent-color` property here, which may require going back to an implementation via
-    CheckBoxPaintable::paint().
-    */
-    image-rendering: pixelated;
-    background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAABHNCSVQICAgIfAhkiAAAAEhJREFUKFNjYBgs4D/MIYxEuAiuGKiWkZAGFMUgw5mQbECWBAljKAYJwmxAl0Tnw81FdhK6DcgGYtWA0xlw1TgY2GzCoZQWwgCU1woFwvnCFQAAAABJRU5ErkJggg==);
+button:hover, input[type=submit]:hover, input[type=button]:hover, input[type=reset]:hover, select:hover {
+    /* FIXME: There isn't a <system-color> keyword for this, so this is a slightly lightened
+     *        version of our light ButtonFace color. Once we support `color-scheme: dark`
+     *        we'll need to use a different color for that.
+     */
+    background-color: #e5e0d7;
 }
 
 option {
     display: none;
+}
+
+/* Custom <input type="range"> styles */
+input[type=range] {
+    display: inline-block;
+    width: 20ch;
+    height: 16px;
+}
+input[type=range]::-webkit-slider-runnable-track, input[type=range]::-webkit-slider-thumb {
+    display: block;
+}
+input[type=range]::-webkit-slider-runnable-track {
+    position: relative;
+    height: 4px;
+    width: 100%;
+    margin-top: 6px;
+    background-color: Background;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+}
+input[type=range]::-webkit-slider-thumb {
+    margin-top: -6px;
+    width: 16px;
+    height: 16px;
+    transform: translateX(-50%);
+    border-radius: 50%;
+    outline: 1px solid rgba(0, 0, 0, 0.5);
+    z-index: 1;
+}
+
+/* Custom <meter> styles */
+meter {
+    display: inline-block;
+    width: 300px;
+    height: 12px;
+}
+meter::-webkit-meter-bar, meter::-webkit-meter-optimum-value, meter::-webkit-meter-suboptimum-value, meter::-webkit-meter-even-less-good-value {
+    display: block;
+    height: 100%;
+}
+meter::-webkit-meter-bar {
+    background-color: hsl(0, 0%, 96%);
+    border: 1px solid rgba(0, 0, 0, 0.5);
+}
+meter::-webkit-meter-optimum-value {
+    background-color: hsl(141, 53%, 53%);
+}
+meter::-webkit-meter-suboptimum-value {
+    background-color: hsl(48, 100%, 67%);
+}
+meter::-webkit-meter-even-less-good-value {
+    background-color: hsl(348, 100%, 61%);
+}
+
+/* Custom <progress> styles */
+progress {
+    display: inline-block;
+    width: 300px;
+    height: 12px;
+}
+progress::-webkit-progress-bar, progress::-webkit-progress-value {
+    display: block;
+    height: 100%;
+}
+progress::-webkit-progress-bar {
+    background-color: Background;
+    border: 1px solid rgba(0, 0, 0, 0.5);
 }
 
 /* 15.3.1 Hidden elements
@@ -132,7 +192,7 @@ html, body {
  * https://html.spec.whatwg.org/multipage/rendering.html#flow-content-3
  */
 address, blockquote, center, dialog, div, figure, figcaption, footer, form,
-header, hr, legend, listing, main, p, plaintext, pre, xmp {
+header, hr, legend, listing, main, p, plaintext, pre, search, xmp {
     display: block;
 }
 
@@ -161,8 +221,8 @@ dialog:not([open]) {
 
 dialog {
     position: absolute;
-    inset-left: 0;
-    inset-right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     width: fit-content;
     height: fit-content;
     margin: auto;
@@ -172,8 +232,44 @@ dialog {
     color: CanvasText;
 }
 
+dialog:modal {
+    position: fixed;
+    overflow: auto;
+    inset-block: 0;
+    max-width: calc(100% - 6px - 2em);
+    max-height: calc(100% - 6px - 2em);
+}
+
 dialog::backdrop {
     background: rgba(0, 0, 0, 0.1);
+}
+
+[popover]:not(:popover-open):not(dialog[open]) {
+    display:none;
+}
+
+dialog:popover-open {
+    display:block;
+}
+
+[popover] {
+    position: fixed;
+    inset: 0;
+    width: fit-content;
+    height: fit-content;
+    margin: auto;
+    border: solid;
+    padding: 0.25em;
+    overflow: auto;
+    color: CanvasText;
+    background-color: Canvas;
+}
+
+:popover-open::backdrop {
+    position: fixed;
+    inset: 0;
+    pointer-events: none !important;
+    background-color: transparent;
 }
 
 slot {
@@ -226,15 +322,15 @@ rt {
 }
 
 :link {
-    color: -libweb-link;
+    color: LinkText;
 }
 
 :visited {
-    color: -libweb-palette-visited-link;
+    color: VisitedText;
 }
 
 :link:active, :visited:active {
-    color: -libweb-palette-active-link;
+    color: ActiveText;
 }
 
 :link, :visited {
@@ -247,11 +343,9 @@ rt {
 }
 
 mark {
-    background: yellow;
-    color: black;
+    background: Mark;
+    color: MarkText;
 }
-
-/* this color is just a suggestion and can be changed based on implementation feedback */
 
 abbr[title], acronym[title] {
     text-decoration: dotted underline;
@@ -273,18 +367,24 @@ q::after {
     content: close-quote;
 }
 
+/*
+NOTE: This isn't a real property and value. See https://github.com/whatwg/html/issues/2291
 br {
     display-outside: newline;
 }
+*/
 
 /* this also has bidi implications */
 nobr {
     white-space: nowrap;
 }
 
+/*
+NOTE: This isn't a real property and value. See https://github.com/whatwg/html/issues/2291
 wbr {
     display-outside: break-opportunity;
 }
+*/
 
 /* this also has bidi implications */
 nobr wbr {
@@ -413,21 +513,21 @@ li {
 }
 
 dir, dl, menu, ol, ul {
-    margin-top: 1em;
-    margin-bottom: 1em;
+    margin-block-start: 1em;
+    margin-block-end: 1em;
 }
 
 :is(dir, dl, menu, ol, ul) :is(dir, dl, menu, ol, ul) {
-    margin-top: 0;
-    margin-bottom: 0;
+    margin-block-start: 0;
+    margin-block-end: 0;
 }
 
 dd {
-    margin-left: 40px;
+    margin-inline-start: 40px;
 }
 
 dir, menu, ol, ul {
-    padding-left: 40px;
+    padding-inline-start: 40px;
 }
 
 ol, ul, menu {
@@ -508,6 +608,15 @@ td, th {
 
 th {
     font-weight: bold;
+    /*
+    The text-align property for table headings is non-standard, but all
+    existing user-agents seem to render them centered by default.
+
+    See:
+    - https://trac.webkit.org/browser/trunk/Source/WebCore/css/html.css?rev=295625#L272
+    - https://searchfox.org/mozilla-central/rev/0b55b868c17835942d40ca3fedfca8057481207b/layout/style/res/html.css#473
+    */
+    text-align: center;
 }
 
 caption {
@@ -601,7 +710,10 @@ hr {
     color: gray;
     border-style: inset;
     border-width: 1px;
-    margin: 0.5em auto;
+    margin-block-start: 0.5em;
+    margin-inline-end: auto;
+    margin-block-end: 0.5em;
+    margin-inline-start: auto;
     overflow: hidden;
 }
 
@@ -611,10 +723,13 @@ hr {
 
 fieldset {
     display: block;
-    margin-left: 2px;
-    margin-right: 2px;
+    margin-inline-start: 2px;
+    margin-inline-end: 2px;
     border: groove 2px ThreeDFace;
-    padding: 0.35em 0.75em 0.625em;
+    padding-block-start: 0.35em;
+    padding-inline-end: 0.75em;
+    padding-block-end: 0.625em;
+    padding-inline-start: 0.75em;
     min-inline-size: min-content;
 }
 
@@ -633,110 +748,6 @@ legend[align=center i] {
 
 legend[align=right i] {
     justify-self: right;
-}
-
-/* 15.3.8 Embedded content
- * https://html.spec.whatwg.org/multipage/rendering.html#tables-2
- */
-
-table {
-    display: table;
-}
-
-caption {
-    display: table-caption;
-}
-
-colgroup, colgroup[hidden] {
-    display: table-column-group;
-}
-
-col, col[hidden] {
-    display: table-column;
-}
-
-thead, thead[hidden] {
-    display: table-header-group;
-}
-
-tbody, tbody[hidden] {
-    display: table-row-group;
-}
-
-tfoot, tfoot[hidden] {
-    display: table-footer-group;
-}
-
-tr, tr[hidden] {
-    display: table-row;
-}
-
-td, th {
-    display: table-cell;
-}
-
-colgroup[hidden], col[hidden], thead[hidden], tbody[hidden],
-tfoot[hidden], tr[hidden] {
-    visibility: collapse;
-}
-
-table {
-    box-sizing: border-box;
-    border-spacing: 2px;
-    border-collapse: separate;
-    text-indent: initial;
-}
-
-td, th {
-    padding: 1px;
-}
-
-th {
-    font-weight: bold;
-}
-
-caption {
-    text-align: center;
-}
-
-thead, tbody, tfoot, table > tr {
-    vertical-align: middle;
-}
-
-tr, td, th {
-    vertical-align: inherit;
-}
-
-thead, tbody, tfoot, tr {
-    border-color: inherit;
-}
-
-table[rules=none i], table[rules=groups i], table[rules=rows i],
-table[rules=cols i], table[rules=all i], table[frame=void i],
-table[frame=above i], table[frame=below i], table[frame=hsides i],
-table[frame=lhs i], table[frame=rhs i], table[frame=vsides i],
-table[frame=box i], table[frame=border i],
-table[rules=none i] > tr > td, table[rules=none i] > tr > th,
-table[rules=groups i] > tr > td, table[rules=groups i] > tr > th,
-table[rules=rows i] > tr > td, table[rules=rows i] > tr > th,
-table[rules=cols i] > tr > td, table[rules=cols i] > tr > th,
-table[rules=all i] > tr > td, table[rules=all i] > tr > th,
-table[rules=none i] > thead > tr > td, table[rules=none i] > thead > tr > th,
-table[rules=groups i] > thead > tr > td, table[rules=groups i] > thead > tr > th,
-table[rules=rows i] > thead > tr > td, table[rules=rows i] > thead > tr > th,
-table[rules=cols i] > thead > tr > td, table[rules=cols i] > thead > tr > th,
-table[rules=all i] > thead > tr > td, table[rules=all i] > thead > tr > th,
-table[rules=none i] > tbody > tr > td, table[rules=none i] > tbody > tr > th,
-table[rules=groups i] > tbody > tr > td, table[rules=groups i] > tbody > tr > th,
-table[rules=rows i] > tbody > tr > td, table[rules=rows i] > tbody > tr > th,
-table[rules=cols i] > tbody > tr > td, table[rules=cols i] > tbody > tr > th,
-table[rules=all i] > tbody > tr > td, table[rules=all i] > tbody > tr > th,
-table[rules=none i] > tfoot > tr > td, table[rules=none i] > tfoot > tr > th,
-table[rules=groups i] > tfoot > tr > td, table[rules=groups i] > tfoot > tr > th,
-table[rules=rows i] > tfoot > tr > td, table[rules=rows i] > tfoot > tr > th,
-table[rules=cols i] > tfoot > tr > td, table[rules=cols i] > tfoot > tr > th,
-table[rules=all i] > tfoot > tr > td, table[rules=all i] > tfoot > tr > th {
-    border-color: black;
 }
 
 /* 15.4.1 Embedded content
@@ -794,17 +805,21 @@ input[type=image i][align=bottom i], object[align=bottom i] {
     vertical-align: bottom;
 }
 
-/* 15.5.4 The details and summary elements
+/* 15.5.5 The details and summary elements
  * https://html.spec.whatwg.org/multipage/rendering.html#the-details-and-summary-elements
  */
 
-summary {
+details, summary {
+    display: block;
+}
+
+details > summary:first-of-type {
     display: list-item;
     counter-increment: list-item 0;
     list-style: disclosure-closed inside;
 }
 
-details[open] > summary {
+details[open] > summary:first-of-type {
     list-style-type: disclosure-open;
 }
 
@@ -841,25 +856,4 @@ progress {
     video {
         filter: invert(100%);
     }
-}
-
-/* This is the same as default intrinsic size of a <progress> element */
-progress {
-    width: 300px;
-    height: 12px;
-}
-
-/* The default progress-value/bar CSS below is the same as Blink/WebKit.
- * Note: Setting any more than the backgrond-color may have unintended consequences, as sites don't expect to unset more than that.
- */
-
-progress::-webkit-progress-bar {
-    width: inherit;
-    height: inherit;
-    background-color: grey;
-}
-
-progress::-webkit-progress-value {
-    height: inherit;
-    background-color: green;
 }

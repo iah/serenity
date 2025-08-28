@@ -5,66 +5,75 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
 #include <AK/NumberFormat.h>
 #include <AK/NumericLimits.h>
-#include <AK/StringView.h>
 
 namespace AK {
 
 // FIXME: Remove this hackery once printf() supports floats.
-static DeprecatedString number_string_with_one_decimal(u64 number, u64 unit, StringView suffix)
+static String number_string_with_one_decimal(u64 number, u64 unit, StringView suffix, UseThousandsSeparator use_thousands_separator)
 {
     constexpr auto max_unit_size = NumericLimits<u64>::max() / 10;
     VERIFY(unit < max_unit_size);
 
     auto integer_part = number / unit;
     auto decimal_part = (number % unit) * 10 / unit;
-    return DeprecatedString::formatted("{}.{} {}", integer_part, decimal_part, suffix);
+    if (use_thousands_separator == UseThousandsSeparator::Yes)
+        return MUST(String::formatted("{:'d}.{} {}", integer_part, decimal_part, suffix));
+
+    return MUST(String::formatted("{}.{} {}", integer_part, decimal_part, suffix));
 }
 
-DeprecatedString human_readable_quantity(u64 quantity, HumanReadableBasedOn based_on, StringView unit)
+String human_readable_quantity(u64 quantity, HumanReadableBasedOn based_on, StringView unit, UseThousandsSeparator use_thousands_separator)
 {
     u64 size_of_unit = based_on == HumanReadableBasedOn::Base2 ? 1024 : 1000;
     constexpr auto unit_prefixes = AK::Array { "", "K", "M", "G", "T", "P", "E" };
     auto full_unit_suffix = [&](int index) {
         auto binary_infix = (based_on == HumanReadableBasedOn::Base2 && index != 0) ? "i"sv : ""sv;
-        return DeprecatedString::formatted("{}{}{}",
-            unit_prefixes[index], binary_infix, unit);
+        return MUST(String::formatted("{}{}{}",
+            unit_prefixes[index], binary_infix, unit));
     };
 
     auto size_of_current_unit = size_of_unit;
 
     if (quantity < size_of_unit)
-        return DeprecatedString::formatted("{} {}", quantity, full_unit_suffix(0));
+        return MUST(String::formatted("{} {}", quantity, full_unit_suffix(0)));
 
     for (size_t i = 1; i < unit_prefixes.size() - 1; i++) {
         auto suffix = full_unit_suffix(i);
         if (quantity < size_of_unit * size_of_current_unit) {
-            return number_string_with_one_decimal(quantity, size_of_current_unit, suffix);
+            return number_string_with_one_decimal(quantity, size_of_current_unit, suffix, use_thousands_separator);
         }
 
         size_of_current_unit *= size_of_unit;
     }
 
     return number_string_with_one_decimal(quantity,
-        size_of_current_unit, full_unit_suffix(unit_prefixes.size() - 1));
+        size_of_current_unit, full_unit_suffix(unit_prefixes.size() - 1), use_thousands_separator);
 }
 
-DeprecatedString human_readable_size(u64 size, HumanReadableBasedOn based_on)
+String human_readable_size(u64 size, HumanReadableBasedOn based_on, UseThousandsSeparator use_thousands_separator)
 {
-    return human_readable_quantity(size, based_on, "B"sv);
+    return human_readable_quantity(size, based_on, "B"sv, use_thousands_separator);
 }
 
-DeprecatedString human_readable_size_long(u64 size)
+String human_readable_size_long(u64 size, UseThousandsSeparator use_thousands_separator)
 {
-    if (size < 1 * KiB)
-        return DeprecatedString::formatted("{} bytes", size);
-    else
-        return DeprecatedString::formatted("{} ({} bytes)", human_readable_size(size), size);
+    if (size < 1 * KiB) {
+        if (use_thousands_separator == UseThousandsSeparator::Yes)
+            return MUST(String::formatted("{:'d} bytes", size));
+
+        return MUST(String::formatted("{} bytes", size));
+    }
+
+    auto human_readable_size_string = human_readable_size(size, HumanReadableBasedOn::Base2, use_thousands_separator);
+    if (use_thousands_separator == UseThousandsSeparator::Yes)
+        return MUST(String::formatted("{} ({:'d} bytes)", human_readable_size_string, size));
+
+    return MUST(String::formatted("{} ({} bytes)", human_readable_size_string, size));
 }
 
-DeprecatedString human_readable_time(i64 time_in_seconds)
+String human_readable_time(i64 time_in_seconds)
 {
     auto days = time_in_seconds / 86400;
     time_in_seconds = time_in_seconds % 86400;
@@ -86,12 +95,13 @@ DeprecatedString human_readable_time(i64 time_in_seconds)
     if (minutes > 0)
         builder.appendff("{} minute{} ", minutes, minutes == 1 ? "" : "s");
 
-    builder.appendff("{} second{}", time_in_seconds, time_in_seconds == 1 ? "" : "s");
+    if (time_in_seconds > 0 || days + hours + minutes == 0)
+        builder.appendff("{} second{}", time_in_seconds, time_in_seconds == 1 ? "" : "s");
 
-    return builder.to_deprecated_string();
+    return MUST(builder.to_string());
 }
 
-DeprecatedString human_readable_digital_time(i64 time_in_seconds)
+String human_readable_digital_time(i64 time_in_seconds)
 {
     auto hours = time_in_seconds / 3600;
     time_in_seconds = time_in_seconds % 3600;
@@ -106,7 +116,7 @@ DeprecatedString human_readable_digital_time(i64 time_in_seconds)
     builder.appendff("{:02}:", minutes);
     builder.appendff("{:02}", time_in_seconds);
 
-    return builder.to_deprecated_string();
+    return MUST(builder.to_string());
 }
 
 }

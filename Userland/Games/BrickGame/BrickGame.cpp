@@ -246,6 +246,7 @@ class Bricks final {
 public:
     enum class GameState {
         Active,
+        Paused,
         GameOver
     };
 
@@ -276,9 +277,13 @@ public:
 
     [[nodiscard]] Block const& next_block() const { return m_next_block; }
 
-    [[nodiscard]] bool operator[](Position pos) const
+    [[nodiscard]] BrickGame::BoardSpace operator[](Position pos) const
     {
-        return m_well[pos] || m_block[pos];
+        if (m_well[pos] || m_block[pos])
+            return BrickGame::BoardSpace::FullyOn;
+        if (m_shadow_hint_block[pos])
+            return BrickGame::BoardSpace::ShadowHint;
+        return BrickGame::BoardSpace::Off;
     }
 
     [[nodiscard]] RenderRequest rotate_left() { return set_current_block(Block(m_block).rotate_left()); }
@@ -296,13 +301,15 @@ public:
             m_block.place_into(m_well);
             check_and_remove_full_rows();
             add_new_block();
+            update_shadow_hint_block();
             return RenderRequest::RequestUpdate;
         }
         m_block = block;
+        update_shadow_hint_block();
         return RenderRequest::RequestUpdate;
     }
 
-    RenderRequest move_down_fast()
+    [[nodiscard]] RenderRequest move_down_fast()
     {
         for (auto block = m_block;; block.move_down()) {
             if (block.has_collision(m_well)) {
@@ -313,7 +320,31 @@ public:
             }
             m_block = block;
         }
+        update_shadow_hint_block();
         return RenderRequest::RequestUpdate;
+    }
+
+    void update_shadow_hint_block()
+    {
+        for (auto block = m_block;; block.move_down()) {
+            if (block.has_collision(m_well))
+                return;
+            m_shadow_hint_block = block;
+        }
+    }
+
+    void toggle_pause()
+    {
+        switch (m_state) {
+        case GameState::Active:
+            m_state = GameState::Paused;
+            break;
+        case GameState::Paused:
+            m_state = GameState::Active;
+            break;
+        case GameState::GameOver:
+            break;
+        }
     }
 
     [[nodiscard]] RenderRequest update()
@@ -324,7 +355,7 @@ public:
                 break;
             m_level = i;
         }
-        auto const now { Time::now_realtime() };
+        auto const now { UnixDateTime::now() };
         auto const delay = s_level_map[m_level].m_delay;
         if (now - m_last_update > delay) {
             m_last_update = now;
@@ -340,7 +371,8 @@ public:
         m_well.reset();
         m_block.random_shape();
         m_next_block.random_shape();
-        m_last_update = Time::now_realtime();
+        update_shadow_hint_block();
+        m_last_update = UnixDateTime::now();
         m_state = GameState::Active;
     }
 
@@ -348,37 +380,40 @@ private:
     Well m_well {};
     Block m_block {};
     Block m_next_block {};
+    Block m_shadow_hint_block {};
     unsigned m_level {};
     unsigned m_score {};
     GameState m_state { GameState::GameOver };
-    Time m_last_update {};
+    // FIXME: Should probably use a monotonic clock instead.
+    UnixDateTime m_last_update {};
 
     struct LevelMap final {
         unsigned const m_score;
-        Time const m_delay;
+        Duration const m_delay;
     };
 
     static constexpr Array<LevelMap, 14> s_level_map = {
-        LevelMap { 0, Time::from_milliseconds(38000 / 60) },
-        LevelMap { 1000, Time::from_milliseconds(34000 / 60) },
-        LevelMap { 2000, Time::from_milliseconds(29000 / 60) },
-        LevelMap { 3000, Time::from_milliseconds(25000 / 60) },
-        LevelMap { 4000, Time::from_milliseconds(22000 / 60) },
-        LevelMap { 5000, Time::from_milliseconds(18000 / 60) },
-        LevelMap { 6000, Time::from_milliseconds(15000 / 60) },
-        LevelMap { 7000, Time::from_milliseconds(11000 / 60) },
-        LevelMap { 8000, Time::from_milliseconds(7000 / 60) },
-        LevelMap { 9000, Time::from_milliseconds(5000 / 60) },
-        LevelMap { 10000, Time::from_milliseconds(4000 / 60) },
-        LevelMap { 20000, Time::from_milliseconds(3000 / 60) },
-        LevelMap { 30000, Time::from_milliseconds(2000 / 60) },
-        LevelMap { 10000000, Time::from_milliseconds(1000 / 60) }
+        LevelMap { 0, Duration::from_milliseconds(38000 / 60) },
+        LevelMap { 1000, Duration::from_milliseconds(34000 / 60) },
+        LevelMap { 2000, Duration::from_milliseconds(29000 / 60) },
+        LevelMap { 3000, Duration::from_milliseconds(25000 / 60) },
+        LevelMap { 4000, Duration::from_milliseconds(22000 / 60) },
+        LevelMap { 5000, Duration::from_milliseconds(18000 / 60) },
+        LevelMap { 6000, Duration::from_milliseconds(15000 / 60) },
+        LevelMap { 7000, Duration::from_milliseconds(11000 / 60) },
+        LevelMap { 8000, Duration::from_milliseconds(7000 / 60) },
+        LevelMap { 9000, Duration::from_milliseconds(5000 / 60) },
+        LevelMap { 10000, Duration::from_milliseconds(4000 / 60) },
+        LevelMap { 20000, Duration::from_milliseconds(3000 / 60) },
+        LevelMap { 30000, Duration::from_milliseconds(2000 / 60) },
+        LevelMap { 10000000, Duration::from_milliseconds(1000 / 60) }
     };
 
     [[nodiscard]] RenderRequest set_current_block(Block const& block)
     {
         if (!block.has_collision(m_well)) {
             m_block = block;
+            update_shadow_hint_block();
             return RenderRequest::RequestUpdate;
         }
         return RenderRequest::SkipRender;
@@ -431,18 +466,54 @@ void BrickGame::reset()
     update();
 }
 
+void BrickGame::toggle_pause()
+{
+    m_brick_game->toggle_pause();
+    update();
+}
+
+void BrickGame::set_show_shadow_hint(bool should_show)
+{
+    m_show_shadow_hint = should_show;
+    repaint();
+}
+
+bool BrickGame::show_shadow_hint()
+{
+    return m_show_shadow_hint;
+}
+
 void BrickGame::timer_event(Core::TimerEvent&)
 {
-    if (m_brick_game->state() == Bricks::GameState::GameOver) {
+    switch (m_brick_game->state()) {
+    case Bricks::GameState::GameOver:
         game_over();
-        return;
+        break;
+    case Bricks::GameState::Active:
+        if (m_brick_game->update() == Bricks::RenderRequest::RequestUpdate)
+            update();
+        break;
+    case Bricks::GameState::Paused:
+        break;
     }
-    if (m_brick_game->update() == Bricks::RenderRequest::RequestUpdate)
-        update();
 }
 
 void BrickGame::keydown_event(GUI::KeyEvent& event)
 {
+    switch (event.key()) {
+    case KeyCode::Key_Escape:
+    case KeyCode::Key_P:
+        toggle_pause();
+        return;
+    default:
+        break;
+    }
+
+    if (m_brick_game->state() == Bricks::GameState::Paused) {
+        event.ignore();
+        return;
+    }
+
     Bricks::RenderRequest render_request { Bricks::RenderRequest::SkipRender };
     switch (event.key()) {
     case KeyCode::Key_A:
@@ -461,6 +532,7 @@ void BrickGame::keydown_event(GUI::KeyEvent& event)
         render_request = m_brick_game->rotate_right();
         break;
     case KeyCode::Key_E:
+    case KeyCode::Key_Z:
         render_request = m_brick_game->rotate_left();
         break;
     case KeyCode::Key_S:
@@ -478,28 +550,46 @@ void BrickGame::keydown_event(GUI::KeyEvent& event)
         update();
 }
 
-void BrickGame::paint_cell(GUI::Painter& painter, Gfx::IntRect rect, bool is_on)
+void BrickGame::paint_cell(GUI::Painter& painter, Gfx::IntRect rect, BrickGame::BoardSpace space)
 {
+    Color inside_color;
+    Color outside_color;
+
+    switch (space) {
+    case BrickGame::BoardSpace::FullyOn:
+        inside_color = m_front_color;
+        outside_color = m_front_color;
+        break;
+    case BrickGame::BoardSpace::ShadowHint:
+        inside_color = m_shadow_color;
+        outside_color = m_show_shadow_hint ? m_hint_block_color : m_shadow_color;
+        break;
+    case BrickGame::BoardSpace::Off:
+        inside_color = m_shadow_color;
+        outside_color = m_shadow_color;
+        break;
+    }
+
     painter.draw_rect(rect, m_back_color);
     rect.inflate(-1, -1, -1, -1);
-    painter.draw_rect(rect, is_on ? m_front_color : m_shadow_color);
+    painter.draw_rect(rect, outside_color);
     painter.set_pixel(rect.top_left(), m_back_color);
-    painter.set_pixel(rect.bottom_left(), m_back_color);
-    painter.set_pixel(rect.top_right(), m_back_color);
-    painter.set_pixel(rect.bottom_right(), m_back_color);
+    painter.set_pixel(rect.bottom_left().moved_up(1), m_back_color);
+    painter.set_pixel(rect.top_right().moved_left(1), m_back_color);
+    painter.set_pixel(rect.bottom_right().translated(-1), m_back_color);
     rect.inflate(-2, -2);
-    painter.draw_rect(rect, is_on ? m_front_color : m_shadow_color);
-    rect.inflate(-2, -2);
-    painter.draw_rect(rect, m_back_color);
+    painter.draw_rect(rect, outside_color);
     rect.inflate(-2, -2);
     painter.draw_rect(rect, m_back_color);
     rect.inflate(-2, -2);
-    painter.fill_rect(rect, is_on ? m_front_color : m_shadow_color);
+    painter.draw_rect(rect, m_back_color);
+    rect.inflate(-2, -2);
+    painter.fill_rect(rect, inside_color);
 }
 
-void BrickGame::paint_text(GUI::Painter& painter, int row, DeprecatedString const& text)
+void BrickGame::paint_sidebar_text(GUI::Painter& painter, int row, StringView text)
 {
-    auto const text_width = static_cast<int>(ceilf(font().width(text)));
+    auto const text_width = font().width_rounded_up(text);
     auto const entire_area_rect { frame_inner_rect() };
     auto const margin = 4;
     auto const rect { Gfx::IntRect { entire_area_rect.x() + entire_area_rect.width() - 116,
@@ -508,7 +598,24 @@ void BrickGame::paint_text(GUI::Painter& painter, int row, DeprecatedString cons
     painter.draw_text(rect, text, Gfx::TextAlignment::TopLeft, Color::Black);
 }
 
-void BrickGame::paint_game(GUI::Painter& painter, Gfx::IntRect const& rect)
+void BrickGame::paint_paused_text(GUI::Painter& painter)
+{
+    auto const paused_text = "Paused"sv;
+    auto const paused_text_width = font().width_rounded_up(paused_text);
+    auto const more_or_less_font_height = static_cast<int>(font().pixel_size_rounded_up());
+    auto const entire_area_rect { frame_inner_rect() };
+    auto const margin = more_or_less_font_height * 2;
+
+    auto pause_text_box = Gfx::IntRect({}, { paused_text_width + margin, more_or_less_font_height + margin }).centered_within(entire_area_rect);
+    painter.fill_rect(pause_text_box, m_front_color);
+
+    pause_text_box.inflate(-2, -2);
+    painter.fill_rect(pause_text_box, m_back_color);
+
+    painter.draw_text(frame_inner_rect(), paused_text, Gfx::TextAlignment::Center, Color::Black);
+}
+
+ErrorOr<void> BrickGame::paint_game(GUI::Painter& painter, Gfx::IntRect const& rect)
 {
     painter.fill_rect(rect, m_back_color);
     if (m_state == GameState::Active) {
@@ -541,10 +648,10 @@ void BrickGame::paint_game(GUI::Painter& painter, Gfx::IntRect const& rect)
                 paint_cell(painter, cell_rect(position), (*m_brick_game)[board_position]);
             }
 
-        paint_text(painter, 0, DeprecatedString::formatted("Score: {}", m_brick_game->score()));
-        paint_text(painter, 1, DeprecatedString::formatted("Level: {}", m_brick_game->level()));
-        paint_text(painter, 4, DeprecatedString::formatted("Hi-Score: {}", m_high_score));
-        paint_text(painter, 12, "Next:");
+        paint_sidebar_text(painter, 0, TRY(String::formatted("Score: {}", m_brick_game->score())));
+        paint_sidebar_text(painter, 1, TRY(String::formatted("Level: {}", m_brick_game->level())));
+        paint_sidebar_text(painter, 4, TRY(String::formatted("Hi-Score: {}", m_high_score)));
+        paint_sidebar_text(painter, 12, "Next:"sv);
 
         auto const hint_rect = Gfx::IntRect {
             frame_inner_rect().x() + frame_inner_rect().width() - 105,
@@ -558,8 +665,15 @@ void BrickGame::paint_game(GUI::Painter& painter, Gfx::IntRect const& rect)
         auto const dot_rect = Gfx::IntRect { hint_rect.x(), hint_rect.y(), cell_size.width() - 1, cell_size.height() - 1 };
         for (size_t y = 0; y < Block::shape_size; ++y)
             for (size_t x = 0; x < Block::shape_size; ++x)
-                paint_cell(painter, dot_rect.translated(int(x * cell_size.width()), int(y * cell_size.height())), m_brick_game->next_block().dot_at({ x, y }));
+                paint_cell(painter,
+                    dot_rect.translated(int(x * cell_size.width()), int(y * cell_size.height())),
+                    m_brick_game->next_block().dot_at({ x, y }) ? BrickGame::BoardSpace::FullyOn : BrickGame::BoardSpace::Off);
+
+        if (m_brick_game->state() == Bricks::GameState::Paused)
+            paint_paused_text(painter);
     }
+
+    return {};
 }
 
 void BrickGame::paint_event(GUI::PaintEvent& event)
@@ -568,7 +682,7 @@ void BrickGame::paint_event(GUI::PaintEvent& event)
     GUI::Painter painter(*this);
     painter.add_clip_rect(frame_inner_rect());
     painter.add_clip_rect(event.rect());
-    paint_game(painter, frame_inner_rect());
+    paint_game(painter, frame_inner_rect()).release_value_but_fixme_should_propagate_errors();
 }
 
 void BrickGame::game_over()
@@ -582,7 +696,7 @@ void BrickGame::game_over()
         Config::write_i32(m_app_name, m_app_name, "HighScore"sv, int(m_high_score = current_score));
     }
     GUI::MessageBox::show(window(),
-        text.to_deprecated_string(),
+        text.string_view(),
         "Game Over"sv,
         GUI::MessageBox::Type::Information);
 

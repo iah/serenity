@@ -12,9 +12,10 @@ namespace JS {
 
 class PromiseConstructor final : public NativeFunction {
     JS_OBJECT(PromiseConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(PromiseConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~PromiseConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;
@@ -31,8 +32,9 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(race);
     JS_DECLARE_NATIVE_FUNCTION(reject);
     JS_DECLARE_NATIVE_FUNCTION(resolve);
-
     JS_DECLARE_NATIVE_FUNCTION(symbol_species_getter);
+    JS_DECLARE_NATIVE_FUNCTION(try_);
+    JS_DECLARE_NATIVE_FUNCTION(with_resolvers);
 };
 
 }

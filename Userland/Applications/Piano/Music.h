@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/Types.h>
+#include <LibAudio/Queue.h>
 #include <LibGfx/Color.h>
 
 namespace Music {
@@ -18,13 +19,7 @@ namespace Music {
 // - 44,100 samples/sec
 // - 1,411.2 kbps
 
-struct Sample {
-    i16 left;
-    i16 right;
-};
-
-// HACK: needs to increase with device sample rate, but all of the sample_count stuff is static for now
-constexpr int sample_count = 1 << 10;
+constexpr int sample_count = Audio::AUDIO_BUFFER_SIZE * 10;
 
 constexpr double sample_rate = 44100;
 
@@ -56,10 +51,10 @@ constexpr KeyColor key_pattern[] = {
     White,
 };
 
-const Color note_pressed_color(64, 64, 255);
-const Color column_playing_color(128, 128, 255);
+Color const note_pressed_color(64, 64, 255);
+Color const column_playing_color(128, 128, 255);
 
-const Color left_wave_colors[] = {
+Color const left_wave_colors[] = {
     // Sine
     {
         255,
@@ -101,7 +96,7 @@ const Color left_wave_colors[] = {
 // HACK: make the display code shut up for now
 constexpr int RecordedSample = 5;
 
-const Color right_wave_colors[] = {
+Color const right_wave_colors[] = {
     // Sine
     {
         255,

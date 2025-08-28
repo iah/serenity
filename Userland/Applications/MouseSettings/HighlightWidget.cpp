@@ -6,13 +6,11 @@
 
 #include "HighlightWidget.h"
 
-#include <Applications/MouseSettings/HighlightWidgetGML.h>
 #include <LibGUI/ConnectionToWindowServer.h>
 
-HighlightWidget::HighlightWidget()
+namespace MouseSettings {
+ErrorOr<void> HighlightWidget::initialize()
 {
-    load_from_gml(highlight_widget_gml).release_value_but_fixme_should_propagate_errors();
-
     m_highlight_preview = find_descendant_of_type_named<GUI::Frame>("preview_frame")->add<MouseSettings::HighlightPreviewWidget>(palette());
 
     auto current_highlight_color = GUI::ConnectionToWindowServer::the().get_cursor_highlight_color();
@@ -41,6 +39,7 @@ HighlightWidget::HighlightWidget()
 
     m_highlight_preview->set_color(highlight_color());
     m_highlight_preview->set_radius(highlight_radius());
+    return {};
 }
 
 Gfx::Color HighlightWidget::highlight_color()
@@ -76,4 +75,5 @@ void HighlightWidget::reset_default_values()
         // Avoid artifact due to setting both color and opacity sliders:
         m_highlight_preview->update();
     });
+}
 }

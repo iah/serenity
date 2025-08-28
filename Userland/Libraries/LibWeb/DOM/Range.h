@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
  * Copyright (c) 2022, Luke Wilde <lukew@serenityos.org>
- * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,6 +10,7 @@
 
 #include <LibWeb/DOM/AbstractRange.h>
 #include <LibWeb/Selection/Selection.h>
+#include <LibWeb/WebIDL/Types.h>
 
 namespace Web::DOM {
 
@@ -24,19 +25,18 @@ RelativeBoundaryPointPosition position_of_boundary_point_relative_to_other_bound
 
 class Range final : public AbstractRange {
     WEB_PLATFORM_OBJECT(Range, AbstractRange);
+    JS_DECLARE_ALLOCATOR(Range);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Range>> create(Document&);
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Range>> create(HTML::Window&);
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<Range>> create(Node& start_container, u32 start_offset, Node& end_container, u32 end_offset);
+    [[nodiscard]] static JS::NonnullGCPtr<Range> create(Document&);
+    [[nodiscard]] static JS::NonnullGCPtr<Range> create(HTML::Window&);
+    [[nodiscard]] static JS::NonnullGCPtr<Range> create(Node& start_container, WebIDL::UnsignedLong start_offset, Node& end_container, WebIDL::UnsignedLong end_offset);
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<Range>> construct_impl(JS::Realm&);
 
     virtual ~Range() override;
 
-    // FIXME: There are a ton of methods missing here.
-
-    WebIDL::ExceptionOr<void> set_start(Node& node, u32 offset);
-    WebIDL::ExceptionOr<void> set_end(Node& node, u32 offset);
+    WebIDL::ExceptionOr<void> set_start(Node& node, WebIDL::UnsignedLong offset);
+    WebIDL::ExceptionOr<void> set_end(Node& node, WebIDL::UnsignedLong offset);
     WebIDL::ExceptionOr<void> set_start_before(Node& node);
     WebIDL::ExceptionOr<void> set_start_after(Node& node);
     WebIDL::ExceptionOr<void> set_end_before(Node& node);
@@ -45,15 +45,20 @@ public:
     void collapse(bool to_start);
     WebIDL::ExceptionOr<void> select_node_contents(Node&);
 
+    void increase_start_offset(Badge<Node>, WebIDL::UnsignedLong);
+    void increase_end_offset(Badge<Node>, WebIDL::UnsignedLong);
+    void decrease_start_offset(Badge<Node>, WebIDL::UnsignedLong);
+    void decrease_end_offset(Badge<Node>, WebIDL::UnsignedLong);
+
     // https://dom.spec.whatwg.org/#dom-range-start_to_start
-    enum HowToCompareBoundaryPoints : u16 {
+    enum HowToCompareBoundaryPoints : WebIDL::UnsignedShort {
         START_TO_START = 0,
         START_TO_END = 1,
         END_TO_END = 2,
         END_TO_START = 3,
     };
 
-    WebIDL::ExceptionOr<i16> compare_boundary_points(u16 how, Range const& source_range) const;
+    WebIDL::ExceptionOr<WebIDL::Short> compare_boundary_points(WebIDL::UnsignedShort how, Range const& source_range) const;
 
     JS::NonnullGCPtr<Range> inverted() const;
     JS::NonnullGCPtr<Range> normalized() const;
@@ -69,8 +74,8 @@ public:
     }
 
     bool intersects_node(Node const&) const;
-    WebIDL::ExceptionOr<bool> is_point_in_range(Node const&, u32 offset) const;
-    WebIDL::ExceptionOr<i16> compare_point(Node const&, u32 offset) const;
+    WebIDL::ExceptionOr<bool> is_point_in_range(Node const&, WebIDL::UnsignedLong offset) const;
+    WebIDL::ExceptionOr<WebIDL::Short> compare_point(Node const&, WebIDL::UnsignedLong offset) const;
 
     WebIDL::ExceptionOr<void> delete_contents();
     WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> extract_contents();
@@ -79,21 +84,24 @@ public:
     WebIDL::ExceptionOr<void> insert_node(JS::NonnullGCPtr<Node>);
     WebIDL::ExceptionOr<void> surround_contents(JS::NonnullGCPtr<Node> new_parent);
 
-    DeprecatedString to_deprecated_string() const;
+    String to_string() const;
 
     static HashTable<Range*>& live_ranges();
 
-    JS::NonnullGCPtr<Geometry::DOMRect> get_bounding_client_rect() const;
+    JS::NonnullGCPtr<Geometry::DOMRectList> get_client_rects();
+    JS::NonnullGCPtr<Geometry::DOMRect> get_bounding_client_rect();
 
     bool contains_node(Node const&) const;
 
     void set_associated_selection(Badge<Selection::Selection>, JS::GCPtr<Selection::Selection>);
 
+    WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> create_contextual_fragment(String const& fragment);
+
 private:
     explicit Range(Document&);
-    Range(Node& start_container, u32 start_offset, Node& end_container, u32 end_offset);
+    Range(Node& start_container, WebIDL::UnsignedLong start_offset, Node& end_container, WebIDL::UnsignedLong end_offset);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     Node& root();

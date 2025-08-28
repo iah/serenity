@@ -6,13 +6,14 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/CharacterTypes.h>
-#include <AK/DeprecatedString.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <LibCore/MappedFile.h>
+#include <LibCore/Resource.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Size.h>
 
@@ -21,23 +22,29 @@ namespace Gfx {
 class BitmapFont final : public Font {
 public:
     virtual NonnullRefPtr<Font> clone() const override;
-    ErrorOr<NonnullRefPtr<Font>> try_clone() const override;
-    static NonnullRefPtr<BitmapFont> create(u8 glyph_height, u8 glyph_width, bool fixed, size_t glyph_count);
-    static ErrorOr<NonnullRefPtr<BitmapFont>> try_create(u8 glyph_height, u8 glyph_width, bool fixed, size_t glyph_count);
+    virtual ErrorOr<NonnullRefPtr<Font>> try_clone() const override;
+    static ErrorOr<NonnullRefPtr<BitmapFont>> create(u8 glyph_height, u8 glyph_width, bool fixed, size_t glyph_count);
 
     virtual FontPixelMetrics pixel_metrics() const override;
 
     ErrorOr<NonnullRefPtr<BitmapFont>> masked_character_set() const;
     ErrorOr<NonnullRefPtr<BitmapFont>> unmasked_character_set() const;
 
-    static RefPtr<BitmapFont> load_from_file(DeprecatedString const& path);
-    static ErrorOr<NonnullRefPtr<BitmapFont>> try_load_from_file(DeprecatedString const& path);
-    ErrorOr<void> write_to_file(DeprecatedString const& path);
+    static NonnullRefPtr<BitmapFont> load_from_uri(StringView);
+    static ErrorOr<NonnullRefPtr<BitmapFont>> try_load_from_uri(StringView);
+    static ErrorOr<NonnullRefPtr<BitmapFont>> try_load_from_resource(NonnullRefPtr<Core::Resource>);
+    static ErrorOr<NonnullRefPtr<BitmapFont>> try_load_from_mapped_file(NonnullOwnPtr<Core::MappedFile>);
+    static ErrorOr<NonnullRefPtr<BitmapFont>> try_load_from_stream(FixedMemoryStream&);
+
+    ErrorOr<void> write_to_file(ByteString const& path);
+    ErrorOr<void> write_to_file(NonnullOwnPtr<Core::File> file);
 
     ~BitmapFont();
 
-    u8* rows() { return m_rows; }
-    u8* widths() { return m_glyph_widths; }
+    Bytes rows() { return m_rows; }
+    Span<u8> widths() { return m_glyph_widths; }
+
+    virtual float point_size() const override { return m_presentation_size; }
 
     u8 presentation_size() const override { return m_presentation_size; }
     void set_presentation_size(u8 size) { m_presentation_size = size; }
@@ -55,11 +62,14 @@ public:
 
     Glyph glyph(u32 code_point) const override;
     Glyph glyph(u32 code_point, GlyphSubpixelOffset) const override { return glyph(code_point); }
+    Optional<Glyph> glyph_for_postscript_name(StringView, GlyphSubpixelOffset) const override { return {}; }
 
     float glyph_left_bearing(u32) const override { return 0; }
+    Optional<float> glyph_left_bearing_for_postscript_name(StringView) const override { return {}; }
 
     Glyph raw_glyph(u32 code_point) const;
     bool contains_glyph(u32 code_point) const override;
+    bool contains_glyph_for_postscript_name(StringView) const override { return false; }
     bool contains_raw_glyph(u32 code_point) const { return m_glyph_widths[code_point] > 0; }
 
     virtual float glyph_or_emoji_width(Utf8CodePointIterator&) const override;
@@ -71,6 +81,7 @@ public:
     virtual float preferred_line_height() const override { return glyph_height() + m_line_gap; }
 
     virtual float glyph_width(u32 code_point) const override;
+    virtual Optional<float> glyph_width_for_postscript_name(StringView) const override { return {}; }
     u8 raw_glyph_width(u32 code_point) const { return m_glyph_widths[code_point]; }
 
     u8 min_glyph_width() const override { return m_min_glyph_width; }
@@ -95,8 +106,10 @@ public:
     virtual float width(Utf8View const&) const override;
     virtual float width(Utf32View const&) const override;
 
-    DeprecatedString name() const override { return m_name; }
-    void set_name(DeprecatedString name) { m_name = move(name); }
+    virtual int width_rounded_up(StringView) const override;
+
+    virtual String name() const override { return m_name; }
+    void set_name(String name) { m_name = move(name); }
 
     bool is_fixed_width() const override { return m_fixed_width; }
     void set_fixed_width(bool b) { m_fixed_width = b; }
@@ -106,50 +119,45 @@ public:
 
     void set_glyph_width(u32 code_point, u8 width)
     {
-        VERIFY(m_glyph_widths);
         m_glyph_widths[code_point] = width;
     }
 
     size_t glyph_count() const override { return m_glyph_count; }
     Optional<size_t> glyph_index(u32 code_point) const;
 
-    u16 range_size() const { return m_range_mask_size; }
     bool is_range_empty(u32 code_point) const { return !(m_range_mask[code_point / 256 / 8] & 1 << (code_point / 256 % 8)); }
 
-    DeprecatedString family() const override { return m_family; }
-    void set_family(DeprecatedString family) { m_family = move(family); }
-    DeprecatedString variant() const override;
+    virtual String family() const override { return m_family; }
+    void set_family(String family) { m_family = move(family); }
+    virtual String variant() const override;
 
-    DeprecatedString qualified_name() const override;
-    DeprecatedString human_readable_name() const override { return DeprecatedString::formatted("{} {} {}", family(), variant(), presentation_size()); }
+    virtual String qualified_name() const override;
+    virtual String human_readable_name() const override { return MUST(String::formatted("{} {} {}", family(), variant(), presentation_size())); }
 
-    virtual RefPtr<Font> with_size(float point_size) const override;
+    virtual NonnullRefPtr<Font> with_size(float point_size) const override;
 
 private:
-    BitmapFont(DeprecatedString name, DeprecatedString family, u8* rows, u8* widths, bool is_fixed_width,
-        u8 glyph_width, u8 glyph_height, u8 glyph_spacing, u16 range_mask_size, u8* range_mask,
+    BitmapFont(String name, String family, Bytes rows, Span<u8> widths, bool is_fixed_width,
+        u8 glyph_width, u8 glyph_height, u8 glyph_spacing, Bytes range_mask,
         u8 baseline, u8 mean_line, u8 presentation_size, u16 weight, u8 slope, bool owns_arrays = false);
-
-    static ErrorOr<NonnullRefPtr<BitmapFont>> load_from_memory(u8 const*);
 
     template<typename T>
     int unicode_view_width(T const& view) const;
 
-    void update_x_height() { m_x_height = m_baseline - m_mean_line; };
+    void update_x_height() { m_x_height = m_baseline - m_mean_line; }
 
     virtual bool has_color_bitmaps() const override { return false; }
 
-    DeprecatedString m_name;
-    DeprecatedString m_family;
+    String m_name;
+    String m_family;
     size_t m_glyph_count { 0 };
 
-    u16 m_range_mask_size { 0 };
-    u8* m_range_mask { nullptr };
+    Bytes m_range_mask;
     Vector<Optional<size_t>> m_range_indices;
 
-    u8* m_rows { nullptr };
-    u8* m_glyph_widths { nullptr };
-    RefPtr<Core::MappedFile> m_mapped_file;
+    Bytes m_rows;
+    Span<u8> m_glyph_widths;
+    Variant<Empty, NonnullOwnPtr<Core::MappedFile>, NonnullRefPtr<Core::Resource>> m_owned_data = Empty {};
 
     u8 m_glyph_width { 0 };
     u8 m_glyph_height { 0 };

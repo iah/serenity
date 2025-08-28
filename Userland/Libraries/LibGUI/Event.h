@@ -1,12 +1,15 @@
 /*
  * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2023, David Ganz <david.g.ganz@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/EnumBits.h>
+#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <Kernel/API/KeyCode.h>
@@ -72,6 +75,7 @@ public:
         WM_SuperDigitKeyPressed,
         WM_WorkspaceChanged,
         WM_KeymapChanged,
+        WM_AddToQuickLaunch,
         __End_WM_Events,
     };
 
@@ -180,7 +184,7 @@ public:
     {
     }
 
-    DeprecatedString const& title() const { return m_title; }
+    ByteString const& title() const { return m_title; }
     Gfx::IntRect const& rect() const { return m_rect; }
     bool is_active() const { return m_active; }
     bool is_blocked() const { return m_blocked; }
@@ -192,7 +196,7 @@ public:
     unsigned workspace_column() const { return m_workspace_column; }
 
 private:
-    DeprecatedString m_title;
+    ByteString m_title;
     Gfx::IntRect m_rect;
     WindowType m_window_type;
     unsigned m_workspace_row;
@@ -251,16 +255,30 @@ private:
 
 class WMKeymapChangedEvent : public WMEvent {
 public:
-    explicit WMKeymapChangedEvent(int client_id, DeprecatedString const& keymap)
+    explicit WMKeymapChangedEvent(int client_id, ByteString const& keymap)
         : WMEvent(Event::Type::WM_KeymapChanged, client_id, 0)
         , m_keymap(keymap)
     {
     }
 
-    DeprecatedString const& keymap() const { return m_keymap; }
+    ByteString const& keymap() const { return m_keymap; }
 
 private:
-    const DeprecatedString m_keymap;
+    ByteString const m_keymap;
+};
+
+class WMAddToQuickLaunchEvent : public WMEvent {
+public:
+    explicit WMAddToQuickLaunchEvent(int client_id, pid_t pid)
+        : WMEvent(Event::Type::WM_AddToQuickLaunch, client_id, 0)
+        , m_pid(pid)
+    {
+    }
+
+    pid_t pid() const { return m_pid; }
+
+private:
+    pid_t m_pid;
 };
 
 class MultiPaintEvent final : public Event {
@@ -367,11 +385,14 @@ enum MouseButton : u8 {
     Forward = 16,
 };
 
+AK_ENUM_BITWISE_OPERATORS(MouseButton);
+
 class KeyEvent final : public Event {
 public:
-    KeyEvent(Type type, KeyCode key, u8 modifiers, u32 code_point, u32 scancode)
+    KeyEvent(Type type, KeyCode key, u8 map_entry_index, u8 modifiers, u32 code_point, u32 scancode)
         : Event(type)
         , m_key(key)
+        , m_map_entry_index(map_entry_index)
         , m_modifiers(modifiers)
         , m_code_point(code_point)
         , m_scancode(scancode)
@@ -386,15 +407,17 @@ public:
     bool super() const { return m_modifiers & Mod_Super; }
     u8 modifiers() const { return m_modifiers; }
     u32 code_point() const { return m_code_point; }
-    DeprecatedString text() const
+    ByteString text() const
     {
         StringBuilder sb;
         sb.append_code_point(m_code_point);
-        return sb.to_deprecated_string();
+        return sb.to_byte_string();
     }
     u32 scancode() const { return m_scancode; }
 
-    DeprecatedString to_deprecated_string() const;
+    u8 map_entry_index() const { return m_map_entry_index; }
+
+    ByteString to_byte_string() const;
 
     bool is_arrow_key() const
     {
@@ -412,6 +435,7 @@ public:
 private:
     friend class ConnectionToWindowServer;
     KeyCode m_key { KeyCode::Key_Invalid };
+    u8 m_map_entry_index { 0 };
     u8 m_modifiers { 0 };
     u32 m_code_point { 0 };
     u32 m_scancode { 0 };
@@ -458,37 +482,31 @@ private:
     int m_wheel_raw_delta_y { 0 };
 };
 
-class DragEvent final : public Event {
+class DropEvent : public Event {
 public:
-    DragEvent(Type type, Gfx::IntPoint position, Vector<DeprecatedString> mime_types)
-        : Event(type)
-        , m_position(position)
-        , m_mime_types(move(mime_types))
-    {
-    }
+    DropEvent(Type type, Gfx::IntPoint, MouseButton button, u32 buttons, u32 modifiers, ByteString const& text, NonnullRefPtr<Core::MimeData const> mime_data);
+    ~DropEvent();
 
     Gfx::IntPoint position() const { return m_position; }
-    Vector<DeprecatedString> const& mime_types() const { return m_mime_types; }
-
-private:
-    Gfx::IntPoint m_position;
-    Vector<DeprecatedString> m_mime_types;
-};
-
-class DropEvent final : public Event {
-public:
-    DropEvent(Gfx::IntPoint, DeprecatedString const& text, NonnullRefPtr<Core::MimeData const> mime_data);
-
-    ~DropEvent() = default;
-
-    Gfx::IntPoint position() const { return m_position; }
-    DeprecatedString const& text() const { return m_text; }
+    MouseButton button() const { return m_button; }
+    unsigned buttons() const { return m_buttons; }
+    unsigned modifiers() const { return m_modifiers; }
+    ByteString const& text() const { return m_text; }
     Core::MimeData const& mime_data() const { return m_mime_data; }
 
 private:
     Gfx::IntPoint m_position;
-    DeprecatedString m_text;
+    MouseButton m_button { MouseButton::None };
+    unsigned m_buttons { 0 };
+    unsigned m_modifiers { 0 };
+    ByteString m_text;
     NonnullRefPtr<Core::MimeData const> m_mime_data;
+};
+
+class DragEvent final : public DropEvent {
+public:
+    DragEvent(Type type, Gfx::IntPoint, MouseButton button, u32 buttons, u32 modifiers, ByteString const& text, NonnullRefPtr<Core::MimeData const> mime_data);
+    ~DragEvent();
 };
 
 class ThemeChangeEvent final : public Event {
@@ -555,7 +573,7 @@ private:
 class ActionEvent final : public Event {
 public:
     ActionEvent(Type, Action&);
-    ~ActionEvent() = default;
+    ~ActionEvent();
 
     Action const& action() const { return *m_action; }
     Action& action() { return *m_action; }

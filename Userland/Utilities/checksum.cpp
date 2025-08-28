@@ -19,7 +19,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto program_name = LexicalPath::basename(arguments.strings[0]);
     auto hash_kind = Crypto::Hash::HashKind::None;
 
-    if (program_name == "md5sum")
+    if (program_name == "b2sum")
+        hash_kind = Crypto::Hash::HashKind::BLAKE2b;
+    else if (program_name == "md5sum")
         hash_kind = Crypto::Hash::HashKind::MD5;
     else if (program_name == "sha1sum")
         hash_kind = Crypto::Hash::HashKind::SHA1;
@@ -29,12 +31,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         hash_kind = Crypto::Hash::HashKind::SHA512;
 
     if (hash_kind == Crypto::Hash::HashKind::None) {
-        warnln("Error: program must be executed as 'md5sum', 'sha1sum', 'sha256sum' or 'sha512sum'; got '{}'", program_name);
+        warnln("Error: program must be executed as 'b2sum', 'md5sum', 'sha1sum', 'sha256sum' or 'sha512sum'; got '{}'", program_name);
         exit(1);
     }
 
-    auto hash_name = program_name.substring_view(0, program_name.length() - 3).to_deprecated_string().to_uppercase();
-    auto paths_help_string = DeprecatedString::formatted("File(s) to print {} checksum of", hash_name);
+    auto hash_name = program_name.substring_view(0, program_name.length() - 3).to_byte_string().to_uppercase();
+    auto paths_help_string = ByteString::formatted("File(s) to print {} checksum of", hash_name);
 
     bool verify_from_paths = false;
     Vector<StringView> paths;
@@ -66,13 +68,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         Array<u8, PAGE_SIZE> buffer;
         if (!verify_from_paths) {
             while (!file->is_eof())
-                hash.update(TRY(file->read(buffer)));
+                hash.update(TRY(file->read_some(buffer)));
             outln("{:hex-dump}  {}", hash.digest().bytes(), path);
         } else {
             StringBuilder checksum_list_contents;
             Array<u8, 1> checksum_list_buffer;
             while (!file->is_eof())
-                checksum_list_contents.append(TRY(file->read(checksum_list_buffer)).data()[0]);
+                checksum_list_contents.append(TRY(file->read_some(checksum_list_buffer)).data()[0]);
             Vector<StringView> const lines = checksum_list_contents.string_view().split_view("\n"sv);
 
             for (size_t i = 0; i < lines.size(); ++i) {
@@ -96,8 +98,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 auto file_from_filename = file_from_filename_or_error.release_value();
                 hash.reset();
                 while (!file_from_filename->is_eof())
-                    hash.update(TRY(file_from_filename->read(buffer)));
-                if (DeprecatedString::formatted("{:hex-dump}", hash.digest().bytes()) == line[0])
+                    hash.update(TRY(file_from_filename->read_some(buffer)));
+                if (ByteString::formatted("{:hex-dump}", hash.digest().bytes()) == line[0])
                     outln("{}: OK", filename);
                 else {
                     ++failed_verification_count;

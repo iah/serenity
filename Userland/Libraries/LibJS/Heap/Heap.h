@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,16 +15,20 @@
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
 #include <LibJS/Forward.h>
-#include <LibJS/Heap/BlockAllocator.h>
 #include <LibJS/Heap/Cell.h>
 #include <LibJS/Heap/CellAllocator.h>
+#include <LibJS/Heap/ConservativeVector.h>
 #include <LibJS/Heap/Handle.h>
+#include <LibJS/Heap/HeapRoot.h>
+#include <LibJS/Heap/Internals.h>
 #include <LibJS/Heap/MarkedVector.h>
+#include <LibJS/Runtime/Completion.h>
+#include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/WeakContainer.h>
 
 namespace JS {
 
-class Heap {
+class Heap : public HeapBase {
     AK_MAKE_NONCOPYABLE(Heap);
     AK_MAKE_NONMOVABLE(Heap);
 
@@ -35,18 +39,22 @@ public:
     template<typename T, typename... Args>
     NonnullGCPtr<T> allocate_without_realm(Args&&... args)
     {
-        auto* memory = allocate_cell(sizeof(T));
+        auto* memory = allocate_cell<T>();
+        defer_gc();
         new (memory) T(forward<Args>(args)...);
+        undefer_gc();
         return *static_cast<T*>(memory);
     }
 
     template<typename T, typename... Args>
-    ThrowCompletionOr<NonnullGCPtr<T>> allocate(Realm& realm, Args&&... args)
+    NonnullGCPtr<T> allocate(Realm& realm, Args&&... args)
     {
-        auto* memory = allocate_cell(sizeof(T));
+        auto* memory = allocate_cell<T>();
+        defer_gc();
         new (memory) T(forward<Args>(args)...);
+        undefer_gc();
         auto* cell = static_cast<T*>(memory);
-        MUST_OR_THROW_OOM(memory->initialize(realm));
+        memory->initialize(realm);
         return *cell;
     }
 
@@ -56,8 +64,7 @@ public:
     };
 
     void collect_garbage(CollectionType = CollectionType::CollectGarbage, bool print_report = false);
-
-    VM& vm() { return m_vm; }
+    AK::JsonObject dump_graph();
 
     bool should_collect_on_every_allocation() const { return m_should_collect_on_every_allocation; }
     void set_should_collect_on_every_allocation(bool b) { m_should_collect_on_every_allocation = b; }
@@ -68,59 +75,144 @@ public:
     void did_create_marked_vector(Badge<MarkedVectorBase>, MarkedVectorBase&);
     void did_destroy_marked_vector(Badge<MarkedVectorBase>, MarkedVectorBase&);
 
+    void did_create_conservative_vector(Badge<ConservativeVectorBase>, ConservativeVectorBase&);
+    void did_destroy_conservative_vector(Badge<ConservativeVectorBase>, ConservativeVectorBase&);
+
     void did_create_weak_container(Badge<WeakContainer>, WeakContainer&);
     void did_destroy_weak_container(Badge<WeakContainer>, WeakContainer&);
 
-    void defer_gc(Badge<DeferGC>);
-    void undefer_gc(Badge<DeferGC>);
+    void did_create_execution_context(Badge<ExecutionContext>, ExecutionContext&);
+    void did_destroy_execution_context(Badge<ExecutionContext>, ExecutionContext&);
 
-    BlockAllocator& block_allocator() { return m_block_allocator; }
+    void register_cell_allocator(Badge<CellAllocator>, CellAllocator&);
 
     void uproot_cell(Cell* cell);
 
 private:
+    friend class MarkingVisitor;
+    friend class GraphConstructorVisitor;
+    friend class DeferGC;
+
+    void defer_gc();
+    void undefer_gc();
+
     static bool cell_must_survive_garbage_collection(Cell const&);
 
-    Cell* allocate_cell(size_t);
+    template<typename T>
+    Cell* allocate_cell()
+    {
+        will_allocate(sizeof(T));
+        if constexpr (requires { T::cell_allocator.allocator.get().allocate_cell(*this); }) {
+            if constexpr (IsSame<T, typename decltype(T::cell_allocator)::CellType>) {
+                return T::cell_allocator.allocator.get().allocate_cell(*this);
+            }
+        }
+        return allocator_for_size(sizeof(T)).allocate_cell(*this);
+    }
 
-    void gather_roots(HashTable<Cell*>&);
-    void gather_conservative_roots(HashTable<Cell*>&);
-    void mark_live_cells(HashTable<Cell*> const& live_cells);
+    void will_allocate(size_t);
+
+    void find_min_and_max_block_addresses(FlatPtr& min_address, FlatPtr& max_address);
+    void gather_roots(HashMap<Cell*, HeapRoot>&);
+    void gather_conservative_roots(HashMap<Cell*, HeapRoot>&);
+    void gather_asan_fake_stack_roots(HashMap<FlatPtr, HeapRoot>&, FlatPtr, FlatPtr min_block_address, FlatPtr max_block_address);
+    void mark_live_cells(HashMap<Cell*, HeapRoot> const& live_cells);
     void finalize_unmarked_cells();
     void sweep_dead_cells(bool print_report, Core::ElapsedTimer const&);
 
-    CellAllocator& allocator_for_size(size_t);
+    ALWAYS_INLINE CellAllocator& allocator_for_size(size_t cell_size)
+    {
+        // FIXME: Use binary search?
+        for (auto& allocator : m_size_based_cell_allocators) {
+            if (allocator->cell_size() >= cell_size)
+                return *allocator;
+        }
+        dbgln("Cannot get CellAllocator for cell size {}, largest available is {}!", cell_size, m_size_based_cell_allocators.last()->cell_size());
+        VERIFY_NOT_REACHED();
+    }
 
     template<typename Callback>
     void for_each_block(Callback callback)
     {
-        for (auto& allocator : m_allocators) {
-            if (allocator->for_each_block(callback) == IterationDecision::Break)
+        for (auto& allocator : m_all_cell_allocators) {
+            if (allocator.for_each_block(callback) == IterationDecision::Break)
                 return;
         }
     }
 
-    size_t m_max_allocations_between_gc { 100000 };
-    size_t m_allocations_since_last_gc { 0 };
+    static constexpr size_t GC_MIN_BYTES_THRESHOLD { 4 * 1024 * 1024 };
+    size_t m_gc_bytes_threshold { GC_MIN_BYTES_THRESHOLD };
+    size_t m_allocated_bytes_since_last_gc { 0 };
 
     bool m_should_collect_on_every_allocation { false };
 
-    VM& m_vm;
-
-    Vector<NonnullOwnPtr<CellAllocator>> m_allocators;
+    Vector<NonnullOwnPtr<CellAllocator>> m_size_based_cell_allocators;
+    CellAllocator::List m_all_cell_allocators;
 
     HandleImpl::List m_handles;
     MarkedVectorBase::List m_marked_vectors;
+    ConservativeVectorBase::List m_conservative_vectors;
     WeakContainer::List m_weak_containers;
 
-    Vector<Cell*> m_uprooted_cells;
-
-    BlockAllocator m_block_allocator;
+    Vector<GCPtr<Cell>> m_uprooted_cells;
 
     size_t m_gc_deferrals { 0 };
     bool m_should_gc_when_deferral_ends { false };
 
     bool m_collecting_garbage { false };
 };
+
+inline void Heap::did_create_handle(Badge<HandleImpl>, HandleImpl& impl)
+{
+    VERIFY(!m_handles.contains(impl));
+    m_handles.append(impl);
+}
+
+inline void Heap::did_destroy_handle(Badge<HandleImpl>, HandleImpl& impl)
+{
+    VERIFY(m_handles.contains(impl));
+    m_handles.remove(impl);
+}
+
+inline void Heap::did_create_marked_vector(Badge<MarkedVectorBase>, MarkedVectorBase& vector)
+{
+    VERIFY(!m_marked_vectors.contains(vector));
+    m_marked_vectors.append(vector);
+}
+
+inline void Heap::did_destroy_marked_vector(Badge<MarkedVectorBase>, MarkedVectorBase& vector)
+{
+    VERIFY(m_marked_vectors.contains(vector));
+    m_marked_vectors.remove(vector);
+}
+
+inline void Heap::did_create_conservative_vector(Badge<ConservativeVectorBase>, ConservativeVectorBase& vector)
+{
+    VERIFY(!m_conservative_vectors.contains(vector));
+    m_conservative_vectors.append(vector);
+}
+
+inline void Heap::did_destroy_conservative_vector(Badge<ConservativeVectorBase>, ConservativeVectorBase& vector)
+{
+    VERIFY(m_conservative_vectors.contains(vector));
+    m_conservative_vectors.remove(vector);
+}
+
+inline void Heap::did_create_weak_container(Badge<WeakContainer>, WeakContainer& set)
+{
+    VERIFY(!m_weak_containers.contains(set));
+    m_weak_containers.append(set);
+}
+
+inline void Heap::did_destroy_weak_container(Badge<WeakContainer>, WeakContainer& set)
+{
+    VERIFY(m_weak_containers.contains(set));
+    m_weak_containers.remove(set);
+}
+
+inline void Heap::register_cell_allocator(Badge<CellAllocator>, CellAllocator& allocator)
+{
+    m_all_cell_allocators.append(allocator);
+}
 
 }

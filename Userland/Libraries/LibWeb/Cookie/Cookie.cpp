@@ -12,23 +12,24 @@
 
 namespace Web::Cookie {
 
-static DeprecatedString time_to_string(Time const& time)
+static String time_to_string(UnixDateTime const& time)
 {
-    auto local_time = Core::DateTime::from_timestamp(time.to_seconds());
-    return local_time.to_deprecated_string("%Y-%m-%d %H:%M:%S %Z"sv);
+    // FIXME: This roundabout formatting should not be necessary; it also loses precision.
+    auto local_time = Core::DateTime::from_timestamp(time.seconds_since_epoch());
+    return MUST(local_time.to_string("%Y-%m-%d %H:%M:%S %Z"sv));
 }
 
-DeprecatedString Cookie::creation_time_to_string() const
+String Cookie::creation_time_to_string() const
 {
     return time_to_string(creation_time);
 }
 
-DeprecatedString Cookie::last_access_time_to_string() const
+String Cookie::last_access_time_to_string() const
 {
     return time_to_string(last_access_time);
 }
 
-DeprecatedString Cookie::expiry_time_to_string() const
+String Cookie::expiry_time_to_string() const
 {
     return time_to_string(expiry_time);
 }
@@ -50,11 +51,11 @@ StringView same_site_to_string(SameSite same_site)
 
 SameSite same_site_from_string(StringView same_site_mode)
 {
-    if (same_site_mode.equals_ignoring_case("None"sv))
+    if (same_site_mode.equals_ignoring_ascii_case("None"sv))
         return SameSite::None;
-    if (same_site_mode.equals_ignoring_case("Strict"sv))
+    if (same_site_mode.equals_ignoring_ascii_case("Strict"sv))
         return SameSite::Strict;
-    if (same_site_mode.equals_ignoring_case("Lax"sv))
+    if (same_site_mode.equals_ignoring_ascii_case("Lax"sv))
         return SameSite::Lax;
     return SameSite::Default;
 }
@@ -83,15 +84,15 @@ ErrorOr<void> IPC::encode(Encoder& encoder, Web::Cookie::Cookie const& cookie)
 template<>
 ErrorOr<Web::Cookie::Cookie> IPC::decode(Decoder& decoder)
 {
-    auto name = TRY(decoder.decode<DeprecatedString>());
-    auto value = TRY(decoder.decode<DeprecatedString>());
-    auto domain = TRY(decoder.decode<DeprecatedString>());
-    auto path = TRY(decoder.decode<DeprecatedString>());
-    auto creation_time = TRY(decoder.decode<Time>());
-    auto expiry_time = TRY(decoder.decode<Time>());
+    auto name = TRY(decoder.decode<String>());
+    auto value = TRY(decoder.decode<String>());
+    auto domain = TRY(decoder.decode<String>());
+    auto path = TRY(decoder.decode<String>());
+    auto creation_time = TRY(decoder.decode<UnixDateTime>());
+    auto expiry_time = TRY(decoder.decode<UnixDateTime>());
     auto host_only = TRY(decoder.decode<bool>());
     auto http_only = TRY(decoder.decode<bool>());
-    auto last_access_time = TRY(decoder.decode<Time>());
+    auto last_access_time = TRY(decoder.decode<UnixDateTime>());
     auto persistent = TRY(decoder.decode<bool>());
     auto secure = TRY(decoder.decode<bool>());
     auto same_site = TRY(decoder.decode<Web::Cookie::SameSite>());

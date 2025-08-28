@@ -11,13 +11,14 @@
 #if ARCH(X86_64)
 #    include <Kernel/Arch/x86_64/BochsDebugOutput.h>
 #endif
-#include <Kernel/Devices/ConsoleDevice.h>
-#include <Kernel/Devices/DeviceManagement.h>
-#include <Kernel/Devices/PCISerialDevice.h>
-#include <Kernel/Graphics/Console/BootFramebufferConsole.h>
-#include <Kernel/Graphics/GraphicsManagement.h>
+#include <Kernel/Devices/BaseDevices.h>
+#include <Kernel/Devices/Device.h>
+#include <Kernel/Devices/GPU/Console/BootFramebufferConsole.h>
+#include <Kernel/Devices/GPU/Management.h>
+#include <Kernel/Devices/Generic/ConsoleDevice.h>
+#include <Kernel/Devices/Serial/16550/PCISerial16550.h>
+#include <Kernel/Devices/TTY/VirtualConsole.h>
 #include <Kernel/Locking/Spinlock.h>
-#include <Kernel/TTY/ConsoleManagement.h>
 #include <Kernel/kstdio.h>
 
 namespace Kernel {
@@ -41,8 +42,8 @@ bool is_serial_debug_enabled()
 
 static void serial_putch(char ch)
 {
-    if (PCISerialDevice::is_available())
-        return PCISerialDevice::the().put_char(ch);
+    if (PCISerial16550::is_available())
+        PCISerial16550::the().put_char(ch);
 
     debug_output(ch);
 }
@@ -69,22 +70,20 @@ static void critical_console_out(char ch)
 
 static void console_out(char ch)
 {
-    if (s_serial_debug_enabled)
-        serial_putch(ch);
-
-    // It would be bad to reach the assert in ConsoleDevice()::the() and do a stack overflow
-
-    if (DeviceManagement::the().is_console_device_attached()) {
-        DeviceManagement::the().console_device().put_char(ch);
+    auto base_devices = Device::base_devices();
+    if (base_devices) {
+        base_devices->console_device->put_char(ch);
     } else {
+        if (s_serial_debug_enabled)
+            serial_putch(ch);
+
 #if ARCH(X86_64)
         bochs_debug_output(ch);
 #endif
     }
-    if (ConsoleManagement::is_initialized()) {
-        ConsoleManagement::the().debug_tty()->emit_char(ch);
-    } else if (auto* boot_console = g_boot_console.load()) {
-        boot_console->write(ch, true);
+    if (!VirtualConsole::emit_char_on_debug_console(ch)) {
+        if (auto* boot_console = g_boot_console.load())
+            boot_console->write(ch, true);
     }
 }
 

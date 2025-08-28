@@ -6,7 +6,7 @@
 
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
-#include <LibUnicode/Segmentation.h>
+#include <LibLocale/Segmenter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Position.h>
 #include <LibWeb/DOM/Range.h>
@@ -17,42 +17,37 @@
 
 namespace Web {
 
-void EditEventHandler::handle_delete_character_after(DOM::Position const& cursor_position)
+void EditEventHandler::handle_delete_character_after(JS::NonnullGCPtr<DOM::Document> document, JS::NonnullGCPtr<DOM::Position> cursor_position)
 {
-    auto& node = *static_cast<DOM::Text*>(const_cast<DOM::Node*>(cursor_position.node()));
+    auto& node = verify_cast<DOM::Text>(*cursor_position->node());
     auto& text = node.data();
 
-    auto next_grapheme_offset = Unicode::next_grapheme_segmentation_boundary(Utf8View { text }, cursor_position.offset());
-    if (!next_grapheme_offset.has_value()) {
+    auto next_offset = node.grapheme_segmenter().next_boundary(cursor_position->offset());
+    if (!next_offset.has_value()) {
         // FIXME: Move to the next node and delete the first character there.
         return;
     }
 
     StringBuilder builder;
-    builder.append(text.substring_view(0, cursor_position.offset()));
-    builder.append(text.substring_view(*next_grapheme_offset));
-    node.set_data(builder.to_deprecated_string());
+    builder.append(text.bytes_as_string_view().substring_view(0, cursor_position->offset()));
+    builder.append(text.bytes_as_string_view().substring_view(*next_offset));
+    node.set_data(MUST(builder.to_string()));
 
-    // FIXME: When nodes are removed from the DOM, the associated layout nodes become stale and still
-    //        remain in the layout tree. This has to be fixed, this just causes everything to be recomputed
-    //        which really hurts performance.
-    m_browsing_context.active_document()->force_layout();
-
-    m_browsing_context.did_edit({});
+    document->user_did_edit_document_text({});
 }
 
 // This method is quite convoluted but this is necessary to make editing feel intuitive.
-void EditEventHandler::handle_delete(DOM::Range& range)
+void EditEventHandler::handle_delete(JS::NonnullGCPtr<DOM::Document> document, DOM::Range& range)
 {
     auto* start = verify_cast<DOM::Text>(range.start_container());
     auto* end = verify_cast<DOM::Text>(range.end_container());
 
     if (start == end) {
         StringBuilder builder;
-        builder.append(start->data().substring_view(0, range.start_offset()));
-        builder.append(end->data().substring_view(range.end_offset()));
+        builder.append(start->data().bytes_as_string_view().substring_view(0, range.start_offset()));
+        builder.append(end->data().bytes_as_string_view().substring_view(range.end_offset()));
 
-        start->set_data(builder.to_deprecated_string());
+        start->set_data(MUST(builder.to_string()));
     } else {
         // Remove all the nodes that are fully enclosed in the range.
         HashTable<DOM::Node*> queued_for_deletion;
@@ -87,40 +82,51 @@ void EditEventHandler::handle_delete(DOM::Range& range)
 
         // Join the start and end nodes.
         StringBuilder builder;
-        builder.append(start->data().substring_view(0, range.start_offset()));
-        builder.append(end->data().substring_view(range.end_offset()));
+        builder.append(start->data().bytes_as_string_view().substring_view(0, range.start_offset()));
+        builder.append(end->data().bytes_as_string_view().substring_view(range.end_offset()));
 
-        start->set_data(builder.to_deprecated_string());
+        start->set_data(MUST(builder.to_string()));
         end->remove();
     }
 
-    // FIXME: When nodes are removed from the DOM, the associated layout nodes become stale and still
-    //        remain in the layout tree. This has to be fixed, this just causes everything to be recomputed
-    //        which really hurts performance.
-    m_browsing_context.active_document()->force_layout();
-
-    m_browsing_context.did_edit({});
+    document->user_did_edit_document_text({});
 }
 
-void EditEventHandler::handle_insert(DOM::Position position, u32 code_point)
+void EditEventHandler::handle_insert(JS::NonnullGCPtr<DOM::Document> document, JS::NonnullGCPtr<DOM::Position> position, u32 code_point)
 {
-    if (is<DOM::Text>(*position.node())) {
-        auto& node = verify_cast<DOM::Text>(*position.node());
+    StringBuilder builder;
+    builder.append_code_point(code_point);
+    handle_insert(document, position, MUST(builder.to_string()));
+}
+
+void EditEventHandler::handle_insert(JS::NonnullGCPtr<DOM::Document> document, JS::NonnullGCPtr<DOM::Position> position, String data)
+{
+    if (is<DOM::Text>(*position->node())) {
+        auto& node = verify_cast<DOM::Text>(*position->node());
 
         StringBuilder builder;
-        builder.append(node.data().substring_view(0, position.offset()));
-        builder.append_code_point(code_point);
-        builder.append(node.data().substring_view(position.offset()));
-        node.set_data(builder.to_deprecated_string());
+        builder.append(node.data().bytes_as_string_view().substring_view(0, position->offset()));
+        builder.append(data);
+        builder.append(node.data().bytes_as_string_view().substring_view(position->offset()));
 
-        node.invalidate_style();
+        // Cut string by max length
+        // FIXME: Cut by UTF-16 code units instead of raw bytes
+        if (auto max_length = node.max_length(); max_length.has_value() && builder.string_view().length() > *max_length) {
+            node.set_data(MUST(String::from_utf8(builder.string_view().substring_view(0, *max_length))));
+        } else {
+            node.set_data(MUST(builder.to_string()));
+        }
+        node.invalidate_style(DOM::StyleInvalidationReason::EditingInsertion);
+    } else {
+        auto& node = *position->node();
+        auto& realm = node.realm();
+        auto text = realm.heap().allocate<DOM::Text>(realm, node.document(), data);
+        MUST(node.append_child(*text));
+        position->set_node(text);
+        position->set_offset(1);
     }
 
-    // FIXME: When nodes are removed from the DOM, the associated layout nodes become stale and still
-    //        remain in the layout tree. This has to be fixed, this just causes everything to be recomputed
-    //        which really hurts performance.
-    m_browsing_context.active_document()->force_layout();
-
-    m_browsing_context.did_edit({});
+    document->user_did_edit_document_text({});
 }
+
 }

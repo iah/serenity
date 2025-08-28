@@ -13,23 +13,22 @@ namespace Web::DOM {
 
 class StaticNodeList final : public NodeList {
     WEB_PLATFORM_OBJECT(StaticNodeList, NodeList);
+    JS_DECLARE_ALLOCATOR(StaticNodeList);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<NodeList>> create(JS::Realm&, Vector<JS::Handle<Node>>);
+    [[nodiscard]] static JS::NonnullGCPtr<NodeList> create(JS::Realm&, Vector<JS::Handle<Node>>);
 
     virtual ~StaticNodeList() override;
 
     virtual u32 length() const override;
     virtual Node const* item(u32 index) const override;
 
-    virtual bool is_supported_property_index(u32) const override;
-
 private:
     StaticNodeList(JS::Realm&, Vector<JS::Handle<Node>>);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
-    Vector<Node&> m_static_nodes;
+    Vector<JS::NonnullGCPtr<Node>> m_static_nodes;
 };
 
 }

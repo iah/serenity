@@ -18,7 +18,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath recvfd sendfd unix"));
 
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     Config::pledge_domain("Mail");
 
@@ -34,7 +34,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto app_icon = GUI::Icon::default_icon("app-mail"sv);
 
     auto window = TRY(GUI::SettingsWindow::create("Mail Settings", GUI::SettingsWindow::ShowDefaultsButton::Yes));
-    (void)TRY(window->add_tab<MailSettingsWidget>("Mail"sv, "mail"sv));
+    (void)TRY(window->add_tab<MailSettings::MailSettingsWidget>("Mail"_string, "mail"sv));
     window->set_icon(app_icon.bitmap_for_size(16));
     window->set_active_tab(selected_tab);
 

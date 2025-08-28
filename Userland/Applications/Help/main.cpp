@@ -8,20 +8,20 @@
  */
 
 #include "MainWidget.h"
-#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/Window.h>
 #include <LibMain/Main.h>
+#include <LibURL/URL.h>
 
 using namespace Help;
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio recvfd sendfd rpath unix"));
-    auto app = TRY(GUI::Application::try_create(arguments));
+    auto app = TRY(GUI::Application::create(arguments));
 
     TRY(Core::System::unveil("/res", "r"));
     // We specifically don't want to load this path from a library, as that can be hijacked with LD_PRELOAD.
@@ -31,8 +31,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::unveil("/tmp/session/%sid/portal/webcontent", "rw"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
-    DeprecatedString first_query_parameter;
-    DeprecatedString second_query_parameter;
+    ByteString first_query_parameter;
+    ByteString second_query_parameter;
 
     Core::ArgsParser args_parser;
     // The actual "page query" parsing happens when we set the main widget's start page.
@@ -55,13 +55,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto app_icon = GUI::Icon::default_icon("app-help"sv);
 
-    auto window = TRY(GUI::Window::try_create());
+    auto window = GUI::Window::construct();
     window->set_icon(app_icon.bitmap_for_size(16));
     window->set_title("Help");
     window->resize(570, 500);
 
-    auto main_widget = TRY(window->set_main_widget<MainWidget>());
-    TRY(main_widget->initialize_fallibles(window));
+    auto main_widget = TRY(MainWidget::try_create());
+    window->set_main_widget(main_widget);
+
+    TRY(main_widget->initialize(window));
     TRY(main_widget->set_start_page(query_parameters));
 
     window->show();

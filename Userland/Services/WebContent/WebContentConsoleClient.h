@@ -8,23 +8,31 @@
 
 #pragma once
 
-#include "ConnectionFromClient.h"
+#include <AK/Vector.h>
+#include <AK/Weakable.h>
 #include <LibJS/Console.h>
 #include <LibJS/Forward.h>
 #include <LibWeb/Forward.h>
+#include <WebContent/ConsoleGlobalEnvironmentExtensions.h>
 #include <WebContent/Forward.h>
 
 namespace WebContent {
 
 class WebContentConsoleClient final : public JS::ConsoleClient {
-public:
-    WebContentConsoleClient(JS::Console&, JS::Realm&, ConnectionFromClient&);
+    JS_CELL(WebContentConsoleClient, JS::ConsoleClient);
+    JS_DECLARE_ALLOCATOR(WebContentConsoleClient);
 
-    void handle_input(DeprecatedString const& js_source);
+public:
+    virtual ~WebContentConsoleClient() override;
+
+    void handle_input(ByteString const& js_source);
     void send_messages(i32 start_index);
     void report_exception(JS::Error const&, bool) override;
 
 private:
+    WebContentConsoleClient(JS::Console&, JS::Realm&, PageClient&);
+
+    virtual void visit_edges(JS::Cell::Visitor&) override;
     virtual void clear() override;
     virtual JS::ThrowCompletionOr<JS::Value> printer(JS::Console::LogLevel log_level, PrinterArguments) override;
 
@@ -34,12 +42,12 @@ private:
         m_current_message_style.append(';');
     }
 
-    ConnectionFromClient& m_client;
-    JS::Handle<ConsoleGlobalEnvironmentExtensions> m_console_global_environment_extensions;
+    JS::NonnullGCPtr<PageClient> m_client;
+    JS::GCPtr<ConsoleGlobalEnvironmentExtensions> m_console_global_environment_extensions;
 
     void clear_output();
-    void print_html(DeprecatedString const& line);
-    void begin_group(DeprecatedString const& label, bool start_expanded);
+    void print_html(ByteString const& line);
+    void begin_group(ByteString const& label, bool start_expanded);
     virtual void end_group() override;
 
     struct ConsoleOutput {
@@ -51,7 +59,7 @@ private:
             EndGroup,
         };
         Type type;
-        DeprecatedString data;
+        ByteString data;
     };
     Vector<ConsoleOutput> m_message_log;
 

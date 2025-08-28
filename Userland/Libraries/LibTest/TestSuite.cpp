@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibTest/Macros.h> // intentionally first -- we redefine VERIFY and friends in here
-
 #include <AK/Function.h>
 #include <LibCore/ArgsParser.h>
+#include <LibTest/Macros.h>
+#include <LibTest/TestResult.h>
 #include <LibTest/TestSuite.h>
+#include <math.h>
 #include <stdlib.h>
 #include <sys/time.h>
 
@@ -39,9 +40,33 @@ private:
 };
 
 // Declared in Macros.h
-void current_test_case_did_fail()
+TestResult current_test_result()
 {
-    TestSuite::the().current_test_case_did_fail();
+    return TestSuite::the().current_test_result();
+}
+
+// Declared in Macros.h
+void set_current_test_result(TestResult result)
+{
+    TestSuite::the().set_current_test_result(result);
+}
+
+// Declared in Macros.h
+void set_randomness_source(Randomized::RandomnessSource source)
+{
+    TestSuite::the().set_randomness_source(move(source));
+}
+
+// Declared in Macros.h
+Randomized::RandomnessSource& randomness_source()
+{
+    return TestSuite::the().randomness_source();
+}
+
+// Declared in Macros.h
+u64 randomized_runs()
+{
+    return TestSuite::the().randomized_runs();
 }
 
 // Declared in TestCase.h
@@ -56,7 +81,43 @@ void set_suite_setup_function(Function<void()> setup)
     TestSuite::the().set_suite_setup(move(setup));
 }
 
-int TestSuite::main(DeprecatedString const& suite_name, Span<StringView> arguments)
+// Declared in Macros.h
+bool is_reporting_enabled()
+{
+    return TestSuite::the().is_reporting_enabled();
+}
+
+// Declared in Macros.h
+void enable_reporting()
+{
+    TestSuite::the().enable_reporting();
+}
+
+// Declared in Macros.h
+void disable_reporting()
+{
+    TestSuite::the().disable_reporting();
+}
+
+static ByteString test_result_to_string(TestResult result)
+{
+    switch (result) {
+    case TestResult::NotRun:
+        return "Not run";
+    case TestResult::Passed:
+        return "Completed";
+    case TestResult::Failed:
+        return "Failed";
+    case TestResult::Rejected:
+        return "Rejected";
+    case TestResult::Overrun:
+        return "Ran out of randomness";
+    default:
+        return "Unknown TestResult";
+    }
+}
+
+int TestSuite::main(ByteString const& suite_name, Span<StringView> arguments)
 {
     m_suite_name = suite_name;
 
@@ -67,9 +128,11 @@ int TestSuite::main(DeprecatedString const& suite_name, Span<StringView> argumen
     bool do_list_cases = false;
     StringView search_string = "*"sv;
 
-    args_parser.add_option(do_tests_only, "Only run tests.", "tests", 0);
-    args_parser.add_option(do_benchmarks_only, "Only run benchmarks.", "bench", 0);
-    args_parser.add_option(do_list_cases, "List available test cases.", "list", 0);
+    args_parser.add_option(do_tests_only, "Only run tests.", "tests");
+    args_parser.add_option(do_benchmarks_only, "Only run benchmarks.", "bench");
+    args_parser.add_option(m_benchmark_repetitions, "Number of times to repeat each benchmark (default 1)", "benchmark_repetitions", 0, "N");
+    args_parser.add_option(m_randomized_runs, "Number of times to run each RANDOMIZED_TEST_CASE (default 100)", "randomized_runs", 0, "RUNS");
+    args_parser.add_option(do_list_cases, "List available test cases.", "list");
     args_parser.add_positional_argument(search_string, "Only run matching cases.", "pattern", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
@@ -91,7 +154,7 @@ int TestSuite::main(DeprecatedString const& suite_name, Span<StringView> argumen
     return run(matching_tests);
 }
 
-Vector<NonnullRefPtr<TestCase>> TestSuite::find_cases(DeprecatedString const& search, bool find_tests, bool find_benchmarks)
+Vector<NonnullRefPtr<TestCase>> TestSuite::find_cases(ByteString const& search, bool find_tests, bool find_benchmarks)
 {
     Vector<NonnullRefPtr<TestCase>> matches;
     for (auto& t : m_cases) {
@@ -114,32 +177,80 @@ Vector<NonnullRefPtr<TestCase>> TestSuite::find_cases(DeprecatedString const& se
 int TestSuite::run(Vector<NonnullRefPtr<TestCase>> const& tests)
 {
     size_t test_count = 0;
+    size_t test_passed_count = 0;
     size_t test_failed_count = 0;
     size_t benchmark_count = 0;
+    size_t benchmark_passed_count = 0;
+    size_t benchmark_failed_count = 0;
     TestElapsedTimer global_timer;
 
     for (auto const& t : tests) {
         auto const test_type = t->is_benchmark() ? "benchmark" : "test";
+        auto const repetitions = t->is_benchmark() ? m_benchmark_repetitions : 1;
 
         warnln("Running {} '{}'.", test_type, t->name());
-        m_current_test_case_passed = true;
+        m_current_test_result = TestResult::NotRun;
+        enable_reporting();
 
-        TestElapsedTimer timer;
-        t->func()();
-        auto const time = timer.elapsed_milliseconds();
+        u64 total_time = 0;
+        u64 sum_of_squared_times = 0;
+        u64 min_time = NumericLimits<u64>::max();
+        u64 max_time = 0;
 
-        dbgln("{} {} '{}' in {}ms", m_current_test_case_passed ? "Completed" : "Failed", test_type, t->name(), time);
+        for (u64 i = 0; i < repetitions; ++i) {
+            TestElapsedTimer timer;
+            t->func()();
+            auto const iteration_time = timer.elapsed_milliseconds();
+            total_time += iteration_time;
+            sum_of_squared_times += iteration_time * iteration_time;
+            min_time = min(min_time, iteration_time);
+            max_time = max(max_time, iteration_time);
 
-        if (t->is_benchmark()) {
-            m_benchtime += time;
-            benchmark_count++;
-        } else {
-            m_testtime += time;
-            test_count++;
+            // Non-randomized tests don't touch the test result when passing.
+            if (m_current_test_result == TestResult::NotRun)
+                m_current_test_result = TestResult::Passed;
         }
 
-        if (!m_current_test_case_passed) {
-            test_failed_count++;
+        if (repetitions != 1) {
+            double average = total_time / double(repetitions);
+            double average_squared = average * average;
+            double standard_deviation = sqrt((sum_of_squared_times + repetitions * average_squared - 2 * total_time * average) / (repetitions - 1));
+
+            dbgln("{} {} '{}' on average in {:.1f}±{:.1f}ms (min={}ms, max={}ms, total={}ms)",
+                test_result_to_string(m_current_test_result), test_type, t->name(),
+                average, standard_deviation, min_time, max_time, total_time);
+        } else {
+            dbgln("{} {} '{}' in {}ms", test_result_to_string(m_current_test_result), test_type, t->name(), total_time);
+        }
+
+        if (t->is_benchmark()) {
+            m_benchtime += total_time;
+            benchmark_count++;
+
+            switch (m_current_test_result) {
+            case TestResult::Passed:
+                benchmark_passed_count++;
+                break;
+            case TestResult::Failed:
+                benchmark_failed_count++;
+                break;
+            default:
+                break;
+            }
+        } else {
+            m_testtime += total_time;
+            test_count++;
+
+            switch (m_current_test_result) {
+            case TestResult::Passed:
+                test_passed_count++;
+                break;
+            case TestResult::Failed:
+                test_failed_count++;
+                break;
+            default:
+                break;
+            }
         }
     }
 
@@ -150,9 +261,30 @@ int TestSuite::run(Vector<NonnullRefPtr<TestCase>> const& tests)
         m_testtime,
         m_benchtime,
         global_timer.elapsed_milliseconds() - (m_testtime + m_benchtime));
-    dbgln("Out of {} tests, {} passed and {} failed.", test_count, test_count - test_failed_count, test_failed_count);
 
-    return (int)test_failed_count;
+    if (test_count != 0) {
+        if (test_passed_count == test_count) {
+            dbgln("All {} tests passed.", test_count);
+        } else if (test_passed_count + test_failed_count == test_count) {
+            dbgln("Out of {} tests, {} passed and {} failed.", test_count, test_passed_count, test_failed_count);
+        } else {
+            dbgln("Out of {} tests, {} passed, {} failed and {} didn't finish for other reasons.", test_count, test_passed_count, test_failed_count, test_count - test_passed_count - test_failed_count);
+        }
+    }
+
+    if (benchmark_count != 0) {
+        if (benchmark_passed_count == benchmark_count) {
+            dbgln("All {} benchmarks passed.", benchmark_count);
+        } else if (benchmark_passed_count + benchmark_failed_count == benchmark_count) {
+            dbgln("Out of {} benchmarks, {} passed and {} failed.", benchmark_count, benchmark_passed_count, benchmark_failed_count);
+        } else {
+            dbgln("Out of {} benchmarks, {} passed, {} failed and {} didn't finish for other reasons.", benchmark_count, benchmark_passed_count, benchmark_failed_count, benchmark_count - benchmark_passed_count - benchmark_failed_count);
+        }
+    }
+
+    // We have multiple TestResults, all except for Passed being "bad".
+    // Let's get a count of them:
+    return (int)(test_count - test_passed_count + benchmark_count - benchmark_passed_count);
 }
 
-}
+} // namespace Test

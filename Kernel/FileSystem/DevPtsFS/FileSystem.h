@@ -8,6 +8,7 @@
 
 #include <AK/Types.h>
 #include <Kernel/FileSystem/FileSystem.h>
+#include <Kernel/FileSystem/FileSystemSpecificOption.h>
 #include <Kernel/FileSystem/Inode.h>
 
 namespace Kernel {
@@ -20,18 +21,22 @@ class DevPtsFS final : public FileSystem {
 
 public:
     virtual ~DevPtsFS() override;
-    static ErrorOr<NonnullLockRefPtr<FileSystem>> try_create();
+    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(FileSystemSpecificOptions const&);
 
     virtual ErrorOr<void> initialize() override;
     virtual StringView class_name() const override { return "DevPtsFS"sv; }
 
     virtual Inode& root_inode() override;
 
-private:
-    DevPtsFS();
-    ErrorOr<NonnullLockRefPtr<Inode>> get_inode(InodeIdentifier) const;
+    virtual ErrorOr<void> rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename) override;
 
-    LockRefPtr<DevPtsFSInode> m_root_inode;
+private:
+    virtual u8 internal_file_type_to_directory_entry_type(DirectoryEntryView const& entry) const override;
+
+    DevPtsFS();
+    ErrorOr<NonnullRefPtr<Inode>> get_inode(InodeIdentifier) const;
+
+    RefPtr<DevPtsFSInode> m_root_inode;
 };
 
 }

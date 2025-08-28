@@ -1,11 +1,13 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2019-2023, Shannon Booth <shannon@serenityos.org>
+ * Copyright (c) 2024, Lucas Chollet <lucas.chollet@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/FloatingPointStringConversions.h>
 #include <AK/Optional.h>
 #include <AK/Vector.h>
@@ -17,14 +19,44 @@
 
 namespace Gfx {
 
-DeprecatedString Color::to_deprecated_string() const
+String Color::to_string(HTMLCompatibleSerialization html_compatible_serialization) const
 {
-    return DeprecatedString::formatted("#{:02x}{:02x}{:02x}{:02x}", red(), green(), blue(), alpha());
+    // If the following conditions are all true:
+
+    // 1. The color space is sRGB
+    // NOTE: This is currently always true for Gfx::Color.
+
+    // 2. The alpha is 1
+    // NOTE: An alpha value of 1 will be stored as 255 currently.
+
+    // 3. The RGB component values are internally represented as integers between 0 and 255 inclusive (i.e. 8-bit unsigned integer)
+    // NOTE: This is currently always true for Gfx::Color.
+
+    // 4. HTML-compatible serialization is requested
+    if (alpha() == 255
+        && html_compatible_serialization == HTMLCompatibleSerialization::Yes) {
+        return MUST(String::formatted("#{:02x}{:02x}{:02x}", red(), green(), blue()));
+    }
+
+    // Otherwise, for sRGB the CSS serialization of sRGB values is used and for other color spaces, the relevant serialization of the <color> value.
+    if (alpha() < 255)
+        return MUST(String::formatted("rgba({}, {}, {}, {})", red(), green(), blue(), alpha() / 255.0));
+    return MUST(String::formatted("rgb({}, {}, {})", red(), green(), blue()));
 }
 
-DeprecatedString Color::to_deprecated_string_without_alpha() const
+String Color::to_string_without_alpha() const
 {
-    return DeprecatedString::formatted("#{:02x}{:02x}{:02x}", red(), green(), blue());
+    return MUST(String::formatted("#{:02x}{:02x}{:02x}", red(), green(), blue()));
+}
+
+ByteString Color::to_byte_string() const
+{
+    return to_string().to_byte_string();
+}
+
+ByteString Color::to_byte_string_without_alpha() const
+{
+    return to_string_without_alpha().to_byte_string();
 }
 
 static Optional<Color> parse_rgb_color(StringView string)
@@ -38,14 +70,14 @@ static Optional<Color> parse_rgb_color(StringView string)
     if (parts.size() != 3)
         return {};
 
-    auto r = parts[0].to_uint().value_or(256);
-    auto g = parts[1].to_uint().value_or(256);
-    auto b = parts[2].to_uint().value_or(256);
+    auto r = parts[0].to_number<double>().map(AK::clamp_to<u8, double>);
+    auto g = parts[1].to_number<double>().map(AK::clamp_to<u8, double>);
+    auto b = parts[2].to_number<double>().map(AK::clamp_to<u8, double>);
 
-    if (r > 255 || g > 255 || b > 255)
+    if (!r.has_value() || !g.has_value() || !b.has_value())
         return {};
 
-    return Color(r, g, b);
+    return Color(*r, *g, *b);
 }
 
 static Optional<Color> parse_rgba_color(StringView string)
@@ -59,22 +91,196 @@ static Optional<Color> parse_rgba_color(StringView string)
     if (parts.size() != 4)
         return {};
 
-    auto r = parts[0].to_int().value_or(256);
-    auto g = parts[1].to_int().value_or(256);
-    auto b = parts[2].to_int().value_or(256);
+    auto r = parts[0].to_number<double>().map(AK::clamp_to<u8, double>);
+    auto g = parts[1].to_number<double>().map(AK::clamp_to<u8, double>);
+    auto b = parts[2].to_number<double>().map(AK::clamp_to<u8, double>);
 
     double alpha = 0;
-    char const* start = parts[3].characters_without_null_termination();
-    auto alpha_result = parse_first_floating_point(start, start + parts[3].length());
+    auto alpha_str = parts[3].trim_whitespace();
+    char const* start = alpha_str.characters_without_null_termination();
+    auto alpha_result = parse_first_floating_point(start, start + alpha_str.length());
     if (alpha_result.parsed_value())
         alpha = alpha_result.value;
 
     unsigned a = alpha * 255;
 
-    if (r > 255 || g > 255 || b > 255 || a > 255)
+    if (!r.has_value() || !g.has_value() || !b.has_value() || a > 255)
         return {};
 
-    return Color(r, g, b, a);
+    return Color(*r, *g, *b, a);
+}
+
+Optional<Color> Color::from_named_css_color_string(StringView string)
+{
+    if (string.is_empty())
+        return {};
+
+    struct WebColor {
+        ARGB32 color;
+        StringView name;
+    };
+
+    constexpr Array web_colors {
+        // CSS Level 1
+        WebColor { 0x000000, "black"sv },
+        WebColor { 0xc0c0c0, "silver"sv },
+        WebColor { 0x808080, "gray"sv },
+        WebColor { 0xffffff, "white"sv },
+        WebColor { 0x800000, "maroon"sv },
+        WebColor { 0xff0000, "red"sv },
+        WebColor { 0x800080, "purple"sv },
+        WebColor { 0xff00ff, "fuchsia"sv },
+        WebColor { 0x008000, "green"sv },
+        WebColor { 0x00ff00, "lime"sv },
+        WebColor { 0x808000, "olive"sv },
+        WebColor { 0xffff00, "yellow"sv },
+        WebColor { 0x000080, "navy"sv },
+        WebColor { 0x0000ff, "blue"sv },
+        WebColor { 0x008080, "teal"sv },
+        WebColor { 0x00ffff, "aqua"sv },
+        // CSS Level 2 (Revision 1)
+        WebColor { 0xffa500, "orange"sv },
+        // CSS Color Module Level 3
+        WebColor { 0xf0f8ff, "aliceblue"sv },
+        WebColor { 0xfaebd7, "antiquewhite"sv },
+        WebColor { 0x7fffd4, "aquamarine"sv },
+        WebColor { 0xf0ffff, "azure"sv },
+        WebColor { 0xf5f5dc, "beige"sv },
+        WebColor { 0xffe4c4, "bisque"sv },
+        WebColor { 0xffebcd, "blanchedalmond"sv },
+        WebColor { 0x8a2be2, "blueviolet"sv },
+        WebColor { 0xa52a2a, "brown"sv },
+        WebColor { 0xdeb887, "burlywood"sv },
+        WebColor { 0x5f9ea0, "cadetblue"sv },
+        WebColor { 0x7fff00, "chartreuse"sv },
+        WebColor { 0xd2691e, "chocolate"sv },
+        WebColor { 0xff7f50, "coral"sv },
+        WebColor { 0x6495ed, "cornflowerblue"sv },
+        WebColor { 0xfff8dc, "cornsilk"sv },
+        WebColor { 0xdc143c, "crimson"sv },
+        WebColor { 0x00ffff, "cyan"sv },
+        WebColor { 0x00008b, "darkblue"sv },
+        WebColor { 0x008b8b, "darkcyan"sv },
+        WebColor { 0xb8860b, "darkgoldenrod"sv },
+        WebColor { 0xa9a9a9, "darkgray"sv },
+        WebColor { 0x006400, "darkgreen"sv },
+        WebColor { 0xa9a9a9, "darkgrey"sv },
+        WebColor { 0xbdb76b, "darkkhaki"sv },
+        WebColor { 0x8b008b, "darkmagenta"sv },
+        WebColor { 0x556b2f, "darkolivegreen"sv },
+        WebColor { 0xff8c00, "darkorange"sv },
+        WebColor { 0x9932cc, "darkorchid"sv },
+        WebColor { 0x8b0000, "darkred"sv },
+        WebColor { 0xe9967a, "darksalmon"sv },
+        WebColor { 0x8fbc8f, "darkseagreen"sv },
+        WebColor { 0x483d8b, "darkslateblue"sv },
+        WebColor { 0x2f4f4f, "darkslategray"sv },
+        WebColor { 0x2f4f4f, "darkslategrey"sv },
+        WebColor { 0x00ced1, "darkturquoise"sv },
+        WebColor { 0x9400d3, "darkviolet"sv },
+        WebColor { 0xff1493, "deeppink"sv },
+        WebColor { 0x00bfff, "deepskyblue"sv },
+        WebColor { 0x696969, "dimgray"sv },
+        WebColor { 0x696969, "dimgrey"sv },
+        WebColor { 0x1e90ff, "dodgerblue"sv },
+        WebColor { 0xb22222, "firebrick"sv },
+        WebColor { 0xfffaf0, "floralwhite"sv },
+        WebColor { 0x228b22, "forestgreen"sv },
+        WebColor { 0xdcdcdc, "gainsboro"sv },
+        WebColor { 0xf8f8ff, "ghostwhite"sv },
+        WebColor { 0xffd700, "gold"sv },
+        WebColor { 0xdaa520, "goldenrod"sv },
+        WebColor { 0xadff2f, "greenyellow"sv },
+        WebColor { 0x808080, "grey"sv },
+        WebColor { 0xf0fff0, "honeydew"sv },
+        WebColor { 0xff69b4, "hotpink"sv },
+        WebColor { 0xcd5c5c, "indianred"sv },
+        WebColor { 0x4b0082, "indigo"sv },
+        WebColor { 0xfffff0, "ivory"sv },
+        WebColor { 0xf0e68c, "khaki"sv },
+        WebColor { 0xe6e6fa, "lavender"sv },
+        WebColor { 0xfff0f5, "lavenderblush"sv },
+        WebColor { 0x7cfc00, "lawngreen"sv },
+        WebColor { 0xfffacd, "lemonchiffon"sv },
+        WebColor { 0xadd8e6, "lightblue"sv },
+        WebColor { 0xf08080, "lightcoral"sv },
+        WebColor { 0xe0ffff, "lightcyan"sv },
+        WebColor { 0xfafad2, "lightgoldenrodyellow"sv },
+        WebColor { 0xd3d3d3, "lightgray"sv },
+        WebColor { 0x90ee90, "lightgreen"sv },
+        WebColor { 0xd3d3d3, "lightgrey"sv },
+        WebColor { 0xffb6c1, "lightpink"sv },
+        WebColor { 0xffa07a, "lightsalmon"sv },
+        WebColor { 0x20b2aa, "lightseagreen"sv },
+        WebColor { 0x87cefa, "lightskyblue"sv },
+        WebColor { 0x778899, "lightslategray"sv },
+        WebColor { 0x778899, "lightslategrey"sv },
+        WebColor { 0xb0c4de, "lightsteelblue"sv },
+        WebColor { 0xffffe0, "lightyellow"sv },
+        WebColor { 0x32cd32, "limegreen"sv },
+        WebColor { 0xfaf0e6, "linen"sv },
+        WebColor { 0xff00ff, "magenta"sv },
+        WebColor { 0x66cdaa, "mediumaquamarine"sv },
+        WebColor { 0x0000cd, "mediumblue"sv },
+        WebColor { 0xba55d3, "mediumorchid"sv },
+        WebColor { 0x9370db, "mediumpurple"sv },
+        WebColor { 0x3cb371, "mediumseagreen"sv },
+        WebColor { 0x7b68ee, "mediumslateblue"sv },
+        WebColor { 0x00fa9a, "mediumspringgreen"sv },
+        WebColor { 0x48d1cc, "mediumturquoise"sv },
+        WebColor { 0xc71585, "mediumvioletred"sv },
+        WebColor { 0x191970, "midnightblue"sv },
+        WebColor { 0xf5fffa, "mintcream"sv },
+        WebColor { 0xffe4e1, "mistyrose"sv },
+        WebColor { 0xffe4b5, "moccasin"sv },
+        WebColor { 0xffdead, "navajowhite"sv },
+        WebColor { 0xfdf5e6, "oldlace"sv },
+        WebColor { 0x6b8e23, "olivedrab"sv },
+        WebColor { 0xff4500, "orangered"sv },
+        WebColor { 0xda70d6, "orchid"sv },
+        WebColor { 0xeee8aa, "palegoldenrod"sv },
+        WebColor { 0x98fb98, "palegreen"sv },
+        WebColor { 0xafeeee, "paleturquoise"sv },
+        WebColor { 0xdb7093, "palevioletred"sv },
+        WebColor { 0xffefd5, "papayawhip"sv },
+        WebColor { 0xffdab9, "peachpuff"sv },
+        WebColor { 0xcd853f, "peru"sv },
+        WebColor { 0xffc0cb, "pink"sv },
+        WebColor { 0xdda0dd, "plum"sv },
+        WebColor { 0xb0e0e6, "powderblue"sv },
+        WebColor { 0xbc8f8f, "rosybrown"sv },
+        WebColor { 0x4169e1, "royalblue"sv },
+        WebColor { 0x8b4513, "saddlebrown"sv },
+        WebColor { 0xfa8072, "salmon"sv },
+        WebColor { 0xf4a460, "sandybrown"sv },
+        WebColor { 0x2e8b57, "seagreen"sv },
+        WebColor { 0xfff5ee, "seashell"sv },
+        WebColor { 0xa0522d, "sienna"sv },
+        WebColor { 0x87ceeb, "skyblue"sv },
+        WebColor { 0x6a5acd, "slateblue"sv },
+        WebColor { 0x708090, "slategray"sv },
+        WebColor { 0x708090, "slategrey"sv },
+        WebColor { 0xfffafa, "snow"sv },
+        WebColor { 0x00ff7f, "springgreen"sv },
+        WebColor { 0x4682b4, "steelblue"sv },
+        WebColor { 0xd2b48c, "tan"sv },
+        WebColor { 0xd8bfd8, "thistle"sv },
+        WebColor { 0xff6347, "tomato"sv },
+        WebColor { 0x40e0d0, "turquoise"sv },
+        WebColor { 0xee82ee, "violet"sv },
+        WebColor { 0xf5deb3, "wheat"sv },
+        WebColor { 0xf5f5f5, "whitesmoke"sv },
+        WebColor { 0x9acd32, "yellowgreen"sv },
+        // CSS Color Module Level 4
+        WebColor { 0x663399, "rebeccapurple"sv },
+    };
+
+    for (auto const& web_color : web_colors) {
+        if (string.equals_ignoring_ascii_case(web_color.name))
+            return Color::from_rgb(web_color.color);
+    }
+
+    return {};
 }
 
 Optional<Color> Color::from_string(StringView string)
@@ -82,179 +288,54 @@ Optional<Color> Color::from_string(StringView string)
     if (string.is_empty())
         return {};
 
-    struct ColorAndWebName {
-        constexpr ColorAndWebName(ARGB32 c, char const* n)
-            : color(c)
-            , name(n != nullptr ? StringView { n, __builtin_strlen(n) } : StringView {})
-        {
+    if (string[0] == '#') {
+        auto hex_nibble_to_u8 = [](char nibble) -> Optional<u8> {
+            if (!isxdigit(nibble))
+                return {};
+            if (nibble >= '0' && nibble <= '9')
+                return nibble - '0';
+            return 10 + (tolower(nibble) - 'a');
+        };
+
+        if (string.length() == 4) {
+            Optional<u8> r = hex_nibble_to_u8(string[1]);
+            Optional<u8> g = hex_nibble_to_u8(string[2]);
+            Optional<u8> b = hex_nibble_to_u8(string[3]);
+            if (!r.has_value() || !g.has_value() || !b.has_value())
+                return {};
+            return Color(r.value() * 17, g.value() * 17, b.value() * 17);
         }
-        ARGB32 color;
-        StringView name;
-    };
 
-    constexpr ColorAndWebName web_colors[] = {
-        // CSS Level 1
-        { 0x000000, "black" },
-        { 0xc0c0c0, "silver" },
-        { 0x808080, "gray" },
-        { 0xffffff, "white" },
-        { 0x800000, "maroon" },
-        { 0xff0000, "red" },
-        { 0x800080, "purple" },
-        { 0xff00ff, "fuchsia" },
-        { 0x008000, "green" },
-        { 0x00ff00, "lime" },
-        { 0x808000, "olive" },
-        { 0xffff00, "yellow" },
-        { 0x000080, "navy" },
-        { 0x0000ff, "blue" },
-        { 0x008080, "teal" },
-        { 0x00ffff, "aqua" },
-        // CSS Level 2 (Revision 1)
-        { 0xffa500, "orange" },
-        // CSS Color Module Level 3
-        { 0xf0f8ff, "aliceblue" },
-        { 0xfaebd7, "antiquewhite" },
-        { 0x7fffd4, "aquamarine" },
-        { 0xf0ffff, "azure" },
-        { 0xf5f5dc, "beige" },
-        { 0xffe4c4, "bisque" },
-        { 0xffebcd, "blanchedalmond" },
-        { 0x8a2be2, "blueviolet" },
-        { 0xa52a2a, "brown" },
-        { 0xdeb887, "burlywood" },
-        { 0x5f9ea0, "cadetblue" },
-        { 0x7fff00, "chartreuse" },
-        { 0xd2691e, "chocolate" },
-        { 0xff7f50, "coral" },
-        { 0x6495ed, "cornflowerblue" },
-        { 0xfff8dc, "cornsilk" },
-        { 0xdc143c, "crimson" },
-        { 0x00ffff, "cyan" },
-        { 0x00008b, "darkblue" },
-        { 0x008b8b, "darkcyan" },
-        { 0xb8860b, "darkgoldenrod" },
-        { 0xa9a9a9, "darkgray" },
-        { 0x006400, "darkgreen" },
-        { 0xa9a9a9, "darkgrey" },
-        { 0xbdb76b, "darkkhaki" },
-        { 0x8b008b, "darkmagenta" },
-        { 0x556b2f, "darkolivegreen" },
-        { 0xff8c00, "darkorange" },
-        { 0x9932cc, "darkorchid" },
-        { 0x8b0000, "darkred" },
-        { 0xe9967a, "darksalmon" },
-        { 0x8fbc8f, "darkseagreen" },
-        { 0x483d8b, "darkslateblue" },
-        { 0x2f4f4f, "darkslategray" },
-        { 0x2f4f4f, "darkslategrey" },
-        { 0x00ced1, "darkturquoise" },
-        { 0x9400d3, "darkviolet" },
-        { 0xff1493, "deeppink" },
-        { 0x00bfff, "deepskyblue" },
-        { 0x696969, "dimgray" },
-        { 0x696969, "dimgrey" },
-        { 0x1e90ff, "dodgerblue" },
-        { 0xb22222, "firebrick" },
-        { 0xfffaf0, "floralwhite" },
-        { 0x228b22, "forestgreen" },
-        { 0xdcdcdc, "gainsboro" },
-        { 0xf8f8ff, "ghostwhite" },
-        { 0xffd700, "gold" },
-        { 0xdaa520, "goldenrod" },
-        { 0xadff2f, "greenyellow" },
-        { 0x808080, "grey" },
-        { 0xf0fff0, "honeydew" },
-        { 0xff69b4, "hotpink" },
-        { 0xcd5c5c, "indianred" },
-        { 0x4b0082, "indigo" },
-        { 0xfffff0, "ivory" },
-        { 0xf0e68c, "khaki" },
-        { 0xe6e6fa, "lavender" },
-        { 0xfff0f5, "lavenderblush" },
-        { 0x7cfc00, "lawngreen" },
-        { 0xfffacd, "lemonchiffon" },
-        { 0xadd8e6, "lightblue" },
-        { 0xf08080, "lightcoral" },
-        { 0xe0ffff, "lightcyan" },
-        { 0xfafad2, "lightgoldenrodyellow" },
-        { 0xd3d3d3, "lightgray" },
-        { 0x90ee90, "lightgreen" },
-        { 0xd3d3d3, "lightgrey" },
-        { 0xffb6c1, "lightpink" },
-        { 0xffa07a, "lightsalmon" },
-        { 0x20b2aa, "lightseagreen" },
-        { 0x87cefa, "lightskyblue" },
-        { 0x778899, "lightslategray" },
-        { 0x778899, "lightslategrey" },
-        { 0xb0c4de, "lightsteelblue" },
-        { 0xffffe0, "lightyellow" },
-        { 0x32cd32, "limegreen" },
-        { 0xfaf0e6, "linen" },
-        { 0xff00ff, "magenta" },
-        { 0x66cdaa, "mediumaquamarine" },
-        { 0x0000cd, "mediumblue" },
-        { 0xba55d3, "mediumorchid" },
-        { 0x9370db, "mediumpurple" },
-        { 0x3cb371, "mediumseagreen" },
-        { 0x7b68ee, "mediumslateblue" },
-        { 0x00fa9a, "mediumspringgreen" },
-        { 0x48d1cc, "mediumturquoise" },
-        { 0xc71585, "mediumvioletred" },
-        { 0x191970, "midnightblue" },
-        { 0xf5fffa, "mintcream" },
-        { 0xffe4e1, "mistyrose" },
-        { 0xffe4b5, "moccasin" },
-        { 0xffdead, "navajowhite" },
-        { 0xfdf5e6, "oldlace" },
-        { 0x6b8e23, "olivedrab" },
-        { 0xff4500, "orangered" },
-        { 0xda70d6, "orchid" },
-        { 0xeee8aa, "palegoldenrod" },
-        { 0x98fb98, "palegreen" },
-        { 0xafeeee, "paleturquoise" },
-        { 0xdb7093, "palevioletred" },
-        { 0xffefd5, "papayawhip" },
-        { 0xffdab9, "peachpuff" },
-        { 0xcd853f, "peru" },
-        { 0xffc0cb, "pink" },
-        { 0xdda0dd, "plum" },
-        { 0xb0e0e6, "powderblue" },
-        { 0xbc8f8f, "rosybrown" },
-        { 0x4169e1, "royalblue" },
-        { 0x8b4513, "saddlebrown" },
-        { 0xfa8072, "salmon" },
-        { 0xf4a460, "sandybrown" },
-        { 0x2e8b57, "seagreen" },
-        { 0xfff5ee, "seashell" },
-        { 0xa0522d, "sienna" },
-        { 0x87ceeb, "skyblue" },
-        { 0x6a5acd, "slateblue" },
-        { 0x708090, "slategray" },
-        { 0x708090, "slategrey" },
-        { 0xfffafa, "snow" },
-        { 0x00ff7f, "springgreen" },
-        { 0x4682b4, "steelblue" },
-        { 0xd2b48c, "tan" },
-        { 0xd8bfd8, "thistle" },
-        { 0xff6347, "tomato" },
-        { 0x40e0d0, "turquoise" },
-        { 0xee82ee, "violet" },
-        { 0xf5deb3, "wheat" },
-        { 0xf5f5f5, "whitesmoke" },
-        { 0x9acd32, "yellowgreen" },
-        // CSS Color Module Level 4
-        { 0x663399, "rebeccapurple" },
-        // (Fallback)
-        { 0x000000, nullptr }
-    };
+        if (string.length() == 5) {
+            Optional<u8> r = hex_nibble_to_u8(string[1]);
+            Optional<u8> g = hex_nibble_to_u8(string[2]);
+            Optional<u8> b = hex_nibble_to_u8(string[3]);
+            Optional<u8> a = hex_nibble_to_u8(string[4]);
+            if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
+                return {};
+            return Color(r.value() * 17, g.value() * 17, b.value() * 17, a.value() * 17);
+        }
 
-    if (string.equals_ignoring_case("transparent"sv))
-        return Color::from_argb(0x00000000);
+        if (string.length() != 7 && string.length() != 9)
+            return {};
 
-    for (size_t i = 0; !web_colors[i].name.is_null(); ++i) {
-        if (string.equals_ignoring_case(web_colors[i].name))
-            return Color::from_rgb(web_colors[i].color);
+        auto to_hex = [&](char c1, char c2) -> Optional<u8> {
+            auto nib1 = hex_nibble_to_u8(c1);
+            auto nib2 = hex_nibble_to_u8(c2);
+            if (!nib1.has_value() || !nib2.has_value())
+                return {};
+            return nib1.value() << 4 | nib2.value();
+        };
+
+        Optional<u8> r = to_hex(string[1], string[2]);
+        Optional<u8> g = to_hex(string[3], string[4]);
+        Optional<u8> b = to_hex(string[5], string[6]);
+        Optional<u8> a = string.length() == 9 ? to_hex(string[7], string[8]) : Optional<u8>(255);
+
+        if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
+            return {};
+
+        return Color(r.value(), g.value(), b.value(), a.value());
     }
 
     if (string.starts_with("rgb("sv, CaseSensitivity::CaseInsensitive) && string.ends_with(')'))
@@ -263,56 +344,13 @@ Optional<Color> Color::from_string(StringView string)
     if (string.starts_with("rgba("sv, CaseSensitivity::CaseInsensitive) && string.ends_with(')'))
         return parse_rgba_color(string);
 
-    if (string[0] != '#')
-        return {};
+    if (string.equals_ignoring_ascii_case("transparent"sv))
+        return Color::from_argb(0x00000000);
 
-    auto hex_nibble_to_u8 = [](char nibble) -> Optional<u8> {
-        if (!isxdigit(nibble))
-            return {};
-        if (nibble >= '0' && nibble <= '9')
-            return nibble - '0';
-        return 10 + (tolower(nibble) - 'a');
-    };
+    if (auto const color = from_named_css_color_string(string); color.has_value())
+        return color;
 
-    if (string.length() == 4) {
-        Optional<u8> r = hex_nibble_to_u8(string[1]);
-        Optional<u8> g = hex_nibble_to_u8(string[2]);
-        Optional<u8> b = hex_nibble_to_u8(string[3]);
-        if (!r.has_value() || !g.has_value() || !b.has_value())
-            return {};
-        return Color(r.value() * 17, g.value() * 17, b.value() * 17);
-    }
-
-    if (string.length() == 5) {
-        Optional<u8> r = hex_nibble_to_u8(string[1]);
-        Optional<u8> g = hex_nibble_to_u8(string[2]);
-        Optional<u8> b = hex_nibble_to_u8(string[3]);
-        Optional<u8> a = hex_nibble_to_u8(string[4]);
-        if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
-            return {};
-        return Color(r.value() * 17, g.value() * 17, b.value() * 17, a.value() * 17);
-    }
-
-    if (string.length() != 7 && string.length() != 9)
-        return {};
-
-    auto to_hex = [&](char c1, char c2) -> Optional<u8> {
-        auto nib1 = hex_nibble_to_u8(c1);
-        auto nib2 = hex_nibble_to_u8(c2);
-        if (!nib1.has_value() || !nib2.has_value())
-            return {};
-        return nib1.value() << 4 | nib2.value();
-    };
-
-    Optional<u8> r = to_hex(string[1], string[2]);
-    Optional<u8> g = to_hex(string[3], string[4]);
-    Optional<u8> b = to_hex(string[5], string[6]);
-    Optional<u8> a = string.length() == 9 ? to_hex(string[7], string[8]) : Optional<u8>(255);
-
-    if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
-        return {};
-
-    return Color(r.value(), g.value(), b.value(), a.value());
+    return {};
 }
 
 Vector<Color> Color::shades(u32 steps, float max) const
@@ -339,6 +377,55 @@ Vector<Color> Color::tints(u32 steps, float max) const
     return tints;
 }
 
+Color Color::from_xyz50(float x, float y, float z, float alpha)
+{
+    // See commit description for these values
+    float red = 3.13397926f * x - 1.61689519f * y - 0.49070587f * z;
+    float green = -0.97840009f * x + 1.91589112f * y + 0.03339256f * z;
+    float blue = 0.07200357f * x - 0.22897505f * y + 1.40517398f * z;
+
+    auto linear_to_srgb = [](float c) {
+        return c >= 0.0031308f ? 1.055f * pow(c, 0.4166666f) - 0.055f : 12.92f * c;
+    };
+
+    red = linear_to_srgb(red) * 255.f;
+    green = linear_to_srgb(green) * 255.f;
+    blue = linear_to_srgb(blue) * 255.f;
+
+    return Color(
+        clamp(lroundf(red), 0, 255),
+        clamp(lroundf(green), 0, 255),
+        clamp(lroundf(blue), 0, 255),
+        clamp(lroundf(alpha * 255.f), 0, 255));
+}
+
+Color Color::from_lab(float L, float a, float b, float alpha)
+{
+    // Third edition of "Colorimetry" by the CIE
+    // 8.2.1 CIE 1976 (L*a*b*) colour space; CIELAB colour space
+    float y = (L + 16) / 116;
+    float x = y + a / 500;
+    float z = y - b / 200;
+
+    auto f_inv = [](float t) -> float {
+        constexpr auto delta = 24.f / 116;
+        if (t > delta)
+            return t * t * t;
+        return (108.f / 841) * (t - 116.f / 16);
+    };
+
+    // D50
+    constexpr float x_n = 0.96422f;
+    constexpr float y_n = 1.f;
+    constexpr float z_n = 0.82521f;
+
+    x = x_n * f_inv(x);
+    y = y_n * f_inv(y);
+    z = z_n * f_inv(z);
+
+    return from_xyz50(x, y, z, alpha);
+}
+
 }
 
 template<>
@@ -356,5 +443,20 @@ ErrorOr<Gfx::Color> IPC::decode(Decoder& decoder)
 
 ErrorOr<void> AK::Formatter<Gfx::Color>::format(FormatBuilder& builder, Gfx::Color value)
 {
-    return Formatter<StringView>::format(builder, value.to_deprecated_string());
+    return Formatter<StringView>::format(builder, value.to_byte_string());
+}
+
+ErrorOr<void> AK::Formatter<Gfx::YUV>::format(FormatBuilder& builder, Gfx::YUV value)
+{
+    return Formatter<FormatString>::format(builder, "{} {} {}"sv, value.y, value.u, value.v);
+}
+
+ErrorOr<void> AK::Formatter<Gfx::HSV>::format(FormatBuilder& builder, Gfx::HSV value)
+{
+    return Formatter<FormatString>::format(builder, "{} {} {}"sv, value.hue, value.saturation, value.value);
+}
+
+ErrorOr<void> AK::Formatter<Gfx::Oklab>::format(FormatBuilder& builder, Gfx::Oklab value)
+{
+    return Formatter<FormatString>::format(builder, "{} {} {}"sv, value.L, value.a, value.b);
 }

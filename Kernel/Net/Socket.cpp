@@ -8,16 +8,16 @@
 #include <Kernel/API/POSIX/errno.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
-#include <Kernel/Net/IPv4Socket.h>
+#include <Kernel/Net/IP/Socket.h>
 #include <Kernel/Net/LocalSocket.h>
 #include <Kernel/Net/NetworkingManagement.h>
 #include <Kernel/Net/Socket.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 #include <Kernel/UnixTypes.h>
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<Socket>> Socket::create(int domain, int type, int protocol)
+ErrorOr<NonnullRefPtr<Socket>> Socket::create(int domain, int type, int protocol)
 {
     switch (domain) {
     case AF_LOCAL:
@@ -46,7 +46,7 @@ void Socket::set_setup_state(SetupState new_setup_state)
     evaluate_block_conditions();
 }
 
-LockRefPtr<Socket> Socket::accept()
+RefPtr<Socket> Socket::accept()
 {
     MutexLocker locker(mutex());
     if (m_pending.is_empty())
@@ -63,7 +63,7 @@ LockRefPtr<Socket> Socket::accept()
     return client;
 }
 
-ErrorOr<void> Socket::queue_connection_from(NonnullLockRefPtr<Socket> peer)
+ErrorOr<void> Socket::queue_connection_from(NonnullRefPtr<Socket> peer)
 {
     dbgln_if(SOCKET_DEBUG, "Socket({}) queueing connection", this);
     MutexLocker locker(mutex());
@@ -96,11 +96,13 @@ ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<void const*> u
         if (user_value_size != IFNAMSIZ)
             return EINVAL;
         auto user_string = static_ptr_cast<char const*>(user_value);
-        auto ifname = TRY(try_copy_kstring_from_user(user_string, user_value_size));
-        auto device = NetworkingManagement::the().lookup_by_name(ifname->view());
+        auto ifname = TRY(Process::get_syscall_name_string_fixed_buffer<IFNAMSIZ>(user_string, user_value_size));
+        auto device = NetworkingManagement::the().lookup_by_name(ifname.representable_view());
         if (!device)
             return ENODEV;
-        m_bound_interface = move(device);
+        m_bound_interface.with([&device](auto& bound_device) {
+            bound_device = move(device);
+        });
         return {};
     }
     case SO_DEBUG:
@@ -128,6 +130,12 @@ ErrorOr<void> Socket::setsockopt(int level, int option, Userspace<void const*> u
     case SO_REUSEADDR:
         dbgln("FIXME: SO_REUSEADDR requested, but not implemented.");
         return {};
+    case SO_BROADCAST: {
+        if (user_value_size != sizeof(int))
+            return EINVAL;
+        m_broadcast_allowed = TRY(copy_typed_from_user(static_ptr_cast<int const*>(user_value))) != 0;
+        return {};
+    }
     default:
         dbgln("setsockopt({}) at SOL_SOCKET not implemented.", option);
         return ENOPROTOOPT;
@@ -169,31 +177,35 @@ ErrorOr<void> Socket::getsockopt(OpenFileDescription&, int level, int option, Us
     case SO_ERROR: {
         if (size < sizeof(int))
             return EINVAL;
-        int errno = 0;
-        if (auto const& error = so_error(); error.has_value())
-            errno = error.value();
-        TRY(copy_to_user(static_ptr_cast<int*>(value), &errno));
-        size = sizeof(int);
-        TRY(copy_to_user(value_size, &size));
-        clear_so_error();
-        return {};
+        return so_error().with([&size, value, value_size](auto& error) -> ErrorOr<void> {
+            int errno = 0;
+            if (error.has_value())
+                errno = error.value();
+            TRY(copy_to_user(static_ptr_cast<int*>(value), &errno));
+            size = sizeof(int);
+            TRY(copy_to_user(value_size, &size));
+            error = {};
+            return {};
+        });
     }
     case SO_BINDTODEVICE:
         if (size < IFNAMSIZ)
             return EINVAL;
-        if (m_bound_interface) {
-            auto name = m_bound_interface->name();
-            auto length = name.length() + 1;
-            auto characters = name.characters_without_null_termination();
-            TRY(copy_to_user(static_ptr_cast<char*>(value), characters, length));
-            size = length;
-            return copy_to_user(value_size, &size);
-        } else {
-            size = 0;
-            TRY(copy_to_user(value_size, &size));
-            // FIXME: This return value looks suspicious.
-            return EFAULT;
-        }
+        return m_bound_interface.with([&](auto& bound_device) -> ErrorOr<void> {
+            if (bound_device) {
+                auto name = bound_device->name();
+                auto length = name.length() + 1;
+                auto characters = name.characters_without_null_termination();
+                TRY(copy_to_user(static_ptr_cast<char*>(value), characters, length));
+                size = length;
+                return copy_to_user(value_size, &size);
+            } else {
+                size = 0;
+                TRY(copy_to_user(value_size, &size));
+                // FIXME: This return value looks suspicious.
+                return EFAULT;
+            }
+        });
     case SO_TIMESTAMP:
         if (size < sizeof(int))
             return EINVAL;
@@ -229,6 +241,22 @@ ErrorOr<void> Socket::getsockopt(OpenFileDescription&, int level, int option, Us
         size = sizeof(routing_disabled);
         return copy_to_user(value_size, &size);
     }
+    case SO_REUSEADDR: {
+        int reuse_address = 0;
+        if (size < sizeof(reuse_address))
+            return EINVAL;
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &reuse_address));
+        size = sizeof(reuse_address);
+        return copy_to_user(value_size, &size);
+    }
+    case SO_BROADCAST: {
+        int broadcast_allowed = m_broadcast_allowed ? 1 : 0;
+        if (size < sizeof(broadcast_allowed))
+            return EINVAL;
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &broadcast_allowed));
+        size = sizeof(broadcast_allowed);
+        return copy_to_user(value_size, &size);
+    }
     default:
         dbgln("getsockopt({}) at SOL_SOCKET not implemented.", option);
         return ENOPROTOOPT;
@@ -239,7 +267,7 @@ ErrorOr<size_t> Socket::read(OpenFileDescription& description, u64, UserOrKernel
 {
     if (is_shut_down_for_reading())
         return 0;
-    Time t {};
+    UnixDateTime t {};
     return recvfrom(description, buffer, size, 0, {}, 0, t, description.is_blocking());
 }
 

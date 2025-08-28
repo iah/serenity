@@ -8,6 +8,7 @@
 
 #include <AK/DefaultDelete.h>
 #include <AK/SinglyLinkedListSizePolicy.h>
+#include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 
 namespace AK {
@@ -17,32 +18,44 @@ template<size_t inline_capacity>
 class ByteBuffer;
 }
 
-class Bitmap;
+enum class TrailingCodePointTransformation : u8;
+
+class AsyncInputStream;
+class AsyncOutputStream;
+class AsyncStream;
 class BigEndianInputBitStream;
 class BigEndianOutputBitStream;
+class Bitmap;
 using ByteBuffer = Detail::ByteBuffer<32>;
 class CircularBuffer;
+class ConstrainedStream;
+template<typename T>
+class Coroutine;
+class CountingStream;
+class DeprecatedFlyString;
+class ByteString;
+class DeprecatedStringCodePointIterator;
+class Duration;
 class Error;
 class FlyString;
+class GenericAwaiter;
 class GenericLexer;
 class IPv4Address;
 class JsonArray;
 class JsonObject;
 class JsonValue;
+class LexicalPath;
 class LittleEndianInputBitStream;
 class LittleEndianOutputBitStream;
-class StackInfo;
-class DeprecatedFlyString;
-class DeprecatedString;
-class DeprecatedStringCodePointIterator;
+class SearchableCircularBuffer;
 class SeekableStream;
+class StackInfo;
 class Stream;
+class String;
 class StringBuilder;
 class StringImpl;
 class StringView;
-class Time;
-class URL;
-class String;
+class UnixDateTime;
 class Utf16View;
 class Utf32CodePointIterator;
 class Utf32View;
@@ -145,6 +158,9 @@ class [[nodiscard]] ErrorOr;
 
 #if USING_AK_GLOBALLY
 using AK::Array;
+using AK::AsyncInputStream;
+using AK::AsyncOutputStream;
+using AK::AsyncStream;
 using AK::Atomic;
 using AK::Badge;
 using AK::BigEndianInputBitStream;
@@ -152,16 +168,21 @@ using AK::BigEndianOutputBitStream;
 using AK::Bitmap;
 using AK::ByteBuffer;
 using AK::Bytes;
+using AK::ByteString;
 using AK::CircularBuffer;
 using AK::CircularQueue;
+using AK::ConstrainedStream;
+using AK::Coroutine;
+using AK::CountingStream;
 using AK::DeprecatedFlyString;
-using AK::DeprecatedString;
 using AK::DeprecatedStringCodePointIterator;
 using AK::DoublyLinkedList;
+using AK::Duration;
 using AK::Error;
 using AK::ErrorOr;
 using AK::FixedArray;
 using AK::FixedPoint;
+using AK::FlyString;
 using AK::Function;
 using AK::GenericLexer;
 using AK::HashMap;
@@ -170,6 +191,7 @@ using AK::IPv4Address;
 using AK::JsonArray;
 using AK::JsonObject;
 using AK::JsonValue;
+using AK::LexicalPath;
 using AK::LittleEndianInputBitStream;
 using AK::LittleEndianOutputBitStream;
 using AK::NonnullOwnPtr;
@@ -178,6 +200,7 @@ using AK::Optional;
 using AK::OwnPtr;
 using AK::ReadonlyBytes;
 using AK::RefPtr;
+using AK::SearchableCircularBuffer;
 using AK::SeekableStream;
 using AK::SinglyLinkedList;
 using AK::Span;
@@ -187,9 +210,9 @@ using AK::String;
 using AK::StringBuilder;
 using AK::StringImpl;
 using AK::StringView;
-using AK::Time;
+using AK::TrailingCodePointTransformation;
 using AK::Traits;
-using AK::URL;
+using AK::UnixDateTime;
 using AK::Utf16View;
 using AK::Utf32CodePointIterator;
 using AK::Utf32View;

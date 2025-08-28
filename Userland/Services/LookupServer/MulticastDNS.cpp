@@ -6,12 +6,12 @@
  */
 
 #include "MulticastDNS.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/IPv4Address.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <limits.h>
 #include <poll.h>
@@ -20,7 +20,7 @@
 
 namespace LookupServer {
 
-MulticastDNS::MulticastDNS(Object* parent)
+MulticastDNS::MulticastDNS(Core::EventReceiver* parent)
     : Core::UDPServer(parent)
     , m_hostname("courage.local")
 {
@@ -28,7 +28,7 @@ MulticastDNS::MulticastDNS(Object* parent)
     if (gethostname(buffer, sizeof(buffer)) < 0) {
         perror("gethostname");
     } else {
-        m_hostname = DeprecatedString::formatted("{}.local", buffer);
+        m_hostname = ByteString::formatted("{}.local", buffer);
     }
 
     u8 zero = 0;
@@ -56,13 +56,7 @@ MulticastDNS::MulticastDNS(Object* parent)
 ErrorOr<void> MulticastDNS::handle_packet()
 {
     auto buffer = TRY(receive(1024));
-    auto optional_packet = Packet::from_raw_packet(buffer.data(), buffer.size());
-    if (!optional_packet.has_value()) {
-        dbgln("Got an invalid mDNS packet");
-        return {};
-    }
-    auto& packet = optional_packet.value();
-
+    auto packet = TRY(Packet::from_raw_packet(buffer));
     if (packet.is_query())
         handle_query(packet);
     return {};
@@ -98,7 +92,7 @@ void MulticastDNS::announce()
             RecordType::A,
             RecordClass::IN,
             120,
-            DeprecatedString { (char const*)&raw_addr, sizeof(raw_addr) },
+            ByteString { (char const*)&raw_addr, sizeof(raw_addr) },
             true,
         };
         response.add_answer(answer);
@@ -119,20 +113,27 @@ ErrorOr<size_t> MulticastDNS::emit_packet(Packet const& packet, sockaddr_in cons
 
 Vector<IPv4Address> MulticastDNS::local_addresses() const
 {
-    auto file = Core::DeprecatedFile::construct("/sys/kernel/net/adapters");
-    if (!file->open(Core::OpenMode::ReadOnly)) {
-        dbgln("Failed to open /sys/kernel/net/adapters: {}", file->error_string());
+    auto file_or_error = Core::File::open("/sys/kernel/net/adapters"sv, Core::File::OpenMode::Read);
+    if (file_or_error.is_error()) {
+        dbgln("Failed to open /sys/kernel/net/adapters: {}", file_or_error.error());
+        return {};
+    }
+    auto file_contents_or_error = file_or_error.value()->read_until_eof();
+    if (file_or_error.is_error()) {
+        dbgln("Cannot read /sys/kernel/net/adapters: {}", file_contents_or_error.error());
+        return {};
+    }
+    auto json_or_error = JsonValue::from_string(file_contents_or_error.value());
+    if (json_or_error.is_error()) {
+        dbgln("Invalid JSON(?) in /sys/kernel/net/adapters: {}", json_or_error.error());
         return {};
     }
 
-    auto file_contents = file->read_all();
-    auto json = JsonValue::from_string(file_contents).release_value_but_fixme_should_propagate_errors();
-
     Vector<IPv4Address> addresses;
 
-    json.as_array().for_each([&addresses](auto& value) {
+    json_or_error.value().as_array().for_each([&addresses](auto& value) {
         auto if_object = value.as_object();
-        auto address = if_object.get_deprecated_string("ipv4_address"sv).value_or({});
+        auto address = if_object.get_byte_string("ipv4_address"sv).value_or({});
         auto ipv4_address = IPv4Address::from_string(address);
         // Skip unconfigured interfaces.
         if (!ipv4_address.has_value())
@@ -168,12 +169,12 @@ ErrorOr<Vector<Answer>> MulticastDNS::lookup(Name const& name, RecordType record
         auto buffer = TRY(receive(1024));
         if (buffer.is_empty())
             return Vector<Answer> {};
-        auto optional_packet = Packet::from_raw_packet(buffer.data(), buffer.size());
-        if (!optional_packet.has_value()) {
-            dbgln("Got an invalid mDNS packet");
+        auto packet_or_error = Packet::from_raw_packet(buffer);
+        if (packet_or_error.is_error()) {
+            dbgln("Got an invalid mDNS packet: {}", packet_or_error.release_error());
             continue;
         }
-        auto& packet = optional_packet.value();
+        auto packet = packet_or_error.release_value();
 
         if (packet.is_query())
             continue;

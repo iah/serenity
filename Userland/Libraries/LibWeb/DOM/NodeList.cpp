@@ -5,37 +5,32 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/NodeListPrototype.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NodeList.h>
 
 namespace Web::DOM {
 
 NodeList::NodeList(JS::Realm& realm)
-    : LegacyPlatformObject(realm)
+    : PlatformObject(realm)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags { .supports_indexed_properties = true };
 }
 
 NodeList::~NodeList() = default;
 
-JS::ThrowCompletionOr<void> NodeList::initialize(JS::Realm& realm)
+void NodeList::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::NodeListPrototype>(realm, "NodeList"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(NodeList);
 }
 
-WebIDL::ExceptionOr<JS::Value> NodeList::item_value(size_t index) const
+Optional<JS::Value> NodeList::item_value(size_t index) const
 {
     auto* node = item(index);
     if (!node)
-        return JS::js_undefined();
+        return {};
     return const_cast<Node*>(node);
-}
-
-bool NodeList::is_supported_property_index(u32 index) const
-{
-    return index < length();
 }
 
 }

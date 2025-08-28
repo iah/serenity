@@ -12,10 +12,11 @@ namespace JS {
 
 class TypedArrayConstructor : public NativeFunction {
     JS_OBJECT(TypedArrayConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(TypedArrayConstructor);
 
 public:
     explicit TypedArrayConstructor(Realm&);
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~TypedArrayConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

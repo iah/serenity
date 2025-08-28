@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2022, kleines Filmröllchen <malu.bertsch@gmail.com>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2022, kleines Filmröllchen <filmroellchen@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -8,23 +8,20 @@
 
 #pragma once
 
+#include <AK/Concepts.h>
+#include <AK/Coroutine.h>
 #include <AK/Forward.h>
 #include <AK/Function.h>
-#include <AK/HashMap.h>
 #include <AK/Noncopyable.h>
 #include <AK/NonnullOwnPtr.h>
-#include <AK/NonnullRefPtr.h>
 #include <AK/Time.h>
-#include <AK/Vector.h>
-#include <AK/WeakPtr.h>
-#include <LibCore/DeferredInvocationContext.h>
 #include <LibCore/Event.h>
 #include <LibCore/Forward.h>
-#include <LibThreading/MutexProtected.h>
-#include <sys/time.h>
-#include <sys/types.h>
 
 namespace Core {
+
+class EventLoopImplementation;
+class ThreadEventQueue;
 
 // The event loop enables asynchronous (not parallel or multi-threaded) computing by efficiently handling events from various sources.
 // Event loops are most important for GUI programs, where the various GUI updates and action callbacks run on the EventLoop,
@@ -44,30 +41,17 @@ namespace Core {
 // - Fork events, because the child process event loop needs to clear its events and handlers.
 // - Quit events, i.e. the event loop should exit.
 // Any event that the event loop needs to wait on or needs to repeatedly handle is stored in a handle, e.g. s_timers.
-//
-// EventLoop has one final responsibility: Handling the InspectorServer connection and processing requests to the Object hierarchy.
 class EventLoop {
+    friend struct EventLoopPusher;
+
 public:
-    enum class MakeInspectable {
-        No,
-        Yes,
-    };
-
-    enum class ShouldWake {
-        No,
-        Yes
-    };
-
     enum class WaitMode {
         WaitForEvents,
         PollForEvents,
     };
 
-    explicit EventLoop(MakeInspectable = MakeInspectable::No);
+    EventLoop();
     ~EventLoop();
-
-    static void initialize_wake_pipes();
-    static bool has_been_instantiated();
 
     // Pump the event loop until its exit is requested.
     int exec();
@@ -80,30 +64,29 @@ public:
     // Pump the event loop until some condition is met.
     void spin_until(Function<bool()>);
 
-    // Post an event to this event loop and possibly wake the loop.
-    void post_event(Object& receiver, NonnullOwnPtr<Event>&&, ShouldWake = ShouldWake::No);
-    void wake_once(Object& receiver, int custom_event_type);
+    // Post an event to this event loop.
+    void post_event(EventReceiver& receiver, NonnullOwnPtr<Event>&&);
 
-    void deferred_invoke(Function<void()> invokee)
-    {
-        auto context = DeferredInvocationContext::construct();
-        post_event(context, make<Core::DeferredInvocationEvent>(context, move(invokee)));
-    }
+    void add_job(NonnullRefPtr<Promise<NonnullRefPtr<EventReceiver>>> job_promise);
+
+    void deferred_invoke(ESCAPING Function<void()>);
 
     void wake();
 
+    void adopt_coroutine(Coroutine<void>&&);
+
     void quit(int);
     void unquit();
-    bool was_exit_requested() const { return m_exit_requested; }
+    bool was_exit_requested() const;
 
     // The registration functions act upon the current loop of the current thread.
-    static int register_timer(Object&, int milliseconds, bool should_reload, TimerShouldFireWhenNotVisible);
-    static bool unregister_timer(int timer_id);
+    static intptr_t register_timer(EventReceiver&, int milliseconds, bool should_reload, TimerShouldFireWhenNotVisible);
+    static void unregister_timer(intptr_t timer_id);
 
     static void register_notifier(Badge<Notifier>, Notifier&);
     static void unregister_notifier(Badge<Notifier>, Notifier&);
 
-    static int register_signal(int signo, Function<void(int)> handler);
+    static int register_signal(int signo, ESCAPING Function<void(int)> handler);
     static void unregister_signal(int handler_id);
 
     // Note: Boost uses Parent/Child/Prepare, but we don't really have anything
@@ -113,52 +96,37 @@ public:
     };
     static void notify_forked(ForkEvent);
 
-    void take_pending_events_from(EventLoop& other)
-    {
-        m_queued_events.extend(move(other.m_queued_events));
-    }
-
+    static bool is_running();
     static EventLoop& current();
 
-    static void wake_current();
+    EventLoopImplementation& impl() { return *m_impl; }
 
 private:
-    void wait_for_event(WaitMode);
-    Optional<Time> get_next_timer_expiration();
-    static void dispatch_signal(int);
-    static void handle_signal(int);
-
-    struct QueuedEvent {
-        AK_MAKE_NONCOPYABLE(QueuedEvent);
-
-    public:
-        QueuedEvent(Object& receiver, NonnullOwnPtr<Event>);
-        QueuedEvent(QueuedEvent&&);
-        ~QueuedEvent() = default;
-
-        WeakPtr<Object> receiver;
-        NonnullOwnPtr<Event> event;
-    };
-
-    Vector<QueuedEvent, 64> m_queued_events;
-    static pid_t s_pid;
-
-    bool m_exit_requested { false };
-    int m_exit_code { 0 };
-
-    static thread_local int s_wake_pipe_fds[2];
-    static thread_local bool s_wake_pipe_initialized;
-
-    // The wake pipe of this event loop needs to be accessible from other threads.
-    int (*m_wake_pipe_fds)[2];
-
-    struct Private;
-    NonnullOwnPtr<Private> m_private;
+    NonnullOwnPtr<EventLoopImplementation> m_impl;
 };
 
-inline void deferred_invoke(Function<void()> invokee)
+void deferred_invoke(ESCAPING Function<void()>);
+
+template<typename T>
+requires(IsSpecializationOf<InvokeResult<T&>, Coroutine>)
+auto run_async_in_new_event_loop(T&& function)
 {
-    EventLoop::current().deferred_invoke(move(invokee));
+    Core::EventLoop loop;
+    auto coro = function();
+    loop.spin_until([&] {
+        return coro.await_ready();
+    });
+    return coro.await_resume();
 }
 
+template<typename T>
+requires(IsSpecializationOf<InvokeResult<T&>, Coroutine>)
+auto run_async_in_current_event_loop(T&& function)
+{
+    auto coro = function();
+    EventLoop::current().spin_until([&] {
+        return coro.await_ready();
+    });
+    return coro.await_resume();
+}
 }

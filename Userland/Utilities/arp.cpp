@@ -5,7 +5,6 @@
  */
 
 #include <AK/Assertions.h>
-#include <AK/DeprecatedString.h>
 #include <AK/IPv4Address.h>
 #include <AK/JsonObject.h>
 #include <AK/MACAddress.h>
@@ -29,9 +28,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio rpath tty inet unix"));
 
-    static bool flag_set;
-    static bool flag_delete;
-    static bool flag_numeric;
+    bool flag_set = false;
+    bool flag_delete = false;
+    bool flag_numeric = false;
     StringView value_ipv4_address;
     StringView value_hw_address;
 
@@ -56,10 +55,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
 
     struct Column {
-        DeprecatedString title;
+        StringView title;
         Alignment alignment { Alignment::Left };
         int width { 0 };
-        DeprecatedString buffer;
+        StringView buffer;
     };
 
     Vector<Column> columns;
@@ -72,8 +71,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return columns.size() - 1;
     };
 
-    proto_address_column = add_column("Address", Alignment::Left, 15);
-    hw_address_column = add_column("HWaddress", Alignment::Left, 15);
+    proto_address_column = add_column("Address"sv, Alignment::Left, 15);
+    hw_address_column = add_column("HWaddress"sv, Alignment::Left, 15);
 
     auto print_column = [](auto& column, auto& string) {
         if (!column.width) {
@@ -98,13 +97,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         Vector<JsonValue> sorted_regions = json.as_array().values();
         quick_sort(sorted_regions, [](auto& a, auto& b) {
-            return a.as_object().get_deprecated_string("ip_address"sv).value_or({}) < b.as_object().get_deprecated_string("ip_address"sv).value_or({});
+            return a.as_object().get_byte_string("ip_address"sv).value_or({}) < b.as_object().get_byte_string("ip_address"sv).value_or({});
         });
 
         for (auto& value : sorted_regions) {
             auto& if_object = value.as_object();
 
-            auto ip_address = if_object.get_deprecated_string("ip_address"sv).value_or({});
+            auto ip_address = if_object.get_byte_string("ip_address"sv).value_or({});
 
             if (!flag_numeric) {
                 auto from_string = IPv4Address::from_string(ip_address);
@@ -117,7 +116,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
             }
 
-            auto mac_address = if_object.get_deprecated_string("mac_address"sv).value_or({});
+            auto mac_address = if_object.get_byte_string("mac_address"sv).value_or({});
 
             if (proto_address_column != -1)
                 columns[proto_address_column].buffer = ip_address;

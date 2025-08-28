@@ -8,6 +8,7 @@
 #include "PresenterWidget.h"
 #include "Presentation.h"
 #include <LibCore/MimeData.h>
+#include <LibDesktop/Launcher.h>
 #include <LibFileSystemAccessClient/Client.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
@@ -22,8 +23,7 @@ PresenterWidget::PresenterWidget()
     set_min_size(200, 120);
     set_fill_with_background_color(true);
     m_web_view = add<WebView::OutOfProcessWebView>();
-    m_web_view->set_frame_thickness(0);
-    m_web_view->set_scrollbars_enabled(false);
+    m_web_view->set_frame_style(Gfx::FrameStyle::NoFrame);
     m_web_view->set_focus_policy(GUI::FocusPolicy::NoFocus);
     m_web_view->set_content_scales_to_viewport(true);
 }
@@ -32,43 +32,30 @@ void PresenterWidget::resize_event(GUI::ResizeEvent& event)
 {
     Widget::resize_event(event);
 
-    if (!m_current_presentation)
-        return;
-
-    auto normative_size = m_current_presentation->normative_size().to_type<float>();
-    float widget_ratio = static_cast<float>(event.size().width()) / static_cast<float>(event.size().height());
-    float wh_ratio = normative_size.width() / normative_size.height();
-
-    Gfx::IntRect rect;
-    if (widget_ratio >= wh_ratio) {
-        rect.set_width(static_cast<int>(ceilf(static_cast<float>(event.size().height()) * wh_ratio)));
-        rect.set_height(event.size().height());
-    } else {
-        float hw_ratio = normative_size.height() / normative_size.width();
-        rect.set_width(event.size().width());
-        rect.set_height(static_cast<int>(ceilf(static_cast<float>(event.size().width()) * hw_ratio)));
-    }
-    m_web_view->set_relative_rect(rect.centered_within(this->rect()));
+    this->resize_web_view(event.size());
 }
 
 ErrorOr<void> PresenterWidget::initialize_menubar()
 {
     auto* window = this->window();
     // Set up the menu bar.
-    auto file_menu = TRY(window->try_add_menu("&File"));
+    auto file_menu = window->add_menu("&File"_string);
     auto open_action = GUI::CommonActions::make_open_action([this](auto&) {
-        auto response = FileSystemAccessClient::Client::the().open_file(this->window());
+        FileSystemAccessClient::OpenFileOptions options {
+            .allowed_file_types = { { GUI::FileTypeFilter { "Presentation Files", { { "presenter" } } }, GUI::FileTypeFilter::all_files() } },
+        };
+        auto response = FileSystemAccessClient::Client::the().open_file(this->window(), options);
         if (response.is_error())
             return;
         this->set_file(response.value().filename());
     });
-    TRY(file_menu->try_add_action(open_action));
-    TRY(file_menu->try_add_separator());
-    TRY(file_menu->try_add_action(GUI::CommonActions::make_quit_action([](auto&) {
+    file_menu->add_action(open_action);
+    file_menu->add_separator();
+    file_menu->add_action(GUI::CommonActions::make_quit_action([](auto&) {
         GUI::Application::the()->quit();
-    })));
+    }));
 
-    auto presentation_menu = TRY(window->try_add_menu("&Presentation"));
+    auto presentation_menu = window->add_menu("&Presentation"_string);
     m_next_slide_action = GUI::Action::create("&Next", { KeyCode::Key_Right }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png"sv)), [this](auto&) {
         if (m_current_presentation) {
             m_current_presentation->next_frame();
@@ -83,10 +70,7 @@ ErrorOr<void> PresenterWidget::initialize_menubar()
             update_slides_actions();
         }
     });
-    m_full_screen_action = GUI::Action::create("&Full Screen", { KeyModifier::Mod_Shift, KeyCode::Key_F5 }, { KeyCode::Key_F11 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/fullscreen.png"sv)), [this](auto&) {
-        this->window()->set_fullscreen(true);
-    });
-    m_present_from_first_slide_action = GUI::Action::create("Present From First &Slide", { KeyCode::Key_F5 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/play.png"sv)), [this](auto&) {
+    m_present_from_first_slide_action = GUI::Action::create("Present from First &Slide", { KeyCode::Key_F5 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/play.png"sv)), [this](auto&) {
         if (m_current_presentation) {
             m_current_presentation->go_to_first_slide();
             update_web_view();
@@ -94,29 +78,69 @@ ErrorOr<void> PresenterWidget::initialize_menubar()
         this->window()->set_fullscreen(true);
     });
 
-    TRY(presentation_menu->try_add_action(*m_next_slide_action));
-    TRY(presentation_menu->try_add_action(*m_previous_slide_action));
-    TRY(presentation_menu->try_add_action(*m_full_screen_action));
-    TRY(presentation_menu->try_add_action(*m_present_from_first_slide_action));
+    presentation_menu->add_action(*m_next_slide_action);
+    presentation_menu->add_action(*m_previous_slide_action);
+    presentation_menu->add_action(*m_present_from_first_slide_action);
+
+    auto view_menu = window->add_menu("&View"_string);
+    m_full_screen_action = GUI::Action::create("Toggle &Full Screen", { KeyModifier::Mod_Shift, KeyCode::Key_F5 }, { KeyCode::Key_F11 }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/fullscreen.png"sv)), [this](auto&) {
+        auto* window = this->window();
+        window->set_fullscreen(!window->is_fullscreen());
+    });
+    m_resize_to_fit_content_action = GUI::Action::create("Resize to Fit &Content", { KeyModifier::Mod_Alt, KeyCode::Key_C }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/scale.png"sv)), [this](auto&) {
+        if (m_current_presentation) {
+            auto presentation_size = m_current_presentation->normative_size();
+            auto* window = this->window();
+
+            window->resize(window->size().match_aspect_ratio(presentation_size.aspect_ratio(), Orientation::Horizontal));
+        }
+    });
+
+    view_menu->add_action(*m_full_screen_action);
+    view_menu->add_action(*m_resize_to_fit_content_action);
 
     update_slides_actions();
 
-    auto help_menu = TRY(window->try_add_menu("&Help"));
-    TRY(help_menu->try_add_action(GUI::CommonActions::make_about_action("Presenter", GUI::Icon::default_icon("app-presenter"sv))));
+    auto help_menu = window->add_menu("&Help"_string);
+    help_menu->add_action(GUI::CommonActions::make_help_action([](auto&) {
+        Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Applications/Presenter.md"), "/bin/Help");
+    }));
+    help_menu->add_action(GUI::CommonActions::make_about_action("Presenter"_string, GUI::Icon::default_icon("app-presenter"sv)));
 
     return {};
 }
 
+void PresenterWidget::resize_web_view(Gfx::IntSize const& size)
+{
+    if (!m_current_presentation)
+        return;
+
+    auto normative_size = m_current_presentation->normative_size().to_type<float>();
+    float widget_ratio = static_cast<float>(size.width()) / static_cast<float>(size.height());
+    float wh_ratio = normative_size.width() / normative_size.height();
+
+    Gfx::IntRect rect;
+    if (widget_ratio >= wh_ratio) {
+        rect.set_width(static_cast<int>(ceilf(static_cast<float>(size.height()) * wh_ratio)));
+        rect.set_height(size.height());
+    } else {
+        float hw_ratio = normative_size.height() / normative_size.width();
+        rect.set_width(size.width());
+        rect.set_height(static_cast<int>(ceilf(static_cast<float>(size.width()) * hw_ratio)));
+    }
+    m_web_view->set_relative_rect(rect.centered_within(this->rect()));
+}
+
 void PresenterWidget::update_web_view()
 {
-    m_web_view->run_javascript(DeprecatedString::formatted("goto({}, {})", m_current_presentation->current_slide_number(), m_current_presentation->current_frame_in_slide_number()));
+    m_web_view->run_javascript(ByteString::formatted("goto({}, {})", m_current_presentation->current_slide_number(), m_current_presentation->current_frame_in_slide_number()));
 }
 
 void PresenterWidget::update_slides_actions()
 {
     if (m_current_presentation) {
-        m_next_slide_action->set_enabled(m_current_presentation->has_a_next_frame());
-        m_previous_slide_action->set_enabled(m_current_presentation->has_a_previous_frame());
+        m_next_slide_action->set_enabled(m_current_presentation->has_next_frame());
+        m_previous_slide_action->set_enabled(m_current_presentation->has_previous_frame());
         m_full_screen_action->set_enabled(true);
         m_present_from_first_slide_action->set_enabled(true);
     } else {
@@ -131,13 +155,15 @@ void PresenterWidget::set_file(StringView file_name)
 {
     auto presentation = Presentation::load_from_file(file_name);
     if (presentation.is_error()) {
-        GUI::MessageBox::show_error(window(), DeprecatedString::formatted("The presentation \"{}\" could not be loaded.\n{}", file_name, presentation.error()));
+        GUI::MessageBox::show_error(window(), ByteString::formatted("The presentation \"{}\" could not be loaded.\n{}", file_name, presentation.error()));
     } else {
         m_current_presentation = presentation.release_value();
-        window()->set_title(DeprecatedString::formatted(title_template, m_current_presentation->title(), m_current_presentation->author()));
+        window()->set_title(ByteString::formatted(title_template, m_current_presentation->title(), m_current_presentation->author()));
         set_min_size(m_current_presentation->normative_size());
-        m_web_view->load_html(MUST(m_current_presentation->render()), "presenter://slide.html"sv);
+        m_web_view->load_html(MUST(m_current_presentation->render()));
         update_slides_actions();
+
+        this->resize_web_view(window()->size());
     }
 }
 
@@ -186,8 +212,7 @@ void PresenterWidget::second_paint_event(GUI::PaintEvent& event)
 
 void PresenterWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -201,6 +226,6 @@ void PresenterWidget::drop_event(GUI::DropEvent& event)
             return;
 
         window()->move_to_front();
-        set_file(urls.first().path());
+        set_file(URL::percent_decode(urls.first().serialize_path()));
     }
 }

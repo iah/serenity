@@ -17,7 +17,7 @@ SidebarWidget::SidebarWidget()
 
     auto& tab_bar = add<GUI::TabWidget>();
 
-    auto& outline_container = tab_bar.add_tab<GUI::Widget>("Outline");
+    auto& outline_container = tab_bar.add_tab<GUI::Widget>("Outline"_string);
     outline_container.set_layout<GUI::VerticalBoxLayout>(4);
 
     m_outline_tree_view = outline_container.add<GUI::TreeView>();
@@ -32,8 +32,13 @@ SidebarWidget::SidebarWidget()
         on_destination_selected(destination);
     };
 
-    auto& thumbnails_container = tab_bar.add_tab<GUI::Widget>("Thumbnails");
+    auto& thumbnails_container = tab_bar.add_tab<GUI::Widget>("Thumbnails"_string);
     thumbnails_container.set_layout<GUI::VerticalBoxLayout>(4);
 
-    // FIXME: Add thumbnail previews
+    m_thumbnails_list_view = thumbnails_container.add<ThumbnailsListView>();
+    m_thumbnails_list_view->set_fill_with_background_color(false);
+    m_thumbnails_list_view->set_item_height(128);
+    m_thumbnails_list_view->set_alternating_row_colors(false);
+    m_thumbnails_list_view->set_should_hide_unnecessary_scrollbars(false);
+    m_thumbnails_list_view->horizontal_scrollbar().set_visible(false);
 }

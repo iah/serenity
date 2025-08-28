@@ -32,12 +32,12 @@ private:
     bool has_no_history() const { return !m_history_enabled || m_history.is_empty(); }
     bool can_go_backwards_in_history() const { return m_history_index > 0; }
     bool can_go_forwards_in_history() const { return m_history_index < static_cast<int>(m_history.size()) - 1; }
-    void add_input_to_history(DeprecatedString);
+    void add_input_to_history(ByteString);
 
     bool m_history_enabled { false };
-    Vector<DeprecatedString> m_history;
+    Vector<ByteString> m_history;
     int m_history_index { -1 };
-    DeprecatedString m_saved_input;
+    ByteString m_saved_input;
 };
 
 class PasswordBox : public TextBox {
@@ -59,26 +59,6 @@ private:
     Gfx::IntRect reveal_password_button_rect() const;
 
     bool m_show_reveal_button { false };
-};
-
-class UrlBox : public TextBox {
-    C_OBJECT(UrlBox)
-public:
-    virtual ~UrlBox() override = default;
-
-    void set_focus_transition(bool focus_transition) { m_focus_transition = focus_transition; }
-    bool is_focus_transition() const { return m_focus_transition; }
-
-private:
-    UrlBox();
-
-    void highlight_url();
-
-    virtual void mousedown_event(GUI::MouseEvent&) override;
-    virtual void focusout_event(GUI::FocusEvent&) override;
-    virtual void focusin_event(GUI::FocusEvent&) override;
-
-    bool m_focus_transition { true };
 };
 
 }

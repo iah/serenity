@@ -10,11 +10,12 @@
 
 namespace JS::Intl {
 
+JS_DEFINE_ALLOCATOR(NumberFormatFunction);
+
 // 15.5.2 Number Format Functions, https://tc39.es/ecma402/#sec-number-format-functions
-// 1.5.2 Number Format Functions, https://tc39.es/proposal-intl-numberformat-v3/out/numberformat/proposed.html#sec-number-format-functions
 NonnullGCPtr<NumberFormatFunction> NumberFormatFunction::create(Realm& realm, NumberFormat& number_format)
 {
-    return realm.heap().allocate<NumberFormatFunction>(realm, number_format, *realm.intrinsics().function_prototype()).release_allocated_value_but_fixme_should_propagate_errors();
+    return realm.heap().allocate<NumberFormatFunction>(realm, number_format, realm.intrinsics().function_prototype());
 }
 
 NumberFormatFunction::NumberFormatFunction(NumberFormat& number_format, Object& prototype)
@@ -23,15 +24,13 @@ NumberFormatFunction::NumberFormatFunction(NumberFormat& number_format, Object& 
 {
 }
 
-ThrowCompletionOr<void> NumberFormatFunction::initialize(Realm& realm)
+void NumberFormatFunction::initialize(Realm& realm)
 {
     auto& vm = this->vm();
 
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
     define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
     define_direct_property(vm.names.name, PrimitiveString::create(vm, String {}), Attribute::Configurable);
-
-    return {};
 }
 
 ThrowCompletionOr<Value> NumberFormatFunction::call()
@@ -47,14 +46,14 @@ ThrowCompletionOr<Value> NumberFormatFunction::call()
     auto mathematical_value = TRY(to_intl_mathematical_value(vm, value));
 
     // 5. Return ? FormatNumeric(nf, x).
-    auto formatted = TRY(format_numeric(vm, m_number_format, move(mathematical_value)));
+    auto formatted = format_numeric(vm, m_number_format, move(mathematical_value));
     return PrimitiveString::create(vm, move(formatted));
 }
 
 void NumberFormatFunction::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_number_format);
+    visitor.visit(m_number_format);
 }
 
 }

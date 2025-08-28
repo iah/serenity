@@ -12,7 +12,6 @@
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
-#include <LibCore/DeprecatedFile.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/AutocompleteProvider.h>
@@ -47,8 +46,8 @@ static constexpr StringView folded_region_summary_text = " ..."sv;
 TextEditor::TextEditor(Type type)
     : m_type(type)
 {
-    REGISTER_STRING_PROPERTY("text", text, set_text);
-    REGISTER_STRING_PROPERTY("placeholder", placeholder, set_placeholder);
+    REGISTER_DEPRECATED_STRING_PROPERTY("text", text, set_text);
+    REGISTER_DEPRECATED_STRING_PROPERTY("placeholder", placeholder, set_placeholder);
     REGISTER_BOOL_PROPERTY("gutter", is_gutter_visible, set_gutter_visible);
     REGISTER_BOOL_PROPERTY("ruler", is_ruler_visible, set_ruler_visible);
     REGISTER_ENUM_PROPERTY("mode", mode, set_mode, Mode,
@@ -68,7 +67,7 @@ TextEditor::TextEditor(Type type)
     if (is_multi_line()) {
         set_font(Gfx::FontDatabase::default_fixed_width_font());
         set_wrapping_mode(WrappingMode::WrapAtWords);
-        m_search_banner = GUI::IncrementalSearchBanner::construct(*this);
+        m_search_banner = GUI::IncrementalSearchBanner::try_create(*this).release_value_but_fixme_should_propagate_errors();
         set_banner_widget(m_search_banner);
     }
     vertical_scrollbar().set_step(line_height());
@@ -96,11 +95,33 @@ void TextEditor::create_actions()
     m_paste_action = CommonActions::make_paste_action([&](auto&) { paste(); }, this);
     m_paste_action->set_enabled(is_editable() && Clipboard::the().fetch_mime_type().starts_with("text/"sv));
     if (is_multi_line()) {
-        m_go_to_line_action = Action::create(
-            "Go to line...", { Mod_Ctrl, Key_L }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-to.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
-                DeprecatedString value;
-                if (InputBox::show(window(), value, "Line:"sv, "Go to line"sv) == InputBox::ExecResult::OK) {
-                    auto line_target = value.to_uint();
+        m_go_to_line_or_column_action = Action::create(
+            "Go to Line/Column...", { Mod_Ctrl, Key_L }, Gfx::Bitmap::load_from_file("/res/icons/16x16/go-to.png"sv).release_value_but_fixme_should_propagate_errors(), [this](auto&) {
+                String value;
+                if (InputBox::show(window(), value, "Enter the line, or line:column:"sv, "Go to Line/Column"sv) == InputBox::ExecResult::OK) {
+                    // If there is a `:` in the string, the format is expected to be `line:column`. E.g: `123:45`
+                    if (value.contains(':')) {
+                        auto line_and_column_or_error = value.split(':');
+                        if (line_and_column_or_error.is_error()) {
+                            return;
+                        }
+
+                        auto line_and_column = line_and_column_or_error.value();
+                        if (line_and_column.size() != 2) {
+                            return;
+                        }
+
+                        auto line_target = AK::StringUtils::convert_to_uint(line_and_column.at(0));
+                        auto column_target = AK::StringUtils::convert_to_uint(line_and_column.at(1));
+                        if (line_target.has_value() && column_target.has_value()) {
+                            set_cursor_and_focus_line(line_target.value() - 1, column_target.value());
+                        }
+
+                        return;
+                    }
+
+                    // If there is no `:` in the string, we just treat the integer as the line
+                    auto line_target = AK::StringUtils::convert_to_uint(value.bytes_as_string_view());
                     if (line_target.has_value()) {
                         set_cursor_and_focus_line(line_target.value() - 1, 0);
                     }
@@ -132,7 +153,7 @@ void TextEditor::update_content_size()
 {
     int content_width = 0;
     int content_height = 0;
-    for (auto& line : m_line_visual_data) {
+    for (auto& line : m_line_data) {
         content_width = max(line->visual_rect.width(), content_width);
         content_height += line->visual_rect.height();
     }
@@ -167,12 +188,12 @@ TextPosition TextEditor::text_position_at_content_position(Gfx::IntPoint content
             if (!document().line_is_visible(i))
                 continue;
 
-            auto& rect = m_line_visual_data[i]->visual_rect;
-            if (position.y() >= rect.top() && position.y() <= rect.bottom()) {
+            auto& rect = m_line_data[i]->visual_rect;
+            if (rect.contains_vertically(position.y())) {
                 line_index = i;
                 break;
             }
-            if (position.y() > rect.bottom())
+            if (position.y() >= rect.bottom())
                 line_index = last_visible_line_index;
         }
         line_index = max((size_t)0, min(line_index, last_visible_line_index));
@@ -182,7 +203,7 @@ TextPosition TextEditor::text_position_at_content_position(Gfx::IntPoint content
     switch (m_text_alignment) {
     case Gfx::TextAlignment::CenterLeft:
         for_each_visual_line(line_index, [&](Gfx::IntRect const& rect, auto& view, size_t start_of_line, [[maybe_unused]] bool is_last_visual_line) {
-            if (is_multi_line() && !rect.contains_vertically(position.y()) && !is_last_visual_line)
+            if (is_multi_line() && !rect.contains_vertically(position.y()) && !is_last_visual_line && position.y() >= 0)
                 return IterationDecision::Continue;
 
             column_index = start_of_line;
@@ -227,6 +248,26 @@ TextPosition TextEditor::text_position_at(Gfx::IntPoint widget_position) const
     return text_position_at_content_position(content_position);
 }
 
+void TextEditor::highlight_all_occurances_of(ByteString const selected_text)
+{
+    auto search_result = document().find_all(selected_text, false, true);
+    if (search_result.size() > 1) {
+        Vector<GUI::TextDocumentSpan> spans;
+        for (size_t i = 0; i < search_result.size(); ++i) {
+            auto& result = search_result[i];
+            GUI::TextDocumentSpan span;
+            span.range = result;
+            span.attributes.color = Color::from_argb(0xff000000);
+            span.attributes.background_color = palette().bright_yellow();
+            span.attributes.bold = true;
+            span.attributes.underline_style = Gfx::TextAttributes::UnderlineStyle::Solid;
+            spans.append(move(span));
+        }
+        document().set_spans(highlight_selected_text_span_collection_index, spans);
+        update();
+    }
+}
+
 void TextEditor::doubleclick_event(MouseEvent& event)
 {
     if (event.button() != MouseButton::Primary)
@@ -244,22 +285,30 @@ void TextEditor::doubleclick_event(MouseEvent& event)
     m_in_drag_select = false;
 
     auto position = text_position_at(event.position());
+    bool got_selection = false;
 
     if (m_substitution_code_point.has_value()) {
         // NOTE: If we substitute the code points, we don't want double clicking to only select a single word, since
         //       whitespace isn't visible anymore.
         m_selection = document().range_for_entire_line(position.line());
+        got_selection = true;
     } else if (document().has_spans()) {
         for (auto& span : document().spans()) {
             if (span.range.contains(position)) {
                 m_selection = span.range;
+                got_selection = true;
                 break;
             }
         }
-    } else {
+    }
+    if (!got_selection) {
         m_selection.set_start(document().first_word_break_before(position, false));
         m_selection.set_end(document().first_word_break_after(position));
     }
+
+    auto selection = selected_text();
+    if (!selection.is_whitespace())
+        highlight_all_occurances_of(selection);
 
     set_cursor(m_selection.end());
     update();
@@ -273,6 +322,7 @@ void TextEditor::mousedown_event(MouseEvent& event)
     if (event.button() != MouseButton::Primary) {
         return;
     }
+    document().set_spans(highlight_selected_text_span_collection_index, {});
 
     auto text_position = text_position_at(event.position());
     if (event.modifiers() == 0 && folding_indicator_rect(text_position.line()).contains(event.position())) {
@@ -289,6 +339,28 @@ void TextEditor::mousedown_event(MouseEvent& event)
             update();
             return;
         }
+    }
+
+    if (gutter_content_rect(text_position.line()).contains(event.position())) {
+        auto& gutter_indicators = m_line_data[text_position.line()]->gutter_indicators;
+        auto indicator_position = 0;
+        for (auto i = 0u; i < m_gutter_indicators.size(); ++i) {
+            if ((gutter_indicators & (1 << i)) == 0)
+                continue;
+
+            if (gutter_indicator_rect(text_position.line(), indicator_position).contains(event.position())) {
+                auto& indicator_data = m_gutter_indicators[i];
+                if (indicator_data.on_click)
+                    indicator_data.on_click(text_position.line(), event.modifiers());
+                return;
+            }
+            indicator_position++;
+        }
+
+        // We didn't click on an indicator
+        if (on_gutter_click)
+            on_gutter_click(text_position.line(), event.modifiers());
+        return;
     }
 
     if (on_mousedown)
@@ -405,7 +477,7 @@ int TextEditor::gutter_width() const
 {
     if (!m_gutter_visible)
         return 0;
-    return line_height(); // square gutter
+    return line_height() * (m_most_gutter_indicators_displayed_on_one_line + 1);
 }
 
 Gfx::IntRect TextEditor::gutter_content_rect(size_t line_index) const
@@ -444,6 +516,18 @@ Gfx::IntRect TextEditor::folding_indicator_rect(size_t line_index) const
         line_content_rect(line_index).y() - vertical_scrollbar().value(),
         folding_indicator_width(),
         line_content_rect(line_index).height()
+    };
+}
+
+Gfx::IntRect TextEditor::gutter_indicator_rect(size_t line_number, int indicator_position) const
+{
+    auto gutter_rect = gutter_content_rect(line_number);
+    auto indicator_size = gutter_rect.height();
+    return Gfx::IntRect {
+        gutter_rect.right() - 1 - static_cast<int>(lroundf(indicator_size * (indicator_position + 1.5f))),
+        gutter_rect.top(),
+        indicator_size,
+        indicator_size
     };
 }
 
@@ -503,9 +587,9 @@ void TextEditor::paint_event(PaintEvent& event)
         } else {
             painter.draw_text(rect, raw_text, font, alignment, attributes.color);
         }
-        if (attributes.underline) {
+        if (attributes.underline_style.has_value()) {
             auto bottom_left = [&]() {
-                auto point = rect.bottom_left().translated(0, 1);
+                auto point = rect.bottom_left();
 
                 if constexpr (IsSame<RemoveCVReference<decltype(rect)>, Gfx::IntRect>)
                     return point;
@@ -514,7 +598,7 @@ void TextEditor::paint_event(PaintEvent& event)
             };
 
             auto bottom_right = [&]() {
-                auto point = rect.bottom_right().translated(0, 1);
+                auto point = rect.bottom_right().translated(-1, 0);
 
                 if constexpr (IsSame<RemoveCVReference<decltype(rect)>, Gfx::IntRect>)
                     return point;
@@ -551,13 +635,13 @@ void TextEditor::paint_event(PaintEvent& event)
         auto gutter_rect = gutter_rect_in_inner_coordinates();
         painter.fill_rect(gutter_rect, palette().gutter());
         if (!m_ruler_visible)
-            painter.draw_line(gutter_rect.top_right(), gutter_rect.bottom_right(), palette().gutter_border());
+            painter.draw_line(gutter_rect.top_right().translated(-1, 0), gutter_rect.bottom_right().translated(-1), palette().gutter_border());
     }
 
     if (m_ruler_visible) {
         auto ruler_rect = ruler_rect_in_inner_coordinates().inflated(0, folding_indicator_width(), 0, 0);
         painter.fill_rect(ruler_rect, palette().ruler());
-        painter.draw_line(ruler_rect.top_right(), ruler_rect.bottom_right(), palette().ruler_border());
+        painter.draw_line(ruler_rect.top_right().translated(-1, 0), ruler_rect.bottom_right().translated(-1), palette().ruler_border());
 
         // Paint +/- buttons for folding regions
         for (auto const& folding_region : document().folding_regions()) {
@@ -573,7 +657,7 @@ void TextEditor::paint_event(PaintEvent& event)
     }
 
     size_t first_visible_line = text_position_at(event.rect().top_left()).line();
-    size_t last_visible_line = text_position_at(event.rect().bottom_right()).line();
+    size_t last_visible_line = text_position_at(event.rect().bottom_right().translated(-1)).line();
 
     auto selection = normalized_selection();
     bool has_selection = selection.is_valid();
@@ -593,10 +677,32 @@ void TextEditor::paint_event(PaintEvent& event)
             size_t const line_number = is_relative_line_number() && !is_current_line ? max(i, m_cursor.line()) - min(i, m_cursor.line()) : i + 1;
             painter.draw_text(
                 ruler_line_rect.shrunken(2, 0),
-                DeprecatedString::number(line_number),
+                ByteString::number(line_number),
                 is_current_line ? font().bold_variant() : font(),
                 Gfx::TextAlignment::CenterRight,
                 is_current_line ? palette().ruler_active_text() : palette().ruler_inactive_text());
+        }
+    }
+
+    // Draw gutter indicators
+    if (m_gutter_visible) {
+        for (size_t line_index = first_visible_line; line_index <= last_visible_line; ++line_index) {
+            if (!document().line_is_visible(line_index))
+                continue;
+
+            auto& gutter_indicators = m_line_data[line_index]->gutter_indicators;
+            if (gutter_indicators == 0)
+                continue;
+
+            auto indicator_position = 0;
+            for (auto i = 0u; i < m_gutter_indicators.size(); ++i) {
+                if ((gutter_indicators & (1 << i)) == 0)
+                    continue;
+
+                auto rect = gutter_indicator_rect(line_index, indicator_position);
+                m_gutter_indicators[i].draw_indicator(painter, rect, line_index);
+                indicator_position++;
+            }
         }
     }
 
@@ -634,7 +740,7 @@ void TextEditor::paint_event(PaintEvent& event)
                 first_visual_line_with_selection = visual_line_containing(line_index, selection.start().column());
 
             if (selection.end().line() > line_index)
-                last_visual_line_with_selection = m_line_visual_data[line_index]->visual_lines.size();
+                last_visual_line_with_selection = m_line_data[line_index]->visual_lines.size();
             else
                 last_visual_line_with_selection = visual_line_containing(line_index, selection.end().column());
         }
@@ -800,7 +906,7 @@ void TextEditor::paint_event(PaintEvent& event)
 
                     int selection_right = selection_ends_on_current_visual_line
                         ? content_x_for_position({ line_index, (size_t)selection_end_column_within_line })
-                        : visual_line_rect.right() + 1;
+                        : visual_line_rect.right();
 
                     Gfx::IntRect selection_rect {
                         selection_left,
@@ -838,8 +944,11 @@ Optional<UISize> TextEditor::calculated_min_size() const
 {
     if (is_multi_line())
         return AbstractScrollableWidget::calculated_min_size();
+    auto constexpr cursor_padding = 4;
     auto m = content_margins();
-    return UISize { m.left() + m.right(), m.top() + m.bottom() };
+    auto width = max(40, m.horizontal_total());
+    auto height = max(22, line_height() + m.vertical_total() + cursor_padding);
+    return UISize { width, height };
 }
 
 void TextEditor::select_all()
@@ -972,7 +1081,7 @@ void TextEditor::keydown_event(KeyEvent& event)
             return;
 
         size_t indent_length = current_line().leading_spaces();
-        DeprecatedString indent = current_line().to_utf8().substring(0, indent_length);
+        ByteString indent = current_line().to_utf8().substring(0, indent_length);
         auto insert_pos = event.shift() ? InsertLineCommand::InsertPosition::Above : InsertLineCommand::InsertPosition::Below;
         execute<InsertLineCommand>(m_cursor, move(indent), insert_pos);
         return;
@@ -997,6 +1106,8 @@ void TextEditor::keydown_event(KeyEvent& event)
     if (event.key() == KeyCode::Key_Escape) {
         if (on_escape_pressed)
             on_escape_pressed();
+        else
+            event.ignore();
         return;
     }
 
@@ -1046,7 +1157,7 @@ void TextEditor::keydown_event(KeyEvent& event)
                 erase_count = grapheme_break_position - m_cursor.column();
             }
             TextRange erased_range(m_cursor, { m_cursor.line(), m_cursor.column() + erase_count });
-            execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+            execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, erased_range.start());
             return;
         }
         if (m_cursor.column() == current_line().length() && m_cursor.line() != line_count() - 1) {
@@ -1056,7 +1167,7 @@ void TextEditor::keydown_event(KeyEvent& event)
                 erase_count = document().first_word_break_after({ m_cursor.line() + 1, 0 }).column();
             }
             TextRange erased_range(m_cursor, { m_cursor.line() + 1, erase_count });
-            execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+            execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, erased_range.end());
             return;
         }
         return;
@@ -1092,14 +1203,14 @@ void TextEditor::keydown_event(KeyEvent& event)
             // Backspace within line
             TextRange erased_range({ m_cursor.line(), m_cursor.column() - erase_count }, m_cursor);
             auto erased_text = document().text_in_range(erased_range);
-            execute<RemoveTextCommand>(erased_text, erased_range);
+            execute<RemoveTextCommand>(erased_text, erased_range, erased_range.end());
             return;
         }
         if (m_cursor.column() == 0 && m_cursor.line() != 0) {
             // Backspace at column 0; merge with previous line
             size_t previous_length = line(m_cursor.line() - 1).length();
             TextRange erased_range({ m_cursor.line() - 1, previous_length }, m_cursor);
-            execute<RemoveTextCommand>("\n", erased_range);
+            execute<RemoveTextCommand>("\n", erased_range, erased_range.end());
             return;
         }
         return;
@@ -1198,7 +1309,7 @@ void TextEditor::unindent_line()
 void TextEditor::delete_previous_word()
 {
     TextRange to_erase(document().first_word_before(m_cursor, true), m_cursor);
-    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase);
+    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase, to_erase.end());
 }
 
 void TextEditor::delete_current_line()
@@ -1220,7 +1331,7 @@ void TextEditor::delete_current_line()
     }
 
     TextRange erased_range(start, end);
-    execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+    execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, m_cursor);
 }
 
 void TextEditor::delete_previous_char()
@@ -1237,14 +1348,14 @@ void TextEditor::delete_previous_char()
         to_erase.set_start({ m_cursor.line() - 1, prev_line_len });
     }
 
-    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase);
+    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase, to_erase.end());
 }
 
 void TextEditor::delete_from_line_start_to_cursor()
 {
     TextPosition start(m_cursor.line(), current_line().first_non_whitespace_column());
     TextRange to_erase(start, m_cursor);
-    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase);
+    execute<RemoveTextCommand>(document().text_in_range(to_erase), to_erase, m_cursor);
 }
 
 void TextEditor::do_delete()
@@ -1258,13 +1369,13 @@ void TextEditor::do_delete()
     if (m_cursor.column() < current_line().length()) {
         // Delete within line
         TextRange erased_range(m_cursor, { m_cursor.line(), m_cursor.column() + 1 });
-        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, erased_range.start());
         return;
     }
     if (m_cursor.column() == current_line().length() && m_cursor.line() != line_count() - 1) {
         // Delete at end of line; merge with next line
         TextRange erased_range(m_cursor, { m_cursor.line() + 1, 0 });
-        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, erased_range.start());
         return;
     }
 }
@@ -1283,8 +1394,8 @@ void TextEditor::add_code_point(u32 code_point)
         else
             m_autocomplete_timer->start();
     }
-    insert_at_cursor_or_replace_selection(sb.to_deprecated_string());
-};
+    insert_at_cursor_or_replace_selection(sb.to_byte_string());
+}
 
 void TextEditor::reset_cursor_blink()
 {
@@ -1441,7 +1552,7 @@ Gfx::IntRect TextEditor::line_content_rect(size_t line_index) const
         line_rect.center_vertically_within({ {}, frame_inner_rect().size() });
         return line_rect;
     }
-    return m_line_visual_data[line_index]->visual_rect;
+    return m_line_data[line_index]->visual_rect;
 }
 
 void TextEditor::set_cursor_and_focus_line(size_t line, size_t column)
@@ -1451,7 +1562,7 @@ void TextEditor::set_cursor_and_focus_line(size_t line, size_t column)
     if (line > 1 && line < index_max) {
         int headroom = frame_inner_rect().height() / 3;
         do {
-            auto const& line_data = m_line_visual_data[line];
+            auto const& line_data = m_line_data[line];
             headroom -= line_data->visual_rect.height();
             line--;
         } while (line > 0 && headroom > 0);
@@ -1593,15 +1704,15 @@ ErrorOr<void> TextEditor::write_to_file(Core::File& file)
         // A size 0 file doesn't need a data copy.
     } else {
         for (size_t i = 0; i < line_count(); ++i) {
-            TRY(file.write(line(i).to_utf8().bytes()));
-            TRY(file.write("\n"sv.bytes()));
+            TRY(file.write_until_depleted(line(i).to_utf8()));
+            TRY(file.write_until_depleted("\n"sv));
         }
     }
     document().set_unmodified();
     return {};
 }
 
-DeprecatedString TextEditor::text() const
+ByteString TextEditor::text() const
 {
     return document().text();
 }
@@ -1616,7 +1727,7 @@ void TextEditor::clear()
     update();
 }
 
-DeprecatedString TextEditor::selected_text() const
+ByteString TextEditor::selected_text() const
 {
     if (!has_selection())
         return {};
@@ -1675,7 +1786,7 @@ void TextEditor::delete_selection()
     auto selection = normalized_selection();
     auto selected = selected_text();
     m_selection.clear();
-    execute<RemoveTextCommand>(selected, selection);
+    execute<RemoveTextCommand>(selected, selection, selection.end());
     did_update_selection();
     did_change();
     set_cursor(selection.start());
@@ -1685,7 +1796,7 @@ void TextEditor::delete_selection()
 void TextEditor::delete_text_range(TextRange range)
 {
     auto normalized_range = range.normalized();
-    execute<RemoveTextCommand>(document().text_in_range(normalized_range), normalized_range);
+    execute<RemoveTextCommand>(document().text_in_range(normalized_range), normalized_range, normalized_range.end());
     did_change();
     set_cursor(normalized_range.start());
     update();
@@ -1711,21 +1822,15 @@ void TextEditor::insert_at_cursor_or_replace_selection(StringView text)
         TextPosition start(original_cursor_position.line() - 1, 0);
         TextPosition end(original_cursor_position.line() - 1, clear_length);
         TextRange erased_range(start, end);
-        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range);
+        execute<RemoveTextCommand>(document().text_in_range(erased_range), erased_range, erased_range.end());
         set_cursor(original_cursor_position);
     }
 }
 
-void TextEditor::replace_all_text_without_resetting_undo_stack(StringView text)
+void TextEditor::replace_all_text_without_resetting_undo_stack(StringView text, StringView action_text)
 {
-    auto start = GUI::TextPosition(0, 0);
-    auto last_line_index = line_count() - 1;
-    auto end = GUI::TextPosition(last_line_index, line(last_line_index).length());
-    auto range = GUI::TextRange(start, end);
-    auto normalized_range = range.normalized();
-    execute<ReplaceAllTextCommand>(text, range, "GML Playground Format Text");
+    execute<ReplaceAllTextCommand>(text, action_text);
     did_change();
-    set_cursor(normalized_range.start());
     update();
 }
 
@@ -1758,7 +1863,7 @@ void TextEditor::paste()
     if (data.is_empty())
         return;
 
-    dbgln_if(TEXTEDITOR_DEBUG, "Paste: \"{}\"", DeprecatedString::copy(data));
+    dbgln_if(TEXTEDITOR_DEBUG, "Paste: \"{}\"", ByteString::copy(data));
 
     TemporaryChange change(m_automatic_indentation_enabled, false);
     insert_at_cursor_or_replace_selection(data);
@@ -1784,7 +1889,7 @@ void TextEditor::try_show_autocomplete(UserRequestedAutocomplete user_requested_
 {
     force_update_autocomplete([&, user_requested_autocomplete = move(user_requested_autocomplete)] {
         if (user_requested_autocomplete == Yes || m_autocomplete_box->has_suggestions()) {
-            auto position = content_rect_for_position(cursor()).translated(0, -visible_content_rect().y()).bottom_right().translated(screen_relative_rect().top_left().translated(ruler_width(), 0).translated(10, 5));
+            auto position = content_rect_for_position(cursor()).translated(0, -visible_content_rect().y()).bottom_right().translated(screen_relative_rect().top_left().translated(ruler_width(), 0).translated(9, 4));
             m_autocomplete_box->show(position);
         }
     });
@@ -1842,7 +1947,7 @@ void TextEditor::did_change(AllowCallback allow_callback)
     if (on_change && allow_callback == AllowCallback::Yes)
         on_change();
 }
-void TextEditor::set_mode(const Mode mode)
+void TextEditor::set_mode(Mode const mode)
 {
     if (m_mode == mode)
         return;
@@ -1907,7 +2012,7 @@ void TextEditor::context_menu_event(ContextMenuEvent& event)
         m_context_menu->add_action(insert_emoji_action());
         if (is_multi_line()) {
             m_context_menu->add_separator();
-            m_context_menu->add_action(go_to_line_action());
+            m_context_menu->add_action(go_to_line_or_column_action());
         }
         if (!m_custom_context_menu_actions.is_empty()) {
             m_context_menu->add_separator();
@@ -1972,8 +2077,8 @@ void TextEditor::recompute_all_visual_lines()
     auto folded_region_iterator = folded_regions.begin();
     for (size_t line_index = 0; line_index < line_count(); ++line_index) {
         recompute_visual_lines(line_index, folded_region_iterator);
-        m_line_visual_data[line_index]->visual_rect.set_y(y_offset);
-        y_offset += m_line_visual_data[line_index]->visual_rect.height();
+        m_line_data[line_index]->visual_rect.set_y(y_offset);
+        y_offset += m_line_data[line_index]->visual_rect.height();
     }
 
     update_content_size();
@@ -2007,7 +2112,7 @@ void TextEditor::recompute_visual_lines(size_t line_index, Vector<TextDocumentFo
     auto const& line = document().line(line_index);
     size_t line_width_so_far = 0;
 
-    auto& visual_data = m_line_visual_data[line_index];
+    auto& visual_data = m_line_data[line_index];
     visual_data->visual_lines.clear_with_capacity();
 
     auto available_width = visible_text_rect_in_inner_coordinates().width();
@@ -2085,10 +2190,8 @@ void TextEditor::recompute_visual_lines(size_t line_index, Vector<TextDocumentFo
         }
     }
 
-    if (is_wrapping_enabled())
-        visual_data->visual_rect = { m_horizontal_content_padding, 0, available_width, static_cast<int>(visual_data->visual_lines.size()) * line_height() };
-    else
-        visual_data->visual_rect = { m_horizontal_content_padding, 0, text_width_for_font(line.view(), font()), line_height() };
+    auto line_width = is_wrapping_enabled() ? available_width : text_width_for_font(line.view(), font());
+    visual_data->visual_rect = { m_horizontal_content_padding, 0, line_width, static_cast<int>(visual_data->visual_lines.size()) * line_height() };
 }
 
 template<typename Callback>
@@ -2098,7 +2201,7 @@ void TextEditor::for_each_visual_line(size_t line_index, Callback callback) cons
     size_t visual_line_index = 0;
 
     auto& line = document().line(line_index);
-    auto& visual_data = m_line_visual_data[line_index];
+    auto& visual_data = m_line_data[line_index];
 
     for (auto visual_line_view : visual_data->visual_lines) {
         Gfx::IntRect visual_line_rect {
@@ -2148,28 +2251,28 @@ void TextEditor::did_change_font()
 
 void TextEditor::document_did_append_line()
 {
-    m_line_visual_data.append(make<LineVisualData>());
+    m_line_data.append(make<LineData>());
     recompute_all_visual_lines();
     update();
 }
 
 void TextEditor::document_did_remove_line(size_t line_index)
 {
-    m_line_visual_data.remove(line_index);
+    m_line_data.remove(line_index);
     recompute_all_visual_lines();
     update();
 }
 
 void TextEditor::document_did_remove_all_lines()
 {
-    m_line_visual_data.clear();
+    m_line_data.clear();
     recompute_all_visual_lines();
     update();
 }
 
 void TextEditor::document_did_insert_line(size_t line_index)
 {
-    m_line_visual_data.insert(line_index, make<LineVisualData>());
+    m_line_data.insert(line_index, make<LineData>());
     recompute_all_visual_lines();
     update();
 }
@@ -2189,7 +2292,7 @@ void TextEditor::document_did_update_undo_stack()
             builder.append(' ');
             builder.append(suffix.value());
         }
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     };
 
     m_undo_action->set_enabled(can_undo() && !text_is_secret());
@@ -2204,11 +2307,19 @@ void TextEditor::document_did_update_undo_stack()
         on_modified_change(document().is_modified());
 }
 
+void TextEditor::populate_line_data()
+{
+    m_line_data.clear();
+    m_line_data.ensure_capacity(m_document->line_count());
+
+    for (size_t i = 0; i < m_document->line_count(); ++i) {
+        m_line_data.unchecked_append(make<LineData>());
+    }
+}
+
 void TextEditor::document_did_set_text(AllowCallback allow_callback)
 {
-    m_line_visual_data.clear();
-    for (size_t i = 0; i < m_document->line_count(); ++i)
-        m_line_visual_data.append(make<LineVisualData>());
+    populate_line_data();
     document_did_change(allow_callback);
 }
 
@@ -2222,7 +2333,7 @@ void TextEditor::cursor_did_change()
     hide_autocomplete_if_needed();
 }
 
-void TextEditor::clipboard_content_did_change(DeprecatedString const& mime_type)
+void TextEditor::clipboard_content_did_change(ByteString const& mime_type)
 {
     m_paste_action->set_enabled(is_editable() && mime_type.starts_with("text/"sv));
 }
@@ -2234,10 +2345,7 @@ void TextEditor::set_document(TextDocument& document)
     if (m_document)
         m_document->unregister_client(*this);
     m_document = document;
-    m_line_visual_data.clear();
-    for (size_t i = 0; i < m_document->line_count(); ++i) {
-        m_line_visual_data.append(make<LineVisualData>());
-    }
+    populate_line_data();
     set_cursor(0, 0);
     if (has_selection())
         m_selection.clear();
@@ -2368,7 +2476,7 @@ void TextEditor::set_should_autocomplete_automatically(bool value)
         m_autocomplete_timer = Core::Timer::create_single_shot(m_automatic_autocomplete_delay_ms, [this] {
             if (m_autocomplete_box && !m_autocomplete_box->is_visible())
                 try_show_autocomplete(UserRequestedAutocomplete::No);
-        }).release_value_but_fixme_should_propagate_errors();
+        });
         return;
     }
 
@@ -2493,7 +2601,7 @@ void TextEditor::on_search_results(GUI::TextRange current, Vector<GUI::TextRange
         span.attributes.color = Color::from_argb(0xff000000); // So text without spans from a highlighter will have color
         if (i == m_search_result_index) {
             span.attributes.bold = true;
-            span.attributes.underline = true;
+            span.attributes.underline_style = Gfx::TextAttributes::UnderlineStyle::Solid;
         }
         spans.append(move(span));
     }
@@ -2505,6 +2613,48 @@ void TextEditor::highlighter_did_set_folding_regions(Vector<GUI::TextDocumentFol
 {
     document().set_folding_regions(move(folding_regions));
     recompute_all_visual_lines();
+}
+
+ErrorOr<TextEditor::GutterIndicatorID> TextEditor::register_gutter_indicator(PaintGutterIndicator draw_indicator, OnGutterIndicatorClick on_click)
+{
+    // We use a u32 to store a line's active gutter indicators, so that's the limit of how many we can have.
+    VERIFY(m_gutter_indicators.size() < 32);
+
+    GutterIndicatorID id = m_gutter_indicators.size();
+    TRY(m_gutter_indicators.try_empend(move(draw_indicator), move(on_click)));
+    return id;
+}
+
+void TextEditor::add_gutter_indicator(GutterIndicatorID id, size_t line)
+{
+    auto& line_indicators = m_line_data[line]->gutter_indicators;
+    if (line_indicators & (1 << id.value()))
+        return;
+    line_indicators |= (1 << id.value());
+
+    // Ensure the gutter is at least wide enough to display all the indicators on this line.
+    if (m_most_gutter_indicators_displayed_on_one_line < m_gutter_indicators.size()) {
+        unsigned indicators_on_line = popcount(line_indicators);
+        if (indicators_on_line > m_most_gutter_indicators_displayed_on_one_line) {
+            m_most_gutter_indicators_displayed_on_one_line = indicators_on_line;
+            update();
+        }
+    }
+
+    update(gutter_content_rect(line));
+}
+
+void TextEditor::remove_gutter_indicator(GutterIndicatorID id, size_t line)
+{
+    m_line_data[line]->gutter_indicators &= ~(1 << id.value());
+    update(gutter_content_rect(line));
+}
+
+void TextEditor::clear_gutter_indicators(GutterIndicatorID id)
+{
+    for (auto line = 0u; line < line_count(); ++line)
+        remove_gutter_indicator(id, line);
+    update();
 }
 
 }

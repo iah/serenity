@@ -6,7 +6,7 @@
 
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -14,7 +14,7 @@ ErrorOr<FlatPtr> Process::do_statvfs(FileSystem const& fs, Custody const* custod
 {
     statvfs kernelbuf = {};
 
-    kernelbuf.f_bsize = static_cast<u64>(fs.block_size());
+    kernelbuf.f_bsize = static_cast<u64>(fs.logical_block_size());
     kernelbuf.f_frsize = fs.fragment_size();
     kernelbuf.f_blocks = fs.total_block_count();
     kernelbuf.f_bfree = fs.free_block_count();
@@ -47,7 +47,7 @@ ErrorOr<FlatPtr> Process::sys$statvfs(Userspace<Syscall::SC_statvfs_params const
 
     auto path = TRY(get_syscall_path_argument(params.path));
 
-    auto custody = TRY(VirtualFileSystem::the().resolve_path(credentials(), path->view(), current_directory(), nullptr, 0));
+    auto custody = TRY(VirtualFileSystem::resolve_path(vfs_root_context(), credentials(), path->view(), current_directory(), nullptr, 0));
     auto& inode = custody->inode();
     auto const& fs = inode.fs();
 

@@ -6,9 +6,11 @@
 
 #pragma once
 
-#include <AK/URL.h>
+#include <LibURL/URL.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
+#include <LibWeb/HTML/Navigable.h>
+#include <LibWeb/HTML/TokenizedFeatures.h>
 
 namespace Web::HTML {
 
@@ -16,59 +18,59 @@ class HTMLHyperlinkElementUtils {
 public:
     virtual ~HTMLHyperlinkElementUtils();
 
-    DeprecatedString origin() const;
+    String origin() const;
 
-    DeprecatedString href() const;
-    void set_href(DeprecatedString);
+    String href() const;
+    WebIDL::ExceptionOr<void> set_href(String);
 
-    DeprecatedString protocol() const;
-    void set_protocol(DeprecatedString);
+    String protocol() const;
+    void set_protocol(StringView);
 
-    DeprecatedString username() const;
-    void set_username(DeprecatedString);
+    String username() const;
+    void set_username(StringView);
 
-    DeprecatedString password() const;
-    void set_password(DeprecatedString);
+    String password() const;
+    void set_password(StringView);
 
-    DeprecatedString host() const;
-    void set_host(DeprecatedString);
+    String host() const;
+    void set_host(StringView);
 
-    DeprecatedString hostname() const;
-    void set_hostname(DeprecatedString);
+    String hostname() const;
+    void set_hostname(StringView);
 
-    DeprecatedString port() const;
-    void set_port(DeprecatedString);
+    String port() const;
+    void set_port(StringView);
 
-    DeprecatedString pathname() const;
-    void set_pathname(DeprecatedString);
+    String pathname() const;
+    void set_pathname(StringView);
 
-    DeprecatedString search() const;
-    void set_search(DeprecatedString);
+    String search() const;
+    void set_search(StringView);
 
-    DeprecatedString hash() const;
-    void set_hash(DeprecatedString);
+    String hash() const;
+    void set_hash(StringView);
 
 protected:
     virtual DOM::Document& hyperlink_element_utils_document() = 0;
-    virtual DeprecatedString hyperlink_element_utils_href() const = 0;
-    virtual void set_hyperlink_element_utils_href(DeprecatedString) = 0;
+    virtual Optional<String> hyperlink_element_utils_href() const = 0;
+    virtual WebIDL::ExceptionOr<void> set_hyperlink_element_utils_href(String) = 0;
+    virtual Optional<String> hyperlink_element_utils_referrerpolicy() const = 0;
     virtual bool hyperlink_element_utils_is_html_anchor_element() const = 0;
     virtual bool hyperlink_element_utils_is_connected() const = 0;
-    virtual DeprecatedString hyperlink_element_utils_target() const = 0;
-    virtual DeprecatedString hyperlink_element_utils_rel() const = 0;
+    virtual String hyperlink_element_utils_get_an_elements_target() const = 0;
+    virtual TokenizedFeature::NoOpener hyperlink_element_utils_get_an_elements_noopener(StringView target) const = 0;
+
     virtual void hyperlink_element_utils_queue_an_element_task(HTML::Task::Source source, Function<void()> steps) = 0;
 
     void set_the_url();
-    void follow_the_hyperlink(Optional<DeprecatedString> hyperlink_suffix);
+    void follow_the_hyperlink(Optional<String> hyperlink_suffix, UserNavigationInvolvement = UserNavigationInvolvement::None);
 
 private:
     void reinitialize_url() const;
     void update_href();
     bool cannot_navigate() const;
-    DeprecatedString get_an_elements_target() const;
-    bool get_an_elements_noopener(StringView target) const;
 
-    Optional<AK::URL> m_url;
+    Optional<URL::URL> m_url;
 };
 
 }

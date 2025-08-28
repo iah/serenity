@@ -21,16 +21,16 @@
 //
 // Then decode<int>() would be ambiguous because either declaration could work (the compiler would
 // not be able to distinguish if you wanted to decode an int or a Vector of int).
+//
+// They also serve to work around the inability to do partial function specialization in C++.
 namespace IPC::Concepts {
 
 namespace Detail {
 
 template<typename T>
 constexpr inline bool IsHashMap = false;
-template<typename K, typename V>
-constexpr inline bool IsHashMap<HashMap<K, V>> = true;
-template<typename K, typename V>
-constexpr inline bool IsHashMap<OrderedHashMap<K, V>> = true;
+template<typename K, typename V, typename KeyTraits, typename ValueTraits, bool IsOrdered>
+constexpr inline bool IsHashMap<HashMap<K, V, KeyTraits, ValueTraits, IsOrdered>> = true;
 
 template<typename T>
 constexpr inline bool IsOptional = false;
@@ -52,6 +52,11 @@ constexpr inline bool IsVector = false;
 template<typename T>
 constexpr inline bool IsVector<Vector<T>> = true;
 
+template<typename T>
+constexpr inline bool IsArray = false;
+template<typename T, size_t N>
+constexpr inline bool IsArray<Array<T, N>> = true;
+
 }
 
 template<typename T>
@@ -68,5 +73,8 @@ concept Variant = Detail::IsVariant<T>;
 
 template<typename T>
 concept Vector = Detail::IsVector<T>;
+
+template<typename T>
+concept Array = Detail::IsArray<T>;
 
 }

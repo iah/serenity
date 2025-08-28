@@ -8,7 +8,7 @@
 
 #include <AK/StringBuilder.h>
 #include <LibGUI/AboutDialog.h>
-#include <LibGUI/AboutDialogGML.h>
+#include <LibGUI/AboutDialogWidget.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/ImageWidget.h>
@@ -19,13 +19,13 @@
 
 namespace GUI {
 
-ErrorOr<NonnullRefPtr<AboutDialog>> AboutDialog::try_create(String name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window)
+NonnullRefPtr<AboutDialog> AboutDialog::create(String const& name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window)
 {
-    auto dialog = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) AboutDialog(name, version, icon, parent_window)));
-    dialog->set_title(DeprecatedString::formatted("About {}", name));
+    auto dialog = adopt_ref(*new AboutDialog(name, version, icon, parent_window));
+    dialog->set_title(ByteString::formatted("About {}", name));
 
-    auto widget = TRY(dialog->set_main_widget<Widget>());
-    TRY(widget->load_from_gml(about_dialog_gml));
+    auto widget = AboutDialogWidget::try_create().release_value_but_fixme_should_propagate_errors();
+    dialog->set_main_widget(widget);
 
     auto icon_wrapper = widget->find_descendant_of_type_named<Widget>("icon_wrapper");
     if (icon) {
@@ -36,10 +36,10 @@ ErrorOr<NonnullRefPtr<AboutDialog>> AboutDialog::try_create(String name, String 
         icon_wrapper->set_visible(false);
     }
 
-    widget->find_descendant_of_type_named<GUI::Label>("name")->set_text(name.to_deprecated_string());
+    widget->find_descendant_of_type_named<GUI::Label>("name")->set_text(name);
     // If we are displaying a dialog for an application, insert 'SerenityOS' below the application name
     widget->find_descendant_of_type_named<GUI::Label>("serenity_os")->set_visible(name != "SerenityOS");
-    widget->find_descendant_of_type_named<GUI::Label>("version")->set_text(version.to_deprecated_string());
+    widget->find_descendant_of_type_named<GUI::Label>("version")->set_text(version);
 
     auto ok_button = widget->find_descendant_of_type_named<DialogButton>("ok_button");
     ok_button->on_click = [dialog](auto) {
@@ -49,9 +49,9 @@ ErrorOr<NonnullRefPtr<AboutDialog>> AboutDialog::try_create(String name, String 
     return dialog;
 }
 
-AboutDialog::AboutDialog(String name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window)
+AboutDialog::AboutDialog(String const& name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window)
     : Dialog(parent_window)
-    , m_name(move(name))
+    , m_name(name)
     , m_version_string(move(version))
     , m_icon(move(icon))
 {
@@ -62,13 +62,12 @@ AboutDialog::AboutDialog(String name, String version, RefPtr<Gfx::Bitmap const> 
         set_icon(parent_window->icon());
 }
 
-ErrorOr<void> AboutDialog::show(String name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window, RefPtr<Gfx::Bitmap const> window_icon)
+void AboutDialog::show(String name, String version, RefPtr<Gfx::Bitmap const> icon, Window* parent_window, RefPtr<Gfx::Bitmap const> window_icon)
 {
-    auto dialog = TRY(AboutDialog::try_create(move(name), move(version), move(icon), parent_window));
+    auto dialog = AboutDialog::create(move(name), move(version), move(icon), parent_window);
     if (window_icon)
         dialog->set_icon(window_icon);
     dialog->exec();
-    return {};
 }
 
 }

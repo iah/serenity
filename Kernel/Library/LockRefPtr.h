@@ -16,7 +16,7 @@
 #include <Kernel/Library/NonnullLockRefPtr.h>
 #ifdef KERNEL
 #    include <Kernel/Arch/Processor.h>
-#    include <Kernel/ScopedCritical.h>
+#    include <Kernel/Library/ScopedCritical.h>
 #endif
 
 #define LOCKREFPTR_SCRUB_BYTE 0xa0
@@ -460,7 +460,7 @@ struct Formatter<LockRefPtr<T>> : Formatter<T const*> {
 };
 
 template<typename T>
-struct Traits<LockRefPtr<T>> : public GenericTraits<LockRefPtr<T>> {
+struct Traits<LockRefPtr<T>> : public DefaultTraits<LockRefPtr<T>> {
     using PeekType = T*;
     using ConstPeekType = T const*;
     static unsigned hash(LockRefPtr<T> const& p) { return ptr_hash(p.ptr()); }
@@ -500,12 +500,14 @@ requires(IsConstructible<T, Args...>) inline ErrorOr<NonnullLockRefPtr<T>> try_m
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) T(forward<Args>(args)...));
 }
 
-// FIXME: Remove once P0960R3 is available in Clang.
+#ifdef AK_COMPILER_APPLE_CLANG
+// FIXME: Remove once P0960R3 is available in Apple Clang.
 template<typename T, class... Args>
 inline ErrorOr<NonnullLockRefPtr<T>> try_make_lock_ref_counted(Args&&... args)
 {
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) T { forward<Args>(args)... });
 }
+#endif
 
 template<typename T>
 inline ErrorOr<NonnullLockRefPtr<T>> adopt_nonnull_lock_ref_or_enomem(T* object)

@@ -6,13 +6,41 @@
 
 #include <AK/CharacterTypes.h>
 #include <AK/DateConstants.h>
+#include <AK/GenericLexer.h>
+#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <LibCore/DateTime.h>
+#include <LibTimeZone/TimeZone.h>
 #include <errno.h>
 #include <time.h>
 
 namespace Core {
+
+static Optional<StringView> parse_time_zone_name(GenericLexer& lexer)
+{
+    auto start_position = lexer.tell();
+
+    Optional<StringView> canonicalized_time_zone;
+
+    lexer.ignore_until([&](auto) {
+        auto time_zone = lexer.input().substring_view(start_position, lexer.tell() - start_position + 1);
+
+        canonicalized_time_zone = TimeZone::canonicalize_time_zone(time_zone);
+        return canonicalized_time_zone.has_value();
+    });
+
+    if (canonicalized_time_zone.has_value())
+        lexer.ignore();
+
+    return canonicalized_time_zone;
+}
+
+static void apply_time_zone_offset(StringView time_zone, UnixDateTime& time)
+{
+    if (auto offset = TimeZone::get_time_zone_offset(time_zone, time); offset.has_value())
+        time -= Duration::from_seconds(offset->seconds);
+}
 
 DateTime DateTime::now()
 {
@@ -84,14 +112,29 @@ void DateTime::set_time(int year, int month, int day, int hour, int minute, int 
     m_second = tm.tm_sec;
 }
 
-DeprecatedString DateTime::to_deprecated_string(StringView format) const
+void DateTime::set_time_only(int hour, int minute, Optional<int> second)
+{
+    set_time(year(), month(), day(), hour, minute, second.has_value() ? second.release_value() : this->second());
+}
+
+void DateTime::set_date(Core::DateTime const& other)
+{
+    set_time(other.year(), other.month(), other.day(), hour(), minute(), second());
+}
+
+ErrorOr<String> DateTime::to_string(StringView format, LocalTime local_time) const
 {
     struct tm tm;
-    localtime_r(&m_timestamp, &tm);
-    StringBuilder builder;
-    int const format_len = format.length();
 
-    auto format_time_zone_offset = [&](bool with_separator) {
+    if (local_time == LocalTime::Yes)
+        localtime_r(&m_timestamp, &tm);
+    else
+        gmtime_r(&m_timestamp, &tm);
+
+    StringBuilder builder;
+    size_t const format_len = format.length();
+
+    auto format_time_zone_offset = [&](bool with_separator) -> ErrorOr<void> {
         struct tm gmt_tm;
         gmtime_r(&m_timestamp, &gmt_tm);
 
@@ -112,102 +155,103 @@ DeprecatedString DateTime::to_deprecated_string(StringView format) const
         auto offset_minutes = (offset_seconds % 3600) / 60;
         auto separator = with_separator ? ":"sv : ""sv;
 
-        builder.appendff("{}{:02}{}{:02}", offset_sign, offset_hours, separator, offset_minutes);
+        TRY(builder.try_appendff("{}{:02}{}{:02}", offset_sign, offset_hours, separator, offset_minutes));
+        return {};
     };
 
-    for (int i = 0; i < format_len; ++i) {
+    for (size_t i = 0; i < format_len; ++i) {
         if (format[i] != '%') {
-            builder.append(format[i]);
+            TRY(builder.try_append(format[i]));
         } else {
             if (++i == format_len)
-                return DeprecatedString();
+                return String {};
 
             switch (format[i]) {
             case 'a':
-                builder.append(short_day_names[tm.tm_wday]);
+                TRY(builder.try_append(short_day_names[tm.tm_wday]));
                 break;
             case 'A':
-                builder.append(long_day_names[tm.tm_wday]);
+                TRY(builder.try_append(long_day_names[tm.tm_wday]));
                 break;
             case 'b':
-                builder.append(short_month_names[tm.tm_mon]);
+                TRY(builder.try_append(short_month_names[tm.tm_mon]));
                 break;
             case 'B':
-                builder.append(long_month_names[tm.tm_mon]);
+                TRY(builder.try_append(long_month_names[tm.tm_mon]));
                 break;
             case 'C':
-                builder.appendff("{:02}", (tm.tm_year + 1900) / 100);
+                TRY(builder.try_appendff("{:02}", (tm.tm_year + 1900) / 100));
                 break;
             case 'd':
-                builder.appendff("{:02}", tm.tm_mday);
+                TRY(builder.try_appendff("{:02}", tm.tm_mday));
                 break;
             case 'D':
-                builder.appendff("{:02}/{:02}/{:02}", tm.tm_mon + 1, tm.tm_mday, (tm.tm_year + 1900) % 100);
+                TRY(builder.try_appendff("{:02}/{:02}/{:02}", tm.tm_mon + 1, tm.tm_mday, (tm.tm_year + 1900) % 100));
                 break;
             case 'e':
-                builder.appendff("{:2}", tm.tm_mday);
+                TRY(builder.try_appendff("{:2}", tm.tm_mday));
                 break;
             case 'h':
-                builder.append(short_month_names[tm.tm_mon]);
+                TRY(builder.try_append(short_month_names[tm.tm_mon]));
                 break;
             case 'H':
-                builder.appendff("{:02}", tm.tm_hour);
+                TRY(builder.try_appendff("{:02}", tm.tm_hour));
                 break;
             case 'I': {
                 int display_hour = tm.tm_hour % 12;
                 if (display_hour == 0)
                     display_hour = 12;
-                builder.appendff("{:02}", display_hour);
+                TRY(builder.try_appendff("{:02}", display_hour));
                 break;
             }
             case 'j':
-                builder.appendff("{:03}", tm.tm_yday + 1);
+                TRY(builder.try_appendff("{:03}", tm.tm_yday + 1));
                 break;
             case 'l': {
                 int display_hour = tm.tm_hour % 12;
                 if (display_hour == 0)
                     display_hour = 12;
-                builder.appendff("{:2}", display_hour);
+                TRY(builder.try_appendff("{:2}", display_hour));
                 break;
             }
             case 'm':
-                builder.appendff("{:02}", tm.tm_mon + 1);
+                TRY(builder.try_appendff("{:02}", tm.tm_mon + 1));
                 break;
             case 'M':
-                builder.appendff("{:02}", tm.tm_min);
+                TRY(builder.try_appendff("{:02}", tm.tm_min));
                 break;
             case 'n':
-                builder.append('\n');
+                TRY(builder.try_append('\n'));
                 break;
             case 'p':
-                builder.append(tm.tm_hour < 12 ? "AM"sv : "PM"sv);
+                TRY(builder.try_append(tm.tm_hour < 12 ? "AM"sv : "PM"sv));
                 break;
             case 'r': {
                 int display_hour = tm.tm_hour % 12;
                 if (display_hour == 0)
                     display_hour = 12;
-                builder.appendff("{:02}:{:02}:{:02} {}", display_hour, tm.tm_min, tm.tm_sec, tm.tm_hour < 12 ? "AM" : "PM");
+                TRY(builder.try_appendff("{:02}:{:02}:{:02} {}", display_hour, tm.tm_min, tm.tm_sec, tm.tm_hour < 12 ? "AM" : "PM"));
                 break;
             }
             case 'R':
-                builder.appendff("{:02}:{:02}", tm.tm_hour, tm.tm_min);
+                TRY(builder.try_appendff("{:02}:{:02}", tm.tm_hour, tm.tm_min));
                 break;
             case 'S':
-                builder.appendff("{:02}", tm.tm_sec);
+                TRY(builder.try_appendff("{:02}", tm.tm_sec));
                 break;
             case 't':
-                builder.append('\t');
+                TRY(builder.try_append('\t'));
                 break;
             case 'T':
-                builder.appendff("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
+                TRY(builder.try_appendff("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec));
                 break;
             case 'u':
-                builder.appendff("{}", tm.tm_wday ? tm.tm_wday : 7);
+                TRY(builder.try_appendff("{}", tm.tm_wday ? tm.tm_wday : 7));
                 break;
             case 'U': {
                 int const wday_of_year_beginning = (tm.tm_wday + 6 * tm.tm_yday) % 7;
                 int const week_number = (tm.tm_yday + wday_of_year_beginning) / 7;
-                builder.appendff("{:02}", week_number);
+                TRY(builder.try_appendff("{:02}", week_number));
                 break;
             }
             case 'V': {
@@ -224,116 +268,115 @@ DeprecatedString DateTime::to_deprecated_string(StringView format) const
                             --week_number;
                     }
                 }
-                builder.appendff("{:02}", week_number);
+                TRY(builder.try_appendff("{:02}", week_number));
                 break;
             }
             case 'w':
-                builder.appendff("{}", tm.tm_wday);
+                TRY(builder.try_appendff("{}", tm.tm_wday));
                 break;
             case 'W': {
                 int const wday_of_year_beginning = (tm.tm_wday + 6 + 6 * tm.tm_yday) % 7;
                 int const week_number = (tm.tm_yday + wday_of_year_beginning) / 7;
-                builder.appendff("{:02}", week_number);
+                TRY(builder.try_appendff("{:02}", week_number));
                 break;
             }
             case 'y':
-                builder.appendff("{:02}", (tm.tm_year + 1900) % 100);
+                TRY(builder.try_appendff("{:02}", (tm.tm_year + 1900) % 100));
                 break;
             case 'Y':
-                builder.appendff("{}", tm.tm_year + 1900);
+                TRY(builder.try_appendff("{}", tm.tm_year + 1900));
                 break;
             case 'z':
-                format_time_zone_offset(false);
+                TRY(format_time_zone_offset(false));
                 break;
             case ':':
                 if (++i == format_len) {
-                    builder.append("%:"sv);
+                    TRY(builder.try_append("%:"sv));
                     break;
                 }
                 if (format[i] != 'z') {
-                    builder.append("%:"sv);
-                    builder.append(format[i]);
+                    TRY(builder.try_append("%:"sv));
+                    TRY(builder.try_append(format[i]));
                     break;
                 }
-                format_time_zone_offset(true);
+                TRY(format_time_zone_offset(true));
                 break;
             case 'Z': {
                 auto const* timezone_name = tzname[tm.tm_isdst == 0 ? 0 : 1];
-                builder.append({ timezone_name, strlen(timezone_name) });
+                TRY(builder.try_append({ timezone_name, strlen(timezone_name) }));
                 break;
             }
             case '%':
-                builder.append('%');
+                TRY(builder.try_append('%'));
                 break;
             default:
-                builder.append('%');
-                builder.append(format[i]);
+                TRY(builder.try_append('%'));
+                TRY(builder.try_append(format[i]));
                 break;
             }
         }
     }
 
-    return builder.to_deprecated_string();
+    return builder.to_string();
 }
 
-Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& string)
+ByteString DateTime::to_byte_string(StringView format, LocalTime local_time) const
+{
+    return MUST(to_string(format, local_time)).to_byte_string();
+}
+
+Optional<DateTime> DateTime::parse(StringView format, StringView string)
 {
     unsigned format_pos = 0;
-    unsigned string_pos = 0;
+
     struct tm tm = {};
+    tm.tm_isdst = -1;
 
     auto parsing_failed = false;
     auto tm_represents_utc_time = false;
+    Optional<StringView> parsed_time_zone;
+
+    GenericLexer string_lexer(string);
 
     auto parse_number = [&] {
-        if (string_pos >= string.length()) {
+        auto result = string_lexer.consume_decimal_integer<int>();
+        if (result.is_error()) {
             parsing_failed = true;
             return 0;
         }
-
-        char* end_ptr = nullptr;
-        errno = 0;
-        int number = strtol(string.characters() + string_pos, &end_ptr, 10);
-
-        auto chars_parsed = end_ptr - (string.characters() + string_pos);
-        if (chars_parsed == 0 || errno != 0)
-            parsing_failed = true;
-        else
-            string_pos += chars_parsed;
-        return number;
+        return result.value();
     };
 
-    auto consume = [&](char x) {
-        if (string_pos >= string.length()) {
+    auto consume = [&](char c) {
+        if (!string_lexer.consume_specific(c))
             parsing_failed = true;
-            return;
+    };
+
+    auto consume_specific_ascii_case_insensitive = [&](StringView name) {
+        auto next_string = string_lexer.peek_string(name.length());
+        if (next_string.has_value() && next_string->equals_ignoring_ascii_case(name)) {
+            string_lexer.consume(name.length());
+            return true;
         }
-        if (string[string_pos] != x)
-            parsing_failed = true;
-        else
-            string_pos++;
+        return false;
     };
 
-    while (format_pos < format.length() && string_pos < string.length()) {
+    while (format_pos < format.length() && !string_lexer.is_eof()) {
         if (format[format_pos] != '%') {
-            if (format[format_pos] != string[string_pos]) {
-                return {};
-            }
+            consume(format[format_pos]);
             format_pos++;
-            string_pos++;
             continue;
         }
 
         format_pos++;
-        if (format_pos == format.length()) {
+        if (format_pos == format.length())
             return {};
-        }
+
         switch (format[format_pos]) {
         case 'a': {
             auto wday = 0;
             for (auto name : short_day_names) {
-                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
-                    string_pos += name.length();
+                if (consume_specific_ascii_case_insensitive(name)) {
                     tm.tm_wday = wday;
                     break;
                 }
@@ -346,8 +389,7 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
         case 'A': {
             auto wday = 0;
             for (auto name : long_day_names) {
-                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
-                    string_pos += name.length();
+                if (consume_specific_ascii_case_insensitive(name)) {
                     tm.tm_wday = wday;
                     break;
                 }
@@ -361,8 +403,7 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
         case 'b': {
             auto mon = 0;
             for (auto name : short_month_names) {
-                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
-                    string_pos += name.length();
+                if (consume_specific_ascii_case_insensitive(name)) {
                     tm.tm_mon = mon;
                     break;
                 }
@@ -375,8 +416,7 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
         case 'B': {
             auto mon = 0;
             for (auto name : long_month_names) {
-                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
-                    string_pos += name.length();
+                if (consume_specific_ascii_case_insensitive(name)) {
                     tm.tm_mon = mon;
                     break;
                 }
@@ -391,10 +431,9 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
             tm.tm_year = (num - 19) * 100;
             break;
         }
-        case 'd': {
+        case 'd':
             tm.tm_mday = parse_number();
             break;
-        }
         case 'D': {
             int mon = parse_number();
             consume('/');
@@ -406,64 +445,52 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
             tm.tm_year = (year + 1900) % 100;
             break;
         }
-        case 'e': {
+        case 'e':
             tm.tm_mday = parse_number();
             break;
-        }
-        case 'H': {
+        case 'H':
             tm.tm_hour = parse_number();
             break;
-        }
         case 'I': {
             int num = parse_number();
             tm.tm_hour = num % 12;
             break;
         }
-        case 'j': {
+        case 'j':
             // a little trickery here... we can get mktime() to figure out mon and mday using out of range values.
             // yday is not used so setting it is pointless.
             tm.tm_mday = parse_number();
             tm.tm_mon = 0;
             mktime(&tm);
             break;
-        }
         case 'm': {
             int num = parse_number();
             tm.tm_mon = num - 1;
             break;
         }
-        case 'M': {
+        case 'M':
             tm.tm_min = parse_number();
             break;
-        }
         case 'n':
         case 't':
-            while (is_ascii_blank(string[string_pos])) {
-                string_pos++;
-            }
+            string_lexer.consume_while(is_ascii_blank);
             break;
+        case 'r':
         case 'p': {
-            auto ampm = string.substring_view(string_pos, 2);
-            if (ampm == "PM" && tm.tm_hour < 12) {
-                tm.tm_hour += 12;
+            auto ampm = string_lexer.consume(2);
+            if (ampm == "PM") {
+                if (tm.tm_hour < 12)
+                    tm.tm_hour += 12;
+            } else if (ampm != "AM") {
+                return {};
             }
-            string_pos += 2;
             break;
         }
-        case 'r': {
-            auto ampm = string.substring_view(string_pos, 2);
-            if (ampm == "PM" && tm.tm_hour < 12) {
-                tm.tm_hour += 12;
-            }
-            string_pos += 2;
-            break;
-        }
-        case 'R': {
+        case 'R':
             tm.tm_hour = parse_number();
             consume(':');
             tm.tm_min = parse_number();
             break;
-        }
         case 'S':
             tm.tm_sec = parse_number();
             break;
@@ -489,26 +516,22 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
         }
         case 'z': {
             tm_represents_utc_time = true;
-            if (string[string_pos] == 'Z') {
+            if (string_lexer.consume_specific('Z')) {
                 // UTC time
-                string_pos++;
                 break;
             }
             int sign;
 
-            if (string[string_pos] == '+')
+            if (string_lexer.consume_specific('+'))
                 sign = -1;
-            else if (string[string_pos] == '-')
+            else if (string_lexer.consume_specific('-'))
                 sign = +1;
             else
                 return {};
 
-            string_pos++;
-
             auto hours = parse_number();
             int minutes;
-            if (string_pos < string.length() && string[string_pos] == ':') {
-                string_pos++;
+            if (string_lexer.consume_specific(':')) {
                 minutes = parse_number();
             } else {
                 minutes = hours % 100;
@@ -519,34 +542,84 @@ Optional<DateTime> DateTime::parse(StringView format, DeprecatedString const& st
             tm.tm_min += sign * minutes;
             break;
         }
-        case '%':
-            if (string[string_pos] != '%') {
-                return {};
+        case 'x': {
+            tm_represents_utc_time = true;
+            auto hours = parse_number();
+            int minutes;
+            if (string_lexer.consume_specific(':')) {
+                minutes = parse_number();
+            } else {
+                minutes = hours % 100;
+                hours = hours / 100;
             }
-            string_pos += 1;
+
+            tm.tm_hour -= hours;
+            tm.tm_min -= minutes;
+            break;
+        }
+        case 'X': {
+            if (!string_lexer.consume_specific('.'))
+                return {};
+            auto discarded = parse_number();
+            (void)discarded; // NOTE: the tm structure does not support sub second precision, so drop this value.
+            break;
+        }
+        case 'Z':
+            parsed_time_zone = parse_time_zone_name(string_lexer);
+            if (!parsed_time_zone.has_value())
+                return {};
+
+            tm_represents_utc_time = true;
+            break;
+        case '+': {
+            Optional<char> next_format_character;
+
+            if (format_pos + 1 < format.length()) {
+                next_format_character = format[format_pos + 1];
+
+                // Disallow another formatter directly after %+. This is to avoid ambiguity when parsing a string like
+                // "ignoreJan" with "%+%b", as it would be non-trivial to know that where the %b field begins.
+                if (next_format_character == '%')
+                    return {};
+            }
+
+            auto discarded = string_lexer.consume_until([&](auto ch) { return ch == next_format_character; });
+            if (discarded.is_empty())
+                return {};
+
+            break;
+        }
+        case '%':
+            consume('%');
             break;
         default:
             parsing_failed = true;
             break;
         }
 
-        if (parsing_failed) {
+        if (parsing_failed)
             return {};
-        }
 
         format_pos++;
     }
-    if (string_pos != string.length() || format_pos != format.length()) {
-        return {};
-    }
 
-    // If an explicit timezone was present, the time in tm was shifted to UTC.
-    // Convert it to local time, since that is what `mktime` expects.
+    if (!string_lexer.is_eof() || format_pos != format.length())
+        return {};
+
+    // If an explicit time zone offset was present, the time in tm was shifted to UTC. If a time zone name was present,
+    // the time in tm needs to be shifted to UTC. In both cases, convert the result to local time, as that is what is
+    // expected by `mktime`.
     if (tm_represents_utc_time) {
-        auto utc_time = timegm(&tm);
-        localtime_r(&utc_time, &tm);
+        auto utc_time = UnixDateTime::from_seconds_since_epoch(timegm(&tm));
+
+        if (parsed_time_zone.has_value())
+            apply_time_zone_offset(*parsed_time_zone, utc_time);
+
+        time_t utc_time_t = utc_time.seconds_since_epoch();
+        localtime_r(&utc_time_t, &tm);
     }
 
     return DateTime::from_timestamp(mktime(&tm));
 }
+
 }

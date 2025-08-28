@@ -4,6 +4,9 @@
 [Exposed=Window]
 interface HTMLParagraphElement : HTMLElement {
 
-    [Reflect] attribute DOMString align;
+    [HTMLConstructor] constructor();
+
+    // Obsolete
+    [CEReactions, Reflect] attribute DOMString align;
 
 };

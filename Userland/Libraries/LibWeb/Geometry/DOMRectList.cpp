@@ -5,6 +5,7 @@
  */
 
 #include <LibJS/Heap/Handle.h>
+#include <LibWeb/Bindings/DOMRectListPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Geometry/DOMRect.h>
 #include <LibWeb/Geometry/DOMRectList.h>
@@ -12,28 +13,35 @@
 
 namespace Web::Geometry {
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMRectList>> DOMRectList::create(JS::Realm& realm, Vector<JS::Handle<DOMRect>> rect_handles)
+JS_DEFINE_ALLOCATOR(DOMRectList);
+
+JS::NonnullGCPtr<DOMRectList> DOMRectList::create(JS::Realm& realm, Vector<JS::Handle<DOMRect>> rect_handles)
 {
     Vector<JS::NonnullGCPtr<DOMRect>> rects;
     for (auto& rect : rect_handles)
         rects.append(*rect);
-    return MUST_OR_THROW_OOM(realm.heap().allocate<DOMRectList>(realm, realm, move(rects)));
+    return realm.heap().allocate<DOMRectList>(realm, realm, move(rects));
 }
 
 DOMRectList::DOMRectList(JS::Realm& realm, Vector<JS::NonnullGCPtr<DOMRect>> rects)
-    : Bindings::LegacyPlatformObject(realm)
+    : Bindings::PlatformObject(realm)
     , m_rects(move(rects))
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags { .supports_indexed_properties = 1 };
 }
 
 DOMRectList::~DOMRectList() = default;
 
-JS::ThrowCompletionOr<void> DOMRectList::initialize(JS::Realm& realm)
+void DOMRectList::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::DOMRectListPrototype>(realm, "DOMRectList"));
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(DOMRectList);
+}
 
-    return {};
+void DOMRectList::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_rects);
 }
 
 // https://drafts.fxtf.org/geometry-1/#dom-domrectlist-length
@@ -53,15 +61,10 @@ DOMRect const* DOMRectList::item(u32 index) const
     return m_rects[index];
 }
 
-bool DOMRectList::is_supported_property_index(u32 index) const
-{
-    return index < m_rects.size();
-}
-
-WebIDL::ExceptionOr<JS::Value> DOMRectList::item_value(size_t index) const
+Optional<JS::Value> DOMRectList::item_value(size_t index) const
 {
     if (index >= m_rects.size())
-        return JS::js_undefined();
+        return {};
 
     return m_rects[index].ptr();
 }

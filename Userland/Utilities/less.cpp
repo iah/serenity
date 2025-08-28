@@ -9,9 +9,8 @@
 #include <LibCore/System.h>
 #include <LibLine/Editor.h>
 #include <LibMain/Main.h>
-#include <csignal>
+#include <math.h>
 #include <stdio.h>
-#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -19,6 +18,11 @@ static struct termios g_save;
 
 // Flag set by a SIGWINCH signal handler to notify the main loop that the window has been resized.
 static Atomic<bool> g_resized { false };
+
+static Atomic<bool> g_restore_buffer_on_close { false };
+
+constexpr size_t line_number_column_padding = 7;
+static constexpr StringView line_number_column_separator = " "sv;
 
 static ErrorOr<void> setup_tty(bool switch_buffer)
 {
@@ -34,23 +38,23 @@ static ErrorOr<void> setup_tty(bool switch_buffer)
     if (switch_buffer) {
         // Save cursor and switch to alternate buffer.
         out("\e[s\e[?1047h");
+        g_restore_buffer_on_close = true;
     }
 
     return {};
 }
 
-static ErrorOr<void> teardown_tty(bool switch_buffer)
+static void teardown_tty()
 {
-    TRY(Core::System::tcsetattr(STDOUT_FILENO, TCSAFLUSH, g_save));
+    auto maybe_error = Core::System::tcsetattr(STDOUT_FILENO, TCSAFLUSH, g_save);
+    if (maybe_error.is_error())
+        warnln("Failed to reset original terminal state: {}", strerror(maybe_error.error().code()));
 
-    if (switch_buffer) {
+    if (g_restore_buffer_on_close.exchange(false))
         out("\e[?1047l\e[u");
-    }
-
-    return {};
 }
 
-static Vector<StringView> wrap_line(DeprecatedString const& string, size_t width)
+static Vector<StringView> wrap_line(ByteString const& string, size_t width)
 {
     auto const result = Line::Editor::actual_rendered_string_metrics(string, {}, width);
 
@@ -68,11 +72,12 @@ static Vector<StringView> wrap_line(DeprecatedString const& string, size_t width
 
 class Pager {
 public:
-    Pager(StringView filename, FILE* file, FILE* tty, StringView prompt)
+    Pager(StringView filename, FILE* file, FILE* tty, StringView prompt, bool show_line_numbers)
         : m_file(file)
         , m_tty(tty)
         , m_filename(filename)
         , m_prompt(prompt)
+        , m_show_line_numbers(show_line_numbers)
     {
     }
 
@@ -175,12 +180,12 @@ public:
         resize(false);
     }
 
-    void resize(bool clear = true)
+    void populate_line_buffer()
     {
         // First, we get the current size of the window.
         struct winsize window;
-        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == -1) {
-            perror("ioctl(2)");
+        if (auto maybe_error = Core::System::ioctl(STDOUT_FILENO, TIOCGWINSZ, &window); maybe_error.is_error()) {
+            warnln("ioctl(2): {}", strerror(maybe_error.error().code()));
             return;
         }
 
@@ -203,6 +208,11 @@ public:
             }
             --additional_lines;
         }
+    }
+
+    void resize(bool clear = true)
+    {
+        populate_line_buffer();
 
         reflow();
         bound_cursor();
@@ -216,10 +226,20 @@ public:
         }
     }
 
+    static size_t count_digits_in_number(size_t line_numbers)
+    {
+        return line_numbers > 0 ? static_cast<size_t>(log10(static_cast<double>(line_numbers))) + 1 : 1;
+    }
+
     size_t write_range(size_t line, size_t subline, size_t length)
     {
         size_t lines = 0;
         for (size_t i = line; i < m_lines.size(); ++i) {
+            auto digits_count_for_max_line_number = count_digits_in_number(i + 1);
+            auto column_width = 0;
+            if (m_width > line_number_column_padding + line_number_column_separator.length())
+                column_width = max(line_number_column_padding, digits_count_for_max_line_number);
+
             for (auto string : sublines(i)) {
                 if (subline > 0) {
                     --subline;
@@ -227,6 +247,9 @@ public:
                 }
                 if (lines >= length)
                     return lines;
+
+                if (m_show_line_numbers)
+                    out(m_tty, "\e[1m{:>{}}\e[22m{}", i + 1, column_width, line_number_column_separator);
 
                 outln(m_tty, "{}", string);
                 ++lines;
@@ -264,7 +287,7 @@ public:
         if (line[size - 1] == '\n')
             --size;
 
-        m_lines.append(DeprecatedString(line, size));
+        m_lines.append(ByteString(line, size));
         return true;
     }
 
@@ -350,7 +373,13 @@ private:
     Vector<StringView> const& sublines(size_t line)
     {
         return m_subline_cache.ensure(line, [&]() {
-            return wrap_line(m_lines[line], m_width);
+            auto width = m_width;
+            if (m_show_line_numbers) {
+                auto line_number_column_width = max(line_number_column_padding, count_digits_in_number(line)) + line_number_column_separator.length();
+                if (width > line_number_column_width)
+                    width -= line_number_column_width;
+            }
+            return wrap_line(m_lines[line], width);
         });
     }
 
@@ -436,7 +465,7 @@ private:
     }
 
     // FIXME: Don't save scrollback when emulating more.
-    Vector<DeprecatedString> m_lines;
+    Vector<ByteString> m_lines;
 
     size_t m_line { 0 };
     size_t m_subline { 0 };
@@ -451,20 +480,22 @@ private:
     size_t m_width { 0 };
     size_t m_height { 0 };
 
-    DeprecatedString m_filename;
-    DeprecatedString m_prompt;
+    ByteString m_filename;
+    ByteString m_prompt;
+
+    bool m_show_line_numbers { false };
 };
 
 /// Return the next key sequence, or nothing if a signal is received while waiting
 /// to read the next sequence.
-static Optional<DeprecatedString> get_key_sequence()
+static Optional<ByteString> get_key_sequence()
 {
     // We need a buffer to handle ansi sequences.
     char buff[8];
 
     ssize_t n = read(STDOUT_FILENO, buff, sizeof(buff));
     if (n > 0) {
-        return DeprecatedString(buff, n);
+        return ByteString(buff, n);
     } else {
         return {};
     }
@@ -493,11 +524,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(Core::System::pledge("stdio rpath tty sigaction"));
 
     // FIXME: Make these into StringViews once we stop using fopen below.
-    DeprecatedString filename = "-";
-    DeprecatedString prompt = "?f%f :.(line %l)?e (END):.";
+    ByteString filename = "-";
+    ByteString prompt = "?f%f :.(line %l)?e (END):.";
     bool dont_switch_buffer = false;
     bool quit_at_eof = false;
+    bool quit_if_one_screen = false;
     bool emulate_more = false;
+    bool show_line_numbers = false;
 
     if (LexicalPath::basename(arguments.strings[0]) == "more"sv)
         emulate_more = true;
@@ -506,12 +539,14 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_positional_argument(filename, "The paged file", "file", Core::ArgsParser::Required::No);
     args_parser.add_option(prompt, "Prompt line", "prompt", 'P', "Prompt");
     args_parser.add_option(dont_switch_buffer, "Don't use xterm alternate buffer", "no-init", 'X');
+    args_parser.add_option(show_line_numbers, "Show line numbers", "line-numbers", 'N');
     args_parser.add_option(quit_at_eof, "Exit when the end of the file is reached", "quit-at-eof", 'e');
+    args_parser.add_option(quit_if_one_screen, "Exit immediately if the entire file can be displayed on one screen", "quit-if-one-screen", 'F');
     args_parser.add_option(emulate_more, "Pretend that we are more(1)", "emulate-more", 'm');
     args_parser.parse(arguments);
 
     FILE* file;
-    if (DeprecatedString("-") == filename) {
+    if (ByteString("-") == filename) {
         file = stdin;
     } else if ((file = fopen(filename.characters(), "r")) == nullptr) {
         perror("fopen");
@@ -520,11 +555,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     // On SIGWINCH set this flag so that the main-loop knows when the terminal
     // has been resized.
-    signal(SIGWINCH, [](auto) {
+    struct sigaction resize_action;
+    resize_action.sa_handler = [](auto) {
         g_resized = true;
-    });
+    };
+    TRY(Core::System::sigaction(SIGWINCH, &resize_action, nullptr));
 
-    TRY(Core::System::pledge("stdio tty"));
+    TRY(Core::System::pledge("stdio tty sigaction"));
 
     if (emulate_more) {
         // Configure options that match more's behavior
@@ -533,18 +570,42 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         prompt = "--More--";
     }
 
-    if (!isatty(STDOUT_FILENO)) {
+    if (!TRY(Core::System::isatty(STDOUT_FILENO))) {
         cat_file(file);
+        return 0;
+    }
+
+    Pager pager(filename, file, stdout, prompt, show_line_numbers);
+    pager.populate_line_buffer();
+
+    if (quit_if_one_screen && pager.at_end()) {
+        pager.init();
+        pager.clear_status();
         return 0;
     }
 
     TRY(setup_tty(!dont_switch_buffer));
 
-    Pager pager(filename, file, stdout, prompt);
+    ScopeGuard teardown_guard([] {
+        teardown_tty();
+    });
+
+    auto teardown_sigaction_handler = [](auto) {
+        teardown_tty();
+        exit(1);
+    };
+    struct sigaction teardown_action;
+    teardown_action.sa_handler = teardown_sigaction_handler;
+    TRY(Core::System::sigaction(SIGTERM, &teardown_action, nullptr));
+
+    struct sigaction ignore_action;
+    ignore_action.sa_handler = { SIG_IGN };
+    TRY(Core::System::sigaction(SIGINT, &ignore_action, nullptr));
+
     pager.init();
 
     StringBuilder modifier_buffer = StringBuilder(10);
-    for (Optional<DeprecatedString> sequence_value;; sequence_value = get_key_sequence()) {
+    for (Optional<ByteString> sequence_value;; sequence_value = get_key_sequence()) {
         if (g_resized) {
             g_resized = false;
             pager.resize();
@@ -556,36 +617,36 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto const& sequence = sequence_value.value();
 
-        if (sequence.to_uint().has_value()) {
+        if (sequence.to_number<unsigned>().has_value()) {
             modifier_buffer.append(sequence);
         } else {
-            if (sequence == "" || sequence == "q") {
+            if (sequence == "" || sequence == "q" || sequence == "Q") {
                 break;
             } else if (sequence == "j" || sequence == "\e[B" || sequence == "\n") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.down_n(modifier_buffer.to_deprecated_string().to_uint().value_or(1));
+                        pager.down_n(modifier_buffer.to_byte_string().to_number<unsigned>().value_or(1));
                     else
                         pager.down();
                 }
             } else if (sequence == "k" || sequence == "\e[A") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.up_n(modifier_buffer.to_deprecated_string().to_uint().value_or(1));
+                        pager.up_n(modifier_buffer.to_byte_string().to_number<unsigned>().value_or(1));
                     else
                         pager.up();
                 }
             } else if (sequence == "g") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.go_to_line(modifier_buffer.to_deprecated_string().to_uint().value());
+                        pager.go_to_line(modifier_buffer.to_byte_string().to_number<unsigned>().value());
                     else
                         pager.top();
                 }
             } else if (sequence == "G") {
                 if (!emulate_more) {
                     if (!modifier_buffer.is_empty())
-                        pager.go_to_line(modifier_buffer.to_deprecated_string().to_uint().value());
+                        pager.go_to_line(modifier_buffer.to_byte_string().to_number<unsigned>().value());
                     else
                         pager.bottom();
                 }
@@ -607,7 +668,5 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     pager.clear_status();
-
-    TRY(teardown_tty(!dont_switch_buffer));
     return 0;
 }

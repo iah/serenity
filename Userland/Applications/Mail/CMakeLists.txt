@@ -5,7 +5,7 @@ serenity_component(
     DEPENDS WebContent
 )
 
-compile_gml(MailWindow.gml MailWindowGML.h mail_window_gml)
+stringify_gml(MailWindow.gml MailWindowGML.h mail_window_gml)
 
 set(SOURCES
     AccountHolder.cpp
@@ -20,4 +20,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_app(Mail ICON app-mail)
-target_link_libraries(Mail PRIVATE LibConfig LibCore LibDesktop LibGfx LibGUI LibIMAP LibWebView LibWeb LibMain)
+target_link_libraries(Mail PRIVATE LibConfig LibCore LibDesktop LibGfx LibGUI LibIMAP LibWebView LibWeb LibMain LibURL)

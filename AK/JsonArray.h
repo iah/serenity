@@ -16,7 +16,10 @@ namespace AK {
 
 class JsonArray {
     template<typename Callback>
-    using CallbackErrorType = decltype(declval<Callback>()(declval<JsonValue const&>()).release_error());
+    using CallbackErrorType = decltype(declval<Callback>()(declval<JsonValue const&>()))::ErrorType;
+
+    static_assert(SameAs<CallbackErrorType<ErrorOr<void> (*)(JsonValue const&)>, Error>);
+    static_assert(SameAs<ErrorOr<void, CallbackErrorType<ErrorOr<void> (*)(JsonValue const&)>>, ErrorOr<void>>);
 
 public:
     JsonArray() = default;
@@ -61,9 +64,11 @@ public:
 
     [[nodiscard]] JsonValue take(size_t index) { return m_values.take(index); }
 
+    void must_append(JsonValue value) { m_values.append(move(value)); }
+
     void clear() { m_values.clear(); }
-    void append(JsonValue value) { m_values.append(move(value)); }
-    void set(size_t index, JsonValue value) { m_values[index] = move(value); }
+    ErrorOr<void> append(JsonValue value) { return m_values.try_append(move(value)); }
+    void set(size_t index, JsonValue value) { m_values.at(index) = move(value); }
 
     template<typename Builder>
     typename Builder::OutputType serialized() const;
@@ -71,7 +76,7 @@ public:
     template<typename Builder>
     void serialize(Builder&) const;
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const { return serialized<StringBuilder>(); }
+    [[nodiscard]] ByteString to_byte_string() const { return serialized<StringBuilder>(); }
 
     template<typename Callback>
     void for_each(Callback callback) const
@@ -109,7 +114,7 @@ inline typename Builder::OutputType JsonArray::serialized() const
 {
     Builder builder;
     serialize(builder);
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 }

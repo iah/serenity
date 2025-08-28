@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,32 +14,41 @@
 
 namespace JS {
 
+JS_DEFINE_ALLOCATOR(StringObject);
+
 // 10.4.3.4 StringCreate ( value, prototype ), https://tc39.es/ecma262/#sec-stringcreate
-ThrowCompletionOr<NonnullGCPtr<StringObject>> StringObject::create(Realm& realm, PrimitiveString& primitive_string, Object& prototype)
+NonnullGCPtr<StringObject> StringObject::create(Realm& realm, PrimitiveString& primitive_string, Object& prototype)
 {
-    return MUST_OR_THROW_OOM(realm.heap().allocate<StringObject>(realm, primitive_string, prototype));
+    // 1. Let S be MakeBasicObject(« [[Prototype]], [[Extensible]], [[StringData]] »).
+    // 2. Set S.[[Prototype]] to prototype.
+    // 3. Set S.[[StringData]] to value.
+    // 4. Set S.[[GetOwnProperty]] as specified in 10.4.3.1.
+    // 5. Set S.[[DefineOwnProperty]] as specified in 10.4.3.2.
+    // 6. Set S.[[OwnPropertyKeys]] as specified in 10.4.3.3.
+    // 7. Let length be the length of value.
+    // 8. Perform ! DefinePropertyOrThrow(S, "length", PropertyDescriptor { [[Value]]: 𝔽(length), [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }).
+    // 9. Return S.
+    return realm.heap().allocate<StringObject>(realm, primitive_string, prototype);
 }
 
 StringObject::StringObject(PrimitiveString& string, Object& prototype)
-    : Object(ConstructWithPrototypeTag::Tag, prototype)
+    : Object(ConstructWithPrototypeTag::Tag, prototype, MayInterfereWithIndexedPropertyAccess::Yes)
     , m_string(string)
 {
 }
 
-ThrowCompletionOr<void> StringObject::initialize(Realm& realm)
+void StringObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
-    MUST_OR_THROW_OOM(Base::initialize(realm));
+    Base::initialize(realm);
 
-    define_direct_property(vm.names.length, Value(MUST_OR_THROW_OOM(m_string.utf16_string_view()).length_in_code_units()), 0);
-
-    return {};
+    define_direct_property(vm.names.length, Value(m_string->utf16_string_view().length_in_code_units()), 0);
 }
 
 void StringObject::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(&m_string);
+    visitor.visit(m_string);
 }
 
 // 10.4.3.5 StringGetOwnProperty ( S, P ), https://tc39.es/ecma262/#sec-stringgetownproperty
@@ -56,7 +65,7 @@ static ThrowCompletionOr<Optional<PropertyDescriptor>> string_get_own_property(S
         return Optional<PropertyDescriptor> {};
 
     // 2. Let index be CanonicalNumericIndexString(P).
-    auto index = MUST_OR_THROW_OOM(canonical_numeric_index_string(vm, property_key, CanonicalIndexMode::IgnoreNumericRoundtrip));
+    auto index = canonical_numeric_index_string(property_key, CanonicalIndexMode::IgnoreNumericRoundtrip);
 
     // 3. If index is undefined, return undefined.
     // 4. If IsIntegralNumber(index) is false, return undefined.
@@ -66,7 +75,7 @@ static ThrowCompletionOr<Optional<PropertyDescriptor>> string_get_own_property(S
 
     // 6. Let str be S.[[StringData]].
     // 7. Assert: Type(str) is String.
-    auto str = TRY(string.primitive_string().utf16_string_view());
+    auto str = string.primitive_string().utf16_string_view();
 
     // 8. Let len be the length of str.
     auto length = str.length_in_code_units();
@@ -76,7 +85,7 @@ static ThrowCompletionOr<Optional<PropertyDescriptor>> string_get_own_property(S
         return Optional<PropertyDescriptor> {};
 
     // 10. Let resultStr be the String value of length 1, containing one code unit from str, specifically the code unit at index ℝ(index).
-    auto result_str = PrimitiveString::create(vm, TRY(Utf16String::create(vm, str.substring_view(index.as_index(), 1))));
+    auto result_str = PrimitiveString::create(vm, Utf16String::create(str.substring_view(index.as_index(), 1)));
 
     // 11. Return the PropertyDescriptor { [[Value]]: resultStr, [[Writable]]: false, [[Enumerable]]: true, [[Configurable]]: false }.
     return PropertyDescriptor {
@@ -104,7 +113,7 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> StringObject::internal_get_own_p
 }
 
 // 10.4.3.2 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-string-exotic-objects-defineownproperty-p-desc
-ThrowCompletionOr<bool> StringObject::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor)
+ThrowCompletionOr<bool> StringObject::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor, Optional<PropertyDescriptor>* precomputed_get_own_property)
 {
     VERIFY(property_key.is_valid());
 
@@ -121,7 +130,7 @@ ThrowCompletionOr<bool> StringObject::internal_define_own_property(PropertyKey c
     }
 
     // 3. Return ! OrdinaryDefineOwnProperty(S, P, Desc).
-    return Object::internal_define_own_property(property_key, property_descriptor);
+    return Object::internal_define_own_property(property_key, property_descriptor, precomputed_get_own_property);
 }
 
 // 10.4.3.3 [[OwnPropertyKeys]] ( ), https://tc39.es/ecma262/#sec-string-exotic-objects-ownpropertykeys
@@ -133,7 +142,7 @@ ThrowCompletionOr<MarkedVector<Value>> StringObject::internal_own_property_keys(
     auto keys = MarkedVector<Value> { heap() };
 
     // 2. Let str be O.[[StringData]].
-    auto str = TRY(m_string.utf16_string_view());
+    auto str = m_string->utf16_string_view();
 
     // 3. Assert: Type(str) is String.
 
@@ -143,19 +152,19 @@ ThrowCompletionOr<MarkedVector<Value>> StringObject::internal_own_property_keys(
     // 5. For each integer i starting with 0 such that i < len, in ascending order, do
     for (size_t i = 0; i < length; ++i) {
         // a. Add ! ToString(𝔽(i)) as the last element of keys.
-        keys.append(PrimitiveString::create(vm, TRY_OR_THROW_OOM(vm, String::number(i))));
+        keys.append(PrimitiveString::create(vm, String::number(i)));
     }
 
     // 6. For each own property key P of O such that P is an array index and ! ToIntegerOrInfinity(P) ≥ len, in ascending numeric index order, do
     for (auto& entry : indexed_properties()) {
         if (entry.index() >= length) {
             // a. Add P as the last element of keys.
-            keys.append(PrimitiveString::create(vm, TRY_OR_THROW_OOM(vm, String::number(entry.index()))));
+            keys.append(PrimitiveString::create(vm, String::number(entry.index())));
         }
     }
 
     // 7. For each own property key P of O such that Type(P) is String and P is not an array index, in ascending chronological order of property creation, do
-    for (auto& it : shape().property_table_ordered()) {
+    for (auto& it : shape().property_table()) {
         if (it.key.is_string()) {
             // a. Add P as the last element of keys.
             keys.append(it.key.to_value(vm));
@@ -163,7 +172,7 @@ ThrowCompletionOr<MarkedVector<Value>> StringObject::internal_own_property_keys(
     }
 
     // 8. For each own property key P of O such that Type(P) is Symbol, in ascending chronological order of property creation, do
-    for (auto& it : shape().property_table_ordered()) {
+    for (auto& it : shape().property_table()) {
         if (it.key.is_symbol()) {
             // a. Add P as the last element of keys.
             keys.append(it.key.to_value(vm));

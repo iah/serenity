@@ -17,8 +17,8 @@ class IRQHandler : public GenericInterruptHandler {
 public:
     virtual ~IRQHandler();
 
-    virtual bool handle_interrupt(RegisterState const& regs) override { return handle_irq(regs); }
-    virtual bool handle_irq(RegisterState const&) = 0;
+    virtual bool handle_interrupt() override { return handle_irq(); }
+    virtual bool handle_irq() = 0;
 
     void enable_irq();
     void disable_irq();
@@ -31,7 +31,7 @@ public:
 
     virtual size_t sharing_devices_count() const override { return 0; }
     virtual bool is_shared_handler() const override { return false; }
-    virtual bool is_sharing_with_others() const override { return m_shared_with_others; }
+    void set_shared_with_others(bool status) { m_shared_with_others = status; }
 
 protected:
     void change_irq_number(u8 irq);

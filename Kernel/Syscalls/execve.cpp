@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/FixedArray.h>
 #include <AK/ScopeGuard.h>
 #include <AK/TemporaryChange.h>
 #include <Kernel/Arch/CPU.h>
@@ -12,14 +13,15 @@
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
+#include <Kernel/Library/Panic.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Memory/Region.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
-#include <Kernel/Panic.h>
-#include <Kernel/PerformanceManager.h>
-#include <Kernel/Process.h>
-#include <Kernel/Random.h>
-#include <Kernel/Scheduler.h>
+#include <Kernel/Security/Random.h>
+#include <Kernel/Tasks/PerformanceManager.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/ScopedProcessList.h>
 #include <Kernel/Time/TimeManagement.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/Image.h>
@@ -30,13 +32,9 @@ namespace Kernel {
 extern Memory::Region* g_signal_trampoline_region;
 
 struct LoadResult {
-    OwnPtr<Memory::AddressSpace> space;
     FlatPtr load_base { 0 };
     FlatPtr entry_eip { 0 };
     size_t size { 0 };
-    LockWeakPtr<Memory::Region> tls_region;
-    size_t tls_size { 0 };
-    size_t tls_alignment { 0 };
     LockWeakPtr<Memory::Region> stack_region;
 };
 
@@ -157,6 +155,10 @@ static ErrorOr<FlatPtr> make_userspace_context_for_main_thread([[maybe_unused]] 
     regs.x[0] = argv_entries.size();
     regs.x[1] = argv;
     regs.x[2] = envp;
+#elif ARCH(RISCV64)
+    regs.x[9] = argv_entries.size();
+    regs.x[10] = argv;
+    regs.x[11] = envp;
 #else
 #    error Unknown architecture
 #endif
@@ -198,11 +200,15 @@ static ErrorOr<RequiredLoadRange> get_required_load_range(OpenFileDescription& p
             range.end = region_end;
     });
 
+    // If there's nothing to load, there's nothing to execute
+    if (range.start == range.end)
+        return EINVAL;
+
     VERIFY(range.end > range.start);
     return range;
-};
+}
 
-static ErrorOr<FlatPtr> get_load_offset(const ElfW(Ehdr) & main_program_header, OpenFileDescription& main_program_description, OpenFileDescription* interpreter_description)
+static ErrorOr<FlatPtr> get_load_offset(Elf_Ehdr const& main_program_header, OpenFileDescription& main_program_description, OpenFileDescription* interpreter_description)
 {
     constexpr FlatPtr load_range_start = 0x08000000;
     constexpr FlatPtr load_range_size = 65536 * PAGE_SIZE; // 2**16 * PAGE_SIZE = 256MB
@@ -251,18 +257,13 @@ static ErrorOr<FlatPtr> get_load_offset(const ElfW(Ehdr) & main_program_header, 
     return random_load_offset_in_range(selected_range.start, selected_range.end - selected_range.start);
 }
 
-enum class ShouldAllocateTls {
-    No,
-    Yes,
-};
-
 enum class ShouldAllowSyscalls {
     No,
     Yes,
 };
 
-static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> new_space, OpenFileDescription& object_description,
-    FlatPtr load_offset, ShouldAllocateTls should_allocate_tls, ShouldAllowSyscalls should_allow_syscalls)
+static ErrorOr<LoadResult> load_elf_object(Memory::AddressSpace& new_space, OpenFileDescription& object_description,
+    FlatPtr load_offset, ShouldAllowSyscalls should_allow_syscalls, Optional<size_t> minimum_stack_size = {})
 {
     auto& inode = *(object_description.inode());
     auto vmobject = TRY(Memory::SharedInodeVMObject::try_create_with_inode(inode));
@@ -281,34 +282,16 @@ static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> n
     if (!elf_image.is_valid())
         return ENOEXEC;
 
-    Memory::Region* master_tls_region { nullptr };
-    size_t master_tls_size = 0;
-    size_t master_tls_alignment = 0;
     FlatPtr load_base_address = 0;
-    size_t stack_size = 0;
+    size_t stack_size = Thread::default_userspace_stack_size;
+
+    if (minimum_stack_size.has_value() && minimum_stack_size.value() > stack_size)
+        stack_size = minimum_stack_size.value();
 
     auto elf_name = TRY(object_description.pseudo_path());
     VERIFY(!Processor::in_critical());
 
-    Memory::MemoryManager::enter_address_space(*new_space);
-
-    auto load_tls_section = [&](auto& program_header) -> ErrorOr<void> {
-        VERIFY(should_allocate_tls == ShouldAllocateTls::Yes);
-        VERIFY(program_header.size_in_memory());
-
-        if (!elf_image.is_within_image(program_header.raw_data(), program_header.size_in_image())) {
-            dbgln("Shenanigans! ELF PT_TLS header sneaks outside of executable.");
-            return ENOEXEC;
-        }
-
-        auto region_name = TRY(KString::formatted("{} (master-tls)", elf_name));
-        master_tls_region = TRY(new_space->allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, program_header.size_in_memory(), PAGE_SIZE, region_name->view(), PROT_READ | PROT_WRITE, AllocationStrategy::Reserve));
-        master_tls_size = program_header.size_in_memory();
-        master_tls_alignment = program_header.alignment();
-
-        TRY(copy_to_user(master_tls_region->vaddr().as_ptr(), program_header.raw_data(), program_header.size_in_image()));
-        return {};
-    };
+    Memory::MemoryManager::enter_address_space(new_space);
 
     auto load_writable_section = [&](auto& program_header) -> ErrorOr<void> {
         // Writable section: create a copy in memory.
@@ -330,7 +313,7 @@ static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> n
         size_t rounded_range_end = TRY(Memory::page_round_up(program_header.vaddr().offset(load_offset).offset(program_header.size_in_memory()).get()));
         auto range_end = VirtualAddress { rounded_range_end };
 
-        auto region = TRY(new_space->allocate_region(Memory::RandomizeVirtualAddress::Yes, range_base, range_end.get() - range_base.get(), PAGE_SIZE, region_name->view(), prot, AllocationStrategy::Reserve));
+        auto region = TRY(new_space.allocate_region(Memory::RandomizeVirtualAddress::Yes, range_base, range_end.get() - range_base.get(), PAGE_SIZE, region_name->view(), prot, AllocationStrategy::Reserve));
 
         // It's not always the case with PIE executables (and very well shouldn't be) that the
         // virtual address in the program header matches the one we end up giving the process.
@@ -365,7 +348,9 @@ static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> n
         auto range_base = VirtualAddress { Memory::page_round_down(program_header.vaddr().offset(load_offset).get()) };
         size_t rounded_range_end = TRY(Memory::page_round_up(program_header.vaddr().offset(load_offset).offset(program_header.size_in_memory()).get()));
         auto range_end = VirtualAddress { rounded_range_end };
-        auto region = TRY(new_space->allocate_region_with_vmobject(Memory::RandomizeVirtualAddress::Yes, range_base, range_end.get() - range_base.get(), program_header.alignment(), *vmobject, program_header.offset(), elf_name->view(), prot, true));
+        auto region = TRY(new_space.allocate_region_with_vmobject(Memory::RandomizeVirtualAddress::Yes, range_base, range_end.get() - range_base.get(), program_header.alignment(), *vmobject, program_header.offset(), elf_name->view(), prot, true));
+        if (program_header.is_executable())
+            region->set_initially_loaded_executable_segment();
 
         if (should_allow_syscalls == ShouldAllowSyscalls::Yes)
             region->set_syscall_region(true);
@@ -375,15 +360,8 @@ static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> n
     };
 
     auto load_elf_program_header = [&](auto& program_header) -> ErrorOr<void> {
-        if (program_header.type() == PT_TLS)
-            return load_tls_section(program_header);
-
         if (program_header.type() == PT_LOAD)
             return load_section(program_header);
-
-        if (program_header.type() == PT_GNU_STACK) {
-            stack_size = program_header.size_in_memory();
-        }
 
         // NOTE: We ignore other program header types.
         return {};
@@ -398,58 +376,32 @@ static ErrorOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> n
         return result;
     }());
 
-    if (stack_size == 0) {
-        stack_size = Thread::default_userspace_stack_size;
-    }
-
     if (!elf_image.entry().offset(load_offset).get()) {
         dbgln("do_exec: Failure loading program, entry pointer is invalid! {})", elf_image.entry().offset(load_offset));
         return ENOEXEC;
     }
 
-    auto* stack_region = TRY(new_space->allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, stack_size, PAGE_SIZE, "Stack (Main thread)"sv, PROT_READ | PROT_WRITE, AllocationStrategy::Reserve));
+    auto* stack_region = TRY(new_space.allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, stack_size, PAGE_SIZE, "Stack (Main thread)"sv, PROT_READ | PROT_WRITE, AllocationStrategy::Reserve));
     stack_region->set_stack(true);
 
     return LoadResult {
-        move(new_space),
         load_base_address,
         elf_image.entry().offset(load_offset).get(),
         executable_size,
-        TRY(AK::try_make_weak_ptr_if_nonnull(master_tls_region)),
-        master_tls_size,
-        master_tls_alignment,
         TRY(stack_region->try_make_weak_ptr())
     };
 }
 
 ErrorOr<LoadResult>
-Process::load(NonnullRefPtr<OpenFileDescription> main_program_description,
-    RefPtr<OpenFileDescription> interpreter_description, const ElfW(Ehdr) & main_program_header)
+Process::load(Memory::AddressSpace& new_space, NonnullRefPtr<OpenFileDescription> main_program_description,
+    RefPtr<OpenFileDescription> interpreter_description, Elf_Ehdr const& main_program_header, Optional<size_t> minimum_stack_size)
 {
-    auto new_space = TRY(Memory::AddressSpace::try_create(nullptr));
-
-    ScopeGuard space_guard([&]() {
-        Memory::MemoryManager::enter_process_address_space(*this);
-    });
-
     auto load_offset = TRY(get_load_offset(main_program_header, main_program_description, interpreter_description));
 
-    if (interpreter_description.is_null()) {
-        auto load_result = TRY(load_elf_object(move(new_space), main_program_description, load_offset, ShouldAllocateTls::Yes, ShouldAllowSyscalls::No));
-        m_master_tls_region = load_result.tls_region;
-        m_master_tls_size = load_result.tls_size;
-        m_master_tls_alignment = load_result.tls_alignment;
-        return load_result;
-    }
+    if (interpreter_description.is_null())
+        return TRY(load_elf_object(new_space, main_program_description, load_offset, ShouldAllowSyscalls::No, minimum_stack_size));
 
-    auto interpreter_load_result = TRY(load_elf_object(move(new_space), *interpreter_description, load_offset, ShouldAllocateTls::No, ShouldAllowSyscalls::Yes));
-
-    // TLS allocation will be done in userspace by the loader
-    VERIFY(!interpreter_load_result.tls_region);
-    VERIFY(!interpreter_load_result.tls_alignment);
-    VERIFY(!interpreter_load_result.tls_size);
-
-    return interpreter_load_result;
+    return TRY(load_elf_object(new_space, *interpreter_description, load_offset, ShouldAllowSyscalls::Yes, minimum_stack_size));
 }
 
 void Process::clear_signal_handlers_for_exec()
@@ -472,18 +424,14 @@ void Process::clear_signal_handlers_for_exec()
 }
 
 ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_description, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment,
-    RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, const ElfW(Ehdr) & main_program_header)
+    RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, Elf_Ehdr const& main_program_header, Optional<size_t> minimum_stack_size)
 {
     VERIFY(is_user_process());
     VERIFY(!Processor::in_critical());
     auto main_program_metadata = main_program_description->metadata();
     // NOTE: Don't allow running SUID binaries at all if we are in a jail.
-    TRY(Process::current().jail().with([&](auto const& my_jail) -> ErrorOr<void> {
-        if (my_jail && (main_program_metadata.is_setuid() || main_program_metadata.is_setgid())) {
-            return Error::from_errno(EPERM);
-        }
-        return {};
-    }));
+    if (Process::current().is_jailed() && (main_program_metadata.is_setuid() || main_program_metadata.is_setgid()))
+        return Error::from_errno(EPERM);
 
     // Although we *could* handle a pseudo_path here, trying to execute something that doesn't have
     // a custody (e.g. BlockDevice or RandomDevice) is pretty suspicious anyway.
@@ -493,10 +441,22 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
 
     auto last_part = path->view().find_last_split_view('/');
 
-    auto new_process_name = TRY(KString::try_create(last_part));
-    auto new_main_thread_name = TRY(new_process_name->try_clone());
+    auto allocated_space = TRY(Memory::AddressSpace::try_create(*this, nullptr));
+    OwnPtr<Memory::AddressSpace> old_space;
+    auto& new_space = m_space.with([&](auto& space) -> Memory::AddressSpace& {
+        old_space = move(space);
+        space = move(allocated_space);
+        return *space;
+    });
+    ArmedScopeGuard space_guard([&]() {
+        // If we failed at any point from now on we have to revert back to the old address space
+        m_space.with([&](auto& space) {
+            space = old_space.release_nonnull();
+        });
+        Memory::MemoryManager::enter_process_address_space(*this);
+    });
 
-    auto load_result = TRY(load(main_program_description, interpreter_description, main_program_header));
+    auto load_result = TRY(load(new_space, main_program_description, interpreter_description, main_program_header, minimum_stack_size));
 
     // NOTE: We don't need the interpreter executable description after this point.
     //       We destroy it here to prevent it from getting destroyed when we return from this function.
@@ -505,7 +465,7 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
     bool has_interpreter = interpreter_description;
     interpreter_description = nullptr;
 
-    auto* signal_trampoline_region = TRY(load_result.space->allocate_region_with_vmobject(Memory::RandomizeVirtualAddress::Yes, {}, PAGE_SIZE, PAGE_SIZE, g_signal_trampoline_region->vmobject(), 0, "Signal trampoline"sv, PROT_READ | PROT_EXEC, true));
+    auto* signal_trampoline_region = TRY(new_space.allocate_region_with_vmobject(Memory::RandomizeVirtualAddress::Yes, {}, PAGE_SIZE, PAGE_SIZE, g_signal_trampoline_region->vmobject(), 0, "Signal trampoline"sv, PROT_READ | PROT_EXEC, true));
     signal_trampoline_region->set_syscall_region(true);
 
     // (For dynamically linked executable) Allocate an FD for passing the main executable to the dynamic loader.
@@ -515,7 +475,7 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
 
     auto old_credentials = this->credentials();
     auto new_credentials = old_credentials;
-    auto old_process_attached_jail = m_attached_jail.with([&](auto& jail) -> RefPtr<Jail> { return jail; });
+    auto old_scoped_list = m_scoped_process_list.with([&](auto& list) -> RefPtr<ScopedProcessList> { return list; });
 
     bool executable_is_setid = false;
 
@@ -551,6 +511,7 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
     }
 
     // We commit to the new executable at this point. There is no turning back!
+    space_guard.disarm();
 
     // Prevent other processes from attaching to us with ptrace while we're doing this.
     MutexLocker ptrace_locker(ptrace_lock());
@@ -565,19 +526,15 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
         protected_data.credentials = move(new_credentials);
         protected_data.dumpable = !executable_is_setid;
         protected_data.executable_is_setid = executable_is_setid;
+        protected_data.jailed_until_exec = false;
     });
-
-    // We make sure to enter the new address space before destroying the old one.
-    // This ensures that the process always has a valid page directory.
-    Memory::MemoryManager::enter_address_space(*load_result.space);
-
-    m_space.with([&](auto& space) { space = load_result.space.release_nonnull(); });
 
     m_executable.with([&](auto& executable) { executable = main_program_description->custody(); });
     m_arguments = move(arguments);
-    m_attached_jail.with([&](auto& jail) {
-        jail = old_process_attached_jail;
+    m_scoped_process_list.with([&](auto& list) {
+        list = old_scoped_list;
     });
+
     m_environment = move(environment);
 
     TRY(m_unveil_data.with([&](auto& unveil_data) -> ErrorOr<void> {
@@ -647,8 +604,9 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
     //       and we don't want to deal with faults after this point.
     auto new_userspace_sp = TRY(make_userspace_context_for_main_thread(new_main_thread->regs(), *load_result.stack_region.unsafe_ptr(), m_arguments, m_environment, move(auxv)));
 
-    set_name(move(new_process_name));
-    new_main_thread->set_name(move(new_main_thread_name));
+    // NOTE: The Process and its first thread share the same name.
+    set_name(last_part);
+    new_main_thread->set_name(last_part);
 
     if (wait_for_tracer_at_next_execve()) {
         // Make sure we release the ptrace lock here or the tracer will block forever.
@@ -664,14 +622,14 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
     // and Processor::assume_context() or the next context switch.
     // If we used an InterruptDisabler that calls enable_interrupts() on exit, we might timer tick'd too soon in exec().
     Processor::enter_critical();
-    previous_interrupts_state = processor_interrupts_state();
+    previous_interrupts_state = Processor::interrupts_state();
     Processor::disable_interrupts();
 
     // NOTE: Be careful to not trigger any page faults below!
 
     with_mutable_protected_data([&](auto& protected_data) {
-        protected_data.promises = protected_data.execpromises.load();
-        protected_data.has_promises = protected_data.has_execpromises.load();
+        protected_data.promises = protected_data.execpromises;
+        protected_data.has_promises = protected_data.has_execpromises;
 
         protected_data.execpromises = 0;
         protected_data.has_execpromises = false;
@@ -682,11 +640,6 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
         protected_data.pid = new_main_thread->tid().value();
     });
 
-    auto tsr_result = new_main_thread->make_thread_specific_region({});
-    if (tsr_result.is_error()) {
-        // FIXME: We cannot fail this late. Refactor this so the allocation happens before we commit to the new executable.
-        VERIFY_NOT_REACHED();
-    }
     new_main_thread->reset_fpu_state();
 
     auto& regs = new_main_thread->m_regs;
@@ -727,6 +680,8 @@ static Array<ELF::AuxiliaryValue, auxiliary_vector_size> generate_auxiliary_vect
         { ELF::AuxiliaryValue::HwCap, (long)CPUID(1).edx() },
 #elif ARCH(AARCH64)
         { ELF::AuxiliaryValue::HwCap, (long)0 },
+#elif ARCH(RISCV64)
+        { ELF::AuxiliaryValue::HwCap, (long)0 }, // TODO
 #else
 #    error "Unknown architecture"
 #endif
@@ -746,109 +701,172 @@ static Array<ELF::AuxiliaryValue, auxiliary_vector_size> generate_auxiliary_vect
     } };
 }
 
-static ErrorOr<Vector<NonnullOwnPtr<KString>>> find_shebang_interpreter_for_executable(char const first_page[], size_t nread)
+static bool is_executable_starting_with_shebang(Span<u8> const& preliminary_buffer)
 {
+    return preliminary_buffer.size() > 2 && preliminary_buffer[0] == '#' && preliminary_buffer[1] == '!';
+}
+
+static ErrorOr<Vector<NonnullOwnPtr<KString>>> find_shebang_interpreter_for_executable(Span<u8> const& line_buffer)
+{
+    VERIFY(is_executable_starting_with_shebang(line_buffer));
     int word_start = 2;
     size_t word_length = 0;
-    if (nread > 2 && first_page[0] == '#' && first_page[1] == '!') {
-        Vector<NonnullOwnPtr<KString>> interpreter_words;
+    Vector<NonnullOwnPtr<KString>> interpreter_words;
 
-        for (size_t i = 2; i < nread; ++i) {
-            if (first_page[i] == '\n') {
-                break;
-            }
+    bool found_line_break = false;
 
-            if (first_page[i] != ' ') {
-                ++word_length;
-            }
-
-            if (first_page[i] == ' ') {
-                if (word_length > 0) {
-                    auto word = TRY(KString::try_create(StringView { &first_page[word_start], word_length }));
-                    TRY(interpreter_words.try_append(move(word)));
-                }
-                word_length = 0;
-                word_start = i + 1;
-            }
+    for (size_t i = 2; i < line_buffer.size(); ++i) {
+        if (line_buffer[i] == '\n') {
+            found_line_break = true;
+            break;
         }
 
-        if (word_length > 0) {
-            auto word = TRY(KString::try_create(StringView { &first_page[word_start], word_length }));
-            TRY(interpreter_words.try_append(move(word)));
+        if (line_buffer[i] != ' ') {
+            ++word_length;
         }
 
-        if (!interpreter_words.is_empty())
-            return interpreter_words;
+        if (line_buffer[i] == ' ') {
+            if (word_length > 0) {
+                auto word = TRY(KString::try_create(StringView { line_buffer.slice(word_start, word_length) }));
+                TRY(interpreter_words.try_append(move(word)));
+            }
+            word_length = 0;
+            word_start = i + 1;
+        }
     }
+
+    // This is an indication that the provided buffer has not sufficient data
+    // within it to find the entire interpreter path.
+    if (!found_line_break)
+        return ENOBUFS;
+
+    if (word_length > 0) {
+        auto word = TRY(KString::try_create(StringView { line_buffer.slice(word_start, word_length) }));
+        TRY(interpreter_words.try_append(move(word)));
+    }
+
+    if (!interpreter_words.is_empty())
+        return interpreter_words;
 
     return ENOEXEC;
 }
 
-ErrorOr<RefPtr<OpenFileDescription>> Process::find_elf_interpreter_for_executable(StringView path, ElfW(Ehdr) const& main_executable_header, size_t main_executable_header_size, size_t file_size)
+static ErrorOr<FixedArray<u8>> read_elf_buffer_including_program_headers(OpenFileDescription& elf_file, Elf_Ehdr const& main_executable_header)
 {
-    // Not using ErrorOr here because we'll want to do the same thing in userspace in the RTLD
-    StringBuilder interpreter_path_builder;
-    if (!TRY(ELF::validate_program_headers(main_executable_header, file_size, { &main_executable_header, main_executable_header_size }, &interpreter_path_builder))) {
+    auto program_header_offset = static_cast<size_t>(main_executable_header.e_phoff);
+    auto program_header_entry_size = static_cast<size_t>(main_executable_header.e_phentsize);
+    auto program_header_entries_count = static_cast<size_t>(main_executable_header.e_phnum);
+
+    if (Checked<size_t>::multiplication_would_overflow(program_header_entry_size, program_header_entries_count))
+        return EOVERFLOW;
+
+    if (Checked<size_t>::addition_would_overflow(program_header_offset, (program_header_entry_size * program_header_entries_count)))
+        return EOVERFLOW;
+
+    auto last_needed_byte_offset_on_program_header_list = program_header_offset + (program_header_entry_size * program_header_entries_count);
+    if (last_needed_byte_offset_on_program_header_list < sizeof(Elf_Ehdr))
+        return EINVAL;
+
+    auto elf_buffer = TRY(FixedArray<u8>::create(last_needed_byte_offset_on_program_header_list));
+    auto elf_read_buffer = UserOrKernelBuffer::for_kernel_buffer(elf_buffer.data());
+    {
+        auto nread = TRY(elf_file.read(elf_read_buffer, 0, elf_buffer.span().size()));
+        if (nread < elf_buffer.span().size())
+            return EIO;
+    }
+    return elf_buffer;
+}
+
+ErrorOr<RefPtr<OpenFileDescription>> Process::find_elf_interpreter_for_executable(OpenFileDescription& elf_file, StringView path, Elf_Ehdr const& main_executable_header, size_t file_size, Optional<size_t>& minimum_stack_size)
+{
+    // We can't exec an ET_REL, as that's just an object file from the compiler,
+    // and we can't exec an ET_CORE as it's just a coredump.
+    // The only allowed ELF files on execve are executables or shared object files
+    // which are dynamically linked programs (or static-pie programs like the dynamic loader).
+    if (main_executable_header.e_type != ET_EXEC && main_executable_header.e_type != ET_DYN)
+        return ENOEXEC;
+
+    auto main_program_with_program_headers_buffer = TRY(read_elf_buffer_including_program_headers(elf_file, main_executable_header));
+
+    Optional<size_t> main_executable_requested_stack_size {};
+    Optional<Elf_Phdr> maybe_interpreter_path_program_header {};
+    if (!ELF::validate_program_headers(main_executable_header, file_size, main_program_with_program_headers_buffer.span(), maybe_interpreter_path_program_header, &main_executable_requested_stack_size)) {
         dbgln("exec({}): File has invalid ELF Program headers", path);
         return ENOEXEC;
     }
-    auto interpreter_path = interpreter_path_builder.string_view();
 
-    if (!interpreter_path.is_empty()) {
-        dbgln_if(EXEC_DEBUG, "exec({}): Using program interpreter {}", path, interpreter_path);
-        auto interpreter_description = TRY(VirtualFileSystem::the().open(credentials(), interpreter_path, O_EXEC, 0, current_directory()));
-        auto interp_metadata = interpreter_description->metadata();
+    if (main_executable_requested_stack_size.has_value() && (!minimum_stack_size.has_value() || *minimum_stack_size < *main_executable_requested_stack_size))
+        minimum_stack_size = main_executable_requested_stack_size;
 
-        VERIFY(interpreter_description->inode());
+    // The ELF file might not have any INTERP header, which in such
+    // case we can't do anything and therefore we should just continue
+    // without loading any interpreter.
+    if (!maybe_interpreter_path_program_header.has_value())
+        return nullptr;
 
-        // Validate the program interpreter as a valid elf binary.
-        // If your program interpreter is a #! file or something, it's time to stop playing games :)
-        if (interp_metadata.size < (int)sizeof(ElfW(Ehdr)))
-            return ENOEXEC;
+    auto interpreter_path_program_header = maybe_interpreter_path_program_header.release_value();
 
-        char first_page[PAGE_SIZE] = {};
-        auto first_page_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&first_page);
-        auto nread = TRY(interpreter_description->read(first_page_buffer, sizeof(first_page)));
-
-        if (nread < sizeof(ElfW(Ehdr)))
-            return ENOEXEC;
-
-        auto* elf_header = (ElfW(Ehdr)*)first_page;
-        if (!ELF::validate_elf_header(*elf_header, interp_metadata.size)) {
-            dbgln("exec({}): Interpreter ({}) has invalid ELF header", path, interpreter_path);
-            return ENOEXEC;
-        }
-
-        // Not using ErrorOr here because we'll want to do the same thing in userspace in the RTLD
-        StringBuilder interpreter_interpreter_path_builder;
-        if (!TRY(ELF::validate_program_headers(*elf_header, interp_metadata.size, { first_page, nread }, &interpreter_interpreter_path_builder))) {
-            dbgln("exec({}): Interpreter ({}) has invalid ELF Program headers", path, interpreter_path);
-            return ENOEXEC;
-        }
-        auto interpreter_interpreter_path = interpreter_interpreter_path_builder.string_view();
-
-        if (!interpreter_interpreter_path.is_empty()) {
-            dbgln("exec({}): Interpreter ({}) has its own interpreter ({})! No thank you!", path, interpreter_path, interpreter_interpreter_path);
-            return ELOOP;
-        }
-
-        return interpreter_description;
+    auto buffer = TRY(KBuffer::try_create_with_size("ELF interpreter program path"sv, static_cast<size_t>(interpreter_path_program_header.p_filesz) - 1));
+    auto buffer_as_kernel_buffer = buffer->as_kernel_buffer();
+    {
+        auto nread = TRY(elf_file.read(buffer_as_kernel_buffer, static_cast<size_t>(interpreter_path_program_header.p_offset), buffer->size()));
+        if (nread < buffer->size())
+            return EIO;
     }
 
-    if (main_executable_header.e_type == ET_REL) {
-        // We can't exec an ET_REL, that's just an object file from the compiler
-        return ENOEXEC;
-    }
-    if (main_executable_header.e_type == ET_DYN) {
-        // If it's ET_DYN with no PT_INTERP, then it's a dynamic executable responsible
-        // for its own relocation (i.e. it's /usr/lib/Loader.so)
-        if (path != "/usr/lib/Loader.so")
-            dbgln("exec({}): WARNING - Dynamic ELF executable without a PT_INTERP header, and isn't /usr/lib/Loader.so", path);
+    auto interpreter_path = StringView(buffer->bytes());
+    if (interpreter_path.is_empty()) {
+        dbgln("exec({}): WARNING: File has an INTERP program header, but the interpreter path is empty", path);
         return nullptr;
     }
 
-    // No interpreter, but, path refers to a valid elf image
-    return nullptr;
+    dbgln_if(EXEC_DEBUG, "exec({}): Using program interpreter {}", path, interpreter_path);
+    auto interpreter_description = TRY(VirtualFileSystem::open(vfs_root_context(), credentials(), interpreter_path, O_EXEC, 0, current_directory()));
+    auto interp_metadata = interpreter_description->metadata();
+
+    if (!interp_metadata.is_regular_file())
+        return ENOEXEC;
+
+    VERIFY(interpreter_description->inode());
+
+    // The program interpreter should be at least the size of an ELF header
+    // so it's easy to check this and fail accordingly.
+    if (interp_metadata.size < static_cast<int>(sizeof(Elf_Ehdr)))
+        return ENOEXEC;
+
+    static_assert(sizeof(Elf_Ehdr) < PAGE_SIZE);
+    auto elf_interpreter_buffer = Array<u8, sizeof(Elf_Ehdr)>::from_repeated_value(0);
+    auto elf_interpreter_read_buffer = UserOrKernelBuffer::for_kernel_buffer(elf_interpreter_buffer.data());
+    auto nread = TRY(interpreter_description->read(elf_interpreter_read_buffer, elf_interpreter_buffer.span().size()));
+    if (nread < sizeof(Elf_Ehdr))
+        return ENOEXEC;
+
+    auto const* interpreter_executable_header = bit_cast<Elf_Ehdr const*>(elf_interpreter_buffer.data());
+    if (!ELF::validate_elf_header(*interpreter_executable_header, interp_metadata.size)) {
+        dbgln("exec({}): Interpreter ({}) has invalid ELF header", path, interpreter_path);
+        return ENOEXEC;
+    }
+
+    auto elf_interpreter_with_program_headers_buffer = TRY(read_elf_buffer_including_program_headers(*interpreter_description, *interpreter_executable_header));
+
+    Optional<size_t> interpreter_requested_stack_size {};
+    Optional<Elf_Phdr> maybe_interpreter_interpreter_path_program_header {};
+    if (!ELF::validate_program_headers(*interpreter_executable_header, interp_metadata.size, elf_interpreter_with_program_headers_buffer.span(), maybe_interpreter_interpreter_path_program_header, &interpreter_requested_stack_size)) {
+        dbgln("exec({}): Interpreter ({}) has invalid ELF Program headers", path, interpreter_path);
+        return ENOEXEC;
+    }
+
+    // NOTE: This ELF file should not have any INTERP header, because it's already the
+    // interpreter of the previously loaded ELF file!
+    if (maybe_interpreter_interpreter_path_program_header.has_value()) {
+        dbgln("exec({}): Interpreter ({}) has its own interpreter! No thank you!", path, interpreter_path);
+        return ELOOP;
+    }
+
+    if (interpreter_requested_stack_size.has_value() && (!minimum_stack_size.has_value() || *minimum_stack_size < *interpreter_requested_stack_size))
+        minimum_stack_size = interpreter_requested_stack_size;
+
+    return interpreter_description;
 }
 
 ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, int recursion_depth)
@@ -865,7 +883,7 @@ ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KS
     //        * ET_EXEC binary that just gets loaded
     //        * ET_DYN binary that requires a program interpreter
     //
-    auto description = TRY(VirtualFileSystem::the().open(credentials(), path->view(), O_EXEC, 0, current_directory()));
+    auto description = TRY(VirtualFileSystem::open(vfs_root_context(), credentials(), path->view(), O_EXEC, 0, current_directory()));
     auto metadata = description->metadata();
 
     if (!metadata.is_regular_file())
@@ -877,15 +895,21 @@ ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KS
 
     VERIFY(description->inode());
 
-    // Read the first page of the program into memory so we can validate the binfmt of it
-    char first_page[PAGE_SIZE];
-    auto first_page_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&first_page);
-    auto nread = TRY(description->read(first_page_buffer, sizeof(first_page)));
+    // Read just the size of ELF header of the program into memory so we can start parsing it.
+    // The size of a ELF header should suffice to find the shebang sign (known as #! sign) if the file has it
+    // in the start.
+    auto preliminary_buffer = Array<u8, sizeof(Elf_Ehdr)>::from_repeated_value(0);
+    auto preliminary_read_buffer = UserOrKernelBuffer::for_kernel_buffer(preliminary_buffer.data());
+    auto nread = TRY(description->read(preliminary_read_buffer, 0, preliminary_buffer.span().size()));
 
     // 1) #! interpreted file
-    auto shebang_result = find_shebang_interpreter_for_executable(first_page, nread);
-    if (!shebang_result.is_error()) {
-        auto shebang_words = shebang_result.release_value();
+    if (is_executable_starting_with_shebang(preliminary_buffer)) {
+        // FIXME: PAGE_SIZE seems like enough for specifying an interpreter for now.
+        // We might need to re-evaluate this but to avoid further allocations, this is how it is for now.
+        auto shebang_line_buffer = Array<u8, PAGE_SIZE>::from_repeated_value(0);
+        auto shebang_line_read_buffer = UserOrKernelBuffer::for_kernel_buffer(shebang_line_buffer.data());
+        TRY(description->read(shebang_line_read_buffer, 0, shebang_line_buffer.span().size()));
+        auto shebang_words = TRY(find_shebang_interpreter_for_executable(shebang_line_buffer));
         auto shebang_path = TRY(shebang_words.first()->try_clone());
         arguments[0] = move(path);
         TRY(arguments.try_prepend(move(shebang_words)));
@@ -894,17 +918,18 @@ ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KS
 
     // #2) ELF32 for i386
 
-    if (nread < sizeof(ElfW(Ehdr)))
+    if (nread < sizeof(Elf_Ehdr))
         return ENOEXEC;
-    auto const* main_program_header = (ElfW(Ehdr)*)first_page;
+    auto const* main_program_header = bit_cast<Elf_Ehdr const*>(preliminary_buffer.data());
 
     if (!ELF::validate_elf_header(*main_program_header, metadata.size)) {
         dbgln("exec({}): File has invalid ELF header", path);
         return ENOEXEC;
     }
 
-    auto interpreter_description = TRY(find_elf_interpreter_for_executable(path->view(), *main_program_header, nread, metadata.size));
-    return do_exec(move(description), move(arguments), move(environment), move(interpreter_description), new_main_thread, previous_interrupts_state, *main_program_header);
+    Optional<size_t> minimum_stack_size {};
+    auto interpreter_description = TRY(find_elf_interpreter_for_executable(*description, path->view(), *main_program_header, metadata.size, minimum_stack_size));
+    return do_exec(move(description), move(arguments), move(environment), move(interpreter_description), new_main_thread, previous_interrupts_state, *main_program_header, minimum_stack_size);
 }
 
 ErrorOr<FlatPtr> Process::sys$execve(Userspace<Syscall::SC_execve_params const*> user_params)
@@ -974,21 +999,14 @@ ErrorOr<FlatPtr> Process::sys$execve(Userspace<Syscall::SC_execve_params const*>
         VERIFY(Processor::in_critical() == 1);
         g_scheduler_lock.lock();
         current_thread->set_state(Thread::State::Running);
-#if ARCH(X86_64)
-        FlatPtr prev_flags = previous_interrupts_state == InterruptsState::Enabled ? 0x200 : 0;
-        Processor::assume_context(*current_thread, prev_flags);
+        Processor::assume_context(*current_thread, previous_interrupts_state);
         VERIFY_NOT_REACHED();
-#elif ARCH(AARCH64)
-        TODO_AARCH64();
-#else
-#    error Unknown architecture
-#endif
     }
 
     // NOTE: This code path is taken in the non-syscall case, i.e when the kernel spawns
     //       a userspace process directly (such as /bin/SystemServer on startup)
 
-    restore_processor_interrupts_state(previous_interrupts_state);
+    Processor::restore_interrupts_state(previous_interrupts_state);
     Processor::leave_critical();
     return 0;
 }

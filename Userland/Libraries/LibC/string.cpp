@@ -72,6 +72,8 @@ char* strdup(char const* str)
 {
     size_t len = strlen(str);
     char* new_str = (char*)malloc(len + 1);
+    if (!new_str)
+        return nullptr;
     memcpy(new_str, str, len);
     new_str[len] = '\0';
     return new_str;
@@ -82,6 +84,8 @@ char* strndup(char const* str, size_t maxlen)
 {
     size_t len = strnlen(str, maxlen);
     char* new_str = (char*)malloc(len + 1);
+    if (!new_str)
+        return nullptr;
     memcpy(new_str, str, len);
     new_str[len] = 0;
     return new_str;
@@ -122,6 +126,8 @@ int memcmp(void const* v1, void const* v2, size_t n)
     return 0;
 }
 
+// Not in POSIX, originated in BSD
+// https://man.openbsd.org/timingsafe_memcmp.3
 int timingsafe_memcmp(void const* b1, void const* b2, size_t len)
 {
     return AK::timing_safe_compare(b1, b2, len) ? 1 : 0;
@@ -145,6 +151,19 @@ void* memcpy(void* dest_ptr, void const* src_ptr, size_t n)
 #endif
 }
 
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/memccpy.html
+void* memccpy(void* dest_ptr, void const* src_ptr, int c, size_t n)
+{
+    u8* pd = static_cast<u8*>(dest_ptr);
+    u8 const* ps = static_cast<u8 const*>(src_ptr);
+    for (; n--; pd++, ps++) {
+        *pd = *ps;
+        if (*pd == static_cast<u8>(c))
+            return pd + 1;
+    }
+    return nullptr;
+}
+
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/memset.html
 // For x86-64, an optimized ASM implementation is found in ./arch/x86_64/memset.S
 #if ARCH(X86_64)
@@ -161,6 +180,8 @@ void* memset(void* dest_ptr, int c, size_t n)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/memmove.html
 void* memmove(void* dest, void const* src, size_t n)
 {
+    if (dest < src)
+        return memcpy(dest, src, n);
     if (((FlatPtr)dest - (FlatPtr)src) >= n)
         return memcpy(dest, src, n);
 
@@ -171,18 +192,31 @@ void* memmove(void* dest, void const* src, size_t n)
     return dest;
 }
 
-void const* memmem(void const* haystack, size_t haystack_length, void const* needle, size_t needle_length)
+// https://linux.die.net/man/3/memmem (GNU extension)
+void* memmem(void const* haystack, size_t haystack_length, void const* needle, size_t needle_length)
 {
-    return AK::memmem(haystack, haystack_length, needle, needle_length);
+    return const_cast<void*>(AK::memmem(haystack, haystack_length, needle, needle_length));
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/strcpy.html
 char* strcpy(char* dest, char const* src)
 {
     char* original_dest = dest;
-    while ((*dest++ = *src++) != '\0')
-        ;
+    while ((*dest = *src) != '\0') {
+        dest++;
+        src++;
+    }
     return original_dest;
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/stpcpy.html
+char* stpcpy(char* dest, char const* src)
+{
+    while ((*dest = *src) != '\0') {
+        dest++;
+        src++;
+    }
+    return dest;
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/strncpy.html
@@ -196,6 +230,8 @@ char* strncpy(char* dest, char const* src, size_t n)
     return dest;
 }
 
+// Not in POSIX, originated in BSD but also supported on Linux.
+// https://man.openbsd.org/strlcpy.3
 size_t strlcpy(char* dest, char const* src, size_t n)
 {
     size_t i;
@@ -227,6 +263,7 @@ char* index(char const* str, int c)
     return strchr(str, c);
 }
 
+// https://linux.die.net/man/3/strchrnul (GNU extension)
 char* strchrnul(char const* str, int c)
 {
     char ch = c;
@@ -330,7 +367,7 @@ char* strerror(int errnum)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/strsignal.html
 char* strsignal(int signum)
 {
-    if (signum >= NSIG) {
+    if (signum <= 0 || signum >= NSIG || !sys_siglist[signum]) {
         dbgln("strsignal() missing string for signum={}", signum);
         return const_cast<char*>("Unknown signal");
     }
@@ -480,6 +517,8 @@ char* strsep(char** str, char const* delim)
     return begin;
 }
 
+// Not in POSIX, originated in BSD but also supported on Linux.
+// https://man.openbsd.org/explicit_bzero.3
 void explicit_bzero(void* ptr, size_t size)
 {
     secure_zero(ptr, size);

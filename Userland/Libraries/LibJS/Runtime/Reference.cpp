@@ -40,7 +40,7 @@ ThrowCompletionOr<void> Reference::put_value(VM& vm, Value value)
     // 5. If IsPropertyReference(V) is true, then
     if (is_property_reference()) {
         // a. Let baseObj be ? ToObject(V.[[Base]]).
-        auto* base_obj = TRY(m_base_value.to_object(vm));
+        auto base_obj = TRY(m_base_value.to_object(vm));
 
         // b. If IsPrivateReference(V) is true, then
         if (is_private_reference()) {
@@ -53,7 +53,7 @@ ThrowCompletionOr<void> Reference::put_value(VM& vm, Value value)
 
         // d. If succeeded is false and V.[[Strict]] is true, throw a TypeError exception.
         if (!succeeded && m_strict)
-            return vm.throw_completion<TypeError>(ErrorType::ReferenceNullishSetProperty, m_name, TRY_OR_THROW_OOM(vm, m_base_value.to_string_without_side_effects()));
+            return vm.throw_completion<TypeError>(ErrorType::ReferenceNullishSetProperty, m_name, m_base_value.to_string_without_side_effects());
 
         // e. Return unused.
         return {};
@@ -67,7 +67,7 @@ ThrowCompletionOr<void> Reference::put_value(VM& vm, Value value)
     VERIFY(m_base_environment);
 
     // c. Return ? base.SetMutableBinding(V.[[ReferencedName]], W, V.[[Strict]]) (see 9.1).
-    if (m_environment_coordinate.has_value() && m_environment_coordinate->index != EnvironmentCoordinate::global_marker)
+    if (m_environment_coordinate.has_value())
         return static_cast<DeclarativeEnvironment*>(m_base_environment)->set_mutable_binding_direct(vm, m_environment_coordinate->index, value, m_strict);
     else
         return m_base_environment->set_mutable_binding(vm, m_name.as_string(), value, m_strict);
@@ -105,14 +105,14 @@ ThrowCompletionOr<Value> Reference::get_value(VM& vm) const
             // as things currently stand this does the "wrong thing" but
             // the error is unobservable
 
-            auto* base_obj = TRY(m_base_value.to_object(vm));
+            auto base_obj = TRY(m_base_value.to_object(vm));
 
             // i. Return ? PrivateGet(baseObj, V.[[ReferencedName]]).
             return base_obj->private_get(m_private_name);
         }
 
         // OPTIMIZATION: For various primitives we can avoid actually creating a new object for them.
-        Object* base_obj = nullptr;
+        GCPtr<Object> base_obj;
         if (m_base_value.is_string()) {
             auto string_value = TRY(m_base_value.as_string().get(vm, m_name));
             if (string_value.has_value())
@@ -122,6 +122,10 @@ ThrowCompletionOr<Value> Reference::get_value(VM& vm) const
             base_obj = realm.intrinsics().number_prototype();
         else if (m_base_value.is_boolean())
             base_obj = realm.intrinsics().boolean_prototype();
+        else if (m_base_value.is_bigint())
+            base_obj = realm.intrinsics().bigint_prototype();
+        else if (m_base_value.is_symbol())
+            base_obj = realm.intrinsics().symbol_prototype();
         else
             base_obj = TRY(m_base_value.to_object(vm));
 
@@ -137,8 +141,8 @@ ThrowCompletionOr<Value> Reference::get_value(VM& vm) const
     VERIFY(m_base_environment);
 
     // c. Return ? base.GetBindingValue(V.[[ReferencedName]], V.[[Strict]]) (see 9.1).
-    if (m_environment_coordinate.has_value() && m_environment_coordinate->index != EnvironmentCoordinate::global_marker)
-        return static_cast<DeclarativeEnvironment*>(m_base_environment)->get_binding_value_direct(vm, m_environment_coordinate->index, m_strict);
+    if (m_environment_coordinate.has_value())
+        return static_cast<DeclarativeEnvironment*>(m_base_environment)->get_binding_value_direct(vm, m_environment_coordinate->index);
     return m_base_environment->get_binding_value(vm, m_name.as_string(), m_strict);
 }
 
@@ -170,15 +174,15 @@ ThrowCompletionOr<bool> Reference::delete_(VM& vm)
         if (is_super_reference())
             return vm.throw_completion<ReferenceError>(ErrorType::UnsupportedDeleteSuperProperty);
 
-        // c. Let baseObj be ! ToObject(ref.[[Base]]).
-        auto* base_obj = MUST(m_base_value.to_object(vm));
+        // c. Let baseObj be ? ToObject(ref.[[Base]]).
+        auto base_obj = TRY(m_base_value.to_object(vm));
 
         // d. Let deleteStatus be ? baseObj.[[Delete]](ref.[[ReferencedName]]).
         bool delete_status = TRY(base_obj->internal_delete(m_name));
 
         // e. If deleteStatus is false and ref.[[Strict]] is true, throw a TypeError exception.
         if (!delete_status && m_strict)
-            return vm.throw_completion<TypeError>(ErrorType::ReferenceNullishDeleteProperty, m_name, TRY_OR_THROW_OOM(vm, m_base_value.to_string_without_side_effects()));
+            return vm.throw_completion<TypeError>(ErrorType::ReferenceNullishDeleteProperty, m_name, m_base_value.to_string_without_side_effects());
 
         // f. Return deleteStatus.
         return delete_status;
@@ -207,7 +211,7 @@ ThrowCompletionOr<void> Reference::initialize_referenced_binding(VM& vm, Value v
 Reference make_private_reference(VM& vm, Value base_value, DeprecatedFlyString const& private_identifier)
 {
     // 1. Let privEnv be the running execution context's PrivateEnvironment.
-    auto* private_environment = vm.running_execution_context().private_environment;
+    auto private_environment = vm.running_execution_context().private_environment;
 
     // 2. Assert: privEnv is not null.
     VERIFY(private_environment);

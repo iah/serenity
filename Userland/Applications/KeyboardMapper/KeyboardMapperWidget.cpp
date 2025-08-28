@@ -51,11 +51,11 @@ void KeyboardMapperWidget::create_frame()
 
         auto& tmp_button = main_widget.add<KeyButton>();
         tmp_button.set_relative_rect(rect);
-        tmp_button.set_text(String::from_deprecated_string(keys[i].name).release_value_but_fixme_should_propagate_errors());
+        tmp_button.set_text(String::from_byte_string(keys[i].name).release_value_but_fixme_should_propagate_errors());
         tmp_button.set_enabled(keys[i].enabled);
 
         tmp_button.on_click = [this, &tmp_button]() {
-            DeprecatedString value;
+            String value;
             if (GUI::InputBox::show(window(), value, "New Character:"sv, "Select Character"sv) == GUI::InputBox::ExecResult::OK) {
                 int i = m_keys.find_first_index(&tmp_button).value_or(0);
                 VERIFY(i > 0);
@@ -63,13 +63,13 @@ void KeyboardMapperWidget::create_frame()
                 auto index = keys[i].map_index;
                 VERIFY(index > 0);
 
-                tmp_button.set_text(String::from_deprecated_string(value).release_value_but_fixme_should_propagate_errors());
+                tmp_button.set_text(value);
                 u32* map = map_from_name(m_current_map_name);
 
-                if (value.length() == 0)
+                if (value.is_empty())
                     map[index] = '\0'; // Empty string
                 else
-                    map[index] = value[0];
+                    map[index] = *value.code_points().begin();
 
                 window()->set_modified(true);
             }
@@ -88,16 +88,16 @@ void KeyboardMapperWidget::create_frame()
     m_map_group->set_layout<GUI::HorizontalBoxLayout>();
     m_map_group->set_fixed_width(450);
 
-    add_map_radio_button("map"sv, "Default"_short_string);
-    add_map_radio_button("shift_map"sv, "Shift"_short_string);
-    add_map_radio_button("altgr_map"sv, "AltGr"_short_string);
-    add_map_radio_button("alt_map"sv, "Alt"_short_string);
-    add_map_radio_button("shift_altgr_map"sv, "Shift+AltGr"_string.release_value_but_fixme_should_propagate_errors());
+    add_map_radio_button("map"sv, "Default"_string);
+    add_map_radio_button("shift_map"sv, "Shift"_string);
+    add_map_radio_button("altgr_map"sv, "AltGr"_string);
+    add_map_radio_button("alt_map"sv, "Alt"_string);
+    add_map_radio_button("shift_altgr_map"sv, "Shift+AltGr"_string);
 
-    bottom_widget.add_spacer().release_value_but_fixme_should_propagate_errors();
+    bottom_widget.add_spacer();
 }
 
-void KeyboardMapperWidget::add_map_radio_button(const StringView map_name, String button_text)
+void KeyboardMapperWidget::add_map_radio_button(StringView const map_name, String button_text)
 {
     auto& map_radio_button = m_map_group->add<GUI::RadioButton>(button_text);
     map_radio_button.set_name(map_name);
@@ -106,7 +106,7 @@ void KeyboardMapperWidget::add_map_radio_button(const StringView map_name, Strin
     };
 }
 
-u32* KeyboardMapperWidget::map_from_name(const StringView map_name)
+u32* KeyboardMapperWidget::map_from_name(StringView const map_name)
 {
     u32* map;
     if (map_name == "map"sv) {
@@ -125,7 +125,7 @@ u32* KeyboardMapperWidget::map_from_name(const StringView map_name)
     return map;
 }
 
-ErrorOr<void> KeyboardMapperWidget::load_map_from_file(DeprecatedString const& filename)
+ErrorOr<void> KeyboardMapperWidget::load_map_from_file(ByteString const& filename)
 {
     auto character_map = TRY(Keyboard::CharacterMapFile::load_from_file(filename));
 
@@ -147,7 +147,7 @@ ErrorOr<void> KeyboardMapperWidget::load_map_from_system()
 {
     auto character_map = TRY(Keyboard::CharacterMap::fetch_system_map());
 
-    m_filename = DeprecatedString::formatted("/res/keymaps/{}.json", character_map.character_map_name());
+    m_filename = ByteString::formatted("/res/keymaps/{}.json", character_map.character_map_name());
     m_character_map = character_map.character_map_data();
     set_current_map("map");
 
@@ -169,15 +169,15 @@ ErrorOr<void> KeyboardMapperWidget::save_to_file(StringView filename)
 {
     JsonObject map_json;
 
-    auto add_array = [&](DeprecatedString name, u32* values) {
+    auto add_array = [&](ByteString name, u32* values) {
         JsonArray items;
         for (int i = 0; i < 90; i++) {
             StringBuilder sb;
             if (values[i])
                 sb.append_code_point(values[i]);
 
-            JsonValue val(sb.to_deprecated_string());
-            items.append(move(val));
+            JsonValue val(sb.to_byte_string());
+            items.must_append(move(val));
         }
         map_json.set(name, move(items));
     };
@@ -189,9 +189,9 @@ ErrorOr<void> KeyboardMapperWidget::save_to_file(StringView filename)
     add_array("shift_altgr_map", m_character_map.shift_altgr_map);
 
     // Write to file.
-    DeprecatedString file_content = map_json.to_deprecated_string();
+    ByteString file_content = map_json.to_byte_string();
     auto file = TRY(Core::File::open(filename, Core::File::OpenMode::Write));
-    TRY(file->write(file_content.bytes()));
+    TRY(file->write_until_depleted(file_content.bytes()));
     file->close();
 
     window()->set_modified(false);
@@ -203,7 +203,7 @@ ErrorOr<void> KeyboardMapperWidget::save_to_file(StringView filename)
 void KeyboardMapperWidget::keydown_event(GUI::KeyEvent& event)
 {
     for (int i = 0; i < KEY_COUNT; i++) {
-        if (keys[i].scancode != event.scancode())
+        if (keys[i].kernel_map_entry_index != event.map_entry_index())
             continue;
         auto& tmp_button = m_keys.at(i);
         tmp_button->set_pressed(true);
@@ -221,7 +221,7 @@ void KeyboardMapperWidget::keydown_event(GUI::KeyEvent& event)
 void KeyboardMapperWidget::keyup_event(GUI::KeyEvent& event)
 {
     for (int i = 0; i < KEY_COUNT; i++) {
-        if (keys[i].scancode != event.scancode())
+        if (keys[i].kernel_map_entry_index != event.map_entry_index())
             continue;
         auto& tmp_button = m_keys.at(i);
         tmp_button->set_pressed(false);
@@ -234,7 +234,7 @@ void KeyboardMapperWidget::keyup_event(GUI::KeyEvent& event)
     }
 }
 
-void KeyboardMapperWidget::set_current_map(const DeprecatedString current_map)
+void KeyboardMapperWidget::set_current_map(ByteString const current_map)
 {
     m_current_map_name = current_map;
     u32* map = map_from_name(m_current_map_name);
@@ -259,7 +259,7 @@ void KeyboardMapperWidget::update_window_title()
     sb.append(m_filename);
     sb.append("[*] - Keyboard Mapper"sv);
 
-    window()->set_title(sb.to_deprecated_string());
+    window()->set_title(sb.to_byte_string());
 }
 
 void KeyboardMapperWidget::show_error_to_user(Error error)

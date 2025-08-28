@@ -29,15 +29,15 @@ its dependencies, the required files that will be downloaded as well as
 configuration/compilation options, and some other things (see
 [Writing ports scripts](#writing-ports-scripts) for details).
 
-- To install a certain port, `cd` into its directory and run `./package.sh`
-- To install all available ports, run the `build_all.sh` script in this
-  directory. Pass `clean` as first argument to remove old build files
-  beforehand.
-- To reinstall all currently installed ports, run the `build_installed.sh`
-  script in this directory. This is sometimes required when LibC changes, for
-  example. Pass `clean` as first argument to remove old build files beforehand.
+-   To install a certain port, `cd` into its directory and run `./package.sh`
+-   To install all available ports, run the `build_all.sh` script in this
+    directory. Pass `clean` as first argument to remove old build files
+    beforehand.
+-   To reinstall all currently installed ports, run the `build_installed.sh`
+    script in this directory. This is sometimes required when LibC changes, for
+    example. Pass `clean` as first argument to remove old build files beforehand.
 
-Installed ports are being tracked in `Build/x86_64/Root/usr/Ports/packages.db` (a simple text file).
+Installed ports are being tracked in `Build/x86_64/Root/usr/Ports/installed.db` (a simple text file).
 You can delete this file at any time, in fact it must be edited or removed
 when clearing the build directory as port dependencies may not be installed
 again otherwise.
@@ -104,12 +104,12 @@ file.
 Start a development session with guided patch importing.
 This mode has a bunch of nice features:
 
-- Drops the user in a git repository backed by another (local) git repository
-  that acts as the "clean", patched version of the port that is ready to be built
-- The "remote" repository can be pushed to, pulled from and generally anything that
-  you'd want to do with a remote repo.
-- After leaving the dev shell, all patches are updated and the user will be prompted
-  whether they wish to generate a new patch readme file.
+-   Drops the user in a git repository backed by another (local) git repository
+    that acts as the "clean", patched version of the port that is ready to be built
+-   The "remote" repository can be pushed to, pulled from and generally anything that
+    you'd want to do with a remote repo.
+-   After leaving the dev shell, all patches are updated and the user will be prompted
+    whether they wish to generate a new patch readme file.
 
 This mode takes an extra `--no-depends` option, that if given, will cause the dependency
 fetch and build steps to be skipped.
@@ -130,12 +130,16 @@ script simply defines some well-known variables and looks like this:
 
 ```bash
 #!/usr/bin/env -S bash ../.port_include.sh
-
-port="foo"
-version="1.2.3"
-useconfigure="true"
-files="https://example.com/foo-${version}.tar.gz foo-${version}.tar.gz"
-depends=("bar" "baz")
+port='foo'
+version='1.2.3'
+useconfigure='true'
+files=(
+    "https://example.com/foo-${version}.tar.gz#9acd50f9a2af37e471f761c3fe7b8dea5617e51dac802fe6c177b74abf0abb5a"
+)
+depends=(
+    'bar'
+    'baz'
+)
 ```
 
 The script in the shebang, [`.port_include.sh`](./.port_include.sh), is where
@@ -144,36 +148,6 @@ all the magic happens.
 ### Variables
 
 The following variables have special functionality:
-
-#### `auth_import_key`
-
-PGP key to import (from `keyserver.ubuntu.com`) when [`auth_type`](#auth_type)
-is `sig`.
-
-#### `auth_opts`
-
-Options passed to `gpg --verify` when [`auth_type`](#auth_type) is `sig`.
-
-Usually used like this:
-
-```bash
-auth_opts="foo-${version}.tar.xz.asc foo-${version}.tar.xz"
-```
-
-#### `auth_type`
-
-The type of file validation to use, can be one of:
-
-- `sha256`: Use SHA256 hashes defined in [`files`](#files)
-- `sig`: Use PGP signatures (see [`auth_opts`](#auth_opts))
-
-Most ports use `sig` as `.asc` files are widely available.
-
-This _has_ to be specified in order for `lint-ports` to pass.
-
-If no signature or hash is provided by the author of the files, just create the
-hash yourself by calling `sha256sum` on the downloaded file and specifying the
-hash along with the [`files`](#files).
 
 #### `configopts`
 
@@ -208,40 +182,56 @@ installed during the `installdepends` step.
 For example:
 
 ```bash
-depends=("ncurses" "gettext")
+depends=(
+    'gettext'
+    'ncurses'
+)
 ```
 
 #### `files`
 
-A list of external files required by the port, one per line. The format of each
-line is as follows:
+An array of external files required by the port, one per line.
+
+##### Simple downloads
+
+The format of each entry is as follows:
 
 ```text
-URL NAME HASH
+URL#HASH
 ```
 
-Where `URL` is the URL from where the file will be downloaded (using `curl`),
-`NAME` is the output name of the downloaded file, and `HASH` is an optional
-MD5, SHA1, or SHA256 hash that will be used for verification when
-[`auth_type`](#auth_type) is set to either of those hash functions.
+Where `URL` is the URL from where the file will be downloaded (using `curl`)
+and `HASH` is the SHA256 hash that will be used for verification.
 
 For example:
 
-_With PGP signatures_
 ```bash
-files="https://example.com/foo-${version}.tar.xz foo-${version}.tar.xz
-https://example.com/foo-${version}.tar.xz.asc foo-${version}.tar.xz.asc"
-```
-_With a SHA256 hash_
-```bash
-files="https://example.com/foo-${version}.tar.xz foo-${version}.tar.xz 9acd50f9a2af37e471f761c3fe7b8dea5617e51dac802fe6c177b74abf0abb5a"
+files=(
+    "https://example.com/foo-${version}.tar.xz#9acd50f9a2af37e471f761c3fe7b8dea5617e51dac802fe6c177b74abf0abb5a"
+)
 ```
 
 If a file is a compressed tar archive, a gzip compressed file or a zip
 compressed file, it will be extracted.
 
-If a file is an `.asc` file (PGP signature) it will be imported into `gpg`'s
-keyring and can later be used for verification using [`auth_opts`](#auth_opts).
+##### Git repositories
+
+The format of each entry is as follows:
+
+```text
+git+URL#REVISION
+```
+
+Where `URL` is the URL where the repository is located
+and `REVISION` can be any revision qualifier that is accepted by `git fetch`.
+
+For example:
+
+```bash
+files=(
+    'git+https://gn.googlesource.com/gn#fae280eabe5d31accc53100137459ece19a7a295'
+)
+```
 
 #### `icon_file`
 
@@ -295,14 +285,14 @@ filename.
 #### `workdir`
 
 The working directory used for executing other commands via `run` as well as
-cleanup. Usually the directory name of the upacked source archive.
+cleanup. Usually the directory name of the unpacked source archive.
 
 Defaults to `$port-$version`.
 
 ### Functions
 
 The various steps of the port installation process are split into individual
-Bash functions, some of which can be overridden to provide custom behaviour,
+Bash functions, some of which can be overridden to provide custom behavior,
 like this:
 
 ```bash
@@ -314,16 +304,19 @@ build() {
 The following can be overridden, the names should be self-explanatory as they
 mostly match the [available options](#options):
 
-- `pre_fetch`
-- `post_fetch`
-- `pre_configure`
-- `configure`.
-- `build`
-- `install`
-- `post_install`
-- `clean`
-- `clean_dist`
-- `clean_all`
+-   `pre_fetch`
+-   `post_fetch`
+-   `pre_patch`
+-   `pre_configure`
+-   `configure`
+-   `post_configure`
+-   `build`
+-   `pre_install`
+-   `install`
+-   `post_install`
+-   `clean`
+-   `clean_dist`
+-   `clean_all`
 
 A few (non-overridable) util functions are available as well:
 
@@ -348,20 +341,20 @@ run_replace_in_file "s/define FOO 1/undef FOO/" config.h
 
 You can either:
 
-- Add new ports - just get the software to build and add the necessary patches
-  and `package.sh` script
-- Update an existing port: bumping its version, getting functionality to work
-  that wasn't available so far etc. Make sure to update the patches
-  accordingly.
+-   Add new ports - just get the software to build and add the necessary patches
+    and `package.sh` script
+-   Update an existing port: bumping its version, getting functionality to work
+    that wasn't available so far etc. Make sure to update the patches
+    accordingly.
 
 Some videos of Andreas adding new ports can be found on YouTube, they might
 help you understand how this usually works:
 
-- [OS hacking: Porting the Bash shell](https://www.youtube.com/watch?v=QNK8vK-nkkg)
-  (2019-05-20)
-- [OS hacking: Porting DOOM to Serenity](https://www.youtube.com/watch?v=a0P_bB6wjhY)
-  (2019-09-09)
-- [OS hacking: Let's port git to SerenityOS!](https://www.youtube.com/watch?v=1-7VQwWo2Tg)
-  (2020-02-19)
-- [OS hacking: Fixing a resize bug with the vim port](https://www.youtube.com/watch?v=d4uVnawzHdQ)
-  (2020-06-03)
+-   [OS hacking: Porting the Bash shell](https://www.youtube.com/watch?v=QNK8vK-nkkg)
+    (2019-05-20)
+-   [OS hacking: Porting DOOM to Serenity](https://www.youtube.com/watch?v=a0P_bB6wjhY)
+    (2019-09-09)
+-   [OS hacking: Let's port git to SerenityOS!](https://www.youtube.com/watch?v=1-7VQwWo2Tg)
+    (2020-02-19)
+-   [OS hacking: Fixing a resize bug with the vim port](https://www.youtube.com/watch?v=d4uVnawzHdQ)
+    (2020-06-03)

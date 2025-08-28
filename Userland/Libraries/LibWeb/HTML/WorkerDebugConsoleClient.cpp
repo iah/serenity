@@ -4,14 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
 #include <LibJS/Heap/MarkedVector.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Realm.h>
-#include <LibJS/Runtime/ThrowableStringBuilder.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibWeb/HTML/WorkerDebugConsoleClient.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(WorkerDebugConsoleClient);
 
 WorkerDebugConsoleClient::WorkerDebugConsoleClient(JS::Console& console)
     : ConsoleClient(console)
@@ -34,18 +36,18 @@ void WorkerDebugConsoleClient::end_group()
 // 2.3. Printer(logLevel, args[, options]), https://console.spec.whatwg.org/#printer
 JS::ThrowCompletionOr<JS::Value> WorkerDebugConsoleClient::printer(JS::Console::LogLevel log_level, PrinterArguments arguments)
 {
-    auto& vm = m_console.realm().vm();
+    auto& vm = m_console->realm().vm();
 
     auto indent = TRY_OR_THROW_OOM(vm, String::repeated(' ', m_group_stack_depth * 2));
 
     if (log_level == JS::Console::LogLevel::Trace) {
         auto trace = arguments.get<JS::Console::Trace>();
-        JS::ThrowableStringBuilder builder(vm);
+        StringBuilder builder;
         if (!trace.label.is_empty())
-            MUST_OR_THROW_OOM(builder.appendff("{}\033[36;1m{}\033[0m\n", indent, trace.label));
+            builder.appendff("{}\033[36;1m{}\033[0m\n", indent, trace.label);
 
         for (auto& function_name : trace.stack)
-            MUST_OR_THROW_OOM(builder.appendff("{}-> {}\n", indent, function_name));
+            builder.appendff("{}-> {}\n", indent, function_name);
 
         dbgln("{}", builder.string_view());
         return JS::js_undefined();
@@ -59,30 +61,7 @@ JS::ThrowCompletionOr<JS::Value> WorkerDebugConsoleClient::printer(JS::Console::
     }
 
     auto output = TRY(generically_format_values(arguments.get<JS::MarkedVector<JS::Value>>()));
-    m_console.output_debug_message(log_level, output);
-
-    switch (log_level) {
-    case JS::Console::LogLevel::Debug:
-        dbgln("{}\033[36;1m{}\033[0m", indent, output);
-        break;
-    case JS::Console::LogLevel::Error:
-    case JS::Console::LogLevel::Assert:
-        dbgln("{}\033[31;1m{}\033[0m", indent, output);
-        break;
-    case JS::Console::LogLevel::Info:
-        dbgln("{}(i) {}", indent, output);
-        break;
-    case JS::Console::LogLevel::Log:
-        dbgln("{}{}", indent, output);
-        break;
-    case JS::Console::LogLevel::Warn:
-    case JS::Console::LogLevel::CountReset:
-        dbgln("{}\033[33;1m{}\033[0m", indent, output);
-        break;
-    default:
-        dbgln("{}{}", indent, output);
-        break;
-    }
+    m_console->output_debug_message(log_level, output);
     return JS::js_undefined();
 }
 

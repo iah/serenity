@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2023, Andrew Kaster <akaster@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,6 +9,9 @@
 
 #include <AK/RefCounted.h>
 #include <AK/Weakable.h>
+#include <LibCore/Socket.h>
+#include <LibIPC/File.h>
+#include <LibWeb/Bindings/Transferable.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Forward.h>
 
@@ -17,25 +21,29 @@ namespace Web::HTML {
     E(onmessage, HTML::EventNames::message)      \
     E(onmessageerror, HTML::EventNames::messageerror)
 
-// https://html.spec.whatwg.org/multipage/web-messaging.html#structuredserializeoptions
-struct StructuredSerializeOptions {
-    Vector<JS::Handle<JS::Object>> transfer;
-};
-
 // https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports
-class MessagePort final : public DOM::EventTarget {
+class MessagePort final : public DOM::EventTarget
+    , public Bindings::Transferable {
     WEB_PLATFORM_OBJECT(MessagePort, DOM::EventTarget);
+    JS_DECLARE_ALLOCATOR(MessagePort);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<MessagePort>> create(JS::Realm&);
+    [[nodiscard]] static JS::NonnullGCPtr<MessagePort> create(JS::Realm&);
+
+    static void for_each_message_port(Function<void(MessagePort&)>);
 
     virtual ~MessagePort() override;
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#entangle
     void entangle_with(MessagePort&);
 
+    void disentangle();
+
     // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-postmessage
-    void post_message(JS::Value);
+    WebIDL::ExceptionOr<void> post_message(JS::Value message, Vector<JS::Handle<JS::Object>> const& transfer);
+
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-postmessage-options
+    WebIDL::ExceptionOr<void> post_message(JS::Value message, StructuredSerializeOptions const& options);
 
     void start();
 
@@ -48,14 +56,32 @@ public:
     ENUMERATE_MESSAGE_PORT_EVENT_HANDLERS(__ENUMERATE)
 #undef __ENUMERATE
 
+    // ^Transferable
+    virtual WebIDL::ExceptionOr<void> transfer_steps(HTML::TransferDataHolder&) override;
+    virtual WebIDL::ExceptionOr<void> transfer_receiving_steps(HTML::TransferDataHolder&) override;
+    virtual HTML::TransferType primary_interface() const override { return HTML::TransferType::MessagePort; }
+
+    void set_worker_event_target(JS::NonnullGCPtr<DOM::EventTarget>);
+
 private:
     explicit MessagePort(JS::Realm&);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
-    bool is_entangled() const { return m_remote_port; }
-    void disentangle();
+    bool is_entangled() const { return static_cast<bool>(m_socket); }
+
+    WebIDL::ExceptionOr<void> message_port_post_message_steps(JS::GCPtr<MessagePort> target_port, JS::Value message, StructuredSerializeOptions const& options);
+    void post_message_task_steps(SerializedTransferRecord&);
+    void post_port_message(SerializedTransferRecord);
+    ErrorOr<void> send_message_on_socket(SerializedTransferRecord const&);
+    void read_from_socket();
+
+    enum class ParseDecision {
+        NotEnoughData,
+        ParseNextMessage,
+    };
+    ErrorOr<ParseDecision> parse_message();
 
     // The HTML spec implies(!) that this is MessagePort.[[RemotePort]]
     JS::GCPtr<MessagePort> m_remote_port;
@@ -63,8 +89,18 @@ private:
     // https://html.spec.whatwg.org/multipage/web-messaging.html#has-been-shipped
     bool m_has_been_shipped { false };
 
-    // This is TransferableObject.[[Detached]]
-    bool m_detached { false };
+    OwnPtr<Core::LocalSocket> m_socket;
+
+    enum class SocketState : u8 {
+        Header,
+        Data,
+        Error,
+    } m_socket_state { SocketState::Header };
+    size_t m_socket_incoming_message_size { 0 };
+    Queue<IPC::File> m_unprocessed_fds;
+    Vector<u8> m_buffered_data;
+
+    JS::GCPtr<DOM::EventTarget> m_worker_event_target;
 };
 
 }

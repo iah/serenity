@@ -12,15 +12,18 @@ $ lsof [-p pid] [-d fd] [-u login/UID] [-g PGID] [filename]
 
 List open files of a processes. This can mean actual files in the file system, sockets, pipes, etc.
 
-## Options:
+## Options
 
-* `-p pid`: Select by PID
-* `-d fd`: Select by file descriptor
-* `-u login/UID`: Select by login/UID
-* `-g PGID`: Select by process group ID
+-   `-p pid`: Select by PID
+-   `-d fd`: Select by file descriptor
+-   `-u login/UID`: Select by login/UID
+-   `-g PGID`: Select by process group ID
 
-## Arguments:
+## Arguments
 
-* `filename`: Filename
+-   `filename`: Filename
 
-<!-- Auto-generated through ArgsParser -->
+## See Also
+
+-   [`pmap`(1)](help://man/1/pmap)
+-   [`ps`(1)](help://man/1/ps)

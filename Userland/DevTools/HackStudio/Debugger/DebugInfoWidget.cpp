@@ -76,12 +76,12 @@ DebugInfoWidget::DebugInfoWidget()
     auto& splitter = bottom_box.add<GUI::HorizontalSplitter>();
     m_backtrace_view = splitter.add<GUI::ListView>();
     auto& variables_tab_widget = splitter.add<GUI::TabWidget>();
-    variables_tab_widget.set_tab_position(GUI::TabWidget::TabPosition::Bottom);
+    variables_tab_widget.set_tab_position(TabPosition::Bottom);
     variables_tab_widget.add_widget(build_variables_tab());
     variables_tab_widget.add_widget(build_registers_tab());
 
     m_backtrace_view->on_selection_change = [this] {
-        const auto& index = m_backtrace_view->selection().first();
+        auto const& index = m_backtrace_view->selection().first();
 
         if (!index.is_valid()) {
             return;
@@ -121,7 +121,7 @@ RefPtr<GUI::Menu> DebugInfoWidget::get_context_menu_for_variable(const GUI::Mode
     auto* variable = static_cast<Debug::DebugInfo::VariableInfo const*>(index.internal_data());
     if (does_variable_support_writing(variable)) {
         context_menu->add_action(GUI::Action::create("Change value", [&](auto&) {
-            DeprecatedString value;
+            String value;
             if (GUI::InputBox::show(window(), value, "Enter new value:"sv, "Set variable value"sv) == GUI::InputBox::ExecResult::OK) {
                 auto& model = static_cast<VariablesModel&>(*m_variables_view->model());
                 model.set_variable_value(index, value, window());
@@ -148,7 +148,7 @@ RefPtr<GUI::Menu> DebugInfoWidget::get_context_menu_for_variable(const GUI::Mode
 NonnullRefPtr<GUI::Widget> DebugInfoWidget::build_variables_tab()
 {
     auto variables_widget = GUI::Widget::construct();
-    variables_widget->set_title("Variables");
+    variables_widget->set_title("Variables"_string);
     variables_widget->set_layout<GUI::HorizontalBoxLayout>();
 
     m_variables_view = variables_widget->add<GUI::TreeView>();
@@ -165,7 +165,7 @@ NonnullRefPtr<GUI::Widget> DebugInfoWidget::build_variables_tab()
 NonnullRefPtr<GUI::Widget> DebugInfoWidget::build_registers_tab()
 {
     auto registers_widget = GUI::Widget::construct();
-    registers_widget->set_title("Registers");
+    registers_widget->set_title("Registers"_string);
     registers_widget->set_layout<GUI::HorizontalBoxLayout>();
 
     m_registers_view = registers_widget->add<GUI::TableView>();

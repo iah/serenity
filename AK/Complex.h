@@ -9,10 +9,6 @@
 #include <AK/Concepts.h>
 #include <AK/Math.h>
 
-#ifdef __cplusplus
-#    if __cplusplus >= 201103L
-#        define COMPLEX_NOEXCEPT noexcept
-#    endif
 namespace AK {
 
 template<AK::Concepts::Arithmetic T>
@@ -36,18 +32,18 @@ public:
     {
     }
 
-    constexpr T real() const COMPLEX_NOEXCEPT { return m_real; }
+    constexpr T real() const noexcept { return m_real; }
 
-    constexpr T imag() const COMPLEX_NOEXCEPT { return m_imag; }
+    constexpr T imag() const noexcept { return m_imag; }
 
-    constexpr T magnitude_squared() const COMPLEX_NOEXCEPT { return m_real * m_real + m_imag * m_imag; }
+    constexpr T magnitude_squared() const noexcept { return m_real * m_real + m_imag * m_imag; }
 
-    constexpr T magnitude() const COMPLEX_NOEXCEPT
+    constexpr T magnitude() const noexcept
     {
         return hypot(m_real, m_imag);
     }
 
-    constexpr T phase() const COMPLEX_NOEXCEPT
+    constexpr T phase() const noexcept
     {
         return atan2(m_imag, m_real);
     }
@@ -87,7 +83,7 @@ public:
     template<AK::Concepts::Arithmetic U>
     constexpr Complex<T> operator+=(U const& x)
     {
-        m_real += x.real();
+        m_real += x;
         return *this;
     }
 
@@ -102,14 +98,14 @@ public:
     template<AK::Concepts::Arithmetic U>
     constexpr Complex<T> operator-=(U const& x)
     {
-        m_real -= x.real();
+        m_real -= x;
         return *this;
     }
 
     template<AK::Concepts::Arithmetic U>
     constexpr Complex<T> operator*=(Complex<U> const& x)
     {
-        const T real = m_real;
+        T const real = m_real;
         m_real = real * x.real() - m_imag * x.imag();
         m_imag = real * x.imag() + m_imag * x.real();
         return *this;
@@ -126,8 +122,8 @@ public:
     template<AK::Concepts::Arithmetic U>
     constexpr Complex<T> operator/=(Complex<U> const& x)
     {
-        const T real = m_real;
-        const T divisor = x.real() * x.real() + x.imag() * x.imag();
+        T const real = m_real;
+        T const divisor = x.real() * x.real() + x.imag() * x.imag();
         m_real = (real * x.real() + m_imag * x.imag()) / divisor;
         m_imag = (m_imag * x.real() - x.real() * x.imag()) / divisor;
         return *this;
@@ -228,7 +224,7 @@ private:
 
 // reverse associativity operators for scalars
 template<AK::Concepts::Arithmetic T, AK::Concepts::Arithmetic U>
-constexpr Complex<T> operator+(U const& b, Complex<T> const& a)
+constexpr Complex<T> operator+(U const& a, Complex<T> const& b)
 {
     Complex<T> x = a;
     x += b;
@@ -236,7 +232,7 @@ constexpr Complex<T> operator+(U const& b, Complex<T> const& a)
 }
 
 template<AK::Concepts::Arithmetic T, AK::Concepts::Arithmetic U>
-constexpr Complex<T> operator-(U const& b, Complex<T> const& a)
+constexpr Complex<T> operator-(U const& a, Complex<T> const& b)
 {
     Complex<T> x = a;
     x -= b;
@@ -244,7 +240,7 @@ constexpr Complex<T> operator-(U const& b, Complex<T> const& a)
 }
 
 template<AK::Concepts::Arithmetic T, AK::Concepts::Arithmetic U>
-constexpr Complex<T> operator*(U const& b, Complex<T> const& a)
+constexpr Complex<T> operator*(U const& a, Complex<T> const& b)
 {
     Complex<T> x = a;
     x *= b;
@@ -252,7 +248,7 @@ constexpr Complex<T> operator*(U const& b, Complex<T> const& a)
 }
 
 template<AK::Concepts::Arithmetic T, AK::Concepts::Arithmetic U>
-constexpr Complex<T> operator/(U const& b, Complex<T> const& a)
+constexpr Complex<T> operator/(U const& a, Complex<T> const& b)
 {
     Complex<T> x = a;
     x /= b;
@@ -281,12 +277,18 @@ static constexpr Complex<T> cexp(Complex<T> const& a)
 }
 }
 
-#    if USING_AK_GLOBALLY
+template<AK::Concepts::Arithmetic T>
+struct AK::Formatter<AK::Complex<T>> : Formatter<StringView> {
+    ErrorOr<void> format(FormatBuilder& builder, AK::Complex<T> c)
+    {
+        return Formatter<StringView>::format(builder, TRY(String::formatted("{}{:+}i", c.real(), c.imag())));
+    }
+};
+
+#if USING_AK_GLOBALLY
 using AK::approx_eq;
 using AK::cexp;
 using AK::Complex;
 using AK::complex_imag_unit;
 using AK::complex_real_unit;
-#    endif
-
 #endif

@@ -8,33 +8,44 @@
 
 #include <Kernel/FileSystem/ProcFS/FileSystem.h>
 #include <Kernel/FileSystem/ProcFS/Inode.h>
+#include <Kernel/FileSystem/RAMBackedFileType.h>
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<FileSystem>> ProcFS::try_create()
+ErrorOr<NonnullRefPtr<FileSystem>> ProcFS::try_create(FileSystemSpecificOptions const&)
 {
-    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) ProcFS));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProcFS));
 }
 
 ProcFS::ProcFS() = default;
 ProcFS::~ProcFS() = default;
 
-ErrorOr<NonnullLockRefPtr<Inode>> ProcFS::get_inode(InodeIdentifier inode_id) const
+ErrorOr<NonnullRefPtr<Inode>> ProcFS::get_inode(InodeIdentifier inode_id) const
 {
     if (inode_id.index() == 1)
         return *m_root_inode;
-    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) ProcFSInode(const_cast<ProcFS&>(*this), inode_id.index())));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProcFSInode(const_cast<ProcFS&>(*this), inode_id.index())));
 }
 
 ErrorOr<void> ProcFS::initialize()
 {
-    m_root_inode = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) ProcFSInode(const_cast<ProcFS&>(*this), 1)));
+    m_root_inode = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProcFSInode(const_cast<ProcFS&>(*this), 1)));
     return {};
+}
+
+u8 ProcFS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& entry) const
+{
+    return ram_backed_file_type_to_directory_entry_type(entry);
 }
 
 Inode& ProcFS::root_inode()
 {
     return *m_root_inode;
+}
+
+ErrorOr<void> ProcFS::rename(Inode&, StringView, Inode&, StringView)
+{
+    return EROFS;
 }
 
 }

@@ -1,15 +1,21 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=libarchive
-version=3.6.1
-useconfigure=true
-use_fresh_config_sub=true
-config_sub_paths=("build/autoconf/config.sub")
-configopts=("--without-xml2")
-files="https://libarchive.org/downloads/libarchive-${version}.tar.gz libarchive-${version}.tar.gz
-https://libarchive.org/downloads/libarchive-${version}.tar.gz.asc libarchive-${version}.tar.gz.asc"
-depends=("zlib" "pcre")
-auth_type="sig"
-auth_import_key="A5A45B12AD92D964B89EEE2DEC560C81CEC2276E"
-auth_opts=("libarchive-${version}.tar.gz.asc" "libarchive-${version}.tar.gz")
+port='libarchive'
+version='3.7.7'
+useconfigure='true'
+use_fresh_config_sub='true'
+config_sub_paths=(
+    'build/autoconf/config.sub'
+)
+configopts=(
+    '--without-xml2'
+    "--with-sysroot=${SERENITY_INSTALL_ROOT}"
+)
+files=(
+    "https://libarchive.org/downloads/libarchive-${version}.tar.gz#4cc540a3e9a1eebdefa1045d2e4184831100667e6d7d5b315bb1cbc951f8ddff"
+)
+depends=(
+    'pcre'
+    'zlib'
+)
 
-export ac_cv_header_regex_h=no
+export ac_cv_header_regex_h='no'

@@ -1,19 +1,25 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='SDL2_image'
+version='2.8.8'
 useconfigure='true'
-version='2.6.2'
-depends=("SDL2" "libpng" "libjpeg" "libtiff")
-files="https://github.com/libsdl-org/SDL_image/releases/download/release-${version}/SDL2_image-${version}.tar.gz SDL2_image-${version}.tar.gz 48355fb4d8d00bac639cd1c4f4a7661c4afef2c212af60b340e06b7059814777"
-auth_type='sha256'
-
+depends=(
+    'libjpeg'
+    'libpng'
+    'libtiff'
+    'SDL2'
+)
+files=(
+    "https://github.com/libsdl-org/SDL_image/releases/download/release-${version}/SDL2_image-${version}.tar.gz#2213b56fdaff2220d0e38c8e420cbe1a83c87374190cba8c70af2156097ce30a"
+)
 configure() {
     run ./configure \
         --host="${SERENITY_ARCH}-pc-serenity" \
         --with-sdl-prefix="${SERENITY_INSTALL_ROOT}/usr/local" \
-        --enable-webp=false --enable-webp-shared=false     \
+        --enable-webp='false' \
+        --enable-webp-shared='false' \
         --disable-static \
         --enable-shared \
-        LDFLAGS="-lgui -lgfx -lipc -lcore -lm"
+        LDFLAGS='-lgui -lgfx -lipc -lcore -lcoreminimal -lm'
 }
 
 build() {

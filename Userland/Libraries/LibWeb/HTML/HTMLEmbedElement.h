@@ -12,6 +12,7 @@ namespace Web::HTML {
 
 class HTMLEmbedElement final : public HTMLElement {
     WEB_PLATFORM_OBJECT(HTMLEmbedElement, HTMLElement);
+    JS_DECLARE_ALLOCATOR(HTMLEmbedElement);
 
 public:
     virtual ~HTMLEmbedElement() override;
@@ -19,7 +20,14 @@ public:
 private:
     HTMLEmbedElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual bool is_html_embed_element() const override { return true; }
+    virtual void initialize(JS::Realm&) override;
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 };
 
+}
+
+namespace Web::DOM {
+template<>
+inline bool Node::fast_is<HTML::HTMLEmbedElement>() const { return is_html_embed_element(); }
 }

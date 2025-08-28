@@ -92,13 +92,12 @@ AutocompleteBox::AutocompleteBox(TextEditor& editor)
     m_popup_window->set_obey_widget_min_size(false);
     m_popup_window->set_rect(0, 0, 175, 25);
 
-    auto main_widget = m_popup_window->set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
+    auto main_widget = m_popup_window->set_main_widget<GUI::Widget>();
     main_widget->set_fill_with_background_color(true);
     main_widget->set_layout<GUI::VerticalBoxLayout>();
 
     m_suggestion_view = main_widget->add<GUI::TableView>();
-    m_suggestion_view->set_frame_shadow(Gfx::FrameShadow::Plain);
-    m_suggestion_view->set_frame_thickness(1);
+    m_suggestion_view->set_frame_style(Gfx::FrameStyle::Plain);
     m_suggestion_view->set_column_headers_visible(false);
     m_suggestion_view->set_visible(false);
     m_suggestion_view->on_activation = [&](GUI::ModelIndex const& index) {
@@ -109,7 +108,7 @@ AutocompleteBox::AutocompleteBox(TextEditor& editor)
         apply_suggestion();
     };
 
-    m_no_suggestions_view = main_widget->add<GUI::Label>("No suggestions");
+    m_no_suggestions_view = main_widget->add<GUI::Label>("No suggestions"_string);
 }
 
 void AutocompleteBox::update_suggestions(Vector<CodeComprehension::AutocompleteResultEntry>&& suggestions)
@@ -183,7 +182,7 @@ CodeComprehension::AutocompleteResultEntry::HideAutocompleteAfterApplying Autoco
         return hide_when_done;
 
     auto suggestion_index = m_suggestion_view->model()->index(selected_index.row());
-    auto completion = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::Completion).to_deprecated_string();
+    auto completion = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::Completion).to_byte_string();
     size_t partial_length = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::PartialInputLength).to_i64();
     auto hide_after_applying = suggestion_index.data((GUI::ModelRole)AutocompleteSuggestionModel::InternalRole::HideAutocompleteAfterApplying).to_bool();
 

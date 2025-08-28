@@ -13,13 +13,14 @@ namespace Web::SVG {
 // https://www.w3.org/TR/SVG11/shapes.html#RectElement
 class SVGRectElement final : public SVGGeometryElement {
     WEB_PLATFORM_OBJECT(SVGRectElement, SVGGeometryElement);
+    JS_DECLARE_ALLOCATOR(SVGRectElement);
 
 public:
     virtual ~SVGRectElement() override = default;
 
-    virtual void parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
 
-    virtual Gfx::Path& get_path() override;
+    virtual Gfx::Path get_path(CSSPixelSize viewport_size) override;
 
     JS::NonnullGCPtr<SVGAnimatedLength> x() const;
     JS::NonnullGCPtr<SVGAnimatedLength> y() const;
@@ -31,11 +32,9 @@ public:
 private:
     SVGRectElement(DOM::Document&, DOM::QualifiedName);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     Gfx::FloatSize calculate_used_corner_radius_values() const;
-
-    Optional<Gfx::Path> m_path;
 
     Optional<float> m_x;
     Optional<float> m_y;

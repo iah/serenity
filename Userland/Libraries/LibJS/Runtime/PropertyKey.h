@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/DeprecatedFlyString.h>
+#include <AK/FlyString.h>
 #include <LibJS/Heap/Handle.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/StringOrSymbol.h>
@@ -35,7 +36,7 @@ public:
             return PropertyKey { value.as_symbol() };
         if (value.is_integral_number() && value.as_double() >= 0 && value.as_double() < NumericLimits<u32>::max())
             return static_cast<u32>(value.as_double());
-        return TRY(value.to_deprecated_string(vm));
+        return TRY(value.to_byte_string(vm));
     }
 
     PropertyKey() = default;
@@ -48,7 +49,7 @@ public:
         VERIFY(index >= 0);
         if constexpr (NumericLimits<T>::max() >= NumericLimits<u32>::max()) {
             if (index >= NumericLimits<u32>::max()) {
-                m_string = DeprecatedString::number(index);
+                m_string = ByteString::number(index);
                 m_type = Type::String;
                 m_string_may_be_number = false;
                 return;
@@ -65,11 +66,16 @@ public:
     {
     }
 
-    PropertyKey(DeprecatedString const& string)
+    PropertyKey(ByteString const& string)
         : m_type(Type::String)
         , m_string(DeprecatedFlyString(string))
     {
-        VERIFY(!m_string.is_null());
+    }
+
+    PropertyKey(FlyString const& string)
+        : m_type(Type::String)
+        , m_string(string.to_deprecated_fly_string())
+    {
     }
 
     PropertyKey(DeprecatedFlyString string, StringMayBeNumber string_may_be_number = StringMayBeNumber::Yes)
@@ -77,12 +83,11 @@ public:
         , m_type(Type::String)
         , m_string(move(string))
     {
-        VERIFY(!m_string.is_null());
     }
 
-    PropertyKey(Symbol& symbol)
+    PropertyKey(NonnullGCPtr<Symbol> symbol)
         : m_type(Type::Symbol)
-        , m_symbol(&symbol)
+        , m_symbol(symbol)
     {
     }
 
@@ -136,7 +141,7 @@ public:
             return false;
         }
 
-        auto property_index = m_string.to_uint(TrimWhitespace::No);
+        auto property_index = m_string.to_number<unsigned>(TrimWhitespace::No);
         if (!property_index.has_value() || property_index.value() == NumericLimits<u32>::max()) {
             m_string_may_be_number = false;
             return false;
@@ -164,13 +169,13 @@ public:
         return m_symbol;
     }
 
-    DeprecatedString to_string() const
+    ByteString to_string() const
     {
         VERIFY(is_valid());
         VERIFY(!is_symbol());
         if (is_string())
             return as_string();
-        return DeprecatedString::number(as_number());
+        return ByteString::number(as_number());
     }
 
     StringOrSymbol to_string_or_symbol() const
@@ -195,7 +200,7 @@ private:
 namespace AK {
 
 template<>
-struct Traits<JS::PropertyKey> : public GenericTraits<JS::PropertyKey> {
+struct Traits<JS::PropertyKey> : public DefaultTraits<JS::PropertyKey> {
     static unsigned hash(JS::PropertyKey const& name)
     {
         VERIFY(name.is_valid());

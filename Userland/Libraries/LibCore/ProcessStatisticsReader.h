@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/Time.h>
 #include <AK/Vector.h>
 #include <unistd.h>
 
@@ -21,16 +22,16 @@ struct ThreadStatistics {
     unsigned inode_faults;
     unsigned zero_faults;
     unsigned cow_faults;
-    unsigned unix_socket_read_bytes;
-    unsigned unix_socket_write_bytes;
-    unsigned ipv4_socket_read_bytes;
-    unsigned ipv4_socket_write_bytes;
-    unsigned file_read_bytes;
-    unsigned file_write_bytes;
-    DeprecatedString state;
+    u64 unix_socket_read_bytes;
+    u64 unix_socket_write_bytes;
+    u64 ipv4_socket_read_bytes;
+    u64 ipv4_socket_write_bytes;
+    u64 file_read_bytes;
+    u64 file_write_bytes;
+    ByteString state;
     u32 cpu;
     u32 priority;
-    DeprecatedString name;
+    ByteString name;
 };
 
 struct ProcessStatistics {
@@ -43,13 +44,13 @@ struct ProcessStatistics {
     uid_t uid;
     gid_t gid;
     pid_t ppid;
-    unsigned nfds;
     bool kernel;
-    DeprecatedString name;
-    DeprecatedString executable;
-    DeprecatedString tty;
-    DeprecatedString pledge;
-    DeprecatedString veil;
+    ByteString name;
+    ByteString executable;
+    ByteString tty;
+    ByteString pledge;
+    ByteString veil;
+    UnixDateTime creation_time;
     size_t amount_virtual;
     size_t amount_resident;
     size_t amount_shared;
@@ -61,7 +62,7 @@ struct ProcessStatistics {
     Vector<Core::ThreadStatistics> threads;
 
     // synthetic
-    DeprecatedString username;
+    ByteString username;
 };
 
 struct AllProcessesStatistics {
@@ -76,8 +77,8 @@ public:
     static ErrorOr<AllProcessesStatistics> get_all(bool include_usernames = true);
 
 private:
-    static DeprecatedString username_from_uid(uid_t);
-    static HashMap<uid_t, DeprecatedString> s_usernames;
+    static ByteString username_from_uid(uid_t);
+    static HashMap<uid_t, ByteString> s_usernames;
 };
 
 }

@@ -4,10 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLHeadElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(HTMLHeadElement);
 
 HTMLHeadElement::HTMLHeadElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -16,12 +19,10 @@ HTMLHeadElement::HTMLHeadElement(DOM::Document& document, DOM::QualifiedName qua
 
 HTMLHeadElement::~HTMLHeadElement() = default;
 
-JS::ThrowCompletionOr<void> HTMLHeadElement::initialize(JS::Realm& realm)
+void HTMLHeadElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::HTMLHeadElementPrototype>(realm, "HTMLHeadElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLHeadElement);
 }
 
 }

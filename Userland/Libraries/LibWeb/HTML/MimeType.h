@@ -6,26 +6,27 @@
 
 #pragma once
 
-#include <LibWeb/Bindings/LegacyPlatformObject.h>
+#include <LibWeb/Bindings/PlatformObject.h>
 
 namespace Web::HTML {
 
 // https://html.spec.whatwg.org/multipage/system-state.html#mimetype
 class MimeType : public Bindings::PlatformObject {
     WEB_PLATFORM_OBJECT(MimeType, Bindings::PlatformObject);
+    JS_DECLARE_ALLOCATOR(MimeType);
 
 public:
     virtual ~MimeType() override;
 
     String const& type() const;
-    JS::ThrowCompletionOr<String> description() const;
+    String description() const;
     String const& suffixes() const;
     JS::NonnullGCPtr<Plugin> enabled_plugin() const;
 
 private:
     MimeType(JS::Realm&, String type);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     // https://html.spec.whatwg.org/multipage/system-state.html#concept-mimetype-type
     String m_type;

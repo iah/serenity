@@ -6,12 +6,12 @@
  */
 
 #include "RunWindow.h"
+#include "MainWidget.h"
 #include <AK/LexicalPath.h>
-#include <AK/URL.h>
-#include <Applications/Run/RunGML.h>
-#include <LibCore/DeprecatedFile.h>
+#include <LibCore/Process.h>
 #include <LibCore/StandardPaths.h>
 #include <LibDesktop/Launcher.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/FilePicker.h>
@@ -19,15 +19,18 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Widget.h>
+#include <LibURL/URL.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+namespace Run {
+
 RunWindow::RunWindow()
     : m_path_history()
-    , m_path_history_model(GUI::ItemListModel<DeprecatedString>::create(m_path_history))
+    , m_path_history_model(GUI::ItemListModel<ByteString>::create(m_path_history))
 {
     // FIXME: Handle failure to load history somehow.
     (void)load_history();
@@ -40,8 +43,8 @@ RunWindow::RunWindow()
     set_resizable(false);
     set_minimizable(false);
 
-    auto main_widget = set_main_widget<GUI::Widget>().release_value_but_fixme_should_propagate_errors();
-    main_widget->load_from_gml(run_gml).release_value_but_fixme_should_propagate_errors();
+    auto main_widget = MUST(Run::MainWidget::try_create());
+    set_main_widget(main_widget);
 
     m_icon_image_widget = *main_widget->find_descendant_of_type_named<GUI::ImageWidget>("icon");
     m_icon_image_widget->set_bitmap(app_icon.bitmap_for_size(32));
@@ -62,9 +65,9 @@ RunWindow::RunWindow()
         close();
     };
 
-    m_browse_button = *find_descendant_of_type_named<GUI::DialogButton>("browse_button");
+    m_browse_button = *main_widget->find_descendant_of_type_named<GUI::DialogButton>("browse_button");
     m_browse_button->on_click = [this](auto) {
-        Optional<DeprecatedString> path = GUI::FilePicker::get_open_filepath(this, {}, Core::StandardPaths::home_directory(), false, GUI::Dialog::ScreenPosition::Center);
+        Optional<ByteString> path = GUI::FilePicker::get_open_filepath(this, {}, Core::StandardPaths::home_directory(), false, GUI::Dialog::ScreenPosition::Center);
         if (path.has_value())
             m_path_combo_box->set_text(path.value().view());
     };
@@ -93,12 +96,6 @@ void RunWindow::do_run()
     hide();
 
     if (run_via_launch(run_input) || run_as_command(run_input)) {
-        // Remove any existing history entry, prepend the successful run string to history and save.
-        m_path_history.remove_all_matching([&](DeprecatedString v) { return v == run_input; });
-        m_path_history.prepend(run_input);
-        // FIXME: Handle failure to save history somehow.
-        (void)save_history();
-
         close();
         return;
     }
@@ -108,18 +105,20 @@ void RunWindow::do_run()
     show();
 }
 
-bool RunWindow::run_as_command(DeprecatedString const& run_input)
+bool RunWindow::run_as_command(ByteString const& run_input)
 {
-    pid_t child_pid;
-    char const* shell_executable = "/bin/Shell"; // TODO query and use the user's preferred shell.
-    char const* argv[] = { shell_executable, "-c", run_input.characters(), nullptr };
-
-    if ((errno = posix_spawn(&child_pid, shell_executable, nullptr, nullptr, const_cast<char**>(argv), environ))) {
-        perror("posix_spawn");
+    // TODO: Query and use the user's preferred shell.
+    auto maybe_child_pid = Core::Process::spawn("/bin/Shell"sv, Array { "-c", run_input.characters() }, {}, Core::Process::KeepAsChild::Yes);
+    if (maybe_child_pid.is_error())
         return false;
-    }
 
-    // Command spawned in child shell. Hide and wait for exit code.
+    pid_t child_pid = maybe_child_pid.release_value();
+
+    // The child shell was able to start. Let's save it to the history immediately so users can see it as the first entry the next time they run this program.
+    prepend_history(run_input);
+    // FIXME: Handle failure to save history somehow.
+    (void)save_history();
+
     int status;
     if (waitpid(child_pid, &status, 0) < 0)
         return false;
@@ -129,6 +128,8 @@ bool RunWindow::run_as_command(DeprecatedString const& run_input)
 
     // 127 is typically the shell indicating command not found. 126 for all other errors.
     if (child_error == 126 || child_error == 127) {
+        // There's an opportunity to remove the history entry here since it failed during its runtime, but other implementations (e.g. Windows 11) don't bother removing the entry.
+        // This makes sense, especially for cases where a user is debugging a failing program.
         return false;
     }
 
@@ -137,18 +138,18 @@ bool RunWindow::run_as_command(DeprecatedString const& run_input)
     return true;
 }
 
-bool RunWindow::run_via_launch(DeprecatedString const& run_input)
+bool RunWindow::run_via_launch(ByteString const& run_input)
 {
     auto url = URL::create_with_url_or_path(run_input);
 
     if (url.scheme() == "file") {
-        auto real_path = Core::DeprecatedFile::real_path_for(url.path());
-        if (real_path.is_null()) {
-            // errno *should* be preserved from Core::DeprecatedFile::real_path_for().
-            warnln("Failed to launch '{}': {}", url.path(), strerror(errno));
+        auto file_path = URL::percent_decode(url.serialize_path());
+        auto real_path_or_error = FileSystem::real_path(file_path);
+        if (real_path_or_error.is_error()) {
+            warnln("Failed to launch '{}': {}", file_path, real_path_or_error.error());
             return false;
         }
-        url = URL::create_with_url_or_path(real_path);
+        url = URL::create_with_url_or_path(real_path_or_error.release_value());
     }
 
     if (!Desktop::Launcher::open(url)) {
@@ -156,21 +157,25 @@ bool RunWindow::run_via_launch(DeprecatedString const& run_input)
         return false;
     }
 
+    prepend_history(run_input);
+    // FIXME: Handle failure to save history somehow.
+    (void)save_history();
+
     dbgln("Ran via URL launch.");
 
     return true;
 }
 
-DeprecatedString RunWindow::history_file_path()
+ByteString RunWindow::history_file_path()
 {
-    return LexicalPath::canonicalized_path(DeprecatedString::formatted("{}/{}", Core::StandardPaths::config_directory(), "RunHistory.txt"));
+    return LexicalPath::canonicalized_path(ByteString::formatted("{}/{}", Core::StandardPaths::config_directory(), "RunHistory.txt"));
 }
 
 ErrorOr<void> RunWindow::load_history()
 {
     m_path_history.clear();
     auto file = TRY(Core::File::open(history_file_path(), Core::File::OpenMode::Read));
-    auto buffered_file = TRY(Core::BufferedFile::create(move(file)));
+    auto buffered_file = TRY(Core::InputBufferedFile::create(move(file)));
     Array<u8, PAGE_SIZE> line_buffer;
 
     while (!buffered_file->is_eof()) {
@@ -181,13 +186,21 @@ ErrorOr<void> RunWindow::load_history()
     return {};
 }
 
+void RunWindow::prepend_history(ByteString const& input)
+{
+    m_path_history.remove_all_matching([&](ByteString const& entry) { return input == entry; });
+    m_path_history.prepend(input);
+}
+
 ErrorOr<void> RunWindow::save_history()
 {
     auto file = TRY(Core::File::open(history_file_path(), Core::File::OpenMode::Write));
 
     // Write the first 25 items of history
     for (int i = 0; i < min(static_cast<int>(m_path_history.size()), 25); i++)
-        TRY(file->write(DeprecatedString::formatted("{}\n", m_path_history[i]).bytes()));
+        TRY(file->write_until_depleted(ByteString::formatted("{}\n", m_path_history[i])));
 
     return {};
+}
+
 }

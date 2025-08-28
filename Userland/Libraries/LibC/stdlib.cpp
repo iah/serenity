@@ -125,7 +125,7 @@ public:
         return DigitConsumeDecision::Consumed;
     }
 
-    T number() const { return m_num; };
+    T number() const { return m_num; }
 
 private:
     bool can_append_digit(int digit)
@@ -144,7 +144,7 @@ private:
         return m_sign != Sign::Negative;
     }
 
-    const T m_base;
+    T const m_base;
     T m_num;
     T m_cutoff;
     int m_max_digit_after_cutoff;
@@ -313,7 +313,7 @@ static T c_str_to_floating_point(char const* str, char** endptr)
     // - One of INF or INFINITY, ignoring case
     // - One of NAN or NAN(n-char-sequenceopt), ignoring case in the NAN part
 
-    const Sign sign = strtosign(parse_ptr, &parse_ptr);
+    Sign const sign = strtosign(parse_ptr, &parse_ptr);
 
     if (is_infinity_string(parse_ptr, endptr)) {
         // Don't set errno to ERANGE here:
@@ -343,22 +343,23 @@ static T c_str_to_floating_point(char const* str, char** endptr)
     return 0;
 }
 
+[[gnu::weak]] extern void __call_fini_functions() asm("__call_fini_functions");
+
 extern "C" {
 
 void exit(int status)
 {
+#ifndef _DYNAMIC_LOADER
+    __pthread_key_destroy_for_current_thread();
+#endif
+
     __cxa_finalize(nullptr);
 
     if (secure_getenv("LIBC_DUMP_MALLOC_STATS"))
         serenity_dump_malloc_stats();
 
-    extern void _fini();
-    _fini();
+    __call_fini_functions();
     fflush(nullptr);
-
-#ifndef _DYNAMIC_LOADER
-    __pthread_key_destroy_for_current_thread();
-#endif
 
     _exit(status);
 }
@@ -376,7 +377,7 @@ int atexit(void (*handler)())
 void _abort()
 {
     // According to the GCC manual __builtin_trap() can call abort() so using it here might not seem safe at first. However,
-    // on all the platforms we support GCC emits an undefined instruction instead of a call.
+    // on all the platforms we support GCC emits a trapping instruction instead of a call.
     __builtin_trap();
 }
 
@@ -399,8 +400,8 @@ static void free_environment_variable_if_needed(char const* var)
 {
     if (!s_malloced_environment_variables.contains((FlatPtr)var))
         return;
-    free(const_cast<char*>(var));
     s_malloced_environment_variables.remove((FlatPtr)var);
+    free(const_cast<char*>(var));
 }
 
 char* getenv(char const* name)
@@ -414,9 +415,8 @@ char* getenv(char const* name)
         size_t varLength = eq - decl;
         if (vl != varLength)
             continue;
-        if (strncmp(decl, name, varLength) == 0) {
+        if (strncmp(decl, name, varLength) == 0)
             return eq + 1;
-        }
     }
     return nullptr;
 }
@@ -432,6 +432,11 @@ char* secure_getenv(char const* name)
 int unsetenv(char const* name)
 {
     auto new_var_len = strlen(name);
+    if (new_var_len == 0 || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
+    }
+
     size_t environ_size = 0;
     int skip = -1;
 
@@ -461,20 +466,26 @@ int unsetenv(char const* name)
 
 int clearenv()
 {
-    size_t environ_size = 0;
-    for (; environ[environ_size]; ++environ_size) {
-        environ[environ_size] = NULL;
+    for (char** env = environ; *env; ++env) {
+        free_environment_variable_if_needed(*env);
+        *env = nullptr;
     }
-    *environ = NULL;
     return 0;
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/setenv.html
 int setenv(char const* name, char const* value, int overwrite)
 {
+    auto new_var_len = strlen(name);
+    if (new_var_len == 0 || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
+    }
+
     if (!overwrite && getenv(name))
         return 0;
-    auto const total_length = strlen(name) + strlen(value) + 2;
+
+    auto const total_length = new_var_len + strlen(value) + 2;
     auto* var = (char*)malloc(total_length);
     snprintf(var, total_length, "%s=%s", name, value);
     s_malloced_environment_variables.set((FlatPtr)var);
@@ -493,22 +504,23 @@ int serenity_putenv(char const* new_var, size_t length)
 int putenv(char* new_var)
 {
     char* new_eq = strchr(new_var, '=');
-
     if (!new_eq)
         return unsetenv(new_var);
 
-    auto new_var_len = new_eq - new_var;
+    auto new_var_name_len = new_eq - new_var;
     int environ_size = 0;
     for (; environ[environ_size]; ++environ_size) {
         char* old_var = environ[environ_size];
-        char* old_eq = strchr(old_var, '=');
-        VERIFY(old_eq);
-        auto old_var_len = old_eq - old_var;
+        auto old_var_name_max_length = strnlen(old_var, new_var_name_len);
+        char* old_eq = static_cast<char*>(memchr(old_var, '=', old_var_name_max_length + 1));
+        if (!old_eq)
+            continue; // name is longer, or possibly freed or overwritten value
 
-        if (new_var_len != old_var_len)
+        auto old_var_name_len = old_eq - old_var;
+        if (new_var_name_len != old_var_name_len)
             continue; // can't match
 
-        if (strncmp(new_var, old_var, new_var_len) == 0) {
+        if (strncmp(new_var, old_var, new_var_name_len) == 0) {
             free_environment_variable_if_needed(old_var);
             environ[environ_size] = new_var;
             return 0;
@@ -523,9 +535,8 @@ int putenv(char* new_var)
         return -1;
     }
 
-    for (int i = 0; environ[i]; ++i) {
+    for (int i = 0; environ[i]; ++i)
         new_environ[i] = environ[i];
-    }
 
     new_environ[environ_size] = new_var;
     new_environ[environ_size + 1] = nullptr;
@@ -568,7 +579,8 @@ double strtod(char const* str, char** endptr)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/strtold.html
 long double strtold(char const* str, char** endptr)
 {
-    assert(sizeof(double) == sizeof(long double));
+    // FIXME: eisel-lemire needs a deep overhaul to work with fp80 and fp128.
+    // For now, we just implicitly cast to long double and accept the loss of precision.
     return strtod(str, endptr);
 }
 
@@ -644,7 +656,7 @@ int ptsname_r(int fd, char* buffer, size_t size)
         return -1;
     }
     memset(buffer, 0, devpts_path_builder.length() + 1);
-    auto full_devpts_path_string = devpts_path_builder.to_deprecated_string();
+    auto full_devpts_path_string = devpts_path_builder.to_byte_string();
     if (!full_devpts_path_string.copy_characters_to_buffer(buffer, size)) {
         errno = ERANGE;
         return -1;
@@ -653,6 +665,7 @@ int ptsname_r(int fd, char* buffer, size_t size)
 }
 
 static unsigned long s_next_rand = 1;
+static long s_next_rand48 = 0;
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/rand.html
 int rand()
@@ -665,6 +678,23 @@ int rand()
 void srand(unsigned seed)
 {
     s_next_rand = seed;
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/drand48.html
+double drand48()
+{
+    constexpr u64 a = 0x5DEECE66DULL;
+    constexpr u64 c = 0xBULL;
+    constexpr u64 m = 1ULL << 48;
+
+    s_next_rand48 = (a * s_next_rand48 + c) & (m - 1);
+    return static_cast<double>(s_next_rand48) / m;
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/srand48.html
+void srand48(long seed)
+{
+    s_next_rand48 = (seed & 0xFFFFFFFF) << 16 | 0x330E;
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/abs.html
@@ -950,7 +980,7 @@ long long strtoll(char const* str, char** endptr, int base)
     // Parse spaces and sign
     char* parse_ptr = const_cast<char*>(str);
     strtons(parse_ptr, &parse_ptr);
-    const Sign sign = strtosign(parse_ptr, &parse_ptr);
+    Sign const sign = strtosign(parse_ptr, &parse_ptr);
 
     // Parse base
     if (base == 0) {

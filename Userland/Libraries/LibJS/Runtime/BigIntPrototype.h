@@ -12,9 +12,10 @@ namespace JS {
 
 class BigIntPrototype final : public Object {
     JS_OBJECT(BigIntPrototype, Object);
+    JS_DECLARE_ALLOCATOR(BigIntPrototype);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~BigIntPrototype() override = default;
 
 private:

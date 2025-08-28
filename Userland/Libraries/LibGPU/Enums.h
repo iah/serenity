@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Stephan Unverwerth <s.unverwerth@serenityos.org>
+ * Copyright (c) 2024, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -21,17 +22,29 @@ enum class AlphaTestFunction {
     Greater,
 };
 
+enum class BlendEquation {
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max,
+};
+
 enum class BlendFactor {
     Zero,
     One,
-    SrcAlpha,
-    OneMinusSrcAlpha,
     SrcColor,
     OneMinusSrcColor,
-    DstAlpha,
-    OneMinusDstAlpha,
     DstColor,
     OneMinusDstColor,
+    SrcAlpha,
+    OneMinusSrcAlpha,
+    DstAlpha,
+    OneMinusDstAlpha,
+    ConstantColor,
+    OneMinusConstantColor,
+    ConstantAlpha,
+    OneMinusConstantAlpha,
     SrcAlphaSaturate,
 };
 

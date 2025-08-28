@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2021, Luke Wilde <lukew@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -14,15 +14,17 @@
 
 namespace JS::Temporal {
 
+JS_DEFINE_ALLOCATOR(PlainYearMonthConstructor);
+
 // 9.1 The Temporal.PlainYearMonth Constructor, https://tc39.es/proposal-temporal/#sec-temporal-plainyearmonth-constructor
 PlainYearMonthConstructor::PlainYearMonthConstructor(Realm& realm)
-    : NativeFunction(realm.vm().names.PlainYearMonth.as_string(), *realm.intrinsics().function_prototype())
+    : NativeFunction(realm.vm().names.PlainYearMonth.as_string(), realm.intrinsics().function_prototype())
 {
 }
 
-ThrowCompletionOr<void> PlainYearMonthConstructor::initialize(Realm& realm)
+void PlainYearMonthConstructor::initialize(Realm& realm)
 {
-    MUST_OR_THROW_OOM(NativeFunction::initialize(realm));
+    Base::initialize(realm);
 
     auto& vm = this->vm();
 
@@ -34,8 +36,6 @@ ThrowCompletionOr<void> PlainYearMonthConstructor::initialize(Realm& realm)
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(realm, vm.names.from, from, 1, attr);
     define_native_function(realm, vm.names.compare, compare, 2, attr);
-
-    return {};
 }
 
 // 9.1.1 Temporal.PlainYearMonth ( isoYear, isoMonth [ , calendarLike [ , referenceISODay ] ] ), https://tc39.es/proposal-temporal/#sec-temporal.plainyearmonth

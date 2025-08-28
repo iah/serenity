@@ -14,7 +14,7 @@ die() {
 
 pick_clang() {
     local BEST_VERSION=0
-    for CLANG_CANDIDATE in clang clang-13 clang-14 clang-15 /opt/homebrew/opt/llvm/bin/clang ; do
+    for CLANG_CANDIDATE in clang clang-17 clang-18 /opt/homebrew/opt/llvm/bin/clang ; do
         if ! command -v $CLANG_CANDIDATE >/dev/null 2>&1; then
             continue
         fi
@@ -33,8 +33,8 @@ pick_clang() {
             BEST_CLANG_CANDIDATE="$CLANG_CANDIDATE"
         fi
     done
-    if [ "$BEST_VERSION" -lt 13 ]; then
-        die "Please make sure that Clang version 13 or higher is installed."
+    if [ "$BEST_VERSION" -lt 15 ]; then
+        die "Please make sure that Clang version 15 or higher is installed."
     fi
 }
 
@@ -46,10 +46,18 @@ unset CFLAGS
 unset CXXFLAGS
 export AFL_NOOPT=1
 
+if [ "$#" -gt "0" ] && [ "--oss-fuzz" = "$1" ] ; then
+    # The oss-fuzz runner image (as of June 2024) has libstdc++ 9, which lacks the
+    # <coroutine> header. Use the more modern libc++ shipped with oss-fuzz's Clang.
+    # It's already set in CXXFLAGS_SAVE.
+    CXXFLAGS="$CXXFLAGS -DOSS_FUZZ=ON -stdlib=libc++"
+fi
+
 # FIXME: Replace these CMake invocations with a CMake superbuild?
 echo "Building Lagom Tools..."
 cmake -GNinja -B Build/tools \
     -DBUILD_LAGOM=OFF \
+    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
     -DCMAKE_INSTALL_PREFIX=Build/tool-install \
     -Dpackage=LagomTools
 ninja -C Build/tools install
@@ -67,13 +75,21 @@ if [ "$#" -gt "0" ] && [ "--oss-fuzz" = "$1" ] ; then
         -DBUILD_LAGOM=ON \
         -DBUILD_SHARED_LIBS=OFF \
         -DENABLE_FUZZERS_OSSFUZZ=ON \
+        -DFUZZER_DICTIONARY_DIRECTORY="$OUT" \
         -DCMAKE_C_COMPILER="$CC" \
         -DCMAKE_CXX_COMPILER="$CXX" \
         -DCMAKE_CXX_FLAGS="$CXXFLAGS -DOSS_FUZZ=ON" \
         -DLINKER_FLAGS="$LIB_FUZZING_ENGINE" \
         -DCMAKE_PREFIX_PATH=Build/tool-install
     ninja -C Build/fuzzers
-    cp Build/fuzzers/Fuzzers/Fuzz* "$OUT"/
+    cp Build/fuzzers/bin/Fuzz* "$OUT"/
+elif [ "$#" -gt "0" ] && [ "--standalone" = "$1" ] ; then
+    echo "Building for standalone fuzz configuration..."
+    cmake -GNinja -B Build/lagom-fuzzers-standalone \
+        -DBUILD_LAGOM=ON \
+        -DENABLE_FUZZERS=ON \
+        -DCMAKE_PREFIX_PATH=Build/tool-install
+    ninja -C Build/lagom-fuzzers-standalone
 else
     echo "Building for local fuzz configuration..."
     pick_clang

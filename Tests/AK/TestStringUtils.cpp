@@ -22,11 +22,11 @@ TEST_CASE(hash_compatible)
     static_assert(AK::Concepts::HashCompatible<FlyString, String>);
     static_assert(AK::Concepts::HashCompatible<FlyString, StringView>);
 
-    static_assert(AK::Concepts::HashCompatible<DeprecatedString, StringView>);
-    static_assert(AK::Concepts::HashCompatible<DeprecatedString, DeprecatedFlyString>);
-    static_assert(AK::Concepts::HashCompatible<StringView, DeprecatedString>);
+    static_assert(AK::Concepts::HashCompatible<ByteString, StringView>);
+    static_assert(AK::Concepts::HashCompatible<ByteString, DeprecatedFlyString>);
+    static_assert(AK::Concepts::HashCompatible<StringView, ByteString>);
     static_assert(AK::Concepts::HashCompatible<StringView, DeprecatedFlyString>);
-    static_assert(AK::Concepts::HashCompatible<DeprecatedFlyString, DeprecatedString>);
+    static_assert(AK::Concepts::HashCompatible<DeprecatedFlyString, ByteString>);
     static_assert(AK::Concepts::HashCompatible<DeprecatedFlyString, StringView>);
 
     static_assert(AK::Concepts::HashCompatible<StringView, ByteBuffer>);
@@ -319,9 +319,16 @@ TEST_CASE(convert_to_uint_from_octal)
     EXPECT_EQ(actual.value(), 0177777u);
 }
 
+TEST_CASE(convert_to_floating_point)
+{
+    auto number_string = "  123.45  "sv;
+    auto maybe_number = AK::StringUtils::convert_to_floating_point<float>(number_string, TrimWhitespace::Yes);
+    EXPECT_APPROXIMATE(maybe_number.value(), 123.45f);
+}
+
 TEST_CASE(ends_with)
 {
-    DeprecatedString test_string = "ABCDEF";
+    ByteString test_string = "ABCDEF";
     EXPECT(AK::StringUtils::ends_with(test_string, "DEF"sv, CaseSensitivity::CaseSensitive));
     EXPECT(AK::StringUtils::ends_with(test_string, "ABCDEF"sv, CaseSensitivity::CaseSensitive));
     EXPECT(!AK::StringUtils::ends_with(test_string, "ABCDE"sv, CaseSensitivity::CaseSensitive));
@@ -332,7 +339,7 @@ TEST_CASE(ends_with)
 
 TEST_CASE(starts_with)
 {
-    DeprecatedString test_string = "ABCDEF";
+    ByteString test_string = "ABCDEF";
     EXPECT(AK::StringUtils::starts_with(test_string, "ABC"sv, CaseSensitivity::CaseSensitive));
     EXPECT(AK::StringUtils::starts_with(test_string, "ABCDEF"sv, CaseSensitivity::CaseSensitive));
     EXPECT(!AK::StringUtils::starts_with(test_string, "BCDEF"sv, CaseSensitivity::CaseSensitive));
@@ -343,7 +350,7 @@ TEST_CASE(starts_with)
 
 TEST_CASE(contains)
 {
-    DeprecatedString test_string = "ABCDEFABCXYZ";
+    ByteString test_string = "ABCDEFABCXYZ";
     EXPECT(AK::StringUtils::contains(test_string, "ABC"sv, CaseSensitivity::CaseSensitive));
     EXPECT(AK::StringUtils::contains(test_string, "ABC"sv, CaseSensitivity::CaseInsensitive));
     EXPECT(AK::StringUtils::contains(test_string, "AbC"sv, CaseSensitivity::CaseInsensitive));
@@ -361,7 +368,7 @@ TEST_CASE(contains)
     EXPECT(!AK::StringUtils::contains(test_string, "L"sv, CaseSensitivity::CaseSensitive));
     EXPECT(!AK::StringUtils::contains(test_string, "L"sv, CaseSensitivity::CaseInsensitive));
 
-    DeprecatedString command_palette_bug_string = "Go Go Back";
+    ByteString command_palette_bug_string = "Go Go Back";
     EXPECT(AK::StringUtils::contains(command_palette_bug_string, "Go Back"sv, AK::CaseSensitivity::CaseSensitive));
     EXPECT(AK::StringUtils::contains(command_palette_bug_string, "gO bAcK"sv, AK::CaseSensitivity::CaseInsensitive));
 }
@@ -390,7 +397,7 @@ TEST_CASE(trim)
 
 TEST_CASE(find)
 {
-    DeprecatedString test_string = "1234567";
+    ByteString test_string = "1234567";
     EXPECT_EQ(AK::StringUtils::find(test_string, "1"sv).value_or(1), 0u);
     EXPECT_EQ(AK::StringUtils::find(test_string, "2"sv).value_or(2), 1u);
     EXPECT_EQ(AK::StringUtils::find(test_string, "3"sv).value_or(3), 2u);
@@ -398,6 +405,45 @@ TEST_CASE(find)
     EXPECT_EQ(AK::StringUtils::find(test_string, "5"sv).value_or(5), 4u);
     EXPECT_EQ(AK::StringUtils::find(test_string, "34"sv).value_or(3), 2u);
     EXPECT_EQ(AK::StringUtils::find(test_string, "78"sv).has_value(), false);
+}
+
+TEST_CASE(find_last)
+{
+    auto test_string = "abcdabc"sv;
+
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, ""sv), 7u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "a"sv), 4u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "b"sv), 5u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "c"sv), 6u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "ab"sv), 4u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "bc"sv), 5u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "abc"sv), 4u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, "abcd"sv), 0u);
+    EXPECT_EQ(AK::StringUtils::find_last(test_string, test_string), 0u);
+
+    EXPECT(!AK::StringUtils::find_last(test_string, "1"sv).has_value());
+    EXPECT(!AK::StringUtils::find_last(test_string, "e"sv).has_value());
+    EXPECT(!AK::StringUtils::find_last(test_string, "abd"sv).has_value());
+}
+
+TEST_CASE(replace_all_overlapping)
+{
+    // Replace only should take into account non-overlapping instances of the
+    // needle, since it is looking to replace them.
+
+    // These samples were grabbed from ADKaster's sample code in
+    // https://github.com/SerenityOS/jakt/issues/1159. This is the equivalent
+    // C++ code that triggered the same bug from Jakt's code generator.
+
+    auto const replace_like_in_jakt = [](StringView source) -> ByteString {
+        ByteString replaced = AK::StringUtils::replace(source, "\\\""sv, "\""sv, ReplaceMode::All);
+        replaced = AK::StringUtils::replace(replaced.view(), "\\\\"sv, "\\"sv, ReplaceMode::All);
+        return replaced;
+    };
+
+    EXPECT_EQ(replace_like_in_jakt("\\\\\\\\\\\\\\\\"sv), "\\\\\\\\"sv);
+    EXPECT_EQ(replace_like_in_jakt(" auto str4 = \"\\\";"sv), " auto str4 = \"\";"sv);
+    EXPECT_EQ(replace_like_in_jakt(" auto str5 = \"\\\\\";"sv), " auto str5 = \"\\\";"sv);
 }
 
 TEST_CASE(to_snakecase)

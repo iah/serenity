@@ -1,10 +1,11 @@
 #!/usr/bin/env -S bash ../.port_include.sh
-port=x265
-version=3.5
-auth_type=sha256
+port='x265'
+version='4.1'
 workdir="${port}_${version}"
-files=("https://bitbucket.org/multicoreware/x265_git/downloads/x265_${version}.tar.gz x265_${version}.tar.gz e70a3335cacacbba0b3a20ec6fecd6783932288ebc8163ad74bcc9606477cae8")
-useconfigure=true
+files=(
+    "https://bitbucket.org/multicoreware/x265_git/downloads/x265_${version}.tar.gz#a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29"
+)
+useconfigure='true'
 
 configopts=(
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"

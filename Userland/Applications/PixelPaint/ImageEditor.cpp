@@ -4,6 +4,7 @@
  * Copyright (c) 2021-2022, Mustafa Quraish <mustafa@serenityos.org>
  * Copyright (c) 2021, David Isaksson <davidisaksson93@gmail.com>
  * Copyright (c) 2022, Timothy Slater <tslater2006@gmail.com>
+ * Copyright (c) 2025, TheOnlyASDK <theonlyasdk@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -30,11 +31,11 @@ constexpr int marching_ant_length = 4;
 
 ImageEditor::ImageEditor(NonnullRefPtr<Image> image)
     : m_image(move(image))
-    , m_title("Untitled")
+    , m_title("Untitled"_string)
     , m_gui_event_loop(Core::EventLoop::current())
 {
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
-    m_undo_stack.push(make<ImageUndoCommand>(*m_image, DeprecatedString()));
+    m_undo_stack.push(make<ImageUndoCommand>(*m_image, ByteString()));
     m_image->add_client(*this);
     m_image->selection().add_client(*this);
     set_original_rect(m_image->rect());
@@ -51,7 +52,7 @@ ImageEditor::ImageEditor(NonnullRefPtr<Image> image)
         m_marching_ants_offset %= (marching_ant_length * 2);
         if (!m_image->selection().is_empty() || m_image->selection().in_interactive_selection())
             update();
-    }).release_value_but_fixme_should_propagate_errors();
+    });
     m_marching_ants_timer->start();
 }
 
@@ -61,7 +62,7 @@ ImageEditor::~ImageEditor()
     m_image->remove_client(*this);
 }
 
-void ImageEditor::did_complete_action(DeprecatedString action_text)
+void ImageEditor::did_complete_action(ByteString action_text)
 {
     set_modified(move(action_text));
 }
@@ -103,20 +104,20 @@ bool ImageEditor::redo()
     return true;
 }
 
-void ImageEditor::set_title(DeprecatedString title)
+void ImageEditor::set_title(String title)
 {
     m_title = move(title);
     if (on_title_change)
         on_title_change(m_title);
 }
 
-void ImageEditor::set_path(DeprecatedString path)
+void ImageEditor::set_path(ByteString path)
 {
     m_path = move(path);
-    set_title(LexicalPath::title(m_path));
+    set_title(String::from_byte_string(LexicalPath::title(m_path)).release_value_but_fixme_should_propagate_errors());
 }
 
-void ImageEditor::set_modified(DeprecatedString action_text)
+void ImageEditor::set_modified(ByteString action_text)
 {
     m_undo_stack.push(make<ImageUndoCommand>(*m_image, move(action_text)));
     update_modified();
@@ -172,15 +173,15 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
         auto event_image_rect = enclosing_int_rect(frame_to_content_rect(event.rect())).inflated(1, 1);
         auto image_rect = m_image->rect().inflated(1, 1).intersected(event_image_rect);
 
-        for (auto i = image_rect.left(); i < image_rect.right(); i++) {
+        for (auto i = image_rect.left(); i < image_rect.right() - 1; i++) {
             auto start_point = content_to_frame_position({ i, image_rect.top() }).to_type<int>();
-            auto end_point = content_to_frame_position({ i, image_rect.bottom() }).to_type<int>();
+            auto end_point = content_to_frame_position({ i, image_rect.bottom() - 1 }).to_type<int>();
             painter.draw_line(start_point, end_point, Color::LightGray);
         }
 
-        for (auto i = image_rect.top(); i < image_rect.bottom(); i++) {
+        for (auto i = image_rect.top(); i < image_rect.bottom() - 1; i++) {
             auto start_point = content_to_frame_position({ image_rect.left(), i }).to_type<int>();
-            auto end_point = content_to_frame_position({ image_rect.right(), i }).to_type<int>();
+            auto end_point = content_to_frame_position({ image_rect.right() - 1, i }).to_type<int>();
             painter.draw_line(start_point, end_point, Color::LightGray);
         }
     }
@@ -189,10 +190,10 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
         for (auto& guide : m_guides) {
             if (guide->orientation() == Guide::Orientation::Horizontal) {
                 int y_coordinate = (int)content_to_frame_position({ 0.0f, guide->offset() }).y();
-                painter.draw_line({ 0, y_coordinate }, { rect().width(), y_coordinate }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+                painter.draw_line({ 0, y_coordinate }, { rect().width(), y_coordinate }, Color::Cyan, 1, Gfx::LineStyle::Dashed, Color::LightGray);
             } else if (guide->orientation() == Guide::Orientation::Vertical) {
                 int x_coordinate = (int)content_to_frame_position({ guide->offset(), 0.0f }).x();
-                painter.draw_line({ x_coordinate, 0 }, { x_coordinate, rect().height() }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+                painter.draw_line({ x_coordinate, 0 }, { x_coordinate, rect().height() }, Color::Cyan, 1, Gfx::LineStyle::Dashed, Color::LightGray);
             }
         }
     }
@@ -227,7 +228,7 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
 
             int const editor_x = content_to_frame_position({ x, 0 }).x();
             painter.draw_line({ editor_x, 0 }, { editor_x, m_ruler_thickness }, ruler_fg_color);
-            painter.draw_text(Gfx::IntRect { { editor_x + 2, 0 }, { m_ruler_thickness, m_ruler_thickness - 2 } }, DeprecatedString::formatted("{}", x), painter.font(), Gfx::TextAlignment::CenterLeft, ruler_text_color);
+            painter.draw_text(Gfx::IntRect { { editor_x + 2, 0 }, { m_ruler_thickness, m_ruler_thickness - 2 } }, ByteString::formatted("{}", x), painter.font(), Gfx::TextAlignment::CenterLeft, ruler_text_color);
         }
 
         // Vertical ruler
@@ -244,12 +245,12 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
 
             int const editor_y = content_to_frame_position({ 0, y }).y();
             painter.draw_line({ 0, editor_y }, { m_ruler_thickness, editor_y }, ruler_fg_color);
-            painter.draw_text(Gfx::IntRect { { 0, editor_y - m_ruler_thickness }, { m_ruler_thickness, m_ruler_thickness } }, DeprecatedString::formatted("{}", y), painter.font(), Gfx::TextAlignment::BottomRight, ruler_text_color);
+            painter.draw_text(Gfx::IntRect { { 0, editor_y - m_ruler_thickness }, { m_ruler_thickness, m_ruler_thickness } }, ByteString::formatted("{}", y), painter.font(), Gfx::TextAlignment::BottomRight, ruler_text_color);
         }
 
         // Mouse position indicator
-        const Gfx::IntPoint indicator_x({ m_mouse_position.x(), m_ruler_thickness });
-        const Gfx::IntPoint indicator_y({ m_ruler_thickness, m_mouse_position.y() });
+        Gfx::IntPoint const indicator_x({ m_mouse_position.x(), m_ruler_thickness });
+        Gfx::IntPoint const indicator_y({ m_ruler_thickness, m_mouse_position.y() });
         painter.draw_triangle(indicator_x, indicator_x + Gfx::IntPoint(-m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), indicator_x + Gfx::IntPoint(m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), mouse_indicator_color);
         painter.draw_triangle(indicator_y, indicator_y + Gfx::IntPoint(-m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), indicator_y + Gfx::IntPoint(-m_mouse_indicator_triangle_size, m_mouse_indicator_triangle_size), mouse_indicator_color);
 
@@ -276,20 +277,23 @@ int ImageEditor::calculate_ruler_step_size() const
 
 Gfx::IntRect ImageEditor::mouse_indicator_rect_x() const
 {
-    const Gfx::IntPoint top_left({ m_ruler_thickness, m_ruler_thickness - m_mouse_indicator_triangle_size });
-    const Gfx::IntSize size({ width() + 1, m_mouse_indicator_triangle_size + 1 });
+    Gfx::IntPoint const top_left({ m_ruler_thickness, m_ruler_thickness - m_mouse_indicator_triangle_size });
+    Gfx::IntSize const size({ width() + 1, m_mouse_indicator_triangle_size + 1 });
     return Gfx::IntRect(top_left, size);
 }
 
 Gfx::IntRect ImageEditor::mouse_indicator_rect_y() const
 {
-    const Gfx::IntPoint top_left({ m_ruler_thickness - m_mouse_indicator_triangle_size, m_ruler_thickness });
-    const Gfx::IntSize size({ m_mouse_indicator_triangle_size + 1, height() + 1 });
+    Gfx::IntPoint const top_left({ m_ruler_thickness - m_mouse_indicator_triangle_size, m_ruler_thickness });
+    Gfx::IntSize const size({ m_mouse_indicator_triangle_size + 1, height() + 1 });
     return Gfx::IntRect(top_left, size);
 }
 
 void ImageEditor::second_paint_event(GUI::PaintEvent& event)
 {
+    if (m_active_layer && m_active_layer->mask_type() != Layer::MaskType::None)
+        m_active_layer->on_second_paint(*this);
+
     if (m_active_tool) {
         if (m_show_rulers) {
             auto clipped_event = GUI::PaintEvent(subtract_rulers_from_rect(event.rect()), event.window_size());
@@ -337,36 +341,50 @@ GUI::MouseEvent ImageEditor::event_adjusted_for_layer(GUI::MouseEvent const& eve
     };
 }
 
-void ImageEditor::set_editor_color_to_color_at_mouse_position(GUI::MouseEvent const& event, bool sample_all_layers = false)
+Optional<Color> ImageEditor::color_from_position(Gfx::IntPoint position, bool sample_all_layers)
 {
-    auto position = event.position();
     Color color;
-    auto layer = active_layer();
+    auto* layer = active_layer();
     if (sample_all_layers) {
         color = image().color_at(position);
     } else {
         if (!layer || !layer->rect().contains(position))
-            return;
+            return {};
         color = layer->currently_edited_bitmap().get_pixel(position);
     }
+    return color;
+}
 
-    set_appended_status_info(DeprecatedString::formatted("R:{}, G:{}, B:{}, A:{} [{}]", color.red(), color.green(), color.blue(), color.alpha(), color.to_deprecated_string()));
+void ImageEditor::set_status_info_to_color_at_mouse_position(Gfx::IntPoint position, bool sample_all_layers)
+{
+    auto const color = color_from_position(position, sample_all_layers);
+    if (!color.has_value())
+        return;
+
+    set_appended_status_info(ByteString::formatted("R:{}, G:{}, B:{}, A:{} [{}]", color->red(), color->green(), color->blue(), color->alpha(), color->to_byte_string()));
+}
+
+void ImageEditor::set_editor_color_to_color_at_mouse_position(GUI::MouseEvent const& event, bool sample_all_layers = false)
+{
+    auto const color = color_from_position(event.position(), sample_all_layers);
+
+    if (!color.has_value())
+        return;
 
     // We picked a transparent pixel, do nothing.
-    if (!color.alpha())
+    if (!color->alpha())
         return;
 
     if (event.buttons() & GUI::MouseButton::Primary)
-        set_primary_color(color);
+        set_primary_color(*color);
     if (event.buttons() & GUI::MouseButton::Secondary)
-        set_secondary_color(color);
+        set_secondary_color(*color);
 }
 
 void ImageEditor::mousedown_event(GUI::MouseEvent& event)
 {
     if (event.button() == GUI::MouseButton::Middle) {
         start_panning(event.position());
-        set_override_cursor(Gfx::StandardCursor::Drag);
         return;
     }
 
@@ -411,6 +429,9 @@ void ImageEditor::mousemove_event(GUI::MouseEvent& event)
         GUI::AbstractZoomPanWidget::mousemove_event(event);
         return;
     }
+
+    if (active_tool() == nullptr)
+        return;
 
     auto image_event = event_with_pan_and_scale_applied(event);
     if (on_image_mouse_position_change) {
@@ -464,7 +485,7 @@ void ImageEditor::keydown_event(GUI::KeyEvent& event)
     if (!m_active_tool)
         return;
 
-    if (!m_active_tool->is_overriding_alt() && event.key() == Key_Alt)
+    if (!m_active_tool->is_overriding_alt() && event.key() == Key_LeftAlt)
         set_override_cursor(Gfx::StandardCursor::Eyedropper);
 
     if (m_active_tool->on_keydown(event))
@@ -476,6 +497,11 @@ void ImageEditor::keydown_event(GUI::KeyEvent& event)
         return;
     }
 
+    if (event.key() == Key_Space) {
+        start_panning(m_mouse_position);
+        return;
+    }
+
     event.ignore();
 }
 
@@ -484,8 +510,11 @@ void ImageEditor::keyup_event(GUI::KeyEvent& event)
     if (!m_active_tool)
         return;
 
-    if (!m_active_tool->is_overriding_alt() && event.key() == Key_Alt)
+    if (!m_active_tool->is_overriding_alt() && event.key() == Key_LeftAlt)
         update_tool_cursor();
+
+    if (event.key() == Key_Space)
+        stop_panning();
 
     m_active_tool->on_keyup(event);
 }
@@ -738,26 +767,30 @@ void ImageEditor::save_project()
         return;
     auto result = save_project_to_file(response.value().release_stream());
     if (result.is_error()) {
-        GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Could not save {}: {}", path(), result.error()));
+        GUI::MessageBox::show_error(window(), MUST(String::formatted("Could not save {}: {}", path(), result.release_error())));
         return;
     }
     set_unmodified();
+    if (on_file_saved)
+        on_file_saved(path());
 }
 
 void ImageEditor::save_project_as()
 {
-    auto response = FileSystemAccessClient::Client::the().save_file(window(), m_title, "pp");
+    auto response = FileSystemAccessClient::Client::the().save_file(window(), m_title.to_byte_string(), "pp");
     if (response.is_error())
         return;
     auto file = response.release_value();
     auto result = save_project_to_file(file.release_stream());
     if (result.is_error()) {
-        GUI::MessageBox::show_error(window(), DeprecatedString::formatted("Could not save {}: {}", file.filename(), result.error()));
+        GUI::MessageBox::show_error(window(), MUST(String::formatted("Could not save {}: {}", file.filename(), result.release_error())));
         return;
     }
-    set_path(file.filename().to_deprecated_string());
+    set_path(file.filename());
     set_loaded_from_image(false);
     set_unmodified();
+    if (on_file_saved)
+        on_file_saved(path());
 }
 
 ErrorOr<void> ImageEditor::save_project_to_file(NonnullOwnPtr<Core::File> file) const
@@ -778,7 +811,7 @@ ErrorOr<void> ImageEditor::save_project_to_file(NonnullOwnPtr<Core::File> file) 
     TRY(json_guides.finish());
     TRY(json.finish());
 
-    TRY(file->write_entire_buffer(builder.string_view().bytes()));
+    TRY(file->write_until_depleted(builder.string_view().bytes()));
     return {};
 }
 
@@ -807,19 +840,19 @@ void ImageEditor::paint_selection(Gfx::Painter& painter)
 void ImageEditor::draw_marching_ants(Gfx::Painter& painter, Gfx::IntRect const& rect) const
 {
     // Top line
-    for (int x = rect.left(); x <= rect.right(); ++x)
+    for (int x = rect.left(); x < rect.right(); ++x)
         draw_marching_ants_pixel(painter, x, rect.top());
 
     // Right line
-    for (int y = rect.top() + 1; y <= rect.bottom(); ++y)
-        draw_marching_ants_pixel(painter, rect.right(), y);
+    for (int y = rect.top() + 1; y < rect.bottom(); ++y)
+        draw_marching_ants_pixel(painter, rect.right() - 1, y);
 
     // Bottom line
-    for (int x = rect.right() - 1; x >= rect.left(); --x)
-        draw_marching_ants_pixel(painter, x, rect.bottom());
+    for (int x = rect.right() - 2; x >= rect.left(); --x)
+        draw_marching_ants_pixel(painter, x, rect.bottom() - 1);
 
     // Left line
-    for (int y = rect.bottom() - 1; y > rect.top(); --y)
+    for (int y = rect.bottom() - 2; y > rect.top(); --y)
         draw_marching_ants_pixel(painter, rect.left(), y);
 }
 
@@ -834,18 +867,17 @@ void ImageEditor::draw_marching_ants(Gfx::Painter& painter, Mask const& mask) co
     rect.inflate(step * 2, step * 2); // prevent borders from having visible ants if the selection extends beyond it
 
     // Scan the image horizontally to find vertical borders
-    for (int y = rect.top(); y <= rect.bottom(); y += step) {
-
+    for (int y = rect.top(); y < rect.bottom(); y += step) {
         bool previous_selected = false;
-        for (int x = rect.left(); x <= rect.right(); x += step) {
+        for (int x = rect.left(); x < rect.right(); x += step) {
             bool this_selected = mask.get(x, y) > 0;
 
             if (this_selected != previous_selected) {
                 Gfx::IntRect image_pixel { x, y, 1, 1 };
                 auto pixel = content_to_frame_rect(image_pixel).to_type<int>();
-                auto end = max(pixel.top(), pixel.bottom()); // for when the zoom is < 100%
+                auto end = max(pixel.top() + 1, pixel.bottom()); // for when the zoom is < 100%
 
-                for (int pixel_y = pixel.top(); pixel_y <= end; pixel_y++) {
+                for (int pixel_y = pixel.top(); pixel_y < end; pixel_y++) {
                     draw_marching_ants_pixel(painter, pixel.left(), pixel_y);
                 }
             }
@@ -855,20 +887,19 @@ void ImageEditor::draw_marching_ants(Gfx::Painter& painter, Mask const& mask) co
     }
 
     // Scan the image vertically to find horizontal borders
-    for (int x = rect.left(); x <= rect.right(); x += step) {
+    for (int x = rect.left(); x < rect.right(); x += step) {
 
         bool previous_selected = false;
-        for (int y = rect.top(); y <= rect.bottom(); y += step) {
+        for (int y = rect.top(); y < rect.bottom(); y += step) {
             bool this_selected = mask.get(x, y) > 0;
 
             if (this_selected != previous_selected) {
                 Gfx::IntRect image_pixel { x, y, 1, 1 };
                 auto pixel = content_to_frame_rect(image_pixel).to_type<int>();
-                auto end = max(pixel.left(), pixel.right()); // for when the zoom is < 100%
+                auto end = max(pixel.left() + 1, pixel.right()); // for when the zoom is < 100%
 
-                for (int pixel_x = pixel.left(); pixel_x <= end; pixel_x++) {
+                for (int pixel_x = pixel.left(); pixel_x < end; pixel_x++)
                     draw_marching_ants_pixel(painter, pixel_x, pixel.top());
-                }
             }
 
             previous_selected = this_selected;
@@ -892,11 +923,55 @@ void ImageEditor::selection_did_change()
     update();
 }
 
-void ImageEditor::set_appended_status_info(DeprecatedString new_status_info)
+void ImageEditor::set_appended_status_info(ByteString new_status_info)
 {
     m_appended_status_info = new_status_info;
     if (on_appended_status_info_change)
         on_appended_status_info_change(m_appended_status_info);
+}
+
+ByteString ImageEditor::generate_unique_layer_name(ByteString const& original_layer_name)
+{
+    constexpr StringView copy_string_view = " copy"sv;
+    auto copy_suffix_index = original_layer_name.find_last(copy_string_view);
+    if (!copy_suffix_index.has_value())
+        return ByteString::formatted("{}{}", original_layer_name, copy_string_view);
+
+    auto after_copy_suffix_view = original_layer_name.substring_view(copy_suffix_index.value() + copy_string_view.length());
+    if (!after_copy_suffix_view.is_empty()) {
+        auto after_copy_suffix_number = after_copy_suffix_view.trim_whitespace().to_number<int>();
+        if (!after_copy_suffix_number.has_value())
+            return ByteString::formatted("{}{}", original_layer_name, copy_string_view);
+    }
+
+    auto layer_with_name_exists = [this](auto name) {
+        for (size_t i = 0; i < image().layer_count(); ++i) {
+            if (image().layer(i).name() == name)
+                return true;
+        }
+        return false;
+    };
+
+    auto base_layer_name = original_layer_name.substring_view(0, copy_suffix_index.value());
+    StringBuilder new_layer_name;
+    auto duplicate_name_count = 0;
+    do {
+        new_layer_name.clear();
+        new_layer_name.appendff("{}{} {}", base_layer_name, copy_string_view, ++duplicate_name_count);
+    } while (layer_with_name_exists(new_layer_name.string_view()));
+
+    return new_layer_name.to_byte_string();
+}
+
+Gfx::IntRect ImageEditor::active_layer_visible_rect()
+{
+    if (!active_layer())
+        return {};
+
+    auto scaled_layer_rect = active_layer()->relative_rect().to_type<float>().scaled(scale(), scale()).to_type<int>().translated(content_rect().location());
+    auto visible_editor_rect = ruler_visibility() ? subtract_rulers_from_rect(rect()) : rect();
+    scaled_layer_rect.intersect(visible_editor_rect);
+    return scaled_layer_rect;
 }
 
 }

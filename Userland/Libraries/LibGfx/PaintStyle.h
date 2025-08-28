@@ -12,6 +12,7 @@
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Vector.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Gradients.h>
@@ -25,13 +26,6 @@ public:
     using SamplerFunction = Function<Color(IntPoint)>;
     using PaintFunction = Function<void(SamplerFunction)>;
 
-    friend Painter;
-    friend AntiAliasingPainter;
-
-private:
-    // Simple paint styles can simply override sample_color() if they can easily generate a color from a coordinate.
-    virtual Color sample_color(IntPoint) const { return Color(); };
-
     // Paint styles that have paint time dependent state (e.g. based on the paint size) may find it easier to override paint().
     // If paint() is overridden sample_color() is unused.
     virtual void paint(IntRect physical_bounding_box, PaintFunction paint) const
@@ -39,6 +33,10 @@ private:
         (void)physical_bounding_box;
         paint([this](IntPoint point) { return sample_color(point); });
     }
+
+private:
+    // Simple paint styles can simply override sample_color() if they can easily generate a color from a coordinate.
+    virtual Color sample_color(IntPoint) const { return Color(); }
 };
 
 class SolidColorPaintStyle final : public PaintStyle {
@@ -57,6 +55,89 @@ private:
     }
 
     Color m_color;
+};
+
+class BitmapPaintStyle : public PaintStyle {
+public:
+    static ErrorOr<NonnullRefPtr<BitmapPaintStyle>> create(Bitmap const& bitmap, IntPoint offset = {})
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) BitmapPaintStyle(bitmap, offset));
+    }
+
+    virtual Color sample_color(IntPoint point) const override
+    {
+        point += m_offset;
+        if (m_bitmap->rect().contains(point))
+            return m_bitmap->get_pixel(point);
+        return Color();
+    }
+
+private:
+    BitmapPaintStyle(Bitmap const& bitmap, IntPoint offset)
+        : m_bitmap(bitmap)
+        , m_offset(offset)
+    {
+    }
+
+    NonnullRefPtr<Bitmap const> m_bitmap;
+    IntPoint m_offset;
+};
+
+class RepeatingBitmapPaintStyle : public Gfx::PaintStyle {
+public:
+    static ErrorOr<NonnullRefPtr<RepeatingBitmapPaintStyle>> create(Gfx::Bitmap const& bitmap, Gfx::IntPoint steps, Color fallback)
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) RepeatingBitmapPaintStyle(bitmap, steps, fallback));
+    }
+
+    virtual Color sample_color(Gfx::IntPoint point) const override
+    {
+        point.set_x(point.x() % m_steps.x());
+        point.set_y(point.y() % m_steps.y());
+        if (point.x() < 0 || point.y() < 0 || point.x() >= m_bitmap->width() || point.y() >= m_bitmap->height())
+            return m_fallback;
+        auto px = m_bitmap->get_pixel(point);
+        return px;
+    }
+
+private:
+    RepeatingBitmapPaintStyle(Gfx::Bitmap const& bitmap, Gfx::IntPoint steps, Color fallback)
+        : m_bitmap(bitmap)
+        , m_steps(steps)
+        , m_fallback(fallback)
+    {
+    }
+
+    NonnullRefPtr<Gfx::Bitmap const> m_bitmap;
+    Gfx::IntPoint m_steps;
+    Color m_fallback;
+};
+
+class OffsetPaintStyle : public Gfx::PaintStyle {
+public:
+    static ErrorOr<NonnullRefPtr<OffsetPaintStyle>> create(RefPtr<PaintStyle> other, Gfx::AffineTransform transform)
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) OffsetPaintStyle(move(other), transform));
+    }
+
+    virtual void paint(Gfx::IntRect physical_bounding_box, PaintFunction paint) const override
+    {
+        m_other->paint(m_transform.map(physical_bounding_box), [=, this, paint = move(paint)](SamplerFunction sampler) {
+            paint([=, this, sampler = move(sampler)](Gfx::IntPoint point) {
+                return sampler(m_transform.map(point));
+            });
+        });
+    }
+
+private:
+    OffsetPaintStyle(RefPtr<PaintStyle> other, Gfx::AffineTransform transform)
+        : m_other(move(other))
+        , m_transform(transform)
+    {
+    }
+
+    RefPtr<PaintStyle> m_other;
+    Gfx::AffineTransform m_transform;
 };
 
 class GradientPaintStyle : public PaintStyle {
@@ -80,6 +161,8 @@ public:
     }
 
     ReadonlySpan<ColorStop> color_stops() const { return m_color_stops; }
+    void set_color_stops(Vector<ColorStop>&& color_stops) { m_color_stops = move(color_stops); }
+
     Optional<float> repeat_length() const { return m_repeat_length; }
 
 private:
@@ -209,6 +292,111 @@ private:
         , m_end_radius(end_radius)
     {
     }
+
+    FloatPoint m_start_center;
+    float m_start_radius { 0.0f };
+    FloatPoint m_end_center;
+    float m_end_radius { 0.0f };
+};
+
+// The following paint styles implement the gradients required for SVGs
+
+class SVGGradientPaintStyle : public GradientPaintStyle {
+public:
+    void set_gradient_transform(Gfx::AffineTransform transform);
+
+    enum class SpreadMethod {
+        Pad,
+        Repeat,
+        Reflect
+    };
+
+    void set_spread_method(SpreadMethod spread_method)
+    {
+        m_spread_method = spread_method;
+    }
+
+    void set_inverse_transform(AffineTransform transform) { m_inverse_transform = transform; }
+    void set_scale(float scale) { m_scale = scale; }
+
+protected:
+    Optional<AffineTransform> const& scale_adjusted_inverse_gradient_transform() const { return m_inverse_transform; }
+    float gradient_transform_scale() const { return m_scale; }
+    SpreadMethod spread_method() const { return m_spread_method; }
+
+private:
+    Optional<AffineTransform> m_inverse_transform {};
+    float m_scale = 1.0f;
+    SpreadMethod m_spread_method { SpreadMethod::Pad };
+};
+
+class SVGLinearGradientPaintStyle final : public SVGGradientPaintStyle {
+public:
+    static ErrorOr<NonnullRefPtr<SVGLinearGradientPaintStyle>> create(FloatPoint p0, FloatPoint p1)
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) SVGLinearGradientPaintStyle(p0, p1));
+    }
+
+    void set_start_point(FloatPoint start_point)
+    {
+        m_p0 = start_point;
+    }
+
+    void set_end_point(FloatPoint end_point)
+    {
+        m_p1 = end_point;
+    }
+
+    SVGLinearGradientPaintStyle(FloatPoint p0, FloatPoint p1)
+        : m_p0(p0)
+        , m_p1(p1)
+    {
+    }
+
+private:
+    virtual void paint(IntRect physical_bounding_box, PaintFunction paint) const override;
+
+    FloatPoint m_p0;
+    FloatPoint m_p1;
+};
+
+class SVGRadialGradientPaintStyle final : public SVGGradientPaintStyle {
+public:
+    static ErrorOr<NonnullRefPtr<SVGRadialGradientPaintStyle>> create(FloatPoint start_center, float start_radius, FloatPoint end_center, float end_radius)
+    {
+        return adopt_nonnull_ref_or_enomem(new (nothrow) SVGRadialGradientPaintStyle(start_center, start_radius, end_center, end_radius));
+    }
+
+    void set_start_center(FloatPoint start_center)
+    {
+        m_start_center = start_center;
+    }
+
+    void set_start_radius(float start_radius)
+    {
+        m_start_radius = start_radius;
+    }
+
+    void set_end_center(FloatPoint end_center)
+    {
+        m_end_center = end_center;
+    }
+
+    void set_end_radius(float end_radius)
+    {
+        m_end_radius = end_radius;
+    }
+
+    SVGRadialGradientPaintStyle(FloatPoint start_center, float start_radius, FloatPoint end_center, float end_radius)
+        : m_start_center(start_center)
+        , m_start_radius(start_radius)
+        , m_end_center(end_center)
+        , m_end_radius(end_radius)
+    {
+    }
+
+private:
+    virtual void paint(IntRect physical_bounding_box, PaintFunction paint) const override;
 
     FloatPoint m_start_center;
     float m_start_radius { 0.0f };

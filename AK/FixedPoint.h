@@ -15,6 +15,10 @@
 #ifndef KERNEL
 #    include <AK/Math.h>
 #endif
+#ifndef __SIZEOF_INT128__
+#    include <AK/UFixedBigInt.h>
+#    include <AK/UFixedBigIntDivision.h>
+#endif
 
 // Solaris' definition of signbit in math_c99.h conflicts with our implementation.
 #ifdef AK_OS_SOLARIS
@@ -66,19 +70,7 @@ public:
     template<Integral I>
     explicit constexpr operator I() const
     {
-        I value = m_value >> precision;
-        // fract(m_value) >= .5?
-        if (m_value & (1u << (precision - 1))) {
-            // fract(m_value) > .5?
-            if (m_value & (radix_mask >> 2u)) {
-                // yes: round "up";
-                value += (m_value > 0 ? 1 : -1);
-            } else {
-                //  no: round to even;
-                value += value & 1;
-            }
-        }
-        return value;
+        return trunc().raw() >> precision;
     }
 
     static constexpr This create_raw(Underlying value)
@@ -111,9 +103,27 @@ public:
         return *this;
     }
 
-    constexpr This round() const
+    constexpr This rint() const
     {
-        return This { static_cast<Underlying>(*this) };
+        // Note: Round fair, break tie to even
+        Underlying value = m_value >> precision;
+
+        // Note: For negative numbers the ordering are reversed,
+        //       and they were already decremented by the shift, so we need to
+        //       add 1 when we see a fract values behind the `.5`s place set,
+        //       because that means they are smaller than .5
+        // fract(m_value) >= .5?
+        if (m_value & (static_cast<Underlying>(1) << (precision - 1))) {
+            // fract(m_value) > .5?
+            if (m_value & (radix_mask >> 1)) {
+                // yes: round "up";
+                value += 1;
+            } else {
+                //  no: round to even;
+                value += value & 1;
+            }
+        }
+        return value;
     }
     constexpr This floor() const
     {
@@ -122,24 +132,24 @@ public:
     constexpr This ceil() const
     {
         return create_raw((m_value & ~radix_mask)
-            + (m_value & radix_mask ? 1 << precision : 0));
+            + (m_value & radix_mask ? static_cast<Underlying>(1) << precision : 0));
     }
-    constexpr This trunk() const
+    constexpr This trunc() const
     {
         return create_raw((m_value & ~radix_mask)
             + ((m_value & radix_mask)
-                    ? (m_value > 0 ? 0 : (1 << precision))
+                    ? (m_value > 0 ? 0 : (static_cast<Underlying>(1) << precision))
                     : 0));
     }
 
-    constexpr Underlying lround() const { return static_cast<Underlying>(*this); }
+    constexpr Underlying lrint() const { return rint().raw() >> precision; }
     constexpr Underlying lfloor() const { return m_value >> precision; }
     constexpr Underlying lceil() const
     {
         return (m_value >> precision)
             + (m_value & radix_mask ? 1 : 0);
     }
-    constexpr Underlying ltrunk() const
+    constexpr Underlying ltrunc() const
     {
         return (m_value >> precision)
             + ((m_value & radix_mask)
@@ -151,7 +161,7 @@ public:
     constexpr This log2() const
     {
         // 0.5
-        This b = create_raw(1 << (precision - 1));
+        This b = create_raw(static_cast<Underlying>(1) << (precision - 1));
         This y = 0;
         This x = *this;
 
@@ -202,38 +212,78 @@ public:
     }
     constexpr This operator*(This const& other) const
     {
-        // FIXME: Potential Overflow, although result could be represented accurately
-        Underlying value = m_value * other.raw();
-        This ret {};
-        ret.raw() = value >> precision;
-        // fract(value) >= .5?
-        if (value & (1u << (precision - 1))) {
-            // fract(value) > .5?
-            if (value & (radix_mask >> 2u)) {
-                // yes: round up;
-                ret.raw() += (value > 0 ? 1 : -1);
+#ifdef __SIZEOF_INT128__
+        // FIXME: Figure out a nicer way to use more narrow types and avoid __int128
+        using MulRes = Conditional<sizeof(Underlying) < sizeof(i64), i64, __int128>;
+        MulRes value = raw();
+        value *= other.raw();
+
+        This ret = create_raw(value >> precision);
+#else
+        // Note: We sign extend the raw value to a u128 to emulate the signed multiplication
+        //       done in the version above
+        // FIXME: Provide narrower intermediate results types
+        u128 value = { (u64)(i64)raw(), ~0ull * (raw() < 0) };
+        value *= (u64)(i64)other.raw();
+
+        This ret = create_raw((value >> precision).low());
+#endif
+        // Rounding:
+        // If last bit cut off is 1:
+        if (value & (static_cast<Underlying>(1) << (precision - 1))) {
+            // If the bit after is 1 as well
+            if (value & (radix_mask >> 1)) {
+                // We round away from 0
+                ret.raw() += 1;
             } else {
-                //  no: round to even (aka unset last sigificant bit);
-                ret.raw() += m_value & 1;
+                // Otherwise we round to the next even value
+                // Which means we add the least significant bit of the raw return value
+                ret.raw() += ret.raw() & 1;
             }
         }
         return ret;
     }
     constexpr This operator/(This const& other) const
     {
-        // FIXME: Better rounding?
-        return create_raw((m_value / other.m_value) << (precision));
+#ifdef __SIZEOF_INT128__
+        // FIXME: Figure out a nicer way to use more narrow types and avoid __int128
+        using DivRes = Conditional<sizeof(Underlying) < sizeof(i64), i64, __int128>;
+
+        DivRes value = raw();
+        value <<= precision;
+        value /= other.raw();
+
+        return create_raw(value);
+#else
+        // Note: We sign extend the raw value to a u128 to emulate the wide division
+        //       done in the version above
+        if constexpr (sizeof(Underlying) > sizeof(u32)) {
+            u128 value = { (u64)(i64)raw(), ~0ull * (raw() < 0) };
+
+            value <<= precision;
+            value /= (u64)(i64)other.raw();
+
+            return create_raw(value.low());
+        }
+        // FIXME: Maybe allow going even narrower
+        using DivRes = Conditional<sizeof(Underlying) < sizeof(i32), i32, i64>;
+        DivRes value = raw();
+        value <<= precision;
+        value /= other.raw();
+
+        return create_raw(value);
+#endif
     }
 
     template<Integral I>
     constexpr This operator+(I other) const
     {
-        return create_raw(m_value + (other << precision));
+        return create_raw(m_value + (static_cast<Underlying>(other) << precision));
     }
     template<Integral I>
     constexpr This operator-(I other) const
     {
-        return create_raw(m_value - (other << precision));
+        return create_raw(m_value - (static_cast<Underlying>(other) << precision));
     }
     template<Integral I>
     constexpr This operator*(I other) const
@@ -268,39 +318,25 @@ public:
     }
     This& operator*=(This const& other)
     {
-        Underlying value = m_value * other.raw();
-        m_value = value >> precision;
-        // fract(value) >= .5?
-        if (value & (1u << (precision - 1))) {
-            // fract(value) > .5?
-            if (value & (radix_mask >> 2u)) {
-                // yes: round up;
-                m_value += (value > 0 ? 1 : -1);
-            } else {
-                //  no: round to even (aka unset last sigificant bit);
-                m_value += m_value & 1;
-            }
-        }
+        *this = *this * other;
         return *this;
     }
     This& operator/=(This const& other)
     {
-        // FIXME: See above
-        m_value /= other.raw();
-        m_value <<= precision;
+        *this = *this / other;
         return *this;
     }
 
     template<Integral I>
     This& operator+=(I other)
     {
-        m_value += other << precision;
+        m_value += static_cast<Underlying>(other) << precision;
         return *this;
     }
     template<Integral I>
     This& operator-=(I other)
     {
-        m_value -= other << precision;
+        m_value -= static_cast<Underlying>(other) << precision;
         return *this;
     }
     template<Integral I>
@@ -335,7 +371,7 @@ public:
     bool operator<(This const& other) const { return raw() < other.raw(); }
     bool operator<=(This const& other) const { return raw() <= other.raw(); }
 
-    // FIXE: There are probably better ways to do these
+    // FIXME: There are probably better ways to do these
     template<Integral I>
     bool operator==(I other) const
     {
@@ -359,7 +395,7 @@ public:
     template<Integral I>
     bool operator<(I other) const
     {
-        return (m_value >> precision) < other || m_value < (other << precision);
+        return (m_value >> precision) < other || m_value < (static_cast<Underlying>(other) << precision);
     }
     template<Integral I>
     bool operator<=(I other) const
@@ -367,6 +403,7 @@ public:
         return *this < other || *this == other;
     }
 
+#ifndef KERNEL
     // Casting from a float should be faster than casting to a float
     template<FloatingPoint F>
     bool operator==(F other) const { return *this == (This)other; }
@@ -380,6 +417,7 @@ public:
     bool operator<(F other) const { return *this < (This)other; }
     template<FloatingPoint F>
     bool operator<=(F other) const { return *this <= (This)other; }
+#endif
 
     template<size_t P, typename U>
     operator FixedPoint<P, U>() const
@@ -416,19 +454,21 @@ struct Formatter<FixedPoint<precision, Underlying>> : StandardFormatter {
     ErrorOr<void> format(FormatBuilder& builder, FixedPoint<precision, Underlying> value)
     {
         u8 base;
-        bool upper_case;
-        FormatBuilder::RealNumberDisplayMode real_number_display_mode = FormatBuilder::RealNumberDisplayMode::General;
+        bool upper_case = false;
         if (m_mode == Mode::Default || m_mode == Mode::FixedPoint) {
             base = 10;
-            upper_case = false;
-            if (m_mode == Mode::FixedPoint)
-                real_number_display_mode = FormatBuilder::RealNumberDisplayMode::FixedPoint;
         } else if (m_mode == Mode::Hexfloat) {
             base = 16;
-            upper_case = false;
         } else if (m_mode == Mode::HexfloatUppercase) {
             base = 16;
             upper_case = true;
+        } else if (m_mode == Mode::Binary) {
+            base = 2;
+        } else if (m_mode == Mode::BinaryUppercase) {
+            base = 2;
+            upper_case = true;
+        } else if (m_mode == Mode::Octal) {
+            base = 8;
         } else {
             VERIFY_NOT_REACHED();
         }
@@ -440,10 +480,10 @@ struct Formatter<FixedPoint<precision, Underlying>> : StandardFormatter {
         if constexpr (IsSigned<Underlying>)
             is_negative = value < 0;
 
-        i64 integer = value.ltrunk();
+        i64 integer = value.ltrunc();
         constexpr u64 one = static_cast<Underlying>(1) << precision;
         u64 fraction_raw = value.raw() & (one - 1);
-        return builder.put_fixed_point(is_negative, integer, fraction_raw, one, base, upper_case, m_zero_pad, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode, real_number_display_mode);
+        return builder.put_fixed_point(is_negative, integer, fraction_raw, one, precision, base, upper_case, m_zero_pad, m_use_separator, m_align, m_width.value(), m_precision.value(), m_fill, m_sign_mode);
     }
 };
 

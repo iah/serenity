@@ -19,7 +19,7 @@ public:
     static void initialize_for_disabled_master_pic();
     static void initialize_for_disabled_slave_pic();
     virtual ~SpuriousInterruptHandler();
-    virtual bool handle_interrupt(RegisterState const& regs) override;
+    virtual bool handle_interrupt() override;
 
     void register_handler(GenericInterruptHandler&);
     void unregister_handler(GenericInterruptHandler&);
@@ -28,7 +28,6 @@ public:
 
     virtual size_t sharing_devices_count() const override { return 1; }
     virtual bool is_shared_handler() const override { return false; }
-    virtual bool is_sharing_with_others() const override { return false; }
 
     virtual HandlerType type() const override { return HandlerType::SpuriousInterruptHandler; }
     virtual StringView purpose() const override;

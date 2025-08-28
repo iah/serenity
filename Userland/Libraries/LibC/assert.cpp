@@ -16,8 +16,6 @@
 
 extern "C" {
 
-extern bool __stdio_is_initialized;
-
 void __assertion_failed(char const* msg)
 {
     if (__heap_is_stable) {
@@ -30,7 +28,7 @@ void __assertion_failed(char const* msg)
         { "assertion", strlen("assertion") },
         { msg, strlen(msg) },
     };
-    syscall(SC_prctl, PR_SET_COREDUMP_METADATA_VALUE, &params, nullptr);
+    syscall(SC_prctl, PR_SET_COREDUMP_METADATA_VALUE, &params, nullptr, nullptr);
     abort();
 }
 }

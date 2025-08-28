@@ -6,10 +6,10 @@
 
 #include <AK/Badge.h>
 #include <AK/ByteBuffer.h>
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
-#include <AK/URL.h>
+#include <LibURL/URL.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/HttpCommon.h>
 #include <RequestServer/HttpsProtocol.h>
@@ -22,9 +22,14 @@ HttpsProtocol::HttpsProtocol()
 {
 }
 
-OwnPtr<Request> HttpsProtocol::start_request(ConnectionFromClient& client, DeprecatedString const& method, const URL& url, HashMap<DeprecatedString, DeprecatedString> const& headers, ReadonlyBytes body, Core::ProxyData proxy_data)
+OwnPtr<Request> HttpsProtocol::start_request(i32 request_id, ConnectionFromClient& client, ByteString const& method, URL::URL const& url, HTTP::HeaderMap const& headers, ReadonlyBytes body, Core::ProxyData proxy_data)
 {
-    return Detail::start_request(Badge<HttpsProtocol> {}, client, method, url, headers, body, get_pipe_for_request(), proxy_data);
+    return Detail::start_request(Badge<HttpsProtocol> {}, request_id, client, method, url, headers, body, get_pipe_for_request(), proxy_data);
+}
+
+void HttpsProtocol::install()
+{
+    Protocol::install(adopt_own(*new HttpsProtocol()));
 }
 
 }

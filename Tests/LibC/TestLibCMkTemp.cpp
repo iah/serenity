@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/DeprecatedString.h>
-#include <LibCore/DeprecatedFile.h>
+#include <AK/ByteString.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibTest/TestCase.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -23,7 +23,7 @@ TEST_CASE(test_mktemp_unique_filename)
 
     if (fork() == 0) {
         char path[] = "/tmp/test.mktemp.XXXXXX";
-        auto temp_path = DeprecatedString::formatted("{}", mktemp(path));
+        auto temp_path = ByteString::formatted("{}", mktemp(path));
         EXPECT(temp_path.characters());
         unlink(path);
 
@@ -33,10 +33,10 @@ TEST_CASE(test_mktemp_unique_filename)
     } else {
         wait(NULL);
 
-        auto path1 = DeprecatedString::formatted("{}", reinterpret_cast<char const*>(ptr));
+        auto path1 = ByteString::formatted("{}", reinterpret_cast<char const*>(ptr));
 
         char path[] = "/tmp/test.mktemp.XXXXXX";
-        auto path2 = DeprecatedString::formatted("{}", mktemp(path));
+        auto path2 = ByteString::formatted("{}", mktemp(path));
         EXPECT(path2.characters());
         unlink(path);
 
@@ -53,7 +53,7 @@ TEST_CASE(test_mkdtemp_unique_filename)
 
     if (fork() == 0) {
         char path[] = "/tmp/test.mkdtemp.XXXXXX";
-        auto temp_path = DeprecatedString::formatted("{}", mkdtemp(path));
+        auto temp_path = ByteString::formatted("{}", mkdtemp(path));
         EXPECT(temp_path.characters());
         rmdir(path);
 
@@ -63,10 +63,10 @@ TEST_CASE(test_mkdtemp_unique_filename)
     } else {
         wait(NULL);
 
-        auto path1 = DeprecatedString::formatted("{}", reinterpret_cast<char const*>(ptr));
+        auto path1 = ByteString::formatted("{}", reinterpret_cast<char const*>(ptr));
 
         char path[] = "/tmp/test.mkdtemp.XXXXXX";
-        auto path2 = DeprecatedString::formatted("{}", mkdtemp(path));
+        auto path2 = ByteString::formatted("{}", mkdtemp(path));
         EXPECT(path2.characters());
         rmdir(path);
 
@@ -86,10 +86,7 @@ TEST_CASE(test_mkstemp_unique_filename)
         auto fd = mkstemp(path);
         EXPECT_NE(fd, -1);
 
-        auto temp_path_or_error = Core::DeprecatedFile::read_link(DeprecatedString::formatted("/proc/{}/fd/{}", getpid(), fd));
-        EXPECT(!temp_path_or_error.is_error());
-
-        auto temp_path = temp_path_or_error.release_value();
+        auto temp_path = TRY_OR_FAIL(FileSystem::read_link(ByteString::formatted("/proc/{}/fd/{}", getpid(), fd)));
         EXPECT(temp_path.characters());
 
         close(fd);
@@ -101,16 +98,13 @@ TEST_CASE(test_mkstemp_unique_filename)
     } else {
         wait(NULL);
 
-        auto path1 = DeprecatedString::formatted("{}", reinterpret_cast<char const*>(ptr));
+        auto path1 = ByteString::formatted("{}", reinterpret_cast<char const*>(ptr));
 
         char path[] = "/tmp/test.mkstemp.XXXXXX";
         auto fd = mkstemp(path);
         EXPECT(fd != -1);
 
-        auto path2_or_error = Core::DeprecatedFile::read_link(DeprecatedString::formatted("/proc/{}/fd/{}", getpid(), fd));
-        EXPECT(!path2_or_error.is_error());
-
-        auto path2 = path2_or_error.release_value();
+        auto path2 = TRY_OR_FAIL(FileSystem::read_link(ByteString::formatted("/proc/{}/fd/{}", getpid(), fd)));
         EXPECT(path2.characters());
 
         close(fd);
@@ -132,10 +126,7 @@ TEST_CASE(test_mkstemps_unique_filename)
         auto fd = mkstemps(path, 6);
         EXPECT_NE(fd, -1);
 
-        auto temp_path_or_error = Core::DeprecatedFile::read_link(DeprecatedString::formatted("/proc/{}/fd/{}", getpid(), fd));
-        EXPECT(!temp_path_or_error.is_error());
-
-        auto temp_path = temp_path_or_error.release_value();
+        auto temp_path = TRY_OR_FAIL(FileSystem::read_link(ByteString::formatted("/proc/{}/fd/{}", getpid(), fd)));
         EXPECT(temp_path.characters());
 
         close(fd);
@@ -151,16 +142,13 @@ TEST_CASE(test_mkstemps_unique_filename)
     } else {
         wait(NULL);
 
-        auto path1 = DeprecatedString::formatted("{}", reinterpret_cast<char const*>(ptr));
+        auto path1 = ByteString::formatted("{}", reinterpret_cast<char const*>(ptr));
 
         char path[] = "/tmp/test.mkstemps.prefixXXXXXXsuffix";
         auto fd = mkstemps(path, 6);
         EXPECT(fd != -1);
 
-        auto path2_or_error = Core::DeprecatedFile::read_link(DeprecatedString::formatted("/proc/{}/fd/{}", getpid(), fd));
-        EXPECT(!path2_or_error.is_error());
-
-        auto path2 = path2_or_error.release_value();
+        auto path2 = TRY_OR_FAIL(FileSystem::read_link(ByteString::formatted("/proc/{}/fd/{}", getpid(), fd)));
         EXPECT(path2.characters());
 
         close(fd);

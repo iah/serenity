@@ -1,9 +1,11 @@
 /*
  * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2023, Luke Wilde <lukew@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <LibIDL/Types.h>
 
 namespace IDL {
@@ -70,13 +72,12 @@ bool Type::includes_undefined() const
 }
 
 // https://webidl.spec.whatwg.org/#dfn-distinguishable
-bool Type::is_distinguishable_from(IDL::Type const& other) const
+bool Type::is_distinguishable_from(IDL::Interface const& interface, IDL::Type const& other) const
 {
     // 1. If one type includes a nullable type and the other type either includes a nullable type,
     //    is a union type with flattened member types including a dictionary type, or is a dictionary type,
     //    return false.
-    // FIXME: "is a union type with flattened member types including a dictionary type, or is a dictionary type,"
-    if (includes_nullable_type() && other.includes_nullable_type())
+    if (includes_nullable_type() && (other.includes_nullable_type() || (other.is_union() && any_of(other.as_union().flattened_member_types(), [&interface](auto const& type) { return interface.dictionaries.contains(type->name()); })) || interface.dictionaries.contains(other.name())))
         return false;
 
     // 2. If both types are either a union type or nullable union type, return true if each member type
@@ -87,7 +88,7 @@ bool Type::is_distinguishable_from(IDL::Type const& other) const
 
         for (auto& this_member_type : this_union.member_types()) {
             for (auto& other_member_type : other_union.member_types()) {
-                if (!this_member_type->is_distinguishable_from(other_member_type))
+                if (!this_member_type->is_distinguishable_from(interface, other_member_type))
                     return false;
             }
         }
@@ -101,7 +102,7 @@ bool Type::is_distinguishable_from(IDL::Type const& other) const
         auto const& non_union = is_union() ? other : *this;
 
         for (auto& member_type : the_union.member_types()) {
-            if (!non_union.is_distinguishable_from(member_type))
+            if (!non_union.is_distinguishable_from(interface, member_type))
                 return false;
         }
         return true;
@@ -147,7 +148,7 @@ bool Type::is_distinguishable_from(IDL::Type const& other) const
     };
     // clang-format on
 
-    auto determine_category = [](Type const& type) -> DistinguishabilityCategory {
+    auto determine_category = [&interface](Type const& type) -> DistinguishabilityCategory {
         if (type.is_undefined())
             return DistinguishabilityCategory::Undefined;
         if (type.is_boolean())
@@ -164,13 +165,18 @@ bool Type::is_distinguishable_from(IDL::Type const& other) const
             return DistinguishabilityCategory::Symbol;
         // FIXME: InterfaceLike - see below
         // FIXME: CallbackFunction
-        // FIXME: DictionaryLike
+        // DictionaryLike
+        // * Dictionary Types
+        // * Record Types
+        // FIXME: * Callback Interface Types
+        if (interface.dictionaries.contains(type.name()) || (type.is_parameterized() && type.name() == "record"sv))
+            return DistinguishabilityCategory::DictionaryLike;
         // FIXME: Frozen array types are included in "sequence-like"
         if (type.is_sequence())
             return DistinguishabilityCategory::SequenceLike;
 
         // FIXME: For lack of a better way of determining if something is an interface type, this just assumes anything we don't recognise is one.
-        dbgln("Unable to determine category for type named '{}', assuming it's an interface type.", type.name());
+        dbgln_if(IDL_DEBUG, "Unable to determine category for type named '{}', assuming it's an interface type.", type.name());
         return DistinguishabilityCategory::InterfaceLike;
     };
 
@@ -178,38 +184,118 @@ bool Type::is_distinguishable_from(IDL::Type const& other) const
     auto other_distinguishability = determine_category(other_innermost_type);
 
     if (this_distinguishability == DistinguishabilityCategory::InterfaceLike && other_distinguishability == DistinguishabilityCategory::InterfaceLike) {
-        // Two interface-likes are distinguishable if:
-        // "The two identified interface-like types are not the same, and no single platform object
-        // implements both interface-like types."
-        // FIXME: Implement this.
-        return false;
+        // The two identified interface-like types are not the same, and
+        // FIXME: no single platform object implements both interface-like types.
+        return this_innermost_type.name() != other_innermost_type.name();
     }
 
     return table[to_underlying(this_distinguishability)][to_underlying(other_distinguishability)];
 }
 
-// https://webidl.spec.whatwg.org/#dfn-distinguishing-argument-index
-int EffectiveOverloadSet::distinguishing_argument_index()
+// https://webidl.spec.whatwg.org/#dfn-json-types
+bool Type::is_json(Interface const& interface) const
 {
-    for (auto argument_index = 0u; argument_index < m_argument_count; ++argument_index) {
-        bool found_indistinguishable = false;
+    // The JSON types are:
+    // - numeric types,
+    if (is_numeric())
+        return true;
 
-        for (auto first_item_index = 0u; first_item_index < m_items.size(); ++first_item_index) {
-            for (auto second_item_index = first_item_index + 1; second_item_index < m_items.size(); ++second_item_index) {
-                if (!m_items[first_item_index].types[argument_index]->is_distinguishable_from(m_items[second_item_index].types[argument_index])) {
-                    found_indistinguishable = true;
-                    break;
-                }
-            }
-            if (found_indistinguishable)
-                break;
+    // - boolean,
+    if (is_boolean())
+        return true;
+
+    // - string types,
+    if (is_string() || interface.enumerations.find(m_name) != interface.enumerations.end())
+        return true;
+
+    // - object,
+    if (is_object())
+        return true;
+
+    // - nullable types whose inner type is a JSON type,
+    // - annotated types whose inner type is a JSON type,
+    // NOTE: We don't separate nullable and annotated into separate types.
+
+    // - union types whose member types are JSON types,
+    if (is_union()) {
+        auto const& union_type = as_union();
+
+        for (auto const& type : union_type.member_types()) {
+            if (!type->is_json(interface))
+                return false;
         }
 
-        if (!found_indistinguishable)
-            return argument_index;
+        return true;
     }
 
-    VERIFY_NOT_REACHED();
+    // - typedefs whose type being given a new name is a JSON type,
+    auto typedef_iterator = interface.typedefs.find(m_name);
+    if (typedef_iterator != interface.typedefs.end())
+        return typedef_iterator->value.type->is_json(interface);
+
+    // - sequence types whose parameterized type is a JSON type,
+    // - frozen array types whose parameterized type is a JSON type,
+    // - records where all of their values are JSON types,
+    if (is_parameterized() && m_name.is_one_of("sequence", "FrozenArray", "record")) {
+        auto const& parameterized_type = as_parameterized();
+
+        for (auto const& parameter : parameterized_type.parameters()) {
+            if (!parameter->is_json(interface))
+                return false;
+        }
+
+        return true;
+    }
+
+    // - dictionary types where the types of all members declared on the dictionary and all its inherited dictionaries are JSON types,
+    auto dictionary_iterator = interface.dictionaries.find(m_name);
+    if (dictionary_iterator != interface.dictionaries.end()) {
+        auto const& dictionary = dictionary_iterator->value;
+        for (auto const& member : dictionary.members) {
+            if (!member.type->is_json(interface))
+                return false;
+        }
+
+        return true;
+    }
+
+    // - interface types that have a toJSON operation declared on themselves or one of their inherited interfaces.
+    Optional<Interface const&> current_interface_for_to_json;
+    if (m_name == interface.name) {
+        current_interface_for_to_json = interface;
+    } else {
+        // NOTE: Interface types must have the IDL file of their interface imported.
+        //       Though the type name may not refer to an interface, so we don't assert this here.
+        auto imported_interface_iterator = interface.imported_modules.find_if([this](IDL::Interface const& imported_interface) {
+            return imported_interface.name == m_name;
+        });
+
+        if (imported_interface_iterator != interface.imported_modules.end())
+            current_interface_for_to_json = *imported_interface_iterator;
+    }
+
+    while (current_interface_for_to_json.has_value()) {
+        auto to_json_iterator = current_interface_for_to_json->functions.find_if([](IDL::Function const& function) {
+            return function.name == "toJSON"sv;
+        });
+
+        if (to_json_iterator != current_interface_for_to_json->functions.end())
+            return true;
+
+        if (current_interface_for_to_json->parent_name.is_empty())
+            break;
+
+        auto imported_interface_iterator = current_interface_for_to_json->imported_modules.find_if([&current_interface_for_to_json](IDL::Interface const& imported_interface) {
+            return imported_interface.name == current_interface_for_to_json->parent_name;
+        });
+
+        // Inherited interfaces must have their IDL files imported.
+        VERIFY(imported_interface_iterator != interface.imported_modules.end());
+
+        current_interface_for_to_json = *imported_interface_iterator;
+    }
+
+    return false;
 }
 
 void EffectiveOverloadSet::remove_all_other_entries()

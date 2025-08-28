@@ -1,16 +1,17 @@
 /*
  * Copyright (c) 2021, Jan de Visser <jan@de-visser.net>
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Checked.h>
-#include <AK/DeprecatedString.h>
 #include <AK/Format.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
@@ -39,7 +40,8 @@ class Value {
 
 public:
     explicit Value(SQLType sql_type = SQLType::Null);
-    explicit Value(DeprecatedString);
+    explicit Value(String);
+    explicit Value(ByteString);
     explicit Value(double);
     Value(Value const&);
     Value(Value&&);
@@ -57,6 +59,9 @@ public:
     {
     }
 
+    explicit Value(UnixDateTime);
+    explicit Value(Duration);
+
     static ResultOr<Value> create_tuple(NonnullRefPtr<TupleDescriptor>);
     static ResultOr<Value> create_tuple(Vector<Value>);
 
@@ -68,13 +73,14 @@ public:
 
     [[nodiscard]] auto const& value() const
     {
-        VERIFY(m_value.has_value());
         return *m_value;
     }
 
-    [[nodiscard]] DeprecatedString to_deprecated_string() const;
+    [[nodiscard]] ErrorOr<String> to_string() const;
+    [[nodiscard]] ByteString to_byte_string() const;
     [[nodiscard]] Optional<double> to_double() const;
     [[nodiscard]] Optional<bool> to_bool() const;
+    [[nodiscard]] Optional<UnixDateTime> to_unix_date_time() const;
     [[nodiscard]] Optional<Vector<Value>> to_vector() const;
 
     template<Integer T>
@@ -84,11 +90,8 @@ public:
             return {};
 
         return m_value->visit(
-            [](DeprecatedString const& value) -> Optional<T> {
-                if constexpr (IsSigned<T>)
-                    return value.to_int<T>();
-                else
-                    return value.to_uint<T>();
+            [](ByteString const& value) -> Optional<T> {
+                return value.to_number<T>();
             },
             [](Integer auto value) -> Optional<T> {
                 if (!AK::is_within_range<T>(value))
@@ -105,7 +108,7 @@ public:
     }
 
     Value& operator=(Value);
-    Value& operator=(DeprecatedString);
+    Value& operator=(ByteString);
     Value& operator=(double);
 
     Value& operator=(Integer auto value)
@@ -169,7 +172,7 @@ private:
         Vector<Value> values;
     };
 
-    using ValueType = Variant<DeprecatedString, i64, u64, double, bool, TupleValue>;
+    using ValueType = Variant<ByteString, i64, u64, double, bool, TupleValue>;
 
     static ResultOr<NonnullRefPtr<TupleDescriptor>> infer_tuple_descriptor(Vector<Value> const& values);
     Value(NonnullRefPtr<TupleDescriptor> descriptor, Vector<Value> values);
@@ -184,7 +187,7 @@ template<>
 struct AK::Formatter<SQL::Value> : Formatter<StringView> {
     ErrorOr<void> format(FormatBuilder& builder, SQL::Value const& value)
     {
-        return Formatter<StringView>::format(builder, value.to_deprecated_string());
+        return Formatter<StringView>::format(builder, value.to_byte_string());
     }
 };
 

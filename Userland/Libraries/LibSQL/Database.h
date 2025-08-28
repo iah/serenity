@@ -7,9 +7,9 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
+#include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
-#include <LibCore/Object.h>
 #include <LibSQL/Forward.h>
 #include <LibSQL/Heap.h>
 #include <LibSQL/Meta.h>
@@ -23,23 +23,23 @@ namespace SQL {
  * to store in it. It has BTree pointers for B-Trees holding the definitions
  * of tables, columns, indexes, and other SQL objects.
  */
-class Database : public Core::Object {
-    C_OBJECT(Database);
-
+class Database : public RefCounted<Database> {
 public:
-    ~Database() override;
+    static ErrorOr<NonnullRefPtr<Database>> create(ByteString);
+    ~Database();
 
     ResultOr<void> open();
     bool is_open() const { return m_open; }
     ErrorOr<void> commit();
+    ErrorOr<size_t> file_size_in_bytes() const { return m_heap->file_size_in_bytes(); }
 
     ResultOr<void> add_schema(SchemaDef const&);
-    static Key get_schema_key(DeprecatedString const&);
-    ResultOr<NonnullRefPtr<SchemaDef>> get_schema(DeprecatedString const&);
+    static Key get_schema_key(ByteString const&);
+    ResultOr<NonnullRefPtr<SchemaDef>> get_schema(ByteString const&);
 
     ResultOr<void> add_table(TableDef& table);
-    static Key get_table_key(DeprecatedString const&, DeprecatedString const&);
-    ResultOr<NonnullRefPtr<TableDef>> get_table(DeprecatedString const&, DeprecatedString const&);
+    static Key get_table_key(ByteString const&, ByteString const&);
+    ResultOr<NonnullRefPtr<TableDef>> get_table(ByteString const&, ByteString const&);
 
     ErrorOr<Vector<Row>> select_all(TableDef&);
     ErrorOr<Vector<Row>> match(TableDef&, Key const&);
@@ -48,7 +48,7 @@ public:
     ErrorOr<void> update(Row&);
 
 private:
-    explicit Database(DeprecatedString);
+    explicit Database(NonnullRefPtr<Heap>);
 
     bool m_open { false };
     NonnullRefPtr<Heap> m_heap;

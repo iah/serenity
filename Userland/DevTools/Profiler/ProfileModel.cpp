@@ -74,22 +74,21 @@ int ProfileModel::column_count(GUI::ModelIndex const&) const
     return Column::__Count;
 }
 
-DeprecatedString ProfileModel::column_name(int column) const
+ErrorOr<String> ProfileModel::column_name(int column) const
 {
     switch (column) {
     case Column::SampleCount:
-        return m_profile.show_percentages() ? "% Samples" : "# Samples";
+        return m_profile.show_percentages() ? "% Samples"_string : "# Samples"_string;
     case Column::SelfCount:
-        return m_profile.show_percentages() ? "% Self" : "# Self";
+        return m_profile.show_percentages() ? "% Self"_string : "# Self"_string;
     case Column::ObjectName:
-        return "Object";
+        return "Object"_string;
     case Column::StackFrame:
-        return "Stack Frame";
+        return "Stack Frame"_string;
     case Column::SymbolAddress:
-        return "Symbol Address";
+        return "Symbol Address"_string;
     default:
         VERIFY_NOT_REACHED();
-        return {};
     }
 }
 
@@ -127,7 +126,7 @@ GUI::Variant ProfileModel::data(GUI::ModelIndex const& index, GUI::ModelRole rol
             return node->object_name();
         if (index.column() == Column::StackFrame) {
             if (node->is_root()) {
-                return DeprecatedString::formatted("{} ({})", node->process().basename, node->process().pid);
+                return ByteString::formatted("{} ({})", node->process().basename, node->process().pid);
             }
             return node->symbol();
         }
@@ -137,7 +136,7 @@ GUI::Variant ProfileModel::data(GUI::ModelIndex const& index, GUI::ModelRole rol
             auto const* library = node->process().library_metadata.library_containing(node->address());
             if (!library)
                 return "";
-            return DeprecatedString::formatted("{:p} (offset {:p})", node->address(), node->address() - library->base);
+            return ByteString::formatted("{:p} (offset {:p})", node->address(), node->address() - library->base);
         }
         return {};
     }

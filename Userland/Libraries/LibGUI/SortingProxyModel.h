@@ -24,7 +24,7 @@ public:
     virtual int tree_column() const override { return m_source->tree_column(); }
     virtual int row_count(ModelIndex const& = ModelIndex()) const override;
     virtual int column_count(ModelIndex const& = ModelIndex()) const override;
-    virtual DeprecatedString column_name(int) const override;
+    virtual ErrorOr<String> column_name(int) const override;
     virtual Variant data(ModelIndex const&, ModelRole = ModelRole::Display) const override;
     virtual void invalidate() override;
     virtual StringView drag_data_type() const override;
@@ -34,7 +34,7 @@ public:
     virtual bool is_searchable() const override;
     virtual void set_data(ModelIndex const&, Variant const&) override;
     virtual Vector<ModelIndex> matches(StringView, unsigned = MatchesFlag::AllMatching, ModelIndex const& = ModelIndex()) override;
-    virtual bool accepts_drag(ModelIndex const&, Vector<DeprecatedString> const& mime_types) const override;
+    virtual bool accepts_drag(ModelIndex const&, Core::MimeData const&) const override;
 
     virtual bool is_column_sortable(int column_index) const override;
 
@@ -48,9 +48,10 @@ public:
 
     virtual void sort(int column, SortOrder) override;
 
-private:
+protected:
     explicit SortingProxyModel(NonnullRefPtr<Model> source);
 
+private:
     // NOTE: The internal_data() of indices points to the corresponding Mapping object for that index.
     struct Mapping {
         Vector<int> source_rows;

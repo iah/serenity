@@ -8,8 +8,8 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/Concepts.h>
-#include <AK/DeprecatedString.h>
 #include <LibGUI/Icon.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/Font.h>
@@ -21,7 +21,7 @@ namespace Detail {
 struct Boolean {
     bool value;
 };
-using VariantUnderlyingType = AK::Variant<Empty, Boolean, float, i32, i64, u32, u64, DeprecatedString, Color, Gfx::IntPoint, Gfx::IntSize, Gfx::IntRect, Gfx::TextAlignment, Gfx::ColorRole, Gfx::AlignmentRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole, NonnullRefPtr<Gfx::Bitmap const>, NonnullRefPtr<Gfx::Font const>, GUI::Icon>;
+using VariantUnderlyingType = AK::Variant<Empty, Boolean, float, double, i32, i64, u32, u64, ByteString, Color, Gfx::IntPoint, Gfx::IntSize, Gfx::IntRect, Gfx::TextAlignment, Gfx::WindowThemeProvider, Gfx::ColorRole, Gfx::AlignmentRole, Gfx::WindowThemeRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole, NonnullRefPtr<Gfx::Bitmap const>, NonnullRefPtr<Gfx::Font const>, GUI::Icon>;
 }
 
 class Variant : public Detail::VariantUnderlyingType {
@@ -29,8 +29,6 @@ public:
     using Detail::VariantUnderlyingType::Variant;
     using Detail::VariantUnderlyingType::operator=;
 
-    Variant(JsonValue const&);
-    Variant& operator=(JsonValue const&);
     Variant(bool v)
         : Variant(Detail::Boolean { v })
     {
@@ -43,15 +41,15 @@ public:
 
     template<typename T>
     Variant(T&& value)
-    requires(IsConstructible<DeprecatedString, T>)
-        : Variant(DeprecatedString(forward<T>(value)))
+    requires(IsConstructible<ByteString, T>)
+        : Variant(ByteString(forward<T>(value)))
     {
     }
     template<typename T>
     Variant& operator=(T&& v)
-    requires(IsConstructible<DeprecatedString, T>)
+    requires(IsConstructible<ByteString, T>)
     {
-        set(DeprecatedString(v));
+        set(ByteString(v));
         return *this;
     }
 
@@ -76,7 +74,8 @@ public:
     bool is_u32() const { return has<u32>(); }
     bool is_u64() const { return has<u64>(); }
     bool is_float() const { return has<float>(); }
-    bool is_string() const { return has<DeprecatedString>(); }
+    bool is_double() const { return has<double>(); }
+    bool is_string() const { return has<ByteString>(); }
     bool is_bitmap() const { return has<NonnullRefPtr<Gfx::Bitmap const>>(); }
     bool is_color() const { return has<Color>(); }
     bool is_icon() const { return has<GUI::Icon>(); }
@@ -90,6 +89,7 @@ public:
     bool is_flag_role() const { return has<Gfx::FlagRole>(); }
     bool is_metric_role() const { return has<Gfx::MetricRole>(); }
     bool is_path_role() const { return has<Gfx::PathRole>(); }
+    bool is_window_theme_role() const { return has<Gfx::WindowThemeRole>(); }
 
     bool as_bool() const { return get<Detail::Boolean>().value; }
 
@@ -98,12 +98,11 @@ public:
         return visit(
             [](Empty) { return false; },
             [](Detail::Boolean v) { return v.value; },
-            [](DeprecatedString const& v) { return !v.is_null(); },
             [](Integral auto v) { return v != 0; },
             [](Gfx::IntPoint const& v) { return !v.is_zero(); },
             [](OneOf<Gfx::IntRect, Gfx::IntSize> auto const& v) { return !v.is_empty(); },
             [](Enum auto const&) { return true; },
-            [](OneOf<float, DeprecatedString, Color, NonnullRefPtr<Gfx::Font const>, NonnullRefPtr<Gfx::Bitmap const>, GUI::Icon> auto const&) { return true; });
+            [](OneOf<float, double, ByteString, Color, NonnullRefPtr<Gfx::Font const>, NonnullRefPtr<Gfx::Bitmap const>, GUI::Icon> auto const&) { return true; });
     }
 
     i32 as_i32() const { return get<i32>(); }
@@ -119,11 +118,8 @@ public:
             [](Integral auto v) { return static_cast<T>(v); },
             [](FloatingPoint auto v) { return (T)v; },
             [](Detail::Boolean v) -> T { return v.value ? 1 : 0; },
-            [](DeprecatedString const& v) {
-                if constexpr (IsUnsigned<T>)
-                    return v.to_uint<T>().value_or(0u);
-                else
-                    return v.to_int<T>().value_or(0);
+            [](ByteString const& v) {
+                return v.to_number<T>().value_or(0);
             },
             [](Enum auto const&) -> T { return 0; },
             [](OneOf<Gfx::IntPoint, Gfx::IntRect, Gfx::IntSize, Color, NonnullRefPtr<Gfx::Font const>, NonnullRefPtr<Gfx::Bitmap const>, GUI::Icon> auto const&) -> T { return 0; });
@@ -140,14 +136,22 @@ public:
         return fallback;
     }
 
+    double as_double() const { return get<double>(); }
     Gfx::IntPoint as_point() const { return get<Gfx::IntPoint>(); }
     Gfx::IntSize as_size() const { return get<Gfx::IntSize>(); }
     Gfx::IntRect as_rect() const { return get<Gfx::IntRect>(); }
-    DeprecatedString as_string() const { return get<DeprecatedString>(); }
+    ByteString as_string() const { return get<ByteString>(); }
     Gfx::Bitmap const& as_bitmap() const { return *get<NonnullRefPtr<Gfx::Bitmap const>>(); }
     GUI::Icon as_icon() const { return get<GUI::Icon>(); }
     Color as_color() const { return get<Color>(); }
     Gfx::Font const& as_font() const { return *get<NonnullRefPtr<Gfx::Font const>>(); }
+
+    Gfx::WindowThemeProvider to_window_theme_provider(Gfx::WindowThemeProvider default_value) const
+    {
+        if (auto const* p = get_pointer<Gfx::WindowThemeProvider>())
+            return *p;
+        return default_value;
+    }
 
     Gfx::TextAlignment to_text_alignment(Gfx::TextAlignment default_value) const
     {
@@ -168,6 +172,13 @@ public:
         if (auto const* p = get_pointer<Gfx::AlignmentRole>())
             return *p;
         return Gfx::AlignmentRole::NoRole;
+    }
+
+    Gfx::WindowThemeRole to_window_theme_role() const
+    {
+        if (auto const* p = get_pointer<Gfx::WindowThemeRole>())
+            return *p;
+        return Gfx::WindowThemeRole::NoRole;
     }
 
     Gfx::FlagRole to_flag_role() const
@@ -195,27 +206,29 @@ public:
     {
         if (auto const* p = get_pointer<Color>())
             return *p;
-        if (auto const* p = get_pointer<DeprecatedString>())
+        if (auto const* p = get_pointer<ByteString>())
             return Color::from_string(*p).value_or(default_value);
         return default_value;
     }
 
-    DeprecatedString to_deprecated_string() const
+    ByteString to_byte_string() const
     {
         return visit(
-            [](Empty) -> DeprecatedString { return "[null]"; },
-            [](DeprecatedString v) { return v; },
-            [](Gfx::TextAlignment v) { return DeprecatedString::formatted("Gfx::TextAlignment::{}", Gfx::to_string(v)); },
-            [](Gfx::ColorRole v) { return DeprecatedString::formatted("Gfx::ColorRole::{}", Gfx::to_string(v)); },
-            [](Gfx::AlignmentRole v) { return DeprecatedString::formatted("Gfx::AlignmentRole::{}", Gfx::to_string(v)); },
-            [](Gfx::FlagRole v) { return DeprecatedString::formatted("Gfx::FlagRole::{}", Gfx::to_string(v)); },
-            [](Gfx::MetricRole v) { return DeprecatedString::formatted("Gfx::MetricRole::{}", Gfx::to_string(v)); },
-            [](Gfx::PathRole v) { return DeprecatedString::formatted("Gfx::PathRole::{}", Gfx::to_string(v)); },
-            [](NonnullRefPtr<Gfx::Font const> const& font) { return DeprecatedString::formatted("[Font: {}]", font->name()); },
-            [](NonnullRefPtr<Gfx::Bitmap const> const&) -> DeprecatedString { return "[Gfx::Bitmap]"; },
-            [](GUI::Icon const&) -> DeprecatedString { return "[GUI::Icon]"; },
-            [](Detail::Boolean v) { return DeprecatedString::formatted("{}", v.value); },
-            [](auto const& v) { return DeprecatedString::formatted("{}", v); });
+            [](Empty) -> ByteString { return "[null]"; },
+            [](ByteString v) { return v; },
+            [](Gfx::TextAlignment v) { return ByteString::formatted("Gfx::TextAlignment::{}", Gfx::to_string(v)); },
+            [](Gfx::WindowThemeProvider v) { return ByteString::formatted("Gfx::WindowThemeProvider::{}", Gfx::to_string(v)); },
+            [](Gfx::ColorRole v) { return ByteString::formatted("Gfx::ColorRole::{}", Gfx::to_string(v)); },
+            [](Gfx::AlignmentRole v) { return ByteString::formatted("Gfx::AlignmentRole::{}", Gfx::to_string(v)); },
+            [](Gfx::WindowThemeRole v) { return ByteString::formatted("Gfx::WindowThemeRole::{}", Gfx::to_string(v)); },
+            [](Gfx::FlagRole v) { return ByteString::formatted("Gfx::FlagRole::{}", Gfx::to_string(v)); },
+            [](Gfx::MetricRole v) { return ByteString::formatted("Gfx::MetricRole::{}", Gfx::to_string(v)); },
+            [](Gfx::PathRole v) { return ByteString::formatted("Gfx::PathRole::{}", Gfx::to_string(v)); },
+            [](NonnullRefPtr<Gfx::Font const> const& font) { return ByteString::formatted("[Font: {}]", font->name()); },
+            [](NonnullRefPtr<Gfx::Bitmap const> const&) -> ByteString { return "[Gfx::Bitmap]"; },
+            [](GUI::Icon const&) -> ByteString { return "[GUI::Icon]"; },
+            [](Detail::Boolean v) { return ByteString::formatted("{}", v.value); },
+            [](auto const& v) { return ByteString::formatted("{}", v); });
     }
 
     bool operator==(Variant const&) const;

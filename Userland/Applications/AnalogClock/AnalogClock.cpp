@@ -10,14 +10,15 @@
 #include <LibGUI/Window.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/Path.h>
+#include <LibTimeZone/TimeZone.h>
 
-void AnalogClock::draw_graduations(GUI::Painter& painter, Gfx::IntRect& rect, int x, int y)
+void AnalogClock::draw_graduations(GUI::Painter& painter, Gfx::IntRect rect, int x, int y)
 {
-    rect.set_x(x);
-    rect.set_y(y);
+    rect.set_location({ x, y });
 
     painter.fill_rect(rect, palette().active_window_border2());
 
+    rect.shrink(0, 1, 1, 0);
     painter.draw_line(rect.top_left(), rect.top_right(), palette().threed_highlight());
     painter.draw_line(rect.bottom_left(), rect.bottom_right(), palette().active_window_border1().darkened(0.7f));
     painter.draw_line(rect.bottom_right(), rect.top_right(), palette().active_window_border1().darkened(0.7f));
@@ -79,7 +80,7 @@ void AnalogClock::draw_hand(GUI::Painter& painter, double angle, double length, 
     hand_fill.line_to(static_cast<Gfx::FloatPoint>(right_wing_point));
     hand_fill.close();
 
-    painter.fill_path(hand_fill, hand_color, Gfx::Painter::WindingRule::Nonzero);
+    painter.fill_path(hand_fill, hand_color, Gfx::WindingRule::Nonzero);
 
     // Draw highlight depending on the angle, this creates a subtle 3d effect.
     // remember the angle value is offset by half pi.
@@ -96,7 +97,7 @@ void AnalogClock::draw_hand(GUI::Painter& painter, double angle, double length, 
         painter.draw_line(left_wing_point, indicator_point, palette().threed_highlight());
         painter.draw_line(left_wing_point, tail_point, palette().threed_highlight());
     }
-};
+}
 
 void AnalogClock::draw_seconds_hand(GUI::Painter& painter, double angle)
 {
@@ -112,9 +113,21 @@ void AnalogClock::paint_event(GUI::PaintEvent& event)
     GUI::Painter painter(*this);
     painter.clear_rect(event.rect(), m_show_window_frame ? palette().window() : Gfx::Color::Transparent);
 
+    if (m_show_time_zone) {
+        painter.draw_text(
+            Gfx::IntRect { { event.rect().width() / 2, (int)(event.rect().height() - m_clock_face_radius) / 2 }, {} },
+            m_time_zone,
+            Gfx::FontDatabase::default_font().bold_variant(),
+            Gfx::TextAlignment::Center);
+    }
+
     draw_face(painter);
 
-    auto time = Core::DateTime::now();
+    auto now_seconds = Core::DateTime::now().timestamp();
+    auto maybe_time_zone_offset = TimeZone::get_time_zone_offset(m_time_zone, UnixDateTime::from_seconds_since_epoch(now_seconds));
+    VERIFY(maybe_time_zone_offset.has_value());
+
+    auto time = Core::DateTime::from_timestamp(now_seconds + maybe_time_zone_offset.value().seconds);
     auto minute = time.minute() * (2 * M_PI) / 60;
     auto hour = (minute + (2 * M_PI) * time.hour()) / 12;
     auto seconds = time.second() * (2 * M_PI) / 60;
@@ -130,7 +143,7 @@ void AnalogClock::paint_event(GUI::PaintEvent& event)
 
 void AnalogClock::update_title_date()
 {
-    window()->set_title(Core::DateTime::now().to_deprecated_string("%Y-%m-%d"sv));
+    window()->set_title(Core::DateTime::now().to_byte_string("%Y-%m-%d"sv));
 }
 
 void AnalogClock::context_menu_event(GUI::ContextMenuEvent& event)

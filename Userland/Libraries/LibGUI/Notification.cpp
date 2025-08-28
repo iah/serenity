@@ -22,7 +22,8 @@ class ConnectionToNotificationServer final
 public:
     virtual void die() override
     {
-        m_notification->connection_closed();
+        if (!m_notification->m_destroyed)
+            m_notification->connection_closed();
     }
 
 private:
@@ -42,7 +43,7 @@ void Notification::show()
     VERIFY(!m_shown && !m_destroyed);
     auto icon = m_icon ? m_icon->to_shareable_bitmap() : Gfx::ShareableBitmap();
     m_connection = ConnectionToNotificationServer::try_create(this).release_value_but_fixme_should_propagate_errors();
-    m_connection->show_notification(m_text, m_title, icon);
+    m_connection->show_notification(m_text, m_title, icon, m_launch_url);
     m_shown = true;
 }
 
@@ -72,6 +73,11 @@ bool Notification::update()
     if (m_icon_dirty) {
         m_connection->update_notification_icon(m_icon ? m_icon->to_shareable_bitmap() : Gfx::ShareableBitmap());
         m_icon_dirty = false;
+    }
+
+    if (m_launch_url_dirty) {
+        m_connection->update_notification_launch_url(m_launch_url);
+        m_launch_url_dirty = false;
     }
 
     return true;

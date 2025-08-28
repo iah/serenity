@@ -5,22 +5,22 @@
  */
 
 #include <AK/StringBuilder.h>
-#include <AK/URL.h>
 #include <LibGemini/GeminiRequest.h>
+#include <LibURL/URL.h>
 
 namespace Gemini {
 
-ByteBuffer GeminiRequest::to_raw_request() const
+ErrorOr<ByteBuffer> GeminiRequest::to_raw_request() const
 {
     StringBuilder builder;
-    builder.append(m_url.to_deprecated_string());
-    builder.append("\r\n"sv);
+    TRY(builder.try_append(m_url.to_byte_string()));
+    TRY(builder.try_append("\r\n"sv));
     return builder.to_byte_buffer();
 }
 
 Optional<GeminiRequest> GeminiRequest::from_raw_request(ByteBuffer const& raw_request)
 {
-    URL url = StringView(raw_request);
+    URL::URL url = StringView(raw_request);
     if (!url.is_valid())
         return {};
     GeminiRequest request;

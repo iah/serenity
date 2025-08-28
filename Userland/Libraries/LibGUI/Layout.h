@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,29 +9,25 @@
 #include <AK/OwnPtr.h>
 #include <AK/Vector.h>
 #include <AK/WeakPtr.h>
-#include <LibCore/Object.h>
 #include <LibGUI/Forward.h>
 #include <LibGUI/Margins.h>
+#include <LibGUI/Object.h>
 #include <LibGUI/UIDimensions.h>
 #include <LibGfx/Forward.h>
 
-namespace Core {
-namespace Registration {
-extern Core::ObjectClassRegistration registration_Layout;
-}
+namespace GUI::Registration {
+extern GUI::ObjectClassRegistration registration_Layout;
 }
 
-#define REGISTER_LAYOUT(namespace_, class_name)                                                                                                       \
-    namespace Core {                                                                                                                                  \
-    namespace Registration {                                                                                                                          \
-    Core::ObjectClassRegistration registration_##class_name(                                                                                          \
-        #namespace_ "::" #class_name##sv, []() { return static_ptr_cast<Core::Object>(namespace_::class_name::construct()); }, &registration_Layout); \
-    }                                                                                                                                                 \
+#define REGISTER_LAYOUT(namespace_, class_name)                                                                                                      \
+    namespace GUI::Registration {                                                                                                                    \
+    ::GUI::ObjectClassRegistration registration_##class_name(                                                                                        \
+        #namespace_ "::" #class_name##sv, []() { return static_ptr_cast<GUI::Object>(namespace_::class_name::construct()); }, &registration_Layout); \
     }
 
 namespace GUI {
 
-class Layout : public Core::Object {
+class Layout : public GUI::Object {
     C_OBJECT_ABSTRACT(Layout);
 
 public:
@@ -41,10 +37,6 @@ public:
     void insert_widget_before(Widget& widget, Widget& before_widget);
     void add_layout(OwnPtr<Layout>&&);
     void add_spacer();
-
-    ErrorOr<void> try_add_widget(Widget&);
-    ErrorOr<void> try_insert_widget_before(Widget& widget, Widget& before_widget);
-    ErrorOr<void> try_add_spacer();
 
     void remove_widget(Widget&);
 
@@ -78,7 +70,6 @@ protected:
         OwnPtr<Layout> layout {};
     };
     void add_entry(Entry&&);
-    ErrorOr<void> try_add_entry(Entry&&);
 
     WeakPtr<Widget> m_owner;
     Vector<Entry> m_entries;

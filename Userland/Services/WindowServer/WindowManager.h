@@ -43,8 +43,9 @@ class WindowSwitcher;
 class Button;
 class DndOverlay;
 class WindowGeometryOverlay;
+class TileWindowOverlay;
 
-class WindowManager : public Core::Object {
+class WindowManager : public Core::EventReceiver {
     C_OBJECT(WindowManager)
 
     friend class Compositor;
@@ -79,12 +80,12 @@ public:
     void notify_progress_changed(Window&);
     void notify_modified_changed(Window&);
 
-    Gfx::IntRect tiled_window_rect(Window const&, WindowTileType tile_type = WindowTileType::Maximized, bool relative_to_window_screen = false) const;
+    Gfx::IntRect tiled_window_rect(Window const&, Optional<Screen const&> = {}, WindowTileType tile_type = WindowTileType::Maximized) const;
 
     ConnectionFromClient const* dnd_client() const { return m_dnd_client.ptr(); }
     Core::MimeData const& dnd_mime_data() const { return *m_dnd_mime_data; }
 
-    void start_dnd_drag(ConnectionFromClient&, DeprecatedString const& text, Gfx::Bitmap const*, Core::MimeData const&);
+    void start_dnd_drag(ConnectionFromClient&, ByteString const& text, Gfx::Bitmap const*, Core::MimeData const&);
     void end_dnd_drag();
 
     void set_accepts_drag(bool);
@@ -115,7 +116,7 @@ public:
 
     void move_to_front_and_make_active(Window&);
 
-    Gfx::IntRect desktop_rect(Screen&) const;
+    Gfx::IntRect desktop_rect(Screen const&) const;
     Gfx::IntRect arena_rect_for_type(Screen&, WindowType) const;
 
     Cursor const& active_cursor() const;
@@ -145,9 +146,9 @@ public:
     Gfx::Font const& font() const;
     Gfx::Font const& window_title_font() const;
 
-    bool set_screen_layout(ScreenLayout&&, bool, DeprecatedString&);
+    bool set_screen_layout(ScreenLayout&&, bool, ByteString&);
     ScreenLayout get_screen_layout() const;
-    bool save_screen_layout(DeprecatedString&);
+    bool save_screen_layout(ByteString&);
 
     void set_acceleration_factor(double);
     void set_scroll_step_size(unsigned);
@@ -192,7 +193,7 @@ public:
         if (active_window() && active_window()->is_fullscreen())
             return active_window();
         return nullptr;
-    };
+    }
 
     Window* active_fullscreen_window()
     {
@@ -201,13 +202,14 @@ public:
         return nullptr;
     }
 
-    bool update_theme(DeprecatedString theme_path, DeprecatedString theme_name, bool keep_desktop_background);
+    bool update_theme(ByteString theme_path, ByteString theme_name, bool keep_desktop_background, Optional<ByteString> const& color_scheme_path);
     void invalidate_after_theme_or_font_change();
 
     bool set_theme_override(Core::AnonymousBuffer const& theme_override);
     Optional<Core::AnonymousBuffer> get_theme_override() const;
     void clear_theme_override();
     bool is_theme_overridden() { return m_theme_overridden; }
+    Optional<ByteString> get_preferred_color_scheme() { return m_preferred_color_scheme; }
 
     bool set_hovered_window(Window*);
     void deliver_mouse_event(Window&, MouseEvent const&);
@@ -319,7 +321,7 @@ public:
 
     MultiScaleBitmaps const* overlay_rect_shadow() const { return m_overlay_rect_shadow.ptr(); }
 
-    void apply_cursor_theme(DeprecatedString const& name);
+    void apply_cursor_theme(ByteString const& name);
 
     void set_cursor_highlight_radius(int radius);
     void set_cursor_highlight_color(Gfx::Color color);
@@ -327,7 +329,7 @@ public:
     bool is_cursor_highlight_enabled() const { return m_cursor_highlight_radius > 0 && m_cursor_highlight_enabled; }
 
     void load_system_effects();
-    void apply_system_effects(Vector<bool>, ShowGeometry);
+    void apply_system_effects(Vector<bool>, ShowGeometry, TileWindow);
     SystemEffects& system_effects() { return m_system_effects; }
 
     RefPtr<KeymapSwitcher> keymap_switcher() { return m_keymap_switcher; }
@@ -337,6 +339,12 @@ public:
     void set_automatic_cursor_tracking_window(Window* window) { m_automatic_cursor_tracking_window = window; }
 
     u8 last_processed_buttons() { return m_last_processed_buttons; }
+
+    TileWindowOverlay* get_tile_window_overlay(Window&) const;
+    void start_tile_window_animation(Gfx::IntRect const&);
+    void stop_tile_window_animation();
+
+    void on_add_to_quick_launch(pid_t);
 
 private:
     explicit WindowManager(Gfx::PaletteImpl&);
@@ -432,6 +440,8 @@ private:
 
     Gfx::IntPoint to_floating_cursor_position(Gfx::IntPoint) const;
 
+    void show_tile_window_overlay(Window&, Screen const&, WindowTileType);
+
     DoubleClickInfo m_double_click_info;
     int m_double_click_speed { 0 };
     int m_max_distance_for_double_click { 4 };
@@ -439,6 +449,7 @@ private:
     bool m_mouse_buttons_switched { false };
     bool m_natural_scroll { false };
     bool m_theme_overridden { false };
+    Optional<ByteString> m_preferred_color_scheme { OptionalNone() };
 
     WeakPtr<Window> m_hovered_window;
     WeakPtr<Window> m_highlight_window;
@@ -446,7 +457,10 @@ private:
     WeakPtr<Window> m_automatic_cursor_tracking_window;
 
     OwnPtr<WindowGeometryOverlay> m_geometry_overlay;
+    OwnPtr<TileWindowOverlay> m_tile_window_overlay;
+    RefPtr<Animation> m_tile_window_overlay_animation;
     WeakPtr<Window> m_move_window;
+    WindowTileType m_move_window_suggested_tile { WindowTileType::None };
     Gfx::IntPoint m_move_origin;
     Gfx::IntPoint m_move_window_origin;
     Gfx::IntPoint m_move_window_cursor_position;
@@ -474,7 +488,7 @@ private:
 
     OwnPtr<DndOverlay> m_dnd_overlay;
     WeakPtr<ConnectionFromClient> m_dnd_client;
-    DeprecatedString m_dnd_text;
+    ByteString m_dnd_text;
     bool m_dnd_accepts_drag { false };
 
     RefPtr<Core::MimeData const> m_dnd_mime_data;
@@ -569,8 +583,8 @@ void WindowManager::for_each_window_manager(Callback callback)
     auto& connections = WMConnectionFromClient::s_connections;
 
     // FIXME: this isn't really ordered... does it need to be?
-    for (auto it = connections.begin(); it != connections.end(); ++it) {
-        if (callback(*it->value) == IterationDecision::Break)
+    for (auto [_, connection] : connections) {
+        if (callback(connection) == IterationDecision::Break)
             return;
     }
 }

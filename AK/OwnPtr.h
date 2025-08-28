@@ -106,8 +106,8 @@ public:
 
     void clear()
     {
-        TDeleter {}(m_ptr);
-        m_ptr = nullptr;
+        auto* ptr = exchange(m_ptr, nullptr);
+        TDeleter {}(ptr);
     }
 
     bool operator!() const { return !m_ptr; }
@@ -152,13 +152,13 @@ public:
 
     void swap(OwnPtr& other)
     {
-        ::swap(m_ptr, other.m_ptr);
+        AK::swap(m_ptr, other.m_ptr);
     }
 
     template<typename U>
     void swap(OwnPtr<U>& other)
     {
-        ::swap(m_ptr, other.m_ptr);
+        AK::swap(m_ptr, other.m_ptr);
     }
 
     static OwnPtr lift(T* ptr)
@@ -193,13 +193,20 @@ inline OwnPtr<T> adopt_own_if_nonnull(T* object)
 }
 
 template<typename T>
-struct Traits<OwnPtr<T>> : public GenericTraits<OwnPtr<T>> {
+struct Traits<OwnPtr<T>> : public DefaultTraits<OwnPtr<T>> {
     using PeekType = T*;
     using ConstPeekType = T const*;
     static unsigned hash(OwnPtr<T> const& p) { return ptr_hash(p.ptr()); }
     static bool equals(OwnPtr<T> const& a, OwnPtr<T> const& b) { return a.ptr() == b.ptr(); }
 };
 
+template<typename T>
+struct Formatter<OwnPtr<T>> : Formatter<T*> {
+    ErrorOr<void> format(FormatBuilder& builder, OwnPtr<T> const& value)
+    {
+        return Formatter<T*>::format(builder, value.ptr());
+    }
+};
 }
 
 #if USING_AK_GLOBALLY

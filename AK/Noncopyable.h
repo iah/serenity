@@ -15,3 +15,13 @@ private:                       \
 private:                      \
     c(c&&) = delete;          \
     c& operator=(c&&) = delete
+
+#define AK_MAKE_DEFAULT_MOVABLE(c) \
+public:                            \
+    c(c&&) = default;              \
+    c& operator=(c&&) = default
+
+#define AK_MAKE_DEFAULT_COPYABLE(c) \
+public:                             \
+    c(c const&) = default;          \
+    c& operator=(c const&) = default

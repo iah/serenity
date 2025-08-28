@@ -9,12 +9,9 @@
 
 namespace RequestServer {
 
-// FIXME: What about rollover?
-static i32 s_next_id = 1;
-
-Request::Request(ConnectionFromClient& client, NonnullOwnPtr<Core::File>&& output_stream)
+Request::Request(ConnectionFromClient& client, NonnullOwnPtr<Core::File>&& output_stream, i32 request_id)
     : m_client(client)
-    , m_id(s_next_id++)
+    , m_id(request_id)
     , m_output_stream(move(output_stream))
 {
 }
@@ -24,13 +21,13 @@ void Request::stop()
     m_client.did_finish_request({}, *this, false);
 }
 
-void Request::set_response_headers(HashMap<DeprecatedString, DeprecatedString, CaseInsensitiveStringTraits> const& response_headers)
+void Request::set_response_headers(HTTP::HeaderMap response_headers)
 {
-    m_response_headers = response_headers;
+    m_response_headers = move(response_headers);
     m_client.did_receive_headers({}, *this);
 }
 
-void Request::set_certificate(DeprecatedString, DeprecatedString)
+void Request::set_certificate(ByteString, ByteString)
 {
 }
 
@@ -39,7 +36,7 @@ void Request::did_finish(bool success)
     m_client.did_finish_request({}, *this, success);
 }
 
-void Request::did_progress(Optional<u32> total_size, u32 downloaded_size)
+void Request::did_progress(Optional<u64> total_size, u64 downloaded_size)
 {
     m_total_size = total_size;
     m_downloaded_size = downloaded_size;

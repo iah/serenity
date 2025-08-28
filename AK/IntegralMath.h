@@ -15,7 +15,7 @@ namespace AK {
 template<Integral T>
 constexpr T exp2(T exponent)
 {
-    return 1u << exponent;
+    return static_cast<T>(1) << exponent;
 }
 
 template<Integral T>
@@ -27,12 +27,10 @@ constexpr T log2(T x)
 template<Integral T>
 constexpr T ceil_log2(T x)
 {
-    if (!x)
+    if (x <= 1)
         return 0;
 
-    T log = AK::log2(x);
-    log += (x & ((((T)1) << (log - 1)) - 1)) != 0;
-    return log;
+    return AK::log2(x - 1) + 1;
 }
 
 template<Integral I>
@@ -52,6 +50,48 @@ constexpr I pow(I base, I exponent)
         exponent /= 2u;
     }
     return res;
+}
+
+template<auto base, Unsigned U = decltype(base)>
+constexpr bool is_power_of(U x)
+{
+    if constexpr (base == 1)
+        return x == 1;
+    else if constexpr (base == 2)
+        return is_power_of_two(x);
+
+    if (base == 0 && x == 0)
+        return true;
+    if (base == 0 || x == 0)
+        return false;
+
+    while (x != 1) {
+        if (x % base != 0)
+            return false;
+        x /= base;
+    }
+    return true;
+}
+
+template<Unsigned T>
+constexpr T reinterpret_as_octal(T decimal)
+{
+    T result = 0;
+    T n = 0;
+    while (decimal > 0) {
+        result += pow<T>(8, n++) * (decimal % 10);
+        decimal /= 10;
+    }
+    return result;
+}
+
+template<Unsigned T>
+constexpr MakeSigned<T> sign_extend(T value, u8 bits)
+{
+    // C++ considers the shift by sizeof(T) * 8 UB, and it doesn’t make logical sense to sign-extend 0 bits anyways.
+    VERIFY(bits > 0);
+    auto shift = sizeof(T) * 8 - bits;
+    return static_cast<MakeSigned<T>>(value << shift) >> shift;
 }
 
 }

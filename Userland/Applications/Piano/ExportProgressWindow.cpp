@@ -5,9 +5,9 @@
  */
 
 #include "ExportProgressWindow.h"
-#include "LibGUI/Icon.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <Applications/Piano/ExportProgressWidget.h>
+#include <LibGUI/Icon.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
@@ -18,14 +18,14 @@ ExportProgressWindow::ExportProgressWindow(GUI::Window& parent_window, Atomic<in
 {
 }
 
-ErrorOr<void> ExportProgressWindow::initialize_fallibles()
+ErrorOr<void> ExportProgressWindow::initialize()
 {
-    auto main_widget = TRY(set_main_widget<GUI::Widget>());
+    auto main_widget = set_main_widget<GUI::Widget>();
     TRY(main_widget->load_from_gml(export_progress_widget));
 
     set_resizable(false);
     set_closeable(false);
-    set_title("Rendering audio");
+    set_title("Rendering Audio");
     set_icon(GUI::Icon::default_icon("app-piano"sv).bitmap_for_size(16));
 
     m_progress_bar = *main_widget->find_descendant_of_type_named<GUI::HorizontalProgressbar>("progress_bar");
@@ -38,7 +38,7 @@ ErrorOr<void> ExportProgressWindow::initialize_fallibles()
 
 void ExportProgressWindow::set_filename(StringView filename)
 {
-    m_label->set_text(DeprecatedString::formatted("Rendering audio to {}…", filename));
+    m_label->set_text(String::formatted("Rendering audio to {}…", filename).release_value_but_fixme_should_propagate_errors());
     update();
 }
 

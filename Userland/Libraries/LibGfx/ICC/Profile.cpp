@@ -5,9 +5,12 @@
  */
 
 #include <AK/Endian.h>
+#include <LibGfx/CIELAB.h>
+#include <LibGfx/CMYKBitmap.h>
 #include <LibGfx/ICC/BinaryFormat.h>
 #include <LibGfx/ICC/Profile.h>
 #include <LibGfx/ICC/Tags.h>
+#include <LibGfx/Matrix3x3.h>
 #include <math.h>
 #include <time.h>
 
@@ -18,45 +21,16 @@ namespace Gfx::ICC {
 
 namespace {
 
-ErrorOr<time_t> parse_date_time_number(DateTimeNumber const& date_time)
+ErrorOr<DateTime> parse_date_time_number(DateTimeNumber const& date_time)
 {
-    // ICC V4, 4.2 dateTimeNumber
-
-    // "Number of the month (1 to 12)"
-    if (date_time.month < 1 || date_time.month > 12)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber month out of bounds");
-
-    // "Number of the day of the month (1 to 31)"
-    if (date_time.day < 1 || date_time.day > 31)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber day out of bounds");
-
-    // "Number of hours (0 to 23)"
-    if (date_time.hours > 23)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber hours out of bounds");
-
-    // "Number of minutes (0 to 59)"
-    if (date_time.minutes > 59)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber minutes out of bounds");
-
-    // "Number of seconds (0 to 59)"
-    // ICC profiles apparently can't be created during leap seconds (seconds would be 60 there, but the spec doesn't allow that).
-    if (date_time.seconds > 59)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber seconds out of bounds");
-
-    struct tm tm = {};
-    tm.tm_year = date_time.year - 1900;
-    tm.tm_mon = date_time.month - 1;
-    tm.tm_mday = date_time.day;
-    tm.tm_hour = date_time.hours;
-    tm.tm_min = date_time.minutes;
-    tm.tm_sec = date_time.seconds;
-    // timegm() doesn't read tm.tm_isdst, tm.tm_wday, and tm.tm_yday, no need to fill them in.
-
-    time_t timestamp = timegm(&tm);
-    if (timestamp == -1)
-        return Error::from_string_literal("ICC::Profile: dateTimeNumber not representable as timestamp");
-
-    return timestamp;
+    return DateTime {
+        .year = date_time.year,
+        .month = date_time.month,
+        .day = date_time.day,
+        .hours = date_time.hours,
+        .minutes = date_time.minutes,
+        .seconds = date_time.seconds,
+    };
 }
 
 ErrorOr<u32> parse_size(ICCHeader const& header, ReadonlyBytes icc_bytes)
@@ -74,7 +48,12 @@ ErrorOr<u32> parse_size(ICCHeader const& header, ReadonlyBytes icc_bytes)
 
     // ICC v4, 7.1.2:
     // "NOTE 1 This implies that the length is required to be a multiple of four."
-    if (header.profile_size % 4 != 0)
+    // The ICC v2 spec doesn't have this note. It instead has:
+    // ICC v2, 6.2.2 Offset:
+    // "All tag data is required to start on a 4-byte boundary"
+    // And indeed, there are files in the wild where the last tag has a size that isn't a multiple of four,
+    // resulting in an ICC file whose size isn't a multiple of four either.
+    if (header.profile_version_major >= 4 && header.profile_size % 4 != 0)
         return Error::from_string_literal("ICC::Profile: Profile size not a multiple of four");
 
     return header.profile_size;
@@ -175,7 +154,7 @@ ErrorOr<ColorSpace> parse_connection_space(ICCHeader const& header)
     return space;
 }
 
-ErrorOr<time_t> parse_creation_date_time(ICCHeader const& header)
+ErrorOr<DateTime> parse_creation_date_time(ICCHeader const& header)
 {
     // ICC v4, 7.2.8 Date and time field
     return parse_date_time_number(header.profile_creation_time);
@@ -267,8 +246,20 @@ ErrorOr<XYZ> parse_pcs_illuminant(ICCHeader const& header)
     // ICC v4, 7.2.16 PCS illuminant field
     XYZ xyz = (XYZ)header.pcs_illuminant;
 
-    /// "The value, when rounded to four decimals, shall be X = 0,9642, Y = 1,0 and Z = 0,8249."
-    if (round(xyz.x * 10'000) != 9'642 || round(xyz.y * 10'000) != 10'000 || round(xyz.z * 10'000) != 8'249)
+    // "The value, when rounded to four decimals, shall be X = 0,9642, Y = 1,0 and Z = 0,8249."
+    // The v2 spec also says that this should be D50 (icc30.pdf, 8.1 "This must correspond to D50.", same in all newer versions of the v2 spec),
+    // but in practice there are v2 profiles with this set to D65 white instead of D50 white.
+    bool is_d65 = (round(xyz.X * 10'000) == 9'505 && round(xyz.Y * 10'000) == 10'000 && round(xyz.Z * 10'000) == 10'890);
+    if (header.profile_version_major <= 2 && is_d65) {
+        // FIXME: We might have to remap other values here too?
+        dbgln("ICC::Profile: PCS illuminant is D65, not D50. Setting to D50 and continuing.");
+        xyz.X = 0.9642;
+        xyz.Y = 1.0;
+        xyz.Z = 0.8249;
+        return xyz;
+    }
+
+    if (header.profile_version_major > 2 && (round(xyz.X * 10'000) != 9'642 || round(xyz.Y * 10'000) != 10'000 || round(xyz.Z * 10'000) != 8'249))
         return Error::from_string_literal("ICC::Profile: Invalid pcs illuminant");
 
     return xyz;
@@ -289,7 +280,7 @@ Optional<Creator> parse_profile_creator(ICCHeader const& header)
 }
 
 template<size_t N>
-bool all_bytes_are_zero(const u8 (&bytes)[N])
+bool all_bytes_are_zero(u8 const (&bytes)[N])
 {
     for (u8 byte : bytes) {
         if (byte != 0)
@@ -326,183 +317,16 @@ ErrorOr<void> parse_reserved(ICCHeader const& header)
 }
 }
 
-URL device_manufacturer_url(DeviceManufacturer device_manufacturer)
+URL::URL device_manufacturer_url(DeviceManufacturer device_manufacturer)
 {
-    return URL(DeprecatedString::formatted("https://www.color.org/signatureRegistry/?entityEntry={:c}{:c}{:c}{:c}-{:08X}",
+    return URL::URL(ByteString::formatted("https://www.color.org/signatureRegistry/?entityEntry={:c}{:c}{:c}{:c}-{:08X}",
         device_manufacturer.c0(), device_manufacturer.c1(), device_manufacturer.c2(), device_manufacturer.c3(), device_manufacturer.value));
 }
 
-URL device_model_url(DeviceModel device_model)
+URL::URL device_model_url(DeviceModel device_model)
 {
-    return URL(DeprecatedString::formatted("https://www.color.org/signatureRegistry/deviceRegistry/?entityEntry={:c}{:c}{:c}{:c}-{:08X}",
+    return URL::URL(ByteString::formatted("https://www.color.org/signatureRegistry/deviceRegistry/?entityEntry={:c}{:c}{:c}{:c}-{:08X}",
         device_model.c0(), device_model.c1(), device_model.c2(), device_model.c3(), device_model.value));
-}
-
-StringView device_class_name(DeviceClass device_class)
-{
-    switch (device_class) {
-    case DeviceClass::InputDevice:
-        return "InputDevice"sv;
-    case DeviceClass::DisplayDevice:
-        return "DisplayDevice"sv;
-    case DeviceClass::OutputDevice:
-        return "OutputDevice"sv;
-    case DeviceClass::DeviceLink:
-        return "DeviceLink"sv;
-    case DeviceClass::ColorSpace:
-        return "ColorSpace"sv;
-    case DeviceClass::Abstract:
-        return "Abstract"sv;
-    case DeviceClass::NamedColor:
-        return "NamedColor"sv;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-StringView data_color_space_name(ColorSpace color_space)
-{
-    switch (color_space) {
-    case ColorSpace::nCIEXYZ:
-        return "nCIEXYZ"sv;
-    case ColorSpace::CIELAB:
-        return "CIELAB"sv;
-    case ColorSpace::CIELUV:
-        return "CIELUV"sv;
-    case ColorSpace::YCbCr:
-        return "YCbCr"sv;
-    case ColorSpace::CIEYxy:
-        return "CIEYxy"sv;
-    case ColorSpace::RGB:
-        return "RGB"sv;
-    case ColorSpace::Gray:
-        return "Gray"sv;
-    case ColorSpace::HSV:
-        return "HSV"sv;
-    case ColorSpace::HLS:
-        return "HLS"sv;
-    case ColorSpace::CMYK:
-        return "CMYK"sv;
-    case ColorSpace::CMY:
-        return "CMY"sv;
-    case ColorSpace::TwoColor:
-        return "2 color"sv;
-    case ColorSpace::ThreeColor:
-        return "3 color (other than XYZ, Lab, Luv, YCbCr, CIEYxy, RGB, HSV, HLS, CMY)"sv;
-    case ColorSpace::FourColor:
-        return "4 color (other than CMYK)"sv;
-    case ColorSpace::FiveColor:
-        return "5 color"sv;
-    case ColorSpace::SixColor:
-        return "6 color"sv;
-    case ColorSpace::SevenColor:
-        return "7 color"sv;
-    case ColorSpace::EightColor:
-        return "8 color"sv;
-    case ColorSpace::NineColor:
-        return "9 color"sv;
-    case ColorSpace::TenColor:
-        return "10 color"sv;
-    case ColorSpace::ElevenColor:
-        return "11 color"sv;
-    case ColorSpace::TwelveColor:
-        return "12 color"sv;
-    case ColorSpace::ThirteenColor:
-        return "13 color"sv;
-    case ColorSpace::FourteenColor:
-        return "14 color"sv;
-    case ColorSpace::FifteenColor:
-        return "15 color"sv;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-static int number_of_components_in_color_space(ColorSpace color_space)
-{
-    switch (color_space) {
-    case ColorSpace::Gray:
-        return 1;
-    case ColorSpace::TwoColor:
-        return 2;
-    case ColorSpace::nCIEXYZ:
-    case ColorSpace::CIELAB:
-    case ColorSpace::CIELUV:
-    case ColorSpace::YCbCr:
-    case ColorSpace::CIEYxy:
-    case ColorSpace::RGB:
-    case ColorSpace::HSV:
-    case ColorSpace::HLS:
-    case ColorSpace::CMY:
-    case ColorSpace::ThreeColor:
-        return 3;
-    case ColorSpace::CMYK:
-    case ColorSpace::FourColor:
-        return 4;
-    case ColorSpace::FiveColor:
-        return 5;
-    case ColorSpace::SixColor:
-        return 6;
-    case ColorSpace::SevenColor:
-        return 7;
-    case ColorSpace::EightColor:
-        return 8;
-    case ColorSpace::NineColor:
-        return 9;
-    case ColorSpace::TenColor:
-        return 10;
-    case ColorSpace::ElevenColor:
-        return 11;
-    case ColorSpace::TwelveColor:
-        return 12;
-    case ColorSpace::ThirteenColor:
-        return 13;
-    case ColorSpace::FourteenColor:
-        return 14;
-    case ColorSpace::FifteenColor:
-        return 15;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-StringView profile_connection_space_name(ColorSpace color_space)
-{
-    switch (color_space) {
-    case ColorSpace::PCSXYZ:
-        return "PCSXYZ"sv;
-    case ColorSpace::PCSLAB:
-        return "PCSLAB"sv;
-    default:
-        return data_color_space_name(color_space);
-    }
-}
-
-StringView primary_platform_name(PrimaryPlatform primary_platform)
-{
-    switch (primary_platform) {
-    case PrimaryPlatform::Apple:
-        return "Apple"sv;
-    case PrimaryPlatform::Microsoft:
-        return "Microsoft"sv;
-    case PrimaryPlatform::SiliconGraphics:
-        return "Silicon Graphics"sv;
-    case PrimaryPlatform::Sun:
-        return "Sun"sv;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-StringView rendering_intent_name(RenderingIntent rendering_intent)
-{
-    switch (rendering_intent) {
-    case RenderingIntent::Perceptual:
-        return "Perceptual"sv;
-    case RenderingIntent::MediaRelativeColorimetric:
-        return "Media-relative colorimetric"sv;
-    case RenderingIntent::Saturation:
-        return "Saturation"sv;
-    case RenderingIntent::ICCAbsoluteColorimetric:
-        return "ICC-absolute colorimetric"sv;
-    }
-    VERIFY_NOT_REACHED();
 }
 
 Flags::Flags() = default;
@@ -517,7 +341,75 @@ DeviceAttributes::DeviceAttributes(u64 bits)
 {
 }
 
-static ErrorOr<ProfileHeader> read_header(ReadonlyBytes bytes)
+static ErrorOr<void> validate_date_time(DateTime const& date_time)
+{
+    // Returns if a DateTime is valid per ICC V4, 4.2 dateTimeNumber.
+    // In practice, some profiles contain invalid dates, but we should enforce this for data we write at least.
+
+    // "Number of the month (1 to 12)"
+    if (date_time.month < 1 || date_time.month > 12)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber month out of bounds");
+
+    // "Number of the day of the month (1 to 31)"
+    if (date_time.day < 1 || date_time.day > 31)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber day out of bounds");
+
+    // "Number of hours (0 to 23)"
+    if (date_time.hours > 23)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber hours out of bounds");
+
+    // "Number of minutes (0 to 59)"
+    if (date_time.minutes > 59)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber minutes out of bounds");
+
+    // "Number of seconds (0 to 59)"
+    // ICC profiles apparently can't be created during leap seconds (seconds would be 60 there, but the spec doesn't allow that).
+    if (date_time.seconds > 59)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber seconds out of bounds");
+
+    return {};
+}
+
+ErrorOr<time_t> DateTime::to_time_t() const
+{
+    TRY(validate_date_time(*this));
+
+    struct tm tm = {};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hours;
+    tm.tm_min = minutes;
+    tm.tm_sec = seconds;
+    // timegm() doesn't read tm.tm_isdst, tm.tm_wday, and tm.tm_yday, no need to fill them in.
+
+    time_t timestamp = timegm(&tm);
+    if (timestamp == -1)
+        return Error::from_string_literal("ICC::Profile: dateTimeNumber not representable as timestamp");
+
+    return timestamp;
+}
+
+ErrorOr<DateTime> DateTime::from_time_t(time_t timestamp)
+{
+    struct tm gmt_tm;
+    if (gmtime_r(&timestamp, &gmt_tm) == NULL)
+        return Error::from_string_literal("ICC::Profile: timestamp not representable as DateTimeNumber");
+
+    // FIXME: Range-check, using something like `TRY(Checked<u16>(x).try_value())`?
+    DateTime result {
+        .year = static_cast<u16>(gmt_tm.tm_year + 1900),
+        .month = static_cast<u16>(gmt_tm.tm_mon + 1),
+        .day = static_cast<u16>(gmt_tm.tm_mday),
+        .hours = static_cast<u16>(gmt_tm.tm_hour),
+        .minutes = static_cast<u16>(gmt_tm.tm_min),
+        .seconds = static_cast<u16>(gmt_tm.tm_sec),
+    };
+    TRY(validate_date_time(result));
+    return result;
+}
+
+ErrorOr<ProfileHeader> Profile::read_header(ReadonlyBytes bytes)
 {
     if (bytes.size() < sizeof(ICCHeader))
         return Error::from_string_literal("ICC::Profile: Not enough data for header");
@@ -553,7 +445,7 @@ static ErrorOr<NonnullRefPtr<TagData>> read_tag(ReadonlyBytes bytes, u32 offset_
     if (offset_to_beginning_of_tag_data_element % 4 != 0)
         return Error::from_string_literal("ICC::Profile: Tag data not aligned");
 
-    if (offset_to_beginning_of_tag_data_element + size_of_tag_data_element > bytes.size())
+    if (static_cast<u64>(offset_to_beginning_of_tag_data_element) + size_of_tag_data_element > bytes.size())
         return Error::from_string_literal("ICC::Profile: Tag data out of bounds");
 
     auto tag_bytes = bytes.slice(offset_to_beginning_of_tag_data_element, size_of_tag_data_element);
@@ -739,7 +631,7 @@ ErrorOr<void> Profile::check_required_tags()
         //  [...] Only the PCSXYZ encoding can be used with matrix/TRC models.
         //  8.3.4 Monochrome Input profiles
         //  In addition to the tags listed in 8.2, a monochrome Input profile shall contain the following tag:
-        //  - grayTRCTag (see 9.2.29).
+        //  - grayTRCTag (see 9.2.29)."
         bool has_n_component_lut_based_tags = has_tag(AToB0Tag);
         bool has_three_component_matrix_based_tags = has_all_tags(Array { redMatrixColumnTag, greenMatrixColumnTag, blueMatrixColumnTag, redTRCTag, greenTRCTag, blueTRCTag });
         bool has_monochrome_tags = has_tag(grayTRCTag);
@@ -859,6 +751,12 @@ ErrorOr<void> Profile::check_required_tags()
         break;
     }
 
+    m_cached_has_any_a_to_b_tag = has_tag(AToB0Tag) || has_tag(AToB1Tag) || has_tag(AToB2Tag);
+    m_cached_has_a_to_b0_tag = has_tag(AToB0Tag);
+    m_cached_has_any_b_to_a_tag = has_tag(BToA0Tag) || has_tag(BToA1Tag) || has_tag(BToA2Tag);
+    m_cached_has_b_to_a0_tag = has_tag(BToA0Tag);
+    m_cached_has_all_rgb_matrix_tags = has_all_tags(Array { redMatrixColumnTag, greenMatrixColumnTag, blueMatrixColumnTag, redTRCTag, greenTRCTag, blueTRCTag });
+
     return {};
 }
 
@@ -873,6 +771,10 @@ ErrorOr<void> Profile::check_tag_types()
     // Profile ID of the "Display P3" profiles embedded in the images on https://webkit.org/blog-files/color-gamut/comparison.html
     // (The macOS 13.1 /System/Library/ColorSync/Profiles/Display\ P3.icc file no longer has this quirk.)
     static constexpr Crypto::Hash::MD5::DigestType apple_p3_2015_id = { 0xe5, 0xbb, 0x0e, 0x98, 0x67, 0xbd, 0x46, 0xcd, 0x4b, 0xbe, 0x44, 0x6e, 0xbd, 0x1b, 0x75, 0x98 };
+
+    // Profile ID of the "Display P3" profile in object 881 in https://fredrikbk.com/publications/copy-and-patch.pdf
+    // (The macOS 13.1 /System/Library/ColorSync/Profiles/Display\ P3.icc file no longer has this quirk.)
+    static constexpr Crypto::Hash::MD5::DigestType apple_p3_2017_id = { 0xca, 0x1a, 0x95, 0x82, 0x25, 0x7f, 0x10, 0x4d, 0x38, 0x99, 0x13, 0xd5, 0xd1, 0xea, 0x15, 0x82 };
 
     auto has_type = [&](auto tag, std::initializer_list<TagTypeSignature> types, std::initializer_list<TagTypeSignature> v4_types) {
         if (auto type = m_tag_table.get(tag); type.has_value()) {
@@ -1028,7 +930,7 @@ ErrorOr<void> Profile::check_tag_types()
         // The v4 spec requires multiLocalizedUnicodeType for this, but I'm aware of a single file
         // that still uses the v2 'text' type here: /System/Library/ColorSync/Profiles/ITU-2020.icc on macOS 13.1.
         // https://openradar.appspot.com/radar?id=5529765549178880
-        bool has_v2_cprt_type_in_v4_file_quirk = id() == apple_itu_2020_id || id() == apple_p3_2015_id;
+        bool has_v2_cprt_type_in_v4_file_quirk = id() == apple_itu_2020_id || id() == apple_p3_2015_id || id() == apple_p3_2017_id;
         if (is_v4() && type.value()->type() != MultiLocalizedUnicodeTagData::Type && (!has_v2_cprt_type_in_v4_file_quirk || type.value()->type() != TextTagData::Type))
             return Error::from_string_literal("ICC::Profile: copyrightTag has unexpected v4 type");
         if (is_v2() && type.value()->type() != TextTagData::Type)
@@ -1119,9 +1021,9 @@ ErrorOr<void> Profile::check_tag_types()
         auto& xyz_type = static_cast<XYZTagData const&>(*type.value());
         if (xyz_type.xyzs().size() != 1)
             return Error::from_string_literal("ICC::Profile: luminanceTag has unexpected size");
-        if (is_v4() && xyz_type.xyzs()[0].x != 0)
+        if (is_v4() && xyz_type.xyzs()[0].X != 0)
             return Error::from_string_literal("ICC::Profile: luminanceTag.x unexpectedly not 0");
-        if (is_v4() && xyz_type.xyzs()[0].z != 0)
+        if (is_v4() && xyz_type.xyzs()[0].Z != 0)
             return Error::from_string_literal("ICC::Profile: luminanceTag.z unexpectedly not 0");
     }
 
@@ -1173,7 +1075,7 @@ ErrorOr<void> Profile::check_tag_types()
         // "The device representation corresponds to the header’s “data colour space” field.
         //  This representation should be consistent with the “number of device coordinates” field in the namedColor2Type.
         //  If this field is 0, device coordinates are not provided."
-        if (int number_of_device_coordinates = static_cast<NamedColor2TagData const&>(*type.value()).number_of_device_coordinates();
+        if (auto number_of_device_coordinates = static_cast<NamedColor2TagData const&>(*type.value()).number_of_device_coordinates();
             number_of_device_coordinates != 0 && number_of_device_coordinates != number_of_components_in_color_space(data_color_space())) {
             return Error::from_string_literal("ICC::Profile: namedColor2Tag number of device coordinates inconsistent with data color space");
         }
@@ -1217,7 +1119,7 @@ ErrorOr<void> Profile::check_tag_types()
         // The v4 spec requires multiLocalizedUnicodeType for this, but I'm aware of a single file
         // that still uses the v2 'desc' type here: /System/Library/ColorSync/Profiles/ITU-2020.icc on macOS 13.1.
         // https://openradar.appspot.com/radar?id=5529765549178880
-        bool has_v2_desc_type_in_v4_file_quirk = id() == apple_itu_2020_id || id() == apple_p3_2015_id;
+        bool has_v2_desc_type_in_v4_file_quirk = id() == apple_itu_2020_id || id() == apple_p3_2015_id || id() == apple_p3_2017_id;
         if (is_v4() && type.value()->type() != MultiLocalizedUnicodeTagData::Type && (!has_v2_desc_type_in_v4_file_quirk || type.value()->type() != TextDescriptionTagData::Type))
             return Error::from_string_literal("ICC::Profile: profileDescriptionTag has unexpected v4 type");
         if (is_v2() && type.value()->type() != TextDescriptionTagData::Type)
@@ -1339,7 +1241,7 @@ Crypto::Hash::MD5::DigestType Profile::compute_id(ReadonlyBytes bytes)
     //  and profile ID field (bytes 84 to 99)
     //  in the profile header temporarily set to zeros (00h),
     //  shall be used to calculate the ID."
-    const u8 zero[16] = {};
+    u8 const zero[16] = {};
     Crypto::Hash::MD5 md5;
     md5.update(bytes.slice(0, 44));
     md5.update(ReadonlyBytes { zero, 4 }); // profile flags field
@@ -1349,6 +1251,574 @@ Crypto::Hash::MD5::DigestType Profile::compute_id(ReadonlyBytes bytes)
     md5.update(ReadonlyBytes { zero, 16 }); // profile ID field
     md5.update(bytes.slice(100));
     return md5.digest();
+}
+
+static TagSignature forward_transform_tag_for_rendering_intent(RenderingIntent rendering_intent)
+{
+    // ICCv4, Table 25 — Profile type/profile tag and defined rendering intents
+    // This function assumes a profile class of InputDevice, DisplayDevice, OutputDevice, or ColorSpace.
+    switch (rendering_intent) {
+    case RenderingIntent::Perceptual:
+        return AToB0Tag;
+    case RenderingIntent::MediaRelativeColorimetric:
+    case RenderingIntent::ICCAbsoluteColorimetric:
+        return AToB1Tag;
+    case RenderingIntent::Saturation:
+        return AToB2Tag;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<FloatVector3> Profile::to_pcs_a_to_b(TagData const& tag_data, ReadonlyBytes color) const
+{
+    // Assumes a "normal" device_class() (i.e. not DeviceLink).
+    VERIFY(number_of_components_in_color_space(connection_space()) == 3);
+
+    if (m_to_pcs_clut_cache.has_value() && m_to_pcs_clut_cache->key == color)
+        return m_to_pcs_clut_cache->value;
+
+    FloatVector3 result;
+
+    switch (tag_data.type()) {
+    case Lut16TagData::Type: {
+        auto const& a_to_b = static_cast<Lut16TagData const&>(tag_data);
+        result = TRY(a_to_b.evaluate(data_color_space(), connection_space(), color));
+        break;
+    }
+    case Lut8TagData::Type: {
+        auto const& a_to_b = static_cast<Lut8TagData const&>(tag_data);
+        result = TRY(a_to_b.evaluate(data_color_space(), connection_space(), color));
+        break;
+    }
+    case LutAToBTagData::Type: {
+        auto const& a_to_b = static_cast<LutAToBTagData const&>(tag_data);
+        if (a_to_b.number_of_input_channels() != number_of_components_in_color_space(data_color_space()))
+            return Error::from_string_literal("ICC::Profile::to_pcs_a_to_b: mAB input channel count does not match color space size");
+
+        if (a_to_b.number_of_output_channels() != number_of_components_in_color_space(connection_space()))
+            return Error::from_string_literal("ICC::Profile::to_pcs_a_to_b: mAB output channel count does not match profile connection space size");
+
+        result = TRY(a_to_b.evaluate(connection_space(), color));
+        break;
+    }
+    default:
+        VERIFY_NOT_REACHED();
+    }
+
+    if (!m_to_pcs_clut_cache.has_value())
+        m_to_pcs_clut_cache = OneElementCLUTCache {};
+    m_to_pcs_clut_cache->key = Vector<u8, 4>(color);
+    m_to_pcs_clut_cache->value = result;
+
+    return result;
+}
+
+ErrorOr<FloatVector3> Profile::to_pcs(ReadonlyBytes color) const
+{
+    if (color.size() != number_of_components_in_color_space(data_color_space()))
+        return Error::from_string_literal("ICC::Profile: input color doesn't match color space size");
+
+    auto get_tag = [&](auto tag) { return m_tag_table.get(tag); };
+
+    switch (device_class()) {
+    case DeviceClass::InputDevice:
+    case DeviceClass::DisplayDevice:
+    case DeviceClass::OutputDevice:
+    case DeviceClass::ColorSpace: {
+        // ICC v4, 8.10 Precedence order of tag usage
+        // "There are several methods of colour transformation that can function within a single CMM. If data for more than
+        //  one method are included in the same profile, the following selection algorithm shall be used by the software
+        //  implementation."
+        // ICC v4, 8.10.2 Input, display, output, or colour space profile types
+        // "a) Use the BToD0Tag, BToD1Tag, BToD2Tag, BToD3Tag, DToB0Tag, DToB1Tag, DToB2Tag, or
+        //     DToB3Tag designated for the rendering intent if the tag is present, except where this tag is not needed or
+        //     supported by the CMM (if a particular processing element within the tag is not supported the tag is not
+        //     supported)."
+        // FIXME: Implement multiProcessElementsType one day.
+
+        // "b) Use the BToA0Tag, BToA1Tag, BToA2Tag, AToB0Tag, AToB1Tag, or AToB2Tag designated for the
+        //     rendering intent if present, when the tag in a) is not used."
+        if (m_cached_has_any_a_to_b_tag)
+            if (auto tag = get_tag(forward_transform_tag_for_rendering_intent(rendering_intent())); tag.has_value())
+                return to_pcs_a_to_b(*tag.value(), color);
+
+        // "c) Use the BToA0Tag or AToB0Tag if present, when the tags in a) and b) are not used."
+        // AToB0Tag is for the conversion _to_ PCS (BToA0Tag is for conversion _from_ PCS, so not needed in this function).
+        if (m_cached_has_a_to_b0_tag)
+            if (auto tag = get_tag(AToB0Tag); tag.has_value())
+                return to_pcs_a_to_b(*tag.value(), color);
+
+        // "d) Use TRCs (redTRCTag, greenTRCTag, blueTRCTag, or grayTRCTag) and colorants
+        //     (redMatrixColumnTag, greenMatrixColumnTag, blueMatrixColumnTag) when tags in a), b), and c) are not
+        //     used."
+        auto evaluate_curve = [this](TagSignature curve_tag, float f) {
+            auto const& trc = *m_tag_table.get(curve_tag).value();
+            VERIFY(trc.type() == CurveTagData::Type || trc.type() == ParametricCurveTagData::Type);
+            if (trc.type() == CurveTagData::Type)
+                return static_cast<CurveTagData const&>(trc).evaluate(f);
+            return static_cast<ParametricCurveTagData const&>(trc).evaluate(f);
+        };
+
+        if (data_color_space() == ColorSpace::Gray) {
+            VERIFY(color.size() == 1); // True because of color.size() check further up.
+
+            // ICC v4, F.2 grayTRCTag
+            // "connection = grayTRC[device]"
+            float gray = evaluate_curve(grayTRCTag, color[0] / 255.f);
+            FloatVector3 white { pcs_illuminant().X, pcs_illuminant().Y, pcs_illuminant().Z };
+            return white * gray;
+        }
+
+        // FIXME: Per ICC v4, A.1 General, this should also handle HLS, HSV, YCbCr.
+        if (data_color_space() == ColorSpace::RGB) {
+            if (!m_cached_has_all_rgb_matrix_tags)
+                return Error::from_string_literal("ICC::Profile::to_pcs: RGB color space but neither LUT-based nor matrix-based tags present");
+            VERIFY(color.size() == 3); // True because of color.size() check further up.
+
+            // ICC v4, F.3 Three-component matrix-based profiles
+            // "linear_r = redTRC[device_r]
+            //  linear_g = greenTRC[device_g]
+            //  linear_b = blueTRC[device_b]
+            //  [connection_X] = [redMatrixColumn_X greenMatrixColumn_X blueMatrixColumn_X]   [ linear_r ]
+            //  [connection_Y] = [redMatrixColumn_Y greenMatrixColumn_Y blueMatrixColumn_Y] * [ linear_g ]
+            //  [connection_Z] = [redMatrixColumn_Z greenMatrixColumn_Z blueMatrixColumn_Z]   [ linear_b ]"
+            FloatVector3 linear_rgb {
+                evaluate_curve(redTRCTag, color[0] / 255.f),
+                evaluate_curve(greenTRCTag, color[1] / 255.f),
+                evaluate_curve(blueTRCTag, color[2] / 255.f),
+            };
+
+            return rgb_to_xyz_matrix() * linear_rgb;
+        }
+
+        return Error::from_string_literal("ICC::Profile::to_pcs: What happened?!");
+    }
+
+    case DeviceClass::DeviceLink:
+    case DeviceClass::Abstract:
+        // ICC v4, 8.10.3 DeviceLink or Abstract profile types
+        // FIXME
+        return Error::from_string_literal("ICC::Profile::to_pcs: conversion for DeviceLink and Abstract not implemented");
+
+    case DeviceClass::NamedColor:
+        return Error::from_string_literal("ICC::Profile::to_pcs: to_pcs with NamedColor profile does not make sense");
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static FloatVector3 lab_from_xyz(FloatVector3 xyz, XYZ white_point)
+{
+    // 6.3.2.2 Translation between media-relative colorimetric data and ICC-absolute colorimetric data
+    // 6.3.2.3 Computation of PCSLAB
+    // 6.3.4 Colour space encodings for the PCS
+    // A.3 PCS encodings
+
+    auto f = [](float x) {
+        if (x > powf(6.f / 29.f, 3))
+            return cbrtf(x);
+        return x / (3 * powf(6.f / 29.f, 2)) + 4.f / 29.f;
+    };
+
+    // "X/Xn is replaced by Xr/Xi (or Xa/Xmw)"
+
+    // 6.3.2.2 Translation between media-relative colorimetric data and ICC-absolute colorimetric data
+    // "The translation from ICC-absolute colorimetric data to media-relative colorimetry data is given by Equations
+    //      Xr = (Xi/Xmw) * Xa
+    //  where
+    //      Xr   media-relative colorimetric data (i.e. PCSXYZ);
+    //      Xa   ICC-absolute colorimetric data (i.e. nCIEXYZ);
+    //      Xmw  nCIEXYZ values of the media white point as specified in the mediaWhitePointTag;
+    //      Xi   PCSXYZ values of the PCS white point defined in 6.3.4.3."
+    // 6.3.4.3 PCS encodings for white and black
+    // "Table 14 — Encodings of PCS white point: X 0,9642 Y 1,0000 Z 0,8249"
+    // That's identical to the values in 7.2.16 PCS illuminant field (Bytes 68 to 79).
+    // 9.2.36 mediaWhitePointTag
+    // "For displays, the values specified shall be those of the PCS illuminant as defined in 7.2.16."
+    // ...so for displays, this is all equivalent I think? It's maybe different for OutputDevice profiles?
+
+    float Xn = white_point.X;
+    float Yn = white_point.Y;
+    float Zn = white_point.Z;
+
+    float x = xyz[0] / Xn;
+    float y = xyz[1] / Yn;
+    float z = xyz[2] / Zn;
+
+    float L = 116 * f(y) - 16;
+    float a = 500 * (f(x) - f(y));
+    float b = 200 * (f(y) - f(z));
+
+    return { L, a, b };
+}
+
+static FloatVector3 xyz_from_lab(FloatVector3 lab, XYZ white_point)
+{
+    // Inverse of lab_from_xyz().
+    auto L_star = lab[0];
+    auto a_star = lab[1];
+    auto b_star = lab[2];
+
+    auto L = (L_star + 16) / 116 + a_star / 500; // f(x)
+    auto M = (L_star + 16) / 116;                // f(y)
+    auto N = (L_star + 16) / 116 - b_star / 200; // f(z)
+
+    // Inverse of f in lab_from_xyz().
+    auto g = [](float x) {
+        if (x >= 6.0f / 29.0f)
+            return powf(x, 3);
+        return (x - 4.0f / 29.0f) * (3 * powf(6.f / 29.f, 2));
+    };
+
+    return { white_point.X * g(L), white_point.Y * g(M), white_point.Z * g(N) };
+}
+
+static TagSignature backward_transform_tag_for_rendering_intent(RenderingIntent rendering_intent)
+{
+    // ICCv4, Table 25 — Profile type/profile tag and defined rendering intents
+    // This function assumes a profile class of InputDevice, DisplayDevice, OutputDevice, or ColorSpace.
+    switch (rendering_intent) {
+    case RenderingIntent::Perceptual:
+        return BToA0Tag;
+    case RenderingIntent::MediaRelativeColorimetric:
+    case RenderingIntent::ICCAbsoluteColorimetric:
+        return BToA1Tag;
+    case RenderingIntent::Saturation:
+        return BToA2Tag;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<void> Profile::from_pcs_b_to_a(TagData const& tag_data, FloatVector3 const& pcs, Bytes out_bytes) const
+{
+    switch (tag_data.type()) {
+    case Lut16TagData::Type:
+        // FIXME
+        return Error::from_string_literal("ICC::Profile::to_pcs: BToA*Tag handling for mft2 tags not yet implemented");
+    case Lut8TagData::Type:
+        // FIXME
+        return Error::from_string_literal("ICC::Profile::to_pcs: BToA*Tag handling for mft1 tags not yet implemented");
+    case LutBToATagData::Type: {
+        auto const& b_to_a = static_cast<LutBToATagData const&>(tag_data);
+        if (b_to_a.number_of_input_channels() != number_of_components_in_color_space(connection_space()))
+            return Error::from_string_literal("ICC::Profile::from_pcs_b_to_a: mBA input channel count does not match color space size");
+
+        if (b_to_a.number_of_output_channels() != number_of_components_in_color_space(data_color_space()))
+            return Error::from_string_literal("ICC::Profile::from_pcs_b_to_a: mBA output channel count does not match profile connection space size");
+
+        return b_to_a.evaluate(connection_space(), pcs, out_bytes);
+    }
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<void> Profile::from_pcs(Profile const& source_profile, FloatVector3 pcs, Bytes color) const
+{
+    if (source_profile.connection_space() != connection_space()) {
+        if (source_profile.connection_space() == ColorSpace::PCSLAB) {
+            VERIFY(connection_space() == ColorSpace::PCSXYZ);
+            pcs = xyz_from_lab(pcs, source_profile.pcs_illuminant());
+        } else {
+            VERIFY(source_profile.connection_space() == ColorSpace::PCSXYZ);
+            VERIFY(connection_space() == ColorSpace::PCSLAB);
+            pcs = lab_from_xyz(pcs, pcs_illuminant());
+        }
+    }
+
+    // See `to_pcs()` for spec links.
+    // This function is very similar, but uses BToAn instead of AToBn for LUT profiles,
+    // and an inverse transform for matrix profiles.
+    if (color.size() != number_of_components_in_color_space(data_color_space()))
+        return Error::from_string_literal("ICC::Profile: output color doesn't match color space size");
+
+    auto get_tag = [&](auto tag) { return m_tag_table.get(tag); };
+
+    switch (device_class()) {
+    case DeviceClass::InputDevice:
+    case DeviceClass::DisplayDevice:
+    case DeviceClass::OutputDevice:
+    case DeviceClass::ColorSpace: {
+        // FIXME: Implement multiProcessElementsType one day.
+
+        if (m_cached_has_any_b_to_a_tag)
+            if (auto tag = get_tag(backward_transform_tag_for_rendering_intent(rendering_intent())); tag.has_value())
+                return from_pcs_b_to_a(*tag.value(), pcs, color);
+
+        if (m_cached_has_b_to_a0_tag)
+            if (auto tag = get_tag(BToA0Tag); tag.has_value())
+                return from_pcs_b_to_a(*tag.value(), pcs, color);
+
+        if (data_color_space() == ColorSpace::Gray) {
+            // FIXME
+            return Error::from_string_literal("ICC::Profile::from_pcs: Gray handling not yet implemented");
+        }
+
+        // FIXME: Per ICC v4, A.1 General, this should also handle HLS, HSV, YCbCr.
+        if (data_color_space() == ColorSpace::RGB) {
+            if (!m_cached_has_all_rgb_matrix_tags)
+                return Error::from_string_literal("ICC::Profile::from_pcs: RGB color space but neither LUT-based nor matrix-based tags present");
+            VERIFY(color.size() == 3); // True because of color.size() check further up.
+
+            // ICC v4, F.3 Three-component matrix-based profiles
+            // "The inverse model is given by the following equations:
+            //      [linear_r] = [redMatrixColumn_X greenMatrixColumn_X blueMatrixColumn_X]^-1   [ connection_X ]
+            //      [linear_g] = [redMatrixColumn_Y greenMatrixColumn_Y blueMatrixColumn_Y]    * [ connection_Y ]
+            //      [linear_b] = [redMatrixColumn_Z greenMatrixColumn_Z blueMatrixColumn_Z]      [ connection_Z ]
+            //
+            //      for linear_r < 0,     device_r = redTRC^-1[0]          (F.8)
+            //      for 0 ≤ linear_r ≤ 1, device_r = redTRC^-1[linear_r]   (F.9)
+            //      for linear_r > 1,     device_r = redTRC^-1[1]          (F.10)
+            //
+            //      for linear_g < 0,     device_g = greenTRC^-1[0]        (F.11)
+            //      for 0 ≤ linear_g ≤ 1, device_g = greenTRC^-1[linear_g] (F.12)
+            //      for linear_g > 1,     device_g = greenTRC^-1[1]        (F.13)
+            //
+            //      for linear_b < 0,     device_b = blueTRC^-1[0]         (F.14)
+            //      for 0 ≤ linear_b ≤ 1, device_b = blueTRC^-1[linear_b]  (F.15)
+            //      for linear_b > 1,     device_b = blueTRC^-1[1]         (F.16)
+            //
+            // where redTRC^-1, greenTRC^-1, and blueTRC^-1 indicate the inverse functions of the redTRC greenTRC and
+            // blueTRC functions respectively.
+            // If the redTRC, greenTRC, or blueTRC function is not invertible the behaviour of the corresponding redTRC^-1,
+            // greenTRC^-1, and blueTRC^-1 function is undefined. If a one-dimensional curve is constant, the curve cannot be
+            // inverted."
+
+            // Convert from XYZ to linear rgb.
+            // FIXME: Inverting curves on every call to this function is very inefficient.
+            FloatVector3 linear_rgb = TRY(xyz_to_rgb_matrix()) * pcs;
+
+            auto evaluate_curve_inverse = [this](TagSignature curve_tag, float f) {
+                auto const& trc = *m_tag_table.get(curve_tag).value();
+                VERIFY(trc.type() == CurveTagData::Type || trc.type() == ParametricCurveTagData::Type);
+                if (trc.type() == CurveTagData::Type)
+                    return static_cast<CurveTagData const&>(trc).evaluate_inverse(f);
+                return static_cast<ParametricCurveTagData const&>(trc).evaluate_inverse(f);
+            };
+
+            // Convert from linear rgb to device rgb.
+            // See equations (F.8) - (F.16) above.
+            // FIXME: The spec says to do this, but it loses information. Color.js returns unclamped
+            //        values instead (...but how do those make it through the TRC?) and has a separate
+            //        clipping step. Maybe that's better?
+            //        Also, maybe doing actual gamut mapping would look better?
+            //        (For LUT profiles, I think the gamut mapping is baked into the BToA* data in the profile (?).
+            //        But for matrix profiles, it'd have to be done in code.)
+            linear_rgb.clamp(0.f, 1.f);
+            float device_r = evaluate_curve_inverse(redTRCTag, linear_rgb[0]);
+            float device_g = evaluate_curve_inverse(greenTRCTag, linear_rgb[1]);
+            float device_b = evaluate_curve_inverse(blueTRCTag, linear_rgb[2]);
+
+            color[0] = round(255 * device_r);
+            color[1] = round(255 * device_g);
+            color[2] = round(255 * device_b);
+            return {};
+        }
+
+        return Error::from_string_literal("ICC::Profile::from_pcs: What happened?!");
+    }
+
+    case DeviceClass::DeviceLink:
+    case DeviceClass::Abstract:
+        // ICC v4, 8.10.3 DeviceLink or Abstract profile types
+        // FIXME
+        return Error::from_string_literal("ICC::Profile::from_pcs: conversion for DeviceLink and Abstract not implemented");
+
+    case DeviceClass::NamedColor:
+        return Error::from_string_literal("ICC::Profile::from_pcs: from_pcs with NamedColor profile does not make sense");
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<CIELAB> Profile::to_lab(ReadonlyBytes color) const
+{
+    auto pcs = TRY(to_pcs(color));
+    if (connection_space() == ColorSpace::PCSLAB)
+        return CIELAB { pcs[0], pcs[1], pcs[2] };
+
+    if (connection_space() != ColorSpace::PCSXYZ) {
+        VERIFY(device_class() == DeviceClass::DeviceLink);
+        return Error::from_string_literal("ICC::Profile::to_lab: conversion for DeviceLink not implemented");
+    }
+
+    FloatVector3 lab = lab_from_xyz(pcs, pcs_illuminant());
+    return CIELAB { lab[0], lab[1], lab[2] };
+}
+
+MatrixMatrixConversion::MatrixMatrixConversion(LutCurveType source_red_TRC,
+    LutCurveType source_green_TRC,
+    LutCurveType source_blue_TRC,
+    FloatMatrix3x3 matrix,
+    LutCurveType destination_red_TRC,
+    LutCurveType destination_green_TRC,
+    LutCurveType destination_blue_TRC)
+    : m_source_red_TRC(move(source_red_TRC))
+    , m_source_green_TRC(move(source_green_TRC))
+    , m_source_blue_TRC(move(source_blue_TRC))
+    , m_matrix(matrix)
+    , m_destination_red_TRC(move(destination_red_TRC))
+    , m_destination_green_TRC(move(destination_green_TRC))
+    , m_destination_blue_TRC(move(destination_blue_TRC))
+{
+    auto check = [](auto const& trc) {
+        VERIFY(trc->type() == CurveTagData::Type || trc->type() == ParametricCurveTagData::Type);
+    };
+    check(m_source_red_TRC);
+    check(m_source_green_TRC);
+    check(m_source_blue_TRC);
+    check(m_destination_red_TRC);
+    check(m_destination_green_TRC);
+    check(m_destination_blue_TRC);
+}
+
+Optional<MatrixMatrixConversion> Profile::matrix_matrix_conversion(Profile const& source_profile) const
+{
+    auto has_normal_device_class = [](DeviceClass device) {
+        return device == DeviceClass::InputDevice
+            || device == DeviceClass::DisplayDevice
+            || device == DeviceClass::OutputDevice
+            || device == DeviceClass::ColorSpace;
+    };
+
+    bool is_matrix_matrix_conversion = has_normal_device_class(device_class())
+        && has_normal_device_class(source_profile.device_class())
+        && connection_space() == ColorSpace::PCSXYZ
+        && source_profile.connection_space() == ColorSpace::PCSXYZ
+        && data_color_space() == ColorSpace::RGB
+        && source_profile.data_color_space() == ColorSpace::RGB
+        && !m_cached_has_any_a_to_b_tag
+        && !source_profile.m_cached_has_any_a_to_b_tag
+        && m_cached_has_all_rgb_matrix_tags
+        && source_profile.m_cached_has_all_rgb_matrix_tags
+        && rgb_to_xyz_matrix().is_invertible();
+
+    if (!is_matrix_matrix_conversion)
+        return OptionalNone {};
+
+    LutCurveType sourceRedTRC = *source_profile.m_tag_table.get(redTRCTag).value();
+    LutCurveType sourceGreenTRC = *source_profile.m_tag_table.get(greenTRCTag).value();
+    LutCurveType sourceBlueTRC = *source_profile.m_tag_table.get(blueTRCTag).value();
+
+    FloatMatrix3x3 matrix = MUST(xyz_to_rgb_matrix()) * source_profile.rgb_to_xyz_matrix();
+
+    LutCurveType destinationRedTRC = *m_tag_table.get(redTRCTag).value();
+    LutCurveType destinationGreenTRC = *m_tag_table.get(greenTRCTag).value();
+    LutCurveType destinationBlueTRC = *m_tag_table.get(blueTRCTag).value();
+
+    return MatrixMatrixConversion(sourceRedTRC, sourceGreenTRC, sourceBlueTRC, matrix, destinationRedTRC, destinationGreenTRC, destinationBlueTRC);
+}
+
+ErrorOr<void> Profile::convert_image_matrix_matrix(Gfx::Bitmap& bitmap, MatrixMatrixConversion const& map) const
+{
+    for (auto& pixel : bitmap) {
+        FloatVector3 rgb { (float)Color::from_argb(pixel).red(), (float)Color::from_argb(pixel).green(), (float)Color::from_argb(pixel).blue() };
+        auto out = map.map(rgb / 255.0f);
+        out.set_alpha(Color::from_argb(pixel).alpha());
+        pixel = out.value();
+    }
+    return {};
+}
+
+ErrorOr<void> Profile::convert_image(Gfx::Bitmap& bitmap, Profile const& source_profile) const
+{
+    if (auto map = matrix_matrix_conversion(source_profile); map.has_value())
+        return convert_image_matrix_matrix(bitmap, map.value());
+
+    for (auto& pixel : bitmap) {
+        u8 rgb[] = { Color::from_argb(pixel).red(), Color::from_argb(pixel).green(), Color::from_argb(pixel).blue() };
+        auto pcs = TRY(source_profile.to_pcs(rgb));
+        TRY(from_pcs(source_profile, pcs, rgb));
+        pixel = Color(rgb[0], rgb[1], rgb[2], Color::from_argb(pixel).alpha()).value();
+    }
+
+    return {};
+}
+
+ErrorOr<void> Profile::convert_cmyk_image(Bitmap& out, CMYKBitmap const& in, Profile const& source_profile) const
+{
+    if (out.size() != in.size())
+        return Error::from_string_literal("ICC::Profile::convert_cmyk_image: out and in must have the same dimensions");
+
+    // Might fail if `out` has a scale_factor() != 1.
+    if (out.data_size() != in.data_size())
+        return Error::from_string_literal("ICC::Profile::convert_cmyk_image: out and in must have the same buffer size");
+
+    static_assert(sizeof(ARGB32) == sizeof(CMYK));
+    ARGB32* out_data = out.begin();
+    CMYK const* in_data = const_cast<CMYKBitmap&>(in).begin();
+
+    for (size_t i = 0; i < in.data_size() / sizeof(CMYK); ++i) {
+        u8 cmyk[] = { in_data[i].c, in_data[i].m, in_data[i].y, in_data[i].k };
+        auto pcs = TRY(source_profile.to_pcs(cmyk));
+
+        u8 rgb[3];
+        TRY(from_pcs(source_profile, pcs, rgb));
+        out_data[i] = Color(rgb[0], rgb[1], rgb[2]).value();
+    }
+
+    return {};
+}
+
+XYZ const& Profile::red_matrix_column() const { return xyz_data(redMatrixColumnTag); }
+XYZ const& Profile::green_matrix_column() const { return xyz_data(greenMatrixColumnTag); }
+XYZ const& Profile::blue_matrix_column() const { return xyz_data(blueMatrixColumnTag); }
+
+Optional<String> Profile::tag_string_data(TagSignature signature) const
+{
+    auto maybe_tag_data = tag_data(signature);
+    if (!maybe_tag_data.has_value())
+        return {};
+    auto& tag_data = maybe_tag_data.release_value();
+    if (tag_data.type() == Gfx::ICC::MultiLocalizedUnicodeTagData::Type) {
+        auto& multi_localized_unicode = static_cast<Gfx::ICC::MultiLocalizedUnicodeTagData const&>(tag_data);
+        // Try to find 'en-US', otherwise any 'en' language, otherwise the first record.
+        Optional<String> en_string;
+        constexpr u16 language_en = ('e' << 8) + 'n';
+        constexpr u16 country_us = ('U' << 8) + 'S';
+        for (auto const& record : multi_localized_unicode.records()) {
+            if (record.iso_639_1_language_code == language_en) {
+                if (record.iso_3166_1_country_code == country_us)
+                    return record.text;
+                en_string = record.text;
+            }
+        }
+        if (en_string.has_value())
+            return en_string.value();
+        if (!multi_localized_unicode.records().is_empty())
+            return multi_localized_unicode.records().first().text;
+        return {};
+    }
+    if (tag_data.type() == Gfx::ICC::TextDescriptionTagData::Type) {
+        auto& text_description = static_cast<Gfx::ICC::TextDescriptionTagData const&>(tag_data);
+        return text_description.ascii_description();
+    }
+    if (tag_data.type() == Gfx::ICC::TextTagData::Type) {
+        auto& text = static_cast<Gfx::ICC::TextTagData const&>(tag_data);
+        return text.text();
+    }
+    return {};
+}
+
+ErrorOr<FloatMatrix3x3> Profile::xyz_to_rgb_matrix() const
+{
+    if (!m_cached_xyz_to_rgb_matrix.has_value()) {
+        FloatMatrix3x3 forward_matrix = rgb_to_xyz_matrix();
+        if (!forward_matrix.is_invertible())
+            return Error::from_string_literal("ICC::Profile::from_pcs: matrix not invertible");
+        m_cached_xyz_to_rgb_matrix = forward_matrix.inverse();
+    }
+    return m_cached_xyz_to_rgb_matrix.value();
+}
+
+FloatMatrix3x3 Profile::rgb_to_xyz_matrix() const
+{
+    auto const& red_matrix_column = this->red_matrix_column();
+    auto const& green_matrix_column = this->green_matrix_column();
+    auto const& blue_matrix_column = this->blue_matrix_column();
+
+    return FloatMatrix3x3 {
+        red_matrix_column.X, green_matrix_column.X, blue_matrix_column.X,
+        red_matrix_column.Y, green_matrix_column.Y, blue_matrix_column.Y,
+        red_matrix_column.Z, green_matrix_column.Z, blue_matrix_column.Z
+    };
 }
 
 }

@@ -19,9 +19,13 @@ NonnullRefPtr<Encoding> Encoding::create()
 PDFErrorOr<NonnullRefPtr<Encoding>> Encoding::from_object(Document* document, NonnullRefPtr<Object> const& obj)
 {
     if (obj->is<NameObject>()) {
+        // PDF 1.7 spec, 5.5.5 "Character Encoding"
         auto name = obj->cast<NameObject>()->name();
         if (name == "StandardEncoding")
             return standard_encoding();
+
+        // FIXME: MacExpertEncoding
+
         if (name == "MacRomanEncoding")
             return mac_encoding();
         if (name == "WinAnsiEncoding")
@@ -38,30 +42,37 @@ PDFErrorOr<NonnullRefPtr<Encoding>> Encoding::from_object(Document* document, No
         auto base_encoding_obj = MUST(dict->get_object(document, CommonNames::BaseEncoding));
         base_encoding = TRY(Encoding::from_object(document, base_encoding_obj));
     } else {
+        // FIXME:
+        // "If this entry is absent, the Differences entry describes differences from an implicit base encoding.
+        // For a font program that is embedded in the PDF file, the implicit base encoding is the font program’s built-in encoding,
+        // as described above and further elaborated in the sections on specific font types below.
+        // Otherwise, for a nonsymbolic font, it is StandardEncoding, and for a symbolic font, it is the font’s built-in encoding."
         base_encoding = Encoding::standard_encoding();
     }
 
     auto encoding = adopt_ref(*new Encoding());
 
-    encoding->m_descriptors = base_encoding->m_descriptors;
-    encoding->m_name_mapping = base_encoding->m_name_mapping;
+    encoding->m_descriptors = TRY(base_encoding->m_descriptors.clone());
+    encoding->m_name_mapping = TRY(base_encoding->m_name_mapping.clone());
 
-    auto differences_array = TRY(dict->get_array(document, CommonNames::Differences));
+    if (dict->contains(CommonNames::Differences)) {
+        auto differences_array = TRY(dict->get_array(document, CommonNames::Differences));
 
-    u16 current_code_point = 0;
-    bool first = true;
+        u16 current_code_point = 0;
+        bool first = true;
 
-    for (auto& item : *differences_array) {
-        if (item.has_u32()) {
-            current_code_point = item.to_int();
-            first = false;
-        } else {
-            VERIFY(item.has<NonnullRefPtr<Object>>());
-            VERIFY(!first);
-            auto& object = item.get<NonnullRefPtr<Object>>();
-            auto name = object->cast<NameObject>()->name();
-            encoding->set(current_code_point, name);
-            current_code_point++;
+        for (auto& item : *differences_array) {
+            if (item.has_u32()) {
+                current_code_point = item.to_int();
+                first = false;
+            } else {
+                VERIFY(item.has<NonnullRefPtr<Object>>());
+                VERIFY(!first);
+                auto& object = item.get<NonnullRefPtr<Object>>();
+                auto name = object->cast<NameObject>()->name();
+                encoding->set(current_code_point, name);
+                current_code_point++;
+            }
         }
     }
 
@@ -160,7 +171,7 @@ NonnullRefPtr<Encoding> Encoding::zapf_encoding()
     return encoding;
 }
 
-u16 Encoding::get_char_code(DeprecatedString const& name) const
+u16 Encoding::get_char_code(ByteString const& name) const
 {
     auto code_iterator = m_name_mapping.find(name);
     if (code_iterator != m_name_mapping.end())

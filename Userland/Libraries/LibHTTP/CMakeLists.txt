@@ -1,4 +1,5 @@
 set(SOURCES
+    Http11Connection.cpp
     HttpRequest.cpp
     HttpResponse.cpp
     HttpsJob.cpp
@@ -6,4 +7,4 @@ set(SOURCES
 )
 
 serenity_lib(LibHTTP http)
-target_link_libraries(LibHTTP PRIVATE LibCompress LibCore LibTLS)
+target_link_libraries(LibHTTP PRIVATE LibCompress LibCore LibTLS LibURL)

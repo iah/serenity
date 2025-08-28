@@ -5,16 +5,16 @@
  */
 
 #include "WebContentClient.h"
-#include "OutOfProcessWebView.h"
-#include <AK/Debug.h>
+#include "ProcessManager.h"
+#include "ViewImplementation.h"
 #include <LibWeb/Cookie/ParsedCookie.h>
 
 namespace WebView {
 
 WebContentClient::WebContentClient(NonnullOwnPtr<Core::LocalSocket> socket, ViewImplementation& view)
     : IPC::ConnectionToServer<WebContentClientEndpoint, WebContentServerEndpoint>(*this, move(socket))
-    , m_view(view)
 {
+    m_views.set(0, &view);
 }
 
 void WebContentClient::die()
@@ -23,276 +23,714 @@ void WebContentClient::die()
     on_web_content_process_crash();
 }
 
-void WebContentClient::did_paint(Gfx::IntRect const&, i32 bitmap_id)
+void WebContentClient::register_view(u64 page_id, ViewImplementation& view)
 {
-    m_view.notify_server_did_paint({}, bitmap_id);
+    VERIFY(page_id > 0);
+    m_views.set(page_id, &view);
 }
 
-void WebContentClient::did_finish_loading(AK::URL const& url)
+void WebContentClient::unregister_view(u64 page_id)
 {
-    m_view.notify_server_did_finish_loading({}, url);
+    m_views.remove(page_id);
 }
 
-void WebContentClient::did_request_navigate_back()
+void WebContentClient::did_paint(u64 page_id, Gfx::IntRect const& rect, i32 bitmap_id)
 {
-    m_view.notify_server_did_request_navigate_back({});
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->server_did_paint({}, bitmap_id, rect.size());
 }
 
-void WebContentClient::did_request_navigate_forward()
+void WebContentClient::did_start_loading(u64 page_id, URL::URL const& url, bool is_redirect)
 {
-    m_view.notify_server_did_request_navigate_forward({});
+    if (auto* process = WebView::ProcessManager::the().find_process(m_process_handle.pid))
+        process->title.clear();
+
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        view->set_url({}, url);
+
+        if (view->on_load_start)
+            view->on_load_start(url, is_redirect);
+    }
 }
 
-void WebContentClient::did_request_refresh()
+void WebContentClient::did_finish_loading(u64 page_id, URL::URL const& url)
 {
-    m_view.notify_server_did_request_refresh({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        view->set_url({}, url);
+
+        if (view->on_load_finish)
+            view->on_load_finish(url);
+    }
 }
 
-void WebContentClient::did_invalidate_content_rect(Gfx::IntRect const& content_rect)
+void WebContentClient::did_finish_text_test(u64 page_id, String const& text)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidInvalidateContentRect! content_rect={}", content_rect);
-
-    // FIXME: Figure out a way to coalesce these messages to reduce unnecessary painting
-    m_view.notify_server_did_invalidate_content_rect({}, content_rect);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_text_test_finish)
+            view->on_text_test_finish(text);
+    }
 }
 
-void WebContentClient::did_change_selection()
+void WebContentClient::did_find_in_page(u64 page_id, size_t current_match_index, Optional<size_t> const& total_match_count)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidChangeSelection!");
-    m_view.notify_server_did_change_selection({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_find_in_page)
+            view->on_find_in_page(current_match_index, total_match_count);
+    }
 }
 
-void WebContentClient::did_request_cursor_change(i32 cursor_type)
+void WebContentClient::did_request_navigate_back(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_navigate_back)
+            view->on_navigate_back();
+    }
+}
+
+void WebContentClient::did_request_navigate_forward(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_navigate_forward)
+            view->on_navigate_forward();
+    }
+}
+
+void WebContentClient::did_request_refresh(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_refresh)
+            view->on_refresh();
+    }
+}
+
+void WebContentClient::did_request_cursor_change(u64 page_id, i32 cursor_type)
 {
     if (cursor_type < 0 || cursor_type >= (i32)Gfx::StandardCursor::__Count) {
         dbgln("DidRequestCursorChange: Bad cursor type");
         return;
     }
-    m_view.notify_server_did_request_cursor_change({}, (Gfx::StandardCursor)cursor_type);
+
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_cursor_change)
+            view->on_cursor_change(static_cast<Gfx::StandardCursor>(cursor_type));
+    }
 }
 
-void WebContentClient::did_layout(Gfx::IntSize content_size)
+void WebContentClient::did_layout(u64 page_id, Gfx::IntSize content_size)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidLayout! content_size={}", content_size);
-    m_view.notify_server_did_layout({}, content_size);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_did_layout)
+            view->on_did_layout(content_size);
+    }
 }
 
-void WebContentClient::did_change_title(DeprecatedString const& title)
+void WebContentClient::did_change_title(u64 page_id, ByteString const& title)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidChangeTitle! title={}", title);
-    m_view.notify_server_did_change_title({}, title);
+    if (auto* process = WebView::ProcessManager::the().find_process(m_process_handle.pid))
+        process->title = MUST(String::from_byte_string(title));
+
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (!view->on_title_change)
+            return;
+
+        if (title.is_empty())
+            view->on_title_change(view->url().to_byte_string());
+        else
+            view->on_title_change(title);
+    }
 }
 
-void WebContentClient::did_request_scroll(i32 x_delta, i32 y_delta)
+void WebContentClient::did_change_url(u64 page_id, URL::URL const& url)
 {
-    m_view.notify_server_did_request_scroll({}, x_delta, y_delta);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        view->set_url({}, url);
+
+        if (view->on_url_change)
+            view->on_url_change(url);
+    }
 }
 
-void WebContentClient::did_request_scroll_to(Gfx::IntPoint scroll_position)
+void WebContentClient::did_request_tooltip_override(u64 page_id, Gfx::IntPoint position, ByteString const& title)
 {
-    m_view.notify_server_did_request_scroll_to({}, scroll_position);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_tooltip_override)
+            view->on_request_tooltip_override(view->to_widget_position(position), title);
+    }
 }
 
-void WebContentClient::did_request_scroll_into_view(Gfx::IntRect const& rect)
+void WebContentClient::did_stop_tooltip_override(u64 page_id)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidRequestScrollIntoView! rect={}", rect);
-    m_view.notify_server_did_request_scroll_into_view({}, rect);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_stop_tooltip_override)
+            view->on_stop_tooltip_override();
+    }
 }
 
-void WebContentClient::did_enter_tooltip_area(Gfx::IntPoint content_position, DeprecatedString const& title)
+void WebContentClient::did_enter_tooltip_area(u64 page_id, ByteString const& title)
 {
-    m_view.notify_server_did_enter_tooltip_area({}, content_position, title);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_enter_tooltip_area)
+            view->on_enter_tooltip_area(title);
+    }
 }
 
-void WebContentClient::did_leave_tooltip_area()
+void WebContentClient::did_leave_tooltip_area(u64 page_id)
 {
-    m_view.notify_server_did_leave_tooltip_area({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_leave_tooltip_area)
+            view->on_leave_tooltip_area();
+    }
 }
 
-void WebContentClient::did_hover_link(AK::URL const& url)
+void WebContentClient::did_hover_link(u64 page_id, URL::URL const& url)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidHoverLink! url={}", url);
-    m_view.notify_server_did_hover_link({}, url);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_link_hover)
+            view->on_link_hover(url);
+    }
 }
 
-void WebContentClient::did_unhover_link()
+void WebContentClient::did_unhover_link(u64 page_id)
 {
-    dbgln_if(SPAM_DEBUG, "handle: WebContentClient::DidUnhoverLink!");
-    m_view.notify_server_did_unhover_link({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_link_unhover)
+            view->on_link_unhover();
+    }
 }
 
-void WebContentClient::did_click_link(AK::URL const& url, DeprecatedString const& target, unsigned modifiers)
+void WebContentClient::did_click_link(u64 page_id, URL::URL const& url, ByteString const& target, unsigned modifiers)
 {
-    m_view.notify_server_did_click_link({}, url, target, modifiers);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_link_click)
+            view->on_link_click(url, target, modifiers);
+    }
 }
 
-void WebContentClient::did_middle_click_link(AK::URL const& url, DeprecatedString const& target, unsigned modifiers)
+void WebContentClient::did_middle_click_link(u64 page_id, URL::URL const& url, ByteString const& target, unsigned modifiers)
 {
-    m_view.notify_server_did_middle_click_link({}, url, target, modifiers);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_link_middle_click)
+            view->on_link_middle_click(url, target, modifiers);
+    }
 }
 
-void WebContentClient::did_start_loading(AK::URL const& url, bool is_redirect)
+void WebContentClient::did_request_context_menu(u64 page_id, Gfx::IntPoint content_position)
 {
-    m_view.notify_server_did_start_loading({}, url, is_redirect);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_context_menu_request)
+            view->on_context_menu_request(view->to_widget_position(content_position));
+    }
 }
 
-void WebContentClient::did_request_context_menu(Gfx::IntPoint content_position)
+void WebContentClient::did_request_link_context_menu(u64 page_id, Gfx::IntPoint content_position, URL::URL const& url, ByteString const&, unsigned)
 {
-    m_view.notify_server_did_request_context_menu({}, content_position);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_link_context_menu_request)
+            view->on_link_context_menu_request(url, view->to_widget_position(content_position));
+    }
 }
 
-void WebContentClient::did_request_link_context_menu(Gfx::IntPoint content_position, AK::URL const& url, DeprecatedString const& target, unsigned modifiers)
+void WebContentClient::did_request_image_context_menu(u64 page_id, Gfx::IntPoint content_position, URL::URL const& url, ByteString const&, unsigned, Gfx::ShareableBitmap const& bitmap)
 {
-    m_view.notify_server_did_request_link_context_menu({}, content_position, url, target, modifiers);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_image_context_menu_request)
+            view->on_image_context_menu_request(url, view->to_widget_position(content_position), bitmap);
+    }
 }
 
-void WebContentClient::did_request_image_context_menu(Gfx::IntPoint content_position, AK::URL const& url, DeprecatedString const& target, unsigned modifiers, Gfx::ShareableBitmap const& bitmap)
+void WebContentClient::did_request_media_context_menu(u64 page_id, Gfx::IntPoint content_position, ByteString const&, unsigned, Web::Page::MediaContextMenu const& menu)
 {
-    m_view.notify_server_did_request_image_context_menu({}, content_position, url, target, modifiers, bitmap);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_media_context_menu_request)
+            view->on_media_context_menu_request(view->to_widget_position(content_position), menu);
+    }
 }
 
-void WebContentClient::did_get_source(AK::URL const& url, DeprecatedString const& source)
+void WebContentClient::did_get_source(u64 page_id, URL::URL const& url, URL::URL const& base_url, String const& source)
 {
-    m_view.notify_server_did_get_source(url, source);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_source)
+            view->on_received_source(url, base_url, source);
+    }
 }
 
-void WebContentClient::did_get_dom_tree(DeprecatedString const& dom_tree)
+void WebContentClient::did_inspect_dom_tree(u64 page_id, ByteString const& dom_tree)
 {
-    m_view.notify_server_did_get_dom_tree(dom_tree);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_dom_tree)
+            view->on_received_dom_tree(dom_tree);
+    }
 }
 
-void WebContentClient::did_get_dom_node_properties(i32 node_id, DeprecatedString const& computed_style, DeprecatedString const& resolved_style, DeprecatedString const& custom_properties, DeprecatedString const& node_box_sizing)
+void WebContentClient::did_inspect_dom_node(u64 page_id, bool has_style, ByteString const& computed_style, ByteString const& resolved_style, ByteString const& custom_properties, ByteString const& node_box_sizing, ByteString const& aria_properties_state, ByteString const& fonts)
 {
-    m_view.notify_server_did_get_dom_node_properties(node_id, computed_style, resolved_style, custom_properties, node_box_sizing);
+    auto view = view_for_page_id(page_id);
+    if (!view.has_value() || !view->on_received_dom_node_properties)
+        return;
+
+    Optional<ViewImplementation::DOMNodeProperties> properties;
+
+    if (has_style) {
+        properties = ViewImplementation::DOMNodeProperties {
+            .computed_style_json = MUST(String::from_byte_string(computed_style)),
+            .resolved_style_json = MUST(String::from_byte_string(resolved_style)),
+            .custom_properties_json = MUST(String::from_byte_string(custom_properties)),
+            .node_box_sizing_json = MUST(String::from_byte_string(node_box_sizing)),
+            .aria_properties_state_json = MUST(String::from_byte_string(aria_properties_state)),
+            .fonts_json = MUST(String::from_byte_string(fonts))
+        };
+    }
+
+    view->on_received_dom_node_properties(move(properties));
 }
 
-void WebContentClient::did_output_js_console_message(i32 message_index)
+void WebContentClient::did_inspect_accessibility_tree(u64 page_id, ByteString const& accessibility_tree)
 {
-    m_view.notify_server_did_output_js_console_message(message_index);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_accessibility_tree)
+            view->on_received_accessibility_tree(accessibility_tree);
+    }
 }
 
-void WebContentClient::did_get_js_console_messages(i32 start_index, Vector<DeprecatedString> const& message_types, Vector<DeprecatedString> const& messages)
+void WebContentClient::did_get_hovered_node_id(u64 page_id, i32 node_id)
 {
-    m_view.notify_server_did_get_js_console_messages(start_index, message_types, messages);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_hovered_node_id)
+            view->on_received_hovered_node_id(node_id);
+    }
 }
 
-void WebContentClient::did_request_alert(DeprecatedString const& message)
+void WebContentClient::did_finish_editing_dom_node(u64 page_id, Optional<i32> const& node_id)
 {
-    m_view.notify_server_did_request_alert({}, message);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_finshed_editing_dom_node)
+            view->on_finshed_editing_dom_node(node_id);
+    }
 }
 
-void WebContentClient::did_request_confirm(DeprecatedString const& message)
+void WebContentClient::did_get_dom_node_html(u64 page_id, String const& html)
 {
-    m_view.notify_server_did_request_confirm({}, message);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_dom_node_html)
+            view->on_received_dom_node_html(html);
+    }
 }
 
-void WebContentClient::did_request_prompt(DeprecatedString const& message, DeprecatedString const& default_)
+void WebContentClient::did_take_screenshot(u64 page_id, Gfx::ShareableBitmap const& screenshot)
 {
-    m_view.notify_server_did_request_prompt({}, message, default_);
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_receive_screenshot({}, screenshot);
 }
 
-void WebContentClient::did_request_set_prompt_text(DeprecatedString const& message)
+void WebContentClient::did_get_internal_page_info(u64 page_id, WebView::PageInfoType type, String const& info)
 {
-    m_view.notify_server_did_request_set_prompt_text({}, message);
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_receive_internal_page_info({}, type, info);
 }
 
-void WebContentClient::did_request_accept_dialog()
+void WebContentClient::did_output_js_console_message(u64 page_id, i32 message_index)
 {
-    m_view.notify_server_did_request_accept_dialog({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_console_message)
+            view->on_received_console_message(message_index);
+    }
 }
 
-void WebContentClient::did_request_dismiss_dialog()
+void WebContentClient::did_get_js_console_messages(u64 page_id, i32 start_index, Vector<ByteString> const& message_types, Vector<ByteString> const& messages)
 {
-    m_view.notify_server_did_request_dismiss_dialog({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_console_messages)
+            view->on_received_console_messages(start_index, message_types, messages);
+    }
 }
 
-void WebContentClient::did_change_favicon(Gfx::ShareableBitmap const& favicon)
+void WebContentClient::did_request_alert(u64 page_id, String const& message)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_alert)
+            view->on_request_alert(message);
+    }
+}
+
+void WebContentClient::did_request_confirm(u64 page_id, String const& message)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_confirm)
+            view->on_request_confirm(message);
+    }
+}
+
+void WebContentClient::did_request_prompt(u64 page_id, String const& message, String const& default_)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_prompt)
+            view->on_request_prompt(message, default_);
+    }
+}
+
+void WebContentClient::did_request_set_prompt_text(u64 page_id, String const& message)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_set_prompt_text)
+            view->on_request_set_prompt_text(message);
+    }
+}
+
+void WebContentClient::did_request_accept_dialog(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_accept_dialog)
+            view->on_request_accept_dialog();
+    }
+}
+
+void WebContentClient::did_request_dismiss_dialog(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_dismiss_dialog)
+            view->on_request_dismiss_dialog();
+    }
+}
+
+void WebContentClient::did_change_favicon(u64 page_id, Gfx::ShareableBitmap const& favicon)
 {
     if (!favicon.is_valid()) {
         dbgln("DidChangeFavicon: Received invalid favicon");
         return;
     }
-    m_view.notify_server_did_change_favicon(*favicon.bitmap());
+
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_favicon_change)
+            view->on_favicon_change(*favicon.bitmap());
+    }
 }
 
-Messages::WebContentClient::DidRequestAllCookiesResponse WebContentClient::did_request_all_cookies(AK::URL const& url)
+Messages::WebContentClient::DidRequestAllCookiesResponse WebContentClient::did_request_all_cookies(u64 page_id, URL::URL const& url)
 {
-    return m_view.notify_server_did_request_all_cookies({}, url);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_get_all_cookies)
+            return view->on_get_all_cookies(url);
+    }
+
+    return Vector<Web::Cookie::Cookie> {};
 }
 
-Messages::WebContentClient::DidRequestNamedCookieResponse WebContentClient::did_request_named_cookie(AK::URL const& url, DeprecatedString const& name)
+Messages::WebContentClient::DidRequestNamedCookieResponse WebContentClient::did_request_named_cookie(u64 page_id, URL::URL const& url, String const& name)
 {
-    return m_view.notify_server_did_request_named_cookie({}, url, name);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_get_named_cookie)
+            return view->on_get_named_cookie(url, name);
+    }
+
+    return OptionalNone {};
 }
 
-Messages::WebContentClient::DidRequestCookieResponse WebContentClient::did_request_cookie(AK::URL const& url, u8 source)
+Messages::WebContentClient::DidRequestCookieResponse WebContentClient::did_request_cookie(u64 page_id, URL::URL const& url, Web::Cookie::Source source)
 {
-    return m_view.notify_server_did_request_cookie({}, url, static_cast<Web::Cookie::Source>(source));
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_get_cookie)
+            return view->on_get_cookie(url, source);
+    }
+
+    return String {};
 }
 
-void WebContentClient::did_set_cookie(AK::URL const& url, Web::Cookie::ParsedCookie const& cookie, u8 source)
+void WebContentClient::did_set_cookie(u64 page_id, URL::URL const& url, Web::Cookie::ParsedCookie const& cookie, Web::Cookie::Source source)
 {
-    m_view.notify_server_did_set_cookie({}, url, cookie, static_cast<Web::Cookie::Source>(source));
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_set_cookie)
+            view->on_set_cookie(url, cookie, source);
+    }
 }
 
-void WebContentClient::did_update_cookie(Web::Cookie::Cookie const& cookie)
+void WebContentClient::did_update_cookie(u64 page_id, Web::Cookie::Cookie const& cookie)
 {
-    m_view.notify_server_did_update_cookie({}, cookie);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_update_cookie)
+            view->on_update_cookie(cookie);
+    }
 }
 
-void WebContentClient::did_close_browsing_context()
+Messages::WebContentClient::DidRequestNewWebViewResponse WebContentClient::did_request_new_web_view(u64 page_id, Web::HTML::ActivateTab const& activate_tab, Web::HTML::WebViewHints const& hints, Optional<u64> const& page_index)
 {
-    m_view.notify_server_did_close_browsing_context({});
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_new_web_view)
+            return view->on_new_web_view(activate_tab, hints, page_index);
+    }
+
+    return String {};
 }
 
-void WebContentClient::did_update_resource_count(i32 count_waiting)
+void WebContentClient::did_request_activate_tab(u64 page_id)
 {
-    m_view.notify_server_did_update_resource_count(count_waiting);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_activate_tab)
+            view->on_activate_tab();
+    }
 }
 
-void WebContentClient::did_request_restore_window()
+void WebContentClient::did_close_browsing_context(u64 page_id)
 {
-    m_view.notify_server_did_request_restore_window();
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_close)
+            view->on_close();
+    }
 }
 
-Messages::WebContentClient::DidRequestRepositionWindowResponse WebContentClient::did_request_reposition_window(Gfx::IntPoint position)
+void WebContentClient::did_update_resource_count(u64 page_id, i32 count_waiting)
 {
-    return m_view.notify_server_did_request_reposition_window(position);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_resource_status_change)
+            view->on_resource_status_change(count_waiting);
+    }
 }
 
-Messages::WebContentClient::DidRequestResizeWindowResponse WebContentClient::did_request_resize_window(Gfx::IntSize size)
+void WebContentClient::did_request_restore_window(u64 page_id)
 {
-    return m_view.notify_server_did_request_resize_window(size);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_restore_window)
+            view->on_restore_window();
+    }
 }
 
-Messages::WebContentClient::DidRequestMaximizeWindowResponse WebContentClient::did_request_maximize_window()
+Messages::WebContentClient::DidRequestRepositionWindowResponse WebContentClient::did_request_reposition_window(u64 page_id, Gfx::IntPoint position)
 {
-    return m_view.notify_server_did_request_maximize_window();
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_reposition_window)
+            return view->on_reposition_window(position);
+    }
+
+    return Gfx::IntPoint {};
 }
 
-Messages::WebContentClient::DidRequestMinimizeWindowResponse WebContentClient::did_request_minimize_window()
+Messages::WebContentClient::DidRequestResizeWindowResponse WebContentClient::did_request_resize_window(u64 page_id, Gfx::IntSize size)
 {
-    return m_view.notify_server_did_request_minimize_window();
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_resize_window)
+            return view->on_resize_window(size);
+    }
+
+    return Gfx::IntSize {};
 }
 
-Messages::WebContentClient::DidRequestFullscreenWindowResponse WebContentClient::did_request_fullscreen_window()
+Messages::WebContentClient::DidRequestMaximizeWindowResponse WebContentClient::did_request_maximize_window(u64 page_id)
 {
-    return m_view.notify_server_did_request_fullscreen_window();
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_maximize_window)
+            return view->on_maximize_window();
+    }
+
+    return Gfx::IntRect {};
 }
 
-void WebContentClient::did_request_file(DeprecatedString const& path, i32 request_id)
+Messages::WebContentClient::DidRequestMinimizeWindowResponse WebContentClient::did_request_minimize_window(u64 page_id)
 {
-    m_view.notify_server_did_request_file({}, path, request_id);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_minimize_window)
+            return view->on_minimize_window();
+    }
+
+    return Gfx::IntRect {};
 }
 
-void WebContentClient::did_finish_handling_input_event(bool event_was_accepted)
+Messages::WebContentClient::DidRequestFullscreenWindowResponse WebContentClient::did_request_fullscreen_window(u64 page_id)
 {
-    m_view.notify_server_did_finish_handling_input_event(event_was_accepted);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_fullscreen_window)
+            return view->on_fullscreen_window();
+    }
+
+    return Gfx::IntRect {};
 }
 
-void WebContentClient::did_get_accessibility_tree(DeprecatedString const& accessibility_tree)
+void WebContentClient::did_request_file(u64 page_id, ByteString const& path, i32 request_id)
 {
-    m_view.notify_server_did_get_accessibility_tree(accessibility_tree);
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_file)
+            view->on_request_file(path, request_id);
+    }
+}
+
+void WebContentClient::did_request_color_picker(u64 page_id, Color const& current_color)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_color_picker)
+            view->on_request_color_picker(current_color);
+    }
+}
+
+void WebContentClient::did_request_file_picker(u64 page_id, Web::HTML::FileFilter const& accepted_file_types, Web::HTML::AllowMultipleFiles allow_multiple_files)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_file_picker)
+            view->on_request_file_picker(accepted_file_types, allow_multiple_files);
+    }
+}
+
+void WebContentClient::did_request_select_dropdown(u64 page_id, Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> const& items)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_select_dropdown)
+            view->on_request_select_dropdown(content_position, minimum_width, items);
+    }
+}
+
+void WebContentClient::did_finish_handling_input_event(u64 page_id, Web::EventResult event_result)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_finish_handling_input_event({}, event_result);
+}
+
+void WebContentClient::did_change_theme_color(u64 page_id, Gfx::Color color)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_theme_color_change)
+            view->on_theme_color_change(color);
+    }
+}
+
+void WebContentClient::did_insert_clipboard_entry(u64 page_id, String const& data, String const& presentation_style, String const& mime_type)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_insert_clipboard_entry)
+            view->on_insert_clipboard_entry(data, presentation_style, mime_type);
+    }
+}
+
+void WebContentClient::did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState play_state)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_change_audio_play_state({}, play_state);
+}
+
+void WebContentClient::did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_update_navigation_buttons_state({}, back_enabled, forward_enabled);
+}
+
+void WebContentClient::inspector_did_load(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_loaded)
+            view->on_inspector_loaded();
+    }
+}
+
+void WebContentClient::inspector_did_select_dom_node(u64 page_id, i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> const& pseudo_element)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_selected_dom_node)
+            view->on_inspector_selected_dom_node(node_id, pseudo_element);
+    }
+}
+
+void WebContentClient::inspector_did_set_dom_node_text(u64 page_id, i32 node_id, String const& text)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_set_dom_node_text)
+            view->on_inspector_set_dom_node_text(node_id, text);
+    }
+}
+
+void WebContentClient::inspector_did_set_dom_node_tag(u64 page_id, i32 node_id, String const& tag)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_set_dom_node_tag)
+            view->on_inspector_set_dom_node_tag(node_id, tag);
+    }
+}
+
+void WebContentClient::inspector_did_add_dom_node_attributes(u64 page_id, i32 node_id, Vector<Attribute> const& attributes)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_added_dom_node_attributes)
+            view->on_inspector_added_dom_node_attributes(node_id, attributes);
+    }
+}
+
+void WebContentClient::inspector_did_replace_dom_node_attribute(u64 page_id, i32 node_id, size_t attribute_index, Vector<Attribute> const& replacement_attributes)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_replaced_dom_node_attribute)
+            view->on_inspector_replaced_dom_node_attribute(node_id, attribute_index, replacement_attributes);
+    }
+}
+
+void WebContentClient::inspector_did_request_dom_tree_context_menu(u64 page_id, i32 node_id, Gfx::IntPoint position, String const& type, Optional<String> const& tag, Optional<size_t> const& attribute_index)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_requested_dom_tree_context_menu)
+            view->on_inspector_requested_dom_tree_context_menu(node_id, view->to_widget_position(position), type, tag, attribute_index);
+    }
+}
+
+void WebContentClient::inspector_did_execute_console_script(u64 page_id, String const& script)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_executed_console_script)
+            view->on_inspector_executed_console_script(script);
+    }
+}
+
+void WebContentClient::inspector_did_export_inspector_html(u64 page_id, String const& html)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_exported_inspector_html)
+            view->on_inspector_exported_inspector_html(html);
+    }
+}
+
+Messages::WebContentClient::RequestWorkerAgentResponse WebContentClient::request_worker_agent(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_request_worker_agent)
+            return view->on_request_worker_agent();
+    }
+
+    return IPC::File {};
+}
+
+void WebContentClient::inspector_did_list_style_sheets(u64 page_id, Vector<Web::CSS::StyleSheetIdentifier> const& stylesheets)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_style_sheet_list)
+            view->on_received_style_sheet_list(stylesheets);
+    }
+}
+
+void WebContentClient::inspector_did_request_style_sheet_source(u64 page_id, Web::CSS::StyleSheetIdentifier const& identifier)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_inspector_requested_style_sheet_source)
+            view->on_inspector_requested_style_sheet_source(identifier);
+    }
+}
+
+void WebContentClient::did_get_style_sheet_source(u64 page_id, Web::CSS::StyleSheetIdentifier const& identifier, URL::URL const& base_url, String const& source)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->on_received_style_sheet_source)
+            view->on_received_style_sheet_source(identifier, base_url, source);
+    }
+}
+
+Optional<ViewImplementation&> WebContentClient::view_for_page_id(u64 page_id, SourceLocation location)
+{
+    if (auto view = m_views.get(page_id); view.has_value())
+        return *view.value();
+
+    dbgln("WebContentClient::{}: Did not find a page with ID {}", location.function_name(), page_id);
+    return {};
+}
+
+Messages::WebContentClient::HandleNonFetchSchemeResponse WebContentClient::handle_non_fetch_scheme(u64 page_id, const URL::URL& url)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        if (view->handle_custom_scheme)
+            return view->handle_custom_scheme(url);
+    }
+    return false;
 }
 
 }

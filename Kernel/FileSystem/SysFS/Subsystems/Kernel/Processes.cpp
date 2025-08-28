@@ -6,11 +6,11 @@
 
 #include <AK/JsonObjectSerializer.h>
 #include <AK/Try.h>
+#include <Kernel/Devices/TTY/TTY.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/Kernel/Processes.h>
-#include <Kernel/Process.h>
-#include <Kernel/Scheduler.h>
 #include <Kernel/Sections.h>
-#include <Kernel/TTY/TTY.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Scheduler.h>
 
 namespace Kernel {
 
@@ -19,9 +19,9 @@ UNMAP_AFTER_INIT SysFSOverallProcesses::SysFSOverallProcesses(SysFSDirectory con
 {
 }
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<SysFSOverallProcesses> SysFSOverallProcesses::must_create(SysFSDirectory const& parent_directory)
+UNMAP_AFTER_INIT NonnullRefPtr<SysFSOverallProcesses> SysFSOverallProcesses::must_create(SysFSDirectory const& parent_directory)
 {
-    return adopt_lock_ref_if_nonnull(new (nothrow) SysFSOverallProcesses(parent_directory)).release_nonnull();
+    return adopt_ref_if_nonnull(new (nothrow) SysFSOverallProcesses(parent_directory)).release_nonnull();
 }
 
 ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
@@ -65,7 +65,10 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
         }
 
         TRY(process_object.add("pid"sv, process.pid().value()));
-        TRY(process_object.add("pgid"sv, process.tty() ? process.tty()->pgid().value() : 0));
+        ProcessGroupID tty_pgid = 0;
+        if (auto tty = process.tty())
+            tty_pgid = tty->pgid();
+        TRY(process_object.add("pgid"sv, tty_pgid.value()));
         TRY(process_object.add("pgp"sv, process.pgid().value()));
         TRY(process_object.add("sid"sv, process.sid().value()));
         auto credentials = process.credentials();
@@ -78,9 +81,9 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
         } else {
             TRY(process_object.add("tty"sv, ""));
         }
-        TRY(process_object.add("nfds"sv, process.fds().with_shared([](auto& fds) { return fds.open_count(); })));
-        TRY(process.name().with([&](auto& process_name) { return process_object.add("name"sv, process_name->view()); }));
+        TRY(process.name().with([&](auto& process_name) { return process_object.add("name"sv, process_name.representable_view()); }));
         TRY(process_object.add("executable"sv, process.executable() ? TRY(process.executable()->try_serialize_absolute_path())->view() : ""sv));
+        TRY(process_object.add("creation_time"sv, process.creation_time().nanoseconds_since_epoch()));
 
         size_t amount_virtual = 0;
         size_t amount_resident = 0;
@@ -111,14 +114,14 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
         TRY(process_object.add("dumpable"sv, process.is_dumpable()));
         TRY(process_object.add("kernel"sv, process.is_kernel_process()));
         auto thread_array = TRY(process_object.add_array("threads"sv));
-        TRY(process.try_for_each_thread([&](const Thread& thread) -> ErrorOr<void> {
+        TRY(process.try_for_each_thread([&](Thread const& thread) -> ErrorOr<void> {
             SpinlockLocker locker(thread.get_lock());
             auto thread_object = TRY(thread_array.add_object());
 #if LOCK_DEBUG
             TRY(thread_object.add("lock_count"sv, thread.lock_count()));
 #endif
             TRY(thread_object.add("tid"sv, thread.tid().value()));
-            TRY(thread.name().with([&](auto& thread_name) { return thread_object.add("name"sv, thread_name->view()); }));
+            TRY(thread.name().with([&](auto& thread_name) { return thread_object.add("name"sv, thread_name.representable_view()); }));
             TRY(thread_object.add("times_scheduled"sv, thread.times_scheduled()));
             TRY(thread_object.add("time_user"sv, thread.time_in_user()));
             TRY(thread_object.add("time_kernel"sv, thread.time_in_kernel()));
@@ -146,9 +149,9 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
 
     {
         auto array = TRY(json.add_array("processes"sv));
-        // FIXME: Do we actually want to expose the colonel process in a Jail environment?
-        TRY(build_process(array, *Scheduler::colonel()));
-        TRY(Process::for_each_in_same_jail([&](Process& process) -> ErrorOr<void> {
+        if (!Process::current().is_jailed())
+            TRY(build_process(array, *Scheduler::colonel()));
+        TRY(Process::for_each_in_same_process_list([&](Process& process) -> ErrorOr<void> {
             TRY(build_process(array, process));
             return {};
         }));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,15 +12,24 @@
 
 namespace JS {
 
-CellAllocator::CellAllocator(size_t cell_size)
-    : m_cell_size(cell_size)
+CellAllocator::CellAllocator(size_t cell_size, char const* class_name)
+    : m_class_name(class_name)
+    , m_cell_size(cell_size)
 {
 }
 
 Cell* CellAllocator::allocate_cell(Heap& heap)
 {
+    if (!m_list_node.is_in_list())
+        heap.register_cell_allocator({}, *this);
+
     if (m_usable_blocks.is_empty()) {
-        auto block = HeapBlock::create_with_cell_size(heap, m_cell_size);
+        auto block = HeapBlock::create_with_cell_size(heap, *this, m_cell_size, m_class_name);
+        auto block_ptr = reinterpret_cast<FlatPtr>(block.ptr());
+        if (m_min_block_address > block_ptr)
+            m_min_block_address = block_ptr;
+        if (m_max_block_address < block_ptr)
+            m_max_block_address = block_ptr;
         m_usable_blocks.append(*block.leak_ptr());
     }
 
@@ -34,11 +43,10 @@ Cell* CellAllocator::allocate_cell(Heap& heap)
 
 void CellAllocator::block_did_become_empty(Badge<Heap>, HeapBlock& block)
 {
-    auto& heap = block.heap();
     block.m_list_node.remove();
     // NOTE: HeapBlocks are managed by the BlockAllocator, so we don't want to `delete` the block here.
     block.~HeapBlock();
-    heap.block_allocator().deallocate_block(&block);
+    m_block_allocator.deallocate_block(&block);
 }
 
 void CellAllocator::block_did_become_usable(Badge<Heap>, HeapBlock& block)

@@ -1,101 +1,24 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, the SerenityOS developers.
+ * Copyright (c) 2024, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Locator.h"
+#include "DeclarationsModel.h"
 #include "HackStudio.h"
 #include "Project.h"
 #include "ProjectDeclarations.h"
-#include <LibGUI/AutocompleteProvider.h>
 #include <LibGUI/BoxLayout.h>
-#include <LibGUI/FileIconProvider.h>
 #include <LibGUI/TableView.h>
 #include <LibGUI/TextBox.h>
 #include <LibGUI/Window.h>
 
 namespace HackStudio {
 
-class LocatorSuggestionModel final : public GUI::Model {
-public:
-    struct Suggestion {
-        static Suggestion create_filename(DeprecatedString const& filename);
-        static Suggestion create_symbol_declaration(CodeComprehension::Declaration const&);
-
-        bool is_filename() const { return as_filename.has_value(); }
-        bool is_symbol_declaration() const { return as_symbol_declaration.has_value(); }
-
-        Optional<DeprecatedString> as_filename;
-        Optional<CodeComprehension::Declaration> as_symbol_declaration;
-    };
-
-    explicit LocatorSuggestionModel(Vector<Suggestion>&& suggestions)
-        : m_suggestions(move(suggestions))
-    {
-    }
-
-    enum Column {
-        Icon,
-        Name,
-        Filename,
-        __Column_Count,
-    };
-    virtual int row_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return m_suggestions.size(); }
-    virtual int column_count(const GUI::ModelIndex& = GUI::ModelIndex()) const override { return Column::__Column_Count; }
-    virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override
-    {
-        auto& suggestion = m_suggestions.at(index.row());
-        if (role != GUI::ModelRole::Display)
-            return {};
-
-        if (suggestion.is_filename()) {
-            if (index.column() == Column::Name)
-                return suggestion.as_filename.value();
-            if (index.column() == Column::Filename)
-                return "";
-            if (index.column() == Column::Icon)
-                return GUI::FileIconProvider::icon_for_path(suggestion.as_filename.value());
-        }
-        if (suggestion.is_symbol_declaration()) {
-            if (index.column() == Column::Name) {
-                if (suggestion.as_symbol_declaration.value().scope.is_null())
-                    return suggestion.as_symbol_declaration.value().name;
-                return DeprecatedString::formatted("{}::{}", suggestion.as_symbol_declaration.value().scope, suggestion.as_symbol_declaration.value().name);
-            }
-            if (index.column() == Column::Filename)
-                return suggestion.as_symbol_declaration.value().position.file;
-            if (index.column() == Column::Icon) {
-                auto icon = ProjectDeclarations::get_icon_for(suggestion.as_symbol_declaration.value().type);
-                if (icon.has_value())
-                    return icon.value();
-                return {};
-            }
-        }
-        return {};
-    }
-
-    Vector<Suggestion> const& suggestions() const { return m_suggestions; }
-
-private:
-    Vector<Suggestion> m_suggestions;
-};
-
-LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_filename(DeprecatedString const& filename)
-{
-    LocatorSuggestionModel::Suggestion s;
-    s.as_filename = filename;
-    return s;
-}
-LocatorSuggestionModel::Suggestion LocatorSuggestionModel::Suggestion::create_symbol_declaration(CodeComprehension::Declaration const& decl)
-{
-    LocatorSuggestionModel::Suggestion s;
-    s.as_symbol_declaration = decl;
-    return s;
-}
-
-Locator::Locator(Core::Object* parent)
+Locator::Locator(Core::EventReceiver* parent)
 {
     set_layout<GUI::VerticalBoxLayout>();
     set_fixed_height(22);
@@ -146,21 +69,24 @@ Locator::Locator(Core::Object* parent)
     };
 
     m_popup_window = GUI::Window::construct(parent);
-    m_popup_window->set_window_type(GUI::WindowType::Popup);
+    m_popup_window->set_window_type(GUI::WindowType::Autocomplete);
     m_popup_window->set_rect(0, 0, 500, 200);
 
-    m_suggestion_view = m_popup_window->set_main_widget<GUI::TableView>().release_value_but_fixme_should_propagate_errors();
+    m_suggestion_view = m_popup_window->set_main_widget<GUI::TableView>();
     m_suggestion_view->set_column_headers_visible(false);
 
     m_suggestion_view->on_activation = [this](auto& index) {
         open_suggestion(index);
     };
+
+    m_model = GUI::FilteringProxyModel::create(ProjectDeclarations::the().declarations_model(), GUI::FilteringProxyModel::FilteringOptions::SortByScore).release_value_but_fixme_should_propagate_errors();
+    m_suggestion_view->set_model(m_model);
 }
 
 void Locator::open_suggestion(const GUI::ModelIndex& index)
 {
-    auto& model = reinterpret_cast<LocatorSuggestionModel&>(*m_suggestion_view->model());
-    auto suggestion = model.suggestions()[index.row()];
+    auto original_index = m_model->map(index);
+    auto suggestion = ProjectDeclarations::the().declarations_model().declarations()[original_index.row()];
     if (suggestion.is_filename()) {
         auto filename = suggestion.as_filename.value();
         open_file(filename);
@@ -184,44 +110,19 @@ void Locator::open()
 void Locator::close()
 {
     m_popup_window->hide();
+    m_textbox->set_focus(false);
 }
 
 void Locator::update_suggestions()
 {
-    auto typed_text = m_textbox->text();
-    Vector<LocatorSuggestionModel::Suggestion> suggestions;
-    project().for_each_text_file([&](auto& file) {
-        if (file.name().contains(typed_text, CaseSensitivity::CaseInsensitive))
-            suggestions.append(LocatorSuggestionModel::Suggestion::create_filename(file.name()));
-    });
+    m_model->set_filter_term(m_textbox->text());
 
-    ProjectDeclarations::the().for_each_declared_symbol([&suggestions, &typed_text](auto& decl) {
-        if (decl.name.contains(typed_text, CaseSensitivity::CaseInsensitive) || decl.scope.contains(typed_text, CaseSensitivity::CaseInsensitive))
-            suggestions.append((LocatorSuggestionModel::Suggestion::create_symbol_declaration(decl)));
-    });
-
-    dbgln("I have {} suggestion(s):", suggestions.size());
-    // Limit the debug logging otherwise this can be very slow for large projects
-    if (suggestions.size() < 100) {
-        for (auto& s : suggestions) {
-            if (s.is_filename())
-                dbgln("    {}", s.as_filename.value());
-            if (s.is_symbol_declaration())
-                dbgln("    {} ({})", s.as_symbol_declaration.value().name, s.as_symbol_declaration.value().position.file);
-        }
-    }
-
-    bool has_suggestions = !suggestions.is_empty();
-
-    m_suggestion_view->set_model(adopt_ref(*new LocatorSuggestionModel(move(suggestions))));
-
-    if (!has_suggestions)
+    if (m_model->row_count() == 0)
         m_suggestion_view->selection().clear();
     else
         m_suggestion_view->selection().set(m_suggestion_view->model()->index(0));
 
     m_popup_window->move_to(screen_relative_rect().top_left().translated(0, -m_popup_window->height()));
-    dbgln("Popup rect: {}", m_popup_window->rect());
     m_popup_window->show();
 }
 }

@@ -33,7 +33,7 @@ Menu* Menu::from_menu_id(int menu_id)
     return (*it).value;
 }
 
-Menu::Menu(DeprecatedString name)
+Menu::Menu(String name)
     : m_name(move(name))
 {
 }
@@ -48,21 +48,12 @@ void Menu::set_icon(Gfx::Bitmap const* icon)
     m_icon = icon;
 }
 
-ErrorOr<void> Menu::try_add_action(NonnullRefPtr<Action> action)
-{
-    // NOTE: We grow the vector first, to get allocation failure handled immediately.
-    TRY(m_items.try_ensure_capacity(m_items.size() + 1));
-
-    auto item = TRY(adopt_nonnull_own_or_enomem(new (nothrow) MenuItem(m_menu_id, move(action))));
-    if (m_menu_id != -1)
-        realize_menu_item(*item, m_items.size());
-    m_items.unchecked_append(move(item));
-    return {};
-}
-
 void Menu::add_action(NonnullRefPtr<Action> action)
 {
-    MUST(try_add_action(move(action)));
+    auto item = make<MenuItem>(m_menu_id, move(action));
+    if (m_menu_id != -1)
+        realize_menu_item(*item, m_items.size());
+    m_items.append(move(item));
 }
 
 void Menu::remove_all_actions()
@@ -73,42 +64,66 @@ void Menu::remove_all_actions()
     m_items.clear();
 }
 
-ErrorOr<NonnullRefPtr<Menu>> Menu::try_add_submenu(DeprecatedString name)
+void Menu::update_parent_menu_item()
 {
-    // NOTE: We grow the vector first, to get allocation failure handled immediately.
-    TRY(m_items.try_ensure_capacity(m_items.size() + 1));
+    if (auto parent = m_parent_menu.strong_ref()) {
+        auto const& parent_items = parent->items();
+        if (m_index_in_parent_menu >= 0 && static_cast<unsigned>(m_index_in_parent_menu) < parent_items.size()) {
+            auto& item = *parent_items[m_index_in_parent_menu];
+            if (item.submenu() == this)
+                item.update_from_menu(Badge<Menu> {});
+            return;
+        }
+        // Parent has since been cleared/repopulated:
+        parent = nullptr;
+        m_index_in_parent_menu = -1;
+    }
+}
 
-    auto submenu = TRY(Menu::try_create(name));
+void Menu::set_name(String name)
+{
+    m_name = move(name);
+    if (m_menu_id != -1) {
+        ConnectionToWindowServer::the().async_set_menu_name(m_menu_id, m_name);
+        update_parent_menu_item();
+    }
+}
 
-    auto item = TRY(adopt_nonnull_own_or_enomem(new (nothrow) MenuItem(m_menu_id, submenu)));
+void Menu::set_minimum_width(int minimum_width)
+{
+    m_minimum_width = minimum_width;
+    if (m_menu_id != -1) {
+        ConnectionToWindowServer::the().async_set_menu_minimum_width(m_menu_id, m_minimum_width);
+        update_parent_menu_item();
+    }
+}
+
+void Menu::set_parent(Menu& menu, int submenu_index)
+{
+    m_parent_menu = menu;
+    m_index_in_parent_menu = submenu_index;
+}
+
+NonnullRefPtr<Menu> Menu::add_submenu(String name)
+{
+    auto submenu = Menu::construct(move(name));
+
+    auto item = make<MenuItem>(m_menu_id, submenu);
+    submenu->set_parent(*this, m_items.size());
+
     if (m_menu_id != -1)
         realize_menu_item(*item, m_items.size());
 
-    m_items.unchecked_append(move(item));
+    m_items.append(move(item));
     return submenu;
-}
-
-Menu& Menu::add_submenu(DeprecatedString name)
-{
-    auto menu = MUST(try_add_submenu(move(name)));
-    return menu;
-}
-
-ErrorOr<void> Menu::try_add_separator()
-{
-    // NOTE: We grow the vector first, to get allocation failure handled immediately.
-    TRY(m_items.try_ensure_capacity(m_items.size() + 1));
-
-    auto item = TRY(adopt_nonnull_own_or_enomem(new (nothrow) MenuItem(m_menu_id, MenuItem::Type::Separator)));
-    if (m_menu_id != -1)
-        realize_menu_item(*item, m_items.size());
-    m_items.unchecked_append(move(item));
-    return {};
 }
 
 void Menu::add_separator()
 {
-    MUST(try_add_separator());
+    auto item = make<MenuItem>(m_menu_id, MenuItem::Type::Separator);
+    if (m_menu_id != -1)
+        realize_menu_item(*item, m_items.size());
+    m_items.append(move(item));
 }
 
 void Menu::realize_if_needed(RefPtr<Action> const& default_action)
@@ -135,7 +150,7 @@ int Menu::realize_menu(RefPtr<Action> default_action)
     unrealize_menu();
     m_menu_id = s_menu_id_allocator.allocate();
 
-    ConnectionToWindowServer::the().async_create_menu(m_menu_id, m_name);
+    ConnectionToWindowServer::the().async_create_menu(m_menu_id, m_name, m_minimum_width);
 
     dbgln_if(MENU_DEBUG, "GUI::Menu::realize_menu(): New menu ID: {}", m_menu_id);
     VERIFY(m_menu_id > 0);
@@ -198,7 +213,7 @@ void Menu::realize_menu_item(MenuItem& item, int item_id)
         break;
     case MenuItem::Type::Action: {
         auto& action = *item.action();
-        auto shortcut_text = action.shortcut().is_valid() ? action.shortcut().to_deprecated_string() : DeprecatedString();
+        auto shortcut_text = action.shortcut().is_valid() ? action.shortcut().to_byte_string() : ByteString();
         bool exclusive = action.group() && action.group()->is_exclusive() && action.is_checkable();
         bool is_default = (m_current_default_action.ptr() == &action);
         auto icon = action.icon() ? action.icon()->to_shareable_bitmap() : Gfx::ShareableBitmap();
@@ -209,7 +224,7 @@ void Menu::realize_menu_item(MenuItem& item, int item_id)
         auto& submenu = *item.submenu();
         submenu.realize_if_needed(m_current_default_action.strong_ref());
         auto icon = submenu.icon() ? submenu.icon()->to_shareable_bitmap() : Gfx::ShareableBitmap();
-        ConnectionToWindowServer::the().async_add_menu_item(m_menu_id, item_id, submenu.menu_id(), submenu.name(), true, true, false, false, false, "", icon, false);
+        ConnectionToWindowServer::the().async_add_menu_item(m_menu_id, item_id, submenu.menu_id(), submenu.name().to_byte_string(), true, true, false, false, false, "", icon, false);
         break;
     }
     case MenuItem::Type::Invalid:
@@ -218,7 +233,7 @@ void Menu::realize_menu_item(MenuItem& item, int item_id)
     }
 }
 
-ErrorOr<void> Menu::add_recent_files_list(Function<void(Action&)> callback)
+void Menu::add_recent_files_list(Function<void(Action&)> callback, AddTrailingSeparator add_trailing_separator)
 {
     m_recent_files_callback = move(callback);
 
@@ -235,11 +250,11 @@ ErrorOr<void> Menu::add_recent_files_list(Function<void(Action&)> callback)
     app->register_recent_file_actions({}, recent_file_actions);
 
     for (auto& action : recent_file_actions) {
-        TRY(try_add_action(action));
+        add_action(action);
     }
 
-    TRY(try_add_separator());
-    return {};
+    if (add_trailing_separator == AddTrailingSeparator::Yes)
+        add_separator();
 }
 
 }

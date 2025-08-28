@@ -18,10 +18,11 @@ struct WebGLContextEventInit final : public DOM::EventInit {
 
 class WebGLContextEvent final : public DOM::Event {
     WEB_PLATFORM_OBJECT(WebGLContextEvent, DOM::Event);
+    JS_DECLARE_ALLOCATOR(WebGLContextEvent);
 
 public:
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> create(JS::Realm&, FlyString const& type, WebGLContextEventInit const& event_init);
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> construct_impl(JS::Realm&, FlyString const& type, WebGLContextEventInit const& event_init);
+    [[nodiscard]] static JS::NonnullGCPtr<WebGLContextEvent> create(JS::Realm&, FlyString const& type, WebGLContextEventInit const&);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<WebGLContextEvent>> construct_impl(JS::Realm&, FlyString const& type, WebGLContextEventInit const&);
 
     virtual ~WebGLContextEvent() override;
 
@@ -30,7 +31,7 @@ public:
 private:
     WebGLContextEvent(JS::Realm&, FlyString const& type, WebGLContextEventInit const& event_init);
 
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
 
     String m_status_message;
 };

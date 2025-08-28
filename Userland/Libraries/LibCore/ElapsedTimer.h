@@ -10,12 +10,17 @@
 
 namespace Core {
 
+enum class TimerType {
+    Precise,
+    Coarse
+};
+
 class ElapsedTimer {
 public:
-    static ElapsedTimer start_new();
+    static ElapsedTimer start_new(TimerType timer_type = TimerType::Coarse);
 
-    ElapsedTimer(bool precise = false)
-        : m_precise(precise)
+    ElapsedTimer(TimerType timer_type = TimerType::Coarse)
+        : m_timer_type(timer_type)
     {
     }
 
@@ -23,14 +28,20 @@ public:
     void start();
     void reset();
 
-    i64 elapsed() const; // milliseconds
-    Time elapsed_time() const;
+    i64 elapsed_milliseconds() const;
+    Duration elapsed_time() const;
 
-    Time const& origin_time() const { return m_origin_time; }
+    // FIXME: Move callers to elapsed_milliseconds(), remove this.
+    i64 elapsed() const // milliseconds
+    {
+        return elapsed_milliseconds();
+    }
+
+    MonotonicTime const& origin_time() const { return m_origin_time; }
 
 private:
-    Time m_origin_time {};
-    bool m_precise { false };
+    MonotonicTime m_origin_time { MonotonicTime::now() };
+    TimerType m_timer_type { TimerType::Coarse };
     bool m_valid { false };
 };
 

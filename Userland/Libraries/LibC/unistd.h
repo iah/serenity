@@ -14,6 +14,7 @@
 #pragma once
 
 #include <Kernel/API/POSIX/unistd.h>
+#include <bits/getopt.h>
 #include <fd_set.h>
 #include <limits.h>
 #include <sys/cdefs.h>
@@ -35,7 +36,6 @@ int get_process_name(char* buffer, int buffer_size);
 int set_process_name(char const* name, size_t name_length);
 void dump_backtrace(void);
 int fsync(int fd);
-int sysbeep(int tone);
 int gettid(void);
 int getpagesize(void);
 pid_t fork(void);
@@ -108,6 +108,7 @@ int access(char const* pathname, int mode);
 int faccessat(int dirfd, char const* pathname, int mode, int flags);
 int isatty(int fd);
 int mknod(char const* pathname, mode_t, dev_t);
+int mknodat(int dirfd, char const* pathname, mode_t, dev_t);
 long fpathconf(int fd, int name);
 long pathconf(char const* path, int name);
 char* getlogin(void);
@@ -117,6 +118,9 @@ int fchown(int fd, uid_t, gid_t);
 int fchownat(int fd, char const* pathname, uid_t uid, gid_t gid, int flags);
 int ftruncate(int fd, off_t length);
 int truncate(char const* path, off_t length);
+int fsopen(char const* fs_type, int flags);
+int fsmount(int vfs_context_id, int mount_fd, int source_fd, char const* target);
+int bindmount(int vfs_context_id, int source_fd, char const* target, int flags);
 int mount(int source_fd, char const* target, char const* fs_type, int flags);
 int umount(char const* mountpoint);
 int pledge(char const* promises, char const* execpromises);
@@ -158,22 +162,5 @@ enum {
 #define _POSIX_VDISABLE '\0'
 
 long sysconf(int name);
-
-// If opterr is set (the default), print error messages to stderr.
-extern int opterr;
-// On errors, optopt is set to the erroneous *character*.
-extern int optopt;
-// Index of the next argument to process upon a getopt*() call.
-extern int optind;
-// If set, reset the internal state kept by getopt*(). You may also want to set
-// optind to 1 in that case. Alternatively, setting optind to 0 is treated like
-// doing both of the above.
-extern int optreset;
-// After parsing an option that accept an argument, set to point to the argument
-// value.
-extern char* optarg;
-
-int getopt(int argc, char* const* argv, char const* short_options);
-int getsubopt(char** optionp, char* const* tokens, char** valuep);
 
 __END_DECLS

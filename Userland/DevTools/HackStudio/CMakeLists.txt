@@ -8,8 +8,8 @@ serenity_component(
 add_subdirectory(LanguageServers)
 add_subdirectory(LanguageClients)
 
-compile_gml(Dialogs/NewProjectDialog.gml Dialogs/NewProjectDialogGML.h new_project_dialog_gml)
-compile_gml(Dialogs/Git/GitCommitDialog.gml Dialogs/Git/GitCommitDialogGML.h git_commit_dialog_gml)
+stringify_gml(Dialogs/NewProjectDialog.gml Dialogs/NewProjectDialogGML.h new_project_dialog_gml)
+stringify_gml(Dialogs/Git/GitCommitDialog.gml Dialogs/Git/GitCommitDialogGML.h git_commit_dialog_gml)
 
 set(SOURCES
     CodeDocument.cpp
@@ -21,6 +21,7 @@ set(SOURCES
     Debugger/DisassemblyWidget.cpp
     Debugger/RegistersModel.cpp
     Debugger/VariablesModel.cpp
+    DeclarationsModel.cpp
     Dialogs/Git/GitCommitDialog.cpp
     Dialogs/NewProjectDialog.cpp
     Dialogs/ProjectTemplatesModel.cpp
@@ -34,7 +35,6 @@ set(SOURCES
     Git/GitWidget.cpp
     GMLPreviewWidget.cpp
     HackStudioWidget.cpp
-    Language.cpp
     LanguageClient.cpp
     Locator.cpp
     Project.cpp
@@ -55,5 +55,5 @@ set(GENERATED_SOURCES
 )
 
 serenity_app(HackStudio ICON app-hack-studio)
-target_link_libraries(HackStudio PRIVATE LibWebView LibWeb LibMarkdown LibGUI LibCpp LibCMake LibGfx LibCore LibVT LibDebug LibX86 LibDiff LibShell LibSymbolication LibSyntax LibRegex LibSQL LibConfig LibCore LibCoredump LibDesktop LibIPC LibJS LibMain LibThreading)
+target_link_libraries(HackStudio PRIVATE LibELF LibWebView LibWeb LibMarkdown LibGUI LibCpp LibCMake LibGfx LibCore LibVT LibDebug LibDisassembly LibDiff LibShell LibSymbolication LibSyntax LibRegex LibSQL LibConfig LibCore LibCoredump LibDesktop LibFileSystem LibIPC LibJS LibMain LibThreading LibURL)
 add_dependencies(HackStudio CppLanguageServer)

@@ -11,13 +11,6 @@
 #include <AK/SIMDExtras.h>
 #include <math.h>
 
-// Functions returning vectors or accepting vector arguments have different calling conventions
-// depending on whether the target architecture supports SSE or not. GCC generates warning "psabi"
-// when compiling for non-SSE architectures. We disable this warning because these functions
-// are static and should never be visible from outside the translation unit that includes this header.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpsabi"
-
 namespace AK::SIMD {
 
 // Functions ending in "_int_range" only accept arguments within range [INT_MIN, INT_MAX].
@@ -25,7 +18,7 @@ namespace AK::SIMD {
 
 ALWAYS_INLINE static f32x4 truncate_int_range(f32x4 v)
 {
-    return to_f32x4(to_i32x4(v));
+    return simd_cast<f32x4>(simd_cast<i32x4>(v));
 }
 
 ALWAYS_INLINE static f32x4 floor_int_range(f32x4 v)
@@ -45,12 +38,26 @@ ALWAYS_INLINE static f32x4 frac_int_range(f32x4 v)
     return v - floor_int_range(v);
 }
 
+template<SIMDVector T>
+ALWAYS_INLINE T bitselect(T v1, T v2, T control_mask)
+{
+    return (v1 & control_mask) | (v2 & ~control_mask);
+}
+
+template<SIMDVector T>
+requires(IsIntegral<ElementOf<T>>)
+ALWAYS_INLINE T abs(T x)
+{
+    return bitselect(x, -x, x > 0);
+}
+
 ALWAYS_INLINE static f32x4 clamp(f32x4 v, f32x4 min, f32x4 max)
 {
     return v < min ? min : (v > max ? max : v);
 }
 
-ALWAYS_INLINE static f32x4 clamp(f32x4 v, float min, float max)
+template<SIMDVector V, typename U = ElementOf<V>>
+ALWAYS_INLINE static V clamp(V v, U min, U max)
 {
     return v < min ? min : (v > max ? max : v);
 }
@@ -89,20 +96,4 @@ ALWAYS_INLINE static f32x4 sqrt(f32x4 v)
 #endif
 }
 
-ALWAYS_INLINE static f32x4 rsqrt(f32x4 v)
-{
-#if ARCH(X86_64)
-    return __builtin_ia32_rsqrtps(v);
-#else
-    return f32x4 {
-        1.f / AK::sqrt(v[0]),
-        1.f / AK::sqrt(v[1]),
-        1.f / AK::sqrt(v[2]),
-        1.f / AK::sqrt(v[3]),
-    };
-#endif
 }
-
-}
-
-#pragma GCC diagnostic pop

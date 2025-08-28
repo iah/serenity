@@ -44,7 +44,7 @@ TextTool::TextTool()
     m_text_editor->set_font(m_selected_font);
     m_cursor_blink_timer = Core::Timer::create_repeating(500, [&]() {
         m_cursor_blink_state = !m_cursor_blink_state;
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 }
 
 void TextTool::on_primary_color_change(Color color)
@@ -103,21 +103,21 @@ void TextTool::on_mousedown(Layer*, MouseEvent& event)
     }
 }
 
-ErrorOr<GUI::Widget*> TextTool::get_properties_widget()
+NonnullRefPtr<GUI::Widget> TextTool::get_properties_widget()
 {
     if (m_properties_widget)
-        return m_properties_widget.ptr();
+        return *m_properties_widget.ptr();
 
-    auto properties_widget = TRY(GUI::Widget::try_create());
-    (void)TRY(properties_widget->try_set_layout<GUI::VerticalBoxLayout>());
+    auto properties_widget = GUI::Widget::construct();
+    properties_widget->set_layout<GUI::VerticalBoxLayout>();
 
-    auto font_header = TRY(properties_widget->try_add<GUI::Label>("Current Font:"));
-    font_header->set_text_alignment(Gfx::TextAlignment::CenterLeft);
+    auto& font_header = properties_widget->add<GUI::Label>("Current Font:"_string);
+    font_header.set_text_alignment(Gfx::TextAlignment::CenterLeft);
 
-    m_font_label = TRY(properties_widget->try_add<GUI::Label>(m_selected_font->human_readable_name()));
+    m_font_label = properties_widget->add<GUI::Label>(m_selected_font->human_readable_name());
 
-    auto change_font_button = TRY(properties_widget->try_add<GUI::Button>(TRY("Change Font..."_string)));
-    change_font_button->on_click = [this](auto) {
+    auto& change_font_button = properties_widget->add<GUI::Button>("Change Font..."_string);
+    change_font_button.on_click = [this](auto) {
         auto picker = GUI::FontPicker::construct(nullptr, m_selected_font, false);
         if (picker->exec() == GUI::Dialog::ExecResult::OK) {
             m_font_label->set_text(picker->font()->human_readable_name());
@@ -128,7 +128,7 @@ ErrorOr<GUI::Widget*> TextTool::get_properties_widget()
     };
 
     m_properties_widget = properties_widget;
-    return m_properties_widget.ptr();
+    return *m_properties_widget;
 }
 
 void TextTool::on_second_paint(Layer const* layer, GUI::PaintEvent& event)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,10 +10,10 @@
 
 namespace Core {
 
-Notifier::Notifier(int fd, unsigned event_mask, Object* parent)
-    : Object(parent)
+Notifier::Notifier(int fd, Type type, EventReceiver* parent)
+    : EventReceiver(parent)
     , m_fd(fd)
-    , m_event_mask(event_mask)
+    , m_type(type)
 {
     set_enabled(true);
 }
@@ -27,6 +27,9 @@ void Notifier::set_enabled(bool enabled)
 {
     if (m_fd < 0)
         return;
+    if (enabled == m_is_enabled)
+        return;
+    m_is_enabled = enabled;
     if (enabled)
         Core::EventLoop::register_notifier({}, *this);
     else
@@ -41,15 +44,26 @@ void Notifier::close()
     m_fd = -1;
 }
 
+void Notifier::set_type(Type type)
+{
+    if (m_is_enabled) {
+        // FIXME: Directly communicate intent to the EventLoop.
+        set_enabled(false);
+        m_type = type;
+        set_enabled(true);
+    } else {
+        m_type = type;
+    }
+}
+
 void Notifier::event(Core::Event& event)
 {
-    if (event.type() == Core::Event::NotifierRead && on_ready_to_read) {
-        on_ready_to_read();
-    } else if (event.type() == Core::Event::NotifierWrite && on_ready_to_write) {
-        on_ready_to_write();
-    } else {
-        Object::event(event);
+    if (event.type() == Core::Event::NotifierActivation) {
+        if (on_activation)
+            on_activation();
+        return;
     }
+    EventReceiver::event(event);
 }
 
 }

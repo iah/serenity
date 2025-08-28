@@ -5,6 +5,7 @@
  */
 
 #include "ManualModel.h"
+#include <AK/FuzzyMatch.h>
 #include <AK/Try.h>
 #include <AK/Utf8View.h>
 #include <LibManual/Node.h>
@@ -56,10 +57,10 @@ Optional<String> ManualModel::page_name(const GUI::ModelIndex& index) const
 {
     if (!index.is_valid())
         return {};
-    auto* node = static_cast<Manual::Node const*>(index.internal_data());
-    if (!node->is_page())
+    auto const* node = static_cast<Manual::Node const*>(index.internal_data());
+    auto const* page = node->document();
+    if (!page)
         return {};
-    auto* page = static_cast<Manual::PageNode const*>(node);
     auto path = page->name();
     if (path.is_error())
         return {};
@@ -103,11 +104,12 @@ Optional<String> ManualModel::page_and_section(const GUI::ModelIndex& index) con
 {
     if (!index.is_valid())
         return {};
-    auto* node = static_cast<Manual::Node const*>(index.internal_data());
-    if (!node->is_page())
+    auto const* node = static_cast<Manual::Node const*>(index.internal_data());
+    auto const* page = node->document();
+    if (!page)
         return {};
-    auto* page = static_cast<Manual::PageNode const*>(node);
-    auto* section = static_cast<Manual::SectionNode const*>(page->parent());
+
+    auto const* section = static_cast<Manual::SectionNode const*>(page->parent());
     auto page_name = page->name();
     if (page_name.is_error())
         return {};
@@ -181,8 +183,8 @@ GUI::Variant ManualModel::data(const GUI::ModelIndex& index, GUI::ModelRole role
             return {};
         if (auto path = page_path(index); path.has_value())
             if (auto page = page_view(path.release_value()); !page.is_error())
-                // FIXME: We already provide String, but GUI::Variant still needs DeprecatedString.
-                return DeprecatedString(page.release_value());
+                // FIXME: We already provide String, but GUI::Variant still needs ByteString.
+                return ByteString(page.release_value());
         return {};
     case GUI::ModelRole::Display:
         if (auto name = node->name(); !name.is_error())
@@ -206,22 +208,26 @@ void ManualModel::update_section_node_on_toggle(const GUI::ModelIndex& index, bo
         static_cast<Manual::SectionNode*>(node)->set_open(open);
 }
 
-TriState ManualModel::data_matches(const GUI::ModelIndex& index, const GUI::Variant& term) const
+GUI::Model::MatchResult ManualModel::data_matches(const GUI::ModelIndex& index, const GUI::Variant& term) const
 {
     auto name = page_name(index);
     if (!name.has_value())
-        return TriState::False;
+        return { TriState::False };
 
-    if (name.value().bytes_as_string_view().contains(term.as_string(), CaseSensitivity::CaseInsensitive))
-        return TriState::True;
+    auto match_result = fuzzy_match(term.as_string(), name.value());
+    if (match_result.score > 0)
+        return { TriState::True, match_result.score };
 
     auto path = page_path(index);
     // NOTE: This is slightly inaccurate, as page_path can also fail due to OOM. We consider it acceptable to have a data mismatch in that case.
     if (!path.has_value())
-        return TriState::False;
+        return { TriState::False };
     auto view_result = page_view(path.release_value());
     if (view_result.is_error() || view_result.value().is_empty())
-        return TriState::False;
+        return { TriState::False };
 
-    return view_result.value().contains(term.as_string(), CaseSensitivity::CaseInsensitive) ? TriState::True : TriState::False;
+    if (view_result.value().contains(term.as_string(), CaseSensitivity::CaseInsensitive))
+        return { TriState::True, 0 };
+
+    return { TriState::False };
 }

@@ -8,6 +8,7 @@
 #include <AK/QuickSort.h>
 #include <Applications/PixelPaint/Filters/MedianSettingsGML.h>
 #include <LibGUI/SpinBox.h>
+#include <LibGfx/Painter.h>
 
 namespace PixelPaint::Filters {
 
@@ -45,7 +46,7 @@ void Median::apply(Gfx::Bitmap& target_bitmap, Gfx::Bitmap const& source_bitmap)
 ErrorOr<RefPtr<GUI::Widget>> Median::get_settings_widget()
 {
     if (!m_settings_widget) {
-        auto settings_widget = TRY(GUI::Widget::try_create());
+        auto settings_widget = GUI::Widget::construct();
         TRY(settings_widget->load_from_gml(median_settings_gml));
         settings_widget->find_descendant_of_type_named<GUI::SpinBox>("filter_radius")->on_change = [this](auto value) {
             m_filter_radius = value;

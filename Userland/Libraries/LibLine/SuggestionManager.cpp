@@ -4,61 +4,50 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Assertions.h>
 #include <AK/Function.h>
 #include <LibLine/SuggestionManager.h>
 
 namespace Line {
 
 CompletionSuggestion::CompletionSuggestion(StringView completion, StringView trailing_trivia, StringView display_trivia, Style style)
-    : style(style)
-    , text_string(completion)
-    , display_trivia_string(display_trivia)
+    : text(MUST(String::from_utf8(completion)))
+    , trailing_trivia(MUST(String::from_utf8(trailing_trivia)))
+    , display_trivia(MUST(String::from_utf8(display_trivia)))
+    , style(style)
     , is_valid(true)
 {
-    Utf8View text_u8 { completion };
-    Utf8View trivia_u8 { trailing_trivia };
-    Utf8View display_u8 { display_trivia };
-
-    for (auto cp : text_u8)
-        text.append(cp);
-
-    for (auto cp : trivia_u8)
-        this->trailing_trivia.append(cp);
-
-    for (auto cp : display_u8)
-        this->display_trivia.append(cp);
-
-    text_view = Utf32View { text.data(), text.size() };
-    trivia_view = Utf32View { this->trailing_trivia.data(), this->trailing_trivia.size() };
-    display_trivia_view = Utf32View { this->display_trivia.data(), this->display_trivia.size() };
 }
 
 void SuggestionManager::set_suggestions(Vector<CompletionSuggestion>&& suggestions)
 {
-    m_suggestions = move(suggestions);
+    auto code_point_at = [](Utf8View view, size_t index) {
+        size_t count = 0;
+        for (auto cp : view) {
+            if (count == index) {
+                return cp;
+            }
+            count++;
+        }
+        VERIFY_NOT_REACHED();
+    };
 
-    // Set the views and make sure we were not given invalid suggestions
-    for (auto& suggestion : m_suggestions) {
-        VERIFY(suggestion.is_valid);
-        suggestion.text_view = { suggestion.text.data(), suggestion.text.size() };
-        suggestion.trivia_view = { suggestion.trailing_trivia.data(), suggestion.trailing_trivia.size() };
-        suggestion.display_trivia_view = { suggestion.display_trivia.data(), suggestion.display_trivia.size() };
-    }
+    m_suggestions = move(suggestions);
 
     size_t common_suggestion_prefix { 0 };
     if (m_suggestions.size() == 1) {
-        m_largest_common_suggestion_prefix_length = m_suggestions[0].text_view.length();
+        m_largest_common_suggestion_prefix_length = m_suggestions[0].text_view().length();
     } else if (m_suggestions.size()) {
         u32 last_valid_suggestion_code_point;
 
         for (;; ++common_suggestion_prefix) {
-            if (m_suggestions[0].text_view.length() <= common_suggestion_prefix)
+            if (m_suggestions[0].text_view().length() <= common_suggestion_prefix)
                 goto no_more_commons;
 
-            last_valid_suggestion_code_point = m_suggestions[0].text_view.code_points()[common_suggestion_prefix];
+            last_valid_suggestion_code_point = code_point_at(m_suggestions[0].text_view(), common_suggestion_prefix);
 
             for (auto& suggestion : m_suggestions) {
-                if (suggestion.text_view.length() <= common_suggestion_prefix || suggestion.text_view.code_points()[common_suggestion_prefix] != last_valid_suggestion_code_point) {
+                if (suggestion.text_view().length() <= common_suggestion_prefix || code_point_at(suggestion.text_view(), common_suggestion_prefix) != last_valid_suggestion_code_point) {
                     goto no_more_commons;
                 }
             }
@@ -87,9 +76,10 @@ void SuggestionManager::previous()
 
 CompletionSuggestion const& SuggestionManager::suggest()
 {
-    m_last_shown_suggestion = m_suggestions[m_next_suggestion_index];
+    auto const& suggestion = m_suggestions[m_next_suggestion_index];
     m_selected_suggestion_index = m_next_suggestion_index;
-    return m_last_shown_suggestion;
+    m_last_shown_suggestion = suggestion;
+    return suggestion;
 }
 
 void SuggestionManager::set_current_suggestion_initiation_index(size_t index)
@@ -101,7 +91,7 @@ void SuggestionManager::set_current_suggestion_initiation_index(size_t index)
     else
         m_last_shown_suggestion.start_index = index - suggestion.static_offset - suggestion.invariant_offset;
 
-    m_last_shown_suggestion_display_length = m_last_shown_suggestion.text_view.length();
+    m_last_shown_suggestion_display_length = m_last_shown_suggestion.text_view().length();
     m_last_shown_suggestion_was_complete = true;
 }
 
@@ -117,7 +107,7 @@ SuggestionManager::CompletionAttemptResult SuggestionManager::attempt_completion
             result.avoid_committing_to_single_suggestion = true;
             m_last_shown_suggestion_display_length = 0;
             m_last_shown_suggestion_was_complete = false;
-            m_last_shown_suggestion = DeprecatedString::empty();
+            m_last_shown_suggestion = ByteString::empty();
             return result;
         }
 
@@ -131,7 +121,7 @@ SuggestionManager::CompletionAttemptResult SuggestionManager::attempt_completion
         case ShowSuggestions:
             actual_offset = 0 - m_largest_common_suggestion_prefix_length + next_suggestion.invariant_offset;
             if (can_complete && next_suggestion.allow_commit_without_listing)
-                shown_length = m_largest_common_suggestion_prefix_length + m_last_shown_suggestion.trivia_view.length();
+                shown_length = m_largest_common_suggestion_prefix_length + m_last_shown_suggestion.trivia_view().length();
             break;
         default:
             if (m_last_shown_suggestion_display_length == 0)
@@ -151,14 +141,14 @@ SuggestionManager::CompletionAttemptResult SuggestionManager::attempt_completion
         if (mode == CompletePrefix) {
             // Only auto-complete *if possible*.
             if (can_complete) {
-                result.insert.append(suggestion.text_view.substring_view(suggestion.invariant_offset, m_largest_common_suggestion_prefix_length - suggestion.invariant_offset));
+                result.insert.append(suggestion.text_view().unicode_substring_view(suggestion.invariant_offset, m_largest_common_suggestion_prefix_length - suggestion.invariant_offset));
                 m_last_shown_suggestion_display_length = m_largest_common_suggestion_prefix_length;
                 // Do not increment the suggestion index, as the first tab should only be a *peek*.
                 if (m_suggestions.size() == 1) {
                     // If there's one suggestion, commit and forget.
                     result.new_completion_mode = DontComplete;
                     // Add in the trivia of the last selected suggestion.
-                    result.insert.append(suggestion.trivia_view);
+                    result.insert.append(suggestion.trailing_trivia.code_points());
                     m_last_shown_suggestion_display_length = 0;
                     result.style_to_apply = suggestion.style;
                     m_last_shown_suggestion_was_complete = true;
@@ -169,12 +159,12 @@ SuggestionManager::CompletionAttemptResult SuggestionManager::attempt_completion
             }
             result.new_completion_mode = CompletionMode::ShowSuggestions;
             m_last_shown_suggestion_was_complete = false;
-            m_last_shown_suggestion = DeprecatedString::empty();
+            m_last_shown_suggestion = ByteString::empty();
         } else {
-            result.insert.append(suggestion.text_view.substring_view(suggestion.invariant_offset, suggestion.text_view.length() - suggestion.invariant_offset));
+            result.insert.append(suggestion.text_view().unicode_substring_view(suggestion.invariant_offset, suggestion.text_view().length() - suggestion.invariant_offset));
             // Add in the trivia of the last selected suggestion.
-            result.insert.append(suggestion.trivia_view);
-            m_last_shown_suggestion_display_length += suggestion.trivia_view.length();
+            result.insert.append(suggestion.trailing_trivia.code_points());
+            m_last_shown_suggestion_display_length += suggestion.trivia_view().length();
         }
     } else {
         m_next_suggestion_index = 0;

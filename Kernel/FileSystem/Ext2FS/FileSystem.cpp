@@ -5,17 +5,18 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/IntegralMath.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/Ext2FS/FileSystem.h>
 #include <Kernel/FileSystem/Ext2FS/Inode.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 #include <Kernel/UnixTypes.h>
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<FileSystem>> Ext2FS::try_create(OpenFileDescription& file_description)
+ErrorOr<NonnullRefPtr<FileSystem>> Ext2FS::try_create(OpenFileDescription& file_description, FileSystemSpecificOptions const&)
 {
-    return TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Ext2FS(file_description)));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Ext2FS(file_description)));
 }
 
 Ext2FS::Ext2FS(OpenFileDescription& file_description)
@@ -25,12 +26,97 @@ Ext2FS::Ext2FS(OpenFileDescription& file_description)
 
 Ext2FS::~Ext2FS() = default;
 
+ErrorOr<void> Ext2FS::rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename)
+{
+    MutexLocker locker(m_lock);
+
+    if (auto maybe_inode_to_be_replaced = new_parent_inode.lookup(new_basename); !maybe_inode_to_be_replaced.is_error()) {
+        VERIFY(!maybe_inode_to_be_replaced.value()->is_directory());
+        TRY(new_parent_inode.remove_child(new_basename));
+    }
+
+    auto old_inode = TRY(old_parent_inode.lookup(old_basename));
+
+    TRY(new_parent_inode.add_child(old_inode, new_basename, old_inode->mode()));
+    TRY(static_cast<Ext2FSInode&>(old_parent_inode).remove_child_impl(old_basename, Ext2FSInode::RemoveDotEntries::No));
+
+    // If the inode that we moved is a directory and we changed parent
+    // directories, then we also have to make .. point to the new parent inode,
+    // because .. is its own inode.
+    if (old_inode->is_directory() && old_parent_inode.index() != new_parent_inode.index()) {
+        Vector<Ext2FSDirectoryEntry> entries;
+        bool has_file_type_attribute = has_flag(get_features_optional(), Ext2FS::FeaturesOptional::ExtendedAttributes);
+
+        Optional<InodeIndex> dot_dot_index;
+        TRY(old_inode->traverse_as_directory([&](auto& entry) -> ErrorOr<void> {
+            auto is_replacing_this_inode = entry.name == ".."sv;
+            auto inode_index = is_replacing_this_inode ? new_parent_inode.index() : entry.inode.index();
+
+            auto entry_name = TRY(KString::try_create(entry.name));
+            TRY(entries.try_empend(move(entry_name), inode_index, has_file_type_attribute ? Ext2FSInode::to_ext2_file_type(new_parent_inode.mode()) : (u8)EXT2_FT_UNKNOWN));
+
+            if (is_replacing_this_inode)
+                dot_dot_index = entry.inode.index();
+
+            return {};
+        }));
+
+        if (!dot_dot_index.has_value())
+            return ENOENT;
+
+        auto dot_dot = TRY(get_inode({ fsid(), *dot_dot_index }));
+        auto new_inode = TRY(new_parent_inode.lookup(new_basename));
+
+        auto old_index_it = static_cast<Ext2FSInode&>(*old_inode).m_lookup_cache.find(".."sv);
+        bool has_cached_dot_dot = old_index_it != static_cast<Ext2FSInode&>(*old_inode).m_lookup_cache.end();
+        if (has_cached_dot_dot)
+            old_index_it->value = new_parent_inode.index();
+
+        // NOTE: Between this line and the write_directory line, all operations must
+        //       be atomic. Any changes made should be reverted.
+        TRY(new_parent_inode.increment_link_count());
+
+        auto maybe_decrement_error = dot_dot->decrement_link_count();
+        if (maybe_decrement_error.is_error()) {
+            if (has_cached_dot_dot)
+                old_index_it->value = *dot_dot_index;
+
+            MUST(new_parent_inode.decrement_link_count());
+            return maybe_decrement_error;
+        }
+
+        // FIXME: The filesystem is left in an inconsistent state if this fails.
+        //        Revert the changes made above if we can't write_directory.
+        //        Ideally, decrement should be the last operation, but we currently
+        //        can't "un-write" a directory entry list.
+        TRY(static_cast<Ext2FSInode&>(*new_inode).write_directory(entries));
+    }
+
+    return {};
+}
+
 ErrorOr<void> Ext2FS::flush_super_block()
 {
     MutexLocker locker(m_lock);
-    VERIFY((sizeof(ext2_super_block) % logical_block_size()) == 0);
     auto super_block_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&m_super_block);
-    return raw_write_blocks(2, (sizeof(ext2_super_block) / logical_block_size()), super_block_buffer);
+    auto const superblock_physical_block_count = (sizeof(ext2_super_block) / device_block_size());
+
+    // FIXME: We currently have no ability of writing within a device block, but the ability to do so would allow us to use device block sizes larger than 1024.
+    VERIFY((sizeof(ext2_super_block) % device_block_size()) == 0);
+    TRY(raw_write_blocks(super_block_offset_on_device / device_block_size(), superblock_physical_block_count, super_block_buffer));
+
+    auto is_sparse = has_flag(get_features_readonly(), FeaturesReadOnly::SparseSuperblock);
+
+    for (auto group = 1u; group < m_block_group_count; ++group) {
+        auto first_block_in_group = first_block_of_group(group);
+        // Superblock copies with sparse layout are in group number 2 and powers of 3, 5, and 7.
+        if (!is_sparse || group == 2 || AK::is_power_of<3>(group - 1) || AK::is_power_of<5>(group - 1) || AK::is_power_of<7>(group - 1)) {
+            dbgln_if(EXT2_DEBUG, "Writing superblock backup to block group {} (block {})", group, first_block_in_group);
+            TRY(write_blocks(first_block_in_group, 1, super_block_buffer));
+        }
+    }
+
+    return {};
 }
 
 ext2_group_desc const& Ext2FS::group_descriptor(GroupIndex group_index) const
@@ -52,9 +138,9 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
     VERIFY(m_lock.is_locked());
     VERIFY(!is_initialized_while_locked());
 
-    VERIFY((sizeof(ext2_super_block) % logical_block_size()) == 0);
+    VERIFY((sizeof(ext2_super_block) % device_block_size()) == 0);
     auto super_block_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&m_super_block);
-    TRY(raw_read_blocks(2, (sizeof(ext2_super_block) / logical_block_size()), super_block_buffer));
+    TRY(raw_read_blocks(super_block_offset_on_device / device_block_size(), (sizeof(ext2_super_block) / device_block_size()), super_block_buffer));
 
     auto const& super_block = this->super_block();
     if constexpr (EXT2_DEBUG) {
@@ -64,6 +150,9 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
         dmesgln("Ext2FS: Bad super block magic");
         return EINVAL;
     }
+
+    if (super_block.s_state == EXT2_ERROR_FS)
+        dmesgln("Ext2FS: Was not unmounted cleanly, file system may be erroneous!");
 
     if constexpr (EXT2_DEBUG) {
         dmesgln("Ext2FS: {} inodes, {} blocks", super_block.s_inodes_count, super_block.s_blocks_count);
@@ -76,13 +165,15 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
         dmesgln("Ext2FS: Descriptor size: {}", EXT2_DESC_SIZE(&super_block));
     }
 
-    set_block_size(EXT2_BLOCK_SIZE(&super_block));
+    set_logical_block_size(EXT2_BLOCK_SIZE(&super_block));
     set_fragment_size(EXT2_FRAG_SIZE(&super_block));
 
     // Note: This depends on the block size being available.
     TRY(BlockBasedFileSystem::initialize_while_locked());
 
-    VERIFY(block_size() <= (int)max_block_size);
+    VERIFY(logical_block_size() <= (int)max_block_size);
+
+    m_i_blocks_increment = logical_block_size() / 512;
 
     m_block_group_count = ceil_div(super_block.s_blocks_count, super_block.s_blocks_per_group);
 
@@ -91,9 +182,9 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
         return EINVAL;
     }
 
-    auto blocks_to_read = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
-    BlockIndex first_block_of_bgdt = block_size() == 1024 ? 2 : 1;
-    m_cached_group_descriptor_table = TRY(KBuffer::try_create_with_size("Ext2FS: Block group descriptors"sv, block_size() * blocks_to_read, Memory::Region::Access::ReadWrite));
+    auto blocks_to_read = ceil_div(m_block_group_count * sizeof(ext2_group_desc), logical_block_size());
+    BlockIndex first_block_of_bgdt = first_block_of_block_group_descriptors();
+    m_cached_group_descriptor_table = TRY(KBuffer::try_create_with_size("Ext2FS: Block group descriptors"sv, logical_block_size() * blocks_to_read, Memory::Region::Access::ReadWrite));
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(m_cached_group_descriptor_table->data());
     TRY(read_blocks(first_block_of_bgdt, blocks_to_read, buffer));
 
@@ -105,6 +196,12 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
     }
 
     m_root_inode = TRY(build_root_inode());
+
+    // Set filesystem to "error" state until we unmount cleanly.
+    dmesgln("Ext2FS: Mount successful, setting superblock to error state.");
+    m_super_block.s_state = EXT2_ERROR_FS;
+    TRY(flush_super_block());
+
     return {};
 }
 
@@ -127,42 +224,9 @@ bool Ext2FS::find_block_containing_inode(InodeIndex inode, BlockIndex& block_ind
 
     u64 full_offset = ((inode.value() - 1) % inodes_per_group()) * inode_size();
     block_index = bgd.bg_inode_table + (full_offset >> EXT2_BLOCK_SIZE_BITS(&super_block));
-    offset = full_offset & (block_size() - 1);
+    offset = full_offset & (logical_block_size() - 1);
 
     return true;
-}
-
-Ext2FS::BlockListShape Ext2FS::compute_block_list_shape(unsigned blocks) const
-{
-    BlockListShape shape;
-    unsigned const entries_per_block = EXT2_ADDR_PER_BLOCK(&super_block());
-    unsigned blocks_remaining = blocks;
-
-    shape.direct_blocks = min((unsigned)EXT2_NDIR_BLOCKS, blocks_remaining);
-    blocks_remaining -= shape.direct_blocks;
-    if (!blocks_remaining)
-        return shape;
-
-    shape.indirect_blocks = min(blocks_remaining, entries_per_block);
-    shape.meta_blocks += 1;
-    blocks_remaining -= shape.indirect_blocks;
-    if (!blocks_remaining)
-        return shape;
-
-    shape.doubly_indirect_blocks = min(blocks_remaining, entries_per_block * entries_per_block);
-    shape.meta_blocks += 1;
-    shape.meta_blocks += ceil_div(shape.doubly_indirect_blocks, entries_per_block);
-    blocks_remaining -= shape.doubly_indirect_blocks;
-    if (!blocks_remaining)
-        return shape;
-
-    shape.triply_indirect_blocks = min(blocks_remaining, entries_per_block * entries_per_block * entries_per_block);
-    shape.meta_blocks += 1;
-    shape.meta_blocks += ceil_div(shape.triply_indirect_blocks, entries_per_block * entries_per_block);
-    shape.meta_blocks += ceil_div(shape.triply_indirect_blocks, entries_per_block);
-    blocks_remaining -= shape.triply_indirect_blocks;
-    VERIFY(blocks_remaining == 0);
-    return shape;
 }
 
 u8 Ext2FS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& entry) const
@@ -187,6 +251,13 @@ u8 Ext2FS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& 
     }
 }
 
+Ext2FS::FeaturesOptional Ext2FS::get_features_optional() const
+{
+    if (m_super_block.s_rev_level > 0)
+        return static_cast<Ext2FS::FeaturesOptional>(m_super_block.s_feature_compat);
+    return Ext2FS::FeaturesOptional::None;
+}
+
 Ext2FS::FeaturesReadOnly Ext2FS::get_features_readonly() const
 {
     if (m_super_block.s_rev_level > 0)
@@ -204,22 +275,55 @@ u64 Ext2FS::inodes_per_group() const
     return EXT2_INODES_PER_GROUP(&super_block());
 }
 
-u64 Ext2FS::inode_size() const
-{
-    return EXT2_INODE_SIZE(&super_block());
-}
 u64 Ext2FS::blocks_per_group() const
 {
     return EXT2_BLOCKS_PER_GROUP(&super_block());
 }
 
-ErrorOr<void> Ext2FS::write_ext2_inode(InodeIndex inode, ext2_inode const& e2inode)
+// Get the maximum on-disk size for all inodes.
+u64 Ext2FS::inode_size() const
+{
+    return EXT2_INODE_SIZE(&super_block());
+}
+
+// Get the provided inode's logical size (which may be smaller [but not
+// greater] than the global maximum on-disk size). This is conceptually
+// a forward-compatibility measure to ensure that new extensions can be
+// added without requiring a full reformat.
+u64 Ext2FS::usable_inode_size(ext2_inode_large const& inode) const
+{
+    u64 physical_inode_size = inode_size();
+    VERIFY(physical_inode_size >= EXT2_GOOD_OLD_INODE_SIZE);
+
+    if (physical_inode_size == EXT2_GOOD_OLD_INODE_SIZE) {
+        // The i_extra_isize record doesn't exist on these old filesystems.
+        return EXT2_GOOD_OLD_INODE_SIZE;
+    }
+
+    u64 logical_inode_size = EXT2_GOOD_OLD_INODE_SIZE + inode.i_extra_isize;
+    if (logical_inode_size > sizeof(ext2_inode_large)) {
+        // We don't know how to handle this/these extra record(s), so just
+        // pretend that they don't exist. This also prevents inodes from
+        // claiming to be larger than what is physically possible.
+        return sizeof(ext2_inode_large);
+    }
+
+    return logical_inode_size;
+}
+
+ErrorOr<void> Ext2FS::write_ext2_inode(InodeIndex inode, ext2_inode_large const& e2inode)
 {
     BlockIndex block_index;
     unsigned offset;
     if (!find_block_containing_inode(inode, block_index, offset))
         return EINVAL;
-    auto buffer = UserOrKernelBuffer::for_kernel_buffer(const_cast<u8*>((u8 const*)&e2inode));
+
+    Vector<u8> inode_storage;
+    TRY(inode_storage.try_resize(inode_size()));
+
+    memcpy(inode_storage.data(), &e2inode, usable_inode_size(e2inode));
+
+    auto buffer = UserOrKernelBuffer::for_kernel_buffer(inode_storage.data());
     return write_block(block_index, buffer, inode_size(), offset);
 }
 
@@ -233,6 +337,17 @@ auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> 
     TRY(blocks.try_ensure_capacity(count));
 
     MutexLocker locker(m_lock);
+
+    size_t free_blocks = 0;
+    for (GroupIndex i = 1; i <= m_block_group_count; i = GroupIndex { i.value() + 1 }) {
+        free_blocks += group_descriptor(i).bg_free_blocks_count;
+        if (free_blocks >= count)
+            break;
+    }
+
+    if (free_blocks < count)
+        return Error::from_errno(ENOSPC);
+
     auto group_index = preferred_group_index;
 
     if (!group_descriptor(preferred_group_index).bg_free_blocks_count) {
@@ -262,7 +377,7 @@ auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> 
         int blocks_in_group = min(blocks_per_group(), super_block().s_blocks_count);
         auto block_bitmap = cached_bitmap->bitmap(blocks_in_group);
 
-        BlockIndex first_block_in_group = (group_index.value() - 1) * blocks_per_group() + first_block_index().value();
+        BlockIndex first_block_in_group = first_block_of_group(group_index);
         size_t free_region_size = 0;
         auto first_unset_bit_index = block_bitmap.find_longest_range_of_unset_bits(count - blocks.size(), free_region_size);
         VERIFY(first_unset_bit_index.has_value());
@@ -343,7 +458,17 @@ Ext2FS::GroupIndex Ext2FS::group_index_from_block_index(BlockIndex block_index) 
 {
     if (!block_index)
         return 0;
-    return (block_index.value() - 1) / blocks_per_group() + 1;
+    return (block_index.value() - first_block_index().value()) / blocks_per_group() + 1;
+}
+
+Ext2FS::BlockIndex Ext2FS::first_block_of_group(GroupIndex group_index) const
+{
+    return (group_index.value() - 1) * blocks_per_group() + first_block_index().value();
+}
+
+Ext2FS::BlockIndex Ext2FS::first_block_of_block_group_descriptors() const
+{
+    return logical_block_size() == 1024 ? 2 : 1;
 }
 
 auto Ext2FS::group_index_from_inode(InodeIndex inode) const -> GroupIndex
@@ -405,7 +530,7 @@ ErrorOr<void> Ext2FS::set_inode_allocation_state(InodeIndex inode_index, bool ne
 
 Ext2FS::BlockIndex Ext2FS::first_block_index() const
 {
-    return block_size() == 1024 ? 1 : 0;
+    return logical_block_size() == 1024 ? 1 : 0;
 }
 
 ErrorOr<Ext2FS::CachedBitmap*> Ext2FS::get_bitmap_block(BlockIndex bitmap_block_index)
@@ -415,9 +540,9 @@ ErrorOr<Ext2FS::CachedBitmap*> Ext2FS::get_bitmap_block(BlockIndex bitmap_block_
             return cached_bitmap.ptr();
     }
 
-    auto block = TRY(KBuffer::try_create_with_size("Ext2FS: Cached bitmap block"sv, block_size(), Memory::Region::Access::ReadWrite));
+    auto block = TRY(KBuffer::try_create_with_size("Ext2FS: Cached bitmap block"sv, logical_block_size(), Memory::Region::Access::ReadWrite));
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(block->data());
-    TRY(read_block(bitmap_block_index, &buffer, block_size()));
+    TRY(read_block(bitmap_block_index, &buffer, logical_block_size()));
     auto new_bitmap = TRY(adopt_nonnull_own_or_enomem(new (nothrow) CachedBitmap(bitmap_block_index, move(block))));
     TRY(m_cached_bitmaps.try_append(move(new_bitmap)));
     return m_cached_bitmaps.last().ptr();
@@ -437,7 +562,7 @@ ErrorOr<void> Ext2FS::set_block_allocation_state(BlockIndex block_index, bool ne
     return update_bitmap_block(bgd.bg_block_bitmap, bit_index, new_state, m_super_block.s_free_blocks_count, bgd.bg_free_blocks_count);
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::create_directory(Ext2FSInode& parent_inode, StringView name, mode_t mode, UserID uid, GroupID gid)
+ErrorOr<NonnullRefPtr<Inode>> Ext2FS::create_directory(Ext2FSInode& parent_inode, StringView name, mode_t mode, UserID uid, GroupID gid)
 {
     MutexLocker locker(m_lock);
     VERIFY(is_directory(mode));
@@ -462,7 +587,7 @@ ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::create_directory(Ext2FSInode& parent_i
     return inode;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::create_inode(Ext2FSInode& parent_inode, StringView name, mode_t mode, dev_t dev, UserID uid, GroupID gid)
+ErrorOr<NonnullRefPtr<Inode>> Ext2FS::create_inode(Ext2FSInode& parent_inode, StringView name, mode_t mode, dev_t dev, UserID uid, GroupID gid)
 {
     if (name.length() > EXT2_NAME_LEN)
         return ENAMETOOLONG;
@@ -470,17 +595,30 @@ ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::create_inode(Ext2FSInode& parent_inode
     if (parent_inode.m_raw_inode.i_links_count == 0)
         return ENOENT;
 
-    ext2_inode e2inode {};
-    auto now = kgettimeofday().to_truncated_seconds();
+    ext2_inode_large e2inode {};
+    auto now = kgettimeofday().to_timespec();
+
+    u32 extra = Ext2FSInode::encode_time_to_extra(now.tv_sec, now.tv_nsec);
+
     e2inode.i_mode = mode;
-    e2inode.i_uid = uid.value();
-    e2inode.i_gid = gid.value();
+    e2inode.i_uid = static_cast<u16>(uid.value());
+    ext2fs_set_i_uid_high(e2inode, uid.value() >> 16);
+    e2inode.i_gid = static_cast<u16>(gid.value());
+    ext2fs_set_i_gid_high(e2inode, gid.value() >> 16);
     e2inode.i_size = 0;
-    e2inode.i_atime = now;
-    e2inode.i_ctime = now;
-    e2inode.i_mtime = now;
+    e2inode.i_atime = now.tv_sec;
+    e2inode.i_ctime = now.tv_sec;
+    e2inode.i_mtime = now.tv_sec;
+    e2inode.i_crtime = now.tv_sec;
+    e2inode.i_atime_extra = extra;
+    e2inode.i_ctime_extra = extra;
+    e2inode.i_mtime_extra = extra;
+    e2inode.i_crtime_extra = extra;
     e2inode.i_dtime = 0;
     e2inode.i_flags = 0;
+
+    if (inode_size() > EXT2_GOOD_OLD_INODE_SIZE)
+        e2inode.i_extra_isize = min(inode_size(), sizeof(ext2_inode_large)) - EXT2_GOOD_OLD_INODE_SIZE;
 
     // For directories, add +1 link count for the "." entry in self.
     e2inode.i_links_count = is_directory(mode);
@@ -532,17 +670,34 @@ unsigned Ext2FS::free_inode_count() const
     return super_block().s_free_inodes_count;
 }
 
-ErrorOr<void> Ext2FS::prepare_to_clear_last_mount()
+ErrorOr<void> Ext2FS::prepare_to_clear_last_mount(Inode& mount_guest_inode)
 {
     MutexLocker locker(m_lock);
+    bool any_inode_busy = false;
     for (auto& it : m_inode_cache) {
-        if (it.value->ref_count() > 1)
-            return EBUSY;
+        // We hold the last reference to the root inode, and the VFS Mount object holds the last reference to the mount_guest_inode,
+        // so they are allowed to have one more reference.
+        if ((it.value == m_root_inode || it.value->identifier() == mount_guest_inode.identifier()) && it.value->ref_count() > 2) {
+            dbgln_if(EXT2_DEBUG, "Ext2FS: Ignoring root or mount point inode's last reference");
+            continue;
+        }
+        // The Inode::all_instances list always holds one reference to all inodes, which we disregard.
+        if (it.value->ref_count() > 1) {
+            dbgln_if(EXT2_DEBUG, "Ext2FS: Busy inode {} ({} refs)", it.value->index(), it.value->ref_count());
+            any_inode_busy = true;
+        }
     }
+    if (any_inode_busy)
+        return EBUSY;
 
-    BlockBasedFileSystem::remove_disk_cache_before_last_unmount();
     m_inode_cache.clear();
     m_root_inode = nullptr;
+
+    // Mark filesystem as valid before unmount.
+    dmesgln("Ext2FS: Clean unmount, setting superblock to valid state");
+    m_super_block.s_state = EXT2_VALID_FS;
+    TRY(flush_super_block());
+
     return {};
 }
 
@@ -552,15 +707,7 @@ ErrorOr<void> Ext2FS::free_inode(Ext2FSInode& inode)
     VERIFY(inode.m_raw_inode.i_links_count == 0);
     dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::free_inode(): Inode {} has no more links, time to delete!", fsid(), inode.index());
 
-    // Mark all blocks used by this inode as free.
-    {
-        auto blocks = TRY(inode.compute_block_list_with_meta_blocks());
-        for (auto block_index : blocks) {
-            VERIFY(block_index <= super_block().s_blocks_count);
-            if (block_index.value())
-                TRY(set_block_allocation_state(block_index, false));
-        }
-    }
+    TRY(inode.free_all_blocks());
 
     // If the inode being freed is a directory, update block group directory counter.
     if (inode.is_directory()) {
@@ -571,8 +718,8 @@ ErrorOr<void> Ext2FS::free_inode(Ext2FSInode& inode)
     }
 
     // NOTE: After this point, the inode metadata is wiped.
-    memset(&inode.m_raw_inode, 0, sizeof(ext2_inode));
-    inode.m_raw_inode.i_dtime = kgettimeofday().to_truncated_seconds();
+    memset(&inode.m_raw_inode, 0, sizeof(ext2_inode_large));
+    inode.m_raw_inode.i_dtime = kgettimeofday().truncated_seconds_since_epoch();
     TRY(write_ext2_inode(inode.index(), inode.m_raw_inode));
 
     // Mark the inode as free.
@@ -584,14 +731,30 @@ ErrorOr<void> Ext2FS::free_inode(Ext2FSInode& inode)
 void Ext2FS::flush_block_group_descriptor_table()
 {
     MutexLocker locker(m_lock);
-    auto blocks_to_write = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
-    auto first_block_of_bgdt = block_size() == 1024 ? 2 : 1;
+    auto blocks_to_write = ceil_div(m_block_group_count * sizeof(ext2_group_desc), logical_block_size());
+    auto first_block_of_bgdt = first_block_of_block_group_descriptors();
     auto buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)block_group_descriptors());
-    if (auto result = write_blocks(first_block_of_bgdt, blocks_to_write, buffer); result.is_error())
-        dbgln("Ext2FS[{}]::flush_block_group_descriptor_table(): Failed to write blocks: {}", fsid(), result.error());
+    auto write_bgdt_to_block = [&](BlockIndex index) {
+        if (auto result = write_blocks(index, blocks_to_write, buffer); result.is_error())
+            dbgln("Ext2FS[{}]::flush_block_group_descriptor_table(): Failed to write blocks: {}", fsid(), result.error());
+    };
+
+    write_bgdt_to_block(first_block_of_bgdt);
+
+    auto is_sparse = has_flag(get_features_readonly(), FeaturesReadOnly::SparseSuperblock);
+
+    for (auto group = 1u; group < m_block_group_count; ++group) {
+        // First block is occupied by the super block
+        BlockIndex second_block_in_group = first_block_of_group(group).value() + 1;
+        // BGDT copies with sparse layout are in group number 2 and powers of 3, 5, and 7.
+        if (!is_sparse || group == 2 || AK::is_power_of<3>(group - 1) || AK::is_power_of<5>(group - 1) || AK::is_power_of<7>(group - 1)) {
+            dbgln_if(EXT2_DEBUG, "Writing block group descriptor table backup to block group {} (block {})", group, second_block_in_group);
+            write_bgdt_to_block(second_block_in_group);
+        }
+    }
 }
 
-void Ext2FS::flush_writes()
+ErrorOr<void> Ext2FS::flush_writes()
 {
     {
         MutexLocker locker(m_lock);
@@ -599,8 +762,7 @@ void Ext2FS::flush_writes()
             auto result = flush_super_block();
             if (result.is_error()) {
                 dbgln("Ext2FS[{}]::flush_writes(): Failed to write superblock: {}", fsid(), result.error());
-                // FIXME: We should handle this error.
-                VERIFY_NOT_REACHED();
+                return result.release_error();
             }
             m_super_block_dirty = false;
         }
@@ -611,7 +773,7 @@ void Ext2FS::flush_writes()
         for (auto& cached_bitmap : m_cached_bitmaps) {
             if (cached_bitmap->dirty) {
                 auto buffer = UserOrKernelBuffer::for_kernel_buffer(cached_bitmap->buffer->data());
-                if (auto result = write_block(cached_bitmap->bitmap_block_index, buffer, block_size()); result.is_error()) {
+                if (auto result = write_block(cached_bitmap->bitmap_block_index, buffer, logical_block_size()); result.is_error()) {
                     dbgln("Ext2FS[{}]::flush_writes(): Failed to write blocks: {}", fsid(), result.error());
                 }
                 cached_bitmap->dirty = false;
@@ -626,7 +788,7 @@ void Ext2FS::flush_writes()
         //        The problem is that they are quite heavy objects, and use a lot of heap memory
         //        for their (child name lookup) and (block list) caches.
 
-        m_inode_cache.remove_all_matching([](InodeIndex, LockRefPtr<Ext2FSInode> const& cached_inode) {
+        m_inode_cache.remove_all_matching([](InodeIndex, RefPtr<Ext2FSInode> const& cached_inode) {
             // NOTE: If we're asked to look up an inode by number (via get_inode) and it turns out
             //       to not exist, we remember the fact that it doesn't exist by caching a nullptr.
             //       This seems like a reasonable time to uncache ideas about unknown inodes, so do that.
@@ -637,10 +799,16 @@ void Ext2FS::flush_writes()
         });
     }
 
-    BlockBasedFileSystem::flush_writes();
+    auto result = BlockBasedFileSystem::flush_writes();
+    if (result.is_error()) {
+        dbgln("Ext2FS[{}]::flush_writes(): Failed to flush writes: {}", BlockBasedFileSystem::fsid(), result.error());
+        return result.release_error();
+    }
+
+    return {};
 }
 
-ErrorOr<NonnullLockRefPtr<Ext2FSInode>> Ext2FS::build_root_inode() const
+ErrorOr<NonnullRefPtr<Ext2FSInode>> Ext2FS::build_root_inode() const
 {
     MutexLocker locker(m_lock);
     BlockIndex block_index;
@@ -648,14 +816,18 @@ ErrorOr<NonnullLockRefPtr<Ext2FSInode>> Ext2FS::build_root_inode() const
     if (!find_block_containing_inode(EXT2_ROOT_INO, block_index, offset))
         return EINVAL;
 
-    auto inode = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Ext2FSInode(const_cast<Ext2FS&>(*this), EXT2_ROOT_INO)));
+    auto inode = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Ext2FSInode(const_cast<Ext2FS&>(*this), EXT2_ROOT_INO)));
 
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(&inode->m_raw_inode));
-    TRY(read_block(block_index, &buffer, sizeof(ext2_inode), offset));
+
+    size_t size = min(inode_size(), sizeof(ext2_inode_large));
+    VERIFY(size >= EXT2_GOOD_OLD_INODE_SIZE);
+
+    TRY(read_block(block_index, &buffer, size, offset));
     return inode;
 }
 
-ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::get_inode(InodeIdentifier inode) const
+ErrorOr<NonnullRefPtr<Inode>> Ext2FS::get_inode(InodeIdentifier inode) const
 {
     MutexLocker locker(m_lock);
     VERIFY(inode.fsid() == fsid());
@@ -669,7 +841,7 @@ ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::get_inode(InodeIdentifier inode) const
         if (it != m_inode_cache.end()) {
             if (!it->value)
                 return ENOENT;
-            return NonnullLockRefPtr<Inode> { *it->value };
+            return NonnullRefPtr<Inode> { *it->value };
         }
     }
 
@@ -685,10 +857,14 @@ ErrorOr<NonnullLockRefPtr<Inode>> Ext2FS::get_inode(InodeIdentifier inode) const
     if (!find_block_containing_inode(inode.index(), block_index, offset))
         return EINVAL;
 
-    auto new_inode = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) Ext2FSInode(const_cast<Ext2FS&>(*this), inode.index())));
+    auto new_inode = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Ext2FSInode(const_cast<Ext2FS&>(*this), inode.index())));
 
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(&new_inode->m_raw_inode));
-    TRY(read_block(block_index, &buffer, sizeof(ext2_inode), offset));
+
+    size_t size = min(inode_size(), sizeof(ext2_inode_large));
+    VERIFY(size >= EXT2_GOOD_OLD_INODE_SIZE);
+
+    TRY(read_block(block_index, &buffer, size, offset));
 
     TRY(m_inode_cache.try_set(inode.index(), new_inode));
     return new_inode;

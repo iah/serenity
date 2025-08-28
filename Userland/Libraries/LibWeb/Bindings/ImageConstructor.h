@@ -12,9 +12,12 @@
 namespace Web::Bindings {
 
 class ImageConstructor final : public JS::NativeFunction {
+    JS_OBJECT(ImageConstructor, JS::NativeFunction);
+    JS_DECLARE_ALLOCATOR(ImageConstructor);
+
 public:
     explicit ImageConstructor(JS::Realm&);
-    virtual JS::ThrowCompletionOr<void> initialize(JS::Realm&) override;
+    virtual void initialize(JS::Realm&) override;
     virtual ~ImageConstructor() override = default;
 
     virtual JS::ThrowCompletionOr<JS::Value> call() override;
@@ -22,7 +25,6 @@ public:
 
 private:
     virtual bool has_constructor() const override { return true; }
-    virtual StringView class_name() const override { return "ImageConstructor"sv; }
 };
 
 }

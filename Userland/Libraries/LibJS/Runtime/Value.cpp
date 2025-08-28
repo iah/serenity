@@ -8,8 +8,8 @@
 
 #include <AK/AllOf.h>
 #include <AK/Assertions.h>
+#include <AK/ByteString.h>
 #include <AK/CharacterTypes.h>
-#include <AK/DeprecatedString.h>
 #include <AK/FloatingPointStringConversions.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringFloatingPointConversions.h>
@@ -39,6 +39,7 @@
 #include <LibJS/Runtime/Utf16String.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
+#include <LibJS/Runtime/ValueInlines.h>
 #include <math.h>
 
 namespace JS {
@@ -58,7 +59,7 @@ static inline bool same_type_for_equality(Value const& lhs, Value const& rhs)
     return false;
 }
 
-static const Crypto::SignedBigInteger BIGINT_ZERO { 0 };
+static Crypto::SignedBigInteger const BIGINT_ZERO { 0 };
 
 ALWAYS_INLINE bool both_number(Value const& lhs, Value const& rhs)
 {
@@ -72,7 +73,7 @@ ALWAYS_INLINE bool both_bigint(Value const& lhs, Value const& rhs)
 
 // 6.1.6.1.20 Number::toString ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-tostring
 // Implementation for radix = 10
-static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, NumberToStringMode mode)
+static void number_to_string_impl(StringBuilder& builder, double d, NumberToStringMode mode)
 {
     auto convert_to_decimal_digits_array = [](auto x, auto& digits, auto& length) {
         for (; x; x /= 10)
@@ -83,25 +84,25 @@ static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, Num
 
     // 1. If x is NaN, return "NaN".
     if (isnan(d)) {
-        TRY(builder.try_append("NaN"sv));
-        return {};
+        builder.append("NaN"sv);
+        return;
     }
 
     // 2. If x is +0𝔽 or -0𝔽, return "0".
     if (d == +0.0 || d == -0.0) {
-        TRY(builder.try_append("0"sv));
-        return {};
+        builder.append("0"sv);
+        return;
     }
 
     // 4. If x is +∞𝔽, return "Infinity".
     if (isinf(d)) {
         if (d > 0) {
-            TRY(builder.try_append("Infinity"sv));
-            return {};
+            builder.append("Infinity"sv);
+            return;
         }
 
-        TRY(builder.try_append("-Infinity"sv));
-        return {};
+        builder.append("-Infinity"sv);
+        return;
     }
 
     // 5. Let n, k, and s be integers such that k ≥ 1, radix ^ (k - 1) ≤ s < radix ^ k,
@@ -120,7 +121,7 @@ static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, Num
 
     // 3. If x < -0𝔽, return the string-concatenation of "-" and Number::toString(-x, radix).
     if (sign)
-        TRY(builder.try_append('-'));
+        builder.append('-');
 
     // Non-standard: Intl needs number-to-string conversions for extremely large numbers without any
     // exponential formatting, as it will handle such formatting itself in a locale-aware way.
@@ -132,34 +133,34 @@ static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, Num
         if (n >= k) {
             // i. Return the string-concatenation of:
             // the code units of the k digits of the representation of s using radix radix
-            TRY(builder.try_append(mantissa_digits.data(), k));
+            builder.append(mantissa_digits.data(), k);
             // n - k occurrences of the code unit 0x0030 (DIGIT ZERO)
-            TRY(builder.try_append_repeated('0', n - k));
+            builder.append_repeated('0', n - k);
             // b. Else if n > 0, then
         } else if (n > 0) {
             // i. Return the string-concatenation of:
             // the code units of the most significant n digits of the representation of s using radix radix
-            TRY(builder.try_append(mantissa_digits.data(), n));
+            builder.append(mantissa_digits.data(), n);
             // the code unit 0x002E (FULL STOP)
-            TRY(builder.try_append('.'));
+            builder.append('.');
             // the code units of the remaining k - n digits of the representation of s using radix radix
-            TRY(builder.try_append(mantissa_digits.data() + n, k - n));
+            builder.append(mantissa_digits.data() + n, k - n);
             // c. Else,
         } else {
             // i. Assert: n ≤ 0.
             VERIFY(n <= 0);
             // ii. Return the string-concatenation of:
             // the code unit 0x0030 (DIGIT ZERO)
-            TRY(builder.try_append('0'));
+            builder.append('0');
             // the code unit 0x002E (FULL STOP)
-            TRY(builder.try_append('.'));
+            builder.append('.');
             // -n occurrences of the code unit 0x0030 (DIGIT ZERO)
-            TRY(builder.try_append_repeated('0', -n));
+            builder.append_repeated('0', -n);
             // the code units of the k digits of the representation of s using radix radix
-            TRY(builder.try_append(mantissa_digits.data(), k));
+            builder.append(mantissa_digits.data(), k);
         }
 
-        return {};
+        return;
     }
 
     // 7. NOTE: In this case, the input will be represented using scientific E notation, such as 1.2e+3.
@@ -178,46 +179,44 @@ static ErrorOr<void> number_to_string_impl(StringBuilder& builder, double d, Num
     if (k == 1) {
         // a. Return the string-concatenation of:
         // the code unit of the single digit of s
-        TRY(builder.try_append(mantissa_digits[0]));
+        builder.append(mantissa_digits[0]);
         // the code unit 0x0065 (LATIN SMALL LETTER E)
-        TRY(builder.try_append('e'));
+        builder.append('e');
         // exponentSign
-        TRY(builder.try_append(exponent_sign));
+        builder.append(exponent_sign);
         // the code units of the decimal representation of abs(n - 1)
-        TRY(builder.try_append(exponent_digits.data(), exponent_length));
+        builder.append(exponent_digits.data(), exponent_length);
 
-        return {};
+        return;
     }
 
     // 12. Return the string-concatenation of:
     // the code unit of the most significant digit of the decimal representation of s
-    TRY(builder.try_append(mantissa_digits[0]));
+    builder.append(mantissa_digits[0]);
     // the code unit 0x002E (FULL STOP)
-    TRY(builder.try_append('.'));
+    builder.append('.');
     // the code units of the remaining k - 1 digits of the decimal representation of s
-    TRY(builder.try_append(mantissa_digits.data() + 1, k - 1));
+    builder.append(mantissa_digits.data() + 1, k - 1);
     // the code unit 0x0065 (LATIN SMALL LETTER E)
-    TRY(builder.try_append('e'));
+    builder.append('e');
     // exponentSign
-    TRY(builder.try_append(exponent_sign));
+    builder.append(exponent_sign);
     // the code units of the decimal representation of abs(n - 1)
-    TRY(builder.try_append(exponent_digits.data(), exponent_length));
-
-    return {};
+    builder.append(exponent_digits.data(), exponent_length);
 }
 
-ErrorOr<String> number_to_string(double d, NumberToStringMode mode)
+String number_to_string(double d, NumberToStringMode mode)
 {
     StringBuilder builder;
-    TRY(number_to_string_impl(builder, d, mode));
-    return builder.to_string();
+    number_to_string_impl(builder, d, mode);
+    return builder.to_string().release_value();
 }
 
-DeprecatedString number_to_deprecated_string(double d, NumberToStringMode mode)
+ByteString number_to_byte_string(double d, NumberToStringMode mode)
 {
     StringBuilder builder;
-    MUST(number_to_string_impl(builder, d, mode));
-    return builder.to_deprecated_string();
+    number_to_string_impl(builder, d, mode);
+    return builder.to_byte_string();
 }
 
 // 7.2.2 IsArray ( argument ), https://tc39.es/ecma262/#sec-isarray
@@ -256,6 +255,15 @@ Array& Value::as_array()
 {
     VERIFY(is_object() && is<Array>(as_object()));
     return static_cast<Array&>(as_object());
+}
+
+// 20.5.8.2 IsError ( argument ), https://tc39.es/proposal-is-error/#sec-iserror
+bool Value::is_error() const
+{
+    // 1. If argument is not an Object, return false.
+    // 2. If argument has an [[ErrorData]] internal slot, return true.
+    // 3. Return false.
+    return is_object() && is<Error>(as_object());
 }
 
 // 7.2.3 IsCallable ( argument ), https://tc39.es/ecma262/#sec-iscallable
@@ -302,7 +310,7 @@ ThrowCompletionOr<bool> Value::is_regexp(VM& vm) const
         return false;
 
     // 2. Let matcher be ? Get(argument, @@match).
-    auto matcher = TRY(as_object().get(*vm.well_known_symbol_match()));
+    auto matcher = TRY(as_object().get(vm.well_known_symbol_match()));
 
     // 3. If matcher is not undefined, return ToBoolean(matcher).
     if (!matcher.is_undefined())
@@ -314,48 +322,48 @@ ThrowCompletionOr<bool> Value::is_regexp(VM& vm) const
 }
 
 // 13.5.3 The typeof Operator, https://tc39.es/ecma262/#sec-typeof-operator
-StringView Value::typeof() const
+NonnullGCPtr<PrimitiveString> Value::typeof_(VM& vm) const
 {
     // 9. If val is a Number, return "number".
     if (is_number())
-        return "number"sv;
+        return *vm.typeof_strings.number;
 
     switch (m_value.tag) {
     // 4. If val is undefined, return "undefined".
     case UNDEFINED_TAG:
-        return "undefined"sv;
+        return *vm.typeof_strings.undefined;
     // 5. If val is null, return "object".
     case NULL_TAG:
-        return "object"sv;
+        return *vm.typeof_strings.object;
     // 6. If val is a String, return "string".
     case STRING_TAG:
-        return "string"sv;
+        return *vm.typeof_strings.string;
     // 7. If val is a Symbol, return "symbol".
     case SYMBOL_TAG:
-        return "symbol"sv;
+        return *vm.typeof_strings.symbol;
     // 8. If val is a Boolean, return "boolean".
     case BOOLEAN_TAG:
-        return "boolean"sv;
+        return *vm.typeof_strings.boolean;
     // 10. If val is a BigInt, return "bigint".
     case BIGINT_TAG:
-        return "bigint"sv;
+        return *vm.typeof_strings.bigint;
     // 11. Assert: val is an Object.
     case OBJECT_TAG:
         // B.3.6.3 Changes to the typeof Operator, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-typeof
         // 12. If val has an [[IsHTMLDDA]] internal slot, return "undefined".
         if (as_object().is_htmldda())
-            return "undefined"sv;
+            return *vm.typeof_strings.undefined;
         // 13. If val has a [[Call]] internal slot, return "function".
         if (is_function())
-            return "function"sv;
+            return *vm.typeof_strings.function;
         // 14. Return "object".
-        return "object"sv;
+        return *vm.typeof_strings.object;
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
-ErrorOr<String> Value::to_string_without_side_effects() const
+String Value::to_string_without_side_effects() const
 {
     if (is_double())
         return number_to_string(m_value.as_double);
@@ -370,24 +378,13 @@ ErrorOr<String> Value::to_string_without_side_effects() const
     case INT32_TAG:
         return String::number(as_i32());
     case STRING_TAG:
-        if (auto string = as_string().utf8_string(); string.is_throw_completion()) {
-            auto completion = string.release_error();
-
-            // We can't explicitly check for OOM because InternalError does not store the ErrorType
-            VERIFY(completion.value().has_value());
-            VERIFY(completion.value()->is_object());
-            VERIFY(is<InternalError>(completion.value()->as_object()));
-
-            return AK::Error::from_errno(ENOMEM);
-        } else {
-            return string.release_value();
-        }
+        return as_string().utf8_string();
     case SYMBOL_TAG:
-        return as_symbol().descriptive_string();
+        return as_symbol().descriptive_string().release_value();
     case BIGINT_TAG:
-        return as_bigint().to_string();
+        return as_bigint().to_string().release_value();
     case OBJECT_TAG:
-        return String::formatted("[object {}]", as_object().class_name());
+        return String::formatted("[object {}]", as_object().class_name()).release_value();
     case ACCESSOR_TAG:
         return "<accessor>"_string;
     case EMPTY_TAG:
@@ -397,40 +394,40 @@ ErrorOr<String> Value::to_string_without_side_effects() const
     }
 }
 
-ThrowCompletionOr<PrimitiveString*> Value::to_primitive_string(VM& vm)
+ThrowCompletionOr<NonnullGCPtr<PrimitiveString>> Value::to_primitive_string(VM& vm)
 {
     if (is_string())
-        return &as_string();
+        return as_string();
     auto string = TRY(to_string(vm));
-    return PrimitiveString::create(vm, move(string)).ptr();
+    return PrimitiveString::create(vm, move(string));
 }
 
 // 7.1.17 ToString ( argument ), https://tc39.es/ecma262/#sec-tostring
 ThrowCompletionOr<String> Value::to_string(VM& vm) const
 {
     if (is_double())
-        return TRY_OR_THROW_OOM(vm, number_to_string(m_value.as_double));
+        return number_to_string(m_value.as_double);
 
     switch (m_value.tag) {
     // 1. If argument is a String, return argument.
     case STRING_TAG:
-        return TRY(as_string().utf8_string());
+        return as_string().utf8_string();
     // 2. If argument is a Symbol, throw a TypeError exception.
     case SYMBOL_TAG:
         return vm.throw_completion<TypeError>(ErrorType::Convert, "symbol", "string");
     // 3. If argument is undefined, return "undefined".
     case UNDEFINED_TAG:
-        return TRY_OR_THROW_OOM(vm, "undefined"_string);
+        return "undefined"_string;
     // 4. If argument is null, return "null".
     case NULL_TAG:
-        return TRY_OR_THROW_OOM(vm, "null"_string);
+        return "null"_string;
     // 5. If argument is true, return "true".
     // 6. If argument is false, return "false".
     case BOOLEAN_TAG:
-        return TRY_OR_THROW_OOM(vm, as_bool() ? "true"_string : "false"_string);
+        return as_bool() ? "true"_string : "false"_string;
     // 7. If argument is a Number, return Number::toString(argument, 10).
     case INT32_TAG:
-        return TRY_OR_THROW_OOM(vm, String::number(as_i32()));
+        return String::number(as_i32());
     // 8. If argument is a BigInt, return BigInt::toString(argument, 10).
     case BIGINT_TAG:
         return TRY_OR_THROW_OOM(vm, as_bigint().big_integer().to_base(10));
@@ -451,22 +448,27 @@ ThrowCompletionOr<String> Value::to_string(VM& vm) const
 }
 
 // 7.1.17 ToString ( argument ), https://tc39.es/ecma262/#sec-tostring
-ThrowCompletionOr<DeprecatedString> Value::to_deprecated_string(VM& vm) const
+ThrowCompletionOr<ByteString> Value::to_byte_string(VM& vm) const
 {
-    return TRY(to_string(vm)).to_deprecated_string();
+    return TRY(to_string(vm)).to_byte_string();
 }
 
 ThrowCompletionOr<Utf16String> Value::to_utf16_string(VM& vm) const
 {
     if (is_string())
-        return TRY(as_string().utf16_string());
+        return as_string().utf16_string();
 
     auto utf8_string = TRY(to_string(vm));
-    return Utf16String::create(vm, utf8_string.bytes_as_string_view());
+    return Utf16String::create(utf8_string.bytes_as_string_view());
+}
+
+ThrowCompletionOr<String> Value::to_well_formed_string(VM& vm) const
+{
+    return ::JS::to_well_formed_string(TRY(to_utf16_string(vm)));
 }
 
 // 7.1.2 ToBoolean ( argument ), https://tc39.es/ecma262/#sec-toboolean
-bool Value::to_boolean() const
+bool Value::to_boolean_slow_case() const
 {
     if (is_double()) {
         if (is_nan())
@@ -503,16 +505,16 @@ bool Value::to_boolean() const
 }
 
 // 7.1.1 ToPrimitive ( input [ , preferredType ] ), https://tc39.es/ecma262/#sec-toprimitive
-ThrowCompletionOr<Value> Value::to_primitive(VM& vm, PreferredType preferred_type) const
+ThrowCompletionOr<Value> Value::to_primitive_slow_case(VM& vm, PreferredType preferred_type) const
 {
     // 1. If input is an Object, then
     if (is_object()) {
         // a. Let exoticToPrim be ? GetMethod(input, @@toPrimitive).
-        auto* exotic_to_primitive = TRY(get_method(vm, *vm.well_known_symbol_to_primitive()));
+        auto exotic_to_primitive = TRY(get_method(vm, vm.well_known_symbol_to_primitive()));
 
         // b. If exoticToPrim is not undefined, then
         if (exotic_to_primitive) {
-            auto hint = [&]() -> DeprecatedString {
+            auto hint = [&]() -> ByteString {
                 switch (preferred_type) {
                 // i. If preferredType is not present, let hint be "default".
                 case PreferredType::Default:
@@ -538,7 +540,7 @@ ThrowCompletionOr<Value> Value::to_primitive(VM& vm, PreferredType preferred_typ
                 return result;
 
             // vi. Throw a TypeError exception.
-            return vm.throw_completion<TypeError>(ErrorType::ToPrimitiveReturnedObject, TRY_OR_THROW_OOM(vm, to_string_without_side_effects()), hint);
+            return vm.throw_completion<TypeError>(ErrorType::ToPrimitiveReturnedObject, to_string_without_side_effects(), hint);
         }
 
         // c. If preferredType is not present, let preferredType be number.
@@ -554,7 +556,7 @@ ThrowCompletionOr<Value> Value::to_primitive(VM& vm, PreferredType preferred_typ
 }
 
 // 7.1.18 ToObject ( argument ), https://tc39.es/ecma262/#sec-toobject
-ThrowCompletionOr<Object*> Value::to_object(VM& vm) const
+ThrowCompletionOr<NonnullGCPtr<Object>> Value::to_object(VM& vm) const
 {
     auto& realm = *vm.current_realm();
     VERIFY(!is_empty());
@@ -562,7 +564,7 @@ ThrowCompletionOr<Object*> Value::to_object(VM& vm) const
     // Number
     if (is_number()) {
         // Return a new Number object whose [[NumberData]] internal slot is set to argument. See 21.1 for a description of Number objects.
-        return NumberObject::create(realm, as_double()).ptr();
+        return NumberObject::create(realm, as_double());
     }
 
     switch (m_value.tag) {
@@ -575,30 +577,30 @@ ThrowCompletionOr<Object*> Value::to_object(VM& vm) const
     // Boolean
     case BOOLEAN_TAG:
         // Return a new Boolean object whose [[BooleanData]] internal slot is set to argument. See 20.3 for a description of Boolean objects.
-        return BooleanObject::create(realm, as_bool()).ptr();
+        return BooleanObject::create(realm, as_bool());
     // String
     case STRING_TAG:
         // Return a new String object whose [[StringData]] internal slot is set to argument. See 22.1 for a description of String objects.
-        return MUST_OR_THROW_OOM(StringObject::create(realm, const_cast<JS::PrimitiveString&>(as_string()), *realm.intrinsics().string_prototype())).ptr();
+        return StringObject::create(realm, const_cast<JS::PrimitiveString&>(as_string()), realm.intrinsics().string_prototype());
     // Symbol
     case SYMBOL_TAG:
         // Return a new Symbol object whose [[SymbolData]] internal slot is set to argument. See 20.4 for a description of Symbol objects.
-        return SymbolObject::create(realm, const_cast<JS::Symbol&>(as_symbol())).ptr();
+        return SymbolObject::create(realm, const_cast<JS::Symbol&>(as_symbol()));
     // BigInt
     case BIGINT_TAG:
         // Return a new BigInt object whose [[BigIntData]] internal slot is set to argument. See 21.2 for a description of BigInt objects.
-        return BigIntObject::create(realm, const_cast<JS::BigInt&>(as_bigint())).ptr();
+        return BigIntObject::create(realm, const_cast<JS::BigInt&>(as_bigint()));
     // Object
     case OBJECT_TAG:
         // Return argument.
-        return &const_cast<Object&>(as_object());
+        return const_cast<Object&>(as_object());
     default:
         VERIFY_NOT_REACHED();
     }
 }
 
 // 7.1.3 ToNumeric ( value ), https://tc39.es/ecma262/#sec-tonumeric
-FLATTEN ThrowCompletionOr<Value> Value::to_numeric(VM& vm) const
+FLATTEN ThrowCompletionOr<Value> Value::to_numeric_slow_case(VM& vm) const
 {
     // 1. Let primValue be ? ToPrimitive(value, number).
     auto primitive_value = TRY(to_primitive(vm, Value::PreferredType::Number));
@@ -667,14 +669,14 @@ static Optional<NumberParseResult> parse_number_text(StringView text)
 double string_to_number(StringView string)
 {
     // 1. Let text be StringToCodePoints(str).
-    DeprecatedString text = Utf8View(string).trim(whitespace_characters, AK::TrimMode::Both).as_string();
+    auto text = Utf8View(string).trim(whitespace_characters, AK::TrimMode::Both).as_string();
 
     // 2. Let literal be ParseText(text, StringNumericLiteral).
     if (text.is_empty())
         return 0;
-    if (text == "Infinity" || text == "+Infinity")
+    if (text == "Infinity"sv || text == "+Infinity"sv)
         return INFINITY;
-    if (text == "-Infinity")
+    if (text == "-Infinity"sv)
         return -INFINITY;
 
     auto result = parse_number_text(text);
@@ -685,11 +687,11 @@ double string_to_number(StringView string)
 
     // 4. Return StringNumericValue of literal.
     if (result->base != 10) {
-        auto bigint = Crypto::UnsignedBigInteger::from_base(result->base, result->literal);
+        auto bigint = MUST(Crypto::UnsignedBigInteger::from_base(result->base, result->literal));
         return bigint.to_double();
     }
 
-    auto maybe_double = text.to_double(AK::TrimWhitespace::No);
+    auto maybe_double = text.to_number<double>(AK::TrimWhitespace::No);
     if (!maybe_double.has_value())
         return NAN;
 
@@ -697,7 +699,7 @@ double string_to_number(StringView string)
 }
 
 // 7.1.4 ToNumber ( argument ), https://tc39.es/ecma262/#sec-tonumber
-ThrowCompletionOr<Value> Value::to_number(VM& vm) const
+ThrowCompletionOr<Value> Value::to_number_slow_case(VM& vm) const
 {
     VERIFY(!is_empty());
 
@@ -722,7 +724,7 @@ ThrowCompletionOr<Value> Value::to_number(VM& vm) const
         return Value(as_bool() ? 1 : 0);
     // 6. If argument is a String, return StringToNumber(argument).
     case STRING_TAG:
-        return string_to_number(TRY(as_string().deprecated_string()));
+        return string_to_number(as_string().byte_string());
     // 7. Assert: argument is an Object.
     case OBJECT_TAG: {
         // 8. Let primValue be ? ToPrimitive(argument, number).
@@ -742,7 +744,7 @@ ThrowCompletionOr<Value> Value::to_number(VM& vm) const
 static Optional<BigInt*> string_to_bigint(VM& vm, StringView string);
 
 // 7.1.13 ToBigInt ( argument ), https://tc39.es/ecma262/#sec-tobigint
-ThrowCompletionOr<BigInt*> Value::to_bigint(VM& vm) const
+ThrowCompletionOr<NonnullGCPtr<BigInt>> Value::to_bigint(VM& vm) const
 {
     // 1. Let prim be ? ToPrimitive(argument, number).
     auto primitive = TRY(to_primitive(vm, PreferredType::Number));
@@ -768,22 +770,22 @@ ThrowCompletionOr<BigInt*> Value::to_bigint(VM& vm) const
     case BOOLEAN_TAG: {
         // Return 1n if prim is true and 0n if prim is false.
         auto value = primitive.as_bool() ? 1 : 0;
-        return BigInt::create(vm, Crypto::SignedBigInteger { value }).ptr();
+        return BigInt::create(vm, Crypto::SignedBigInteger { value });
     }
     // BigInt
     case BIGINT_TAG:
         // Return prim.
-        return &primitive.as_bigint();
+        return primitive.as_bigint();
     case STRING_TAG: {
         // 1. Let n be ! StringToBigInt(prim).
-        auto bigint = string_to_bigint(vm, TRY(primitive.as_string().deprecated_string()));
+        auto bigint = string_to_bigint(vm, primitive.as_string().byte_string());
 
         // 2. If n is undefined, throw a SyntaxError exception.
         if (!bigint.has_value())
             return vm.throw_completion<SyntaxError>(ErrorType::BigIntInvalidValue, primitive);
 
         // 3. Return n.
-        return bigint.release_value();
+        return *bigint.release_value();
     }
     // Symbol
     case SYMBOL_TAG:
@@ -854,7 +856,7 @@ static Optional<BigInt*> string_to_bigint(VM& vm, StringView string)
 
     // 4. Let mv be the MV of literal.
     // 5. Assert: mv is an integer.
-    auto bigint = Crypto::SignedBigInteger::from_base(result->base, result->literal);
+    auto bigint = MUST(Crypto::SignedBigInteger::from_base(result->base, result->literal));
     if (result->is_negative && (bigint != BIGINT_ZERO))
         bigint.negate();
 
@@ -866,7 +868,7 @@ static Optional<BigInt*> string_to_bigint(VM& vm, StringView string)
 ThrowCompletionOr<i64> Value::to_bigint_int64(VM& vm) const
 {
     // 1. Let n be ? ToBigInt(argument).
-    auto* bigint = TRY(to_bigint(vm));
+    auto bigint = TRY(to_bigint(vm));
 
     // 2. Let int64bit be ℝ(n) modulo 2^64.
     // 3. If int64bit ≥ 2^63, return ℤ(int64bit - 2^64); otherwise return ℤ(int64bit).
@@ -877,7 +879,7 @@ ThrowCompletionOr<i64> Value::to_bigint_int64(VM& vm) const
 ThrowCompletionOr<u64> Value::to_bigint_uint64(VM& vm) const
 {
     // 1. Let n be ? ToBigInt(argument).
-    auto* bigint = TRY(to_bigint(vm));
+    auto bigint = TRY(to_bigint(vm));
 
     // 2. Let int64bit be ℝ(n) modulo 2^64.
     // 3. Return ℤ(int64bit).
@@ -906,7 +908,7 @@ ThrowCompletionOr<PropertyKey> Value::to_property_key(VM& vm) const
     }
 
     // 3. Return ! ToString(key).
-    return MUST(key.to_deprecated_string(vm));
+    return MUST(key.to_byte_string(vm));
 }
 
 // 7.1.6 ToInt32 ( argument ), https://tc39.es/ecma262/#sec-toint32
@@ -947,6 +949,10 @@ ThrowCompletionOr<i32> Value::to_i32(VM& vm) const
 // 7.1.7 ToUint32 ( argument ), https://tc39.es/ecma262/#sec-touint32
 ThrowCompletionOr<u32> Value::to_u32(VM& vm) const
 {
+    // OPTIMIZATION: If this value is encoded as a positive i32, return it directly.
+    if (is_int32() && as_i32() >= 0)
+        return as_i32();
+
     // 1. Let number be ? ToNumber(argument).
     double number = TRY(to_number(vm)).as_double();
 
@@ -1217,14 +1223,14 @@ ThrowCompletionOr<Value> Value::get(VM& vm, PropertyKey const& property_key) con
     VERIFY(property_key.is_valid());
 
     // 2. Let O be ? ToObject(V).
-    auto* object = TRY(to_object(vm));
+    auto object = TRY(to_object(vm));
 
     // 3. Return ? O.[[Get]](P, V).
     return TRY(object->internal_get(property_key, *this));
 }
 
 // 7.3.11 GetMethod ( V, P ), https://tc39.es/ecma262/#sec-getmethod
-ThrowCompletionOr<FunctionObject*> Value::get_method(VM& vm, PropertyKey const& property_key) const
+ThrowCompletionOr<GCPtr<FunctionObject>> Value::get_method(VM& vm, PropertyKey const& property_key) const
 {
     // 1. Assert: IsPropertyKey(P) is true.
     VERIFY(property_key.is_valid());
@@ -1238,10 +1244,10 @@ ThrowCompletionOr<FunctionObject*> Value::get_method(VM& vm, PropertyKey const& 
 
     // 4. If IsCallable(func) is false, throw a TypeError exception.
     if (!function.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, function.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, function.to_string_without_side_effects());
 
     // 5. Return func.
-    return &function.as_function();
+    return function.as_function();
 }
 
 // 13.10 Relational Operators, https://tc39.es/ecma262/#sec-relational-operators
@@ -1340,6 +1346,10 @@ ThrowCompletionOr<Value> less_than_equals(VM& vm, Value lhs, Value rhs)
 // BitwiseANDExpression : BitwiseANDExpression & EqualityExpression
 ThrowCompletionOr<Value> bitwise_and(VM& vm, Value lhs, Value rhs)
 {
+    // OPTIMIZATION: Fast path when both values are Int32.
+    if (lhs.is_int32() && rhs.is_int32())
+        return Value(lhs.as_i32() & rhs.as_i32());
+
     // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
     // 1-2, 6. N/A.
 
@@ -1373,6 +1383,10 @@ ThrowCompletionOr<Value> bitwise_and(VM& vm, Value lhs, Value rhs)
 // BitwiseORExpression : BitwiseORExpression | BitwiseXORExpression
 ThrowCompletionOr<Value> bitwise_or(VM& vm, Value lhs, Value rhs)
 {
+    // OPTIMIZATION: Fast path when both values are Int32.
+    if (lhs.is_int32() && rhs.is_int32())
+        return Value(lhs.as_i32() | rhs.as_i32());
+
     // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
     // 1-2, 6. N/A.
 
@@ -1410,6 +1424,10 @@ ThrowCompletionOr<Value> bitwise_or(VM& vm, Value lhs, Value rhs)
 // BitwiseXORExpression : BitwiseXORExpression ^ BitwiseANDExpression
 ThrowCompletionOr<Value> bitwise_xor(VM& vm, Value lhs, Value rhs)
 {
+    // OPTIMIZATION: Fast path when both values are Int32.
+    if (lhs.is_int32() && rhs.is_int32())
+        return Value(lhs.as_i32() ^ rhs.as_i32());
+
     // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
     // 1-2, 6. N/A.
 
@@ -1724,7 +1742,7 @@ ThrowCompletionOr<Value> add(VM& vm, Value lhs, Value rhs)
         auto rhs_string = TRY(rhs_primitive.to_primitive_string(vm));
 
         // iii. Return the string-concatenation of lstr and rstr.
-        return PrimitiveString::create(vm, *lhs_string, *rhs_string);
+        return PrimitiveString::create(vm, lhs_string, rhs_string);
     }
 
     // d. Set lval to lprim.
@@ -1799,6 +1817,14 @@ ThrowCompletionOr<Value> sub(VM& vm, Value lhs, Value rhs)
 // MultiplicativeExpression : MultiplicativeExpression MultiplicativeOperator ExponentiationExpression
 ThrowCompletionOr<Value> mul(VM& vm, Value lhs, Value rhs)
 {
+    // OPTIMIZATION: Fast path for multiplication of two Int32 values.
+    if (lhs.is_int32() && rhs.is_int32()) {
+        Checked<i32> result = lhs.as_i32();
+        result *= rhs.as_i32();
+        if (!result.has_overflow())
+            return result.value();
+    }
+
     // 13.15.3 ApplyStringOrNumericBinaryOperator ( lval, opText, rval ), https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
     // 1-2, 6. N/A.
 
@@ -1932,7 +1958,7 @@ static Value exp_double(Value base, Value exponent)
 
     // 5. If base is -∞𝔽, then
     if (base.is_negative_infinity()) {
-        auto is_odd_integral_number = exponent.is_integral_number() && (static_cast<i32>(exponent.as_double()) % 2 != 0);
+        auto is_odd_integral_number = exponent.is_integral_number() && (fmod(exponent.as_double(), 2.0) != 0);
 
         // a. If exponent > +0𝔽, then
         if (exponent.as_double() > 0) {
@@ -1954,7 +1980,7 @@ static Value exp_double(Value base, Value exponent)
 
     // 7. If base is -0𝔽, then
     if (base.is_negative_zero()) {
-        auto is_odd_integral_number = exponent.is_integral_number() && (static_cast<i32>(exponent.as_double()) % 2 != 0);
+        auto is_odd_integral_number = exponent.is_integral_number() && (fmod(exponent.as_double(), 2.0) != 0);
 
         // a. If exponent > +0𝔽, then
         if (exponent.as_double() > 0) {
@@ -2055,10 +2081,10 @@ ThrowCompletionOr<Value> instance_of(VM& vm, Value value, Value target)
 {
     // 1. If target is not an Object, throw a TypeError exception.
     if (!target.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAnObject, target.to_string_without_side_effects());
 
     // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
-    auto* instance_of_handler = TRY(target.get_method(vm, *vm.well_known_symbol_has_instance()));
+    auto instance_of_handler = TRY(target.get_method(vm, vm.well_known_symbol_has_instance()));
 
     // 3. If instOfHandler is not undefined, then
     if (instance_of_handler) {
@@ -2068,7 +2094,7 @@ ThrowCompletionOr<Value> instance_of(VM& vm, Value value, Value target)
 
     // 4. If IsCallable(target) is false, throw a TypeError exception.
     if (!target.is_function())
-        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, TRY_OR_THROW_OOM(vm, target.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::NotAFunction, target.to_string_without_side_effects());
 
     // 5. Return ? OrdinaryHasInstance(target, V).
     return ordinary_has_instance(vm, target, value);
@@ -2103,7 +2129,7 @@ ThrowCompletionOr<Value> ordinary_has_instance(VM& vm, Value lhs, Value rhs)
 
     // 5. If P is not an Object, throw a TypeError exception.
     if (!rhs_prototype.is_object())
-        return vm.throw_completion<TypeError>(ErrorType::InstanceOfOperatorBadPrototype, TRY_OR_THROW_OOM(vm, rhs.to_string_without_side_effects()));
+        return vm.throw_completion<TypeError>(ErrorType::InstanceOfOperatorBadPrototype, rhs.to_string_without_side_effects());
 
     // 6. Repeat,
     while (true) {
@@ -2188,8 +2214,7 @@ bool same_value_non_number(Value lhs, Value rhs)
     // 5. If x is a String, then
     if (lhs.is_string()) {
         // a. If x and y are exactly the same sequence of code units (same length and same code units at corresponding indices), return true; otherwise, return false.
-        // FIXME: Propagate this error.
-        return MUST(lhs.as_string().deprecated_string()) == MUST(rhs.as_string().deprecated_string());
+        return lhs.as_string().byte_string() == rhs.as_string().byte_string();
     }
 
     // 3. If x is undefined, return true.
@@ -2270,7 +2295,7 @@ ThrowCompletionOr<bool> is_loosely_equal(VM& vm, Value lhs, Value rhs)
     // 7. If Type(x) is BigInt and Type(y) is String, then
     if (lhs.is_bigint() && rhs.is_string()) {
         // a. Let n be StringToBigInt(y).
-        auto bigint = string_to_bigint(vm, TRY(rhs.as_string().deprecated_string()));
+        auto bigint = string_to_bigint(vm, rhs.as_string().byte_string());
 
         // b. If n is undefined, return false.
         if (!bigint.has_value())
@@ -2351,8 +2376,8 @@ ThrowCompletionOr<TriState> is_less_than(VM& vm, Value lhs, Value rhs, bool left
 
     // 3. If px is a String and py is a String, then
     if (x_primitive.is_string() && y_primitive.is_string()) {
-        auto x_string = TRY(x_primitive.as_string().deprecated_string());
-        auto y_string = TRY(y_primitive.as_string().deprecated_string());
+        auto x_string = x_primitive.as_string().byte_string();
+        auto y_string = y_primitive.as_string().byte_string();
 
         Utf8View x_code_points { x_string };
         Utf8View y_code_points { y_string };
@@ -2387,7 +2412,7 @@ ThrowCompletionOr<TriState> is_less_than(VM& vm, Value lhs, Value rhs, bool left
     // a. If px is a BigInt and py is a String, then
     if (x_primitive.is_bigint() && y_primitive.is_string()) {
         // i. Let ny be StringToBigInt(py).
-        auto y_bigint = string_to_bigint(vm, TRY(y_primitive.as_string().deprecated_string()));
+        auto y_bigint = string_to_bigint(vm, y_primitive.as_string().byte_string());
 
         // ii. If ny is undefined, return undefined.
         if (!y_bigint.has_value())
@@ -2402,7 +2427,7 @@ ThrowCompletionOr<TriState> is_less_than(VM& vm, Value lhs, Value rhs, bool left
     // b. If px is a String and py is a BigInt, then
     if (x_primitive.is_string() && y_primitive.is_bigint()) {
         // i. Let nx be StringToBigInt(px).
-        auto x_bigint = string_to_bigint(vm, TRY(x_primitive.as_string().deprecated_string()));
+        auto x_bigint = string_to_bigint(vm, x_primitive.as_string().byte_string());
 
         // ii. If nx is undefined, return undefined.
         if (!x_bigint.has_value())
@@ -2482,7 +2507,10 @@ ThrowCompletionOr<Value> Value::invoke_internal(VM& vm, PropertyKey const& prope
     auto function = TRY(get(vm, property_key));
 
     // 3. Return ? Call(func, V, argumentsList).
-    return call(vm, function, *this, move(arguments));
+    ReadonlySpan<Value> argument_list;
+    if (arguments.has_value())
+        argument_list = arguments.value().span();
+    return call(vm, function, *this, argument_list);
 }
 
 }

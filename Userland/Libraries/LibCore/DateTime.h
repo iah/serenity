@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/StringView.h>
 #include <LibIPC/Forward.h>
 #include <time.h>
@@ -31,14 +31,26 @@ public:
     bool is_leap_year() const;
 
     void set_time(int year, int month = 1, int day = 1, int hour = 0, int minute = 0, int second = 0);
-    DeprecatedString to_deprecated_string(StringView format = "%Y-%m-%d %H:%M:%S"sv) const;
+    void set_time_only(int hour, int minute, Optional<int> second = {});
+    void set_date(Core::DateTime const& other);
+
+    enum class LocalTime {
+        Yes,
+        No,
+    };
+
+    ErrorOr<String> to_string(StringView format = "%Y-%m-%d %H:%M:%S"sv, LocalTime = LocalTime::Yes) const;
+    ByteString to_byte_string(StringView format = "%Y-%m-%d %H:%M:%S"sv, LocalTime = LocalTime::Yes) const;
 
     static DateTime create(int year, int month = 1, int day = 1, int hour = 0, int minute = 0, int second = 0);
     static DateTime now();
     static DateTime from_timestamp(time_t);
-    static Optional<DateTime> parse(StringView format, DeprecatedString const& string);
+    static Optional<DateTime> parse(StringView format, StringView string);
 
     bool operator<(DateTime const& other) const { return m_timestamp < other.m_timestamp; }
+    bool operator>(DateTime const& other) const { return m_timestamp > other.m_timestamp; }
+    bool operator<=(DateTime const& other) const { return m_timestamp <= other.m_timestamp; }
+    bool operator>=(DateTime const& other) const { return m_timestamp >= other.m_timestamp; }
     bool operator==(DateTime const& other) const { return m_timestamp == other.m_timestamp; }
 
 private:

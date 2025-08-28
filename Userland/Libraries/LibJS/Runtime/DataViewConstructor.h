@@ -12,9 +12,10 @@ namespace JS {
 
 class DataViewConstructor final : public NativeFunction {
     JS_OBJECT(DataViewConstructor, NativeFunction);
+    JS_DECLARE_ALLOCATOR(DataViewConstructor);
 
 public:
-    virtual ThrowCompletionOr<void> initialize(Realm&) override;
+    virtual void initialize(Realm&) override;
     virtual ~DataViewConstructor() override = default;
 
     virtual ThrowCompletionOr<Value> call() override;

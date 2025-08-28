@@ -7,7 +7,7 @@
 #include "ExportDialog.h"
 #include "Spreadsheet.h"
 #include "Workbook.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/JsonArray.h>
 #include <AK/LexicalPath.h>
 #include <AK/MemoryStream.h>
@@ -34,9 +34,10 @@ CSVExportDialogPage::CSVExportDialogPage(Sheet const& sheet)
 {
     m_headers.extend(m_data.take_first());
 
-    m_page = GUI::WizardPage::construct(
-        "CSV Export Options",
-        "Please select the options for the csv file you wish to export to");
+    m_page = GUI::WizardPage::create(
+        "CSV Export Options"sv,
+        "Please select the options for the csv file you wish to export to"sv)
+                 .release_value_but_fixme_should_propagate_errors();
 
     m_page->body_widget().load_from_gml(csv_export_gml).release_value_but_fixme_should_propagate_errors();
     m_page->set_is_final_page(true);
@@ -58,7 +59,7 @@ CSVExportDialogPage::CSVExportDialogPage(Sheet const& sheet)
 
     m_data_preview_text_editor->set_should_hide_unnecessary_scrollbars(true);
 
-    m_quote_escape_combo_box->set_model(GUI::ItemListModel<DeprecatedString>::create(m_quote_escape_items));
+    m_quote_escape_combo_box->set_model(GUI::ItemListModel<ByteString>::create(m_quote_escape_items));
 
     // By default, use commas, double quotes with repeat, disable headers, and quote only the fields that require quoting.
     m_delimiter_comma_radio->set_checked(true);
@@ -90,7 +91,7 @@ CSVExportDialogPage::CSVExportDialogPage(Sheet const& sheet)
 
 auto CSVExportDialogPage::generate(Stream& stream, GenerationType type) -> ErrorOr<void>
 {
-    auto delimiter = TRY([this]() -> ErrorOr<DeprecatedString> {
+    auto delimiter = TRY([this]() -> ErrorOr<ByteString> {
         if (m_delimiter_other_radio->is_checked()) {
             if (m_delimiter_other_text_box->text().is_empty())
                 return Error::from_string_literal("Delimiter unset");
@@ -107,7 +108,7 @@ auto CSVExportDialogPage::generate(Stream& stream, GenerationType type) -> Error
         return Error::from_string_literal("Delimiter unset");
     }());
 
-    auto quote = TRY([this]() -> ErrorOr<DeprecatedString> {
+    auto quote = TRY([this]() -> ErrorOr<ByteString> {
         if (m_quote_other_radio->is_checked()) {
             if (m_quote_other_text_box->text().is_empty())
                 return Error::from_string_literal("Quote separator unset");
@@ -139,7 +140,7 @@ auto CSVExportDialogPage::generate(Stream& stream, GenerationType type) -> Error
     };
 
     auto behaviors = Writer::default_behaviors();
-    Vector<DeprecatedString> empty_headers;
+    Vector<ByteString> empty_headers;
     auto* headers = &empty_headers;
 
     if (should_export_headers) {
@@ -152,7 +153,7 @@ auto CSVExportDialogPage::generate(Stream& stream, GenerationType type) -> Error
 
     switch (type) {
     case GenerationType::Normal:
-        TRY((Writer::XSV<decltype(m_data), Vector<DeprecatedString>>::generate(stream, m_data, move(traits), *headers, behaviors)));
+        TRY((Writer::XSV<decltype(m_data), Vector<ByteString>>::generate(stream, m_data, move(traits), *headers, behaviors)));
         break;
     case GenerationType::Preview:
         TRY((Writer::XSV<decltype(m_data), decltype(*headers)>::generate_preview(stream, m_data, move(traits), *headers, behaviors)));
@@ -175,12 +176,12 @@ void CSVExportDialogPage::update_preview()
         return {};
     }();
     if (maybe_error.is_error())
-        m_data_preview_text_editor->set_text(DeprecatedString::formatted("Cannot update preview: {}", maybe_error.error()));
+        m_data_preview_text_editor->set_text(ByteString::formatted("Cannot update preview: {}", maybe_error.error()));
 }
 
-ErrorOr<void> ExportDialog::make_and_run_for(StringView mime, Core::File& file, DeprecatedString filename, Workbook& workbook)
+ErrorOr<void> ExportDialog::make_and_run_for(StringView mime, Core::File& file, ByteString filename, Workbook& workbook)
 {
-    auto wizard = GUI::WizardDialog::construct(GUI::Application::the()->active_window());
+    auto wizard = TRY(GUI::WizardDialog::create(GUI::Application::the()->active_window()));
     wizard->set_title("File Export Wizard");
     wizard->set_icon(GUI::Icon::default_icon("app-spreadsheet"sv).bitmap_for_size(16));
 
@@ -202,10 +203,10 @@ ErrorOr<void> ExportDialog::make_and_run_for(StringView mime, Core::File& file, 
     auto export_worksheet = [&]() -> ErrorOr<void> {
         JsonArray array;
         for (auto& sheet : workbook.sheets())
-            array.append(sheet->to_json());
+            array.must_append(sheet->to_json());
 
-        auto file_content = array.to_deprecated_string();
-        return file.write_entire_buffer(file_content.bytes());
+        auto file_content = array.to_byte_string();
+        return file.write_until_depleted(file_content.bytes());
     };
 
     if (mime == "text/csv") {
@@ -213,20 +214,20 @@ ErrorOr<void> ExportDialog::make_and_run_for(StringView mime, Core::File& file, 
     } else if (mime == "application/x-sheets+json") {
         return export_worksheet();
     } else {
-        auto page = GUI::WizardPage::construct(
-            "Export File Format",
-            DeprecatedString::formatted("Select the format you wish to export to '{}' as", LexicalPath::basename(filename)));
+        auto page = TRY(GUI::WizardPage::create(
+            "Export File Format"sv,
+            TRY(String::formatted("Select the format you wish to export to '{}' as", LexicalPath::basename(filename)))));
 
         page->on_next_page = [] { return nullptr; };
 
         TRY(page->body_widget().load_from_gml(select_format_page_gml));
         auto format_combo_box = page->body_widget().find_descendant_of_type_named<GUI::ComboBox>("select_format_page_format_combo_box");
 
-        Vector<DeprecatedString> supported_formats {
+        Vector<ByteString> supported_formats {
             "CSV (text/csv)",
             "Spreadsheet Worksheet",
         };
-        format_combo_box->set_model(GUI::ItemListModel<DeprecatedString>::create(supported_formats));
+        format_combo_box->set_model(GUI::ItemListModel<ByteString>::create(supported_formats));
 
         wizard->push_page(page);
 

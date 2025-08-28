@@ -28,12 +28,13 @@ namespace Detail {
 struct Block {
     size_t start;
     size_t end;
+    StringView comment { "N/A"sv };
 };
 
 }
 
-static constexpr const size_t c_max_recursion = 5000;
-static constexpr const size_t c_match_preallocation_count = 0;
+static constexpr size_t const c_max_recursion = 5000;
+static constexpr size_t const c_match_preallocation_count = 0;
 
 struct RegexResult final {
     bool success { false };
@@ -82,21 +83,21 @@ private:
 template<class Parser>
 class Regex final {
 public:
-    DeprecatedString pattern_value;
+    ByteString pattern_value;
     regex::Parser::Result parser_result;
     OwnPtr<Matcher<Parser>> matcher { nullptr };
     mutable size_t start_offset { 0 };
 
     static regex::Parser::Result parse_pattern(StringView pattern, typename ParserTraits<Parser>::OptionsType regex_options = {});
 
-    explicit Regex(DeprecatedString pattern, typename ParserTraits<Parser>::OptionsType regex_options = {});
-    Regex(regex::Parser::Result parse_result, DeprecatedString pattern, typename ParserTraits<Parser>::OptionsType regex_options = {});
+    explicit Regex(ByteString pattern, typename ParserTraits<Parser>::OptionsType regex_options = {});
+    Regex(regex::Parser::Result parse_result, ByteString pattern, typename ParserTraits<Parser>::OptionsType regex_options = {});
     ~Regex() = default;
     Regex(Regex&&);
     Regex& operator=(Regex&&);
 
     typename ParserTraits<Parser>::OptionsType options() const;
-    DeprecatedString error_string(Optional<DeprecatedString> message = {}) const;
+    ByteString error_string(Optional<ByteString> message = {}) const;
 
     RegexResult match(RegexStringView view, Optional<typename ParserTraits<Parser>::OptionsType> regex_options = {}) const
     {
@@ -112,7 +113,7 @@ public:
         return matcher->match(views, regex_options);
     }
 
-    DeprecatedString replace(RegexStringView view, StringView replacement_pattern, Optional<typename ParserTraits<Parser>::OptionsType> regex_options = {}) const
+    ByteString replace(RegexStringView view, StringView replacement_pattern, Optional<typename ParserTraits<Parser>::OptionsType> regex_options = {}) const
     {
         if (!matcher || parser_result.error != Error::NoError)
             return {};
@@ -121,11 +122,11 @@ public:
         size_t start_offset = 0;
         RegexResult result = matcher->match(view, regex_options);
         if (!result.success)
-            return view.to_deprecated_string();
+            return view.to_byte_string();
 
         for (size_t i = 0; i < result.matches.size(); ++i) {
             auto& match = result.matches[i];
-            builder.append(view.substring_view(start_offset, match.global_offset - start_offset).to_deprecated_string());
+            builder.append(view.substring_view(start_offset, match.global_offset - start_offset).to_byte_string());
             start_offset = match.global_offset + match.view.length();
             GenericLexer lexer(replacement_pattern);
             while (!lexer.is_eof()) {
@@ -135,8 +136,8 @@ public:
                         continue;
                     }
                     auto number = lexer.consume_while(isdigit);
-                    if (auto index = number.to_uint(); index.has_value() && result.n_capture_groups >= index.value()) {
-                        builder.append(result.capture_group_matches[i][index.value() - 1].view.to_deprecated_string());
+                    if (auto index = number.to_number<unsigned>(); index.has_value() && result.n_capture_groups >= index.value()) {
+                        builder.append(result.capture_group_matches[i][index.value() - 1].view.to_byte_string());
                     } else {
                         builder.appendff("\\{}", number);
                     }
@@ -146,9 +147,9 @@ public:
             }
         }
 
-        builder.append(view.substring_view(start_offset, view.length() - start_offset).to_deprecated_string());
+        builder.append(view.substring_view(start_offset, view.length() - start_offset).to_byte_string());
 
-        return builder.to_deprecated_string();
+        return builder.to_byte_string();
     }
 
     // FIXME: replace(Vector<RegexStringView> const , ...)
@@ -231,6 +232,7 @@ public:
 private:
     void run_optimization_passes();
     void attempt_rewrite_loops_as_atomic_groups(BasicBlockList const&);
+    bool attempt_rewrite_entire_match_as_substring_search(BasicBlockList const&);
 };
 
 // free standing functions for match, search and has_match

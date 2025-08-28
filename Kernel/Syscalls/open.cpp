@@ -8,15 +8,15 @@
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
-#include <Kernel/KLexicalPath.h>
+#include <Kernel/Library/KLexicalPath.h>
 #include <Kernel/Net/LocalSocket.h>
-#include <Kernel/Process.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
-ErrorOr<FlatPtr> Process::sys$open(Userspace<Syscall::SC_open_params const*> user_params)
+ErrorOr<FlatPtr> Process::open_impl(Userspace<Syscall::SC_open_params const*> user_params)
 {
-    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     auto params = TRY(copy_typed_from_user(user_params));
 
     int dirfd = params.dirfd;
@@ -55,19 +55,8 @@ ErrorOr<FlatPtr> Process::sys$open(Userspace<Syscall::SC_open_params const*> use
     dbgln_if(IO_DEBUG, "sys$open(dirfd={}, path='{}', options={}, mode={})", dirfd, path->view(), options, mode);
 
     auto fd_allocation = TRY(allocate_fd());
-    RefPtr<Custody> base;
-    if (dirfd == AT_FDCWD) {
-        base = current_directory();
-    } else {
-        auto base_description = TRY(open_file_description(dirfd));
-        if (!base_description->is_directory())
-            return ENOTDIR;
-        if (!base_description->custody())
-            return EINVAL;
-        base = base_description->custody();
-    }
-
-    auto description = TRY(VirtualFileSystem::the().open(credentials(), path->view(), options, mode & ~umask(), *base));
+    CustodyBase base(dirfd, path->view());
+    auto description = TRY(VirtualFileSystem::open(vfs_root_context(), credentials(), path->view(), options, mode & ~umask(), base));
 
     if (description->inode() && description->inode()->bound_socket())
         return ENXIO;
@@ -79,7 +68,7 @@ ErrorOr<FlatPtr> Process::sys$open(Userspace<Syscall::SC_open_params const*> use
     });
 }
 
-ErrorOr<FlatPtr> Process::sys$close(int fd)
+ErrorOr<FlatPtr> Process::close_impl(int fd)
 {
     VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::stdio));

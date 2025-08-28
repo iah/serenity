@@ -5,8 +5,8 @@
  */
 
 #include "FileWatcher.h"
+#include <AK/ByteString.h>
 #include <AK/Debug.h>
-#include <AK/DeprecatedString.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/Notifier.h>
 #include <errno.h>
@@ -34,7 +34,7 @@ static constexpr unsigned file_watcher_flags_to_inotify_flags(FileWatcherFlags f
     return result;
 }
 
-static Optional<FileWatcherEvent> get_event_from_fd(int fd, HashMap<unsigned, DeprecatedString> const& wd_to_path)
+static Optional<FileWatcherEvent> get_event_from_fd(int fd, HashMap<unsigned, ByteString> const& wd_to_path)
 {
     static constexpr auto max_event_size = sizeof(inotify_event) + NAME_MAX + 1;
 
@@ -97,7 +97,7 @@ ErrorOr<NonnullRefPtr<FileWatcher>> FileWatcher::create(FileWatcherFlags flags)
     if (watcher_fd < 0)
         return Error::from_errno(errno);
 
-    auto notifier = TRY(Notifier::try_create(watcher_fd, Notifier::Event::Read));
+    auto notifier = TRY(Notifier::try_create(watcher_fd, Notifier::Type::Read));
     return adopt_nonnull_ref_or_enomem(new (nothrow) FileWatcher(watcher_fd, move(notifier)));
 }
 
@@ -105,7 +105,7 @@ FileWatcher::FileWatcher(int watcher_fd, NonnullRefPtr<Notifier> notifier)
     : FileWatcherBase(watcher_fd)
     , m_notifier(move(notifier))
 {
-    m_notifier->on_ready_to_read = [this] {
+    m_notifier->on_activation = [this] {
         auto maybe_event = get_event_from_fd(m_notifier->fd(), m_wd_to_path);
         if (maybe_event.has_value()) {
             auto event = maybe_event.value();
@@ -123,7 +123,7 @@ FileWatcher::FileWatcher(int watcher_fd, NonnullRefPtr<Notifier> notifier)
 
 FileWatcher::~FileWatcher() = default;
 
-ErrorOr<bool> FileWatcherBase::add_watch(DeprecatedString path, FileWatcherEvent::Type event_mask)
+ErrorOr<bool> FileWatcherBase::add_watch(ByteString path, FileWatcherEvent::Type event_mask)
 {
     if (m_path_to_wd.find(path) != m_path_to_wd.end()) {
         dbgln_if(FILE_WATCHER_DEBUG, "add_watch: path '{}' is already being watched", path);
@@ -154,7 +154,7 @@ ErrorOr<bool> FileWatcherBase::add_watch(DeprecatedString path, FileWatcherEvent
     return true;
 }
 
-ErrorOr<bool> FileWatcherBase::remove_watch(DeprecatedString path)
+ErrorOr<bool> FileWatcherBase::remove_watch(ByteString path)
 {
     auto it = m_path_to_wd.find(path);
     if (it == m_path_to_wd.end()) {

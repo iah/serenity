@@ -5,16 +5,17 @@
  */
 
 #include <AK/Debug.h>
-#include <AK/ExtraMathConstants.h>
 #include <AK/Optional.h>
-#include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
+#include <LibWeb/Bindings/SVGPathElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/Layout/SVGGeometryBox.h>
 #include <LibWeb/SVG/SVGPathElement.h>
 
 namespace Web::SVG {
+
+JS_DEFINE_ALLOCATOR(SVGPathElement);
 
 [[maybe_unused]] static void print_instruction(PathInstruction const& instruction)
 {
@@ -89,22 +90,18 @@ SVGPathElement::SVGPathElement(DOM::Document& document, DOM::QualifiedName quali
 {
 }
 
-JS::ThrowCompletionOr<void> SVGPathElement::initialize(JS::Realm& realm)
+void SVGPathElement::initialize(JS::Realm& realm)
 {
-    MUST_OR_THROW_OOM(Base::initialize(realm));
-    set_prototype(&Bindings::ensure_web_prototype<Bindings::SVGPathElementPrototype>(realm, "SVGPathElement"));
-
-    return {};
+    Base::initialize(realm);
+    WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGPathElement);
 }
 
-void SVGPathElement::parse_attribute(DeprecatedFlyString const& name, DeprecatedString const& value)
+void SVGPathElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGeometryElement::parse_attribute(name, value);
+    SVGGeometryElement::attribute_changed(name, old_value, value);
 
-    if (name == "d") {
-        m_instructions = AttributeParser::parse_path_data(value);
-        m_path.clear();
-    }
+    if (name == "d")
+        m_instructions = AttributeParser::parse_path_data(value.value_or(String {}));
 }
 
 Gfx::Path path_from_path_instructions(ReadonlySpan<PathInstruction> instructions)
@@ -115,7 +112,7 @@ Gfx::Path path_from_path_instructions(ReadonlySpan<PathInstruction> instructions
 
     for (auto& instruction : instructions) {
         // If the first path element uses relative coordinates, we treat them as absolute by making them relative to (0, 0).
-        auto last_point = path.segments().is_empty() ? Gfx::FloatPoint { 0, 0 } : path.segments().last()->point();
+        auto last_point = path.last_point();
 
         auto& absolute = instruction.absolute;
         auto& data = instruction.data;
@@ -165,7 +162,7 @@ Gfx::Path path_from_path_instructions(ReadonlySpan<PathInstruction> instructions
         case PathInstructionType::EllipticalArc: {
             double rx = data[0];
             double ry = data[1];
-            double x_axis_rotation = double { data[2] } * M_DEG2RAD;
+            double x_axis_rotation = AK::to_radians(static_cast<double>(data[2]));
             double large_arc_flag = data[3];
             double sweep_flag = data[4];
 
@@ -275,12 +272,9 @@ Gfx::Path path_from_path_instructions(ReadonlySpan<PathInstruction> instructions
     return path;
 }
 
-Gfx::Path& SVGPathElement::get_path()
+Gfx::Path SVGPathElement::get_path(CSSPixelSize)
 {
-    if (!m_path.has_value()) {
-        m_path = path_from_path_instructions(m_instructions);
-    }
-    return m_path.value();
+    return path_from_path_instructions(m_instructions);
 }
 
 }

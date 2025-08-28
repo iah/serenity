@@ -5,7 +5,7 @@
  */
 
 #include "BigFraction.h"
-#include <AK/DeprecatedString.h>
+#include <AK/ByteString.h>
 #include <AK/Math.h>
 #include <AK/StringBuilder.h>
 #include <LibCrypto/NumberTheory/ModularFunctions.h>
@@ -25,21 +25,22 @@ BigFraction::BigFraction(SignedBigInteger value)
 {
 }
 
-BigFraction::BigFraction(StringView sv)
+ErrorOr<BigFraction> BigFraction::from_string(StringView sv)
 {
-    // FIXME: This constructor is definitely fallible, errors should also be propagated
-    //  from both signed and unsigned version of from_base.
     auto maybe_dot_index = sv.find('.');
 
     auto integer_part_view = sv.substring_view(0, maybe_dot_index.value_or(sv.length()));
     auto fraction_part_view = maybe_dot_index.has_value() ? sv.substring_view(1 + *maybe_dot_index) : "0"sv;
 
-    auto integer_part = SignedBigInteger::from_base(10, integer_part_view);
-    auto fractional_part = SignedBigInteger::from_base(10, fraction_part_view);
+    auto integer_part = TRY(SignedBigInteger::from_base(10, integer_part_view));
+    auto fractional_part = TRY(SignedBigInteger::from_base(10, fraction_part_view));
     auto fraction_length = UnsignedBigInteger(static_cast<u64>(fraction_part_view.length()));
 
-    *this = BigFraction(move(integer_part)) + BigFraction(move(fractional_part), NumberTheory::Power("10"_bigint, move(fraction_length)));
-};
+    if (!sv.is_empty() && sv[0] == '-')
+        fractional_part.negate();
+
+    return BigFraction(move(integer_part)) + BigFraction(move(fractional_part), NumberTheory::Power("10"_bigint, move(fraction_length)));
+}
 
 BigFraction BigFraction::operator+(BigFraction const& rhs) const
 {
@@ -184,7 +185,7 @@ void BigFraction::reduce()
     m_denominator = denominator_divide.quotient;
 }
 
-DeprecatedString BigFraction::to_deprecated_string(unsigned rounding_threshold) const
+ByteString BigFraction::to_byte_string(unsigned rounding_threshold) const
 {
     StringBuilder builder;
     if (m_numerator.is_negative() && m_numerator != "0"_bigint)
@@ -212,7 +213,7 @@ DeprecatedString BigFraction::to_deprecated_string(unsigned rounding_threshold) 
     auto const remove_trailing_zeros = [](StringView value) -> StringView {
         auto n = value.length();
         VERIFY(n > 0);
-        while (value.characters_without_null_termination()[n - 1] == '0')
+        while (n > 0 && value.characters_without_null_termination()[n - 1] == '0')
             --n;
         return { value.characters_without_null_termination(), n };
     };
@@ -239,7 +240,7 @@ DeprecatedString BigFraction::to_deprecated_string(unsigned rounding_threshold) 
             builder.append(fractional_value);
     }
 
-    return builder.to_deprecated_string();
+    return builder.to_byte_string();
 }
 
 BigFraction BigFraction::sqrt() const
